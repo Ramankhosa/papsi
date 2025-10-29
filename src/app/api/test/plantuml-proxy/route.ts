@@ -1,0 +1,49 @@
+import { NextRequest, NextResponse } from 'next/server'
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
+import crypto from 'crypto'
+import plantumlEncoder from 'plantuml-encoder'
+
+export async function POST(request: NextRequest) {
+  try {
+    const { code, format = 'svg' } = await request.json()
+    if (!code || typeof code !== 'string') {
+      return NextResponse.json({ error: 'code is required' }, { status: 400 })
+    }
+    if (format !== 'svg' && format !== 'png') {
+      return NextResponse.json({ error: 'format must be svg or png' }, { status: 400 })
+    }
+
+    // Minimal sanitization similar to server: remove captions/titles, forbidden directives, and entire skinparam blocks
+    let cleaned = code
+      .replace(/^(title|caption).*$/gmi, '')
+      .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
+    // Remove multi-line skinparam blocks like: skinparam X { ... }
+    cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
+    // Remove any remaining single-line skinparam statements
+    cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+    const encoded = plantumlEncoder.encode(cleaned)
+    const base = process.env.PLANTUML_BASE_URL || 'https://www.plantuml.com/plantuml'
+    const url = `${base}/${format}/${encoded}`
+
+    const resp = await fetch(url, { cache: 'no-store', method: 'GET', headers: { 'Accept': format === 'svg' ? 'image/svg+xml' : 'image/png' } })
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '')
+      return NextResponse.json({ error: 'Upstream render failed', upstreamStatus: resp.status, details: text?.slice(0, 300) }, { status: 502 })
+    }
+    const buf = Buffer.from(await resp.arrayBuffer())
+    const checksum = crypto.createHash('sha256').update(buf).digest('hex')
+
+    return new NextResponse(buf, {
+      status: 200,
+      headers: {
+        'Content-Type': format === 'svg' ? 'image/svg+xml' : 'image/png',
+        'Cache-Control': 'private, max-age=0',
+        'X-Checksum': checksum
+      }
+    })
+  } catch (e) {
+    return NextResponse.json({ error: 'Bad request' }, { status: 400 })
+  }
+}
+

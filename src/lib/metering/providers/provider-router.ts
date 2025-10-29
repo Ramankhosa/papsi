@@ -31,7 +31,7 @@ export class LLMProviderRouter {
     const configs = {
       gemini: {
         apiKey: process.env.GOOGLE_AI_API_KEY,
-        model: 'gemini-2.5-pro', // Gemini 2.5 Pro as requested
+        model: 'gemini-2.0-flash-lite', // Gemini 2.0 Flash-Lite (cost-effective, 1M context)
         baseURL: 'https://generativelanguage.googleapis.com/v1beta'
       },
       openai: {

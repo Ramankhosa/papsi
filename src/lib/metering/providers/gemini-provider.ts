@@ -6,7 +6,7 @@ import type { LLMProvider, ProviderConfig } from './llm-provider'
 
 export class GeminiProvider implements LLMProvider {
   name = 'gemini'
-  supportedModels = ['gemini-2.5-pro']
+  supportedModels = ['gemini-2.5-pro', 'gemini-2.0-flash-lite']
 
   private config: ProviderConfig
   private client: any // Google Generative AI client
@@ -97,20 +97,35 @@ export class GeminiProvider implements LLMProvider {
   }
 
   getTokenLimits(modelName: string): { input: number, output: number } {
-    // Gemini 2.5 Pro limits - maximum allowed by API
-    // Use higher limits for drafting tasks, but respect API constraints
-    return {
-      input: 2097152, // 2M tokens
-      output: 8192    // Maximum for Gemini 2.5 Pro completion
+    switch (modelName) {
+      case 'gemini-2.0-flash-lite':
+        return {
+          input: 1048576, // 1M tokens
+          output: 8192
+        }
+      case 'gemini-2.5-pro':
+      default:
+        return {
+          input: 2097152, // 2M tokens
+          output: 8192    // Maximum for Gemini 2.5 Pro completion
+        }
     }
   }
 
   getCostPerToken(modelName: string): { input: number, output: number } {
-    // Gemini 2.5 Pro pricing (per million tokens)
-    // Note: These are approximate - should be updated with actual pricing
-    return {
-      input: 0.00000125,  // $1.25 per million input tokens
-      output: 0.000005    // $5.00 per million output tokens
+    // Pricing per million tokens
+    switch (modelName) {
+      case 'gemini-2.0-flash-lite':
+        return {
+          input: 0.00000035,  // $0.35 per million input tokens
+          output: 0.00000070   // $0.70 per million output tokens
+        }
+      case 'gemini-2.5-pro':
+      default:
+        return {
+          input: 0.00000125,  // $1.25 per million input tokens
+          output: 0.000005    // $5.00 per million output tokens
+        }
     }
   }
 

@@ -1,15 +1,70 @@
 import { NextRequest, NextResponse } from 'next/server';
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 import { authenticateUser } from '@/lib/auth-middleware';
 import { prisma } from '@/lib/prisma';
 import { DraftingService } from '@/lib/drafting-service';
 import { llmGateway } from '@/lib/metering/gateway';
 import crypto from 'crypto';
+import plantumlEncoder from 'plantuml-encoder';
+import path from 'path';
+import fs from 'fs/promises';
 
 export async function GET(
   request: NextRequest,
   { params }: { params: { patentId: string } }
 ) {
   try {
+    // Serve figure image previews without requiring Authorization headers (browser <img> cannot send them)
+    const url = new URL(request.url)
+    const imageKind = url.searchParams.get('image')
+    if (imageKind === 'figure') {
+      const sessionId = url.searchParams.get('sessionId') || ''
+      const figureNo = Number(url.searchParams.get('figureNo') || '0')
+      if (!sessionId || !figureNo) return NextResponse.json({ error: 'sessionId and figureNo required' }, { status: 400 })
+
+      const ds = await prisma.diagramSource.findFirst({ where: { sessionId, figureNo } })
+      try {
+        const fs = await import('fs/promises')
+        const path = await import('path')
+        // Build locations (support both patents/ and projects/ storages and common filename patterns)
+        const pat = await prisma.patent.findUnique({ where: { id: params.patentId }, select: { projectId: true } })
+        const basePat = path.join(process.cwd(), 'uploads', 'patents', params.patentId, 'figures')
+        const baseProj = pat?.projectId ? path.join(process.cwd(), 'uploads', 'projects', pat.projectId, 'patents', params.patentId, 'figures') : ''
+        const nameCandidates = [
+          ds?.imageFilename,
+          `figure-${figureNo}.png`,
+          `figure_${figureNo}.png`,
+          `${figureNo}.png`,
+          `figure-${figureNo}.jpg`,
+          `figure_${figureNo}.jpg`,
+          `${figureNo}.jpg`
+        ].filter(Boolean) as string[]
+        const candidates: string[] = []
+        if (ds?.imagePath) candidates.push(ds.imagePath)
+        for (const n of nameCandidates) {
+          candidates.push(path.join(basePat, n))
+          if (baseProj) candidates.push(path.join(baseProj, n))
+        }
+        let fileBuf: Buffer | null = null
+        let usedPath = ''
+        for (const p of candidates) {
+          try {
+            const buf = await fs.readFile(p)
+            fileBuf = buf
+            usedPath = p
+            break
+          } catch {}
+        }
+        if (!fileBuf) return NextResponse.json({ error: 'Image file not found' }, { status: 404 })
+        const ext = path.extname(usedPath).toLowerCase()
+        const type = ext === '.png' ? 'image/png' : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : ext === '.svg' ? 'image/svg+xml' : 'application/octet-stream'
+        return new NextResponse(fileBuf as any, { status: 200, headers: { 'Content-Type': type, 'Cache-Control': 'private, max-age=60' } })
+      } catch (e) {
+        return NextResponse.json({ error: 'Failed to read image' }, { status: 500 })
+      }
+    }
+
     const authResult = await authenticateUser(request);
     if (!authResult.user) {
       return NextResponse.json(
@@ -60,8 +115,16 @@ export async function GET(
         annexureDrafts: {
           orderBy: { version: 'desc' },
           take: 1
-        }
-      },
+        },
+        relatedArtRuns: {
+          orderBy: { ranAt: 'desc' },
+          take: 5, // Keep last 5 runs for reference
+          include: {
+            ideaBankSuggestions: true
+          }
+        },
+        relatedArtSelections: true
+      } as any,
       orderBy: { createdAt: 'desc' }
     });
 
@@ -141,6 +204,27 @@ export async function POST(
       case 'update_figure_plan':
         return await handleUpdateFigurePlan(authResult.user, patentId, data);
 
+      // Stage 3.5: Related Art search & selection
+      case 'related_art_search':
+        return await handleRelatedArtSearch(authResult.user, patentId, data, requestHeaders);
+      case 'test_pqai_key':
+        return await handleTestPQAIKey();
+      case 'mock_related_art_search':
+        return await handleMockRelatedArtSearch();
+      case 'related_art_select':
+        return await handleRelatedArtSelect(authResult.user, patentId, data);
+      case 'related_art_llm_review':
+        return await handleRelatedArtLLMReview(authResult.user, patentId, data, requestHeaders);
+
+      case 'clear_related_art_selections':
+        return await handleClearRelatedArtSelections(authResult.user, patentId, data);
+
+      case 'save_manual_prior_art':
+        return await handleSaveManualPriorArt(authResult.user, patentId, data);
+
+      case 'save_ai_analysis':
+        return await handleSaveAIAnalysis(authResult.user, patentId, data);
+
       case 'generate_plantuml':
         return await handleGeneratePlantUML(authResult.user, patentId, data);
 
@@ -149,6 +233,16 @@ export async function POST(
 
       case 'generate_draft':
         return await handleGenerateDraft(authResult.user, patentId, data, requestHeaders);
+
+      // New: Section-level generation and save for Annexure 2
+      case 'generate_sections':
+        return await handleGenerateSections(authResult.user, patentId, data, requestHeaders);
+
+      case 'save_sections':
+        return await handleSaveSections(authResult.user, patentId, data);
+
+      case 'autosave_sections':
+        return await handleAutosaveSections(authResult.user, patentId, data);
 
       case 'generate_diagrams_llm':
         return await handleGenerateDiagramsLLM(authResult.user, patentId, data, requestHeaders);
@@ -168,6 +262,9 @@ export async function POST(
       case 'delete_figure':
         return await handleDeleteFigure(authResult.user, patentId, data);
 
+      case 'create_manual_figure':
+        return await handleCreateManualFigure(authResult.user, patentId, data);
+
       // New actions for Stage 1 editing, navigation, and resume
       case 'update_idea_record':
         return await handleUpdateIdeaRecord(authResult.user, patentId, data);
@@ -177,6 +274,19 @@ export async function POST(
 
       case 'resume':
         return await handleResume(authResult.user, patentId);
+
+      // Review & Export
+      case 'run_review_checks':
+        return await handleRunReview(authResult.user, patentId, data);
+
+      case 'export_docx':
+        return await handleExportDOCX(authResult.user, patentId, data, request);
+
+      case 'preview_export':
+        return await handlePreviewExport(authResult.user, patentId, data);
+
+      case 'get_export_preview':
+        return await handleGetExportPreview(authResult.user, patentId, data);
 
       default:
         return NextResponse.json(
@@ -194,16 +304,1099 @@ export async function POST(
   }
 }
 
+async function handleClearRelatedArtSelections(user: any, patentId: string, data: any) {
+  const { sessionId, runId } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+
+  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id } })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  // Delete all related art selections for this session and run
+  await (prisma as any).relatedArtSelection.deleteMany({
+    where: {
+      sessionId,
+      runId: runId || null
+    }
+  })
+
+  return NextResponse.json({ success: true })
+}
+
+async function handleSaveManualPriorArt(user: any, patentId: string, data: any) {
+  const { sessionId, manualPriorArt } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+
+  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id } })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const updated = await prisma.draftingSession.update({
+    where: { id: sessionId },
+    data: { manualPriorArt: manualPriorArt || null } as any
+  })
+
+  return NextResponse.json({ session: updated })
+}
+
+async function handleSaveAIAnalysis(user: any, patentId: string, data: any) {
+  const { sessionId, aiAnalysisData } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+
+  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id } })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const updated = await prisma.draftingSession.update({
+    where: { id: sessionId },
+    data: { aiAnalysisData: aiAnalysisData || null } as any
+  })
+
+  return NextResponse.json({ session: updated })
+}
+
+async function handleRelatedArtLLMReview(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
+  const { sessionId, runId, batchSize } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: {
+      ideaRecord: true,
+      relatedArtRuns: {
+        orderBy: { ranAt: 'desc' },
+        take: 1,
+        include: { ideaBankSuggestions: true }
+      }
+    }
+  })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const useRunId = runId || session.relatedArtRuns?.[0]?.id
+  if (!useRunId) return NextResponse.json({ error: 'No related art run found. Run a search first.' }, { status: 400 })
+
+  const run = await prisma.relatedArtRun.findUnique({ where: { id: useRunId as string } }) as any
+  if (!run) return NextResponse.json({ error: 'Related art run not found' }, { status: 404 })
+
+  const results: any[] = Array.isArray(run.resultsJson) ? run.resultsJson : []
+  if (results.length === 0) return NextResponse.json({ error: 'No results to review' }, { status: 400 })
+
+  const title = session.ideaRecord?.title || ''
+  const query = (session.ideaRecord as any)?.searchQuery || ''
+
+  const candidates = results.map((r: any) => ({
+    pn: r.pn || r.patent_number || r.publication_number || r.publication_id || r.publicationId || r.patentId || r.patent_id || r.id || '',
+    title: r.title || r.invention_title || '',
+    abstract: r.snippet || r.abstract || r.summary || r.description || ''
+  })).filter(x => x.title && (x.pn || x.abstract))
+
+  // Process all candidates at once instead of in batches
+  const request = { headers: requestHeaders || {} }
+  const allDecisions: Array<{
+    pn: string;
+    title: string;
+    relevance: number;
+    novelty_threat: 'anticipates'|'obvious'|'adjacent'|'remote';
+    summary: string;
+    detailedAnalysis: {
+      summary: string;
+      relevant_parts: string[];
+      irrelevant_parts: string[];
+      novelty_comparison: string;
+    };
+    noveltyInsights?: {
+      differences?: string;
+      improvementSuggestions?: string;
+    }
+  }> = []
+
+  // Create candidate text for all patents
+  const candidatesText = candidates.map((b, idx) => `#${idx+1}. PN:${b.pn||'N/A'}\nTitle: ${b.title}\nAbstract: ${b.abstract}`).join('\n\n')
+
+  // STEP 1: Relevance Analysis (in batches to avoid token limits)
+  console.log('Starting relevance analysis with Gemini 2.0 Flash-Lite...')
+  const effectiveBatchSize = batchSize || 6 // Use provided batchSize or default to 6
+  let relevanceData: any[] = []
+
+  for (let i = 0; i < candidates.length; i += effectiveBatchSize) {
+    const batch = candidates.slice(i, i + effectiveBatchSize)
+    const batchText = batch.map((b, idx) => `#${idx+1}. PN:${b.pn||'N/A'}\nTitle: ${b.title}\nAbstract: ${b.abstract}`).join('\n\n')
+
+    const batchRelevancePrompt = `You are an expert patent attorney. Analyze these patent candidates for relevance to our invention and assess novelty.
+
+INVENTION: ${title} | SEARCH: ${query}
+
+For each patent, provide:
+- relevance: 0.0-1.0 score
+- novelty_threat: "anticipates" | "obvious" | "adjacent" | "remote"
+- summary: 1-2 sentence explanation
+- relevant_parts: List specific elements/claims/aspects of the patent that are relevant to our invention
+- irrelevant_parts: List specific elements/claims/aspects of the patent that are NOT relevant to our invention
+- novelty_comparison: Explain what makes our invention novel compared to this patent (key differences, improvements, or unique aspects)
+
+Return ONLY JSON:
+{
+  "relevance_results": [
+    {
+      "pn": "patent_number",
+      "title": "patent_title",
+      "relevance": 0.8,
+      "novelty_threat": "adjacent",
+      "summary": "analysis",
+      "relevant_parts": ["specific element 1", "specific element 2"],
+      "irrelevant_parts": ["unrelated element 1", "different aspect 1"],
+      "novelty_comparison": "detailed explanation of novelty differences"
+    }
+  ]
+}
+
+PATENTS:
+${batchText}`
+
+    const relevanceResult = await llmGateway.executeLLMOperation(request, {
+      taskCode: 'LLM1_PRIOR_ART',
+      prompt: batchRelevancePrompt,
+      idempotencyKey: crypto.randomUUID(),
+      inputTokens: Math.ceil(batchRelevancePrompt.length / 4),
+      parameters: { maxOutputTokens: 3000 }
+    })
+
+    console.log(`Relevance analysis batch ${Math.floor(i/effectiveBatchSize) + 1} model used:`, relevanceResult?.response?.modelClass || 'unknown')
+
+    if (relevanceResult.success && relevanceResult.response) {
+      try {
+        const txt = (relevanceResult.response.output || '').trim()
+        const start = txt.indexOf('{')
+        const end = txt.lastIndexOf('}')
+        const json = start !== -1 && end !== -1 && end > start ? txt.substring(start, end + 1) : txt
+
+        const parsed = JSON.parse(json)
+        const batchResults = Array.isArray(parsed?.relevance_results) ? parsed.relevance_results : []
+        relevanceData.push(...batchResults)
+        console.log(`Batch ${Math.floor(i/effectiveBatchSize) + 1} successful:`, batchResults.length, 'patents analyzed')
+      } catch (e) {
+        console.log(`Batch ${Math.floor(i/effectiveBatchSize) + 1} JSON parse failed:`, e instanceof Error ? e.message : String(e))
+        // Fallback for this batch
+        const fallbackResults = batch.map(c => ({
+          pn: c.pn,
+          title: c.title,
+          relevance: 0.5,
+          novelty_threat: 'adjacent',
+          summary: 'Basic relevance analysis - detailed analysis failed'
+        }))
+        relevanceData.push(...fallbackResults)
+      }
+    }
+  }
+
+  console.log('Total relevance analysis completed:', relevanceData.length, 'patents analyzed')
+
+  // Process relevance results
+  for (const r of relevanceData) {
+    if (!r || typeof r !== 'object') continue
+    const pn = String(r.pn || '').trim()
+    const t = String(r.title || '').trim()
+    const rel = typeof r.relevance === 'number' ? Math.max(0, Math.min(1, r.relevance)) : 0
+    const noveltyThreat = (String(r.novelty_threat||'').toLowerCase() as any) || 'remote'
+
+    let sum = String(r.summary || '').trim()
+    if (noveltyThreat === 'remote' && (!sum || sum.length === 0)) {
+      sum = 'AI found this prior art poses no novelty threat to this invention'
+    }
+    sum = sum.slice(0, 500)
+
+    // Store complete analysis as JSON in userNotes
+    const detailedAnalysis = {
+      summary: sum,
+      relevant_parts: Array.isArray(r.relevant_parts) ? r.relevant_parts : [],
+      irrelevant_parts: Array.isArray(r.irrelevant_parts) ? r.irrelevant_parts : [],
+      novelty_comparison: String(r.novelty_comparison || '').trim()
+    }
+
+    allDecisions.push({
+      pn,
+      title: t,
+      relevance: rel,
+      novelty_threat: noveltyThreat,
+      summary: sum,
+      detailedAnalysis
+    })
+  }
+
+  // STEP 2: Idea Generation (separate call)
+  console.log('Starting idea generation with Gemini 2.0 Flash-Lite...')
+  const ideaPrompt = `You are an expert patent strategist and creative technologist.
+Your task is to propose out-of-the-box, non-obvious, patent-worthy invention ideas inspired by—but not limited to—the patterns, gaps, and limitations in the references.
+
+INVENTION CONTEXT:
+Title: ${title}
+Search Query: ${query}
+
+CREATIVITY & NOVELTY CONSTRAINTS:
+- Do NOT reference specific patent numbers or identifiers (no "patent #1" etc.).
+- Avoid incremental tweaks; prefer concept shifts, cross-domain transfers, and surprising combinations.
+- Ensure ideas are technically feasible with current or near-term technology.
+- Favor solutions that would likely pass a non-obviousness test.
+- Each idea must stand alone (no citations) and be understandable to a patent examiner.
+
+IDEA GENERATION BRIEFS (use at least two per idea):
+- Cross-domain transfer (e.g., environmental sensing → medical diagnostics)
+- Invert control or data flow (edge → cloud, cloud → edge, passive → active)
+- New constraint satisfaction (e.g., ultra-low power, privacy-by-design, zero-calibration)
+- Hybridize modalities (e.g., RF + vision, vibrometry + thermal)
+- Self-adaptive or self-healing mechanism (continuous learning, closed-loop)
+- System-level re-architecture (coordination, marketplaces, incentive design)
+
+OUTPUT SPECIFICATION:
+Return ONLY valid JSON with exactly this schema.
+{
+  "idea_bank_suggestions": [
+    {
+      "title": "Short inventive concept (≤15 words)",
+      "core_principle": "2–3 sentences on the technical mechanism; avoid citations",
+      "expected_advantage": "1–2 sentences on measurable benefits vs current art",
+      "tags": ["technical-domain", "application", "novelty-type", "cross-discipline"],
+      "non_obvious_extension": "1–2 sentences applying the principle in an unrelated field"
+    }
+  ]
+}
+
+GENERATE 5 IDEAS.
+
+REFERENCE SNAPSHOTS (for inspiration; do not cite):
+${candidatesText}`
+
+  const ideaResult = await llmGateway.executeLLMOperation(request, {
+    taskCode: 'LLM1_PRIOR_ART',
+    prompt: ideaPrompt,
+    idempotencyKey: crypto.randomUUID(),
+    inputTokens: Math.ceil(ideaPrompt.length / 4),
+    parameters: { maxOutputTokens: 5000 }
+  })
+
+  console.log('Idea generation model used:', ideaResult?.response?.modelClass || 'unknown')
+
+  let ideaBank: any[] = []
+  if (ideaResult.success && ideaResult.response) {
+    try {
+      const txt = (ideaResult.response.output || '').trim()
+      const start = txt.indexOf('{'); const end = txt.lastIndexOf('}')
+      const json = start !== -1 && end !== -1 ? txt.substring(start, end + 1) : txt
+      const parsed = JSON.parse(json)
+      ideaBank = Array.isArray(parsed?.idea_bank_suggestions) ? parsed.idea_bank_suggestions : []
+      console.log('Idea generation successful:', ideaBank.length, 'ideas generated')
+      if (ideaBank.length > 0) {
+        console.log('Sample idea:', ideaBank[0].title)
+      }
+    } catch (e) {
+      console.log('Idea generation JSON parse failed:', e)
+    }
+  }
+
+
+  const autoUse: string[] = []
+  const tagsFor = (d: typeof allDecisions[number]) => {
+    const base = ['AI_REVIEWED']
+    if (d.novelty_threat === 'anticipates') base.push('AI_ANTICIPATES')
+    else if (d.novelty_threat === 'obvious') base.push('AI_OBVIOUS')
+    else if (d.novelty_threat === 'adjacent') base.push('AI_ADJACENT')
+    else base.push('AI_REMOTE')
+    return base
+  }
+
+  for (const d of allDecisions) {
+    if (!d.pn) continue
+    try {
+      await (prisma as any).relatedArtSelection.upsert({
+        where: { sessionId_patentNumber_runId: { sessionId, patentNumber: d.pn, runId: useRunId } },
+        update: { score: d.relevance, tags: tagsFor(d), userNotes: JSON.stringify(d.detailedAnalysis), title: d.title || undefined },
+        create: { sessionId, runId: useRunId, patentNumber: d.pn, title: d.title || undefined, score: d.relevance, tags: tagsFor(d), userNotes: JSON.stringify(d.detailedAnalysis) }
+      })
+    } catch {}
+    // Auto-select everything except those that anticipate the invention (very high threat)
+    if (d.novelty_threat !== 'anticipates') autoUse.push(d.pn)
+  }
+
+  // Debug: log the idea bank suggestions
+  console.log('Idea Bank suggestions to persist:', ideaBank.length)
+
+  // Persist Idea Bank suggestions if any
+  console.log('🔄 Persisting', ideaBank.length, 'idea bank suggestions to database...')
+  if (ideaBank.length > 0) {
+    for (let i = 0; i < ideaBank.length; i++) {
+      const ib = ideaBank[i] || {}
+      try {
+        const savedIdea = await (prisma as any).ideaBankSuggestion.create({
+          data: {
+            relatedArtRunId: useRunId as string,
+            modelVersion: (ideaResult as any)?.response?.modelClass || (ideaResult as any)?.response?.metadata?.model || null,
+            ideaTitle: String(ib.title || '').slice(0, 200),
+            corePrinciple: String(ib.core_principle || '').slice(0, 2000),
+            expectedAdvantage: String(ib.expected_advantage || '').slice(0, 500),
+            tags: Array.isArray(ib.tags) ? ib.tags.map((t: any) => String(t).slice(0, 60)) : [],
+            nonObviousExtension: String(ib.non_obvious_extension || '').slice(0, 1000),
+            sourceBatchIndex: i,
+            confidenceScore: allDecisions.length
+              ? (allDecisions.reduce((acc, d) => acc + (d.relevance || 0), 0) / allDecisions.length)
+              : null
+          }
+        })
+        console.log('✅ Saved idea bank suggestion:', savedIdea.id, 'for idea:', ib.title?.substring(0, 50))
+      } catch (e) {
+        console.error('❌ Failed to save idea bank suggestion:', ib.title, 'Error:', e)
+      }
+    }
+    console.log('✅ Finished persisting', ideaBank.length, 'idea bank suggestions')
+  } else {
+    console.log('⚠️ No idea bank suggestions to persist')
+  }
+
+  const response = {
+    reviewed: allDecisions.length,
+    decisions: allDecisions,
+    autoSelect: autoUse,
+    runId: useRunId,
+    ideaBankSuggestions: ideaBank
+  }
+  console.log('API Response structure:', {
+    reviewed: response.reviewed,
+    decisionsCount: response.decisions.length,
+    autoSelectCount: response.autoSelect.length,
+    runId: response.runId,
+    ideaBankSuggestionsCount: response.ideaBankSuggestions.length,
+    ideaBankSuggestions: response.ideaBankSuggestions
+  })
+  return NextResponse.json(response)
+}
+async function handleRunReview(user: any, patentId: string, data: any) {
+  const { sessionId } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { annexureDrafts: { orderBy: { version: 'desc' }, take: 1 }, referenceMap: true, figurePlans: true }
+  })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const last = session.annexureDrafts?.[0]
+  const fullText = last?.fullDraftText || [
+    last?.fieldOfInvention && `FIELD OF INVENTION\n\n${last.fieldOfInvention}`,
+    last?.background && `BACKGROUND\n\n${last.background}`,
+    last?.summary && `SUMMARY\n\n${last.summary}`,
+    last?.briefDescriptionOfDrawings && `BRIEF DESCRIPTION OF DRAWINGS\n\n${last.briefDescriptionOfDrawings}`,
+    last?.detailedDescription && `DETAILED DESCRIPTION\n\n${last.detailedDescription}`,
+    last?.bestMethod && `BEST METHOD\n\n${last.bestMethod}`,
+    last?.claims && `CLAIMS\n\n${last.claims}`,
+    last?.abstract && `ABSTRACT\n\n${last.abstract}`,
+    last?.industrialApplicability && `INDUSTRIAL APPLICABILITY\n\n${last.industrialApplicability}`,
+    last?.listOfNumerals && `LIST OF REFERENCE NUMERALS\n\n${last.listOfNumerals}`
+  ].filter(Boolean).join('\n\n')
+
+  const validation = DraftingService.validateDraftConsistencyPublic({ fullText }, session as any)
+  const extended = DraftingService.validateDraftExtended(session.annexureDrafts?.[0] || {}, session)
+  return NextResponse.json({
+    validationReport: validation.report,
+    isValid: validation.valid,
+    extendedReport: extended.report,
+    extendedValid: extended.valid
+  })
+}
+
+// Pre-export normalizer: prepares content blocks with blank space control and color sanitization
+function preExportNormalizer(content: Record<string, string>): { blocks: Array<{ type: string; section: string; subtype?: string; content: string; blockId: string }> } {
+  const blocks: Array<{ type: string; section: string; subtype?: string; content: string; blockId: string }> = []
+  let blockCounter = 0
+
+  const sections = [
+    { key: 'title', section: 'title', type: 'heading' },
+    { key: 'fieldOfInvention', section: 'fieldOfInvention', type: 'body' },
+    { key: 'background', section: 'background', type: 'body' },
+    { key: 'summary', section: 'summary', type: 'body' },
+    { key: 'briefDescriptionOfDrawings', section: 'briefDescriptionOfDrawings', type: 'body' },
+    { key: 'detailedDescription', section: 'detailedDescription', type: 'body' },
+    { key: 'industrialApplicability', section: 'industrialApplicability', type: 'body' },
+    { key: 'bestMethod', section: 'bestMethod', type: 'body' },
+    { key: 'claims', section: 'claims', type: 'body' },
+    { key: 'listOfNumerals', section: 'listOfNumerals', type: 'body' },
+    { key: 'abstract', section: 'abstract', type: 'body' }
+  ]
+
+  for (const { key, section, type } of sections) {
+    const rawContent = content[key] || ''
+    const cleanedContent = sanitizeContent(rawContent)
+
+    if (type === 'heading') {
+      blocks.push({
+        type: 'heading',
+        section,
+        content: cleanedContent,
+        blockId: `block_${blockCounter++}`
+      })
+    } else {
+      // Split into paragraphs and collapse empty ones
+      const paragraphs = cleanedContent.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0)
+      for (const para of paragraphs) {
+        blocks.push({
+          type: 'paragraph',
+          section,
+          content: para,
+          blockId: `block_${blockCounter++}`
+        })
+      }
+    }
+  }
+
+  return { blocks }
+}
+
+// Sanitize content: remove color styles, collapse whitespace, strip trailing empties
+function sanitizeContent(text: string): string {
+  if (!text) return ''
+
+  // Remove any color/style markup (basic cleanup for now)
+  let cleaned = text.replace(/\x1b\[[0-9;]*m/g, '') // Remove ANSI colors
+  cleaned = cleaned.replace(/<[^>]*>/g, '') // Remove HTML tags (basic)
+
+  // Normalize whitespace: collapse multiple spaces/newlines
+  cleaned = cleaned.replace(/[ \t]+/g, ' ') // Multiple spaces to single
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n') // Max 2 consecutive newlines
+
+  // Trim leading/trailing whitespace per line
+  cleaned = cleaned.split('\n').map(line => line.trim()).join('\n')
+
+  return cleaned.trim()
+}
+
+// Paragraph numbering injector: adds [0001] style numbering to Description sections
+function injectParagraphNumbering(blocks: Array<{ type: string; section: string; subtype?: string; content: string; blockId: string }>): void {
+  // Description sections that get numbered: fieldOfInvention, background, summary, briefDescriptionOfDrawings, detailedDescription, bestMethod
+  const descriptionSections = ['fieldOfInvention', 'background', 'summary', 'briefDescriptionOfDrawings', 'detailedDescription', 'bestMethod']
+
+  let paragraphNumber = 1
+
+  for (const block of blocks) {
+    // Only number paragraphs in description sections, exclude headings, captions, tables, equations
+    if (block.type === 'paragraph' && descriptionSections.includes(block.section) && !block.subtype) {
+      // Check if paragraph already starts with numbering pattern and strip it
+      const existingNumberMatch = block.content.match(/^\[\d{4}\]\s+/)
+      if (existingNumberMatch) {
+        block.content = block.content.substring(existingNumberMatch[0].length)
+      }
+
+      // Inject new numbering with non-breaking space
+      const formattedNumber = `[${paragraphNumber.toString().padStart(4, '0')}] `
+      block.content = formattedNumber + block.content
+      paragraphNumber++
+    }
+  }
+}
+
+// Get proper section heading text
+function getSectionHeading(sectionName: string): string {
+  const headingMap: Record<string, string> = {
+    fieldOfInvention: 'FIELD OF THE INVENTION',
+    background: 'BACKGROUND OF THE INVENTION',
+    summary: 'SUMMARY OF THE INVENTION',
+    briefDescriptionOfDrawings: 'BRIEF DESCRIPTION OF THE DRAWINGS',
+    detailedDescription: 'DETAILED DESCRIPTION OF THE INVENTION',
+    industrialApplicability: 'INDUSTRIAL APPLICABILITY',
+    bestMethod: 'BEST METHOD OF PERFORMING THE INVENTION',
+    claims: 'CLAIMS',
+    listOfNumerals: 'LIST OF REFERENCE NUMERALS',
+    abstract: 'ABSTRACT'
+  }
+  return headingMap[sectionName] || sectionName.toUpperCase()
+}
+
+async function handleExportDOCX(user: any, patentId: string, data: any, request?: NextRequest) {
+  const { sessionId, autoNumberParagraphs = false } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { annexureDrafts: { orderBy: { version: 'desc' }, take: 1 }, figurePlans: true, diagramSources: true }
+  })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const last = session.annexureDrafts?.[0]
+  if (!last) return NextResponse.json({ error: 'No draft to export' }, { status: 400 })
+
+  const figuresSorted = [...(session.figurePlans||[])].sort((a,b)=>a.figureNo-b.figureNo)
+
+  // Prepare content for normalization
+  const rawContent = {
+    title: last.title || 'Untitled',
+    fieldOfInvention: last.fieldOfInvention || '',
+    background: last.background || '',
+    summary: last.summary || '',
+    briefDescriptionOfDrawings: last.briefDescriptionOfDrawings || '',
+    detailedDescription: last.detailedDescription || '',
+    bestMethod: last.bestMethod || '',
+    claims: last.claims || '',
+    industrialApplicability: (last as any).industrialApplicability || '',
+    listOfNumerals: last.listOfNumerals || '',
+    abstract: last.abstract || ''
+  }
+
+  // Run pre-export normalizer
+  const { blocks } = preExportNormalizer(rawContent)
+
+  // Apply paragraph numbering if enabled
+  if (autoNumberParagraphs) {
+    injectParagraphNumbering(blocks)
+  }
+
+  const exportInput = {
+    title: last.title || 'Untitled',
+    fieldOfInvention: last.fieldOfInvention || '',
+    background: last.background || '',
+    summary: last.summary || '',
+    briefDescriptionOfDrawings: last.briefDescriptionOfDrawings || '',
+    detailedDescription: last.detailedDescription || '',
+    bestMethod: last.bestMethod || '',
+    claims: last.claims || '',
+    abstract: last.abstract || '',
+    industrialApplicability: (last as any).industrialApplicability || '',
+    listOfNumerals: last.listOfNumerals || '',
+    figures: figuresSorted.map(f => {
+      const ds = (session.diagramSources||[]).find((d:any)=>d.figureNo===f.figureNo)
+      return {
+        figureNo: f.figureNo,
+        caption: f.title || `Figure ${f.figureNo}`,
+        imagePath: (ds?.imagePath as string) || '',
+        imageFilename: (ds?.imageFilename as string) || ''
+      }
+    }),
+    blocks, // Include normalized blocks
+    exportOptions: { autoNumberParagraphs }
+  }
+
+  const guards = preExportGuards(exportInput)
+  // Note: Do not block export on pending issues; proceed regardless
+
+  // Attempt rich DOCX export; fall back to plain text if library unavailable
+  try {
+    // Try to load docx at runtime without bundler resolution
+    let docx: any
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-implied-eval
+      const req = eval('require') as (m: string) => any
+      docx = req('docx')
+    } catch {
+      throw new Error('DOCX_NOT_AVAILABLE')
+    }
+
+    const {
+      Document, Packer, Paragraph, HeadingLevel, TextRun, AlignmentType, Media, ImageRun,
+      PageBreak, Footer, Header, PageNumber, NumberOfPages, SectionType
+    } = docx as any
+
+    // Create document with A4 page size and 2.54cm margins (1 inch = 1440 twips, 2.54cm = ~1 inch)
+    const pageMargin = 1440 // 2.54cm = 1 inch = 1440 twips
+
+    // Page header with "Page X of Y" format
+    const header = new Header({
+      children: [
+        new Paragraph({
+          alignment: AlignmentType.RIGHT,
+          children: [
+            new TextRun({
+              text: 'Page ',
+              size: 24,
+              color: '000000'
+            }),
+            new TextRun({
+              children: [PageNumber.CURRENT]
+            }),
+            new TextRun({
+              text: ' of ',
+              size: 24,
+              color: '000000'
+            }),
+            new TextRun({
+              children: [PageNumber.TOTAL_PAGES]
+            })
+          ]
+        })
+      ]
+    })
+
+    const doc = new Document({
+      sections: [],
+      styles: {
+        default: {
+          document: {
+            run: {
+              size: 24, // 12pt = 24 half-points
+              font: 'Times New Roman'
+            }
+          }
+        },
+        paragraphStyles: [
+          {
+            id: 'bodyStyle',
+            name: 'Body',
+            basedOn: 'Normal',
+            next: 'Normal',
+            run: {
+              size: 24, // 12pt
+              color: '000000' // black
+            },
+            paragraph: {
+              alignment: AlignmentType.JUSTIFIED,
+              spacing: {
+                line: 480, // 2.0 line spacing (240 = single, 480 = 2.0)
+                before: 0,
+                after: 120 // 6pt after
+              }
+            }
+          },
+          {
+            id: 'headingStyle',
+            name: 'Heading',
+            basedOn: 'Normal',
+            next: 'Normal',
+            run: {
+              size: 24, // 12pt
+              color: '000000', // black
+              bold: true
+            },
+            paragraph: {
+              alignment: AlignmentType.LEFT,
+              spacing: {
+                before: 240, // 12pt before
+                after: 120 // 6pt after
+              }
+            }
+          },
+          {
+            id: 'captionStyle',
+            name: 'Caption',
+            basedOn: 'Normal',
+            next: 'Normal',
+            run: {
+              size: 24, // 12pt
+              color: '000000' // black
+            },
+            paragraph: {
+              alignment: AlignmentType.LEFT,
+              spacing: {
+                before: 120, // 6pt before
+                after: 0
+              }
+            }
+          }
+        ]
+      }
+    })
+
+    // Build document sections using normalized blocks
+    const documentSections: any[] = []
+    const { blocks, figures, exportOptions } = exportInput
+
+    // Section 1: Title
+    const titleSection = {
+      properties: {
+        type: SectionType.NEXT_PAGE,
+        page: {
+          margin: {
+            top: pageMargin,
+            right: pageMargin,
+            bottom: pageMargin,
+            left: pageMargin
+          },
+          size: {
+            width: 11906, // A4 width in twips (210mm)
+            height: 16838 // A4 height in twips (297mm)
+          }
+        },
+        headers: {
+          default: header
+        }
+      },
+      children: []
+    }
+
+    // Add title
+    const titleBlock = blocks.find(b => b.section === 'title')
+    if (titleBlock) {
+      ;(titleSection.children as any[]).push(
+        new Paragraph({
+          text: titleBlock.content.toUpperCase(),
+          heading: HeadingLevel.HEADING_1,
+          style: 'headingStyle'
+        })
+      )
+    }
+
+    // Add body sections in correct sequence: TITLE, FIELD, BACKGROUND, SUMMARY, BRIEF_DESCRIPTION, DETAILED_DESCRIPTION, INDUSTRIAL_APPLICABILITY, CLAIMS
+    const bodySections = ['fieldOfInvention', 'background', 'summary', 'briefDescriptionOfDrawings', 'detailedDescription', 'industrialApplicability', 'claims']
+    for (const sectionName of bodySections) {
+      const sectionHeading = getSectionHeading(sectionName)
+      const sectionBlocks = blocks.filter(b => b.section === sectionName)
+
+      if (sectionBlocks.length > 0) {
+        // Add section heading
+        ;(titleSection.children as any[]).push(
+          new Paragraph({
+            text: sectionHeading,
+            heading: HeadingLevel.HEADING_2,
+            style: 'headingStyle'
+          })
+        )
+
+        // Add content blocks
+        for (const block of sectionBlocks) {
+          if (block.type === 'paragraph') {
+            let content = block.content
+
+
+            ;(titleSection.children as any[]).push(
+              new Paragraph({
+                children: [new TextRun({
+                  text: content,
+                  size: 24,
+                  color: '000000'
+                })],
+                style: 'bodyStyle'
+              })
+            )
+          }
+        }
+      }
+    }
+
+    documentSections.push(titleSection)
+
+    // Add figure sections (one per page)
+    const pat = await prisma.patent.findUnique({ where: { id: patentId }, select: { projectId: true } })
+    const fs = await import('fs/promises')
+    const path = await import('path')
+
+    for (const figure of figures) {
+      const figureSection = {
+        properties: {
+          type: SectionType.NEXT_PAGE,
+          page: {
+            margin: {
+              top: pageMargin,
+              right: pageMargin,
+              bottom: pageMargin,
+              left: pageMargin
+            },
+            size: {
+              width: 11906,
+              height: 16838
+            }
+          },
+          headers: {
+            default: header
+          }
+        },
+        children: []
+      }
+
+      // Try to load and size the image
+      let imageElement: any = null
+      const candidates: string[] = []
+      if (figure.imagePath) candidates.push(figure.imagePath)
+      if (figure.imageFilename) {
+        candidates.push(path.join(process.cwd(), 'uploads', 'patents', patentId, 'figures', figure.imageFilename))
+        if (pat?.projectId) candidates.push(path.join(process.cwd(), 'uploads', 'projects', pat.projectId, 'patents', patentId, 'figures', figure.imageFilename))
+      }
+
+      for (const candidatePath of candidates) {
+        if (!candidatePath) continue
+        try {
+          const imgBuffer = await fs.readFile(candidatePath)
+
+          // Calculate size: use intrinsic pixel size at 300 DPI, scale down only if necessary
+          // For now, use a reasonable default size and let docx handle scaling
+          const img = imgBuffer instanceof Buffer ? new Uint8Array(imgBuffer) : imgBuffer
+          imageElement = new ImageRun({
+            data: img,
+            transformation: {
+              width: 500, // Will be scaled by docx if needed to fit content area
+              height: 400
+            }
+          })
+          break
+        } catch (e) {
+          // Continue to next candidate
+        }
+      }
+
+      // Add image if available
+      if (imageElement) {
+        ;(figureSection.children as any[]).push(
+          new Paragraph({
+            children: [imageElement],
+            alignment: AlignmentType.CENTER
+          })
+        )
+      }
+
+      // Add caption
+      ;(figureSection.children as any[]).push(
+        new Paragraph({
+          children: [new TextRun({
+            text: `Figure ${figure.figureNo}: ${figure.caption}`,
+            size: 24,
+            color: '000000'
+          })],
+          style: 'captionStyle'
+        })
+      )
+
+      documentSections.push(figureSection)
+    }
+
+    // Add abstract section at the end (last page)
+    const abstractSection = {
+      properties: {
+        type: SectionType.NEXT_PAGE,
+        page: {
+          margin: {
+            top: pageMargin,
+            right: pageMargin,
+            bottom: pageMargin,
+            left: pageMargin
+          },
+          size: {
+            width: 11906,
+            height: 16838
+          }
+        },
+        headers: {
+          default: header
+        }
+      },
+      children: []
+    }
+
+    // Add patent title (repeated on abstract page)
+    const titleBlockForAbstract = blocks.find(b => b.section === 'title')
+    if (titleBlockForAbstract) {
+      ;(abstractSection.children as any[]).push(
+        new Paragraph({
+          children: [new TextRun({
+            text: titleBlockForAbstract.content,
+            size: 24,
+            color: '000000',
+            bold: true
+          })],
+          spacing: { after: 120 }
+        })
+      )
+    }
+
+    // Add ABSTRACT heading
+    ;(abstractSection.children as any[]).push(
+      new Paragraph({
+        children: [new TextRun({
+          text: 'ABSTRACT',
+          size: 24,
+          color: '000000',
+          bold: true
+        })],
+        spacing: { before: 120, after: 120 }
+      })
+    )
+
+    // Add abstract content (no numbering for abstract)
+    const abstractBlocks = blocks.filter(b => b.section === 'abstract')
+
+    for (const block of abstractBlocks) {
+      if (block.type === 'paragraph') {
+        ;(abstractSection.children as any[]).push(
+          new Paragraph({
+            children: [new TextRun({
+              text: block.content,
+              size: 24,
+              color: '000000'
+            })],
+            style: 'bodyStyle'
+          })
+        )
+      }
+    }
+
+    documentSections.push(abstractSection)
+
+    // Add all sections to document
+    for (const section of documentSections) {
+      doc.addSection(section)
+    }
+
+    const buffer = await Packer.toBuffer(doc)
+    return new NextResponse(buffer, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'Content-Disposition': `attachment; filename="annexure_${sessionId}.docx"`
+      }
+    })
+  } catch (e) {
+    console.error('DOCX export error:', e)
+    // Fallback to plain text packaging when docx is unavailable
+    const docContent = buildAnnexurePlainText(exportInput)
+
+    const fileBuffer = Buffer.from(docContent, 'utf8')
+    return new NextResponse(fileBuffer, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="annexure_${sessionId}.txt"`
+      }
+    })
+  }
+}
+
+// Preview export builder and guards
+function buildAnnexurePlainText(doc: any): string {
+  const H = (s: string) => String(s||'').toUpperCase()
+  const SECTIONS: Array<[string, string]> = [
+    [H('Title of the Invention'), doc.title||''],
+    [H('Field of the Invention'), doc.fieldOfInvention||''],
+    [H('Background of the Invention'), doc.background||''],
+    [H('Summary of the Invention'), doc.summary||''],
+    [H('Brief Description of the Drawings'), doc.briefDescriptionOfDrawings||''],
+    [H('Detailed Description of the Invention'), doc.detailedDescription||''],
+    [H('Best Method of Performing the Invention'), doc.bestMethod||''],
+    [H('Claims'), doc.claims||''],
+    [H('Abstract'), doc.abstract||''],
+    [H('Industrial Applicability'), doc.industrialApplicability||''],
+    [H('List of Reference Numerals'), doc.listOfNumerals||'']
+  ]
+  const BODY = SECTIONS.filter(([_,v]) => String(v||'').trim()).map(([h,v]) => `${h}\n\n${String(v).trim()}`).join('\n\n')
+  const PAGE_BREAK = '\n\n<<<PAGE_BREAK>>>\n\n'
+  const DRAWINGS_HEADER = H('Drawings / Figures')
+  const FIGURE_PAGES = [ `${DRAWINGS_HEADER}\n\n` ].concat(
+    (doc.figures||[]).sort((a:any,b:any)=>a.figureNo-b.figureNo).map((f:any)=>`Fig. ${f.figureNo} — ${String(f.caption||'').replace(/^Fig\.\s*\d+\s*—\s*/i,'')}`)
+  ).join(PAGE_BREAK)
+  return [BODY, PAGE_BREAK, FIGURE_PAGES].join('')
+}
+
+function preExportGuards(doc: any): { ok: boolean; issues: string[] } {
+  const issues: string[] = []
+  const req = (key: keyof typeof doc, label: string) => { if (!String(doc[key]||'').trim()) issues.push(`Missing: ${label}`) }
+  req('title','Title')
+  req('fieldOfInvention','Field of the Invention')
+  req('background','Background of the Invention')
+  req('summary','Summary of the Invention')
+  req('detailedDescription','Detailed Description of the Invention')
+  req('bestMethod','Best Method of Performing the Invention')
+  req('claims','Claims')
+  req('abstract','Abstract')
+  req('industrialApplicability','Industrial Applicability')
+
+  const absWords = String(doc.abstract||'').trim().split(/\s+/).length
+  if (absWords>150) issues.push(`Abstract exceeds 150 words (${absWords})`)
+
+  const declared = (doc.figures||[]).map((f:any)=>f.figureNo).sort((a:number,b:number)=>a-b)
+  const bdod = String(doc.briefDescriptionOfDrawings||'')
+  if (bdod.trim()) {
+    const bdodFigs = Array.from(bdod.matchAll(/\b(Fig\.?|Figure)\s*0*(\d+)\b/gi)).map(m=>Number(m[2])).sort((a,b)=>a-b)
+    const missing = declared.filter((n:number)=>!bdodFigs.includes(n))
+    if (missing.length) issues.push(`BDOD missing figure lines for: ${missing.join(', ')}`)
+  } else if (declared.length) {
+    issues.push('BDOD missing while figures are present')
+  }
+
+  if (String(doc.listOfNumerals||'').trim()) {
+    const nums = Array.from(String(doc.listOfNumerals).matchAll(/\((\d{1,5})\)/g)).map(m=>Number(m[1]))
+    const dup = nums.filter((n,i)=>nums.indexOf(n)!==i)
+    if (dup.length) issues.push(`Duplicate numerals in list: ${Array.from(new Set(dup)).join(', ')}`)
+  }
+  return { ok: issues.length===0, issues }
+}
+
+async function handlePreviewExport(user: any, patentId: string, data: any) {
+  const { sessionId } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { annexureDrafts: { orderBy: { version: 'desc' }, take: 1 }, figurePlans: true, diagramSources: true }
+  })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  const last = session.annexureDrafts?.[0]
+  if (!last) return NextResponse.json({ error: 'No draft to export' }, { status: 400 })
+
+  const exportInput = {
+    title: last.title || 'Untitled',
+    fieldOfInvention: last.fieldOfInvention || '',
+    background: last.background || '',
+    summary: last.summary || '',
+    briefDescriptionOfDrawings: last.briefDescriptionOfDrawings || '',
+    detailedDescription: last.detailedDescription || '',
+    bestMethod: last.bestMethod || '',
+    claims: last.claims || '',
+    abstract: last.abstract || '',
+    industrialApplicability: (last as any).industrialApplicability || '',
+    listOfNumerals: last.listOfNumerals || '',
+    figures: [...(session.figurePlans||[])].sort((a,b)=>a.figureNo-b.figureNo).map(f=>({
+      figureNo: f.figureNo,
+      caption: f.title || `Figure ${f.figureNo}`,
+      imagePathOrBuffer: (session.diagramSources||[]).find((d:any)=>d.figureNo===f.figureNo)?.imagePath || ''
+    }))
+  }
+
+  const guards = preExportGuards(exportInput)
+  const plain = buildAnnexurePlainText(exportInput)
+  return NextResponse.json({ ok: guards.ok, issues: guards.issues, preview: plain, input: exportInput })
+}
+
+// Rich preview payload with figure data (for inline HTML preview)
+async function handleGetExportPreview(user: any, patentId: string, data: any) {
+  const { sessionId } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { annexureDrafts: { orderBy: { version: 'desc' }, take: 1 }, figurePlans: true, diagramSources: true }
+  })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  const last = session.annexureDrafts?.[0]
+  if (!last) return NextResponse.json({ error: 'No draft to export' }, { status: 400 })
+
+  const figures = [...(session.figurePlans||[])].sort((a,b)=>a.figureNo-b.figureNo).map(f=>{
+    const ds = (session.diagramSources||[]).find((d:any)=>d.figureNo===f.figureNo)
+    const hasImage = !!(ds && (ds.imagePath || ds.imageFilename))
+    const url = hasImage ? `/api/patents/${patentId}/drafting?image=figure&sessionId=${session.id}&figureNo=${f.figureNo}` : null
+    return {
+      figureNo: f.figureNo,
+      caption: f.title || `Figure ${f.figureNo}`,
+      imageUrl: url
+    }
+  })
+  return NextResponse.json({
+    title: last.title || 'Untitled',
+    fieldOfInvention: last.fieldOfInvention || '',
+    background: last.background || '',
+    summary: last.summary || '',
+    briefDescriptionOfDrawings: last.briefDescriptionOfDrawings || '',
+    detailedDescription: last.detailedDescription || '',
+    bestMethod: last.bestMethod || '',
+    claims: last.claims || '',
+    abstract: last.abstract || '',
+    industrialApplicability: (last as any).industrialApplicability || '',
+    listOfNumerals: last.listOfNumerals || '',
+    figures
+  })
+}
+
 function sanitizePlantUML(input: string): string {
   const match = input.match(/@startuml[\s\S]*?@enduml/)
   const block = match ? match[0] : input
-  const lines = block.split(/\r?\n/).filter(line => {
-    if (/^\s*!\s*(theme|include|import|pragma)\b/i.test(line)) return false
-    if (/^\s*skinparam\b/i.test(line)) return false
-    if (/^\s*(title|caption)\b/i.test(line)) return false
-    return true
-  })
-  return lines.join('\n')
+  // Remove multi-line skinparam blocks
+  let cleaned = block.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
+  // Remove single lines we don't allow
+  cleaned = cleaned
+    .split(/\r?\n/)
+    .filter(line => {
+      if (/^\s*!\s*(theme|include|import|pragma)\b/i.test(line)) return false
+      if (/^\s*skinparam\b/i.test(line)) return false
+      if (/^\s*(title|caption)\b/i.test(line)) return false
+      return true
+    })
+    .join('\n')
+  return cleaned
 }
 
 async function handleStartSession(user: any, patentId: string, data: any) {
@@ -263,7 +1456,7 @@ async function handleUpdateIdeaRecord(user: any, patentId: string, data: any) {
   const allowedKeys = [
     'problem','objectives','components','logic','inputs','outputs','variants','bestMethod','normalizedData',
     'fieldOfRelevance','subfield','recommendedFocus','complianceNotes','drawingsFocus','claimStrategy','riskFlags','title',
-    'rawInput'
+    'rawInput','abstract','cpcCodes','ipcCodes'
   ] as const
 
   const updateData: Record<string, any> = {}
@@ -284,7 +1477,8 @@ async function handleUpdateIdeaRecord(user: any, patentId: string, data: any) {
   // Merge edits into normalizedData to keep a single source of truth
   const normalizedMergeKeys = [
     'problem','objectives','components','logic','inputs','outputs','variants','bestMethod',
-    'fieldOfRelevance','subfield','recommendedFocus','complianceNotes','drawingsFocus','claimStrategy','riskFlags'
+    'fieldOfRelevance','subfield','recommendedFocus','complianceNotes','drawingsFocus','claimStrategy','riskFlags',
+    'abstract','cpcCodes','ipcCodes'
   ] as const
 
   const baseNormalized = (existing?.normalizedData as any) || {}
@@ -324,13 +1518,16 @@ async function handleUpdateIdeaRecord(user: any, patentId: string, data: any) {
 }
 
 async function handleSetStage(user: any, patentId: string, data: any) {
-  const { sessionId, stage } = data
+  const { sessionId, stage, manualPriorArt, selectedPatents } = data
+
+  console.log('handleSetStage called with:', { sessionId, stage, patentId, userId: user.id, manualPriorArt: !!manualPriorArt, selectedPatentsCount: selectedPatents?.length || 0 })
 
   const allowedStages = [
-    'IDEA_ENTRY','COMPONENT_PLANNER','FIGURE_PLANNER','DIAGRAM_GENERATOR','ANNEXURE_DRAFT','REVIEW_FIX','COMPLETED'
+    'IDEA_ENTRY','COMPONENT_PLANNER','FIGURE_PLANNER','RELATED_ART','ANNEXURE_DRAFT','REVIEW_FIX','EXPORT_READY','COMPLETED'
   ]
 
   if (!sessionId || !allowedStages.includes(stage)) {
+    console.log('Invalid sessionId or stage:', { sessionId, stage })
     return NextResponse.json(
       { error: 'Valid sessionId and stage are required' },
       { status: 400 }
@@ -341,16 +1538,30 @@ async function handleSetStage(user: any, patentId: string, data: any) {
     where: { id: sessionId, patentId, userId: user.id }
   })
 
+  console.log('Session lookup result:', session ? 'found' : 'not found')
+
   if (!session) {
+    // Try to find the session without patentId constraint to debug
+    const sessionWithoutPatent = await prisma.draftingSession.findFirst({
+      where: { id: sessionId, userId: user.id }
+    })
+    console.log('Session exists but wrong patent?', sessionWithoutPatent ? `belongs to patent: ${sessionWithoutPatent.patentId}` : 'session not found at all')
+
     return NextResponse.json(
       { error: 'Session not found or access denied' },
       { status: 404 }
     )
   }
 
+  // Prepare update data
+  const updateData: any = { status: stage }
+  if (manualPriorArt !== undefined) {
+    updateData.manualPriorArt = manualPriorArt
+  }
+
   const updated = await prisma.draftingSession.update({
     where: { id: sessionId },
-    data: { status: stage }
+    data: updateData as any
   })
 
   return NextResponse.json({ session: updated })
@@ -467,39 +1678,47 @@ async function handleNormalizeIdea(user: any, patentId: string, data: any, reque
   // Create or update idea record
   const ideaRecord = await prisma.ideaRecord.upsert({
     where: { sessionId },
-    update: {
+    update: ({
       title,
       rawInput: rawIdea,
       normalizedData: result.normalizedData,
-      problem: result.extractedFields.problem,
-      objectives: result.extractedFields.objectives,
-      components: result.extractedFields.components,
-      logic: result.extractedFields.logic,
-      inputs: result.extractedFields.inputs,
-      outputs: result.extractedFields.outputs,
-      variants: result.extractedFields.variants,
-      bestMethod: result.extractedFields.bestMethod,
+      searchQuery: (result.extractedFields as any)?.searchQuery || null,
+      problem: result.extractedFields?.problem,
+      objectives: result.extractedFields?.objectives,
+      components: result.extractedFields?.components,
+      logic: result.extractedFields?.logic,
+      inputs: result.extractedFields?.inputs,
+      outputs: result.extractedFields?.outputs,
+      variants: result.extractedFields?.variants,
+      bestMethod: result.extractedFields?.bestMethod,
+      abstract: result.extractedFields?.abstract,
+      cpcCodes: (result.extractedFields as any)?.cpcCodes || [],
+      ipcCodes: (result.extractedFields as any)?.ipcCodes || [],
       llmPromptUsed: result.llmPrompt,
       llmResponse: result.llmResponse,
       tokensUsed: result.tokensUsed
-    },
-    create: {
+    } as any),
+    create: ({
       sessionId,
       title,
       rawInput: rawIdea,
       normalizedData: result.normalizedData,
-      problem: result.extractedFields.problem,
-      objectives: result.extractedFields.objectives,
-      components: result.extractedFields.components,
-      logic: result.extractedFields.logic,
-      inputs: result.extractedFields.inputs,
-      outputs: result.extractedFields.outputs,
-      variants: result.extractedFields.variants,
-      bestMethod: result.extractedFields.bestMethod,
+      searchQuery: (result.extractedFields as any)?.searchQuery || null,
+      problem: result.extractedFields?.problem,
+      objectives: result.extractedFields?.objectives,
+      components: result.extractedFields?.components,
+      logic: result.extractedFields?.logic,
+      inputs: result.extractedFields?.inputs,
+      outputs: result.extractedFields?.outputs,
+      variants: result.extractedFields?.variants,
+      bestMethod: result.extractedFields?.bestMethod,
+      abstract: result.extractedFields?.abstract,
+      cpcCodes: (result.extractedFields as any)?.cpcCodes || [],
+      ipcCodes: (result.extractedFields as any)?.ipcCodes || [],
       llmPromptUsed: result.llmPrompt,
       llmResponse: result.llmResponse,
       tokensUsed: result.tokensUsed
-    }
+    } as any)
   });
 
   // Keep session status as IDEA_ENTRY so user sees Stage 1 first
@@ -558,7 +1777,7 @@ async function handleUpdateComponentMap(user: any, patentId: string, data: any) 
     update: {
       components: validation.components,
       isValid: true,
-      validationErrors: null
+      validationErrors: undefined
     },
     create: {
       sessionId,
@@ -567,11 +1786,8 @@ async function handleUpdateComponentMap(user: any, patentId: string, data: any) 
     }
   });
 
-  // Update session status
-  await prisma.draftingSession.update({
-    where: { id: sessionId },
-    data: { status: 'FIGURE_PLANNER' }
-  });
+  // Note: We don't automatically advance to FIGURE_PLANNER here
+  // The user should manually proceed when ready
 
   return NextResponse.json({ referenceMap });
 }
@@ -631,11 +1847,332 @@ async function handleUpdateFigurePlan(user: any, patentId: string, data: any) {
   if (figureCount === 1) {
     await prisma.draftingSession.update({
       where: { id: sessionId },
-      data: { status: 'DIAGRAM_GENERATOR' }
+      data: { status: 'FIGURE_PLANNER' }
     });
   }
 
   return NextResponse.json({ figurePlan });
+}
+
+async function handleTestPQAIKey() {
+  // Direct PQAI only
+  const token = process.env.PQAI_API_TOKEN || process.env.PQAI_TOKEN || ''
+  if (!token) {
+    return NextResponse.json({ keyPresent: false, message: 'No PQAI API token configured. Set PQAI_API_TOKEN.' })
+  }
+
+  const baseUrl = 'https://api.projectpq.ai/search/102'
+  const params = new URLSearchParams({ q: 'drone navigation system', n: '1', type: 'patent', snip: '1', token })
+  const url = `${baseUrl}?${params.toString()}`
+
+  console.log('Testing PQAI API (Direct):', { url, hasToken: !!token, tokenLength: token.length })
+
+  try {
+    const controller = new AbortController()
+    const to = setTimeout(() => controller.abort(), 8000)
+    const resp = await fetch(url, { method: 'GET', signal: controller.signal })
+    clearTimeout(to)
+    const text = await resp.text()
+    console.log('PQAI test response:', { status: resp.status, statusText: resp.statusText, bodyPreview: text.substring(0, 200) })
+    return NextResponse.json({
+      keyPresent: true,
+      usingDirect: true,
+      testStatus: resp.status,
+      testOk: resp.ok,
+      method: 'GET',
+      url,
+      responseText: text.substring(0, 300),
+      message: resp.ok ? 'API call succeeded (Direct PQAI)' : `API call returned ${resp.status}: ${resp.statusText}`
+    })
+  } catch (e) {
+    console.log('PQAI test network error:', e)
+    return NextResponse.json({ keyPresent: true, usingDirect: true, testStatus: 'error', error: String(e), message: 'Network error calling PQAI test endpoint' })
+  }
+}
+
+async function handleMockRelatedArtSearch() {
+  // Mock response for testing UI functionality
+  const mockResults = [
+    {
+      title: "Autonomous drone navigation system with landmark recognition",
+      pn: "US20210012345A1",
+      snippet: "A system for autonomous navigation of unmanned aerial vehicles using computer vision to identify and track visual landmarks in real-time.",
+      publication_date: "2021-01-15",
+      score: 0.89
+    },
+    {
+      title: "Machine learning-based object detection for UAV applications",
+      pn: "US20200098765A1",
+      snippet: "Method and apparatus for detecting objects in aerial imagery using convolutional neural networks trained on diverse datasets.",
+      publication_date: "2020-03-22",
+      score: 0.76
+    },
+    {
+      title: "Wireless communication protocol for drone swarms",
+      pn: "US20190087654A1",
+      snippet: "Communication system enabling coordinated operation of multiple unmanned aerial vehicles through mesh networking protocols.",
+      publication_date: "2019-11-08",
+      score: 0.65
+    },
+    {
+      title: "Battery management system for extended flight duration",
+      pn: "US20180076543A1",
+      snippet: "Power management apparatus that optimizes battery usage in drones through predictive algorithms and thermal regulation.",
+      publication_date: "2018-07-14",
+      score: 0.58
+    }
+  ]
+
+  // Mock run creation
+  const mockRunId = `mock_${Date.now()}`
+  console.log('Returning mock related art search results for UI testing')
+
+  return NextResponse.json({ runId: mockRunId, results: mockResults })
+}
+
+async function handleRelatedArtSearch(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
+  const { sessionId, limit = 15, queryOverride, afterDate } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+
+  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id }, include: { ideaRecord: true } })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  // Use only the searchQuery field from Stage 1 (compact, optimized for PQAI search)
+  const idea = session.ideaRecord as any
+  const searchQueryFromDB = (idea?.searchQuery || '').toString().trim()
+
+  // Use provided queryOverride if given, otherwise use the stored searchQuery
+  console.log('🔍 API Query Debug:')
+  console.log('  - queryOverride received:', queryOverride)
+  console.log('  - queryOverride type:', typeof queryOverride)
+  console.log('  - queryOverride trimmed:', queryOverride ? String(queryOverride).trim() : 'null')
+  console.log('  - searchQueryFromDB:', searchQueryFromDB)
+
+  const baseQuery = (queryOverride && String(queryOverride).trim().length>0)
+    ? String(queryOverride).trim()
+    : searchQueryFromDB
+
+  console.log('  - Final baseQuery:', baseQuery)
+  console.log('  - Using queryOverride?', queryOverride && String(queryOverride).trim().length>0)
+
+  // If no query available, return error
+  if (!baseQuery) {
+    return NextResponse.json({
+      error: 'No search query available. Please complete Stage 1 first to generate a search query.',
+      showMockOption: true
+    }, { status: 400 })
+  }
+
+  // Simple normalization for PQAI (keep it compact as per Stage 1 design)
+  // - remove most punctuation except hyphens
+  // - collapse whitespace
+  // - keep it short to avoid server errors
+  let safeQuery = baseQuery
+    .replace(/[\u2013\u2014]/g, '-')       // en/em dash → hyphen
+    .replace(/[\u2018\u2019\u201C\u201D]/g, '"') // curly quotes → plain
+    .replace(/[^\w\s-]/g, ' ')             // strip punctuation except hyphen
+    .replace(/-/g, ' ')                      // turn hyphens into spaces to avoid tokenization issues
+    .replace(/\s+/g, ' ')                   // collapse whitespace
+    .trim()
+  // Constrain to first 20 words (keep it compact per Stage 1 design and avoid PQAI server 500s)
+  const words = safeQuery.split(/\s+/)
+  if (words.length > 20) safeQuery = words.slice(0, 20).join(' ')
+
+  // Direct PQAI only
+  const token = process.env.PQAI_API_TOKEN || process.env.PQAI_TOKEN || ''
+  if (!token) return NextResponse.json({ error: 'No PQAI API token configured. Set PQAI_API_TOKEN.' }, { status: 500 })
+
+  // PQAI endpoint: GET /search/102 with query parameters
+  const baseUrl = 'https://api.projectpq.ai/search/102'
+
+  const params = new URLSearchParams({
+    q: safeQuery,
+    n: String(Math.min(Math.max(10, limit), 50)),
+    type: 'patent' // Only return patents, not research papers (NPL)
+  })
+
+  // Optional date filter - only add if user specifies
+  if (afterDate && typeof afterDate === 'string' && afterDate.trim()) {
+    params.set('after', afterDate.trim())
+  }
+
+  // Add token as query parameter for direct API
+  params.set('token', token)
+
+  const url = `${baseUrl}?${params.toString()}`
+
+  // Debug: Log the final URL components
+  console.log('PQAI Request Debug:', {
+    baseUrl,
+    queryLength: safeQuery.length,
+    originalQueryLength: baseQuery.length,
+    paramsCount: Array.from(params.entries()).length,
+    hasToken: !!token,
+    finalUrlLength: url.length,
+    filters: 'type=patent' // Confirm patent-only filtering
+  })
+
+  const headers: Record<string, string> = {
+    'Accept': 'application/json',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  }
+
+  console.log('PQAI search (Direct):', {
+    url,
+    queryPreview: safeQuery.substring(0, 100) + '...',
+    limit,
+    hasToken: !!token,
+    tokenLength: token.length
+  })
+
+  // Single API call per search (one API credit usage) with fetch + tighter headers and timeout
+  let resp: Response | null = null
+  try {
+    const controller = new AbortController()
+    const to = setTimeout(() => controller.abort(), 15000)
+    resp = await fetch(url, { method: 'GET', headers, signal: controller.signal, cache: 'no-store' })
+    clearTimeout(to)
+    console.log('PQAI search result:', { status: resp.status, url: url.substring(0, 120) + '...' })
+  } catch (e) {
+    console.log('PQAI search network error:', e)
+    return NextResponse.json({ error: 'Network error contacting PQAI API', details: String(e) }, { status: 502 })
+  }
+
+  if (!resp || !resp.ok) {
+    let errorMsg = 'PQAI API request failed'
+    let details: string | undefined
+    let shouldShowMockOption = false
+
+    if (resp) {
+      errorMsg += ` (HTTP ${resp.status})`
+
+      if (resp.status === 500) {
+        errorMsg = 'PQAI API server error - the service may be temporarily unavailable'
+        shouldShowMockOption = true
+      } else if (resp.status === 401 || resp.status === 403) {
+        errorMsg = 'PQAI API authentication failed - please check your API token'
+      } else if (resp.status === 429) {
+        errorMsg = 'PQAI API rate limit exceeded - please try again later'
+      }
+      try {
+        const errorText = await resp.text()
+        details = errorText || undefined
+        if (errorText.includes('Server error while handling request')) {
+          errorMsg = 'PQAI API is currently experiencing server issues. Please try again later or use "Mock Search" for testing.'
+          shouldShowMockOption = true
+        }
+      } catch {}
+    }
+
+    console.log('PQAI API error:', { status: resp?.status, error: errorMsg, details })
+
+    return NextResponse.json({
+      error: errorMsg,
+      details,
+      showMockOption: shouldShowMockOption,
+      apiStatus: resp?.status || 'unknown'
+    }, { status: 502 })
+  }
+
+  let dataJson: any = {}
+  try { dataJson = await resp.json() } catch (e) { console.log('Failed to parse JSON response:', e) }
+
+  console.log('PQAI API full response:', JSON.stringify(dataJson, null, 2))
+
+  // Try multiple possible result locations
+  let results = []
+  if (Array.isArray(dataJson?.results)) {
+    results = dataJson.results
+  } else if (Array.isArray(dataJson?.data)) {
+    results = dataJson.data
+  } else if (Array.isArray(dataJson)) {
+    results = dataJson
+  }
+
+  console.log('PQAI API success - results count:', results.length, 'response keys:', Object.keys(dataJson))
+  console.log('First result sample:', results[0] ? Object.keys(results[0]) : 'No results')
+  if (results[0]) {
+    console.log('First result data:', JSON.stringify(results[0], null, 2))
+    console.log('Patent number fields in first result:', {
+      pn: results[0].pn,
+      patent_number: results[0].patent_number,
+      publication_number: results[0].publication_number,
+      publication_id: results[0].publication_id,
+      publicationId: results[0].publicationId,
+      patentId: results[0].patentId,
+      patent_id: results[0].patent_id,
+      id: results[0].id
+    })
+  }
+
+  // Check for unique patent numbers
+  const patentNumbers = results.map((r: any) => r.publication_number || r.patent_number || r.pn || r.publication_id || r.publicationId || r.patentId || r.patent_id || r.id || 'N/A').filter((pn: any) => pn !== 'N/A')
+  const uniquePatentNumbers = Array.from(new Set(patentNumbers))
+  console.log('Patent numbers found:', patentNumbers.length, 'unique:', uniquePatentNumbers.length)
+  if (patentNumbers.length !== uniquePatentNumbers.length) {
+    console.log('WARNING: Duplicate patent numbers detected!')
+  }
+
+  // Persist run
+  const run = await (prisma as any).relatedArtRun.create({ data: { sessionId, queryText: safeQuery, paramsJson: { endpoint: baseUrl, limit: Math.min(Math.max(10, limit), 50), after: afterDate || undefined }, resultsJson: results, ranBy: user.id } })
+
+  return NextResponse.json({ runId: run.id, results })
+}
+
+async function handleRelatedArtSelect(user: any, patentId: string, data: any) {
+  const { sessionId, runId, selections } = data
+  if (!sessionId || !Array.isArray(selections)) return NextResponse.json({ error: 'sessionId and selections[] required' }, { status: 400 })
+
+  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id } })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const created: any[] = []
+  for (const sel of selections) {
+    try {
+      const rec = await (prisma as any).relatedArtSelection.upsert({
+        where: {
+          sessionId_patentNumber_runId: {
+            sessionId,
+            patentNumber: String(sel.patent_number || sel.pn || '').trim(),
+            runId: runId || null
+          }
+        },
+        update: {
+          title: sel.title || undefined,
+          snippet: sel.snippet || undefined,
+          score: typeof sel.score === 'number' ? sel.score : undefined,
+          tags: Array.isArray(sel.tags) ? sel.tags : [],
+          userNotes: sel.user_notes || undefined,
+          publicationDate: sel.publication_date || undefined,
+          cpcCodes: sel.cpc_codes || undefined,
+          ipcCodes: sel.ipc_codes || undefined,
+          inventors: sel.inventors || undefined,
+          assignees: sel.assignees || undefined
+        },
+        create: {
+          sessionId,
+          runId: runId || null,
+          patentNumber: String(sel.patent_number || sel.pn || '').trim(),
+          title: sel.title || undefined,
+          snippet: sel.snippet || undefined,
+          score: typeof sel.score === 'number' ? sel.score : undefined,
+          tags: Array.isArray(sel.tags) ? sel.tags : [],
+          userNotes: sel.user_notes || undefined,
+          publicationDate: sel.publication_date || undefined,
+          cpcCodes: sel.cpc_codes || undefined,
+          ipcCodes: sel.ipc_codes || undefined,
+          inventors: sel.inventors || undefined,
+          assignees: sel.assignees || undefined
+        }
+      })
+      created.push(rec)
+    } catch (e) {
+      // ignore duplicates errors due to constraint race
+    }
+  }
+
+  return NextResponse.json({ saved: created.length })
 }
 
 async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
@@ -692,16 +2229,66 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
       }
     },
     update: {
-      plantumlCode: result.plantumlCode,
-      checksum: result.checksum
+      plantumlCode: result.plantumlCode || '',
+      checksum: result.checksum || ''
     },
     create: {
       sessionId,
       figureNo,
-      plantumlCode: result.plantumlCode,
-      checksum: result.checksum
+      plantumlCode: result.plantumlCode || '',
+      checksum: result.checksum || ''
     }
   });
+
+  // Generate and save image from PlantUML code
+  if (result.plantumlCode) {
+    try {
+      // Clean the PlantUML code (remove titles, themes, etc.)
+      let cleaned = result.plantumlCode
+        .replace(/^(title|caption).*$/gmi, '')
+        .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
+      // Remove multi-line skinparam blocks
+      cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
+      // Remove single-line skinparam statements
+      cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+
+      const encoded = plantumlEncoder.encode(cleaned)
+      const base = process.env.PLANTUML_BASE_URL || 'https://www.plantuml.com/plantuml'
+      const url = `${base}/png/${encoded}`
+
+      const resp = await fetch(url, {
+        cache: 'no-store',
+        method: 'GET',
+        headers: { 'Accept': 'image/png' }
+      })
+
+      if (resp.ok) {
+        const buf = Buffer.from(await resp.arrayBuffer())
+        const imageChecksum = crypto.createHash('sha256').update(buf).digest('hex')
+
+        // Save image to disk
+        const baseDir = path.join(process.cwd(), 'uploads', 'patents', patentId, 'figures')
+        await fs.mkdir(baseDir, { recursive: true })
+        const filename = `figure_${figureNo}_${Date.now()}.png`
+        const imagePath = path.join(baseDir, filename)
+        await fs.writeFile(imagePath, buf)
+
+        // Update diagram source with image path
+        await prisma.diagramSource.update({
+          where: { sessionId_figureNo: { sessionId, figureNo } },
+          data: {
+            imageFilename: filename,
+            imagePath: imagePath,
+            imageChecksum: imageChecksum,
+            imageUploadedAt: new Date()
+          }
+        })
+      }
+    } catch (imageError) {
+      console.warn('Failed to generate/save PlantUML image:', imageError)
+      // Don't fail the whole operation if image generation fails
+    }
+  }
 
   return NextResponse.json({ diagramSource });
 }
@@ -768,6 +2355,7 @@ async function handleGenerateDiagramsLLM(user: any, patentId: string, data: any,
 
     for (const fig of figures) {
       const title = typeof fig?.title === 'string' ? fig.title : 'Figure'
+      const description = typeof fig?.purpose === 'string' ? fig.purpose : undefined
       const codeRaw = typeof fig?.plantuml === 'string' ? fig.plantuml : ''
       const code = sanitizePlantUML(codeRaw)
       if (!code.includes('@startuml')) continue
@@ -777,8 +2365,8 @@ async function handleGenerateDiagramsLLM(user: any, patentId: string, data: any,
 
       await prisma.figurePlan.upsert({
         where: { sessionId_figureNo: { sessionId, figureNo } },
-        update: { title },
-        create: { sessionId, figureNo, title, nodes: [], edges: [] }
+        update: { title, ...(description ? { description } : {}) },
+        create: { sessionId, figureNo, title, ...(description ? { description } : {}), nodes: [], edges: [] }
       })
 
       await prisma.diagramSource.upsert({
@@ -821,6 +2409,54 @@ async function handleSavePlantUML(user: any, patentId: string, data: any) {
     create: { sessionId, figureNo, title: title || `Figure ${figureNo}`, nodes: [], edges: [] }
   })
 
+  // Generate and save image from PlantUML code
+  try {
+    // Clean the PlantUML code (remove titles, themes, etc.)
+    let cleaned = plantumlCode
+      .replace(/^(title|caption).*$/gmi, '')
+      .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
+    // Remove multi-line skinparam blocks
+    cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
+    // Remove single-line skinparam statements
+    cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+
+    const encoded = plantumlEncoder.encode(cleaned)
+    const base = process.env.PLANTUML_BASE_URL || 'https://www.plantuml.com/plantuml'
+    const url = `${base}/png/${encoded}`
+
+    const resp = await fetch(url, {
+      cache: 'no-store',
+      method: 'GET',
+      headers: { 'Accept': 'image/png' }
+    })
+
+    if (resp.ok) {
+      const buf = Buffer.from(await resp.arrayBuffer())
+      const imageChecksum = crypto.createHash('sha256').update(buf).digest('hex')
+
+      // Save image to disk
+      const baseDir = path.join(process.cwd(), 'uploads', 'patents', patentId, 'figures')
+      await fs.mkdir(baseDir, { recursive: true })
+      const filename = `figure_${figureNo}_${Date.now()}.png`
+      const imagePath = path.join(baseDir, filename)
+      await fs.writeFile(imagePath, buf)
+
+      // Update diagram source with image path
+      await prisma.diagramSource.update({
+        where: { sessionId_figureNo: { sessionId, figureNo } },
+        data: {
+          imageFilename: filename,
+          imagePath: imagePath,
+          imageChecksum: imageChecksum,
+          imageUploadedAt: new Date()
+        }
+      })
+    }
+  } catch (imageError) {
+    console.warn('Failed to generate/save PlantUML image:', imageError)
+    // Don't fail the whole operation if image generation fails
+  }
+
   return NextResponse.json({ diagramSource })
 }
 
@@ -832,7 +2468,8 @@ async function handleRegenerateDiagramLLM(user: any, patentId: string, data: any
   const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id }, include: { referenceMap: true, figurePlans: true, diagramSources: true } })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const components = session.referenceMap?.components || []
+  const componentsRaw = (session.referenceMap as any)?.components
+  const components = Array.isArray(componentsRaw) ? componentsRaw : []
   const numeralsPreview = components.map((c: any) => `${c.name} (${c.numeral || '?'})`).join(', ')
   const title = session.figurePlans?.find((f: any) => f.figureNo === figureNo)?.title || `Figure ${figureNo}`
 
@@ -869,8 +2506,9 @@ async function handleAddFigureLLM(user: any, patentId: string, data: any, reques
   const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id }, include: { referenceMap: true, figurePlans: true } })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const components = session.referenceMap?.components || []
-  const numeralsPreview = components.map((c: any) => `${c.name} (${c.numeral || '?'})`).join(', ')
+  const componentsRaw2 = (session.referenceMap as any)?.components
+  const components2 = Array.isArray(componentsRaw2) ? componentsRaw2 : []
+  const numeralsPreview = components2.map((c: any) => `${c.name} (${c.numeral || '?'})`).join(', ')
   const prompt = `Add one new simple PlantUML figure for a patent.
 Use only numerals: ${numeralsPreview}.
 User instructions: ${instructions || 'none'}
@@ -910,8 +2548,9 @@ async function handleAddFiguresLLM(user: any, patentId: string, data: any, reque
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const components = session.referenceMap?.components || []
-  const numeralsPreview = components.map((c: any) => `${c.name} (${c.numeral || '?'})`).join(', ')
+  const componentsRaw3 = (session.referenceMap as any)?.components
+  const components3 = Array.isArray(componentsRaw3) ? componentsRaw3 : []
+  const numeralsPreview = components3.map((c: any) => `${c.name} (${c.numeral || '?'})`).join(', ')
   const existingNames = session.figurePlans?.map((f: any) => `Fig.${f.figureNo}: ${f.title}`).join('; ')
   const inventionTitle = session.ideaRecord?.title || ''
 
@@ -971,8 +2610,42 @@ async function handleDeleteFigure(user: any, patentId: string, data: any) {
 
   return NextResponse.json({ deleted: true })
 }
+
+async function handleCreateManualFigure(user: any, patentId: string, data: any) {
+  const { sessionId, title, description, figureNo } = data
+  if (!sessionId || !description || (description as string).trim().split(/\s+/).length < 20) {
+    return NextResponse.json({ error: 'At least 20 words description required' }, { status: 400 })
+  }
+
+  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id } })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  // Assign number if not provided
+  let no = figureNo
+  if (!no) {
+    const existing = await prisma.figurePlan.findMany({ where: { sessionId } })
+    const used = new Set(existing.map(e => e.figureNo))
+    no = 1
+    while (used.has(no)) no++
+  }
+
+  await prisma.figurePlan.upsert({
+    where: { sessionId_figureNo: { sessionId, figureNo: no } },
+    update: { title: title || `Figure ${no}`, description },
+    create: { sessionId, figureNo: no, title: title || `Figure ${no}`, description, nodes: [], edges: [] }
+  })
+
+  // Create empty source to allow upload linkage later
+  await prisma.diagramSource.upsert({
+    where: { sessionId_figureNo: { sessionId, figureNo: no } },
+    update: {},
+    create: { sessionId, figureNo: no, plantumlCode: '', checksum: '' }
+  })
+
+  return NextResponse.json({ created: { figureNo: no } })
+}
 async function handleUploadDiagram(user: any, patentId: string, data: any) {
-  const { sessionId, figureNo, filename, checksum } = data;
+  const { sessionId, figureNo, filename, checksum, imagePath } = data;
 
   if (!sessionId || !figureNo || !filename || !checksum) {
     return NextResponse.json(
@@ -997,18 +2670,32 @@ async function handleUploadDiagram(user: any, patentId: string, data: any) {
     );
   }
 
-  // Update diagram source with uploaded file info
-  const diagramSource = await prisma.diagramSource.updateMany({
-    where: {
-      sessionId,
-      figureNo
-    },
-    data: {
+  // Ensure a figurePlan exists for this figure number (some uploads may come first)
+  const existingPlan = await prisma.figurePlan.findUnique({ where: { sessionId_figureNo: { sessionId, figureNo } } })
+  if (!existingPlan) {
+    await prisma.figurePlan.create({ data: { sessionId, figureNo, title: `Figure ${figureNo}`, nodes: [], edges: [] } })
+  }
+
+  // Upsert diagram source and set upload metadata
+  await prisma.diagramSource.upsert({
+    where: { sessionId_figureNo: { sessionId, figureNo } },
+    update: {
       imageFilename: filename,
       imageChecksum: checksum,
+      imagePath: imagePath,
+      imageUploadedAt: new Date()
+    },
+    create: {
+      sessionId,
+      figureNo,
+      plantumlCode: '',
+      checksum: '',
+      imageFilename: filename,
+      imageChecksum: checksum,
+      imagePath: imagePath,
       imageUploadedAt: new Date()
     }
-  });
+  })
 
   // Return success with counts; do not auto-advance stage
   const totalFigures = await prisma.figurePlan.count({ where: { sessionId } });
@@ -1049,7 +2736,8 @@ async function handleGenerateDraft(user: any, patentId: string, data: any, reque
       annexureDrafts: {
         orderBy: { version: 'desc' },
         take: 1
-      }
+      },
+      // Will be added after Prisma generate; use manual load elsewhere if needed
     }
   });
 
@@ -1082,22 +2770,22 @@ async function handleGenerateDraft(user: any, patentId: string, data: any, reque
     data: {
       sessionId,
       version,
-      title: result.draft.title,
-      fieldOfInvention: result.draft.fieldOfInvention,
-      background: result.draft.background,
-      summary: result.draft.summary,
-      briefDescriptionOfDrawings: result.draft.briefDescriptionOfDrawings,
-      detailedDescription: result.draft.detailedDescription,
-      bestMethod: result.draft.bestMethod,
-      claims: result.draft.claims,
-      abstract: result.draft.abstract,
-      listOfNumerals: result.draft.listOfNumerals,
-      fullDraftText: result.draft.fullText,
-      isValid: result.isValid,
-      validationReport: result.validationReport,
-      llmPromptUsed: result.llmPrompt,
-      llmResponse: result.llmResponse,
-      tokensUsed: result.tokensUsed
+      title: result.draft?.title || session.ideaRecord?.title || 'Untitled',
+      fieldOfInvention: result.draft?.fieldOfInvention || '',
+      background: result.draft?.background || '',
+      summary: result.draft?.summary || '',
+      briefDescriptionOfDrawings: result.draft?.briefDescriptionOfDrawings || '',
+      detailedDescription: result.draft?.detailedDescription || '',
+      bestMethod: result.draft?.bestMethod || '',
+      claims: result.draft?.claims || '',
+      abstract: result.draft?.abstract || '',
+      listOfNumerals: result.draft?.listOfNumerals || '',
+      fullDraftText: result.draft?.fullText || '',
+      isValid: !!result.isValid,
+      validationReport: result.validationReport || {},
+      llmPromptUsed: result.llmPrompt || '',
+      llmResponse: result.llmResponse || {},
+      tokensUsed: result.tokensUsed || 0
     }
   });
 
@@ -1108,4 +2796,215 @@ async function handleGenerateDraft(user: any, patentId: string, data: any, reque
   });
 
   return NextResponse.json({ draft });
+}
+
+// New: Autosave unapproved sections to a working draft version (does not advance stage)
+async function handleAutosaveSections(user: any, patentId: string, data: any) {
+  const { sessionId, patch } = data
+  if (!sessionId || !patch || typeof patch !== 'object') {
+    return NextResponse.json({ error: 'sessionId and patch object required' }, { status: 400 })
+  }
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { annexureDrafts: { orderBy: { version: 'desc' }, take: 1 } }
+  })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const last = session.annexureDrafts?.[0]
+  const merge: any = {
+    title: last?.title || '',
+    fieldOfInvention: last?.fieldOfInvention || null,
+    background: last?.background || null,
+    summary: last?.summary || null,
+    briefDescriptionOfDrawings: last?.briefDescriptionOfDrawings || null,
+    detailedDescription: last?.detailedDescription || null,
+    bestMethod: last?.bestMethod || null,
+    claims: last?.claims || null,
+    abstract: last?.abstract || null,
+    industrialApplicability: last?.industrialApplicability || null,
+    listOfNumerals: last?.listOfNumerals || null,
+    ...patch
+  }
+
+  // Create or update a working draft in place: if last exists, update it; else create version 1
+  let draft
+  if (last) {
+    draft = await prisma.annexureDraft.update({
+      where: { id: last.id },
+      data: {
+        title: merge.title || last.title,
+        fieldOfInvention: merge.fieldOfInvention || last.fieldOfInvention,
+        background: merge.background || last.background,
+        summary: merge.summary || last.summary,
+        briefDescriptionOfDrawings: merge.briefDescriptionOfDrawings || last.briefDescriptionOfDrawings,
+        detailedDescription: merge.detailedDescription || last.detailedDescription,
+        bestMethod: merge.bestMethod || last.bestMethod,
+        claims: merge.claims || last.claims,
+        abstract: merge.abstract || last.abstract,
+        industrialApplicability: merge.industrialApplicability || last.industrialApplicability,
+        listOfNumerals: merge.listOfNumerals || last.listOfNumerals
+      }
+    })
+  } else {
+    draft = await prisma.annexureDraft.create({
+      data: {
+        session: { connect: { id: sessionId } },
+        version: 1,
+        title: merge.title || 'Untitled',
+        fullDraftText: '',
+        isValid: false
+      }
+    })
+  }
+
+  return NextResponse.json({ draft })
+}
+
+// New: Generate specific annexure sections without persisting (e.g., ["title","abstract"]) with backend debug steps
+async function handleGenerateSections(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
+  const { sessionId, sections, instructions, selectedPatents } = data
+
+  if (!sessionId || !Array.isArray(sections) || sections.length === 0) {
+    return NextResponse.json({ error: 'sessionId and sections[] are required' }, { status: 400 })
+  }
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: {
+      ideaRecord: true,
+      referenceMap: true,
+      figurePlans: true,
+      annexureDrafts: { orderBy: { version: 'desc' }, take: 1 },
+      // Needed for prior-art selection logic in DraftingService
+      relatedArtSelections: true
+    }
+  })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const result = await DraftingService.generateSections(session, sections, instructions, user.tenantId, requestHeaders, selectedPatents)
+  if (!result.success) return NextResponse.json({ error: result.error, debugSteps: result.debugSteps }, { status: 400 })
+
+  // Autosave generated sections into latest draft without bumping version
+  try {
+    const last = session.annexureDrafts?.[0]
+    if (last && result.generated) {
+      const updateData: any = {}
+      // Only update fields that exist in the database schema
+      const validFields = ['title', 'fieldOfInvention', 'background', 'summary', 'briefDescriptionOfDrawings', 'detailedDescription', 'bestMethod', 'claims', 'abstract', 'industrialApplicability', 'listOfNumerals']
+
+      for (const [k, v] of Object.entries(result.generated)) {
+        if (validFields.includes(k) && typeof v === 'string' && v.trim()) {
+          updateData[k] = v.trim()
+        }
+      }
+      console.log('Autosave updateData keys:', Object.keys(updateData))
+      console.log('Last draft ID:', last.id)
+      console.log('Last draft exists:', !!last)
+      if (Object.keys(updateData).length > 0) {
+        await prisma.annexureDraft.update({ where: { id: last.id }, data: updateData })
+      }
+    } else if (result.generated) {
+      // Create initial draft if none present
+      const createData: any = { sessionId, version: 1, fullDraftText: '' }
+
+      // Set title
+      createData.title = result.generated.title || session.ideaRecord?.title || 'Untitled'
+
+      // Only set fields that exist in the database schema
+      const validFields = ['fieldOfInvention', 'background', 'summary', 'briefDescriptionOfDrawings', 'detailedDescription', 'bestMethod', 'claims', 'abstract', 'industrialApplicability', 'listOfNumerals']
+
+      for (const field of validFields) {
+        if (result.generated[field] && typeof result.generated[field] === 'string') {
+          createData[field] = (result.generated[field] as string).trim()
+        }
+      }
+
+      console.log('Creating new draft with keys:', Object.keys(createData))
+      await prisma.annexureDraft.create({ data: createData })
+    }
+  } catch (e) {
+    console.error('Autosave after generation failed:', e)
+    console.error('Error details:', e instanceof Error ? e.message : 'Unknown error')
+  }
+
+  return NextResponse.json({ generated: result.generated, debugSteps: result.debugSteps, llmMeta: result.llmMeta })
+}
+
+// New: Persist approved sections and run consistency validation
+async function handleSaveSections(user: any, patentId: string, data: any) {
+  const { sessionId, patch } = data
+  if (!sessionId || !patch || typeof patch !== 'object') {
+    return NextResponse.json({ error: 'sessionId and patch object required' }, { status: 400 })
+  }
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { annexureDrafts: { orderBy: { version: 'desc' }, take: 1 }, referenceMap: true, figurePlans: true }
+  })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const last = session.annexureDrafts?.[0]
+  const nextVersion = (last?.version || 0) + 1
+
+  // Merge patch into latest (or start new)
+  const merged: any = {
+    title: last?.title || '',
+    fieldOfInvention: last?.fieldOfInvention || null,
+    background: last?.background || null,
+    summary: last?.summary || null,
+    briefDescriptionOfDrawings: last?.briefDescriptionOfDrawings || null,
+    detailedDescription: last?.detailedDescription || null,
+    bestMethod: last?.bestMethod || null,
+    claims: last?.claims || null,
+    abstract: last?.abstract || null,
+    industrialApplicability: last?.industrialApplicability || null,
+    listOfNumerals: last?.listOfNumerals || null,
+    ...patch
+  }
+
+  // Assemble full text for validation
+  const fullDraftText = [
+    merged.fieldOfInvention ? `FIELD OF INVENTION\n\n${merged.fieldOfInvention}` : '',
+    merged.background ? `BACKGROUND\n\n${merged.background}` : '',
+    merged.summary ? `SUMMARY\n\n${merged.summary}` : '',
+    merged.briefDescriptionOfDrawings ? `BRIEF DESCRIPTION OF DRAWINGS\n\n${merged.briefDescriptionOfDrawings}` : '',
+    merged.detailedDescription ? `DETAILED DESCRIPTION\n\n${merged.detailedDescription}` : '',
+    merged.bestMethod ? `BEST METHOD\n\n${merged.bestMethod}` : '',
+    merged.claims ? `CLAIMS\n\n${merged.claims}` : '',
+    merged.abstract ? `ABSTRACT\n\n${merged.abstract}` : '',
+    merged.industrialApplicability ? `INDUSTRIAL APPLICABILITY\n\n${merged.industrialApplicability}` : '',
+    merged.listOfNumerals ? `LIST OF REFERENCE NUMERALS\n\n${merged.listOfNumerals}` : ''
+  ].filter(Boolean).join('\n\n')
+
+  // Lightweight consistency validation using service
+  const validation = DraftingService.validateDraftConsistencyPublic({ fullText: fullDraftText }, session as any)
+
+  const draft = await prisma.annexureDraft.create({
+    data: {
+      sessionId,
+      version: nextVersion,
+      title: merged.title || last?.title || 'Untitled',
+      fieldOfInvention: merged.fieldOfInvention || undefined,
+      background: merged.background || undefined,
+      summary: merged.summary || undefined,
+      briefDescriptionOfDrawings: merged.briefDescriptionOfDrawings || undefined,
+      detailedDescription: merged.detailedDescription || undefined,
+      bestMethod: merged.bestMethod || undefined,
+      claims: merged.claims || undefined,
+      abstract: merged.abstract || undefined,
+      industrialApplicability: merged.industrialApplicability || undefined,
+      listOfNumerals: merged.listOfNumerals || undefined,
+      fullDraftText,
+      isValid: !!validation.valid,
+      validationReport: validation.report
+    }
+  })
+
+  // Ensure session is at ANNEXURE_DRAFT stage
+  if (session.status !== 'ANNEXURE_DRAFT') {
+    await prisma.draftingSession.update({ where: { id: sessionId }, data: { status: 'ANNEXURE_DRAFT' } })
+  }
+
+  return NextResponse.json({ draft, validationReport: validation.report })
 }

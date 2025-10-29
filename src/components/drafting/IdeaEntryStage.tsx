@@ -14,6 +14,7 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
   const [error, setError] = useState<string | null>(null)
   const [showNormalized, setShowNormalized] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
+  const [isRegenerating, setIsRegenerating] = useState(false)
 
   // Editable fields
   const [problem, setProblem] = useState('')
@@ -21,6 +22,10 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
   const [logic, setLogic] = useState('')
   const [bestMethod, setBestMethod] = useState('')
   const [components, setComponents] = useState<any[]>([])
+  const [searchQuery, setSearchQuery] = useState('')
+  const [abstractText, setAbstractText] = useState('')
+  const [cpcCodes, setCpcCodes] = useState<string[]>([])
+  const [ipcCodes, setIpcCodes] = useState<string[]>([])
 
   // Use data from existing idea record
   const rawIdea = session?.ideaRecord?.rawInput || ''
@@ -39,7 +44,10 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
           inputs: session.ideaRecord.inputs,
           outputs: session.ideaRecord.outputs,
           variants: session.ideaRecord.variants,
-          bestMethod: session.ideaRecord.bestMethod
+          bestMethod: session.ideaRecord.bestMethod,
+          abstract: session.ideaRecord.abstract,
+          cpcCodes: session.ideaRecord.cpcCodes,
+          ipcCodes: session.ideaRecord.ipcCodes
         }
       })
       setShowNormalized(true)
@@ -50,6 +58,10 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
       setLogic(session.ideaRecord.logic || '')
       setBestMethod(session.ideaRecord.bestMethod || '')
       setComponents(Array.isArray(session.ideaRecord.components) ? session.ideaRecord.components : [])
+      setSearchQuery((session as any)?.ideaRecord?.searchQuery || '')
+      setAbstractText(session.ideaRecord.abstract || '')
+      setCpcCodes(Array.isArray(session.ideaRecord.cpcCodes) ? session.ideaRecord.cpcCodes : [])
+      setIpcCodes(Array.isArray(session.ideaRecord.ipcCodes) ? session.ideaRecord.ipcCodes : [])
     }
   }, [session])
 
@@ -63,7 +75,7 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
     }
 
     const reader = new FileReader()
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       const content = e.target?.result as string
       // Clean the content to remove BOM and normalize line endings
       const cleanContent = content.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
@@ -78,8 +90,20 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
         return
       }
 
-      setRawIdea(cleanContent)
-      setError(null) // Clear any previous errors
+      try {
+        // Update the idea record with the uploaded content
+        await onComplete({
+          action: 'update_idea_record',
+          sessionId: session?.id,
+          patch: { rawInput: cleanContent }
+        })
+
+        // Refresh to get updated data
+        await onRefresh()
+        setError(null) // Clear any previous errors
+      } catch (err) {
+        setError('Failed to save uploaded content')
+      }
     }
 
     reader.onerror = () => {
@@ -115,6 +139,12 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
         </div>
       )}
 
+      {(!showNormalized || !normalizedData) && (
+        <div className="mb-6 bg-indigo-50 border border-indigo-200 rounded-lg p-4 text-sm text-indigo-800 animate-pulse">
+          AI is structuring your idea into a patent-ready outline (problem, objectives, logic, best method, components). Hang tight—this usually takes a few seconds.
+        </div>
+      )}
+
       <div className="max-w-4xl mx-auto">
         {/* Original Input Display */}
         <div className="mb-6">
@@ -141,18 +171,101 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
               </svg>
               <h3 className="text-lg font-medium text-blue-900">AI-Normalized Structure</h3>
-              <div className="ml-auto">
+              <div className="ml-auto flex items-center space-x-2">
                 <button
                   onClick={() => setIsEditing((v) => !v)}
                   className="inline-flex items-center px-3 py-1 border border-blue-300 text-sm font-medium rounded-md text-blue-700 bg-white hover:bg-blue-50"
                 >
                   {isEditing ? 'Stop Editing' : 'Edit'}
                 </button>
+                <button
+                  onClick={async () => {
+                    try {
+                      setError(null)
+                      if (!session?.id) return
+                      const currentRaw = session?.ideaRecord?.rawInput || rawIdea || ''
+                      const currentTitle = session?.ideaRecord?.title || title || ''
+                      if (!currentRaw || !currentTitle) {
+                        setError('Cannot regenerate: missing title or description.')
+                        return
+                      }
+                      setIsRegenerating(true)
+                      setShowNormalized(false)
+                      setNormalizedData(null)
+                      await onComplete({
+                        action: 'normalize_idea',
+                        sessionId: session.id,
+                        rawIdea: currentRaw,
+                        title: currentTitle
+                      })
+                      await onRefresh()
+                      setShowNormalized(true)
+                    } catch (e) {
+                      setError('Failed to regenerate AI output. Please try again.')
+                    } finally {
+                      setIsRegenerating(false)
+                    }
+                  }}
+                  className="inline-flex items-center px-3 py-1 border border-indigo-300 text-sm font-medium rounded-md text-indigo-700 bg-white hover:bg-indigo-50 disabled:opacity-60"
+                  disabled={isRegenerating}
+                  title="Re-run AI normalization for this idea"
+                >
+                  {isRegenerating ? (
+                    <>
+                      <svg className="animate-spin h-4 w-4 mr-2 text-indigo-600" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+                      </svg>
+                      Regenerating...
+                    </>
+                  ) : (
+                    'Regenerate AI Normalization'
+                  )}
+                </button>
               </div>
             </div>
 
             {/* Vertically stacked tiles for readability */}
             <div className="space-y-6">
+              {/* Search Query moved to the bottom of the section */}
+
+              <div className="bg-white p-4 rounded border">
+                <h4 className="font-medium text-blue-800 mb-2">Classification Codes</h4>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs text-blue-800 mb-1">CPC Codes</label>
+                    {isEditing ? (
+                      <input
+                        className="w-full text-sm text-blue-700 bg-white p-3 rounded border"
+                        placeholder="e.g., H04L 29/08, G06F 17/30"
+                        value={cpcCodes.join(', ')}
+                        onChange={(e) => setCpcCodes(e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+                      />
+                    ) : (
+                      <div className="text-sm text-blue-700 bg-white p-3 rounded border">
+                        {(cpcCodes && cpcCodes.length) ? cpcCodes.join(', ') : 'None'}
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-xs text-blue-800 mb-1">IPC Codes</label>
+                    {isEditing ? (
+                      <input
+                        className="w-full text-sm text-blue-700 bg-white p-3 rounded border"
+                        placeholder="e.g., G06F 17/30, H04L 29/08"
+                        value={ipcCodes.join(', ')}
+                        onChange={(e) => setIpcCodes(e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+                      />
+                    ) : (
+                      <div className="text-sm text-blue-700 bg-white p-3 rounded border">
+                        {(ipcCodes && ipcCodes.length) ? ipcCodes.join(', ') : 'None'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <p className="mt-2 text-xs text-blue-600">These codes will be used to link with patent search APIs.</p>
+              </div>
+
               <div className="bg-white p-4 rounded border">
                 <h4 className="font-medium text-blue-800 mb-2">Problem Statement</h4>
                 {isEditing ? (
@@ -280,7 +393,11 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
                           objectives,
                           logic,
                           bestMethod,
-                          components
+                          components,
+                          searchQuery,
+                          abstract: abstractText,
+                          cpcCodes,
+                          ipcCodes
                         }
                       })
                       setShowNormalized(true)
@@ -303,6 +420,24 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
 
       {/* Navigation */}
       <div className="mt-8 pt-6 border-t border-gray-200">
+      {/* Search Query placed at bottom for reference */}
+      <div className="mb-6">
+        <div className="bg-white p-4 rounded border">
+          <h4 className="font-medium text-blue-800 mb-2">Search Query (≤25 words)</h4>
+          {isEditing ? (
+            <input
+              className="w-full text-sm text-blue-700 bg-white p-3 rounded border"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+          ) : (
+            <p className="text-sm text-blue-700 bg-white p-3 rounded border whitespace-pre-wrap">
+              {searchQuery || 'Not specified'}
+            </p>
+          )}
+          <p className="mt-1 text-xs text-blue-600">Plain text, ASCII-safe; no quotes/brackets/CPC/IPC; include only essential technical terms.</p>
+        </div>
+      </div>
         <div className="flex justify-between items-center">
           <div className="text-sm text-gray-600">
             Review the AI-normalized structure and proceed to component planning

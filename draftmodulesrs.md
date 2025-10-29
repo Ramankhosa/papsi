@@ -140,6 +140,52 @@ Convert a user-supplied *patent idea* into a **complete Indian Patent Annexure**
 - Auto-highlighting of all reference numerals.
 - Validation banner for consistency checking.
 
+### Annexure 2 – Section-by-Section Drafting SRS (India Form-2)
+
+- Purpose: Generate and approve Annexure sections in pairs with visible backend activity, strong IN-specific compliance, and numeral/figure consistency.
+- Pairs sequence:
+  1) Title + Abstract
+  2) Field of Invention + Background
+  3) Summary + Brief Description of Drawings
+  4) Detailed Description + Best Method
+  5) Claims (independent + dependents)
+  6) List of Reference Numerals + Industrial Applicability
+
+Backend Activity Panel (exposed to users):
+- Steps shown with timestamps and status badges for transparency:
+  - Fetch session + context (IdeaRecord, ReferenceMap, Figures)
+  - Build section-specific prompt (with jurisdictional rules and schema)
+  - LLM call via metered gateway (model, prompt_hash, params saved)
+  - Parse JSON output and enforce schema/word limits
+  - Run Red-Flag Scanner (§3(k)/(i)/(d)/(c)/(j)) and Terminology lints
+  - Critic→Fixer micro-loop (minimal edits only if flagged)
+  - Numeral/Figure integrity check (no invented refs)
+  - Save (for approved sections) and revalidate
+
+Tier-1 Rules (strict):
+- Abstract Guardrails: ≤150 words; begins with Title; neutral tone; no claims/novelty language; no numerals/figure refs.
+- BDOD Style: "Fig. X — …"; only existing figures; ≤40 words/line; no advantages/claims.
+- Best Method Strictness: at least one reproducible, parameterized embodiment; avoid hedging (may/could/might).
+- Claims Hygiene: ban "and/or", "etc.", vague adjectives; SI units; closed ranges; warn on deep dependency chains (>3).
+- Numeral/Figure Integrity: declared↔used match; forbid invented refs; allow delta renumbering across approved text.
+- Antecedent Basis + Coverage Matrix: element ↔ paragraph IDs ↔ numeral/figure; enforce a/an → the/said.
+
+Data Contracts:
+- generate_sections (non-persisting): { sections: ["title","abstract"], instructions?: {section:string} } → { generated: {section:string}, debugSteps: Step[], llmMeta }
+- save_sections (persisting): { patch: Partial<AnnexureDraft> } → { draft, validationReport }
+
+Validation Order:
+1) Schema + word limits
+2) Jurisdictional guards (Abstract/BDOD, etc.)
+3) Numeral/Figure integrity
+4) §3 red-flags + terminology
+5) Assemble + run full consistency
+
+Acceptance for this stage:
+- Users can generate, review, and approve two sections at a time.
+- Backend activity panel reflects each step with success/fail.
+- All guards enforced pre-save; errors are actionable with inline fixes.
+
 ## 🔷 STAGE 6 – Consistency & Validation (UI: "Review & Fix" Page)
 
 ### UI Components

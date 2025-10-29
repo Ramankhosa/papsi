@@ -319,8 +319,8 @@ export function NoveltyAssessmentReport({ assessment, patentId }: NoveltyAssessm
     const hasLevel1Results = assessment.stage1Results && assessment.stage1Results.length > 0;
 
     if (hasLevel1Results) {
-      const allLow = assessment.stage1Results.every(r => r.relevance === 'LOW');
-      const anyHigh = assessment.stage1Results.some(r => r.relevance === 'HIGH');
+      const allLow = (assessment.stage1Results as any[]).every(r => r.relevance === 'LOW');
+      const anyHigh = (assessment.stage1Results as any[]).some(r => r.relevance === 'HIGH');
 
       if (allLow || anyHigh) {
         const determination = allLow ? 'NOVEL' : 'NOT_NOVEL';

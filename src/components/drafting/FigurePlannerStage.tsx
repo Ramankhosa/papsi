@@ -27,13 +27,24 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   const [modifyText, setModifyText] = useState('')
   const [modifyFigNo, setModifyFigNo] = useState<number | null>(null)
   const [modifyTextSaved, setModifyTextSaved] = useState('')
-  const [isViewing, setIsViewing] = useState(false)
+  const [isViewing, setIsViewing] = useState<Record<number, boolean>>({})
+  const [rendering, setRendering] = useState<Record<number, boolean>>({})
+  const [renderPreview, setRenderPreview] = useState<Record<number, string | null>>({})
+  const [expandedFigNo, setExpandedFigNo] = useState<number | null>(null)
   const [addCount, setAddCount] = useState(0)
   const [addInputs, setAddInputs] = useState<string[]>([])
   const [overrideCount, setOverrideCount] = useState(0)
   const [overrideInputs, setOverrideInputs] = useState<string[]>([])
   const [aiDecides, setAiDecides] = useState(true)
   const [userDecides, setUserDecides] = useState(false)
+  const [manualCount, setManualCount] = useState(0)
+  const [manualInputs, setManualInputs] = useState<{ title: string; description: string }[]>([])
+  const [manualFiles, setManualFiles] = useState<(File | null)[]>([])
+  const [showManual, setShowManual] = useState(false)
+  const [manualBusy, setManualBusy] = useState<Record<number, boolean>>({})
+  const [showPlantUML, setShowPlantUML] = useState<Record<number, boolean>>({})
+
+  const countWords = (text: string) => (text || '').trim().split(/\s+/).filter(Boolean).length
 
   const handleGenerateFromLLM = async () => {
     try {
@@ -61,15 +72,39 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
       const numeralsPreview = components.map((c: any) => `${c.name} (${c.numeral || '?'})`).join(', ')
 
       const prompt = `You are generating PlantUML diagrams for a patent specification.
-Return a JSON array of 3-5 simple, standard patent-style diagrams (no fancy rendering).
+Return a JSON array of 5 simple, standard patent-style diagrams (no fancy rendering).
 Each item must be: {"title":"Fig.X - title","purpose":"one-line purpose","plantuml":"@startuml...@enduml"}.
-Rules:
+
+Strict content & labeling:
 - Use only components and numerals: ${numeralsPreview}.
-- Prefer: Fig.1 block diagram (root modules), Fig.2 data/control flow, Fig.3 optional internal view for a selected module, timing only if short.
+- Use labels with numerals exactly as assigned (e.g., C100). Avoid undefined references.
+- Do NOT include !theme, !include, !import, skinparam, captions, figure numbers, or titles inside the PlantUML code.
+
+Diagram selection (prefer in this order):
+- Fig.1: high-level block diagram (root modules).
+- Fig.2: data/control flow across modules.
+- Fig.3: internal view of a selected module. (Timing only if very short.)
+
+Vertical layout policy (avoid horizontal sprawl):
+- Think and draw in vertical LAYERS: Inputs (top) → Core Processing (middle) → Outputs (bottom).
+- Group related nodes in frames/packages and LIST them in top-to-bottom order inside the group.
+- Limit horizontal fan-out per layer to ≤ 3 siblings; overflow goes to a LOWER layer.
+- Prefer downward arrows and avoid long horizontal cross-edges. If needed, re-insert relay nodes in the lower layer.
+
+PNG/A4 export safety (exception rules):
+- To keep PNG crisp on A4, you MAY use only these two rendering directives:
+  1) scale max 1890x2917  (fits an A4 page at ~25 mm margins, 300 DPI)
+  2) newpage               (start a second page if needed)
+- Do NOT use any other style directives.
+
+Complexity / pagination:
+- If components > 12 OR horizontal width would exceed ~3 vertical stacks, split into multiple diagrams OR use "newpage" inside a single figure.
+- Keep each diagram self-contained and legible without shrinking fonts.
+
+Code quality:
 - Keep code minimal and syntactically valid PlantUML.
-- Use labels with numerals exactly as assigned (e.g., C100), avoid undefined references.
- - Do NOT include !theme, !include, !import, skinparam, or other styling directives.
- - Do NOT include captions, figure numbers, or titles inside the PlantUML code.
+- No undefined aliases. No dangling arrows. Avoid duplicate edges.
+
 Output: JSON only, no markdown fences.`
 
       const res = await onComplete({
@@ -121,13 +156,20 @@ Output: JSON only, no markdown fences.`
         headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
         body: form
       })
-      if (!uploadResp.ok) throw new Error('Upload failed')
+      if (!uploadResp.ok) {
+        let message = 'Upload failed'
+        try {
+          const j = await uploadResp.json()
+          if (j?.error) message = j.error
+        } catch {}
+        throw new Error(message)
+      }
       const uploadedMeta = await uploadResp.json()
-      await onComplete({ action: 'upload_diagram', sessionId: session?.id, figureNo, filename: uploadedMeta.filename, checksum: uploadedMeta.checksum })
+      await onComplete({ action: 'upload_diagram', sessionId: session?.id, figureNo, filename: uploadedMeta.filename, checksum: uploadedMeta.checksum, imagePath: uploadedMeta.path })
       setUploaded((prev) => ({ ...prev, [figureNo]: true }))
       await onRefresh()
     } catch (e) {
-      setError('Upload failed')
+      setError(e instanceof Error ? e.message : 'Upload failed')
     } finally {
       setIsUploading(false)
     }
@@ -136,7 +178,7 @@ Output: JSON only, no markdown fences.`
   const handleViewImage = async (figureNo: number, filename?: string) => {
     if (!filename) return
     try {
-      setIsViewing(true)
+      setIsViewing(prev => ({ ...prev, [figureNo]: true }))
       setError(null)
       const url = `/api/projects/${patent.project.id}/patents/${patent.id}/upload?filename=${encodeURIComponent(filename)}`
       const resp = await fetch(url, { headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` } })
@@ -148,7 +190,7 @@ Output: JSON only, no markdown fences.`
     } catch (e) {
       setError('Unable to open image')
     } finally {
-      setIsViewing(false)
+      setIsViewing(prev => ({ ...prev, [figureNo]: false }))
     }
   }
 
@@ -156,7 +198,7 @@ Output: JSON only, no markdown fences.`
     <div className="p-8">
       <div className="mb-8">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">Stage 3: Figure Planner</h2>
-        <p className="text-gray-600">Generate simple PlantUML diagrams and upload rendered images.</p>
+        <p className="text-gray-600">Generate diagrams and upload images.</p>
       </div>
 
       {error && (
@@ -169,7 +211,7 @@ Output: JSON only, no markdown fences.`
           disabled={isGenerating}
           className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50"
         >
-          {isGenerating ? 'Generating…' : 'Generate PlantUML (LLM)'}
+          {isGenerating ? 'Generating…' : 'Generate diagrams (AI)'}
         </button>
         <div className="flex items-center space-x-4">
           <label className="inline-flex items-center space-x-2">
@@ -189,6 +231,12 @@ Output: JSON only, no markdown fences.`
             <span className="text-sm text-gray-700">I will decide the number and type of images</span>
           </label>
         </div>
+        <button
+          onClick={() => setShowManual((v) => !v)}
+          className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50"
+        >
+          {showManual ? 'Hide outside images' : 'Upload Outside Images'}
+        </button>
       </div>
 
       {userDecides && (
@@ -211,12 +259,18 @@ Output: JSON only, no markdown fences.`
         </div>
       )}
 
+      {isGenerating && (
+        <div className="mb-4 bg-indigo-50 border border-indigo-200 rounded-lg p-3 text-sm text-indigo-800 animate-pulse">
+          AI is composing a figure set tailored to your components and numbering. This may take a few seconds.
+        </div>
+      )}
+
       {figures.length > 0 && (
         <div className="space-y-6">
           {figures.map((f, i) => (
             <div key={i} className="bg-white rounded-lg border p-4">
               <div className="flex items-center justify-between mb-2">
-                <div>
+          <div>
                   <h3 className="font-medium text-gray-900">{f.title || `Fig.${i + 1}`}</h3>
                   <p className="text-sm text-gray-600">{f.purpose}</p>
                 </div>
@@ -225,7 +279,7 @@ Output: JSON only, no markdown fences.`
                     onClick={() => handleSavePlantUML(f, i)}
                     className="inline-flex items-center px-3 py-1 border border-gray-300 text-sm rounded text-gray-700 bg-white hover:bg-gray-50"
                   >
-                    Save PlantUML
+                    Save
                   </button>
                   <button
                     onClick={() => { setModifyIdx(i); setModifyText('') }}
@@ -235,19 +289,13 @@ Output: JSON only, no markdown fences.`
                   </button>
                 </div>
               </div>
-              <div className="relative">
-                <textarea
-                  className="w-full text-xs font-mono border rounded p-3 bg-gray-50"
-                  rows={8}
-                  readOnly
-                  value={f.plantuml}
-                />
-                <button
-                  onClick={() => navigator.clipboard.writeText(f.plantuml)}
-                  className="absolute top-2 right-2 inline-flex items-center px-2 py-1 text-xs border border-gray-300 rounded bg-white hover:bg-gray-50"
-                >
-                  Copy
-                </button>
+              <div className="p-3 border rounded bg-green-50 text-sm text-green-800 flex items-start">
+                <svg className="w-5 h-5 mr-2 text-green-600" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.707a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+                <div>
+                  <div className="font-medium">Image code generated</div>
+                  <div className="text-green-900 mt-1">{f.purpose || 'Diagram ready.'}</div>
+                  <div className="text-green-900 mt-1">Please click Render to display the image.</div>
+                </div>
               </div>
               {modifyIdx === i && (
                 <div className="mt-3 border-t pt-3">
@@ -275,12 +323,12 @@ Output: JSON only, no markdown fences.`
                       Apply Changes
                     </button>
                     <button onClick={() => { setModifyIdx(null); setModifyText('') }} className="inline-flex items-center px-3 py-1 border border-gray-300 text-sm rounded text-gray-700 bg-white hover:bg-gray-50">Cancel</button>
-                  </div>
-                </div>
+          </div>
+        </div>
               )}
             </div>
           ))}
-        </div>
+      </div>
       )}
 
       {/* Persisted diagrams (codes + upload) */}
@@ -293,21 +341,68 @@ Output: JSON only, no markdown fences.`
             {diagramSources.map((d: any) => (
               <div key={d.figureNo} className="bg-white rounded-lg border p-4">
                 <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center">
+        <div className="flex items-center">
                     <h4 className="font-medium text-gray-900">{figurePlans.find((f: any) => f.figureNo === d.figureNo)?.title || `Figure ${d.figureNo}`} (Fig.{d.figureNo})</h4>
                     {(uploaded[d.figureNo] || d.imageUploadedAt) && (
-                      <span className="ml-2 inline-flex items-center text-blue-600 text-xs">
+                      <div className="ml-2 inline-flex items-center text-blue-600 text-xs">
                         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.707a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd"/></svg>
                         <span className="ml-1">Uploaded</span>
-                      </span>
+                        <svg
+                          className="w-3 h-3 ml-1 text-blue-500"
+                          fill="currentColor"
+                          viewBox="0 0 20 20"
+                          aria-label="This is a user-uploaded image that is not generated by the patent drafting AI"
+                        >
+                          <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                        </svg>
+                      </div>
                     )}
                   </div>
-                  <div className="flex items-center space-x-2">
-                    <button onClick={() => navigator.clipboard.writeText(d.plantumlCode)} className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 rounded bg-white hover:bg-gray-50">Copy</button>
-                    <button onClick={() => { setModifyFigNo(d.figureNo); setModifyTextSaved('') }} className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 rounded bg-white hover:bg-gray-50">Modify</button>
-                  </div>
+                <div className="flex items-center space-x-2">
+                  <button onClick={() => { setModifyFigNo(d.figureNo); setModifyTextSaved('') }} className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 rounded bg-white hover:bg-gray-50">Modify</button>
+                  {d.plantumlCode && (
+                    <button
+                      onClick={() => setShowPlantUML(prev => ({ ...prev, [d.figureNo]: !prev[d.figureNo] }))}
+                      className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 rounded bg-white hover:bg-gray-50"
+                    >
+                      {showPlantUML[d.figureNo] ? 'Hide Code' : 'Show Code'}
+                    </button>
+                  )}
                 </div>
-                <textarea className="w-full text-xs font-mono border rounded p-3 bg-gray-50" rows={8} readOnly value={d.plantumlCode} />
+                </div>
+              <div className="p-3 border rounded bg-green-50 text-sm text-green-800 flex items-start">
+                <svg className="w-5 h-5 mr-2 text-green-600" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.707a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clip-rule="evenodd"/></svg>
+                <div>
+                  <div className="font-medium">Image code generated</div>
+                  <div className="text-green-900 mt-1">{(figurePlans.find((f: any) => f.figureNo === d.figureNo)?.description) || 'Diagram ready.'}</div>
+                  <div className="text-green-900 mt-1">Please click Render to display the image.</div>
+                </div>
+              </div>
+                {!d.imageUploadedAt && (
+                  <div className="mt-2 text-xs text-gray-500 flex items-center">
+                    <span className="inline-block w-2 h-2 bg-indigo-400 rounded-full mr-2 animate-ping"></span>
+                    A diagram is ready to render. Click Render to preview and approve.
+                  </div>
+                )}
+                {showPlantUML[d.figureNo] && d.plantumlCode && (
+                  <div className="mt-3">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">PlantUML Code</label>
+                    <div className="relative">
+                      <textarea
+                        className="w-full text-xs font-mono border rounded p-3 bg-gray-50"
+                        rows={12}
+                        readOnly
+                        value={d.plantumlCode}
+                      />
+                      <button
+                        onClick={() => navigator.clipboard.writeText(d.plantumlCode)}
+                        className="absolute top-2 right-2 inline-flex items-center px-2 py-1 text-xs border border-gray-300 rounded bg-white hover:bg-gray-50"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {modifyFigNo === d.figureNo && (
                   <div className="mt-3">
                     <label className="block text-sm font-medium text-gray-700 mb-1">Describe changes for this figure</label>
@@ -335,16 +430,77 @@ Output: JSON only, no markdown fences.`
                   </div>
                 )}
                 <div className="mt-3">
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Upload rendered image (PNG/SVG)</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Image actions</label>
                   <div className="flex items-center space-x-2">
-                    <input type="file" accept=".png,.svg" disabled={isUploading} onChange={(e) => e.target.files && handleUploadImage(d.figureNo, e.target.files[0])} />
+                    {!d.plantumlCode && (
+                      <input type="file" accept=".png,.svg" disabled={isUploading} onChange={(e) => e.target.files && handleUploadImage(d.figureNo, e.target.files[0])} />
+                    )}
                     {(uploaded[d.figureNo] || d.imageUploadedAt) && d.imageFilename && (
+                      <div className="inline-flex items-center space-x-1">
+                        <button
+                          onClick={() => handleViewImage(d.figureNo, d.imageFilename)}
+                          disabled={isViewing[d.figureNo]}
+                          className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 rounded bg-white hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          {isViewing[d.figureNo] ? 'Opening…' : 'View image'}
+                        </button>
+                        <svg
+                          className="w-3 h-3 text-blue-500"
+                          fill="currentColor"
+                          viewBox="0 0 20 20"
+                          aria-label="This is a user-uploaded image that is not generated by the patent drafting AI"
+                        >
+                          <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                        </svg>
+                      </div>
+                    )}
+                    {d.plantumlCode && (
+                    <button
+                      onClick={async () => {
+                        try {
+                          setRendering((prev) => ({ ...prev, [d.figureNo]: true }))
+                          setError(null)
+                          const resp = await fetch('/api/test/plantuml-proxy', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ code: d.plantumlCode, format: 'png' })
+                          })
+                          if (!resp.ok) {
+                            const info = await resp.json().catch(() => ({}))
+                            throw new Error(info.error || 'Render failed')
+                          }
+                          const blob = await resp.blob()
+                          const url = URL.createObjectURL(blob)
+                          setRenderPreview((prev) => ({ ...prev, [d.figureNo]: url }))
+                        } catch (e) {
+                          setError('Render failed')
+                        } finally {
+                          setRendering((prev) => ({ ...prev, [d.figureNo]: false }))
+                        }
+                      }}
+                      className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 rounded bg-white hover:bg-gray-50"
+                    >
+                      {rendering[d.figureNo] ? 'Rendering…' : 'Render'}
+                    </button>
+                    )}
+                    {renderPreview[d.figureNo] && (
                       <button
-                        onClick={() => handleViewImage(d.figureNo, d.imageFilename)}
-                        disabled={isViewing}
-                        className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 rounded bg-white hover:bg-gray-50 disabled:opacity-50"
+                        onClick={async () => {
+                          try {
+                            setIsUploading(true)
+                            const res = await fetch(renderPreview[d.figureNo] as string)
+                            const blob = await res.blob()
+                            const file = new File([blob], `figure-${d.figureNo}.png`, { type: 'image/png' })
+                            await handleUploadImage(d.figureNo, file)
+                          } catch (e) {
+                            setError('Approve failed')
+                          } finally {
+                            setIsUploading(false)
+                          }
+                        }}
+                        className="inline-flex items-center px-2 py-1 text-xs border border-transparent rounded bg-indigo-600 text-white hover:bg-indigo-700"
                       >
-                        {isViewing ? 'Opening…' : 'View image'}
+                        Approve & Save
                       </button>
                     )}
           <button
@@ -361,15 +517,147 @@ Output: JSON only, no markdown fences.`
                       Delete
           </button>
         </div>
+                  {renderPreview[d.figureNo] && (
+                    <div className="mt-3">
+                      <img
+                        src={renderPreview[d.figureNo] as string}
+                        alt={`Preview Fig.${d.figureNo}`}
+                        className="max-w-xs border rounded cursor-pointer"
+                        onClick={() => setExpandedFigNo(d.figureNo)}
+                        title="Click to enlarge"
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
           </div>
         )}
       </div>
+      {showManual && (
       <div className="mt-6 p-3 border rounded">
         <div className="flex items-center space-x-2 mb-2">
-          <label className="text-sm text-gray-700">Add new figures:</label>
+          <label className="text-sm text-gray-700">Upload Outside Images:</label>
+          <input type="number" min={0} className="w-20 border rounded px-2 py-1 text-sm" value={manualCount} onChange={(e) => { const n = Math.max(0, parseInt(e.target.value || '0', 10)); setManualCount(n); setManualInputs(Array.from({ length: n }, (_, i) => manualInputs[i] || { title: '', description: '' })); setManualFiles(Array.from({ length: n }, (_, i) => manualFiles[i] || null)); }} />
+          <button
+            onClick={async () => {
+              try {
+                for (let i = 0; i < manualCount; i++) {
+                  const item = manualInputs[i]
+                  if (!item || !item.description || item.description.trim().split(/\s+/).length < 20) {
+                    setError('Each image needs at least 20 words description')
+                    return
+                  }
+                }
+                for (let i = 0; i < manualCount; i++) {
+                  const item = manualInputs[i]
+                  const resp = await onComplete({ action: 'create_manual_figure', sessionId: session?.id, title: item.title, description: item.description })
+                  const createdNo = resp?.created?.figureNo
+                  if (createdNo && manualFiles[i]) {
+                    await handleUploadImage(createdNo, manualFiles[i] as File)
+                  }
+                }
+                setManualCount(0)
+                setManualInputs([])
+                setManualFiles([])
+                await onRefresh()
+              } catch (e) {
+                setError('Failed to create manual figures')
+              }
+            }}
+            className="inline-flex items-center px-3 py-1 border border-transparent text-xs rounded text-white bg-indigo-600 hover:bg-indigo-700"
+          >
+            Add Slots
+          </button>
+        </div>
+        {Array.from({ length: manualCount }).map((_, i) => (
+          <div key={i} className="mb-3 border rounded p-2">
+            <div className="flex items-center space-x-2 mb-2">
+              <input placeholder="Optional title" className="flex-1 border rounded px-2 py-1 text-sm" value={manualInputs[i]?.title || ''} onChange={(e) => { const arr = [...manualInputs]; arr[i] = { ...(arr[i] || { title: '', description: '' }), title: e.target.value }; setManualInputs(arr) }} />
+            </div>
+            <label className="block text-xs text-gray-600">Describe what this image shows (min 20 words, mention component numerals)</label>
+            <textarea className="w-full text-sm border rounded p-2" rows={3} value={manualInputs[i]?.description || ''} onChange={(e) => { const arr = [...manualInputs]; arr[i] = { ...(arr[i] || { title: '', description: '' }), description: e.target.value }; setManualInputs(arr) }} />
+            <div className="text-xs mt-1">
+              <span className={countWords(manualInputs[i]?.description || '') >= 20 ? 'text-green-600' : 'text-gray-500'}>
+                {countWords(manualInputs[i]?.description || '')} / 20 words
+              </span>
+            </div>
+            <div className="mt-2">
+              <input type="file" accept=".png,.svg" onChange={(e) => { const arr = [...manualFiles]; arr[i] = e.target.files?.[0] || null; setManualFiles(arr) }} />
+          <button
+                onClick={async () => {
+                  try {
+                    const item = manualInputs[i]
+                    const file = manualFiles[i]
+                    if (!item || !item.description || countWords(item.description) < 20) { setError('Description needs at least 20 words'); return }
+                    if (!file) { setError('Please choose an image file to upload'); return }
+                    setManualBusy((prev) => ({ ...prev, [i]: true }))
+                    const resp = await onComplete({ action: 'create_manual_figure', sessionId: session?.id, title: item.title, description: item.description })
+                    const createdNo = resp?.created?.figureNo
+                    if (createdNo) {
+                      await handleUploadImage(createdNo, file)
+                      const newInputs = [...manualInputs]; newInputs[i] = { title: '', description: '' }; setManualInputs(newInputs)
+                      const newFiles = [...manualFiles]; newFiles[i] = null; setManualFiles(newFiles)
+                      await onRefresh()
+                    }
+                  } catch (e) {
+                    setError('Upload failed')
+                  } finally {
+                    setManualBusy((prev) => ({ ...prev, [i]: false }))
+                  }
+                }}
+                className="ml-2 inline-flex items-center px-2 py-1 text-xs border border-transparent rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50"
+                disabled={countWords(manualInputs[i]?.description || '') < 20 || !manualFiles[i] || !!manualBusy[i]}
+              >
+                {manualBusy[i] ? 'Uploading…' : 'Upload'}
+          </button>
+        </div>
+          </div>
+        ))}
+        <p className="text-xs text-gray-500">Tip: Reference numerals (e.g., C100, C200) and flows to help drafting.</p>
+      </div>
+      )}
+      <div className="mt-4 flex justify-end">
+        <button onClick={() => setShowManual((v) => !v)} className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50">
+          {showManual ? 'Hide outside images' : 'Upload Outside Images'}
+        </button>
+      </div>
+      {expandedFigNo && renderPreview[expandedFigNo] && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={() => setExpandedFigNo(null)}>
+          <div className="bg-white rounded-lg shadow-lg p-4 max-w-5xl w-full" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium text-gray-900">Preview Fig.{expandedFigNo}</h4>
+              <button onClick={() => setExpandedFigNo(null)} className="inline-flex items-center px-2 py-1 text-xs border border-gray-300 rounded bg-white hover:bg-gray-50">Close</button>
+            </div>
+            <img src={renderPreview[expandedFigNo] as string} alt={`Preview Fig.${expandedFigNo}`} className="w-full h-auto border rounded" />
+            <div className="mt-3 flex items-center space-x-2">
+              <button
+                onClick={async () => {
+                  try {
+                    setIsUploading(true)
+                    const res = await fetch(renderPreview[expandedFigNo!] as string)
+                    const blob = await res.blob()
+                    const file = new File([blob], `figure-${expandedFigNo}.png`, { type: 'image/png' })
+                    await handleUploadImage(expandedFigNo!, file)
+                    setExpandedFigNo(null)
+                  } catch (e) {
+                    setError('Approve failed')
+                  } finally {
+                    setIsUploading(false)
+                  }
+                }}
+                className="inline-flex items-center px-3 py-1 border border-transparent text-xs rounded text-white bg-indigo-600 hover:bg-indigo-700"
+              >
+                Approve & Save
+              </button>
+              <button onClick={() => setExpandedFigNo(null)} className="inline-flex items-center px-3 py-1 text-xs border border-gray-300 rounded bg-white hover:bg-gray-50">Cancel</button>
+          </div>
+        </div>
+      </div>
+      )}
+      <div className="mt-6 p-3 border rounded">
+        <div className="flex items-center space-x-2 mb-2">
+          <label className="text-sm text-gray-700">Add new AI figures:</label>
           <input type="number" min={0} className="w-20 border rounded px-2 py-1 text-sm" value={addCount} onChange={(e) => { const n = Math.max(0, parseInt(e.target.value || '0', 10)); setAddCount(n); setAddInputs(Array.from({ length: n }, (_, i) => addInputs[i] || '')); }} />
           <button
             onClick={async () => {

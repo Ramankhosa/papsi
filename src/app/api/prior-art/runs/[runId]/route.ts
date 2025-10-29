@@ -64,11 +64,9 @@ export async function GET(
           status: true,
           finalDetermination: true,
           finalRemarks: true,
+          finalSuggestions: true,
           stage1Results: true,
           stage2Results: true,
-          novelAspects: true,
-          nonNovelAspects: true,
-          confidenceLevel: true,
         },
       });
 
@@ -78,11 +76,9 @@ export async function GET(
           status: assessment.status,
           determination: assessment.finalDetermination,
           remarks: assessment.finalRemarks,
+          suggestions: assessment.finalSuggestions,
           stage1Results: assessment.stage1Results,
           stage2Results: assessment.stage2Results,
-          novelAspects: assessment.novelAspects,
-          nonNovelAspects: assessment.nonNovelAspects,
-          confidenceLevel: assessment.confidenceLevel,
           reportUrl: (assessment.status === 'NOVEL' || assessment.status === 'NOT_NOVEL' || assessment.status === 'DOUBT_RESOLVED')
             ? `/api/patents/${run.bundle.patentId}/novelty-assessment/${assessment.id}/report`
             : undefined,

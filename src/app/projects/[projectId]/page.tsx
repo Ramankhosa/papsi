@@ -47,6 +47,10 @@ export default function ProjectDashboardPage() {
   const [project, setProject] = useState<Project | null>(null)
   const [patents, setPatents] = useState<Patent[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [hasDraftSessions, setHasDraftSessions] = useState<Record<string, boolean>>({})
+  const [deleteDialog, setDeleteDialog] = useState<{ patentId: string; patentTitle: string; hasDrafts: boolean } | null>(null)
+  const [deleteConfirmText, setDeleteConfirmText] = useState('')
+  const [isDeleting, setIsDeleting] = useState(false)
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -93,12 +97,63 @@ export default function ProjectDashboardPage() {
 
       if (response.ok) {
         const data = await response.json()
-        setPatents(data.patents || [])
+        const list: Patent[] = data.patents || []
+        setPatents(list)
+
+        // Check for draft sessions per patent
+        const sessionsMap: Record<string, boolean> = {}
+        await Promise.all(
+          list.map(async (p) => {
+            try {
+              const res = await fetch(`/api/patents/${p.id}/drafting`, {
+                headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
+              })
+              if (res.ok) {
+                const draftData = await res.json()
+                sessionsMap[p.id] = Array.isArray(draftData.sessions) && draftData.sessions.length > 0
+              } else {
+                sessionsMap[p.id] = false
+              }
+            } catch {
+              sessionsMap[p.id] = false
+            }
+          })
+        )
+        setHasDraftSessions(sessionsMap)
       }
     } catch (error) {
       console.error('Failed to fetch patents:', error)
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const handleDeletePatent = async () => {
+    if (!deleteDialog) return
+
+    setIsDeleting(true)
+    try {
+      const response = await fetch(`/api/projects/${projectId}/patents/${deleteDialog.patentId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+        }
+      })
+
+      if (response.ok) {
+        // Remove the patent from the list
+        setPatents(patents.filter(p => p.id !== deleteDialog.patentId))
+        setDeleteDialog(null)
+        setDeleteConfirmText('')
+      } else {
+        const error = await response.json()
+        alert(`Failed to delete patent: ${error.error || 'Unknown error'}`)
+      }
+    } catch (error) {
+      console.error('Failed to delete patent:', error)
+      alert('Failed to delete patent. Please try again.')
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -235,10 +290,10 @@ export default function ProjectDashboardPage() {
                     Prior Art Search
                   </Link>
                   <Link
-                    href={`/patents/${patents[0].id}/draft`}
+                    href={`/patents/draft/new?projectId=${projectId}`}
                     className="inline-flex items-center px-2.5 py-1 border border-transparent rounded text-white bg-indigo-600 hover:bg-indigo-700"
                   >
-                    Start Draft
+                    Start New Draft
                   </Link>
                   <Link
                     href={`/patents/${patents[0].id}/draft`}
@@ -293,10 +348,10 @@ export default function ProjectDashboardPage() {
                           Prior Art
                         </Link>
                         <Link
-                          href={`/patents/${patent.id}/draft`}
+                          href={`/patents/draft/new?projectId=${projectId}`}
                           className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700"
                         >
-                          Start Draft
+                          Start New Draft
                         </Link>
                         <Link
                           href={`/patents/${patent.id}/draft`}
@@ -304,6 +359,20 @@ export default function ProjectDashboardPage() {
                         >
                           Resume
                         </Link>
+                        <button
+                          onClick={() => setDeleteDialog({
+                            patentId: patent.id,
+                            patentTitle: patent.title,
+                            hasDrafts: hasDraftSessions[patent.id] || false
+                          })}
+                          className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded text-white bg-red-600 hover:bg-red-700"
+                          title="Delete this patent"
+                        >
+                          <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                          Delete
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -369,6 +438,75 @@ export default function ProjectDashboardPage() {
             Back to Dashboard
           </Link>
         </div>
+
+        {/* Delete Confirmation Dialog */}
+        {deleteDialog && (
+          <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+            <div className="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
+              <div className="mt-3">
+                <div className="flex items-center mb-4">
+                  <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center mr-3">
+                    <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                    </svg>
+                  </div>
+                  <h3 className="text-lg font-medium text-gray-900">Delete Patent</h3>
+                </div>
+
+                <div className="mb-4">
+                  <p className="text-sm text-gray-600 mb-3">
+                    Are you sure you want to delete the patent <strong>"{deleteDialog.patentTitle}"</strong>?
+                  </p>
+                  <p className="text-sm text-gray-600 mb-3">
+                    This action cannot be undone. All patent data, including drafting sessions and generated content, will be permanently removed.
+                  </p>
+
+                  {deleteDialog.hasDrafts && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+                      <p className="text-sm text-red-800 mb-2">
+                        <strong>Warning:</strong> This patent has existing draft sessions. To confirm deletion, please type <strong>"delete"</strong> below:
+                      </p>
+                      <input
+                        type="text"
+                        value={deleteConfirmText}
+                        onChange={(e) => setDeleteConfirmText(e.target.value)}
+                        placeholder="Type 'delete' to confirm"
+                        className="w-full px-3 py-2 border border-red-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex justify-end space-x-3">
+                  <button
+                    onClick={() => {
+                      setDeleteDialog(null)
+                      setDeleteConfirmText('')
+                    }}
+                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
+                    disabled={isDeleting}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleDeletePatent}
+                    disabled={isDeleting || (deleteDialog.hasDrafts && deleteConfirmText.toLowerCase() !== 'delete')}
+                    className="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isDeleting ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                        Deleting...
+                      </>
+                    ) : (
+                      'Delete Patent'
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

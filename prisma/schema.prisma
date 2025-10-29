@@ -87,8 +87,8 @@ model User {
   priorArtRuns            PriorArtRun[]
   credits                 UserCredit?
   noveltyAssessments      NoveltyAssessmentRun[]
-  draftingSessions       DraftingSession[]
-  draftingHistory        DraftingHistory[]
+  draftingSessions        DraftingSession[]
+  draftingHistory         DraftingHistory[]
 
   @@map("users")
 }
@@ -261,17 +261,17 @@ enum ModelClass {
 }
 
 model Patent {
-  id               String                 @id @default(cuid())
-  projectId        String
-  title            String
-  createdBy        String
-  createdAt        DateTime               @default(now())
-  updatedAt        DateTime               @updatedAt
-  annexureVersions AnnexureVersion[]
-  jobs             Job[]
-  priorArtBundles  PriorArtSearchBundle[]
+  id                 String                 @id @default(cuid())
+  projectId          String
+  title              String
+  createdBy          String
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  annexureVersions   AnnexureVersion[]
+  jobs               Job[]
+  priorArtBundles    PriorArtSearchBundle[]
   noveltyAssessments NoveltyAssessmentRun[]
-  draftingSessions DraftingSession[]
+  draftingSessions   DraftingSession[]
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   creator User    @relation(fields: [createdBy], references: [id])
@@ -647,7 +647,7 @@ model PriorArtRun {
   PriorArtUnifiedResult PriorArtUnifiedResult[]
 
   // Level 0 local-database screening
-  level0Checked       Boolean              @default(false)
+  level0Checked       Boolean               @default(false)
   level0Determination NoveltyDetermination?
   level0Results       Json?
   level0ReportUrl     String?
@@ -812,8 +812,8 @@ model PriorArtScholarContent {
 
 // === LOCAL PATENT DATASET (e.g., Indian patents) ===
 model LocalPatent {
-  id                Int      @id @default(autoincrement())
-  publicationNumber String   @unique
+  id                Int     @id @default(autoincrement())
+  publicationNumber String  @unique
   kind              String?
   title             String
   abstract          String?
@@ -852,14 +852,14 @@ enum NoveltyAssessmentStage {
 }
 
 model NoveltyAssessmentRun {
-  id                String                  @id @default(cuid())
-  patentId          String
-  runId             String? // Link to prior art run that provided intersecting patents
-  userId            String
-  status            NoveltyAssessmentStatus @default(PENDING)
+  id       String                  @id @default(cuid())
+  patentId String
+  runId    String? // Link to prior art run that provided intersecting patents
+  userId   String
+  status   NoveltyAssessmentStatus @default(PENDING)
 
   // Input data
-  inventionSummary  Json // Invention summary (title, problem, solution)
+  inventionSummary    Json // Invention summary (title, problem, solution)
   intersectingPatents Json // Array of {publicationNumber, title, abstract, relevance?}
 
   // Stage 1 results (screening)
@@ -876,37 +876,36 @@ model NoveltyAssessmentRun {
   finalSuggestions   String?
 
   // Metadata
-  createdAt          DateTime                @default(now())
-  updatedAt          DateTime                @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  patent Patent @relation(fields: [patentId], references: [id], onDelete: Cascade)
-  user   User   @relation(fields: [userId], references: [id])
+  patent   Patent                     @relation(fields: [patentId], references: [id], onDelete: Cascade)
+  user     User                       @relation(fields: [userId], references: [id])
   llmCalls NoveltyAssessmentLLMCall[]
 
   @@map("novelty_assessment_runs")
 }
 
 model NoveltyAssessmentLLMCall {
-  id              String                 @id @default(cuid())
-  assessmentId    String
-  stage           NoveltyAssessmentStage
-  taskCode        TaskCode
-  prompt          String
-  response        Json?
-  tokensUsed      Int?
-  modelClass      String?
-  determination   NoveltyDetermination?
-  remarks         String?
-  suggestions     String?
-  calledAt        DateTime               @default(now())
+  id            String                 @id @default(cuid())
+  assessmentId  String
+  stage         NoveltyAssessmentStage
+  taskCode      TaskCode
+  prompt        String
+  response      Json?
+  tokensUsed    Int?
+  modelClass    String?
+  determination NoveltyDetermination?
+  remarks       String?
+  suggestions   String?
+  calledAt      DateTime               @default(now())
 
   // Relations
   assessment NoveltyAssessmentRun @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
 
   @@map("novelty_assessment_llm_calls")
 }
-
 
 enum PriorArtContentType {
   PATENT
@@ -917,6 +916,7 @@ enum DraftingSessionStatus {
   IDEA_ENTRY
   COMPONENT_PLANNER
   FIGURE_PLANNER
+  RELATED_ART
   DIAGRAM_GENERATOR
   ANNEXURE_DRAFT
   REVIEW_FIX
@@ -952,52 +952,66 @@ enum NumeralRange {
 }
 
 model DraftingSession {
-  id        String                @id @default(cuid())
-  patentId  String
-  userId    String
-  tenantId  String?
-  status    DraftingSessionStatus @default(IDEA_ENTRY)
+  id       String                @id @default(cuid())
+  patentId String
+  userId   String
+  tenantId String?
+  status   DraftingSessionStatus @default(IDEA_ENTRY)
 
   // Metadata
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-  completedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  // Manual prior art data (Stage 3.5)
+  manualPriorArt Json?
+
+  // AI analysis data for related art (Stage 3.5)
+  aiAnalysisData Json?
 
   // Relations
-  patent     Patent         @relation(fields: [patentId], references: [id], onDelete: Cascade)
-  user       User           @relation(fields: [userId], references: [id])
-  tenant     Tenant?        @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  ideaRecord IdeaRecord?
-  referenceMap ReferenceMap?
-  figurePlans FigurePlan[]
-  diagramSources DiagramSource[]
-  annexureDrafts AnnexureDraft[]
-  history    DraftingHistory[]
+  patent               Patent                @relation(fields: [patentId], references: [id], onDelete: Cascade)
+  user                 User                  @relation(fields: [userId], references: [id])
+  tenant               Tenant?               @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  ideaRecord           IdeaRecord?
+  referenceMap         ReferenceMap?
+  figurePlans          FigurePlan[]
+  diagramSources       DiagramSource[]
+  annexureDrafts       AnnexureDraft[]
+  history              DraftingHistory[]
+  // Stage 3.5 relations
+  relatedArtRuns       RelatedArtRun[]
+  relatedArtSelections RelatedArtSelection[]
 
   @@map("drafting_sessions")
 }
 
 model IdeaRecord {
-  id              String   @id @default(cuid())
-  sessionId       String   @unique
-  title           String
-  rawInput        String // Original user input
-  normalizedData  Json // Structured JSON with all fields
+  id             String @id @default(cuid())
+  sessionId      String @unique
+  title          String
+  rawInput       String // Original user input
+  normalizedData Json // Structured JSON with all fields
 
   // Extracted fields for easy querying
-  problem         String?
-  objectives      String?
-  components      Json? // Array of component descriptions
-  logic           String?
-  inputs          String?
-  outputs         String?
-  variants        String?
-  bestMethod      String?
+  problem    String?
+  objectives String?
+  components Json? // Array of component descriptions
+  logic      String?
+  inputs     String?
+  outputs    String?
+  variants   String?
+  bestMethod String?
+  // New: classification and abstract for linking with patent search APIs
+  abstract   String?
+  searchQuery String? // Compact search query for PQAI prior art search
+  cpcCodes   String[]
+  ipcCodes   String[]
 
   // LLM metadata
-  llmPromptUsed   String?
-  llmResponse     Json?
-  tokensUsed      Int?
+  llmPromptUsed String?
+  llmResponse   Json?
+  tokensUsed    Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1009,12 +1023,12 @@ model IdeaRecord {
 }
 
 model ReferenceMap {
-  id         String   @id @default(cuid())
-  sessionId  String   @unique
+  id         String @id @default(cuid())
+  sessionId  String @unique
   components Json // Array of {id, name, type, description, numeral, range}
 
   // Validation
-  isValid     Boolean  @default(false)
+  isValid          Boolean @default(false)
   validationErrors Json? // Array of validation issues
 
   createdAt DateTime @default(now())
@@ -1027,7 +1041,7 @@ model ReferenceMap {
 }
 
 model FigurePlan {
-  id          String   @id @default(cuid())
+  id          String  @id @default(cuid())
   sessionId   String
   figureNo    Int
   title       String
@@ -1046,16 +1060,16 @@ model FigurePlan {
 }
 
 model DiagramSource {
-  id           String   @id @default(cuid())
+  id           String @id @default(cuid())
   sessionId    String
   figureNo     Int
   plantumlCode String
   checksum     String // For integrity verification
 
   // Uploaded image metadata
-  imageFilename String?
-  imagePath     String?
-  imageChecksum String?
+  imageFilename   String?
+  imagePath       String?
+  imageChecksum   String?
   imageUploadedAt DateTime?
 
   createdAt DateTime @default(now())
@@ -1069,25 +1083,26 @@ model DiagramSource {
 }
 
 model AnnexureDraft {
-  id          String   @id @default(cuid())
-  sessionId   String
-  version     Int      @default(1)
+  id        String @id @default(cuid())
+  sessionId String
+  version   Int    @default(1)
 
   // Draft sections
-  title                    String
-  fieldOfInvention        String?
-  background              String?
-  summary                 String?
+  title                      String
+  fieldOfInvention           String?
+  background                 String?
+  summary                    String?
   briefDescriptionOfDrawings String?
-  detailedDescription     String?
-  bestMethod             String?
-  claims                  String?
-  abstract                String?
-  listOfNumerals          String?
+  detailedDescription        String?
+  bestMethod                 String?
+  claims                     String?
+  abstract                   String?
+  industrialApplicability    String?
+  listOfNumerals             String?
 
   // Metadata
-  fullDraftText String // Complete assembled draft
-  isValid       Boolean @default(false)
+  fullDraftText    String // Complete assembled draft
+  isValid          Boolean @default(false)
   validationReport Json? // Consistency check results
 
   // LLM metadata
@@ -1104,12 +1119,80 @@ model AnnexureDraft {
   @@map("annexure_drafts")
 }
 
-model DraftingHistory {
+// === RELATED ART (Stage 3.5) MODELS ===
+
+model RelatedArtRun {
   id          String   @id @default(cuid())
   sessionId   String
-  action      String // IDEA_UPDATED, COMPONENTS_ASSIGNED, FIGURE_PLAN_CHANGED, etc.
-  userId      String
-  stage       DraftingSessionStatus
+  queryText   String
+  paramsJson  Json?
+  resultsJson Json?
+  ranBy       String
+  ranAt       DateTime @default(now())
+
+  // Relations
+  session            DraftingSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  selections         RelatedArtSelection[]
+  ideaBankSuggestions IdeaBankSuggestion[]
+
+  @@index([sessionId])
+  @@map("related_art_runs")
+}
+
+model RelatedArtSelection {
+  id             String   @id @default(cuid())
+  runId          String?
+  sessionId      String
+  patentNumber   String
+  title          String?
+  snippet        String?
+  score          Decimal? @db.Decimal(5, 2)
+  tags           String[]
+  userNotes      String?
+  publicationDate String?
+  cpcCodes       String[] // Array of CPC codes
+  ipcCodes       String[] // Array of IPC codes
+  inventors      String[] // Array of inventor names
+  assignees      String[] // Array of assignee names
+  selectedAt     DateTime @default(now())
+
+  // Relations
+  run     RelatedArtRun?  @relation(fields: [runId], references: [id], onDelete: SetNull)
+  session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, patentNumber, runId])
+  @@index([runId])
+  @@index([sessionId])
+  @@map("related_art_selections")
+}
+
+// === IDEA BANK SUGGESTIONS ===
+model IdeaBankSuggestion {
+  id                   String   @id @default(cuid())
+  relatedArtRunId      String
+  modelVersion         String?
+  ideaTitle            String
+  corePrinciple        String
+  expectedAdvantage    String
+  tags                 String[]
+  nonObviousExtension  String
+  sourceBatchIndex     Int?     @default(0)
+  confidenceScore      Float?
+  createdAt            DateTime @default(now())
+
+  // Relations
+  run RelatedArtRun @relation(fields: [relatedArtRunId], references: [id], onDelete: Cascade)
+
+  @@index([relatedArtRunId])
+  @@map("idea_bank_suggestions")
+}
+
+model DraftingHistory {
+  id        String                @id @default(cuid())
+  sessionId String
+  action    String // IDEA_UPDATED, COMPONENTS_ASSIGNED, FIGURE_PLAN_CHANGED, etc.
+  userId    String
+  stage     DraftingSessionStatus
 
   // Data changes
   previousData Json?
@@ -1120,7 +1203,7 @@ model DraftingHistory {
 
   // Relations
   session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  user    User           @relation(fields: [userId], references: [id])
+  user    User            @relation(fields: [userId], references: [id])
 
   @@map("drafting_history")
 }

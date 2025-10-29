@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import { useState, useEffect, Suspense } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import Link from 'next/link'
 
@@ -13,9 +13,10 @@ interface Project {
   }
 }
 
-export default function NewPatentDraftPage() {
+function NewPatentDraftPageContent() {
   const { user, isLoading: authLoading } = useAuth()
   const router = useRouter()
+  const searchParams = useSearchParams()
   const [projects, setProjects] = useState<Project[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [selectedProject, setSelectedProject] = useState<string>('')
@@ -36,6 +37,14 @@ export default function NewPatentDraftPage() {
     }
   }, [authLoading, user, router])
 
+  // Preselect project if provided via query param
+  useEffect(() => {
+    const pid = searchParams?.get('projectId') || ''
+    if (pid) {
+      setSelectedProject(pid)
+    }
+  }, [searchParams])
+
   const fetchProjects = async () => {
     try {
       const response = await fetch('/api/projects', {
@@ -46,7 +55,12 @@ export default function NewPatentDraftPage() {
 
       if (response.ok) {
         const data = await response.json()
-        setProjects(data.projects || [])
+        const list: Project[] = data.projects || []
+        setProjects(list)
+        // If preselected projectId is not in list, clear it
+        if (selectedProject && !list.find(p => p.id === selectedProject)) {
+          setSelectedProject('')
+        }
       }
     } catch (error) {
       console.error('Failed to fetch projects:', error)
@@ -471,5 +485,17 @@ export default function NewPatentDraftPage() {
         )}
       </div>
     </div>
+  )
+}
+
+export default function NewPatentDraftPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+      </div>
+    }>
+      <NewPatentDraftPageContent />
+    </Suspense>
   )
 }
