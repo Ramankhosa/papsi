@@ -42,7 +42,8 @@ export class GeminiProvider implements LLMProvider {
 
     // Use enforcement limits, with provider limits as fallback
     const providerLimits = this.getTokenLimits(modelClass)
-    const maxTokens = limits.maxTokensOut || providerLimits.output
+    const requested = limits.maxTokensOut || providerLimits.output
+    const maxTokens = Math.min(requested, providerLimits.output)
     const temperature = 0.7 // Default temperature
 
     try {
@@ -99,6 +100,7 @@ export class GeminiProvider implements LLMProvider {
   getTokenLimits(modelName: string): { input: number, output: number } {
     switch (modelName) {
       case 'gemini-2.0-flash-lite':
+      case 'gemini-2.5-flash-lite':
         return {
           input: 1048576, // 1M tokens
           output: 8192
@@ -107,7 +109,7 @@ export class GeminiProvider implements LLMProvider {
       default:
         return {
           input: 2097152, // 2M tokens
-          output: 8192    // Maximum for Gemini 2.5 Pro completion
+          output: 16384   // Increased ceiling for longer reports
         }
     }
   }
@@ -116,6 +118,7 @@ export class GeminiProvider implements LLMProvider {
     // Pricing per million tokens
     switch (modelName) {
       case 'gemini-2.0-flash-lite':
+      case 'gemini-2.5-flash-lite':
         return {
           input: 0.00000035,  // $0.35 per million input tokens
           output: 0.00000070   // $0.70 per million output tokens

@@ -2,7 +2,10 @@
 
 import { useState, useEffect } from 'react'
 import { useAuth } from '@/lib/auth-context'
+import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import NoveltySearchCard from '../novelty-search/NoveltySearchCard'
+import NoveltySearchHistory from '../novelty-search/NoveltySearchHistory'
 
 interface Project {
   id: string
@@ -29,6 +32,7 @@ interface DropdownState {
 
 export default function UserDashboard() {
   const { user, logout } = useAuth()
+  const router = useRouter()
   const [projects, setProjects] = useState<Project[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [showCreateForm, setShowCreateForm] = useState(false)
@@ -38,6 +42,7 @@ export default function UserDashboard() {
   const [editingProjectName, setEditingProjectName] = useState('')
   const [deletingProjectId, setDeletingProjectId] = useState<string | null>(null)
   const [dropdownOpen, setDropdownOpen] = useState<DropdownState>({})
+  const [showNoveltyHistory, setShowNoveltyHistory] = useState(false)
 
   // Load projects on component mount
   useEffect(() => {
@@ -188,6 +193,43 @@ export default function UserDashboard() {
     setShowCreateForm(false)
   }
 
+  const startWorkflow = async (actionType: 'draft' | 'novelty-search') => {
+    try {
+      // Get user's default project (first project created for user)
+      const response = await fetch('/api/projects', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+        }
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        const userProjects = data.projects || []
+
+        // Find the default project (first project created by this user)
+        const defaultProject = userProjects.length > 0 ? userProjects[0] : null
+
+        if (actionType === 'draft') {
+          // Navigate to patent drafting with default project
+          const url = defaultProject ? `/patents/draft/new?projectId=${defaultProject.id}` : '/patents/draft/new'
+          router.push(url)
+        } else {
+          // Navigate to novelty search (allows user to select from all projects with default selected)
+          router.push('/novelty-search')
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch projects:', error)
+      // Fallback to without project
+      if (actionType === 'draft') {
+        router.push('/patents/draft/new')
+      } else {
+        router.push('/novelty-search')
+      }
+    }
+  }
+
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -231,21 +273,80 @@ export default function UserDashboard() {
               )}.
             </p>
             {(user?.role === 'OWNER' || user?.role === 'ADMIN' || user?.role === 'MANAGER' || user?.role === 'ANALYST') && (
-              <div className="border-t border-gray-200 pt-4">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-sm font-medium text-gray-900">Ready to draft a patent?</h4>
-                    <p className="text-sm text-gray-600">Start the AI-powered patent drafting workflow</p>
+              <div className="border-t border-gray-200 pt-6">
+                <h3 className="text-lg font-medium text-gray-900 mb-4">Quick Actions</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  {/* Patent Drafting Card */}
+                  <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-all duration-200 group cursor-pointer" onClick={() => startWorkflow('draft')}>
+                    <div className="flex items-center mb-4">
+                      <div className="w-12 h-12 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full flex items-center justify-center mr-4">
+                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                      </div>
+                      <div>
+                        <h4 className="text-lg font-semibold text-gray-900">Draft Patent</h4>
+                        <p className="text-sm text-gray-600">Start drafting without a project</p>
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-600 mb-4">
+                      Begin the AI-powered patent drafting workflow. You can associate it with a project later.
+                    </p>
+                    <div className="inline-flex items-center text-indigo-600 font-medium group-hover:text-indigo-800">
+                      Start Drafting
+                      <svg className="w-4 h-4 ml-1 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </div>
                   </div>
-                  <Link
-                    href="/patents/draft/new"
-                    className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all duration-200"
-                  >
-                    <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-                    </svg>
-                    Start Patent Draft
-                  </Link>
+
+                  {/* Novelty Search Card */}
+                  <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-all duration-200 group cursor-pointer" onClick={() => startWorkflow('novelty-search')}>
+                    <div className="flex items-center mb-4">
+                      <div className="w-12 h-12 bg-gradient-to-r from-purple-500 to-pink-600 rounded-full flex items-center justify-center mr-4">
+                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                        </svg>
+                      </div>
+                      <div>
+                        <h4 className="text-lg font-semibold text-gray-900">Novelty Search</h4>
+                        <p className="text-sm text-gray-600">Comprehensive patent analysis</p>
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-600 mb-4">
+                      Perform detailed novelty assessment and prior art analysis for your invention.
+                    </p>
+                    <div className="inline-flex items-center text-purple-600 font-medium group-hover:text-purple-800">
+                      Start Analysis
+                      <svg className="w-4 h-4 ml-1 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    </div>
+                  </div>
+
+                  {/* Create Project Card */}
+                  <div className="bg-white border border-gray-200 rounded-lg p-6 hover:shadow-lg transition-all duration-200 group cursor-pointer" onClick={() => setShowCreateForm(true)}>
+                    <div className="flex items-center mb-4">
+                      <div className="w-12 h-12 bg-gradient-to-r from-green-500 to-teal-600 rounded-full flex items-center justify-center mr-4">
+                        <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                        </svg>
+                      </div>
+                      <div>
+                        <h4 className="text-lg font-semibold text-gray-900">Create Project</h4>
+                        <p className="text-sm text-gray-600">Organize your patent work</p>
+                      </div>
+                    </div>
+                    <p className="text-sm text-gray-600 mb-4">
+                      Set up a new project to manage multiple patents, collaborators, and filings.
+                    </p>
+                    <div className="inline-flex items-center text-green-600 font-medium group-hover:text-green-800">
+                      Create Project
+                      <svg className="w-4 h-4 ml-1 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
@@ -473,7 +574,29 @@ export default function UserDashboard() {
             </div>
           )}
         </div>
+
+        {/* Novelty Search History Section */}
+        <div className="mt-8">
+          <div className="bg-white rounded-lg shadow-sm p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold text-gray-900">Novelty Search History</h2>
+              <button
+                onClick={() => setShowNoveltyHistory(!showNoveltyHistory)}
+                className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all duration-200"
+              >
+                {showNoveltyHistory ? 'Hide Search History' : 'Show Search History'}
+              </button>
+            </div>
+
+            {showNoveltyHistory && (
+              <div className="mt-4">
+                <NoveltySearchHistory showStats={true} />
+              </div>
+            )}
+          </div>
+        </div>
       </main>
+
     </div>
   )
 }

@@ -1,0 +1,108 @@
+'use client';
+
+import { useAuth } from '@/lib/auth-context';
+import { useRouter } from 'next/navigation';
+import { useEffect, Suspense } from 'react';
+import Link from 'next/link';
+import NoveltySearchWorkflow from '@/components/novelty-search/NoveltySearchWorkflow';
+
+// Component that uses search params, wrapped in Suspense
+function NoveltySearchContent() {
+  const searchParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+  const projectId = searchParams.get('projectId');
+
+  return <NoveltySearchWorkflow projectId={projectId || undefined} />;
+}
+
+export default function NoveltySearchPage() {
+  const { user, isLoading } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (!isLoading && !user) {
+      router.push('/login');
+    }
+  }, [user, isLoading, router]);
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return null;
+  }
+
+  // Check if user has permission to access novelty search
+  const hasPermission = user.role === 'OWNER' || user.role === 'ADMIN' ||
+                       user.role === 'MANAGER' || user.role === 'ANALYST';
+
+  if (!hasPermission) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="max-w-md mx-auto text-center">
+          <div className="text-red-600 mb-4">
+            <svg className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+          </div>
+          <h3 className="text-lg font-medium text-gray-900 mb-2">Access Denied</h3>
+          <p className="text-gray-600 mb-4">
+            You don't have permission to access the Novelty Search feature.
+            Please contact your administrator for access.
+          </p>
+          <button
+            onClick={() => router.push('/dashboard')}
+            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700"
+          >
+            Return to Dashboard
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <header className="bg-white shadow">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between items-center py-6">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900">Novelty Search</h1>
+              <p className="text-gray-600">Comprehensive patent novelty assessment</p>
+            </div>
+            <div className="flex items-center space-x-4">
+              <Link
+                href="/dashboard"
+                className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+              >
+                📊 View Search History
+              </Link>
+              <div className="text-right">
+                <div className="text-sm text-gray-500">{user.email}</div>
+                <div className="text-xs text-gray-400">Role: {user.role}</div>
+              </div>
+              <button
+                onClick={() => router.push('/dashboard')}
+                className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+              >
+                Back to Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+        <Suspense fallback={<div className="flex items-center justify-center py-8"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div></div>}>
+          <NoveltySearchContent />
+        </Suspense>
+      </main>
+    </div>
+  );
+}

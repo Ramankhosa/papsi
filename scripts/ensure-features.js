@@ -68,6 +68,16 @@ async function ensureFeatures() {
       }
     })
 
+    const noveltyAssessTask = await prisma.task.upsert({
+      where: { code: 'LLM5_NOVELTY_ASSESS' },
+      update: {},
+      create: {
+        code: 'LLM5_NOVELTY_ASSESS',
+        name: 'Novelty Assessment',
+        linkedFeatureId: priorArtFeature.id
+      }
+    })
+
     const draftingTask = await prisma.task.upsert({
       where: { code: 'LLM2_DRAFT' },
       update: {},

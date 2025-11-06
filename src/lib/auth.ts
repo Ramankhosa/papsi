@@ -3,6 +3,10 @@ import sgMail from '@sendgrid/mail'
 import jwt from 'jsonwebtoken'
 import crypto from 'crypto'
 import { prisma } from '@/lib/prisma'
+import dotenv from 'dotenv'
+
+// Load environment variables
+dotenv.config()
 
 export async function hashPassword(password: string): Promise<string> {
   return bcrypt.hash(password, 12)
@@ -57,7 +61,7 @@ export function generateResetToken(): string {
 }
 
 // JWT utilities
-const JWT_SECRET = process.env.JWT_SECRET!
+const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secure-jwt-secret-change-in-production-min-32-chars'
 const JWT_EXPIRES_IN = '1h'
 
 export interface JWTPayload {
@@ -78,9 +82,27 @@ export function generateJWT(payload: Omit<JWTPayload, 'iat' | 'exp'>): string {
 
 export function verifyJWT(token: string): JWTPayload | null {
   try {
-    return jwt.verify(token, JWT_SECRET) as JWTPayload
-  } catch {
-    return null
+    if (!token || typeof token !== 'string') {
+      console.error('verifyJWT: Token is null, undefined, or not a string');
+      return null;
+    }
+
+    const payload = jwt.verify(token, JWT_SECRET) as JWTPayload;
+
+    // Additional validation
+    if (!payload || typeof payload !== 'object') {
+      console.error('verifyJWT: Payload is not a valid object');
+      return null;
+    }
+
+    return payload;
+  } catch (error) {
+    console.error('JWT verification failed:', {
+      error: error instanceof Error ? error.message : String(error),
+      tokenLength: token ? token.length : 0,
+      hasSecret: !!JWT_SECRET
+    });
+    return null;
   }
 }
 

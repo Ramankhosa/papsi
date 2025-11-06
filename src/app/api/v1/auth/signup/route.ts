@@ -203,6 +203,15 @@ export async function POST(request: NextRequest) {
         }
       })
 
+      // Create default project for the user
+      const defaultProjectName = 'Default Project'
+      const defaultProject = await tx.project.create({
+        data: {
+          name: defaultProjectName,
+          userId: user.id
+        }
+      })
+
       // Get current token state for status update logic
       const currentToken = await tx.aTIToken.findUnique({
         where: { id: tokenValidation.atiToken!.id }

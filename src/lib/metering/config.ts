@@ -11,8 +11,8 @@ export const defaultConfig: MeteringConfig = {
   reservationTimeoutMs: 300000, // 5 minutes
   maxConcurrentReservations: 50,
   defaultLimits: {
-    maxTokensIn: 1000,
-    maxTokensOut: 6000,
+    maxTokensIn: 2000,
+    maxTokensOut: 12000,
     agentMaxSteps: 10,
     retrievalTopK: 5,
     diagramFilesPerReq: 1,

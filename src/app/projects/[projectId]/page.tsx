@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
+import NoveltySearchHistory from '@/components/novelty-search/NoveltySearchHistory'
 
 interface Collaborator {
   id: string
@@ -51,6 +52,7 @@ export default function ProjectDashboardPage() {
   const [deleteDialog, setDeleteDialog] = useState<{ patentId: string; patentTitle: string; hasDrafts: boolean } | null>(null)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const [isDeleting, setIsDeleting] = useState(false)
+  const [showNoveltyHistory, setShowNoveltyHistory] = useState(false)
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -201,6 +203,15 @@ export default function ProjectDashboardPage() {
                 </svg>
                 Add Patent
               </Link>
+              <Link
+                href={`/novelty-search?projectId=${projectId}`}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-gpt-purple-600 hover:bg-gpt-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-purple-500 transition-all duration-200"
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                Novelty Search
+              </Link>
               {!project.applicantProfile && (
                 <Link
                   href={`/projects/${projectId}/applicant`}
@@ -259,6 +270,48 @@ export default function ProjectDashboardPage() {
                 <p className="text-2xl font-semibold text-gpt-gray-900">{project.applicantProfile ? 'Set' : 'Not Set'}</p>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Primary Actions */}
+        <div className="bg-white rounded-lg shadow-sm p-6">
+          <h2 className="text-lg font-semibold text-gpt-gray-900 mb-4">Project Actions</h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Link
+              href={`/patents/draft/new?projectId=${projectId}`}
+              className="flex items-center p-4 border-2 border-gpt-blue-200 rounded-lg hover:border-gpt-blue-300 hover:bg-gpt-blue-50 transition-all duration-200 group"
+            >
+              <div className="w-12 h-12 bg-gpt-blue-100 rounded-full flex items-center justify-center mr-4 group-hover:bg-gpt-blue-200 transition-colors">
+                <svg className="w-6 h-6 text-gpt-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-lg font-medium text-gpt-gray-900">Draft New Patent</h3>
+                <p className="text-sm text-gpt-gray-600">Start AI-powered patent drafting workflow</p>
+              </div>
+              <svg className="w-5 h-5 text-gpt-gray-400 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </Link>
+
+            <Link
+              href={`/novelty-search?projectId=${projectId}`}
+              className="flex items-center p-4 border-2 border-gpt-purple-200 rounded-lg hover:border-gpt-purple-300 hover:bg-gpt-purple-50 transition-all duration-200 group"
+            >
+              <div className="w-12 h-12 bg-gpt-purple-100 rounded-full flex items-center justify-center mr-4 group-hover:bg-gpt-purple-200 transition-colors">
+                <svg className="w-6 h-6 text-gpt-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-lg font-medium text-gpt-gray-900">Novelty Search</h3>
+                <p className="text-sm text-gpt-gray-600">Comprehensive patent novelty assessment</p>
+              </div>
+              <svg className="w-5 h-5 text-gpt-gray-400 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+            </Link>
           </div>
         </div>
 
@@ -507,6 +560,27 @@ export default function ProjectDashboardPage() {
             </div>
           </div>
         )}
+
+        {/* Novelty Search History Section */}
+        <div className="mt-8">
+          <div className="bg-white rounded-lg shadow-sm p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold text-gray-900">Novelty Search History</h2>
+              <button
+                onClick={() => setShowNoveltyHistory(!showNoveltyHistory)}
+                className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all duration-200"
+              >
+                {showNoveltyHistory ? 'Hide Search History' : 'Show Search History'}
+              </button>
+            </div>
+
+            {showNoveltyHistory && (
+              <div className="mt-4">
+                <NoveltySearchHistory projectId={projectId} showStats={false} />
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   )

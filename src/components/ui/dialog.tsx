@@ -6,6 +6,9 @@ import { X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
+// Temporary fix for Radix UI focus guards issue
+const DialogPrimitiveFixed = DialogPrimitive as any
+
 const Dialog = DialogPrimitive.Root
 
 const DialogTrigger = DialogPrimitive.Trigger

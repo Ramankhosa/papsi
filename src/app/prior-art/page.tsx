@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { SimpleDialog, SimpleDialogContent, SimpleDialogDescription, SimpleDialogFooter, SimpleDialogHeader, SimpleDialogTitle, SimpleDialogTrigger } from '@/components/ui/simple-dialog';
 import { SearchHistory } from '@/components/prior-art/SearchHistory';
 import { CreditsDisplay } from '@/components/prior-art/CreditsDisplay';
 
@@ -242,14 +242,14 @@ export default function PriorArtPage() {
       </Tabs>
 
       {/* Search Configuration Dialog */}
-      <Dialog open={searchDialogOpen} onOpenChange={setSearchDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Configure Search</DialogTitle>
-            <DialogDescription>
+      <SimpleDialog open={searchDialogOpen} onOpenChange={setSearchDialogOpen}>
+        <SimpleDialogContent>
+          <SimpleDialogHeader>
+            <SimpleDialogTitle>Configure Search</SimpleDialogTitle>
+            <SimpleDialogDescription>
               Choose which search sources to include in your prior art search.
-            </DialogDescription>
-          </DialogHeader>
+            </SimpleDialogDescription>
+          </SimpleDialogHeader>
 
           <div className="py-4">
             <div className="flex items-center space-x-2">
@@ -270,16 +270,16 @@ export default function PriorArtPage() {
             </p>
           </div>
 
-          <DialogFooter>
+          <SimpleDialogFooter>
             <Button variant="outline" onClick={() => setSearchDialogOpen(false)}>
               Cancel
             </Button>
             <Button onClick={confirmStartSearch}>
               Start Search
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </SimpleDialogFooter>
+        </SimpleDialogContent>
+      </SimpleDialog>
     </div>
   );
 }

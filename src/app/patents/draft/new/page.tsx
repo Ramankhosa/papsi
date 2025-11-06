@@ -4,6 +4,9 @@ import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import Link from 'next/link'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Badge } from '@/components/ui/badge'
+import { FolderOpen } from 'lucide-react'
 
 interface Project {
   id: string
@@ -17,9 +20,10 @@ function NewPatentDraftPageContent() {
   const { user, isLoading: authLoading } = useAuth()
   const router = useRouter()
   const searchParams = useSearchParams()
+  const initialProjectId = searchParams?.get('projectId') || ''
   const [projects, setProjects] = useState<Project[]>([])
   const [isLoading, setIsLoading] = useState(true)
-  const [selectedProject, setSelectedProject] = useState<string>('')
+  const [selectedProject, setSelectedProject] = useState<string>(initialProjectId)
   const [patentTitle, setPatentTitle] = useState('')
   const [rawIdea, setRawIdea] = useState('')
   const [areaOfInvention, setAreaOfInvention] = useState('')
@@ -39,11 +43,10 @@ function NewPatentDraftPageContent() {
 
   // Preselect project if provided via query param
   useEffect(() => {
-    const pid = searchParams?.get('projectId') || ''
-    if (pid) {
-      setSelectedProject(pid)
+    if (initialProjectId) {
+      setSelectedProject(initialProjectId)
     }
-  }, [searchParams])
+  }, [initialProjectId])
 
   const fetchProjects = async () => {
     try {
@@ -57,9 +60,16 @@ function NewPatentDraftPageContent() {
         const data = await response.json()
         const list: Project[] = data.projects || []
         setProjects(list)
-        // If preselected projectId is not in list, clear it
-        if (selectedProject && !list.find(p => p.id === selectedProject)) {
-          setSelectedProject('')
+
+        // If coming from dashboard, find and select the "Default Project"
+        if (!initialProjectId && list.length > 0) {
+          const defaultProject = list.find(p => p.name === 'Default Project');
+          if (defaultProject) {
+            setSelectedProject(defaultProject.id);
+          } else {
+            // Fallback to the first project if "Default Project" is not found
+            setSelectedProject(list[0].id);
+          }
         }
       }
     } catch (error) {
@@ -144,8 +154,13 @@ function NewPatentDraftPageContent() {
   }
 
   const handleCreateDraft = async () => {
-    if (!selectedProject || !patentTitle.trim()) {
-      setError('Please select a project and enter a patent title')
+    if (!selectedProject) {
+      setError('Please select a project')
+      return
+    }
+
+    if (!patentTitle.trim()) {
+      setError('Please enter a patent title')
       return
     }
 
@@ -292,25 +307,29 @@ function NewPatentDraftPageContent() {
             {/* Project Selection */}
             <div>
               <label htmlFor="project" className="block text-sm font-medium text-gray-700 mb-2">
-                Select Project <span className="text-red-500">*</span>
+                Project <span className="text-red-500">*</span>
+                {initialProjectId && (
+                  <Badge variant="secondary" className="text-xs ml-2">Fixed to current project</Badge>
+                )}
               </label>
-              <select
-                id="project"
+              <Select
                 value={selectedProject}
-                onChange={(e) => setSelectedProject(e.target.value)}
-                className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                required
+                onValueChange={setSelectedProject}
+                disabled={!!initialProjectId}
               >
-                <option value="">Choose a project...</option>
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                    {project.applicantProfile && ` - ${project.applicantProfile.applicantLegalName}`}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="Choose a project..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {projects.map((project) => (
+                    <SelectItem key={project.id} value={project.id}>
+                      {project.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <p className="mt-1 text-sm text-gray-500">
-                The patent will be associated with this project
+                The patent will be associated with this project.
               </p>
             </div>
 

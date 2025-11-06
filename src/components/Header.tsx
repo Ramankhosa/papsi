@@ -46,6 +46,13 @@ export default function Header() {
                 🔍 Prior Art Search
               </Link>
 
+              <Link
+                href="/novelty-search"
+                className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
+              >
+                🧬 Novelty Search
+              </Link>
+
               <div className="flex items-center space-x-2">
                 <div className="w-8 h-8 bg-gpt-blue-600 rounded-full flex items-center justify-center text-white text-sm font-medium">
                   {user.email?.charAt(0) || 'U'}

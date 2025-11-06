@@ -70,6 +70,7 @@ model User {
   name             String?
   role             UserRole   @default(ANALYST)
   status           UserStatus @default(ACTIVE)
+  noveltySearchesCompleted Int @default(0) // Track successful novelty searches
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 
@@ -87,6 +88,7 @@ model User {
   priorArtRuns            PriorArtRun[]
   credits                 UserCredit?
   noveltyAssessments      NoveltyAssessmentRun[]
+  noveltySearchRuns       NoveltySearchRun[]
   draftingSessions        DraftingSession[]
   draftingHistory         DraftingHistory[]
 
@@ -140,6 +142,7 @@ model Project {
   applicantProfile ApplicantProfile?
   collaborators    ProjectCollaborator[]
   patents          Patent[]
+  noveltySearchRuns NoveltySearchRun[]
   user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("projects")
@@ -250,6 +253,7 @@ enum TaskCode {
   LLM3_DIAGRAM
   LLM4_NOVELTY_SCREEN
   LLM5_NOVELTY_ASSESS
+  LLM6_REPORT_GENERATION
 }
 
 enum ModelClass {
@@ -271,6 +275,7 @@ model Patent {
   jobs               Job[]
   priorArtBundles    PriorArtSearchBundle[]
   noveltyAssessments NoveltyAssessmentRun[]
+  noveltySearchRuns  NoveltySearchRun[]
   draftingSessions   DraftingSession[]
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -912,6 +917,171 @@ enum PriorArtContentType {
   SCHOLAR
 }
 
+enum NoveltySearchStatus {
+  PENDING
+  STAGE_0_COMPLETED
+  STAGE_1_COMPLETED
+  STAGE_3_5_COMPLETED
+  COMPLETED
+  FAILED
+}
+
+enum NoveltySearchStage {
+  STAGE_0
+  STAGE_1
+  STAGE_3_5
+  STAGE_4
+}
+
+model NoveltySearchRun {
+  id        String              @id @default(cuid())
+  patentId  String?
+  projectId String? // Optional association with a project
+  userId    String
+  status    NoveltySearchStatus @default(PENDING)
+  currentStage NoveltySearchStage @default(STAGE_0)
+
+  // Configuration
+  config Json // NoveltySearchConfig
+
+  // Input data
+  inventionDescription String
+  title                String
+  jurisdiction         String @default("IN")
+  filingType          String @default("utility")
+
+  // Stage results
+  stage0CompletedAt DateTime?
+  stage0Results     Json? // NormalizedIdea
+
+  stage1CompletedAt DateTime?
+  stage1Results     Json? // ScreeningResult
+
+  stage35CompletedAt DateTime?
+  stage35Results     Json? // AssessmentResult[]
+
+  stage4CompletedAt DateTime?
+  stage4Results     Json? // Report data
+
+  // Final output
+  reportUrl String?
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  patent   Patent?                @relation(fields: [patentId], references: [id], onDelete: Cascade)
+  project  Project?               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user     User                   @relation(fields: [userId], references: [id])
+  llmCalls NoveltySearchLLMCall[]
+  featureMapCells FeatureMapCell[]
+  aggregationSnapshot AggregationSnapshot?
+  featureMapOverrides FeatureMapOverride[]
+
+  @@map("novelty_search_runs")
+}
+
+model NoveltySearchLLMCall {
+  id            String            @id @default(cuid())
+  searchId      String
+  stage         NoveltySearchStage
+  taskCode      TaskCode
+  prompt        String
+  response      Json?
+  tokensUsed    Int?
+  modelClass    String?
+  calledAt      DateTime          @default(now())
+
+  // Relations
+  search NoveltySearchRun @relation(fields: [searchId], references: [id], onDelete: Cascade)
+
+  @@map("novelty_search_llm_calls")
+}
+
+model FeatureMapCell {
+  id            String @id @default(cuid())
+  searchId      String
+  publicationNumber String
+  feature       String
+  status        String // "Present", "Partial", "Absent", "Unknown"
+  evidence      String?
+  confidence    Float?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  search NoveltySearchRun @relation(fields: [searchId], references: [id], onDelete: Cascade)
+  overrides FeatureMapOverride[]
+
+  @@unique([searchId, publicationNumber, feature])
+  @@map("feature_map_cells")
+}
+
+model AggregationSnapshot {
+  id                String @id @default(cuid())
+  searchId          String @unique
+  noveltyScore      Float
+  decision          String // "Novel", "Partially Novel", "Not Novel", "Low Evidence"
+  confidence        String // "High", "Medium", "Low"
+
+  // Per-patent coverage data
+  perPatentCoverage Json // Array of {pn, present_count, partial_count, absent_count, coverage_ratio}
+
+  // Per-feature uniqueness data
+  perFeatureUniqueness Json // Array of {feature, present_in, partial_in, absent_in, uniqueness}
+
+  // Integration check
+  integrationCheck Json // {any_single_patent_covers_majority, integration_pn, explanation}
+
+  // Quality flags and risk factors
+  qualityFlags Json // {low_evidence, ambiguous_abstracts, language_mismatch}
+  riskFactors Json // Array of risk factor strings
+
+  // Metadata
+  stats Json // {patents_analyzed, avg_abstract_length_words}
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  search NoveltySearchRun @relation(fields: [searchId], references: [id], onDelete: Cascade)
+
+  @@map("aggregation_snapshots")
+}
+
+model FeatureMapOverride {
+  id                String @id @default(cuid())
+  searchId          String
+  publicationNumber String
+  feature           String
+  originalStatus    String // Original status before override
+  overriddenStatus  String // New status after override
+  evidence          String?
+  reason            String // Reason for override
+  overriddenBy      String // User ID who made the override
+  overriddenAt      DateTime @default(now())
+
+  // Relations
+  search NoveltySearchRun @relation(fields: [searchId], references: [id], onDelete: Cascade)
+  cell FeatureMapCell @relation(fields: [searchId, publicationNumber, feature], references: [searchId, publicationNumber, feature], onDelete: Cascade)
+
+  @@unique([searchId, publicationNumber, feature])
+  @@map("feature_map_overrides")
+}
+
+model FeatureMappingCache {
+  id            String @id @default(cuid())
+  ideaHash      String
+  batchHash     String
+  promptVersion String @default("v1.0")
+  featureMaps   Json // Array of PatentFeatureMap results
+  createdAt     DateTime @default(now())
+  expiresAt     DateTime // When this cache entry expires
+
+  @@unique([ideaHash, batchHash, promptVersion])
+  @@map("feature_mapping_cache")
+}
+
 enum DraftingSessionStatus {
   IDEA_ENTRY
   COMPONENT_PLANNER
@@ -1186,6 +1356,8 @@ model IdeaBankSuggestion {
   @@index([relatedArtRunId])
   @@map("idea_bank_suggestions")
 }
+
+// === NOVELTY IDEA BANK SUGGESTIONS (independent of drafting) ===
 
 model DraftingHistory {
   id        String                @id @default(cuid())
