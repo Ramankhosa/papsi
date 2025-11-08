@@ -58,6 +58,9 @@ model Tenant {
   // Drafting relations
   draftingSessions DraftingSession[]
 
+  // Idea Bank relations
+  ideaBankIdeas IdeaBankIdea[]
+
   @@map("tenants")
 }
 
@@ -91,6 +94,11 @@ model User {
   noveltySearchRuns       NoveltySearchRun[]
   draftingSessions        DraftingSession[]
   draftingHistory         DraftingHistory[]
+
+  // Idea Bank relations
+  createdIdeaBankIdeas    IdeaBankIdea[]         @relation("IdeaBankIdeaCreator")
+  ideaBankReservations    IdeaBankReservation[]
+  ideaBankHistory         IdeaBankHistory[]
 
   @@map("users")
 }
@@ -245,6 +253,7 @@ enum FeatureCode {
   DIAGRAM_GENERATION
   EMBEDDINGS
   RERANK
+  IDEA_BANK
 }
 
 enum TaskCode {
@@ -254,6 +263,9 @@ enum TaskCode {
   LLM4_NOVELTY_SCREEN
   LLM5_NOVELTY_ASSESS
   LLM6_REPORT_GENERATION
+  IDEA_BANK_ACCESS
+  IDEA_BANK_RESERVE
+  IDEA_BANK_EDIT
 }
 
 enum ModelClass {
@@ -1391,4 +1403,114 @@ model UserCredit {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_credits")
+}
+
+// === IDEA BANK MODELS ===
+
+enum IdeaBankStatus {
+  PUBLIC     // Available for everyone to see and reserve
+  RESERVED   // Reserved by a user, content redacted
+  LICENSED   // Licensed/commercialized
+  ARCHIVED   // No longer available
+}
+
+enum IdeaBankReservationStatus {
+  ACTIVE
+  EXPIRED
+  RELEASED
+}
+
+model IdeaBankIdea {
+  id                String            @id @default(cuid())
+  title             String
+  description       String
+  abstract          String?           // Patent abstract format
+  domainTags        String[]          // Array of domain tags
+  technicalField    String?           // Primary technical field
+  noveltyScore      Float?            // AI-calculated novelty score (0-1)
+  status            IdeaBankStatus    @default(PUBLIC)
+
+  // Source information
+  generatedBy       String?           // AI model/version that generated this
+  sourceBatchId     String?           // Batch ID for tracking generations
+  derivedFromIdeaId String?           // If this is a derived/edited idea
+
+  // Content metadata
+  keyFeatures       String[]          // Array of key technical features
+  potentialApplications String[]      // Array of potential applications
+  priorArtSummary   String?           // Summary of prior art analysis
+
+  // Ownership and access
+  createdBy         String            // User ID who created/uploaded this idea
+  tenantId          String?           // Tenant this idea belongs to (null for global)
+
+  // Reservation tracking
+  reservedCount     Int               @default(0) // How many times this idea has been reserved
+
+  // Timestamps
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  publishedAt       DateTime?         // When made available in idea bank
+
+  // Relations
+  creator           User                      @relation("IdeaBankIdeaCreator", fields: [createdBy], references: [id])
+  tenant            Tenant?                   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  derivedFrom       IdeaBankIdea?             @relation("IdeaBankDerivation", fields: [derivedFromIdeaId], references: [id])
+  derivedIdeas      IdeaBankIdea[]            @relation("IdeaBankDerivation")
+  reservations      IdeaBankReservation[]
+  history           IdeaBankHistory[]
+
+  @@index([status])
+  @@index([domainTags])
+  @@index([technicalField])
+  @@index([createdBy])
+  @@index([tenantId])
+  @@map("idea_bank_ideas")
+}
+
+model IdeaBankReservation {
+  id                String                    @id @default(cuid())
+  ideaId            String
+  userId            String
+  status            IdeaBankReservationStatus @default(ACTIVE)
+
+  // Reservation details
+  reservedAt        DateTime                  @default(now())
+  expiresAt         DateTime                  // When reservation expires (default 30 days)
+  releasedAt        DateTime?                 // When user released the reservation
+
+  // Usage tracking
+  sentToNoveltySearch Boolean                 @default(false)
+  sentToDrafting      Boolean                 @default(false)
+
+  // Relations
+  idea              IdeaBankIdea              @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  user              User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([ideaId, userId]) // One reservation per user per idea
+  @@index([userId, status])
+  @@index([expiresAt])
+  @@map("idea_bank_reservations")
+}
+
+model IdeaBankHistory {
+  id                String          @id @default(cuid())
+  ideaId            String
+  action            String          // CREATED, EDITED, RESERVED, RELEASED, SENT_TO_SEARCH, SENT_TO_DRAFTING, etc.
+  userId            String
+
+  // Change tracking
+  previousData      Json?           // Previous state
+  newData          Json?           // New state after change
+  notes            String?         // Optional notes about the change
+
+  timestamp         DateTime        @default(now())
+
+  // Relations
+  idea              IdeaBankIdea    @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  user              User            @relation(fields: [userId], references: [id])
+
+  @@index([ideaId, timestamp])
+  @@index([userId])
+  @@map("idea_bank_history")
 }

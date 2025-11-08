@@ -11,7 +11,6 @@ import { Badge } from '../ui/badge';
 import { Alert, AlertDescription } from '../ui/alert';
 import { Loader2, Search, FileText, AlertCircle, CheckCircle, XCircle, FolderOpen, Check, Eye, AlertTriangle } from 'lucide-react';
 // import { NoveltySearchStatus, NoveltySearchStage } from '@prisma/client';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 
 // Local string constants for UI mapping
 const NoveltySearchStatus = {
@@ -86,7 +85,14 @@ function ExportPdfButton({ searchId }: { searchId: string | null }) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleExport = async () => {
+  const handleViewReport = () => {
+    if (!searchId) return;
+    if (typeof window !== 'undefined') {
+      window.open(`/novelty-search/${searchId}/report`, '_blank');
+    }
+  };
+
+  const handleExportPDF = async () => {
     if (!searchId || isLoading) return;
     setIsLoading(true);
     setError(null);
@@ -114,9 +120,13 @@ function ExportPdfButton({ searchId }: { searchId: string | null }) {
 
   return (
     <div className="flex items-center gap-2">
-      <Button variant="outline" size="sm" disabled={!searchId || isLoading} onClick={handleExport}>
+      <Button variant="outline" size="sm" disabled={!searchId} onClick={handleViewReport}>
+        <Eye className="mr-2 h-4 w-4" />
+        View Report
+      </Button>
+      <Button variant="outline" size="sm" disabled={!searchId || isLoading} onClick={handleExportPDF}>
         {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
-        {isLoading ? 'Exporting…' : 'Export PDF'}
+        {isLoading ? 'Exporting…' : 'Download PDF'}
       </Button>
       {error && (
         <span className="text-xs text-red-600" title={error}>Failed</span>
@@ -766,36 +776,26 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Project Selector */}
+        {/* Project Display */}
         <div>
-          <Label htmlFor="project" className="flex items-center gap-2">
+          <Label className="flex items-center gap-2">
             Project
-            {initialProjectId && (
-              <Badge variant="secondary" className="text-xs">Fixed to current project</Badge>
-            )}
           </Label>
-          {isLoadingProjects ? (
-            <div className="flex items-center space-x-2 mt-1">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span className="text-sm text-gray-500">Loading projects...</span>
+          <div className="flex items-center space-x-3 p-3 bg-purple-50 border border-purple-200 rounded-lg mt-1">
+            <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
+              <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+              </svg>
             </div>
-          ) : (
-            <Select
-              value={selectedProjectId}
-              onValueChange={setSelectedProjectId}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="Select a project" />
-              </SelectTrigger>
-              <SelectContent>
-                {projects.map((project) => (
-                  <SelectItem key={project.id} value={project.id}>
-                    {project.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
+            <div className="flex-1">
+              <div className="font-medium text-gray-900">Default Project</div>
+              <div className="text-xs text-gray-500">Quick drafts and searches</div>
+            </div>
+            <Badge variant="secondary" className="text-xs">Default</Badge>
+          </div>
+          <p className="mt-1 text-sm text-gray-500">
+            Your novelty search results will be saved to the Default Project for quick access.
+          </p>
         </div>
 
         <div>
@@ -1690,6 +1690,22 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
                         <div className="absolute right-0 top-0 opacity-20 pointer-events-none select-none">
                           <svg width="240" height="120" viewBox="0 0 240 120" fill="none"><circle cx="120" cy="60" r="56" stroke="white" strokeWidth="2"/><circle cx="120" cy="60" r="40" stroke="white" strokeWidth="1"/></svg>
                         </div>
+                      </div>
+
+                      {/* View Consolidated Report Button */}
+                      <div className="flex justify-center py-4">
+                        <Button
+                          onClick={() => {
+                            if (typeof window !== 'undefined' && searchState.searchId) {
+                              window.open(`/novelty-search/${searchState.searchId}/report`, '_blank');
+                            }
+                          }}
+                          className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 text-base font-semibold shadow-lg"
+                          size="lg"
+                        >
+                          <FileText className="mr-2 h-5 w-5" />
+                          View Consolidated Report
+                        </Button>
                       </div>
 
                       {/* KPI Cards */}

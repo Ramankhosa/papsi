@@ -2,6 +2,7 @@
 
 import Link from 'next/link'
 import { useAuth } from '@/lib/auth-context'
+import AnimatedLogo from '@/components/ui/animated-logo'
 
 export default function Header() {
   const { user, logout, isLoading } = useAuth()
@@ -15,7 +16,8 @@ export default function Header() {
       <header className="bg-white shadow-sm border-b border-gpt-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
-            <div className="flex items-center">
+            <div className="flex items-center space-x-3">
+              <AnimatedLogo size="sm" className="flex-shrink-0" />
               <Link href="/dashboard" className="text-xl font-bold text-gpt-gray-900">
                 Spotipr
               </Link>
@@ -31,26 +33,20 @@ export default function Header() {
     <header className="bg-white shadow-sm border-b border-gpt-gray-200">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
-          <div className="flex items-center">
+          <div className="flex items-center space-x-3">
+            <AnimatedLogo size="sm" autoPlayDuration={2000} className="flex-shrink-0" />
             <Link href="/dashboard" className="text-xl font-bold text-gpt-gray-900">
-              Spotipr
+              PatentNest
             </Link>
           </div>
 
           {user && (
             <div className="flex items-center space-x-4">
               <Link
-                href="/prior-art"
-                className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
-              >
-                🔍 Prior Art Search
-              </Link>
-
-              <Link
                 href="/novelty-search"
                 className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
               >
-                🧬 Novelty Search
+                🔍 Novelty Search
               </Link>
 
               <div className="flex items-center space-x-2">

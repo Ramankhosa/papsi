@@ -5,6 +5,7 @@ import { useAuth } from '@/lib/auth-context'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
 import NoveltySearchHistory from '@/components/novelty-search/NoveltySearchHistory'
+import { PageLoadingBird } from '@/components/ui/loading-bird'
 
 interface Collaborator {
   id: string
@@ -160,11 +161,7 @@ export default function ProjectDashboardPage() {
   }
 
   if (authLoading || isLoading) {
-    return (
-      <div className="min-h-screen bg-gpt-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gpt-blue-600"></div>
-      </div>
-    )
+    return <PageLoadingBird message="Loading project..." />
   }
 
   if (!user || !project) {
@@ -193,24 +190,6 @@ export default function ProjectDashboardPage() {
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                 </svg>
                 Manage Project
-              </Link>
-              <Link
-                href={`/projects/${projectId}/patents/new`}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-gpt-green-600 hover:bg-gpt-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-green-500 transition-all duration-200"
-              >
-                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                </svg>
-                Add Patent
-              </Link>
-              <Link
-                href={`/novelty-search?projectId=${projectId}`}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-gpt-purple-600 hover:bg-gpt-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-purple-500 transition-all duration-200"
-              >
-                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
-                Novelty Search
               </Link>
               {!project.applicantProfile && (
                 <Link
@@ -322,40 +301,16 @@ export default function ProjectDashboardPage() {
             <div className="px-6 py-4 border-b border-gpt-gray-200">
               <div className="flex items-center justify-between">
                 <h2 className="text-xl font-semibold text-gpt-gray-900">Patents</h2>
-                <Link
-                  href={`/projects/${projectId}/patents/new`}
-                  className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded-md text-white bg-gpt-blue-600 hover:bg-gpt-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500"
-                >
-                  <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                  </svg>
-                  New Patent
-                </Link>
-              </div>
-              {/* Quick actions for the most recent patent */}
-              {patents.length > 0 && (
-                <div className="mt-3 flex items-center space-x-2 text-sm">
-                  <span className="text-gpt-gray-600">Quick actions:</span>
-                  <Link
-                    href={`/projects/${projectId}/patents/${patents[0].id}?tab=actions&action=prior-art-search`}
-                    className="inline-flex items-center px-2.5 py-1 border border-gpt-gray-300 rounded text-gpt-gray-700 bg-white hover:bg-gpt-gray-50"
-                  >
-                    Prior Art Search
-                  </Link>
                   <Link
                     href={`/patents/draft/new?projectId=${projectId}`}
-                    className="inline-flex items-center px-2.5 py-1 border border-transparent rounded text-white bg-indigo-600 hover:bg-indigo-700"
+                    className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded-md text-white bg-gpt-blue-600 hover:bg-gpt-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500"
                   >
-                    Start New Draft
+                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                    </svg>
+                    New Patent
                   </Link>
-                  <Link
-                    href={`/patents/${patents[0].id}/draft`}
-                    className="inline-flex items-center px-2.5 py-1 border border-transparent rounded text-white bg-gpt-blue-600 hover:bg-gpt-blue-700"
-                  >
-                    Resume Draft
-                  </Link>
-                </div>
-              )}
+              </div>
             </div>
 
             <div className="p-6">
@@ -370,12 +325,12 @@ export default function ProjectDashboardPage() {
                   <p className="text-gpt-gray-600 mb-4">
                     Start by creating your first patent application.
                   </p>
-                  <Link
-                    href={`/projects/${projectId}/patents/new`}
-                    className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-gpt-blue-600 hover:bg-gpt-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500"
-                  >
-                    Create First Patent
-                  </Link>
+              <Link
+                href={`/patents/draft/new?projectId=${projectId}`}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-gpt-blue-600 hover:bg-gpt-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500"
+              >
+                Create First Patent
+              </Link>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -395,22 +350,10 @@ export default function ProjectDashboardPage() {
                           View
                         </Link>
                         <Link
-                          href={`/projects/${projectId}/patents/${patent.id}?tab=actions&action=prior-art-search`}
-                          className="inline-flex items-center px-3 py-1 border border-gpt-gray-300 text-sm font-medium rounded text-gpt-gray-700 bg-white hover:bg-gpt-gray-50"
-                        >
-                          Prior Art
-                        </Link>
-                        <Link
-                          href={`/patents/draft/new?projectId=${projectId}`}
-                          className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700"
-                        >
-                          Start New Draft
-                        </Link>
-                        <Link
                           href={`/patents/${patent.id}/draft`}
                           className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded text-white bg-gpt-blue-600 hover:bg-gpt-blue-700"
                         >
-                          Resume
+                          Resume Draft
                         </Link>
                         <button
                           onClick={() => setDeleteDialog({
@@ -431,12 +374,16 @@ export default function ProjectDashboardPage() {
                   ))}
                   {patents.length > 5 && (
                     <div className="text-center pt-4">
-                      <Link
-                        href={`/projects/${projectId}/patents`}
+                      <button
+                        onClick={() => {
+                          // Scroll to show all patents (they're already displayed)
+                          const patentsSection = document.querySelector('.space-y-4');
+                          patentsSection?.scrollIntoView({ behavior: 'smooth' });
+                        }}
                         className="text-gpt-blue-600 hover:text-gpt-blue-800 text-sm font-medium"
                       >
-                        View all {patents.length} patents →
-                      </Link>
+                        Showing {patents.length} patents
+                      </button>
                     </div>
                   )}
                 </div>

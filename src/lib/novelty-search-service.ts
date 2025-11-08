@@ -3,6 +3,7 @@ import { llmGateway } from './metering/gateway';
 import { prisma } from './prisma';
 import { TaskCode, NoveltySearchStatus, NoveltySearchStage } from '@prisma/client';
 import { PDFReportService } from './pdf-report-service';
+import { IdeaBankService } from './idea-bank-service';
 import crypto from 'crypto';
 
 // LLM Prompt Specification for Novelty Search (enhanced versions)
@@ -2801,162 +2802,44 @@ OUTPUT JSON:
         idea_bank_suggestions: ideaBank
       };
 
-      // Persist Idea Bank suggestions like drafting flow (if a drafting session exists for this patent)
+      // Persist Idea Bank suggestions to the main idea bank table
       try {
-        if (Array.isArray(ideaBank) && ideaBank.length > 0 && searchRun.patentId && searchRun.userId) {
-          const draftingSession = await (prisma as any).draftingSession.findFirst({
-            where: { patentId: searchRun.patentId, userId: searchRun.userId },
-            orderBy: { createdAt: 'desc' }
+        if (Array.isArray(ideaBank) && ideaBank.length > 0 && searchRun.userId) {
+          const ideaBankService = new IdeaBankService();
+          const avgRelevance = (aggRes.per_patent_coverage || []).reduce((s, p) => s + (p.coverage_ratio || 0), 0) / Math.max(1, (aggRes.per_patent_coverage || []).length);
+
+          console.log('🔄 Persisting', ideaBank.length, 'Stage 4 idea bank suggestions to main idea bank…');
+
+          // Get user for the idea bank service
+          const user = await prisma.user.findUnique({
+            where: { id: searchRun.userId }
           });
 
-          if (draftingSession) {
-            // Create a RelatedArtRun anchor for idea bank suggestions
-            const relatedArtRun = await (prisma as any).relatedArtRun.create({
-              data: {
-                sessionId: draftingSession.id,
-                queryText: String(stage0Data.searchQuery || searchRun.title || '').slice(0, 500),
-                paramsJson: reportInputs || {},
-                resultsJson: { noveltyScore: aggRes.novelty_score, decision: aggRes.decision },
-                ranBy: searchRun.userId
-              }
-            });
-
-            console.log('🔄 Persisting', ideaBank.length, 'Stage 4 idea bank suggestions…');
-            const avgRelevance = (aggRes.per_patent_coverage || []).reduce((s, p) => s + (p.coverage_ratio || 0), 0) / Math.max(1, (aggRes.per_patent_coverage || []).length);
-
+          if (user) {
             for (let i = 0; i < ideaBank.length; i++) {
               const ib = ideaBank[i] || {};
               try {
-                await (prisma as any).ideaBankSuggestion.create({
-                  data: {
-                    relatedArtRunId: relatedArtRun.id,
-                    modelVersion: (llmResult as any)?.response?.modelClass || (llmResult as any)?.response?.metadata?.model || null,
-                    ideaTitle: String(ib.title || '').slice(0, 200),
-                    corePrinciple: String(ib.core_principle || '').slice(0, 2000),
-                    expectedAdvantage: String(ib.expected_advantage || '').slice(0, 500),
-                    tags: Array.isArray(ib.tags) ? ib.tags.map((t: any) => String(t).slice(0, 60)) : [],
-                    nonObviousExtension: String(ib.non_obvious_extension || '').slice(0, 1000),
-                    sourceBatchIndex: i,
-                    confidenceScore: avgRelevance || null
-                  }
-                });
+                // Convert the idea format to match what addIdeaFromNoveltySearch expects
+                const extractedIdea = {
+                  title: String(ib.title || '').slice(0, 200),
+                  description: String(ib.core_principle || '').slice(0, 2000),
+                  abstract: String(ib.expected_advantage || '').slice(0, 500),
+                  domainTags: Array.isArray(ib.tags) ? ib.tags.map((t: any) => String(t).slice(0, 60)) : [],
+                  technicalField: 'AI-Generated',
+                  keyFeatures: [String(ib.non_obvious_extension || '').slice(0, 200)],
+                  potentialApplications: ['Patentable invention'],
+                  noveltyScore: avgRelevance || 0.5
+                };
+
+                await ideaBankService.addIdeaFromNoveltySearch(extractedIdea, user, searchRun.id);
+                console.log('✅ Persisted idea bank suggestion:', ib.title);
               } catch (e) {
                 console.error('❌ Failed to persist Stage 4 idea bank suggestion:', ib.title, e);
               }
             }
-            console.log('✅ Stage 4 idea bank suggestions persisted');
+            console.log('✅ Stage 4 idea bank suggestions persisted to main idea bank');
           } else {
-            // If a patentId exists, create a minimal drafting session to anchor Idea Bank without schema changes
-            if (searchRun.patentId) {
-              try {
-                console.log('ℹ️ Creating minimal drafting session to persist ideas…');
-                const newSession = await (prisma as any).draftingSession.create({
-                  data: {
-                    patentId: searchRun.patentId,
-                    userId: searchRun.userId,
-                    tenantId: searchRun.tenantId || null
-                  }
-                });
-
-                const relatedArtRun = await (prisma as any).relatedArtRun.create({
-                  data: {
-                    sessionId: newSession.id,
-                    queryText: String(stage0Data.searchQuery || searchRun.title || '').slice(0, 500),
-                    paramsJson: reportInputs || {},
-                    resultsJson: { noveltyScore: aggRes.novelty_score, decision: aggRes.decision },
-                    ranBy: searchRun.userId
-                  }
-                });
-
-                const avgRelevance = (aggRes.per_patent_coverage || []).reduce((s, p) => s + (p.coverage_ratio || 0), 0) / Math.max(1, (aggRes.per_patent_coverage || []).length);
-
-                for (let i = 0; i < ideaBank.length; i++) {
-                  const ib = ideaBank[i] || {};
-                  try {
-                    await (prisma as any).ideaBankSuggestion.create({
-                      data: {
-                        relatedArtRunId: relatedArtRun.id,
-                        modelVersion: (llmResult as any)?.response?.modelClass || (llmResult as any)?.response?.metadata?.model || null,
-                        ideaTitle: String(ib.title || '').slice(0, 200),
-                        corePrinciple: String(ib.core_principle || '').slice(0, 2000),
-                        expectedAdvantage: String(ib.expected_advantage || '').slice(0, 500),
-                        tags: Array.isArray(ib.tags) ? ib.tags.map((t: any) => String(t).slice(0, 60)) : [],
-                        nonObviousExtension: String(ib.non_obvious_extension || '').slice(0, 1000),
-                        sourceBatchIndex: i,
-                        confidenceScore: avgRelevance || null
-                      }
-                    });
-                  } catch (e) {
-                    console.error('❌ Failed to persist Stage 4 idea bank suggestion:', ib.title, e);
-                  }
-                }
-                console.log('✅ Stage 4 idea bank suggestions persisted via new drafting session');
-              } catch (createErr) {
-                console.warn('⚠️ Failed to create drafting session for idea persistence. Ideas remain in Stage 4 results.', createErr);
-              }
-            } else {
-              // No patentId provided: create a lightweight anchor (Project -> Patent -> DraftingSession)
-              try {
-                console.log('ℹ️ No patentId available; creating lightweight project/patent/session to anchor ideas.');
-                // Find or create a user project for Idea Bank
-                let project = await (prisma as any).project.findFirst({ where: { userId: searchRun.userId, name: 'Idea Bank (Auto)' } });
-                if (!project) {
-                  project = await (prisma as any).project.create({ data: { userId: searchRun.userId, name: 'Idea Bank (Auto)' } });
-                }
-
-                // Create a minimal patent under this project to comply with schema
-                const patent = await (prisma as any).patent.create({
-                  data: {
-                    projectId: project.id,
-                    title: `Idea Bank (Novelty) - ${new Date().toISOString().slice(0,10)}`,
-                    createdBy: searchRun.userId
-                  }
-                });
-
-                const newSession = await (prisma as any).draftingSession.create({
-                  data: {
-                    patentId: patent.id,
-                    userId: searchRun.userId,
-                    tenantId: searchRun.tenantId || null
-                  }
-                });
-
-                const relatedArtRun = await (prisma as any).relatedArtRun.create({
-                  data: {
-                    sessionId: newSession.id,
-                    queryText: String(stage0Data.searchQuery || searchRun.title || '').slice(0, 500),
-                    paramsJson: reportInputs || {},
-                    resultsJson: { noveltyScore: aggRes.novelty_score, decision: aggRes.decision },
-                    ranBy: searchRun.userId
-                  }
-                });
-
-                const avgRelevance = (aggRes.per_patent_coverage || []).reduce((s, p) => s + (p.coverage_ratio || 0), 0) / Math.max(1, (aggRes.per_patent_coverage || []).length);
-                for (let i = 0; i < ideaBank.length; i++) {
-                  const ib = ideaBank[i] || {};
-                  try {
-                    await (prisma as any).ideaBankSuggestion.create({
-                      data: {
-                        relatedArtRunId: relatedArtRun.id,
-                        modelVersion: (llmResult as any)?.response?.modelClass || (llmResult as any)?.response?.metadata?.model || null,
-                        ideaTitle: String(ib.title || '').slice(0, 200),
-                        corePrinciple: String(ib.core_principle || '').slice(0, 2000),
-                        expectedAdvantage: String(ib.expected_advantage || '').slice(0, 500),
-                        tags: Array.isArray(ib.tags) ? ib.tags.map((t: any) => String(t).slice(0, 60)) : [],
-                        nonObviousExtension: String(ib.non_obvious_extension || '').slice(0, 1000),
-                        sourceBatchIndex: i,
-                        confidenceScore: avgRelevance || null
-                      }
-                    });
-                  } catch (e) {
-                    console.error('❌ Failed to persist Stage 4 idea bank suggestion:', ib.title, e);
-                  }
-                }
-                console.log('✅ Stage 4 idea bank suggestions persisted via auto-created project/patent/session');
-              } catch (anchorErr) {
-                console.warn('⚠️ Failed to auto-create anchor for idea persistence. Ideas remain in Stage 4 results.', anchorErr);
-              }
-            }
+            console.warn('⚠️ Could not find user for idea bank persistence');
           }
         }
       } catch (persistErr) {

@@ -13,8 +13,8 @@ const inter = Inter({
 })
 
 export const metadata: Metadata = {
-  title: 'Spotipr - AI-Powered Grant Writing',
-  description: 'Professional grant writing assistance powered by AI',
+  title: 'PatentNest - AI-Powered Patent Writing',
+  description: 'Professional patent writing assistance powered by AI',
 }
 
 export default function RootLayout({

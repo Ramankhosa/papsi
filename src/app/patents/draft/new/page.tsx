@@ -4,9 +4,7 @@ import { useState, useEffect, Suspense } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import Link from 'next/link'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { FolderOpen } from 'lucide-react'
 
 interface Project {
   id: string
@@ -304,32 +302,25 @@ function NewPatentDraftPageContent() {
           )}
 
           <div className="space-y-6">
-            {/* Project Selection */}
+            {/* Project Display */}
             <div>
-              <label htmlFor="project" className="block text-sm font-medium text-gray-700 mb-2">
-                Project <span className="text-red-500">*</span>
-                {initialProjectId && (
-                  <Badge variant="secondary" className="text-xs ml-2">Fixed to current project</Badge>
-                )}
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Project
               </label>
-              <Select
-                value={selectedProject}
-                onValueChange={setSelectedProject}
-                disabled={!!initialProjectId}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Choose a project..." />
-                </SelectTrigger>
-                <SelectContent>
-                  {projects.map((project) => (
-                    <SelectItem key={project.id} value={project.id}>
-                      {project.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="flex items-center space-x-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                  <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                  </svg>
+                </div>
+                <div className="flex-1">
+                  <div className="font-medium text-gray-900">Default Project</div>
+                  <div className="text-xs text-gray-500">Quick drafts and searches</div>
+                </div>
+                <Badge variant="secondary" className="text-xs">Default</Badge>
+              </div>
               <p className="mt-1 text-sm text-gray-500">
-                The patent will be associated with this project.
+                Your patent draft will be saved to the Default Project for quick access.
               </p>
             </div>
 

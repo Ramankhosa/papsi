@@ -54,7 +54,7 @@ export class PDFReportService {
         throw new Error('Novelty search not found');
       }
 
-      const doc = new jsPDF();
+      const doc = new jsPDF('landscape');
       const pageWidth = doc.internal.pageSize.getWidth();
       const pageHeight = doc.internal.pageSize.getHeight();
       let currentY = 20;
@@ -75,20 +75,79 @@ export class PDFReportService {
       // Helper function to add colored section headers
       const addSectionHeader = (title: string, color: number[] = colors.primary) => {
         doc.setFillColor(color[0], color[1], color[2]);
-        doc.rect(20, currentY, pageWidth - 40, 10, 'F');
+        doc.rect(15, currentY, pageWidth - 30, 12, 'F');
         doc.setTextColor(255, 255, 255);
-        doc.setFontSize(12);
-        doc.text(title, 25, currentY + 7);
+        doc.setFontSize(14);
+        doc.text(title, 20, currentY + 8);
         doc.setTextColor(0, 0, 0);
-        currentY += 15;
+        currentY += 18;
       };
 
       // Helper function to check page space and add new page if needed
       const checkPageSpace = (neededSpace: number) => {
-        if (currentY + neededSpace > pageHeight - 30) {
+        if (currentY + neededSpace > pageHeight - 25) {
           doc.addPage();
           currentY = 20;
         }
+      };
+
+      // Helper: canonicalize a publication number for matching across stages
+      const canonicalizePn = (pn?: string | null) => {
+        if (!pn) return '';
+        const s = String(pn).toUpperCase().replace(/[^A-Z0-9]/g, '');
+        return s.replace(/[A-Z]\d*$/, ''); // strip kind code suffix
+      };
+
+      // Helper: draw a dynamic cell (label + value) with auto width/height
+      const drawLabeledCell = (
+        label: string,
+        value: string,
+        x: number,
+        y: number,
+        maxWidth: number
+      ): { width: number; height: number } => {
+        const paddingX = 4;
+        const paddingY = 3;
+        const labelFontSize = 8;
+        const valueFontSize = 10;
+
+        // Measure value width to decide cell width (cap to maxWidth)
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(labelFontSize);
+        const labelWidth = doc.getTextWidth(label.toUpperCase()) + 1;
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(valueFontSize);
+        const rawValueWidth = doc.getTextWidth(String(value));
+        const targetWidth = Math.min(Math.max(60, rawValueWidth + labelWidth + paddingX * 2 + 6), maxWidth);
+
+        // Wrap value within targetWidth
+        const innerWidth = targetWidth - paddingX * 2;
+        doc.setFontSize(valueFontSize);
+        const valueLines = doc.splitTextToSize(String(value || '-'), innerWidth);
+
+        // Compute height: label line + small gap + value lines
+        const labelHeight = labelFontSize + 2;
+        const valueHeight = valueLines.length * (valueFontSize + 2) * 0.5; // approx line height
+        const cellHeight = Math.max(16, paddingY * 2 + labelHeight + valueHeight);
+
+        // Draw box
+        doc.setDrawColor(200, 205, 210);
+        doc.setFillColor(colors.white[0], colors.white[1], colors.white[2]);
+        doc.rect(x, y, targetWidth, cellHeight, 'S');
+
+        // Render label
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(labelFontSize);
+        doc.setTextColor(90, 90, 90);
+        doc.text(label.toUpperCase(), x + paddingX, y + paddingY + 5);
+
+        // Render value
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(valueFontSize);
+        doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
+        doc.text(valueLines, x + paddingX, y + paddingY + 5 + 6);
+
+        return { width: targetWidth, height: cellHeight };
       };
 
       // Modern Title Page
@@ -114,7 +173,7 @@ export class PDFReportService {
       // Add AI logo/watermark
       doc.setFontSize(10);
       doc.setTextColor(colors.lightGray[0], colors.lightGray[1], colors.lightGray[2]);
-      doc.text('Powered by AI Patent Assistant', pageWidth / 2, pageHeight - 20, { align: 'center' });
+      doc.text('Powered by AI Patent Assistant', pageWidth / 2, pageHeight - 15, { align: 'center' });
 
       // Table of Contents (placeholder page, will be populated after sections are built)
       doc.addPage();
@@ -131,20 +190,7 @@ export class PDFReportService {
       // Will fill later
       const tocEntries: Array<{ label: string; page: number }> = [];
 
-      // Executive Summary Page
-      doc.addPage();
-      tocEntries.push({ label: 'Executive Summary', page: doc.getNumberOfPages() });
-      currentY = 20;
-
-      // Header
-      doc.setFillColor(colors.primary[0], colors.primary[1], colors.primary[2]);
-      doc.rect(0, 0, pageWidth, 25, 'F');
-      doc.setTextColor(colors.white[0], colors.white[1], colors.white[2]);
-      doc.setFontSize(16);
-      doc.setFont('helvetica', 'bold');
-      doc.text('EXECUTIVE SUMMARY', 20, 17);
-
-      currentY = 40;
+      // (Executive Summary removed)
 
       const stage0 = (searchRun as any).stage0Results || {};
       const stage1 = (searchRun as any).stage1Results || {};
@@ -232,8 +278,8 @@ export class PDFReportService {
       const stage4Results = resolvedStage4;
       console.log('Stage 4 Results for PDF (resolved):', JSON.stringify(stage4Results, null, 2));
 
-      // Modern Dashboard Cards - Executive Summary
-      if (stage4Results?.executive_summary) {
+      // (Executive Summary content removed)
+      if (false && stage4Results?.executive_summary) {
         const execSummary = stage4Results.executive_summary;
         const headline = execSummary.headline || 'Novelty Assessment';
         const noveltyScore = execSummary.novelty_score || '0.0';
@@ -283,7 +329,7 @@ export class PDFReportService {
 
           doc.setFont('helvetica', 'normal');
           doc.setFontSize(10);
-          execSummary.key_findings.slice(0, 3).forEach((finding, index) => {
+          execSummary.key_findings.slice(0, 3).forEach((finding: string, index: number) => {
             doc.text(`• ${finding}`, 25, currentY);
             currentY += 8;
           });
@@ -291,8 +337,8 @@ export class PDFReportService {
         }
       }
 
-      // Fallback: map Stage 4 V2 concluding_remarks to this section if legacy recommendations are missing
-      if ((!stage4Results?.recommendations) && stage4Results?.concluding_remarks) {
+      // Fallback: map Stage 4 V2 concluding_remarks to this section if legacy recommendations are missing (removed)
+      if (false && (!stage4Results?.recommendations) && stage4Results?.concluding_remarks) {
         const concl = stage4Results.concluding_remarks as any;
         if (Array.isArray(concl.strategic_recommendations)) {
           doc.setFont('helvetica', 'bold');
@@ -325,8 +371,8 @@ export class PDFReportService {
       doc.setFontSize(11);
       doc.setFont('helvetica', 'normal');
 
-      // Risk Factors
-      if (stage4Results?.risk_factors && Array.isArray(stage4Results.risk_factors)) {
+      // Risk Factors (removed)
+      if (false && stage4Results?.risk_factors && Array.isArray(stage4Results.risk_factors)) {
         doc.setFont('helvetica', 'bold');
         doc.text('RISK FACTORS IDENTIFIED:', 20, currentY);
         currentY += 10;
@@ -339,8 +385,8 @@ export class PDFReportService {
         currentY += 10;
       }
 
-      // Integration Check
-      if (stage4Results?.integration_check) {
+      // Integration Check (removed)
+      if (false && stage4Results?.integration_check) {
         doc.setFont('helvetica', 'bold');
         doc.text('INTEGRATION ANALYSIS:', 20, currentY);
         currentY += 10;
@@ -359,7 +405,8 @@ export class PDFReportService {
         currentY += 10;
       }
 
-      // Novelty Assessment Summary
+      // Novelty Assessment Summary (removed)
+      if (false) {
       doc.setFont('helvetica', 'bold');
       doc.text('NOVELTY ASSESSMENT SUMMARY:', 20, currentY);
       currentY += 10;
@@ -371,6 +418,7 @@ export class PDFReportService {
       currentY += 8;
       doc.text(`• Assessment confidence: ${stage4Results?.confidence || 'Unknown'}`, 25, currentY);
       currentY += 15;
+      }
 
       // Stage 0 — Idea & Key Features
       checkPageSpace(50);
@@ -409,8 +457,8 @@ export class PDFReportService {
           doc.setFontSize(10);
           features.slice(0, 18).forEach((f: string, idx: number) => {
             const text = `${idx + 1}. ${f}`;
-            const fLines = doc.splitTextToSize(text, pageWidth - 40);
-            doc.text(fLines, 20, currentY);
+            const fLines = doc.splitTextToSize(text, pageWidth - 30);
+            doc.text(fLines, 15, currentY);
             currentY += fLines.length * 5 + 4;
             if (currentY > pageHeight - 30) { doc.addPage(); currentY = 20; }
           });
@@ -432,48 +480,128 @@ export class PDFReportService {
 
       currentY = 40;
       const pqai = Array.isArray(stage1?.pqaiResults) ? stage1.pqaiResults : [];
+      
+      // Get patents that were shortlisted for detailed analysis (from Stage 3.5)
+      const stage35Raw: any = (searchRun as any).stage35Results || [];
+      const featureMaps: any[] = Array.isArray(stage35Raw?.feature_map)
+        ? stage35Raw.feature_map
+        : (Array.isArray(stage35Raw) ? stage35Raw : []);
+      
+      // Create a set of publication numbers from Stage 3.5 (shortlisted patents)
+      const shortlistedPns = new Set<string>();
+      featureMaps.forEach((pm: any) => {
+        const pn = canonicalizePn(pm.pn || pm.publicationNumber || pm.publication_number);
+        if (pn) shortlistedPns.add(pn);
+      });
+      
+      // Filter pqai to show only shortlisted patents, or all if none shortlisted
+      const patentsToShow = shortlistedPns.size > 0
+        ? pqai.filter((r: any) => {
+            const pn = canonicalizePn(r.publicationNumber || r.pn || r.publication_number);
+            return pn && shortlistedPns.has(pn);
+          })
+        : pqai; // Show all if no shortlisted patents identified
+      
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
       doc.setFontSize(10);
       doc.text(`Total PQAI results: ${pqai.length}`, 20, currentY);
+      currentY += 6;
+      doc.text(`Patents shortlisted for detailed analysis: ${patentsToShow.length}`, 20, currentY);
       currentY += 10;
 
-      if (pqai.length > 0) {
-        // Compact table header
+      if (patentsToShow.length > 0) {
+        // Table header with better column widths
         doc.setFillColor(colors.lightGray[0], colors.lightGray[1], colors.lightGray[2]);
         doc.rect(20, currentY - 2, pageWidth - 40, 12, 'F');
         doc.setFont('helvetica', 'bold');
         doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
-        doc.text('PN', 25, currentY + 3);
-        doc.text('RELEVANCE', 80, currentY + 3);
-        doc.text('TITLE', 120, currentY + 3);
+        doc.setFontSize(9);
+        doc.text('PATENT NUMBER', 25, currentY + 3);
+        doc.text('RELEVANCE', 100, currentY + 3);
+        doc.text('TITLE', 140, currentY + 3);
         currentY += 15;
 
-        // Sort and list top 10
-        const sorted = [...pqai].sort((a: any, b: any) => ((b.relevanceScore || b.score || b.relevance || 0) - (a.relevanceScore || a.score || a.relevance || 0))).slice(0, 10);
+        // Sort and list ALL shortlisted patents (no limit)
+        const sorted = [...patentsToShow].sort((a: any, b: any) => 
+          ((b.relevanceScore || b.score || b.relevance || 0) - (a.relevanceScore || a.score || a.relevance || 0))
+        );
+        
         doc.setFont('helvetica', 'normal');
-        doc.setFontSize(9);
+        doc.setFontSize(8);
+        
         sorted.forEach((r: any, idx: number) => {
-          if (currentY > pageHeight - 30) { doc.addPage(); currentY = 20; }
-          const pn = String(r.publicationNumber || r.pn || r.publication_number || '').slice(0, 16);
-          const rel = String(r.relevanceScore || r.score || r.relevance || '0');
-          const title = String(r.title || '').slice(0, 48);
-          // row background (zebra)
-          if (idx % 2 === 1) { doc.setFillColor(248,249,250); doc.rect(20, currentY - 2, pageWidth - 40, 10, 'F'); }
-          // row border
+          // Check if we need a new page (leave more space for wrapped text)
+          if (currentY > pageHeight - 40) { 
+            doc.addPage(); 
+            currentY = 20;
+            // Redraw header on new page
+            doc.setFillColor(colors.lightGray[0], colors.lightGray[1], colors.lightGray[2]);
+            doc.rect(20, currentY - 2, pageWidth - 40, 12, 'F');
+            doc.setFont('helvetica', 'bold');
+            doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
+            doc.setFontSize(9);
+            doc.text('PATENT NUMBER', 25, currentY + 3);
+            doc.text('RELEVANCE', 100, currentY + 3);
+            doc.text('TITLE', 140, currentY + 3);
+            currentY += 15;
+          }
+          
+          const pn = String(r.publicationNumber || r.pn || r.publication_number || '—');
+          const title = String(r.title || '—');
+          
+          // Format relevance score as percentage (2 decimal places, max 100%)
+          const relValue = parseFloat(String(r.relevanceScore || r.score || r.relevance || '0'));
+          let relPercent = relValue;
+          // If value is less than 1, assume it's a decimal (0.85 = 85%), otherwise assume it's already a percentage
+          if (relPercent < 1 && relPercent > 0) {
+            relPercent = relPercent * 100;
+          }
+          // Cap at 100%
+          relPercent = Math.min(100, Math.max(0, relPercent));
+          const rel = relPercent.toFixed(2) + '%';
+          
+          // Wrap text for both patent number and title
+          const pnWidth = 70; // Max width for PN column
+          const titleWidth = pageWidth - 160; // Available width for title column (from 140 to pageWidth - 20)
+          const pnLines = doc.splitTextToSize(pn, pnWidth);
+          const titleLines = doc.splitTextToSize(title, titleWidth);
+          
+          // Calculate row height based on maximum lines needed (line height ~5 for font size 8)
+          const lineHeight = 5;
+          const maxLines = Math.max(pnLines.length, titleLines.length, 1);
+          const rowHeight = Math.max(10, maxLines * lineHeight + 4);
+          
+          // Row background (zebra)
+          if (idx % 2 === 1) { 
+            doc.setFillColor(248, 249, 250); 
+            doc.rect(20, currentY - 2, pageWidth - 40, rowHeight, 'F'); 
+          }
+          
+          // Row border
           doc.setDrawColor(220, 220, 220);
-          doc.rect(20, currentY - 2, pageWidth - 40, 10);
-          doc.setDrawColor(0,0,0);
-          // text
-          doc.text(pn || '—', 25, currentY + 3);
-          doc.text(rel, 80, currentY + 3);
-          doc.text(title || '—', 120, currentY + 3);
-          currentY += 10;
+          doc.rect(20, currentY - 2, pageWidth - 40, rowHeight);
+          doc.setDrawColor(0, 0, 0);
+          
+          // Text rendering - align to top of cell
+          doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
+          
+          // Patent number (wrapped, left-aligned)
+          doc.text(pnLines, 25, currentY + 4);
+          
+          // Relevance score (single line, vertically centered if row is tall)
+          const relY = currentY + 4 + (rowHeight > 10 ? (rowHeight - 10) / 2 : 0);
+          doc.text(rel, 100, relY);
+          
+          // Title (wrapped, left-aligned)
+          doc.text(titleLines, 140, currentY + 4);
+          
+          currentY += rowHeight + 2;
         });
       }
 
-      // Stage 1 — Prior Art Details (title + abstract)
-      if (pqai.length > 0) {
+      // Stage 1 — Prior Art Details (two-column format matching sample image)
+      if (patentsToShow.length > 0) {
         checkPageSpace(60);
         doc.addPage();
         tocEntries.push({ label: 'Stage 1 — Prior Art Details', page: doc.getNumberOfPages() });
@@ -487,45 +615,517 @@ export class PDFReportService {
         doc.text('STAGE 1 — PRIOR ART DETAILS', 20, 17);
         currentY = 40;
 
-        const detailed = [...pqai]
-          .sort((a: any, b: any) => ((b.relevanceScore || b.score || b.relevance || 0) - (a.relevanceScore || a.score || a.relevance || 0)))
-          .slice(0, 10);
+        // Sort all shortlisted patents by relevance
+        const detailed = [...patentsToShow]
+          .sort((a: any, b: any) => ((b.relevanceScore || b.score || b.relevance || 0) - (a.relevanceScore || a.score || a.relevance || 0)));
 
-        doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
-        doc.setFont('helvetica', 'normal');
-        doc.setFontSize(10);
+        // Table configuration - two-column format optimized for landscape
+        const marginX = 15;
+        const marginRight = 15;
+        const tableWidth = pageWidth - marginX - marginRight;
+        const labelColWidth = 60; // Wider label column for better readability in landscape
+        const valueColWidth = tableWidth - labelColWidth; // Remaining width for value column
+        const fontSize = 9; // Slightly larger font for landscape
+        const lineHeight = 4.5;
+        const cellPadding = 4;
+        const rowSpacing = 1; // Spacing between rows
 
+        // Helper function to draw a two-column row
+        const drawTwoColumnRow = (label: string, value: string, isLastRow: boolean = false): number => {
+          // Wrap text for both columns
+          const labelLines = doc.splitTextToSize(label, labelColWidth - cellPadding * 2);
+          const valueLines = doc.splitTextToSize(value, valueColWidth - cellPadding * 2);
+          
+          // Calculate row height based on maximum lines
+          const rowHeight = Math.max(
+            labelLines.length * lineHeight + cellPadding * 2,
+            valueLines.length * lineHeight + cellPadding * 2,
+            8 // Minimum row height
+          );
+
+          // Draw cell borders
+          doc.setDrawColor(200, 200, 200);
+          // Left column (label)
+          doc.rect(marginX, currentY, labelColWidth, rowHeight);
+          // Right column (value)
+          doc.rect(marginX + labelColWidth, currentY, valueColWidth, rowHeight);
+          // Bottom border (if last row)
+          if (isLastRow) {
+            doc.setLineWidth(0.5);
+            doc.line(marginX, currentY + rowHeight, marginX + tableWidth, currentY + rowHeight);
+            doc.setLineWidth(0.1);
+          }
+
+          // Draw label (left column, left-aligned)
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(fontSize);
+          doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
+          labelLines.forEach((line: string, lineIdx: number) => {
+            doc.text(line, marginX + cellPadding, currentY + cellPadding + (lineIdx + 1) * lineHeight);
+          });
+
+          // Draw value (right column, left-aligned)
+          valueLines.forEach((line: string, lineIdx: number) => {
+            doc.text(line, marginX + labelColWidth + cellPadding, currentY + cellPadding + (lineIdx + 1) * lineHeight);
+          });
+
+          return rowHeight;
+        };
+
+        // Helper function to draw justified abstract text
+        const drawJustifiedAbstract = (text: string, x: number, y: number, width: number): number => {
+          const words = text.trim().split(/\s+/);
+          if (words.length === 0) return lineHeight + cellPadding * 2;
+          
+          const lines: string[] = [];
+          let currentLine: string[] = [];
+          let currentLineWidth = 0;
+          
+          words.forEach((word: string) => {
+            const spaceWidth = currentLine.length > 0 ? doc.getTextWidth(' ') : 0;
+            const wordWidth = doc.getTextWidth(word);
+            const testWidth = currentLineWidth + spaceWidth + wordWidth;
+            
+            if (testWidth <= width && currentLine.length > 0) {
+              currentLine.push(word);
+              currentLineWidth = testWidth;
+            } else if (currentLine.length === 0) {
+              currentLine.push(word);
+              currentLineWidth = wordWidth;
+            } else {
+              // Justify the line
+              if (currentLine.length > 1) {
+                const lineText = currentLine.join(' ');
+                const lineTextWidth = doc.getTextWidth(lineText);
+                const totalSpaces = currentLine.length - 1;
+                const extraSpace = (width - lineTextWidth) / totalSpaces;
+                const spaceCharWidth = doc.getTextWidth(' ');
+                const extraSpaces = Math.floor(extraSpace / spaceCharWidth);
+                
+                let justifiedLine = currentLine[0];
+                for (let j = 1; j < currentLine.length; j++) {
+                  justifiedLine += ' '.repeat(1 + extraSpaces) + currentLine[j];
+                }
+                lines.push(justifiedLine);
+              } else {
+                lines.push(currentLine[0]);
+              }
+              
+              currentLine = [word];
+              currentLineWidth = wordWidth;
+            }
+          });
+          
+          // Add last line (left-aligned, not justified)
+          if (currentLine.length > 0) {
+            lines.push(currentLine.join(' '));
+          }
+          
+          // Draw lines
+          lines.forEach((line: string, lineIdx: number) => {
+            doc.text(line, x, y + cellPadding + (lineIdx + 1) * lineHeight);
+          });
+          
+          return Math.max(8, lines.length * lineHeight + cellPadding * 2);
+        };
+
+        // Draw each patent in two-column format
         detailed.forEach((r: any, idx: number) => {
-          if (currentY > pageHeight - 50) { doc.addPage(); currentY = 20; }
+          // Check if we need a new page (leave space for header and at least 3 rows)
+          if (currentY > pageHeight - 80) {
+            doc.addPage();
+            currentY = 20;
+          }
+
           const pnFull = String(r.publicationNumber || r.pn || r.publication_number || r.id || 'Unknown');
           const title = String(r.title || 'Untitled Patent');
           const abstract = String(r.snippet || r.abstract || r.description || '').trim();
-          const url = `https://patents.google.com/patent/${pnFull}`;
-
-          doc.setFont('helvetica', 'bold');
-          doc.textWithLink(`${pnFull} — ${title}`, 20, currentY, { url });
-          currentY += 7;
-          doc.setFont('helvetica', 'normal');
-          // Metadata line (if available)
-          const metaParts: string[] = [];
-          if (r.publication_date) metaParts.push(`Pub Date: ${r.publication_date}`);
-          if (r.filing_date) metaParts.push(`Filing: ${r.filing_date}`);
-          if (Array.isArray(r.applicants) && r.applicants.length) metaParts.push(`Applicants: ${r.applicants.slice(0,2).join('; ')}`);
-          if (Array.isArray(r.inventors) && r.inventors.length) metaParts.push(`Inventors: ${r.inventors.slice(0,3).join('; ')}`);
-          if (Array.isArray(r.cpc) && r.cpc.length) metaParts.push(`CPC: ${r.cpc.slice(0,3).join(', ')}`);
-          if (metaParts.length) {
-            const metaLine = doc.splitTextToSize(metaParts.join('  |  '), pageWidth - 40);
-            doc.setTextColor(80,80,80);
-            doc.setFontSize(9);
-            doc.text(metaLine, 20, currentY);
-            currentY += metaLine.length * 4 + 2;
-            doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
-            doc.setFontSize(10);
+          const pubDate = String(r.publication_date || r.pub_date || r.date || '—');
+          const appNo = String(r.application_number || r.applicationNumber || '—');
+          const appDate = String(r.application_date || r.filing_date || r.filingDate || '—');
+          const priorityNo = String(r.priority_number || r.priorityNumber || 'null');
+          const priorityDate = String(r.priority_date || r.priorityDate || pubDate || '—');
+          const inventors = Array.isArray(r.inventors) ? r.inventors.join(' | ') : 
+                           (r.inventor ? String(r.inventor) : '—');
+          const familyMembers = String(r.family_members || r.familyMembers || pnFull);
+          
+          // Format relevance score as percentage
+          const relValue = parseFloat(String(r.relevanceScore || r.score || r.relevance || '0'));
+          let relPercent = relValue;
+          if (relPercent < 1 && relPercent > 0) {
+            relPercent = relPercent * 100;
           }
-          const absLines = doc.splitTextToSize(abstract || 'No abstract available.', pageWidth - 40);
-          doc.text(absLines.slice(0, 8), 20, currentY);
-          currentY += Math.min(absLines.length, 8) * 5 + 6;
+          relPercent = Math.min(100, Math.max(0, relPercent));
+          const relevance = relPercent.toFixed(2) + '%';
+
+          // Draw red header for each patent reference
+          const headerText = `Reference ${idx + 1}: ${pnFull}`;
+          const headerHeight = 10;
+          doc.setFillColor(colors.danger[0], colors.danger[1], colors.danger[2]); // Red header
+          doc.rect(marginX, currentY, tableWidth, headerHeight, 'F');
+          doc.setTextColor(colors.white[0], colors.white[1], colors.white[2]);
+          doc.setFont('helvetica', 'bold');
+          doc.setFontSize(9);
+          doc.text(headerText, marginX + cellPadding, currentY + 7);
+          currentY += headerHeight + 2;
+
+          // Draw table rows
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(fontSize);
+          doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
+
+          // Helper function to draw a four-column row (label1, value1, label2, value2)
+          const drawFourColumnRow = (label1: string, value1: string, label2: string, value2: string): number => {
+            const colWidth = (tableWidth - 8) / 4; // Divide into 4 columns with spacing
+            const labelWidth = colWidth * 0.4; // Label takes 40% of column
+            const valueWidth = colWidth * 0.6; // Value takes 60% of column
+            
+            // Wrap text for all columns
+            const label1Lines = doc.splitTextToSize(label1, labelWidth - cellPadding * 2);
+            const value1Lines = doc.splitTextToSize(value1, valueWidth - cellPadding * 2);
+            const label2Lines = doc.splitTextToSize(label2, labelWidth - cellPadding * 2);
+            const value2Lines = doc.splitTextToSize(value2, valueWidth - cellPadding * 2);
+            
+            // Calculate row height based on maximum lines
+            const maxLines = Math.max(
+              label1Lines.length,
+              value1Lines.length,
+              label2Lines.length,
+              value2Lines.length
+            );
+            const rowHeight = Math.max(
+              maxLines * lineHeight + cellPadding * 2,
+              8 // Minimum row height
+            );
+
+            // Draw cell borders
+            doc.setDrawColor(200, 200, 200);
+            // Column 1 (label1)
+            doc.rect(marginX, currentY, colWidth, rowHeight);
+            // Column 2 (value1)
+            doc.rect(marginX + colWidth, currentY, colWidth, rowHeight);
+            // Column 3 (label2)
+            doc.rect(marginX + colWidth * 2, currentY, colWidth, rowHeight);
+            // Column 4 (value2)
+            doc.rect(marginX + colWidth * 3, currentY, colWidth, rowHeight);
+
+            // Draw label1 (left column, left-aligned)
+            doc.setFont('helvetica', 'bold');
+            label1Lines.forEach((line: string, lineIdx: number) => {
+              doc.text(line, marginX + cellPadding, currentY + cellPadding + (lineIdx + 1) * lineHeight);
+            });
+
+            // Draw value1
+            doc.setFont('helvetica', 'normal');
+            value1Lines.forEach((line: string, lineIdx: number) => {
+              doc.text(line, marginX + colWidth + cellPadding, currentY + cellPadding + (lineIdx + 1) * lineHeight);
+            });
+
+            // Draw label2
+            doc.setFont('helvetica', 'bold');
+            label2Lines.forEach((line: string, lineIdx: number) => {
+              doc.text(line, marginX + colWidth * 2 + cellPadding, currentY + cellPadding + (lineIdx + 1) * lineHeight);
+            });
+
+            // Draw value2
+            doc.setFont('helvetica', 'normal');
+            value2Lines.forEach((line: string, lineIdx: number) => {
+              doc.text(line, marginX + colWidth * 3 + cellPadding, currentY + cellPadding + (lineIdx + 1) * lineHeight);
+            });
+
+            return rowHeight;
+          };
+
+          // Row 1: Publication No and Publication Date
+          const row1Height = drawFourColumnRow('Publication No:', pnFull, 'Publication Date:', pubDate);
+          currentY += row1Height + rowSpacing;
+          
+          // Row 2: Application No and Application Date
+          const row2Height = drawFourColumnRow('Application No:', appNo, 'Application Date:', appDate);
+          currentY += row2Height + rowSpacing;
+          
+          // Row 3: Priority No and Priority Date
+          const row3Height = drawFourColumnRow('Priority No:', priorityNo, 'Priority Date:', priorityDate);
+          currentY += row3Height + rowSpacing;
+          
+          // Inventor(s) - may wrap to multiple lines
+          const row7Height = drawTwoColumnRow('Inventor(s):', inventors);
+          currentY += row7Height + rowSpacing;
+          
+          // Family Member(s)
+          const row8Height = drawTwoColumnRow('Family Member(s):', familyMembers);
+          currentY += row8Height + rowSpacing;
+          
+          // Title - may wrap to multiple lines
+          const row9Height = drawTwoColumnRow('Title:', title);
+          currentY += row9Height + rowSpacing;
+          
+          // Abstract - justified text
+          const abstractText = abstract || 'No abstract available.';
+          const abstractWidth = valueColWidth - cellPadding * 2;
+          const abstractX = marginX + labelColWidth + cellPadding;
+          
+          // Calculate abstract height
+          const abstractWords = abstractText.trim().split(/\s+/);
+          let abstractLineCount = 1;
+          let currentAbstractWidth = 0;
+          abstractWords.forEach((word: string) => {
+            const wordWidth = doc.getTextWidth((currentAbstractWidth > 0 ? ' ' : '') + word);
+            if (currentAbstractWidth + wordWidth > abstractWidth && currentAbstractWidth > 0) {
+              abstractLineCount++;
+              currentAbstractWidth = doc.getTextWidth(word);
+            } else {
+              currentAbstractWidth += wordWidth;
+            }
+          });
+          
+          const abstractRowHeight = Math.max(
+            abstractLineCount * lineHeight + cellPadding * 2,
+            8
+          );
+          
+          // Draw abstract row
+          doc.setDrawColor(200, 200, 200);
+          doc.rect(marginX, currentY, labelColWidth, abstractRowHeight);
+          doc.rect(marginX + labelColWidth, currentY, valueColWidth, abstractRowHeight);
+          doc.setLineWidth(0.5);
+          doc.line(marginX, currentY + abstractRowHeight, marginX + tableWidth, currentY + abstractRowHeight);
+          doc.setLineWidth(0.1);
+          
+          // Draw label
+          doc.text('Abstract:', marginX + cellPadding, currentY + cellPadding + lineHeight);
+          
+          // Draw justified abstract
+          drawJustifiedAbstract(abstractText, abstractX, currentY, abstractWidth);
+          
+          currentY += abstractRowHeight + 8; // Extra spacing after each patent
         });
+      }
+
+      // Stage 3.5a — Patent-wise Feature Comparison Matrix (showing ALL patents and features)
+      try {
+        const stage35Raw: any = (searchRun as any).stage35Results || [];
+        const featureMaps: any[] = Array.isArray(stage35Raw?.feature_map)
+          ? stage35Raw.feature_map
+          : (Array.isArray(stage35Raw) ? stage35Raw : []);
+
+        const features: string[] = Array.isArray(stage0?.inventionFeatures) ? stage0.inventionFeatures : [];
+
+        if (featureMaps.length > 0 && features.length > 0) {
+          // New page for matrix
+          checkPageSpace(60);
+          doc.addPage();
+          tocEntries.push({ label: 'Stage 3.5a — Feature Map Matrix', page: doc.getNumberOfPages() });
+          currentY = 20;
+
+          // Header bar
+          doc.setFillColor(colors.accent[0], colors.accent[1], colors.accent[2]);
+          doc.rect(0, 0, pageWidth, 25, 'F');
+          doc.setTextColor(colors.white[0], colors.white[1], colors.white[2]);
+          doc.setFontSize(16);
+          doc.setFont('helvetica', 'bold');
+          doc.text('PATENT-WISE FEATURE COMPARISON MATRIX', 20, 17);
+          currentY = 40;
+
+          // Show ALL patents (up to 20) and ALL features (up to 8)
+          const allPatents = featureMaps.slice(0, 20); // Limit to 20 as per requirement
+          const allFeatures = features.slice(0, 8); // Limit to 8 as per requirement
+
+          // Grid layout - optimized for landscape
+          const marginX = 15;
+          const marginRight = 15;
+          const featureColWidth = 80; // Wider feature column for better readability in landscape
+          const availableWidth = pageWidth - marginX - marginRight - featureColWidth;
+
+          // Calculate how many patents can fit per page based on minimum column width
+          // In landscape, we can fit more patents with slightly wider columns
+          const minColWidth = 25; // Slightly wider minimum for better readability
+          const maxPatentsPerPage = Math.floor(availableWidth / minColWidth);
+
+          // For landscape, aim for 12-15 patents per page to utilize the wider space
+          const targetPatentsPerPage = Math.min(15, Math.max(12, maxPatentsPerPage));
+          const patentsPerPage = Math.min(targetPatentsPerPage, allPatents.length);
+          const totalPages = Math.ceil(allPatents.length / patentsPerPage);
+          
+          const rowHeight = 7; // Compact row height
+          const cellPadding = 2;
+
+          // Helper to get status for a feature in a patent map
+          const getStatus = (pm: any, feature: string): 'P' | 'Pt' | 'A' | '-' => {
+            const fa = Array.isArray(pm?.feature_analysis) ? pm.feature_analysis : [];
+            const cell = fa.find((c: any) => c.feature === feature);
+            if (!cell) return '-';
+            if (cell.status === 'Present') return 'P';
+            if (cell.status === 'Partial') return 'Pt';
+            if (cell.status === 'Absent') return 'A';
+            return '-';
+          };
+
+          // Draw legend (only on first page)
+          doc.setFont('helvetica', 'normal');
+          doc.setFontSize(7);
+          doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
+          doc.text('Legend:', marginX, currentY);
+          const legendY = currentY - 4;
+          let lx = marginX + 20;
+          const drawLegend = (label: string, fill: number[], text: string) => {
+            doc.setFillColor(fill[0], fill[1], fill[2]);
+            doc.rect(lx, legendY, 8, 5, 'F');
+            doc.setTextColor(255, 255, 255);
+            doc.setFontSize(6);
+            doc.text(label, lx + 1, legendY + 3.5);
+            doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
+            doc.setFontSize(7);
+            doc.text(text, lx + 10, legendY + 3.5);
+            lx += 55;
+          };
+          drawLegend('P', colors.success, 'Present');
+          drawLegend('Pt', colors.warning, 'Partial');
+          drawLegend('A', colors.danger, 'Absent');
+          currentY += 10;
+
+          // Process patents in chunks (pages)
+          for (let pageIdx = 0; pageIdx < totalPages; pageIdx++) {
+            if (pageIdx > 0) {
+              // New page for next chunk of patents
+              doc.addPage();
+              currentY = 20;
+            }
+
+            const startIdx = pageIdx * patentsPerPage;
+            const endIdx = Math.min(startIdx + patentsPerPage, allPatents.length);
+            const patentsOnThisPage = allPatents.slice(startIdx, endIdx);
+            const colWidth = Math.floor(availableWidth / patentsOnThisPage.length);
+
+            // Function to draw column headers
+            const drawHeader = () => {
+              // Feature header cell
+              doc.setFillColor(colors.lightGray[0], colors.lightGray[1], colors.lightGray[2]);
+              doc.rect(marginX, currentY - 2, featureColWidth, rowHeight + 3, 'F');
+              doc.setDrawColor(200, 200, 200);
+              doc.rect(marginX, currentY - 2, featureColWidth, rowHeight + 3);
+              doc.setFont('helvetica', 'bold');
+              doc.setFontSize(7);
+              doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
+              doc.text('FEATURE', marginX + 2, currentY + 3);
+
+              // Patent columns
+              for (let c = 0; c < patentsOnThisPage.length; c++) {
+                const pm = patentsOnThisPage[c];
+                const pnRaw = String(pm.pn || pm.publicationNumber || pm.publication_number || 'PN');
+                const x = marginX + featureColWidth + c * colWidth;
+                doc.setFillColor(colors.lightGray[0], colors.lightGray[1], colors.lightGray[2]);
+                doc.rect(x, currentY - 2, colWidth, rowHeight + 3, 'F');
+                doc.setDrawColor(200, 200, 200);
+                doc.rect(x, currentY - 2, colWidth, rowHeight + 3);
+                doc.setFont('helvetica', 'bold');
+                doc.setFontSize(5.5); // Smaller font for patent numbers
+                doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
+                
+                // Try to fit full patent number, wrap if needed, or truncate intelligently
+                const maxWidth = colWidth - 4;
+                const pnWidth = doc.getTextWidth(pnRaw);
+                if (pnWidth <= maxWidth) {
+                  // Full patent number fits
+                  doc.text(pnRaw, x + colWidth / 2, currentY + 3, { align: 'center' });
+                } else {
+                  // Try wrapping first
+                  const pnLines = doc.splitTextToSize(pnRaw, maxWidth);
+                  if (pnLines.length === 1) {
+                    // Single line but still too long - truncate with ellipsis
+                    let truncated = pnRaw;
+                    while (doc.getTextWidth(truncated + '..') > maxWidth && truncated.length > 0) {
+                      truncated = truncated.substring(0, truncated.length - 1);
+                    }
+                    doc.text(truncated + '..', x + colWidth / 2, currentY + 3, { align: 'center' });
+                  } else {
+                    // Multi-line - show first line only
+                    doc.text(pnLines[0], x + colWidth / 2, currentY + 2, { align: 'center' });
+                  }
+                }
+              }
+              currentY += rowHeight + 4;
+            };
+
+            // Draw header
+            drawHeader();
+
+            // Draw rows for ALL features
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(6);
+            for (let r = 0; r < allFeatures.length; r++) {
+              // Check if we need a new page (but keep same patent columns)
+              if (currentY > pageHeight - 25) {
+                doc.addPage();
+                currentY = 20;
+                drawHeader();
+              }
+
+              const featureName = allFeatures[r];
+              
+              // Feature name cell - allow wrapping for long names
+              const featureLines = doc.splitTextToSize(featureName, featureColWidth - 4);
+              const featureRowHeight = Math.max(rowHeight + 2, featureLines.length * 4 + 2);
+              
+              // Feature name cell background (zebra)
+              if (r % 2 === 0) {
+                doc.setFillColor(248, 249, 250);
+                doc.rect(marginX, currentY - 1, featureColWidth, featureRowHeight, 'F');
+              }
+              doc.setDrawColor(200, 200, 200);
+              doc.rect(marginX, currentY - 1, featureColWidth, featureRowHeight);
+              
+              // Draw feature name (wrapped if needed)
+              doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
+              featureLines.forEach((line: string, lineIdx: number) => {
+                doc.text(line, marginX + 2, currentY + 2 + (lineIdx * 4));
+              });
+
+              // Cells per patent
+              for (let c = 0; c < patentsOnThisPage.length; c++) {
+                const pm = patentsOnThisPage[c];
+                const status = getStatus(pm, featureName);
+                const x = marginX + featureColWidth + c * colWidth;
+                
+                // Determine fill color
+                let fill = colors.lightGray as number[];
+                if (status === 'P') fill = colors.success;
+                else if (status === 'Pt') fill = colors.warning;
+                else if (status === 'A') fill = colors.danger;
+                
+                doc.setFillColor(fill[0], fill[1], fill[2]);
+                doc.rect(x, currentY - 1, colWidth, featureRowHeight, 'F');
+                doc.setDrawColor(200, 200, 200);
+                doc.rect(x, currentY - 1, colWidth, featureRowHeight);
+                
+                // Cell label (centered)
+                const tx = x + Math.floor(colWidth / 2);
+                const ty = currentY + Math.floor(featureRowHeight / 2) + 1;
+                
+                // Choose contrasting color
+                const useWhite = (status === 'A' || status === 'P');
+                doc.setTextColor(useWhite ? 255 : 0, useWhite ? 255 : 0, useWhite ? 255 : 0);
+                doc.setFontSize(7);
+                doc.text(status, tx, ty, { align: 'center' });
+              }
+              currentY += featureRowHeight + 1;
+            }
+
+            // Footer showing page info
+            if (totalPages > 1) {
+              doc.setFontSize(6);
+              doc.setTextColor(120, 120, 120);
+              doc.text(
+                `Page ${pageIdx + 1} of ${totalPages} - Showing patents ${startIdx + 1}-${endIdx} of ${allPatents.length}`,
+                marginX,
+                currentY + 4
+              );
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Error rendering feature comparison matrix:', e);
+        // Non-fatal: if 3.5a results missing, skip matrix
       }
 
       // Feature Uniqueness Table Section (Stage 3.5 summary)
@@ -550,12 +1150,13 @@ export class PDFReportService {
 
         // Table header
         doc.setFillColor(colors.lightGray[0], colors.lightGray[1], colors.lightGray[2]);
-        doc.rect(20, currentY - 2, pageWidth - 40, 12, 'F');
+        doc.rect(15, currentY - 2, pageWidth - 30, 14, 'F');
         doc.setFont('helvetica', 'bold');
-        doc.text('FEATURE', 25, currentY + 3);
-        doc.text('UNIQUENESS %', 120, currentY + 3);
-        doc.text('NOVELTY CLASS', 160, currentY + 3);
-        currentY += 15;
+        doc.setFontSize(11);
+        doc.text('FEATURE', 20, currentY + 5);
+        doc.text('UNIQUENESS %', 140, currentY + 5);
+        doc.text('NOVELTY CLASS', 200, currentY + 5);
+        currentY += 18;
 
         // Feature rows
         doc.setFont('helvetica', 'normal');
@@ -598,6 +1199,74 @@ export class PDFReportService {
           currentY += 12;
         });
         currentY += 15;
+      }
+
+      // Stage 3.5 — Patent Details (tabular per-patent cells)
+      try {
+        const stage35Raw: any = (searchRun as any).stage35Results || [];
+        const stage35List: any[] = Array.isArray(stage35Raw?.feature_map)
+          ? stage35Raw.feature_map
+          : (Array.isArray(stage35Raw) ? stage35Raw : []);
+
+        if (stage35List.length > 0) {
+          checkPageSpace(60);
+          doc.addPage();
+          tocEntries.push({ label: 'Stage 3.5 - Patent Details', page: doc.getNumberOfPages() });
+          currentY = 20;
+
+          doc.setFillColor(colors.accent[0], colors.accent[1], colors.accent[2]);
+          doc.rect(0, 0, pageWidth, 25, 'F');
+          doc.setTextColor(colors.white[0], colors.white[1], colors.white[2]);
+          doc.setFontSize(16);
+          doc.setFont('helvetica', 'bold');
+          doc.text('STAGE 3.5 — PATENT DETAILS', 20, 17);
+          currentY = 40;
+
+          // Build quick index for Stage 1 PQAI results by canonical PN to fetch meta/abstract
+          const pqaiArr: any[] = Array.isArray((stage1 as any)?.pqaiResults) ? (stage1 as any).pqaiResults : [];
+          const pqaiIndex: Record<string, any> = {};
+          for (const r of pqaiArr) {
+            const cpn = canonicalizePn(r.publicationNumber || r.publication_number || r.id);
+            if (cpn) pqaiIndex[cpn] = r;
+          }
+
+          // Render each Stage 3.5 patent as a small table: meta row (PN + date), title full row, abstract full row
+          for (const pm of stage35List) {
+            if (currentY > pageHeight - 60) { doc.addPage(); currentY = 20; }
+
+            const pn = String(pm.pn || pm.publicationNumber || pm.publication_number || pm.id || '-');
+            const cpn = canonicalizePn(pn);
+            const s1 = pqaiIndex[cpn] || {};
+            const title = String(pm.title || s1.title || 'Untitled Patent');
+            const pubDate = String(s1.publication_date || s1.pub_date || s1.date || '-');
+            const abstract = String(s1.snippet || s1.abstract || s1.description || '').trim();
+
+            // Row 1: Dynamic cells (PN, Publication Date)
+            let rowX = 20;
+            const maxCellWidth = Math.floor((pageWidth - 48) / 2);
+            const metaCells: Array<{ label: string; value: string }> = [
+              { label: 'Patent Number', value: pn },
+              { label: 'Publication Date', value: pubDate }
+            ];
+            for (const cell of metaCells) {
+              if (rowX > pageWidth - 40) { rowX = 20; currentY += 6; }
+              const cellBox = drawLabeledCell(cell.label, cell.value, rowX, currentY, maxCellWidth);
+              rowX += cellBox.width + 8;
+            }
+            currentY += 26; // spacing after meta row
+
+            // Row 2: Title (full-width cell)
+            const titleBox = drawLabeledCell('Title', title, 20, currentY, pageWidth - 40);
+            currentY += titleBox.height + 6;
+
+            // Row 3: Abstract (full-width cell)
+            const abstractText = abstract || 'No abstract available.';
+            const abstractBox = drawLabeledCell('Abstract', abstractText, 20, currentY, pageWidth - 40);
+            currentY += abstractBox.height + 12;
+          }
+        }
+      } catch (e) {
+        // Non-fatal: skip Stage 3.5 patent details if data is unavailable
       }
 
       // Structured Narrative Section
@@ -685,16 +1354,17 @@ export class PDFReportService {
 
         // Table header
         doc.setFillColor(colors.lightGray[0], colors.lightGray[1], colors.lightGray[2]);
-        doc.rect(20, currentY - 2, pageWidth - 40, 12, 'F');
+        doc.rect(15, currentY - 2, pageWidth - 30, 14, 'F');
         doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
         doc.setFont('helvetica', 'bold');
-        doc.text('PATENT ID', 25, currentY + 3);
-        doc.text('COVERAGE', 70, currentY + 3);
-        doc.text('PRESENT', 110, currentY + 3);
-        doc.text('PARTIAL', 140, currentY + 3);
-        doc.text('ABSENT', 170, currentY + 3);
-        doc.text('RATIO', 195, currentY + 3);
-        currentY += 15;
+        doc.setFontSize(9);
+        doc.text('PATENT ID', 20, currentY + 5);
+        doc.text('COVERAGE', 85, currentY + 5);
+        doc.text('PRESENT', 130, currentY + 5);
+        doc.text('PARTIAL', 170, currentY + 5);
+        doc.text('ABSENT', 210, currentY + 5);
+        doc.text('RATIO', 240, currentY + 5);
+        currentY += 18;
 
         // Sort by coverage ratio (most relevant first) and show top 15
         const sortedPatents = stage4Results.per_patent_coverage
@@ -774,7 +1444,7 @@ export class PDFReportService {
 
           doc.setFont('helvetica', 'normal');
           doc.setFontSize(10);
-          recommendations.filing_strategy.forEach((strategy, index) => {
+          recommendations.filing_strategy.forEach((strategy: string, index: number) => {
             doc.text(`• ${strategy}`, 25, currentY);
             currentY += 8;
           });
@@ -790,7 +1460,7 @@ export class PDFReportService {
 
           doc.setFont('helvetica', 'normal');
           doc.setFontSize(10);
-          recommendations.search_expansion.forEach((expansion) => {
+          recommendations.search_expansion.forEach((expansion: string) => {
             doc.text(`• ${expansion}`, 25, currentY);
             currentY += 8;
           });

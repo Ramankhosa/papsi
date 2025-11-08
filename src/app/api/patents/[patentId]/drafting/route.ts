@@ -4,6 +4,7 @@ export const dynamic = 'force-dynamic'
 import { authenticateUser } from '@/lib/auth-middleware';
 import { prisma } from '@/lib/prisma';
 import { DraftingService } from '@/lib/drafting-service';
+import { IdeaBankService } from '@/lib/idea-bank-service';
 import { llmGateway } from '@/lib/metering/gateway';
 import crypto from 'crypto';
 import plantumlEncoder from 'plantuml-encoder';
@@ -617,33 +618,36 @@ ${candidatesText}`
   // Debug: log the idea bank suggestions
   console.log('Idea Bank suggestions to persist:', ideaBank.length)
 
-  // Persist Idea Bank suggestions if any
-  console.log('🔄 Persisting', ideaBank.length, 'idea bank suggestions to database...')
+  // Persist Idea Bank suggestions to the main idea bank table
+  console.log('🔄 Persisting', ideaBank.length, 'idea bank suggestions to main idea bank...')
   if (ideaBank.length > 0) {
+    const ideaBankService = new IdeaBankService();
+    const avgRelevance = allDecisions.length
+      ? (allDecisions.reduce((acc, d) => acc + (d.relevance || 0), 0) / allDecisions.length)
+      : 0.5;
+
     for (let i = 0; i < ideaBank.length; i++) {
       const ib = ideaBank[i] || {}
       try {
-        const savedIdea = await (prisma as any).ideaBankSuggestion.create({
-          data: {
-            relatedArtRunId: useRunId as string,
-            modelVersion: (ideaResult as any)?.response?.modelClass || (ideaResult as any)?.response?.metadata?.model || null,
-            ideaTitle: String(ib.title || '').slice(0, 200),
-            corePrinciple: String(ib.core_principle || '').slice(0, 2000),
-            expectedAdvantage: String(ib.expected_advantage || '').slice(0, 500),
-            tags: Array.isArray(ib.tags) ? ib.tags.map((t: any) => String(t).slice(0, 60)) : [],
-            nonObviousExtension: String(ib.non_obvious_extension || '').slice(0, 1000),
-            sourceBatchIndex: i,
-            confidenceScore: allDecisions.length
-              ? (allDecisions.reduce((acc, d) => acc + (d.relevance || 0), 0) / allDecisions.length)
-              : null
-          }
-        })
-        console.log('✅ Saved idea bank suggestion:', savedIdea.id, 'for idea:', ib.title?.substring(0, 50))
+        // Convert the idea format to match what addIdeaFromNoveltySearch expects
+        const extractedIdea = {
+          title: String(ib.title || '').slice(0, 200),
+          description: String(ib.core_principle || '').slice(0, 2000),
+          abstract: String(ib.expected_advantage || '').slice(0, 500),
+          domainTags: Array.isArray(ib.tags) ? ib.tags.map((t: any) => String(t).slice(0, 60)) : [],
+          technicalField: 'AI-Generated',
+          keyFeatures: [String(ib.non_obvious_extension || '').slice(0, 200)],
+          potentialApplications: ['Patentable invention'],
+          noveltyScore: avgRelevance
+        };
+
+        await ideaBankService.addIdeaFromNoveltySearch(extractedIdea, user, patentId);
+        console.log('✅ Persisted idea bank suggestion:', ib.title?.substring(0, 50))
       } catch (e) {
-        console.error('❌ Failed to save idea bank suggestion:', ib.title, 'Error:', e)
+        console.error('❌ Failed to persist idea bank suggestion:', ib.title, 'Error:', e)
       }
     }
-    console.log('✅ Finished persisting', ideaBank.length, 'idea bank suggestions')
+    console.log('✅ Finished persisting', ideaBank.length, 'idea bank suggestions to main idea bank')
   } else {
     console.log('⚠️ No idea bank suggestions to persist')
   }

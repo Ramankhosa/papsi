@@ -70,13 +70,7 @@ export async function extractTenantContextFromRequest(
       return {
         tenantId: payload.tenant_id || 'dev-tenant',
         userId: payload.sub,
-        planCode: 'DEVELOPMENT',
-        features: ['ALL_FEATURES'],
-        limits: {
-          monthlyUsage: 999999,
-          concurrentUsers: 999,
-          apiCallsPerMonth: 999999
-        }
+        planId: 'DEVELOPMENT'
       }
     }
 

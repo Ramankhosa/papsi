@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { NoveltySearchService } from '@/lib/novelty-search-service';
+import { verifyJWT } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 
 const noveltySearchService = new NoveltySearchService();
@@ -27,11 +28,23 @@ export async function GET(
     const jwtToken = authHeader.substring(7);
 
     // Validate user from JWT token
-    const user = await noveltySearchService.validateUser(jwtToken);
-    if (!user) {
+    const payload = verifyJWT(jwtToken);
+    if (!payload || !payload.sub) {
       return NextResponse.json(
         { error: 'Invalid token' },
         { status: 401 }
+      );
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: { id: true, email: true, name: true, tenantId: true }
+    });
+
+    if (!user) {
+      return NextResponse.json(
+        { error: 'User not found' },
+        { status: 404 }
       );
     }
 
@@ -120,11 +133,23 @@ export async function POST(
     const jwtToken = authHeader.substring(7);
 
     // Validate user from JWT token
-    const user = await noveltySearchService.validateUser(jwtToken);
-    if (!user) {
+    const payload = verifyJWT(jwtToken);
+    if (!payload || !payload.sub) {
       return NextResponse.json(
         { error: 'Invalid token' },
         { status: 401 }
+      );
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: { id: true, email: true, name: true, tenantId: true }
+    });
+
+    if (!user) {
+      return NextResponse.json(
+        { error: 'User not found' },
+        { status: 404 }
       );
     }
 
@@ -187,11 +212,23 @@ export async function PATCH(
     const jwtToken = authHeader.substring(7);
 
     // Validate user from JWT token
-    const user = await noveltySearchService.validateUser(jwtToken);
-    if (!user) {
+    const payload = verifyJWT(jwtToken);
+    if (!payload || !payload.sub) {
       return NextResponse.json(
         { error: 'Invalid token' },
         { status: 401 }
+      );
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: { id: true, email: true, name: true, tenantId: true }
+    });
+
+    if (!user) {
+      return NextResponse.json(
+        { error: 'User not found' },
+        { status: 404 }
       );
     }
 

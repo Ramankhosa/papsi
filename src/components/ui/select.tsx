@@ -5,6 +5,7 @@ interface SelectContextType {
   onValueChange: (value: string) => void;
   isOpen: boolean;
   setIsOpen: (open: boolean) => void;
+  disabled?: boolean;
 }
 
 const SelectContext = createContext<SelectContextType | undefined>(undefined);
@@ -14,6 +15,7 @@ interface SelectProps {
   value: string;
   onValueChange: (value: string) => void;
   className?: string;
+  disabled?: boolean;
 }
 
 interface SelectTriggerProps {
@@ -36,11 +38,11 @@ interface SelectItemProps {
   className?: string;
 }
 
-export function Select({ children, value, onValueChange, className = '' }: SelectProps) {
+export function Select({ children, value, onValueChange, className = '', disabled = false }: SelectProps) {
   const [isOpen, setIsOpen] = useState(false);
 
   return (
-    <SelectContext.Provider value={{ value, onValueChange, isOpen, setIsOpen }}>
+    <SelectContext.Provider value={{ value, onValueChange, isOpen, setIsOpen, disabled }}>
       <div className={`relative ${className}`}>
         {children}
       </div>
@@ -55,8 +57,9 @@ export function SelectTrigger({ children, className = '' }: SelectTriggerProps) 
   return (
     <button
       type="button"
+      disabled={context.disabled}
       className={`flex h-10 w-full items-center justify-between rounded-md border border-gray-300 bg-white px-3 py-2 text-sm ring-offset-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
-      onClick={() => context.setIsOpen(!context.isOpen)}
+      onClick={() => !context.disabled && context.setIsOpen(!context.isOpen)}
     >
       {children}
       <svg className="h-4 w-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">

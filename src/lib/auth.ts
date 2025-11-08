@@ -31,13 +31,13 @@ export async function sendPasswordResetEmail(email: string, resetToken: string) 
 
   const msg = {
     to: email,
-    from: 'noreply@spotipr.com', // Replace with your verified sender
-    subject: 'Reset Your Password - Spotipr',
+    from: 'noreply@patentnest.ai', // Replace with your verified sender
+    subject: 'Reset Your Password - PatentNest',
     html: `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
         <h2 style="color: #1f2937; margin-bottom: 20px;">Reset Your Password</h2>
         <p style="color: #6b7280; line-height: 1.6; margin-bottom: 20px;">
-          You requested a password reset for your Spotipr account. Click the button below to reset your password:
+          You requested a password reset for your PatentNest account. Click the button below to reset your password:
         </p>
         <a href="${resetUrl}" style="display: inline-block; background-color: #3b82f6; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: 500;">
           Reset Password

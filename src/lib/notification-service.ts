@@ -123,7 +123,7 @@ export class ExpiryNotificationService {
 
     const msg = {
       to: user.email,
-      from: 'noreply@spotipr.com',
+      from: 'noreply@patentnest.ai',
       subject,
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -145,7 +145,7 @@ export class ExpiryNotificationService {
             </div>
 
             <p style="color: #666; line-height: 1.6;">
-              To continue using Spotipr, please contact your tenant administrator to renew your access before the expiry date.
+              To continue using PatentNest, please contact your tenant administrator to renew your access before the expiry date.
             </p>
           </div>
 
@@ -156,7 +156,7 @@ export class ExpiryNotificationService {
           </div>
 
           <div style="color: #999; font-size: 12px; text-align: center; border-top: 1px solid #eee; padding-top: 20px;">
-            <p>This is an automated notification from Spotipr. If you believe this is an error, please contact support.</p>
+            <p>This is an automated notification from PatentNest. If you believe this is an error, please contact support.</p>
           </div>
         </div>
       `
@@ -215,7 +215,7 @@ export class ExpiryNotificationService {
 
     const msg = {
       to: admin.email,
-      from: 'noreply@spotipr.com',
+      from: 'noreply@patentnest.ai',
       subject,
       html: `
         <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
@@ -249,7 +249,7 @@ export class ExpiryNotificationService {
           </div>
 
           <div style="color: #999; font-size: 12px; text-align: center; border-top: 1px solid #eee; padding-top: 20px;">
-            <p>This is an automated alert from Spotipr. Regular monitoring helps maintain user access.</p>
+            <p>This is an automated alert from PatentNest. Regular monitoring helps maintain user access.</p>
           </div>
         </div>
       `

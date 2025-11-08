@@ -25,7 +25,7 @@ export abstract class BasePatentService {
   /**
    * Verify JWT token and extract user information
    */
-  protected async validateUser(jwtToken: string): Promise<User> {
+  protected async validateUser(jwtToken: string): Promise<User | never> {
     try {
       // Check if token exists and is not empty
       if (!jwtToken || jwtToken.trim() === '') {
@@ -93,11 +93,16 @@ export abstract class BasePatentService {
         } catch (dbError) {
           console.error('Failed to get fallback user:', dbError);
         }
+        // If fallback user lookup failed in development, throw error
+        throw new Error('Authentication failed - no valid user found');
       }
 
       // If we reach here, authentication failed and no fallback was available
       throw new Error('Authentication failed - no valid user found');
     }
+
+    // This should never be reached, but TypeScript wants it
+    throw new Error('Unexpected end of validateUser method');
   }
 
   /**

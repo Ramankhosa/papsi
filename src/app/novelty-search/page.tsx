@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import NoveltySearchWorkflow from '@/components/novelty-search/NoveltySearchWorkflow';
+import { PageLoadingBird } from '@/components/ui/loading-bird';
 
 // Component that uses search params, wrapped in Suspense
 function NoveltySearchContent() {
@@ -25,11 +26,7 @@ export default function NoveltySearchPage() {
   }, [user, isLoading, router]);
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
-      </div>
-    );
+    return <PageLoadingBird message="Loading novelty search..." />;
   }
 
   if (!user) {

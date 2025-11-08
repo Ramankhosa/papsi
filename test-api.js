@@ -1,132 +1,17 @@
-// Simple test script for the new multi-tenant APIs
-const fetch = require('node-fetch');
+const jwt = require('jsonwebtoken');
 
-const BASE_URL = 'http://localhost:3001';
+// Create a test JWT token (you'll need to replace with actual secret and user ID)
+const secret = process.env.JWT_SECRET || 'your-secret-key';
+const userId = 'analyst-user-id'; // Replace with actual user ID
 
-async function testAPIs() {
-  try {
-    console.log('🧪 Testing Multi-Tenant APIs...\n');
+const token = jwt.sign(
+  { sub: userId, email: 'analyst@spotipr.com' },
+  secret,
+  { expiresIn: '1h' }
+);
 
-    // First, create a tenant (this would normally require Super Admin auth)
-    console.log('1. Creating test tenant...');
-    const tenantResponse = await fetch(`${BASE_URL}/api/v1/platform/tenants`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // For testing, we'll skip auth for now
-      },
-      body: JSON.stringify({
-        name: 'Test Corp',
-        atiId: 'TEST001'
-      })
-    });
+console.log('Test JWT token:', token);
 
-    if (!tenantResponse.ok) {
-      console.log('❌ Failed to create tenant:', await tenantResponse.text());
-      return;
-    }
-
-    const tenant = await tenantResponse.json();
-    console.log('✅ Tenant created:', tenant);
-
-    // Issue an ATI token
-    console.log('\n2. Issuing ATI token...');
-    const tokenResponse = await fetch(`${BASE_URL}/api/v1/admin/ati/issue`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // For testing, we'll skip auth for now
-      },
-      body: JSON.stringify({
-        expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24 hours
-        max_uses: 10,
-        plan_tier: 'BASIC'
-      })
-    });
-
-    if (!tokenResponse.ok) {
-      console.log('❌ Failed to issue ATI token:', await tokenResponse.text());
-      return;
-    }
-
-    const tokenResult = await tokenResponse.json();
-    console.log('✅ ATI token issued:', {
-      fingerprint: tokenResult.fingerprint,
-      token_id: tokenResult.token_id
-    });
-
-    // Extract the raw token for signup
-    const rawToken = tokenResult.token_display_once;
-    console.log('📝 Raw token (for signup):', rawToken);
-
-    // Test signup
-    console.log('\n3. Testing signup...');
-    const signupResponse = await fetch(`${BASE_URL}/api/v1/auth/signup`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        email: 'test@example.com',
-        password: 'testpassword123',
-        atiToken: rawToken
-      })
-    });
-
-    if (!signupResponse.ok) {
-      console.log('❌ Signup failed:', await signupResponse.text());
-      return;
-    }
-
-    const signupResult = await signupResponse.json();
-    console.log('✅ Signup successful:', signupResult);
-
-    // Test login
-    console.log('\n4. Testing login...');
-    const loginResponse = await fetch(`${BASE_URL}/api/v1/auth/login`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        email: 'test@example.com',
-        password: 'testpassword123'
-      })
-    });
-
-    if (!loginResponse.ok) {
-      console.log('❌ Login failed:', await loginResponse.text());
-      return;
-    }
-
-    const loginResult = await loginResponse.json();
-    console.log('✅ Login successful, got token');
-
-    const jwtToken = loginResult.token;
-
-    // Test whoami
-    console.log('\n5. Testing whoami...');
-    const whoamiResponse = await fetch(`${BASE_URL}/api/v1/auth/whoami`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${jwtToken}`
-      }
-    });
-
-    if (!whoamiResponse.ok) {
-      console.log('❌ Whoami failed:', await whoamiResponse.text());
-      return;
-    }
-
-    const whoamiResult = await whoamiResponse.json();
-    console.log('✅ Whoami successful:', whoamiResult);
-
-    console.log('\n🎉 All tests passed!');
-
-  } catch (error) {
-    console.error('❌ Test failed:', error);
-  }
-}
-
-// Run the tests
-testAPIs();
+// Now you can use this token to test the API
+console.log('\nUse this curl command:');
+console.log(`curl -H "Authorization: Bearer ${token}" http://localhost:3000/api/idea-bank`);

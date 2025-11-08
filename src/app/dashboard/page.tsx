@@ -6,6 +6,7 @@ import { useAuth, useRoleAccess } from '@/lib/auth-context'
 import SuperAdminDashboard from '@/components/dashboards/SuperAdminDashboard'
 import TenantAdminDashboard from '@/components/dashboards/TenantAdminDashboard'
 import UserDashboard from '@/components/dashboards/UserDashboard'
+import { PageLoadingBird } from '@/components/ui/loading-bird'
 
 export default function DashboardPage() {
   const { user, isLoading } = useAuth()
@@ -19,11 +20,7 @@ export default function DashboardPage() {
   }, [user, isLoading, router])
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600"></div>
-      </div>
-    )
+    return <PageLoadingBird message="Loading your workspace..." />
   }
 
   if (!user) {
