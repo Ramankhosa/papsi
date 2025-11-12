@@ -28,8 +28,8 @@ export default function PatentDetailPage() {
   const { user, isLoading: authLoading } = useAuth()
   const router = useRouter()
   const params = useParams()
-  const projectId = params.projectId as string
-  const patentId = params.patentId as string
+  const projectId = params?.projectId as string
+  const patentId = params?.patentId as string
 
   const [patent, setPatent] = useState<Patent | null>(null)
   const [project, setProject] = useState<Project | null>(null)

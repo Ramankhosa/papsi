@@ -1,10 +1,10 @@
 import type { Metadata } from 'next'
-import { Inter } from 'next/font/google'
+import { Inter, Cormorant_Garamond } from 'next/font/google'
 import { Providers } from '@/components/providers'
 import Header from '@/components/Header'
 import './globals.css'
 
-// Configure Inter font with fallbacks for offline development
+// Configure Inter and Cormorant Garamond fonts with fallbacks for offline development
 const inter = Inter({
   subsets: ['latin'],
   display: 'swap',
@@ -12,9 +12,17 @@ const inter = Inter({
   preload: false, // Disable preload to prevent fetch attempts
 })
 
+const cormorant = Cormorant_Garamond({
+  subsets: ['latin'],
+  weight: ['400', '500', '600', '700'],
+  display: 'swap',
+  variable: '--font-cormorant',
+  preload: false,
+})
+
 export const metadata: Metadata = {
-  title: 'PatentNest - AI-Powered Patent Writing',
-  description: 'Professional patent writing assistance powered by AI',
+  title: 'PatentNest.ai – "Where Ideas Hatch Into Patents"',
+  description: 'Draft, validate, and protect inventions — effortlessly, intelligently, and globally. AI-powered patent writing for innovators.',
 }
 
 export default function RootLayout({
@@ -24,7 +32,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={`${inter.className} bg-gpt-gray-50 min-h-screen`}>
+      <body className={`${inter.className} ${cormorant.variable} bg-gpt-gray-50 min-h-screen`}>
         <Providers>
           <Header />
           {children}

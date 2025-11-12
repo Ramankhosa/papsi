@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import BackendActivityPanel from './BackendActivityPanel'
 
 interface AnnexureDraftStageProps {
   session: any
@@ -13,6 +14,8 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   const [generated, setGenerated] = useState<Record<string, string>>({})
   const [debugSteps, setDebugSteps] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
+  const [usePersonaStyle, setUsePersonaStyle] = useState<boolean>(true)
+  const [styleAvailable, setStyleAvailable] = useState<boolean | null>(null)
   const [currentPair, setCurrentPair] = useState<[string, string] | null>(null)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [editingKey, setEditingKey] = useState<string | null>(null)
@@ -81,7 +84,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     setCurrentPair(keys)
     try {
       const sections = keys.filter(Boolean)
-      const res = await onComplete({ action: 'generate_sections', sessionId: session?.id, sections })
+      const res = await onComplete({ action: 'generate_sections', sessionId: session?.id, sections, usePersonaStyle })
       // Merge new generated content with existing content, but do not overwrite with empty strings
       const incoming = res?.generated || {}
       const filtered: Record<string,string> = {}
@@ -122,7 +125,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     try {
       const instructions: Record<string,string> = {}
       if (regenRemarks[key]) instructions[key] = regenRemarks[key]
-      const res = await onComplete({ action: 'generate_sections', sessionId: session?.id, sections: [key], instructions })
+      const res = await onComplete({ action: 'generate_sections', sessionId: session?.id, sections: [key], instructions, usePersonaStyle })
       const incoming = res?.generated || {}
       const value = typeof incoming?.[key] === 'string' ? incoming[key].trim() : ''
       if (value) setGenerated(prev => ({ ...prev, [key]: value }))
@@ -422,40 +425,27 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
         </div>
 
         <div className="lg:col-span-1">
-          <div className="border rounded-lg p-4">
-            <h4 className="font-semibold text-gray-900 mb-2">Backend activity</h4>
-            {loading && (
-              <div className="mb-3 p-2 bg-yellow-50 rounded text-sm text-yellow-700 flex items-center gap-2">
-                <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-                Processing with AI...
-              </div>
-            )}
-            {currentPair && !loading && (
-              <div className="mb-3 p-2 bg-blue-50 rounded text-sm text-blue-700">
-                {(() => {
-                  const names = currentPair.filter(Boolean).map(k => displayName[k] || k)
-                  return `Currently generating: ${names.join(' + ')}`
-                })()}
-              </div>
-            )}
-            {Object.values(sectionLoading).some(Boolean) && !loading && (
-              <div className="mb-3 p-2 bg-blue-50 rounded text-sm text-blue-700">
-                Regenerating: {Object.entries(sectionLoading).filter(([_, loading]) => loading).map(([key, _]) => displayName[key] || key).join(', ')}
-              </div>
-            )}
-            <ol className="space-y-2 text-sm">
-              {Array.isArray(debugSteps) && debugSteps.map((s:any, i:number) => (
-                <li key={i} className="flex items-center justify-between">
-                  <span className="text-gray-700">{s.step}</span>
-                  <span className={"text-xs px-2 py-0.5 rounded " + (s.status === 'ok' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')}>{s.status}</span>
-                </li>
-              ))}
-              {!Array.isArray(debugSteps) || debugSteps.length === 0 ? <li className="text-gray-400">No steps yet. Click Generate.</li> : null}
-            </ol>
-          </div>
+          <BackendActivityPanel
+            personaStyleEnabled={usePersonaStyle}
+            onTogglePersonaStyle={() => {
+              if (styleAvailable === false) return
+              setUsePersonaStyle(prev => !prev)
+            }}
+            activeLabel={(() => {
+              if (currentPair) {
+                const names = currentPair.filter(Boolean).map(k => displayName[k] || k)
+                return names.join(' + ')
+              }
+              const regen = Object.entries(sectionLoading)
+                .filter(([_, v]) => v)
+                .map(([key]) => displayName[key] || key)
+              return regen.length ? `Regenerating ${regen.join(', ')}` : undefined
+            })()}
+            steps={(Array.isArray(debugSteps) ? debugSteps : []).map((s:any) => ({
+              id: String(s.step || ''),
+              state: s.status === 'fail' ? 'error' : (s.status || 'running')
+            }))}
+          />
         </div>
       </div>
     </div>

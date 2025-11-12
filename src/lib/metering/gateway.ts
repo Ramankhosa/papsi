@@ -22,7 +22,7 @@ export class LLMGateway {
   private system = createMeteringSystem()
 
   async executeLLMOperation(
-    request: { headers: Record<string, string> },
+    request: { headers: Record<string, string> } | { tenantContext: TenantContext },
     llmRequest: LLMRequest
   ): Promise<{ success: boolean; response?: LLMResponse; error?: MeteringError }> {
     try {
@@ -93,7 +93,8 @@ export class LLMGateway {
       LLM6_REPORT_GENERATION: 'PRIOR_ART_SEARCH',
       IDEA_BANK_ACCESS: 'IDEA_BANK',
       IDEA_BANK_RESERVE: 'IDEA_BANK',
-      IDEA_BANK_EDIT: 'IDEA_BANK'
+      IDEA_BANK_EDIT: 'IDEA_BANK',
+      PERSONA_SYNC_LEARN: 'PERSONA_SYNC'
     }
     return taskToFeatureMap[taskCode]
   }

@@ -705,11 +705,27 @@ Respond in this exact JSON shape:
               debugSteps.push({ step: `fixer_${s}`, status: 'ok', meta: { applied: true, fixedTo: val.substring(0, 100) + '...' } })
               generated[s] = val
               debugSteps.push({ step: `guard_${s}`, status: 'ok' })
+              // Enforce section hard word limits post-guard
+              try {
+                const enforced = this.enforceMaxWords(s, generated[s])
+                if (enforced.clipped) {
+                  generated[s] = enforced.text
+                  debugSteps.push({ step: `limit_enforce_${s}`, status: 'ok', meta: { before: enforced.before, after: enforced.after, maxEnforced: true } })
+                }
+              } catch {}
             } else {
               debugSteps.push({ step: `fixer_${s}`, status: 'fail', meta: { reason: recheck.reason, fixedTo: val.substring(0, 100) + '...' } })
               if (s === 'abstract' && recheck.reason === 'Abstract must not include numerals/figure refs') {
                 debugSteps.push({ step: `guard_${s}`, status: 'ok', meta: { note: 'Allowing abstract with numerals for partial generation' } })
                 generated[s] = val
+                // Enforce section hard word limits post-guard
+                try {
+                  const enforced = this.enforceMaxWords(s, generated[s])
+                  if (enforced.clipped) {
+                    generated[s] = enforced.text
+                    debugSteps.push({ step: `limit_enforce_${s}`, status: 'ok', meta: { before: enforced.before, after: enforced.after, maxEnforced: true } })
+                  }
+                } catch {}
               } else {
                 return { success: false, error: `Guardrail failed for ${s}: ${recheck.reason}`, debugSteps }
               }
@@ -720,6 +736,14 @@ Respond in this exact JSON shape:
         } else {
           generated[s] = val
           debugSteps.push({ step: `guard_${s}`, status: 'ok' })
+          // Enforce section hard word limits post-guard
+          try {
+            const enforced = this.enforceMaxWords(s, generated[s])
+            if (enforced.clipped) {
+              generated[s] = enforced.text
+              debugSteps.push({ step: `limit_enforce_${s}`, status: 'ok', meta: { before: enforced.before, after: enforced.after, maxEnforced: true } })
+            }
+          } catch {}
         }
 
         // Save last llmMeta
@@ -1133,6 +1157,97 @@ Return ONLY a valid JSON object exactly matching the schema above. Do NOT includ
 Ensure total word count remains within ±20% of target length. If exceeding, truncate only closing descriptive sentences, not definitions.
 `
     }
+  }
+
+  // Enforce conservative hard upper word limits per section to avoid overflows
+  private static enforceMaxWords(
+    section: string,
+    text: string
+  ): { text: string; clipped: boolean; before: number; after: number } {
+    const wc = (t: string) => (String(t || '').trim().length ? String(t).trim().split(/\s+/).length : 0)
+    const before = wc(text)
+    const maxMap: Record<string, number> = {
+      title: 15,
+      abstract: 150,
+      fieldOfInvention: 80,
+      background: 400,
+      summary: 300,
+      briefDescriptionOfDrawings: 80,
+      detailedDescription: 1200,
+      bestMethod: 350,
+      claims: 900,
+      industrialApplicability: 100,
+      listOfNumerals: 1000 // effectively no cap; list is usually short
+    }
+    const max = maxMap[section] ?? 0
+    if (!max || before <= max) return { text, clipped: false, before, after: before }
+
+    const sentenceSplit = (t: string) => t.split(/(?<=[\.!?;:])\s+/).filter(Boolean)
+    const wordTrim = (t: string, m: number) => t.split(/\s+/).slice(0, m).join(' ')
+
+    // Claims: preserve numbering; trim from last dependent claims backwards
+    if (section === 'claims') {
+      let blocks = String(text).split(/\n\s*(?=\d+\.)/).map(s => s.trim()).filter(Boolean)
+      const blockWordCount = () => wc(blocks.join('\n'))
+      let current = blockWordCount()
+      // Iteratively shorten last block sentences, then drop last block if still long
+      while (current > max && blocks.length > 0) {
+        const lastIdx = blocks.length - 1
+        const last = blocks[lastIdx]
+        const m = last.match(/^(\d+\.\s*)([\s\S]*)$/)
+        if (!m) { blocks.pop(); current = blockWordCount(); continue }
+        const prefix = m[1]
+        let body = m[2].trim()
+        const sentences = sentenceSplit(body)
+        if (sentences.length > 1) {
+          // Remove trailing sentence and re-evaluate
+          sentences.pop()
+          body = sentences.join(' ')
+          blocks[lastIdx] = `${prefix}${body}`.trim()
+        } else {
+          // If only one sentence remains, drop the entire last block
+          blocks.pop()
+        }
+        current = blockWordCount()
+      }
+      const out = blocks.join('\n')
+      const after = wc(out)
+      return { text: out, clipped: after < before, before, after }
+    }
+
+    // Brief Description: keep per-line cap (handled elsewhere) and enforce total cap
+    if (section === 'briefDescriptionOfDrawings') {
+      const lines = String(text).split(/\n+/).map(l => l.trim()).filter(Boolean)
+      const outLines: string[] = []
+      let total = 0
+      for (const l of lines) {
+        const words = l.split(/\s+/)
+        if (total + words.length <= max) {
+          outLines.push(l)
+          total += words.length
+        } else {
+          const remaining = Math.max(0, max - total)
+          if (remaining > 0) {
+            outLines.push(words.slice(0, remaining).join(' '))
+            total = max
+          }
+          break
+        }
+      }
+      const out = outLines.join('\n')
+      const after = wc(out)
+      return { text: out, clipped: after < before, before, after }
+    }
+
+    // Default: drop trailing sentences until within cap; fallback to word trim
+    let sentences = sentenceSplit(String(text))
+    while (wc(sentences.join(' ')) > max && sentences.length > 1) {
+      sentences.pop()
+    }
+    let out = sentences.join(' ')
+    if (wc(out) > max) out = wordTrim(out, max)
+    const after = wc(out)
+    return { text: out, clipped: after < before, before, after }
   }
 
   private static wrapMultiSectionPrompt(prompts: Record<string, string>): string {

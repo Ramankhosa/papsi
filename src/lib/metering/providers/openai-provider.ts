@@ -1,7 +1,7 @@
 // OpenAI Provider Implementation
-// Supports GPT-4o model
+// Supports GPT-4o model with multimodal capabilities
 
-import type { LLMRequest, LLMResponse, EnforcementDecision } from '../types'
+import type { LLMRequest, LLMResponse, EnforcementDecision, MultimodalContent } from '../types'
 import type { LLMProvider, ProviderConfig } from './llm-provider'
 
 export class OpenAIProvider implements LLMProvider {
@@ -19,6 +19,30 @@ export class OpenAIProvider implements LLMProvider {
     const maxTokens = limits.maxTokensOut || 4096
 
     try {
+      // Build message content for OpenAI
+      let messageContent: any;
+
+      if (request.content) {
+        // Build multimodal content for GPT-4o
+        messageContent = []
+        for (const part of request.content.parts) {
+          if (part.type === 'text') {
+            messageContent.push({ type: 'text', text: part.text })
+          } else if (part.type === 'image') {
+            messageContent.push({
+              type: 'image_url',
+              image_url: {
+                url: `data:${part.image.mimeType};base64,${part.image.data}`,
+                detail: 'high' // Use high detail for better analysis
+              }
+            })
+          }
+        }
+      } else {
+        // Fallback to text-only
+        messageContent = request.prompt || ''
+      }
+
       const response = await fetch(`${this.config.baseURL}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -30,7 +54,7 @@ export class OpenAIProvider implements LLMProvider {
           messages: [
             {
               role: 'user',
-              content: request.prompt || ''
+              content: messageContent
             }
           ],
           max_tokens: maxTokens,

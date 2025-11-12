@@ -45,7 +45,7 @@ export default function ProjectDashboardPage() {
   const { user, isLoading: authLoading } = useAuth()
   const router = useRouter()
   const params = useParams()
-  const projectId = params.projectId as string
+  const projectId = params?.projectId as string
   const [project, setProject] = useState<Project | null>(null)
   const [patents, setPatents] = useState<Patent[]>([])
   const [isLoading, setIsLoading] = useState(true)

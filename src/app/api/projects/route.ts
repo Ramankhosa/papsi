@@ -99,7 +99,8 @@ export async function POST(request: NextRequest) {
 
     // Check if user has permission to create projects (ANALYST and above)
     const allowedRoles = ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST']
-    if (!allowedRoles.includes(user.role)) {
+    const hasPermission = user.roles?.some(role => allowedRoles.includes(role))
+    if (!hasPermission) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 })
     }
 

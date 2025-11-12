@@ -173,7 +173,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Check if user is super admin
-    if (payload.role !== 'SUPER_ADMIN') {
+    if (!payload.roles?.includes('SUPER_ADMIN')) {
       return NextResponse.json({ error: 'Super admin access required' }, { status: 403 })
     }
 

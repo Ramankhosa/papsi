@@ -1,12 +1,13 @@
 'use client'
 
 import React, { createContext, useContext, useEffect, useState } from 'react'
+import { hasPermission } from '@/lib/permissions'
 
 export interface User {
   user_id: string
   email: string
   tenant_id: string | null
-  role: 'SUPER_ADMIN' | 'OWNER' | 'ADMIN' | 'MANAGER' | 'ANALYST' | 'VIEWER'
+  roles: ('SUPER_ADMIN' | 'OWNER' | 'ADMIN' | 'MANAGER' | 'ANALYST' | 'VIEWER')[]
   ati_id: string | null
 }
 
@@ -149,20 +150,56 @@ export function useAuth() {
   return context
 }
 
+// Helper function to check if user has any of the specified roles
+function hasAnyRole(user: any, roles: string[]): boolean {
+  if (!user?.roles) return false;
+  return roles.some(role => user.roles.includes(role));
+}
+
+// Helper function to check if user has all of the specified roles
+function hasAllRoles(user: any, roles: string[]): boolean {
+  if (!user?.roles) return false;
+  return roles.every(role => user.roles.includes(role));
+}
+
 // Role-based access helpers
 export function useRoleAccess() {
   const { user } = useAuth()
 
+  // Determine tenant type based on user's tenant context
+  // For security, default to ENTERPRISE (strict permissions)
+  let tenantType: 'INDIVIDUAL' | 'ENTERPRISE' = 'ENTERPRISE'
+
+  // Simple heuristic: if this is a platform admin context or enterprise tenant, use ENTERPRISE
+  // Individual tenants would be explicitly marked as such in the future
+  if (user?.ati_id === 'PLATFORM') {
+    tenantType = 'ENTERPRISE'
+  } else if (user?.tenant_id) {
+    // For now, assume all named tenants are ENTERPRISE
+    // This can be enhanced to fetch actual tenant type from API
+    tenantType = 'ENTERPRISE'
+  }
+
   return {
-    isSuperAdmin: user?.role === 'SUPER_ADMIN',
-    isTenantOwner: user?.role === 'OWNER',
-    isTenantAdmin: user?.role === 'OWNER' || user?.role === 'ADMIN',
-    isManager: user?.role === 'MANAGER',
-    isAnalyst: user?.role === 'ANALYST',
-    isViewer: user?.role === 'VIEWER',
-    canManageUsers: ['OWNER', 'ADMIN'].includes(user?.role || ''),
-    canManageTokens: ['OWNER', 'ADMIN'].includes(user?.role || ''),
-    canViewReports: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST', 'VIEWER'].includes(user?.role || ''),
-    canUseProduct: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST'].includes(user?.role || '')
+    isSuperAdmin: hasAnyRole(user, ['SUPER_ADMIN']),
+    isTenantOwner: hasAnyRole(user, ['OWNER']),
+    isTenantAdmin: hasAnyRole(user, ['OWNER', 'ADMIN']),
+    isManager: hasAnyRole(user, ['MANAGER']),
+    isAnalyst: hasAnyRole(user, ['ANALYST']),
+    isViewer: hasAnyRole(user, ['VIEWER']),
+
+    // Context-aware permissions (consider tenant type)
+    canManageUsers: hasPermission(user, 'manage_users', tenantType),
+    canManageTokens: hasPermission(user, 'manage_ati_tokens', tenantType),
+    canManageTenants: hasPermission(user, 'manage_tenants', tenantType),
+    canViewReports: hasPermission(user, 'view_reports', tenantType),
+    canViewAnalytics: hasPermission(user, 'view_analytics', tenantType),
+    canCreateProjects: hasPermission(user, 'create_projects', tenantType),
+    canUseProduct: hasPermission(user, 'access_novelty_search', tenantType),
+
+    // Additional helpers for multiple role checks
+    hasRoles: (roles: string[]) => hasAnyRole(user, roles),
+    hasAllRoles: (roles: string[]) => hasAllRoles(user, roles),
+    userRoles: user?.roles || []
   }
 }

@@ -20,7 +20,7 @@ export default function TenantAdminAnalyticsPage() {
       return
     }
 
-    if (user.role !== 'ADMIN') {
+    if (!user.roles?.includes('ADMIN')) {
       // Redirect to appropriate dashboard if not tenant admin
       window.location.href = '/dashboard'
       return
@@ -57,7 +57,7 @@ export default function TenantAdminAnalyticsPage() {
     )
   }
 
-  if (user.role !== 'ADMIN') {
+  if (!user.roles?.includes('ADMIN')) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-red-600">Access denied. Tenant admin privileges required.</div>

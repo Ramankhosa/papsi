@@ -26,6 +26,11 @@ enum UserStatus {
   SUSPENDED
 }
 
+enum TenantType {
+  INDIVIDUAL   // Personal tenants for solo users (can have multi-role)
+  ENTERPRISE   // Enterprise tenants (strict role separation)
+}
+
 enum ATITokenStatus {
   ACTIVE
   INACTIVE
@@ -40,6 +45,7 @@ model Tenant {
   id        String       @id @default(cuid())
   name      String
   atiId     String       @unique
+  type      TenantType   @default(ENTERPRISE) // Default to enterprise for existing tenants
   status    TenantStatus @default(ACTIVE)
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
@@ -61,6 +67,11 @@ model Tenant {
   // Idea Bank relations
   ideaBankIdeas IdeaBankIdea[]
 
+  // Style Profile relations
+  styleProfiles     StyleProfile[]
+  styleTrainingJobs StyleTrainingJob[]
+  documents         Document[]
+
   @@map("tenants")
 }
 
@@ -71,7 +82,7 @@ model User {
   email            String     @unique
   passwordHash     String?
   name             String?
-  role             UserRole   @default(ANALYST)
+  roles            UserRole[] @default([ANALYST])
   status           UserStatus @default(ACTIVE)
   noveltySearchesCompleted Int @default(0) // Track successful novelty searches
   createdAt        DateTime   @default(now())
@@ -99,6 +110,13 @@ model User {
   createdIdeaBankIdeas    IdeaBankIdea[]         @relation("IdeaBankIdeaCreator")
   ideaBankReservations    IdeaBankReservation[]
   ideaBankHistory         IdeaBankHistory[]
+
+  // Style Profile relations
+  styleProfiles           StyleProfile[]         @relation("StyleProfileCreator")
+  lockedStyleProfiles     StyleProfile[]         @relation("StyleProfileLocker")
+  ownedStyleProfiles      StyleProfile[]         @relation("StyleProfileUser")
+  styleTrainingJobs       StyleTrainingJob[]
+  documents               Document[]
 
   @@map("users")
 }
@@ -251,9 +269,8 @@ enum FeatureCode {
   PRIOR_ART_SEARCH
   PATENT_DRAFTING
   DIAGRAM_GENERATION
-  EMBEDDINGS
-  RERANK
   IDEA_BANK
+  PERSONA_SYNC
 }
 
 enum TaskCode {
@@ -266,6 +283,7 @@ enum TaskCode {
   IDEA_BANK_ACCESS
   IDEA_BANK_RESERVE
   IDEA_BANK_EDIT
+  PERSONA_SYNC_LEARN
 }
 
 enum ModelClass {
@@ -1513,4 +1531,98 @@ model IdeaBankHistory {
   @@index([ideaId, timestamp])
   @@index([userId])
   @@map("idea_bank_history")
+}
+
+// === PERSONA SYNC (STYLE LEARNING) MODELS ===
+
+enum StyleProfileStatus {
+  NOT_LEARNED
+  LEARNING
+  LEARNED
+  NEEDS_MORE_DATA
+  FAILED
+}
+
+enum StyleTrainingJobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum DocumentType {
+  SAMPLE  // Training samples for style learning
+  REFERENCE // Reference documents
+}
+
+model StyleProfile {
+  id          String             @id @default(cuid())
+  tenantId    String
+  userId      String
+  version     Int                @default(1)
+  json        Json // StyleProfile JSON schema
+  status      StyleProfileStatus @default(NOT_LEARNED)
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+  createdBy   String
+  lockedAt    DateTime?
+  lockedBy    String?
+
+  // Relations
+  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user        User               @relation("StyleProfileUser", fields: [userId], references: [id])
+  creator     User               @relation("StyleProfileCreator", fields: [createdBy], references: [id])
+  locker      User?              @relation("StyleProfileLocker", fields: [lockedBy], references: [id])
+
+  // Indexes
+  @@unique([tenantId, userId, version])
+  @@index([tenantId, userId])
+  @@index([status])
+  @@map("style_profiles")
+}
+
+model StyleTrainingJob {
+  id             String                @id @default(cuid())
+  tenantId       String
+  userId         String
+  status         StyleTrainingJobStatus @default(PENDING)
+  inputsMetadata Json? // Array of {docId, filename, tokens, hash}
+  metrics        Json? // Learning metrics: {totalTokens, entropy, coverage, ngrams}
+  error          String?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id])
+
+  // Indexes
+  @@index([tenantId, userId])
+  @@index([status])
+  @@map("style_training_jobs")
+}
+
+model Document {
+  id          String       @id @default(cuid())
+  tenantId    String
+  userId      String
+  type        DocumentType @default(SAMPLE)
+  filename    String
+  contentPtr  String? // File path or storage reference
+  tokens      Int          @default(0) // Token count
+  hash        String // Content hash for integrity
+  mimeType    String?
+  sizeBytes   Int?
+  createdAt   DateTime     @default(now())
+
+  // Relations
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id])
+
+  // Indexes
+  @@index([tenantId, userId, type])
+  @@index([hash])
+  @@map("documents")
 }

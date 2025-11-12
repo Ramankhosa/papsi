@@ -13,7 +13,11 @@ export async function POST(request: NextRequest) {
   try {
     // Check if any Super Admin already exists
     const existingSuperAdmin = await prisma.user.findFirst({
-      where: { role: 'SUPER_ADMIN' }
+      where: {
+        roles: {
+          has: 'SUPER_ADMIN'
+        }
+      }
     })
 
     if (existingSuperAdmin) {
@@ -47,7 +51,7 @@ export async function POST(request: NextRequest) {
         email,
         passwordHash,
         name,
-        role: 'SUPER_ADMIN',
+        roles: ['SUPER_ADMIN'],
         status: 'ACTIVE'
       }
     })
@@ -58,7 +62,7 @@ export async function POST(request: NextRequest) {
         id: user.id,
         email: user.email,
         name: user.name,
-        role: user.role,
+        roles: user.roles,
         status: user.status
       }
     }, { status: 201 })

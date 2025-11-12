@@ -34,8 +34,8 @@ export default function NoveltySearchPage() {
   }
 
   // Check if user has permission to access novelty search
-  const hasPermission = user.role === 'OWNER' || user.role === 'ADMIN' ||
-                       user.role === 'MANAGER' || user.role === 'ANALYST';
+  const hasPermission = user.roles?.includes('OWNER') || user.roles?.includes('ADMIN') ||
+                       user.roles?.includes('MANAGER') || user.roles?.includes('ANALYST');
 
   if (!hasPermission) {
     return (
@@ -81,7 +81,7 @@ export default function NoveltySearchPage() {
               </Link>
               <div className="text-right">
                 <div className="text-sm text-gray-500">{user.email}</div>
-                <div className="text-xs text-gray-400">Role: {user.role}</div>
+                <div className="text-xs text-gray-400">Role: {user.roles?.join(', ') || 'None'}</div>
               </div>
               <button
                 onClick={() => router.push('/dashboard')}

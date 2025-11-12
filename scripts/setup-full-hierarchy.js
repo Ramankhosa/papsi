@@ -48,7 +48,7 @@ async function setupFullHierarchy() {
 
     // Check if Super Admin exists
     let superAdmin = await prisma.user.findFirst({
-      where: { role: 'SUPER_ADMIN' }
+      where: { roles: { has: 'SUPER_ADMIN' } }
     })
 
     let platformToken = null
@@ -110,7 +110,7 @@ async function setupFullHierarchy() {
           email: superAdminEmail,
           passwordHash: superAdminPasswordHash,
           name: superAdminName,
-          role: 'SUPER_ADMIN',
+          roles: ['SUPER_ADMIN'],
           status: 'ACTIVE',
           signupAtiTokenId: platformToken.id
         }
@@ -204,7 +204,7 @@ async function setupFullHierarchy() {
       update: {
         passwordHash: tenantAdminPasswordHash,
         name: tenantAdminName,
-        role: 'ADMIN',
+        roles: ['ADMIN'],
         status: 'ACTIVE'
       },
       create: {
@@ -212,7 +212,7 @@ async function setupFullHierarchy() {
         email: tenantAdminEmail,
         passwordHash: tenantAdminPasswordHash,
         name: tenantAdminName,
-        role: 'ADMIN',
+        roles: ['ADMIN'],
         status: 'ACTIVE',
         signupAtiTokenId: tenantToken.id
       }
@@ -260,7 +260,7 @@ async function setupFullHierarchy() {
       update: {
         passwordHash: analystPasswordHash,
         name: analystName,
-        role: 'ANALYST',
+        roles: ['ANALYST'],
         status: 'ACTIVE',
         signupAtiTokenId: analystToken.id
       },
@@ -269,7 +269,7 @@ async function setupFullHierarchy() {
         email: analystEmail,
         passwordHash: analystPasswordHash,
         name: analystName,
-        role: 'ANALYST',
+        roles: ['ANALYST'],
         status: 'ACTIVE',
         signupAtiTokenId: analystToken.id
       }

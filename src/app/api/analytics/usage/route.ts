@@ -111,8 +111,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    const isSuperAdmin = user.role === 'SUPER_ADMIN'
-    const isTenantAdmin = user.role === 'ADMIN'
+    const isSuperAdmin = user.roles?.includes('SUPER_ADMIN')
+    const isTenantAdmin = user.roles?.includes('ADMIN')
 
     if (!isSuperAdmin && !isTenantAdmin) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 })

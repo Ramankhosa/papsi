@@ -8,9 +8,7 @@ async function setupCompleteProPlan() {
     // 1. Create missing features
     console.log('\n1. Creating missing features...');
     const featuresToCreate = [
-      { code: 'IDEA_BANK', name: 'Idea Bank Access', unit: 'reservations' },
-      { code: 'EMBEDDINGS', name: 'Semantic Embeddings', unit: 'tokens' },
-      { code: 'RERANK', name: 'Result Reranking', unit: 'queries' }
+      { code: 'IDEA_BANK', name: 'Idea Bank Access', unit: 'reservations' }
     ];
 
     for (const featureData of featuresToCreate) {

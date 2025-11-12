@@ -10,9 +10,14 @@ import { verifyJWT, JWTPayload } from '@/lib/auth'
  * This bridges the gap between current auth and metering
  */
 export async function extractTenantContextFromRequest(
-  request: { headers: Record<string, string> }
+  request: { headers: Record<string, string> } | { tenantContext: TenantContext }
 ): Promise<TenantContext | null> {
   try {
+    // If tenant context is passed directly, use it
+    if ('tenantContext' in request) {
+      return request.tenantContext
+    }
+
     // Check if headers exist
     if (!request.headers) {
       return null

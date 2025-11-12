@@ -1,8 +1,28 @@
-import { redirect } from 'next/navigation'
+import HeroSection from '@/components/home/HeroSection'
+import TrustSection from '@/components/home/TrustSection'
+import HowItWorksSection from '@/components/home/HowItWorksSection'
+import EmotionalSection from '@/components/home/EmotionalSection'
+import ComparisonSection from '@/components/home/ComparisonSection'
+import FeaturesSection from '@/components/home/FeaturesSection'
+import SocialProofSection from '@/components/home/SocialProofSection'
+import GuidedChoiceSection from '@/components/home/GuidedChoiceSection'
+import CTAFooter from '@/components/home/CTAFooter'
+import MinimalFooter from '@/components/home/MinimalFooter'
 
-export default async function HomePage() {
-  // Let the client-side authentication handle user state
-  // If not authenticated, the dashboard will redirect to login
-  redirect('/dashboard')
+export default function HomePage() {
+  return (
+    <div className="min-h-screen">
+      <HeroSection />
+      <TrustSection />
+      <HowItWorksSection />
+      <EmotionalSection />
+      <ComparisonSection />
+      <FeaturesSection />
+      <SocialProofSection />
+      <GuidedChoiceSection />
+      <CTAFooter />
+      <MinimalFooter />
+    </div>
+  )
 }
 

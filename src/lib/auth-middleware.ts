@@ -60,7 +60,7 @@ export async function authenticateUser(request: NextRequest): Promise<{
         id: user.id,
         email: user.email,
         name: user.name,
-        role: user.role,
+        roles: user.roles,
         tenantId: user.tenantId,
         tenant: user.tenant
       },

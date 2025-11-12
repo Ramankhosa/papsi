@@ -1,11 +1,31 @@
 'use client'
 
+import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useAuth } from '@/lib/auth-context'
 import AnimatedLogo from '@/components/ui/animated-logo'
 
 export default function Header() {
   const { user, logout, isLoading } = useAuth()
+  const [showUserMenu, setShowUserMenu] = useState(false)
+  const userMenuRef = useRef<HTMLDivElement>(null)
+
+  // Handle clicks outside dropdown to close it
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setShowUserMenu(false)
+      }
+    }
+
+    if (showUserMenu) {
+      document.addEventListener('mousedown', handleClickOutside)
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [showUserMenu])
 
   const handleSignOut = () => {
     logout()
@@ -17,12 +37,14 @@ export default function Header() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
             <div className="flex items-center space-x-3">
-              <AnimatedLogo size="sm" className="flex-shrink-0" />
-              <Link href="/dashboard" className="text-xl font-bold text-gpt-gray-900">
-                Spotipr
+              <AnimatedLogo size="sm" className="flex-shrink-0" useKishoFallback={true} />
+              <Link href="/" className="text-xl font-bold text-gpt-gray-900">
+                PatentNest
               </Link>
             </div>
-            <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gpt-blue-600"></div>
+            <div className="flex items-center space-x-3">
+              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gpt-blue-600"></div>
+            </div>
           </div>
         </div>
       </header>
@@ -34,36 +56,125 @@ export default function Header() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
           <div className="flex items-center space-x-3">
-            <AnimatedLogo size="sm" autoPlayDuration={2000} className="flex-shrink-0" />
-            <Link href="/dashboard" className="text-xl font-bold text-gpt-gray-900">
+            <AnimatedLogo size="sm" autoPlayDuration={2000} className="flex-shrink-0" useKishoFallback={true} />
+            <Link href="/" className="text-xl font-bold text-gpt-gray-900">
               PatentNest
             </Link>
           </div>
 
-          {user && (
-            <div className="flex items-center space-x-4">
-              <Link
-                href="/novelty-search"
-                className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
-              >
-                🔍 Novelty Search
-              </Link>
+          {user ? (
+            <div className="relative inline-block" ref={userMenuRef}>
+              {/* Quick Navigation Links */}
+              <div className="flex items-center space-x-3">
+                <Link
+                  href="/dashboard"
+                  className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
+                >
+                  🏠 Dashboard
+                </Link>
 
-              <div className="flex items-center space-x-2">
-                <div className="w-8 h-8 bg-gpt-blue-600 rounded-full flex items-center justify-center text-white text-sm font-medium">
-                  {user.email?.charAt(0) || 'U'}
-                </div>
-                <span className="text-sm text-gpt-gray-700">
-                  {user.email}
-                </span>
+                <Link
+                  href="/novelty-search"
+                  className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
+                >
+                  🔍 Search
+                </Link>
+
+                {/* Compact User Dropdown */}
+                <button
+                  onClick={() => setShowUserMenu(!showUserMenu)}
+                  className="flex items-center space-x-2 px-3 py-2 rounded-lg hover:bg-gpt-gray-50 transition-all duration-200 border border-gpt-gray-200"
+                >
+                  <div className="w-6 h-6 bg-gpt-blue-600 rounded-full flex items-center justify-center text-white text-xs font-medium">
+                    {user.email?.charAt(0)?.toUpperCase() || 'U'}
+                  </div>
+                  <svg
+                    className={`w-3 h-3 text-gpt-gray-500 transition-transform duration-200 ${showUserMenu ? 'rotate-180' : ''}`}
+                    fill="none"
+                    stroke="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
               </div>
 
-              <button
-                onClick={handleSignOut}
-                className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
+              {/* Compact User Dropdown Menu */}
+              {showUserMenu && (
+                <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-gpt-gray-200 rounded-lg shadow-lg z-50">
+                  {/* User Info */}
+                  <div className="px-3 py-2 border-b border-gpt-gray-200 bg-gpt-gray-50">
+                    <div className="text-sm text-gpt-gray-900 font-medium truncate">{user.email}</div>
+                    <div className="text-xs text-gpt-gray-600">Role: {user.roles?.join(', ') || 'None'}</div>
+                  </div>
+
+                  {/* Menu Items */}
+                  <div className="py-1">
+                    <Link
+                      href="/dashboard"
+                      className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                      onClick={() => setShowUserMenu(false)}
+                    >
+                      <span>🏠</span>
+                      <span>Dashboard</span>
+                    </Link>
+
+                    <Link
+                      href="/novelty-search"
+                      className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                      onClick={() => setShowUserMenu(false)}
+                    >
+                      <span>🔍</span>
+                      <span>Novelty Search</span>
+                    </Link>
+
+                    <Link
+                      href="/projects"
+                      className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                      onClick={() => setShowUserMenu(false)}
+                    >
+                      <span>📁</span>
+                      <span>Projects</span>
+                    </Link>
+
+                    {/* Separator */}
+                    <div className="border-t border-gpt-gray-200 my-1"></div>
+
+                    <Link
+                      href="/persona-sync"
+                      className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                      onClick={() => setShowUserMenu(false)}
+                    >
+                      <span>🎨</span>
+                      <span>PersonaSync Training</span>
+                    </Link>
+
+                    <button
+                      onClick={handleSignOut}
+                      className="w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center space-x-2"
+                    >
+                      <span>🚪</span>
+                      <span>Sign Out</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center space-x-4">
+              <Link
+                href="/login"
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
               >
-                Sign Out
-              </button>
+                Sign In
+              </Link>
+
+              <Link
+                href="/register"
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-gpt-blue-600 hover:bg-gpt-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
+              >
+                Get Started
+              </Link>
             </div>
           )}
         </div>

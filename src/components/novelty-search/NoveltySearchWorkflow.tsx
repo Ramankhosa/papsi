@@ -370,7 +370,7 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
               includeExecutiveSummary: true,
               includeTechnicalDetails: true,
               colorCoding: true,
-              modelPreference: 'gemini-2.5-pro'
+              modelPreference: 'gemini-2.5-flash-lite'
             }
           }
         })

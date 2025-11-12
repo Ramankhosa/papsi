@@ -74,7 +74,7 @@ export class ExpiryNotificationService {
       const tenantAdmins = await prisma.user.findMany({
         where: {
           tenantId: token.tenantId,
-          role: { in: ['OWNER', 'ADMIN'] },
+          roles: { hasSome: ['OWNER', 'ADMIN'] },
           status: 'ACTIVE'
         }
       })

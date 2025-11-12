@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Only super admins can access this endpoint
-    if (payload.role !== 'SUPER_ADMIN') {
+    if (!payload.roles?.includes('SUPER_ADMIN')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 })
     }
 

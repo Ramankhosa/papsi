@@ -1,18 +1,19 @@
 // Google Gemini Provider Implementation
 // Supports Gemini 2.5 Pro model
 
-import type { LLMRequest, LLMResponse, EnforcementDecision } from '../types'
+import type { LLMRequest, LLMResponse, EnforcementDecision, MultimodalContent } from '../types'
 import type { LLMProvider, ProviderConfig } from './llm-provider'
 
 export class GeminiProvider implements LLMProvider {
   name = 'gemini'
-  supportedModels = ['gemini-2.5-pro', 'gemini-2.0-flash-lite']
+  supportedModels = ['gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite']
 
   private config: ProviderConfig
   private client: any // Google Generative AI client
 
-  constructor(config: ProviderConfig) {
+  constructor(config: ProviderConfig, name?: string) {
     this.config = config
+    if (name) this.name = name
 
     // Initialize Google Generative AI client
     if (typeof window === 'undefined') {
@@ -55,7 +56,30 @@ export class GeminiProvider implements LLMProvider {
         }
       })
 
-      const result = await model.generateContent(request.prompt || '')
+      // Handle multimodal content (text + images)
+      let contentToGenerate: any;
+      if (request.content) {
+        // Build multimodal content for Gemini
+        const parts = []
+        for (const part of request.content.parts) {
+          if (part.type === 'text') {
+            parts.push({ text: part.text })
+          } else if (part.type === 'image') {
+            parts.push({
+              inlineData: {
+                mimeType: part.image.mimeType,
+                data: part.image.data
+              }
+            })
+          }
+        }
+        contentToGenerate = parts
+      } else {
+        // Fallback to text-only prompt
+        contentToGenerate = request.prompt || ''
+      }
+
+      const result = await model.generateContent(contentToGenerate)
       const response = result.response
 
       const output = response.text()

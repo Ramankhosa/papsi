@@ -149,8 +149,6 @@ export function isValidFeatureCode(code: string): code is import('./types').Feat
     'PRIOR_ART_SEARCH',
     'PATENT_DRAFTING',
     'DIAGRAM_GENERATION',
-    'EMBEDDINGS',
-    'RERANK',
   ]
   return validCodes.includes(code)
 }

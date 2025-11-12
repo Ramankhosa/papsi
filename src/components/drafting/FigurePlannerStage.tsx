@@ -68,6 +68,65 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
     })
   }, [diagramSources, uploaded, rendering, processingStatus])
 
+  // Initialize state for new figures when diagramSources changes
+  useEffect(() => {
+    const newFigureNos = diagramSources.map((d: any) => d.figureNo)
+    setUploaded((prev) => {
+      const updated = { ...prev }
+      newFigureNos.forEach((no: number) => {
+        if (updated[no] === undefined) {
+          updated[no] = false
+        }
+      })
+      return updated
+    })
+    setRendering((prev) => {
+      const updated = { ...prev }
+      newFigureNos.forEach((no: number) => {
+        if (updated[no] === undefined) {
+          updated[no] = false
+        }
+      })
+      return updated
+    })
+    setProcessingStatus((prev) => {
+      const updated = { ...prev }
+      newFigureNos.forEach((no: number) => {
+        if (updated[no] === undefined) {
+          updated[no] = ''
+        }
+      })
+      return updated
+    })
+    setProcessingStep((prev) => {
+      const updated = { ...prev }
+      newFigureNos.forEach((no: number) => {
+        if (updated[no] === undefined) {
+          updated[no] = 0
+        }
+      })
+      return updated
+    })
+    setRenderPreview((prev) => {
+      const updated = { ...prev }
+      newFigureNos.forEach((no: number) => {
+        if (updated[no] === undefined) {
+          updated[no] = null
+        }
+      })
+      return updated
+    })
+    setIsViewing((prev) => {
+      const updated = { ...prev }
+      newFigureNos.forEach((no: number) => {
+        if (updated[no] === undefined) {
+          updated[no] = false
+        }
+      })
+      return updated
+    })
+  }, [diagramSources])
+
   const handleGenerateFromLLM = async () => {
     try {
       setIsGenerating(true)
@@ -229,9 +288,11 @@ Output: JSON only, no markdown fences.`
       setProcessingStep(prev => ({ ...prev, [figureNo]: 0 }))
 
     } catch (e) {
-      setError(`Intelligent processing failed: ${e instanceof Error ? e.message : 'Unknown error'}`)
-      setProcessingStatus(prev => ({ ...prev, [figureNo]: '' }))
-      setProcessingStep(prev => ({ ...prev, [figureNo]: 0 }))
+      const errorMessage = e instanceof Error ? e.message : 'Unknown error'
+      console.error(`Processing failed for figure ${figureNo}:`, errorMessage)
+      setError(`Figure ${figureNo} processing failed: ${errorMessage}`)
+      setProcessingStatus(prev => ({ ...prev, [figureNo]: `❌ Failed: ${errorMessage}` }))
+      setProcessingStep(prev => ({ ...prev, [figureNo]: -1 })) // Mark as failed
     } finally {
       setRendering((prev) => ({ ...prev, [figureNo]: false }))
       setIsUploading(false)
@@ -431,7 +492,9 @@ Output: JSON only, no markdown fences.`
           <div className="text-sm text-gray-600">No diagrams saved yet.</div>
         ) : (
           <div className="space-y-6">
-            {diagramSources.map((d: any) => (
+            {diagramSources
+              .sort((a: any, b: any) => a.figureNo - b.figureNo)
+              .map((d: any) => (
               <div key={d.figureNo} className="bg-white rounded-lg border p-4">
                 <div className="flex items-center justify-between mb-2">
         <div className="flex items-center">
@@ -475,6 +538,17 @@ Output: JSON only, no markdown fences.`
                   <div className="mt-2 text-xs text-indigo-600 flex items-center">
                     <span className="inline-block w-2 h-2 bg-indigo-400 rounded-full mr-2 animate-pulse"></span>
                     🤖 Advanced AI processing initializing...
+                  </div>
+                )}
+                {d.plantumlCode && !d.imageUploadedAt && !processingStatus[d.figureNo] && !rendering[d.figureNo] && (
+                  <div className="mt-2 text-xs text-orange-600 flex items-center">
+                    <button
+                      onClick={() => autoProcessDiagram(d.figureNo, d.plantumlCode)}
+                      className="inline-flex items-center px-2 py-1 border border-orange-300 text-orange-700 rounded bg-white hover:bg-orange-50 text-xs"
+                    >
+                      🔄 Process Image
+                    </button>
+                    <span className="ml-2">Click to manually start image processing</span>
                   </div>
                 )}
                 {showPlantUML[d.figureNo] && d.plantumlCode && (
@@ -559,6 +633,26 @@ Output: JSON only, no markdown fences.`
                         <span className="text-sm font-medium text-green-800">
                           ✨ Advanced visualization complete
                         </span>
+                      </div>
+                    )}
+
+                    {/* Show failed status with retry */}
+                    {processingStep[d.figureNo] === -1 && d.plantumlCode && (
+                      <div className="inline-flex items-center space-x-2 px-3 py-2 bg-gradient-to-r from-red-50 to-red-50 border border-red-200 rounded-lg">
+                        <span className="text-sm font-medium text-red-800">
+                          {processingStatus[d.figureNo]}
+                        </span>
+                        <button
+                          onClick={() => {
+                            setProcessingStatus(prev => ({ ...prev, [d.figureNo]: '' }))
+                            setProcessingStep(prev => ({ ...prev, [d.figureNo]: 0 }))
+                            setError(null)
+                            autoProcessDiagram(d.figureNo, d.plantumlCode)
+                          }}
+                          className="inline-flex items-center px-2 py-1 border border-red-300 text-red-700 rounded bg-white hover:bg-red-50 text-xs"
+                        >
+                          🔄 Retry
+                        </button>
                       </div>
                     )}
 

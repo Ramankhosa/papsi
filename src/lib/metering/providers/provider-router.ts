@@ -31,12 +31,17 @@ export class LLMProviderRouter {
     const configs = {
       gemini: {
         apiKey: process.env.GOOGLE_AI_API_KEY,
-        model: 'gemini-2.0-flash-lite', // Gemini 2.0 Flash-Lite (cost-effective, 1M context)
+        model: 'gemini-2.5-pro', // Gemini 2.5 Pro (multimodal capabilities, 2M context)
+        baseURL: 'https://generativelanguage.googleapis.com/v1beta'
+      },
+      'gemini-flash-lite': {
+        apiKey: process.env.GOOGLE_AI_API_KEY,
+        model: 'gemini-2.5-flash-lite', // Gemini 2.5 Flash-Lite (faster, cost-effective)
         baseURL: 'https://generativelanguage.googleapis.com/v1beta'
       },
       openai: {
         apiKey: process.env.OPENAI_API_KEY,
-        model: 'gpt-4o',
+        model: 'gpt-4o', // GPT-4o (multimodal capabilities)
         baseURL: 'https://api.openai.com/v1'
       }
       // Grok removed due to invalid API key
@@ -112,13 +117,33 @@ export class LLMProviderRouter {
       throw new Error('No healthy providers available')
     }
 
-    // Default priority order: Gemini primary, OpenAI fallback
-    const defaultPriorities: ProviderPriority[] = [
-      { provider: 'gemini', priority: 1, fallback: true },
-      { provider: 'openai', priority: 2, fallback: true }
-    ]
+    // Special handling for multimodal requests (text + images)
+    const isMultimodal = request.content && request.content.parts.some(part => part.type === 'image')
 
-    const activePriorities = priorities || defaultPriorities
+    // Special handling for relevance analysis (PRIOR_ART_SEARCH) - use Flash-Lite
+    const isRelevanceAnalysis = limits.featureCode === 'PRIOR_ART_SEARCH' && !isMultimodal
+
+    let activePriorities: ProviderPriority[]
+
+    if (isMultimodal) {
+      // For multimodal: Gemini 2.5 Pro primary, GPT-4o fallback
+      activePriorities = [
+        { provider: 'gemini', priority: 1, fallback: true },
+        { provider: 'openai', priority: 2, fallback: true }
+      ]
+    } else if (isRelevanceAnalysis) {
+      // For relevance analysis: Gemini 2.5 Flash-Lite primary, GPT-4o fallback
+      activePriorities = [
+        { provider: 'gemini-flash-lite', priority: 1, fallback: true },
+        { provider: 'openai', priority: 2, fallback: true }
+      ]
+    } else {
+      // Default priority order: Gemini primary, OpenAI fallback
+      activePriorities = priorities || [
+        { provider: 'gemini', priority: 1, fallback: true },
+        { provider: 'openai', priority: 2, fallback: true }
+      ]
+    }
 
     // Sort providers by priority
     const sortedProviders = availableProviders

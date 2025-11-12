@@ -185,7 +185,7 @@ export default function SuperAdminATIDashboard() {
               <p className="text-gray-600">Manage ATI tokens across all tenants</p>
             </div>
             <div className="flex items-center space-x-4">
-              <span className="text-sm text-gray-500">Role: {user?.role}</span>
+              <span className="text-sm text-gray-500">Role: {user?.roles?.join(', ') || 'None'}</span>
               <button
                 onClick={logout}
                 className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"

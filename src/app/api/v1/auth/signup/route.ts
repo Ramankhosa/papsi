@@ -86,7 +86,7 @@ export async function POST(request: NextRequest) {
       const tenantAdmin = await prisma.user.findFirst({
         where: {
           tenantId: tenant.id,
-          role: { in: ['OWNER', 'ADMIN'] } // Find tenant admin
+          roles: { hasSome: ['OWNER', 'ADMIN'] } // Find tenant admin
         },
         select: {
           id: true,
@@ -159,7 +159,7 @@ export async function POST(request: NextRequest) {
         const creatorUser = await prisma.user.findUnique({
           where: { id: tokenCreator.actorUserId },
           select: {
-            role: true,
+            roles: true,
             tenantId: true,
             tenant: {
               select: { atiId: true }
@@ -169,13 +169,13 @@ export async function POST(request: NextRequest) {
 
         console.log('Token creator details:', {
           creatorId: tokenCreator.actorUserId,
-          creatorRole: creatorUser?.role,
+          creatorRoles: creatorUser?.roles,
           creatorTenantId: creatorUser?.tenantId,
           creatorTenantAtiId: creatorUser?.tenant?.atiId
         })
 
         // If creator is super admin or belongs to platform tenant, assign ADMIN
-        if (creatorUser?.role === 'SUPER_ADMIN' || creatorUser?.tenant?.atiId === 'PLATFORM') {
+        if (creatorUser?.roles?.includes('SUPER_ADMIN') || creatorUser?.tenant?.atiId === 'PLATFORM') {
           userRole = 'ADMIN'
           console.log('Assigned ADMIN role due to super admin token creator')
         } else {
@@ -198,7 +198,7 @@ export async function POST(request: NextRequest) {
           passwordHash,
           tenantId: tenant.id,
           signupAtiTokenId: tokenValidation.atiToken!.id, // Track which ATI token was used
-          role: userRole as any,
+          roles: [userRole as any],
           status: 'ACTIVE'
         }
       })
@@ -243,7 +243,7 @@ export async function POST(request: NextRequest) {
           ip,
           meta: {
             email: user.email,
-            role: user.role,
+            roles: user.roles,
             assigned_role_reason: existingUsersCount === 0 ? 'first_tenant_user' : 'ati_token_creator_check',
             signup_method: 'ati_token',
             ati_token_fingerprint: tokenValidation.atiToken!.fingerprint,
@@ -261,7 +261,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       user_id: user.id,
       tenant_id: tenant.id,
-      role: user.role
+      roles: user.roles
     }, { status: 201 })
 
   } catch (error) {

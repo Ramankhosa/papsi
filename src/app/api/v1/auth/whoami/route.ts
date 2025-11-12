@@ -39,7 +39,7 @@ export async function GET(request: NextRequest) {
       user_id: payload.sub,
       email: payload.email,
       tenant_id: payload.tenant_id,
-      role: payload.role,
+      roles: payload.roles,
       ati_id: payload.ati_id
     }, { status: 200 })
 

@@ -41,7 +41,7 @@
 **Minimum data**
 
 * `Feature(id, code, name, unit)`
-  Suggested codes: `PRIOR_ART_SEARCH`, `PATENT_DRAFTING`, `DIAGRAM_GENERATION`, `EMBEDDINGS`, `RERANK`.
+  Suggested codes: `PRIOR_ART_SEARCH`, `PATENT_DRAFTING`, `DIAGRAM_GENERATION`, `IDEA_BANK`.
 * `PlanFeature(plan_id, feature_id, monthly_quota, daily_quota?)`
 
 **Why**: Turns tiers into enforceable switches without micromanaging.

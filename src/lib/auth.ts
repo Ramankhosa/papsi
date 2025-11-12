@@ -68,7 +68,7 @@ export interface JWTPayload {
   sub: string // user_id
   email: string
   tenant_id: string | null
-  role: string
+  roles: string[] // Array of roles
   ati_id: string | null
   tenant_ati_id: string | null // For scope validation
   scope: 'platform' | 'tenant' // Unified scope model

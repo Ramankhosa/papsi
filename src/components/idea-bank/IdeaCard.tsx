@@ -1,5 +1,6 @@
 'use client'
 
+import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
@@ -24,9 +25,26 @@ export default function IdeaCard({
   onSendToSearch,
   onSendToDrafting
 }: IdeaCardProps) {
+  const [isReserving, setIsReserving] = useState(false)
+  const [reservationSuccess, setReservationSuccess] = useState(false)
+
   const isReserved = idea.status === 'RESERVED'
   const isReservedByUser = idea._isReservedByCurrentUser
   const isRedacted = isReserved && !isReservedByUser
+
+  const handleReserve = async () => {
+    setIsReserving(true)
+    try {
+      await onReserve()
+      setReservationSuccess(true)
+      // Reset success state after a delay
+      setTimeout(() => setReservationSuccess(false), 3000)
+    } catch (error) {
+      console.error('Reservation failed:', error)
+    } finally {
+      setIsReserving(false)
+    }
+  }
 
   const getStatusColor = () => {
     switch (idea.status) {
@@ -145,19 +163,33 @@ export default function IdeaCard({
           ) : !isReserved ? (
             <Button
               size="sm"
-              onClick={onReserve}
-              className="bg-orange-600 hover:bg-orange-700"
+              onClick={handleReserve}
+              disabled={isReserving}
+              className={`bg-orange-600 hover:bg-orange-700 ${
+                reservationSuccess ? 'bg-green-600 hover:bg-green-700' : ''
+              }`}
             >
-              Reserve
+              {isReserving ? (
+                <div className="flex items-center gap-1">
+                  <div className="animate-spin rounded-full h-3 w-3 border border-white border-t-transparent"></div>
+                  <span>Reserving...</span>
+                </div>
+              ) : reservationSuccess ? (
+                <div className="flex items-center gap-1">
+                  <span>✓ Reserved</span>
+                </div>
+              ) : (
+                'Reserve'
+              )}
             </Button>
           ) : isReservedByUser ? (
             <Button
               size="sm"
               onClick={onReserve}
               disabled
-              className="bg-gray-400 cursor-not-allowed"
+              className="bg-green-600 hover:bg-green-700 cursor-not-allowed flex items-center gap-1"
             >
-              Reserved
+              <span>✓ Reserved</span>
             </Button>
           ) : null}
 

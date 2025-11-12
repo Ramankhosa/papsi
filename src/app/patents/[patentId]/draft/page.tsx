@@ -1,9 +1,11 @@
 'use client'
 
+
 import { useState, useEffect } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import Link from 'next/link'
+import { Badge } from '@/components/ui/badge'
 import { PageLoadingBird } from '@/components/ui/loading-bird'
 
 // Stage components
@@ -86,10 +88,11 @@ export default function PatentDraftingPage() {
   const { user, isLoading: authLoading, refreshUser, logout } = useAuth() as any
   const router = useRouter()
   const params = useParams()
-  const patentId = params.patentId as string
+  const patentId = params?.patentId as string
 
   const [patent, setPatent] = useState<Patent | null>(null)
   const [session, setSession] = useState<DraftingSession | null>(null)
+  const [styleStatus, setStyleStatus] = useState<{ enabled: boolean; sections: string[]; profile?: { version: number; status: string; updatedAt: string } | null } | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -134,6 +137,22 @@ export default function PatentDraftingPage() {
         const latest = sessionData.sessions?.[0] || null
         setSession(latest)
 
+        // Fetch style integration status (best-effort)
+        try {
+          const ss = await fetch(`/api/patents/${patentId}/drafting/style-status`, {
+            headers: {
+              "Authorization": `Bearer ${localStorage.getItem('auth_token')}`
+            }
+          })
+          if (ss.ok) {
+            const data = await ss.json()
+            setStyleStatus(data)
+          } else {
+            setStyleStatus(null)
+          }
+        } catch {
+          setStyleStatus(null)
+        }
         // Auto-resume if no session exists yet
         if (!latest) {
           await resumeSession()
@@ -236,7 +255,7 @@ export default function PatentDraftingPage() {
         // but we don't want to trigger a full `loadData()` which would cause the `RelatedArtStage`
         // to re-mount and lose its local state (filters, selections, etc.).
         // Instead, we'll fetch the latest session data directly.
-        console.log('🔄 Handling related_art action: refreshing session data without full reload.')
+        console.log('ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ Handling related_art action: refreshing session data without full reload.')
         try {
           const sessionResponse = await fetch(`/api/patents/${patentId}/drafting`, {
             headers: {
@@ -248,7 +267,7 @@ export default function PatentDraftingPage() {
             const latest = sessionData.sessions?.[0] || null
             if (latest) {
               setSession(latest) // Update with latest session data including idea bank suggestions
-              console.log('✅ Updated session with idea bank suggestions')
+              console.log('ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã¢â‚¬Å“ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ Updated session with idea bank suggestions')
             }
           }
         } catch (err) {
@@ -256,7 +275,7 @@ export default function PatentDraftingPage() {
         }
       } else if (!skipRefresh) {
         // Reload session data for other actions
-        console.log('🔄 Reloading all data for action:', action)
+        console.log('ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚ÂÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¾ Reloading all data for action:', action)
         await loadData()
       }
 
@@ -337,6 +356,13 @@ export default function PatentDraftingPage() {
                 <div className="text-sm text-gray-500">Stage: {STAGE_LABELS[currentStage as keyof typeof STAGE_LABELS]}</div>
                 <div className="text-xs text-gray-400">Progress: {STAGE_PROGRESS[currentStage as keyof typeof STAGE_PROGRESS]}%</div>
               </div>
+              {styleStatus && (
+                <div className="flex items-center">
+                  <Badge variant={styleStatus.enabled ? "default" : "secondary"}>
+                    Style {styleStatus.enabled ? 'Applied' : 'Not Applied'}
+                  </Badge>
+                </div>
+              )}
 
               {/* Stage Navigation Buttons */}
               {session && (
@@ -462,3 +488,4 @@ export default function PatentDraftingPage() {
     </div>
   )
 }
+

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+﻿import { NextRequest, NextResponse } from 'next/server';
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 import { authenticateUser } from '@/lib/auth-middleware';
@@ -6,6 +6,7 @@ import { prisma } from '@/lib/prisma';
 import { DraftingService } from '@/lib/drafting-service';
 import { IdeaBankService } from '@/lib/idea-bank-service';
 import { llmGateway } from '@/lib/metering/gateway';
+import { getGatedStyleInstructions } from '@/lib/style-instruction-builder'
 import crypto from 'crypto';
 import plantumlEncoder from 'plantuml-encoder';
 import path from 'path';
@@ -412,7 +413,7 @@ async function handleRelatedArtLLMReview(user: any, patentId: string, data: any,
   const candidatesText = candidates.map((b, idx) => `#${idx+1}. PN:${b.pn||'N/A'}\nTitle: ${b.title}\nAbstract: ${b.abstract}`).join('\n\n')
 
   // STEP 1: Relevance Analysis (in batches to avoid token limits)
-  console.log('Starting relevance analysis with Gemini 2.0 Flash-Lite...')
+  console.log('Starting relevance analysis with Gemini 2.5 Flash-Lite...')
   const effectiveBatchSize = batchSize || 6 // Use provided batchSize or default to 6
   let relevanceData: any[] = []
 
@@ -454,6 +455,7 @@ ${batchText}`
     const relevanceResult = await llmGateway.executeLLMOperation(request, {
       taskCode: 'LLM1_PRIOR_ART',
       prompt: batchRelevancePrompt,
+      modelClass: 'gemini-2.5-flash-lite',
       idempotencyKey: crypto.randomUUID(),
       inputTokens: Math.ceil(batchRelevancePrompt.length / 4),
       parameters: { maxOutputTokens: 3000 }
@@ -522,9 +524,9 @@ ${batchText}`
   }
 
   // STEP 2: Idea Generation (separate call)
-  console.log('Starting idea generation with Gemini 2.0 Flash-Lite...')
+  console.log('Starting idea generation with Gemini 2.5 Flash-Lite...')
   const ideaPrompt = `You are an expert patent strategist and creative technologist.
-Your task is to propose out-of-the-box, non-obvious, patent-worthy invention ideas inspired by—but not limited to—the patterns, gaps, and limitations in the references.
+Your task is to propose out-of-the-box, non-obvious, patent-worthy invention ideas inspired byÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Âbut not limited toÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Âthe patterns, gaps, and limitations in the references.
 
 INVENTION CONTEXT:
 Title: ${title}
@@ -538,8 +540,8 @@ CREATIVITY & NOVELTY CONSTRAINTS:
 - Each idea must stand alone (no citations) and be understandable to a patent examiner.
 
 IDEA GENERATION BRIEFS (use at least two per idea):
-- Cross-domain transfer (e.g., environmental sensing → medical diagnostics)
-- Invert control or data flow (edge → cloud, cloud → edge, passive → active)
+- Cross-domain transfer (e.g., environmental sensing ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ medical diagnostics)
+- Invert control or data flow (edge ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ cloud, cloud ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ edge, passive ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ active)
 - New constraint satisfaction (e.g., ultra-low power, privacy-by-design, zero-calibration)
 - Hybridize modalities (e.g., RF + vision, vibrometry + thermal)
 - Self-adaptive or self-healing mechanism (continuous learning, closed-loop)
@@ -550,11 +552,11 @@ Return ONLY valid JSON with exactly this schema.
 {
   "idea_bank_suggestions": [
     {
-      "title": "Short inventive concept (≤15 words)",
-      "core_principle": "2–3 sentences on the technical mechanism; avoid citations",
-      "expected_advantage": "1–2 sentences on measurable benefits vs current art",
+      "title": "Short inventive concept (ÃƒÂ¢Ã¢â‚¬Â°Ã‚Â¤15 words)",
+      "core_principle": "2ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“3 sentences on the technical mechanism; avoid citations",
+      "expected_advantage": "1ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“2 sentences on measurable benefits vs current art",
       "tags": ["technical-domain", "application", "novelty-type", "cross-discipline"],
-      "non_obvious_extension": "1–2 sentences applying the principle in an unrelated field"
+      "non_obvious_extension": "1ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“2 sentences applying the principle in an unrelated field"
     }
   ]
 }
@@ -567,6 +569,7 @@ ${candidatesText}`
   const ideaResult = await llmGateway.executeLLMOperation(request, {
     taskCode: 'LLM1_PRIOR_ART',
     prompt: ideaPrompt,
+    modelClass: 'gemini-2.5-flash-lite',
     idempotencyKey: crypto.randomUUID(),
     inputTokens: Math.ceil(ideaPrompt.length / 4),
     parameters: { maxOutputTokens: 5000 }
@@ -619,7 +622,7 @@ ${candidatesText}`
   console.log('Idea Bank suggestions to persist:', ideaBank.length)
 
   // Persist Idea Bank suggestions to the main idea bank table
-  console.log('🔄 Persisting', ideaBank.length, 'idea bank suggestions to main idea bank...')
+  console.log('ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ¢â‚¬Å¾ Persisting', ideaBank.length, 'idea bank suggestions to main idea bank...')
   if (ideaBank.length > 0) {
     const ideaBankService = new IdeaBankService();
     const avgRelevance = allDecisions.length
@@ -642,14 +645,14 @@ ${candidatesText}`
         };
 
         await ideaBankService.addIdeaFromNoveltySearch(extractedIdea, user, patentId);
-        console.log('✅ Persisted idea bank suggestion:', ib.title?.substring(0, 50))
+        console.log('ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Persisted idea bank suggestion:', ib.title?.substring(0, 50))
       } catch (e) {
-        console.error('❌ Failed to persist idea bank suggestion:', ib.title, 'Error:', e)
+        console.error('ÃƒÂ¢Ã‚ÂÃ…â€™ Failed to persist idea bank suggestion:', ib.title, 'Error:', e)
       }
     }
-    console.log('✅ Finished persisting', ideaBank.length, 'idea bank suggestions to main idea bank')
+    console.log('ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Finished persisting', ideaBank.length, 'idea bank suggestions to main idea bank')
   } else {
-    console.log('⚠️ No idea bank suggestions to persist')
+    console.log('ÃƒÂ¢Ã…Â¡Ã‚Â ÃƒÂ¯Ã‚Â¸Ã‚Â No idea bank suggestions to persist')
   }
 
   const response = {
@@ -1273,7 +1276,7 @@ function buildAnnexurePlainText(doc: any): string {
   const PAGE_BREAK = '\n\n<<<PAGE_BREAK>>>\n\n'
   const DRAWINGS_HEADER = H('Drawings / Figures')
   const FIGURE_PAGES = [ `${DRAWINGS_HEADER}\n\n` ].concat(
-    (doc.figures||[]).sort((a:any,b:any)=>a.figureNo-b.figureNo).map((f:any)=>`Fig. ${f.figureNo} — ${String(f.caption||'').replace(/^Fig\.\s*\d+\s*—\s*/i,'')}`)
+    (doc.figures||[]).sort((a:any,b:any)=>a.figureNo-b.figureNo).map((f:any)=>`Fig. ${f.figureNo} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ${String(f.caption||'').replace(/^Fig\.\s*\d+\s*ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â\s*/i,'')}`)
   ).join(PAGE_BREAK)
   return [BODY, PAGE_BREAK, FIGURE_PAGES].join('')
 }
@@ -1639,7 +1642,7 @@ async function handleNormalizeIdea(user: any, patentId: string, data: any, reque
     );
   }
 
-  // Validate title length (≤ 15 words)
+  // Validate title length (ÃƒÂ¢Ã¢â‚¬Â°Ã‚Â¤ 15 words)
   const titleWords = title.trim().split(/\s+/).length;
   if (titleWords > 15) {
     return NextResponse.json(
@@ -1946,7 +1949,7 @@ async function handleRelatedArtSearch(user: any, patentId: string, data: any, re
   const searchQueryFromDB = (idea?.searchQuery || '').toString().trim()
 
   // Use provided queryOverride if given, otherwise use the stored searchQuery
-  console.log('🔍 API Query Debug:')
+  console.log('ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â API Query Debug:')
   console.log('  - queryOverride received:', queryOverride)
   console.log('  - queryOverride type:', typeof queryOverride)
   console.log('  - queryOverride trimmed:', queryOverride ? String(queryOverride).trim() : 'null')
@@ -1972,8 +1975,8 @@ async function handleRelatedArtSearch(user: any, patentId: string, data: any, re
   // - collapse whitespace
   // - keep it short to avoid server errors
   let safeQuery = baseQuery
-    .replace(/[\u2013\u2014]/g, '-')       // en/em dash → hyphen
-    .replace(/[\u2018\u2019\u201C\u201D]/g, '"') // curly quotes → plain
+    .replace(/[\u2013\u2014]/g, '-')       // en/em dash ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ hyphen
+    .replace(/[\u2018\u2019\u201C\u201D]/g, '"') // curly quotes ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ plain
     .replace(/[^\w\s-]/g, ' ')             // strip punctuation except hyphen
     .replace(/-/g, ' ')                      // turn hyphens into spaces to avoid tokenization issues
     .replace(/\s+/g, ' ')                   // collapse whitespace
@@ -2886,7 +2889,34 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const result = await DraftingService.generateSections(session, sections, instructions, user.tenantId, requestHeaders, selectedPatents)
+  // Merge user-provided instructions with PersonaSync style instructions if enabled and available
+  const usePersonaStyle = (data && typeof data.usePersonaStyle === 'boolean') ? Boolean(data.usePersonaStyle) : true
+  let mergedInstructions: Record<string, string> | undefined = instructions
+  if (usePersonaStyle) {
+    try {
+      const styleInstr = await getGatedStyleInstructions(user.tenantId, user.id)
+      if (styleInstr) {
+        mergedInstructions = { ...(instructions || {}) }
+        for (const [k, v] of Object.entries(styleInstr)) {
+          if (!v) continue
+          mergedInstructions[k] = mergedInstructions[k] ? `${mergedInstructions[k]} ; ${v}` : v
+        }
+        if (process.env.PERSONA_SYNC_DEBUG === '1') {
+          console.log('[Drafting][StyleInstr.merge]', Object.keys(styleInstr))
+        }
+      }
+    } catch (e) {
+      if (process.env.PERSONA_SYNC_DEBUG === '1') {
+        console.warn('[Drafting][StyleInstr.skip]', e instanceof Error ? e.message : String(e))
+      }
+    }
+  } else {
+    if (process.env.PERSONA_SYNC_DEBUG === '1') {
+      console.log('[Drafting][StyleInstr.disabled_by_user]')
+    }
+  }
+
+  const result = await DraftingService.generateSections(session, sections, mergedInstructions, user.tenantId, requestHeaders, selectedPatents)
   if (!result.success) return NextResponse.json({ error: result.error, debugSteps: result.debugSteps }, { status: 400 })
 
   // Autosave generated sections into latest draft without bumping version
@@ -3012,3 +3042,4 @@ async function handleSaveSections(user: any, patentId: string, data: any) {
 
   return NextResponse.json({ draft, validationReport: validation.report })
 }
+

@@ -37,9 +37,26 @@ export interface FeatureRequest {
 
 // === LLM REQUEST/RESPONSE TYPES ===
 
+// Image content for multimodal LLMs
+export interface ImageContent {
+  mimeType: string // e.g., "image/jpeg", "image/png"
+  data: string // base64 encoded image data
+  description?: string // optional description of the image
+}
+
+// Multimodal content types
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; image: ImageContent }
+
+export interface MultimodalContent {
+  parts: ContentPart[]
+}
+
 export interface LLMRequest {
   taskCode: TaskCode
   prompt?: string
+  content?: MultimodalContent // For multimodal requests (text + images)
   inputTokens?: number
   modelClass?: string
   parameters?: Record<string, any>

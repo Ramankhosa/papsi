@@ -27,15 +27,17 @@ export default function DashboardPage() {
     return null
   }
 
-  // Render different dashboards based on user role
+  // Render different dashboards based on user role and tenant type
   if (isSuperAdmin) {
     return <SuperAdminDashboard />
   }
 
-  if (isTenantAdmin) {
+  // For tenant admins (ADMIN role) - show tenant admin dashboard
+  if (isTenantAdmin && user.roles?.includes('ADMIN')) {
     return <TenantAdminDashboard />
   }
 
-  // Default user dashboard (ANALYST, VIEWER, etc.)
+  // For individual users (OWNER role) and analysts - show user dashboard
+  // Individual users get analyst-like interface with optional tenant admin access
   return <UserDashboard />
 }

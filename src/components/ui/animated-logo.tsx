@@ -4,6 +4,7 @@ interface AnimatedLogoProps {
   size?: 'sm' | 'md' | 'lg' | 'xl'
   className?: string
   showFallback?: boolean
+  useKishoFallback?: boolean // Use Kisho image as fallback instead of generic logo
   muted?: boolean
   loop?: boolean
   autoPlay?: boolean
@@ -22,6 +23,7 @@ export default function AnimatedLogo({
   size = 'md',
   className = '',
   showFallback = true,
+  useKishoFallback = false,
   muted = true,
   loop = true,
   autoPlay = true,
@@ -102,21 +104,31 @@ export default function AnimatedLogo({
 
   // Fallback logo when video fails or as alternative
   const FallbackLogo = () => (
-    <div className={`${sizeClasses[size]} ${className} bg-gradient-to-br from-gray-400 to-gray-600 rounded-full flex items-center justify-center shadow-lg`}>
-      <svg
-        className="w-1/2 h-1/2 text-white"
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          strokeWidth={2}
-          d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+    useKishoFallback ? (
+      <div className={`${sizeClasses[size]} ${className} rounded-full overflow-hidden shadow-lg border-2 border-cyan-200`}>
+        <img
+          src="/images/kisho.jpg"
+          alt="Kisho - Your AI Assistant"
+          className="w-full h-full object-cover"
         />
-      </svg>
-    </div>
+      </div>
+    ) : (
+      <div className={`${sizeClasses[size]} ${className} bg-gradient-to-br from-gray-400 to-gray-600 rounded-full flex items-center justify-center shadow-lg`}>
+        <svg
+          className="w-1/2 h-1/2 text-white"
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={2}
+            d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"
+          />
+        </svg>
+      </div>
+    )
   )
 
   // Show static logo if paused after auto-play duration

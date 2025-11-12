@@ -21,11 +21,12 @@ export interface ProviderConfig {
 }
 
 // Provider factory function
-export function createLLMProvider(type: 'gemini' | 'openai' | 'grok', config: ProviderConfig): LLMProvider {
+export function createLLMProvider(type: 'gemini' | 'gemini-flash-lite' | 'openai' | 'grok', config: ProviderConfig): LLMProvider {
   switch (type) {
     case 'gemini':
+    case 'gemini-flash-lite':
       const { GeminiProvider } = require('./gemini-provider')
-      return new GeminiProvider(config)
+      return new GeminiProvider(config, type)
     case 'openai':
       const { OpenAIProvider } = require('./openai-provider')
       return new OpenAIProvider(config)

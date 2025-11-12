@@ -130,7 +130,7 @@ export async function POST(request: NextRequest) {
       sub: user.id,
       email: user.email,
       tenant_id: user.tenantId, // Always set - no more null for super admin
-      role: user.role,
+      roles: user.roles,
       ati_id: user.tenant?.atiId || null,
       tenant_ati_id: user.tenant?.atiId || null, // For middleware validation
       scope: isPlatformScope ? 'platform' : 'tenant' // Add explicit scope
@@ -149,7 +149,7 @@ export async function POST(request: NextRequest) {
       ip,
       meta: {
         email: user.email,
-        role: user.role,
+        roles: user.roles,
         scope: isPlatformScope ? 'platform' : 'tenant',
         tenant_ati_id: user.tenant?.atiId
       }

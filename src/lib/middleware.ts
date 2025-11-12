@@ -55,7 +55,7 @@ export function requireRole(allowedRoles: string[]) {
     const { user, error } = await authenticateRequest(request)
     if (error) return error
 
-    if (!allowedRoles.includes(user!.role)) {
+    if (!user!.roles?.some(role => allowedRoles.includes(role))) {
       return NextResponse.json(
         { code: 'FORBIDDEN', message: 'Insufficient permissions' },
         { status: 403 }
@@ -80,7 +80,7 @@ export function requireTenantRole(allowedRoles: string[]) {
     }
 
     // Check if user has required role within their tenant
-    if (!allowedRoles.includes(user!.role)) {
+    if (!user!.roles?.some(role => allowedRoles.includes(role))) {
       return NextResponse.json(
         { code: 'FORBIDDEN', message: 'Insufficient permissions for tenant operations' },
         { status: 403 }
@@ -105,7 +105,7 @@ export function requirePlatformScope() {
     }
 
     // Ensure user has SUPER_ADMIN role for platform operations
-    if (user!.role !== 'SUPER_ADMIN') {
+    if (!user!.roles?.includes('SUPER_ADMIN')) {
       return NextResponse.json(
         { code: 'FORBIDDEN', message: 'Super Admin role required for platform operations' },
         { status: 403 }

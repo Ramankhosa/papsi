@@ -7,6 +7,7 @@ interface LoadingBirdProps {
   className?: string
   overlay?: boolean
   fullScreen?: boolean
+  useKishoFallback?: boolean
 }
 
 export default function LoadingBird({
@@ -14,11 +15,12 @@ export default function LoadingBird({
   message = 'Loading...',
   className = '',
   overlay = false,
-  fullScreen = false
+  fullScreen = false,
+  useKishoFallback = false
 }: LoadingBirdProps) {
   const content = (
     <div className={`flex flex-col items-center justify-center space-y-4 ${className}`}>
-      <AnimatedLogo size={size} className="flex-shrink-0" />
+      <AnimatedLogo size={size} className="flex-shrink-0" useKishoFallback={useKishoFallback} />
       {message && (
         <p className="text-sm text-gray-600 animate-pulse">
           {message}
@@ -47,10 +49,16 @@ export default function LoadingBird({
 }
 
 // Specialized loading components for different use cases
-export function PageLoadingBird({ message = 'Loading page...' }: { message?: string }) {
+export function PageLoadingBird({
+  message = 'Loading page...',
+  useKishoFallback = false
+}: {
+  message?: string
+  useKishoFallback?: boolean
+}) {
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-      <LoadingBird size="lg" message={message} />
+      <LoadingBird size="lg" message={message} useKishoFallback={useKishoFallback} />
     </div>
   )
 }
