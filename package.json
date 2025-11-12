@@ -8,7 +8,6 @@
     "start": "next start",
     "lint": "next lint",
     "create-admin": "node scripts/create-super-admin.js",
-    "test-ati-system": "node scripts/test-ati-system.js",
     "db:migrate": "prisma migrate dev",
     "db:seed": "node scripts/seed-plans-hierarchy.js",
     "import:local-patents": "node scripts/import-local-patents-from-csv.js patients11.csv",

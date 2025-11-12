@@ -34,6 +34,12 @@ export default function NoveltySearchReportPage({
 
   // Get PQAI results and shortlisted patents
   const pqai = Array.isArray(stage1?.pqaiResults) ? stage1.pqaiResults : [];
+  const aiRelevance = stage1?.aiRelevance || null;
+
+  // Compute fallback shortlist target (top 50%, min 10, max 20) when Stage 3.5 shortlist is unavailable
+  const totalPQAI = Array.isArray(pqai) ? pqai.length : 0;
+  const targetCount = Math.ceil(totalPQAI * 0.5);
+  const selectedCount = Math.min(Math.max(targetCount, 10), Math.min(totalPQAI, 20));
   
   // Fetch detailed patent information from database
   useEffect(() => {
@@ -132,7 +138,7 @@ export default function NoveltySearchReportPage({
         const pn = canonicalizePn(r.publicationNumber || r.pn || r.publication_number);
         return pn && shortlistedPns.has(pn);
       })
-    : pqai;
+    : pqai.slice(0, selectedCount);
   
   // Deduplicate by canonicalized patent number
   const seenPatentsStage1 = new Set<string>();
@@ -146,6 +152,11 @@ export default function NoveltySearchReportPage({
   });
   
   console.log(`Stage 1 deduplicated patents: ${patentsToShowRaw.length} -> ${patentsToShow.length}`);
+
+  const gateCount = aiRelevance && (Array.isArray(aiRelevance.accepted) || Array.isArray(aiRelevance.borderline))
+    ? ((aiRelevance.accepted?.length || 0) + (aiRelevance.borderline?.length || 0))
+    : null;
+  const shortlistedCount = shortlistedPns.size > 0 ? shortlistedPns.size : (gateCount ?? selectedCount);
 
   // Stage 4 data
   const executiveSummary = stage4?.executive_summary || {};
@@ -390,7 +401,7 @@ export default function NoveltySearchReportPage({
 
           <div className="mb-4 text-sm text-gray-700">
             <p>Total PQAI results: {pqai.length}</p>
-            <p>Patents shortlisted for detailed analysis: {patentsToShow.length}</p>
+            <p>Patents shortlisted for detailed analysis: {shortlistedCount}</p>
           </div>
 
           {patentsToShow.length > 0 && (
@@ -441,7 +452,16 @@ export default function NoveltySearchReportPage({
               .map((r: any, idx: number) => {
                 const pnFull = String(r.publicationNumber || r.pn || r.publication_number || r.id || 'Unknown');
                 const title = String(r.title || 'Untitled Patent');
-                const abstract = String(r.snippet || r.abstract || r.description || '').trim();
+                const abstract = String(
+                  r.abstract ||
+                  r.snippet ||
+                  r.description ||
+                  (r as any).abstract_text ||
+                  (r as any).abstractText ||
+                  (r as any).abstract_en ||
+                  (r as any).abstractEnglish ||
+                  ''
+                ).trim();
                 const pubDate = String(r.publication_date || r.pub_date || r.date || '—');
                 const appNo = String(r.application_number || r.applicationNumber || '—');
                 const appDate = String(r.application_date || r.filing_date || r.filingDate || '—');
@@ -802,6 +822,14 @@ export default function NoveltySearchReportPage({
                   abstract = String(dbPatentData.description).trim();
                 } else if (pqaiData.abstract) {
                   abstract = String(pqaiData.abstract).trim();
+                } else if (pqaiData.abstract_text) {
+                  abstract = String(pqaiData.abstract_text).trim();
+                } else if (pqaiData.abstractText) {
+                  abstract = String(pqaiData.abstractText).trim();
+                } else if (pqaiData.abstract_en) {
+                  abstract = String(pqaiData.abstract_en).trim();
+                } else if (pqaiData.abstractEnglish) {
+                  abstract = String(pqaiData.abstractEnglish).trim();
                 } else if (pqaiData.snippet) {
                   abstract = String(pqaiData.snippet).trim();
                 } else if (pqaiData.description) {
@@ -1278,4 +1306,3 @@ export default function NoveltySearchReportPage({
     </>
   );
 }
-

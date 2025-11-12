@@ -404,7 +404,7 @@ Strict instructions:
 - Do NOT include: tables, table_of_contents, per‑patent sections, citations, hyperlinks, CPC codes, or copied abstracts.
 - Do NOT restate numeric matrices or lists already provided in inputs.
 - Ground the summary in the feature_analysis_matrix and selected_patents; do not invent metrics.
-- Keep the executive summary ≤ 160 words. Keep each bullet ≤ 18 words.
+- Keep the executive summary ≤ 300 words. Keep each bullet ≤ 18 words.
 - Return valid JSON only with the exact shape below. No prose or backticks.
 
 Output JSON shape:
@@ -413,7 +413,7 @@ Output JSON shape:
     "title": "Novelty Assessment Report",
     "search_id": "SEARCH_ID",
     "date": "GENERATION_DATE",
-    "analyst": "SpotIPR AI"
+    "analyst": "Kisho of PatentNest.ai"
   },
   "executive_summary": {
     "summary": "One tight paragraph on why novelty exists, the role of combinations, and next focus."
@@ -437,6 +437,14 @@ export interface NoveltySearchConfig {
   jurisdiction: string;
   filingType: string;
   tenantId?: string;
+  // Stage 1.5 - AI Relevance gate on PQAI results
+  stage15: {
+    modelPreference: 'gemini-2.5-flash-lite' | 'gemini-2.5-pro' | 'gemini-2.0-flash-lite' | 'gpt-4o-mini' | 'gpt-4o' | 'claude-2.5';
+    thresholds: { high: number; medium: number };
+    borderlineQuota: number; // number of borderline items to keep for diversity/recall
+    maxCandidates: number;   // upper bound of PQAI items to gate
+    batchSize: number;       // batch size for LLM calls
+  };
   stage0: {
     customPrompt?: string;
     extractionRules?: Record<string, any>;
@@ -452,7 +460,10 @@ export interface NoveltySearchConfig {
     thresholdPresent: number;
     thresholdPartial: number;
     criticalFeatures: string[];
-    modelPreference: 'gpt-4o' | 'gpt-4o-mini' | 'claude-2.5' | 'gemini-2.0-flash-lite' | 'gemini-2.5-pro';
+    modelPreference: 'gpt-4o' | 'gpt-4o-mini' | 'claude-2.5' | 'gemini-2.0-flash-lite' | 'gemini-2.5-flash-lite' | 'gemini-2.5-pro';
+    // When Stage 1.5 accepts more than the 50% quota, allow extra mapping capacity
+    acceptedOverflowRatio?: number;   // default 0.15 (15% of total PQAI)
+    borderlineOverflowRatio?: number; // default 0.10 (10% of total PQAI)
     customPrompt?: string;
   };
   stage35b: {
@@ -465,7 +476,7 @@ export interface NoveltySearchConfig {
     colorCoding: boolean;
     maxRefsForReportMain: number;
     maxRefsForUI: number;
-    modelPreference: 'gpt-4o' | 'gpt-4o-mini' | 'claude-2.5' | 'gemini-2.0-flash-lite' | 'gemini-2.5-pro';
+    modelPreference: 'gpt-4o' | 'gpt-4o-mini' | 'claude-2.5' | 'gemini-2.0-flash-lite' | 'gemini-2.5-flash-lite' | 'gemini-2.5-pro';
   };
 }
 
@@ -646,6 +657,14 @@ export class NoveltySearchService extends BasePatentService {
   private defaultConfig: NoveltySearchConfig = {
     jurisdiction: 'IN',
     filingType: 'utility',
+    // New Stage 1.5 (AI Relevance) defaults
+    stage15: {
+      modelPreference: 'gemini-2.5-flash-lite',
+      thresholds: { high: 0.6, medium: 0.4 },
+      borderlineQuota: 5,
+      maxCandidates: 80,
+      batchSize: 8
+    },
     stage0: {},
     stage1: {
       maxPatents: 60, // Increased for more comprehensive analysis
@@ -657,7 +676,9 @@ export class NoveltySearchService extends BasePatentService {
       thresholdPresent: 0.70,
       thresholdPartial: 0.40,
       criticalFeatures: [],
-      modelPreference: 'gemini-2.0-flash-lite'
+      modelPreference: 'gemini-2.5-flash-lite',
+      acceptedOverflowRatio: 0.15,
+      borderlineOverflowRatio: 0.10
     },
     stage35b: {},
     stage4: {
@@ -752,6 +773,41 @@ export class NoveltySearchService extends BasePatentService {
         success: false,
         error: error instanceof Error ? error.message : 'Failed to start novelty search'
       };
+    }
+  }
+
+  /**
+   * Execute Stage 1.5: AI Relevance Gate
+   */
+  async executeStage15(searchId: string, userId: string, requestHeaders?: Record<string, string>): Promise<NoveltySearchResponse> {
+    try {
+      const searchRun = await prisma.noveltySearchRun.findFirst({ where: { id: searchId, userId } });
+      if (!searchRun) return { success: false, error: 'Novelty search not found' };
+
+      const config = searchRun.config as unknown as NoveltySearchConfig;
+      const stage0Data = searchRun.stage0Results as unknown as NormalizedIdea;
+      const stage1Data = searchRun.stage1Results as unknown as any;
+      if (!stage1Data || !Array.isArray(stage1Data?.pqaiResults) || stage1Data.pqaiResults.length === 0) {
+        return { success: false, error: 'Stage 1 results are required before Stage 1.5' };
+      }
+
+      const gate = await this.performStage15(searchId, stage0Data, stage1Data, config, requestHeaders);
+      if (!gate.success) return { success: false, error: gate.error || 'Stage 1.5 failed' };
+
+      // Merge back into stage1Results and persist
+      const merged = { ...(stage1Data || {}), aiRelevance: gate.data };
+      await prisma.noveltySearchRun.update({ where: { id: searchId }, data: { stage1Results: merged as any } });
+
+      return {
+        success: true,
+        searchId,
+        status: NoveltySearchStatus.STAGE_1_COMPLETED,
+        currentStage: NoveltySearchStage.STAGE_1, // logical marker; pipeline may still jump to 3.5 next
+        results: merged
+      };
+    } catch (error) {
+      console.error('Stage 1.5 execution error:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Stage 1.5 execution failed' };
     }
   }
 
@@ -868,6 +924,30 @@ export class NoveltySearchService extends BasePatentService {
         console.log('[Stage3.5a][Service] Filtered PQAI results by selection:', { before, after: stage1Data.pqaiResults.length });
       }
 
+      // If AI relevance (Stage 1.5) has not been computed yet, do it now
+      if (!stage1Data.aiRelevance && Array.isArray(stage1Data?.pqaiResults) && stage1Data.pqaiResults.length > 0) {
+        try {
+          const stage15 = await this.performStage15(
+            searchId,
+            stage0Data,
+            stage1Data,
+            searchRun.config as unknown as NoveltySearchConfig,
+            requestHeaders
+          );
+          if (stage15.success && stage15.data) {
+            stage1Data.aiRelevance = stage15.data;
+            await prisma.noveltySearchRun.update({
+              where: { id: searchId },
+              data: {
+                stage1Results: stage1Data as any
+              }
+            });
+          }
+        } catch (e) {
+          console.warn('[Stage3.5a][Service] Stage 1.5 gate failed, proceeding without it:', e);
+        }
+      }
+
       // Perform Stage 3.5a feature mapping
       const stage35aResult = await this.performStage35a(
         searchId,
@@ -942,12 +1022,13 @@ export class NoveltySearchService extends BasePatentService {
         return { success: false, error: stage35bResult.error };
       }
 
+      // Persist aggregation snapshot into stage4Results, but do NOT mark overall search as COMPLETED here.
+      // Leave status at STAGE_3_5_COMPLETED and advance currentStage pointer to STAGE_4 for next action.
       await prisma.noveltySearchRun.update({
         where: { id: searchId },
         data: {
           currentStage: NoveltySearchStage.STAGE_4,
-          status: NoveltySearchStatus.COMPLETED, // Stage 3.5b completes the analysis
-          stage4CompletedAt: new Date(),
+          status: NoveltySearchStatus.STAGE_3_5_COMPLETED,
           stage4Results: stage35bResult.data as any
         }
       });
@@ -955,7 +1036,7 @@ export class NoveltySearchService extends BasePatentService {
       return {
         success: true,
         searchId,
-        status: NoveltySearchStatus.COMPLETED,
+        status: NoveltySearchStatus.STAGE_3_5_COMPLETED,
         currentStage: NoveltySearchStage.STAGE_4,
         results: stage35bResult.data
       };
@@ -1512,6 +1593,110 @@ RESPONSE:`;
     }
   }
 
+  /**
+   * Stage 1.5: AI Relevance gate on PQAI results (Gemini 2.5 Flash-Lite)
+   * Produces a compact accept/borderline/reject list and a byPn map of scores.
+   */
+  private async performStage15(
+    searchId: string,
+    stage0Data: NormalizedIdea,
+    stage1Data: any,
+    config: NoveltySearchConfig,
+    requestHeaders?: Record<string, string>
+  ): Promise<{ success: boolean; data?: any; error?: string }> {
+    try {
+      const pqai = Array.isArray(stage1Data?.pqaiResults) ? stage1Data.pqaiResults : [];
+      if (pqai.length === 0) return { success: true, data: { accepted: [], borderline: [], rejected: [], byPn: {} } };
+
+      const { thresholds, borderlineQuota, maxCandidates, modelPreference, batchSize } = config.stage15;
+      const features = Array.isArray(stage0Data?.inventionFeatures) ? stage0Data.inventionFeatures : [];
+
+      // Use up to maxCandidates for gating
+      const candidates = pqai.slice(0, Math.min(maxCandidates, pqai.length));
+
+      // Build batch prompt (10-20 items) so the model returns an array of results
+      const buildBatchPrompt = (batch: any[]) => {
+        const feats = JSON.stringify(features.slice(0, 8));
+        const norm = (v: any, max = 800) => String(v || '').replace(/\s+/g, ' ').substring(0, max);
+        const items = batch.map((it, idx) => {
+          const pn = it.publication_number || it.publicationNumber || it.pn || it.id || '';
+          const title = norm(it.title || '');
+          const abstract = norm(it.snippet || it.abstract || it.description || '');
+          return `Item ${idx + 1}:\nPN: ${pn}\nTitle: ${title}\nAbstract: ${abstract}`;
+        }).join("\n---\n");
+
+        // Keep schema tiny to save tokens; scoring semantics handled client-side with thresholds
+        return `You are a patent relevance screener.\nInvention features: ${feats}\n\nFor each patent below, output ONLY a JSON array where each element is {"pn":"<id>","score":0..1,"decision":"accept|borderline|reject"}. Follow the input order.\n\n${items}`;
+      };
+
+      // Process in small batches; tolerate failures and fall back to PQAI scores
+      const byPn: Record<string, any> = {};
+      const accept: string[] = [];
+      const borderline: string[] = [];
+      const reject: string[] = [];
+
+      for (let i = 0; i < candidates.length; i += batchSize) {
+        const batch = candidates.slice(i, i + batchSize);
+
+        // Run a single LLM call for the whole batch
+        let parsed: any[] | null = null;
+        try {
+          const prompt = buildBatchPrompt(batch);
+          const res = await llmGateway.executeLLMOperation(
+            { headers: requestHeaders || {} },
+            { taskCode: TaskCode.LLM5_NOVELTY_ASSESS, prompt, modelClass: modelPreference as any }
+          );
+          if (res.success && res.response?.output) {
+            const obj = this.parseLLMResponse(res.response.output);
+            if (Array.isArray(obj)) parsed = obj;
+          }
+        } catch {
+          // If batching fails, will fall back per-item below
+        }
+
+        // Index parsed results by pn for quick lookup
+        const batchMap: Record<string, any> = {};
+        if (Array.isArray(parsed)) {
+          for (const r of parsed) {
+            const k = String(r?.pn || '').toUpperCase();
+            if (k) batchMap[k] = r;
+          }
+        }
+
+        // Consolidate each item using parsed array or fallback to PQAI score
+        for (const item of batch) {
+          const pnRaw = item.publication_number || item.publicationNumber || item.pn || item.id || 'Unknown';
+          const k = String(pnRaw).toUpperCase();
+          const found = batchMap[k];
+          const pqaiScore = item.relevanceScore || item.score || item.relevance || 0;
+          const score = (found && typeof found.score === 'number') ? found.score : (typeof pqaiScore === 'number' ? pqaiScore : 0);
+          const decision = (found && typeof found.decision === 'string')
+            ? found.decision
+            : (score >= thresholds.high ? 'accept' : score >= thresholds.medium ? 'borderline' : 'reject');
+
+          byPn[String(pnRaw)] = { pn: String(pnRaw), score, decision };
+          if (decision === 'accept') accept.push(String(pnRaw));
+          else if (decision === 'borderline') borderline.push(String(pnRaw));
+          else reject.push(String(pnRaw));
+        }
+      }
+
+      // Trim borderline to quota but keep PQAI order
+      const canon = (x: any) => String(x || '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/[A-Z]\d*$/, '');
+      const borderSet = new Set(borderline.map(p => canon(p)));
+      const trimmedBorderline: string[] = [];
+      for (const r of pqai) {
+        const pn = r.publication_number || r.publicationNumber || r.pn || r.id || '';
+        if (borderSet.has(canon(pn))) trimmedBorderline.push(String(pn));
+        if (trimmedBorderline.length >= borderlineQuota) break;
+      }
+
+      return { success: true, data: { accepted: accept, borderline: trimmedBorderline, rejected: reject, byPn, thresholds } };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Stage 1.5 gating failed' };
+    }
+  }
+
   private async performStage35a(
     searchId: string,
     stage0Data: NormalizedIdea,
@@ -1548,7 +1733,60 @@ RESPONSE:`;
       console.log(`   - Constrained selection: min(10, max(50%, 20)) = ${selectedCount} patents`);
       console.log(`   - Selection percentage: ${((selectedCount/totalPatents)*100).toFixed(1)}%`);
 
-      const selectedPatents = pqaiResults.slice(0, selectedCount);
+      let selectedPatents: any[] = [];
+      const gate = (stage1Data && (stage1Data as any).aiRelevance) ? (stage1Data as any).aiRelevance : null;
+      if (gate && (Array.isArray(gate.accepted) || Array.isArray(gate.borderline))) {
+        const accepted = Array.isArray(gate.accepted) ? gate.accepted : [];
+        const borderline = Array.isArray(gate.borderline) ? gate.borderline : [];
+        const canon = (x: any) => String(x || '').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/[A-Z]\d*$/, '');
+        const setA = new Set(accepted.map((s: string) => s.toUpperCase()));
+        const setAc = new Set(accepted.map((s: string) => canon(s)));
+        const setB = new Set(borderline.map((s: string) => s.toUpperCase()));
+        const setBc = new Set(borderline.map((s: string) => canon(s)));
+
+        // Overflow allowances if accepted/borderline exceed the 50% quota
+        const accExtra = Math.ceil(totalPatents * (config.stage35a.acceptedOverflowRatio ?? 0.15));
+        const borExtra = Math.ceil(totalPatents * (config.stage35a.borderlineOverflowRatio ?? 0.10));
+        const maxAccepted = Math.min(accepted.length, selectedCount + accExtra);
+        const maxTotalAllowed = selectedCount + accExtra + borExtra;
+        console.log('[Stage3.5a][Selection]', {
+          totalPatents,
+          baseQuota: selectedCount,
+          acceptedCount: accepted.length,
+          borderlineCount: borderline.length,
+          acceptedOverflowAllowed: accExtra,
+          borderlineOverflowAllowed: borExtra,
+          maxAccepted,
+          maxTotalAllowed
+        });
+
+        // 1) Accepted first (by PQAI order), up to maxAccepted
+        for (const r of pqaiResults) {
+          if (selectedPatents.length >= maxAccepted) break;
+          const pn = r.publicationNumber || r.pn || r.publication_number || r.id;
+          const k = String(pn || '').toUpperCase();
+          const kc = canon(pn);
+          if (setA.has(k) || setAc.has(kc)) selectedPatents.push(r);
+        }
+
+        // 2) Borderline next, while total stays within maxTotalAllowed
+        for (const r of pqaiResults) {
+          if (selectedPatents.length >= maxTotalAllowed) break;
+          if (selectedPatents.includes(r)) continue;
+          const pn = r.publicationNumber || r.pn || r.publication_number || r.id;
+          const k = String(pn || '').toUpperCase();
+          const kc = canon(pn);
+          if (setB.has(k) || setBc.has(kc)) selectedPatents.push(r);
+        }
+
+        // 3) If still below the base quota (selectedCount), fill from remaining PQAI to reach selectedCount
+        for (const r of pqaiResults) {
+          if (selectedPatents.length >= selectedCount) break;
+          if (!selectedPatents.includes(r)) selectedPatents.push(r);
+        }
+      } else {
+        selectedPatents = pqaiResults.slice(0, selectedCount);
+      }
 
       console.log(`\n📋 SELECTED PATENTS FOR STAGE 3.5a ANALYSIS:`);
       selectedPatents.forEach((patent: any, index: number) => {
@@ -1574,7 +1812,7 @@ RESPONSE:`;
       console.log(`\n🚀 PROCEEDING TO STAGE 3.5a FEATURE MAPPING WITH ${selectedCount} PATENTS`);
 
       // Normalize and canonicalize selected patents
-      const normalizedPatents = this.normalizePatentsForFeatureMapping(selectedPatents, selectedCount);
+      const normalizedPatents = this.normalizePatentsForFeatureMappingV2(selectedPatents, selectedCount);
 
       // Process in batches with concurrency
       const batchSize = config.stage35a.batchSize;
@@ -2308,6 +2546,130 @@ RESPONSE:`;
       }));
   }
 
+  /**
+   * Select patents for Stage 4 using a cost‑effective greedy coverage heuristic:
+   * - Treat all features equally; prefer Present over Partial.
+   * - Cover each feature with Present if any Present exists in the dataset; otherwise allow Partial.
+   * - Rank pool by coverage+overlap; then iteratively add the patent with highest marginal gain.
+   * - Add one extra precision patent if only Partial is possible for remaining features.
+   */
+  private selectPatentsByGreedyCoverage(
+    perPatentCoverage: PerPatentCoverage[],
+    featureMapCells: any[],
+    inventionFeatures: string[],
+    stage1PQAI?: any[]
+  ): any[] {
+    const pqaiByPn = new Map<string, any>();
+    if (Array.isArray(stage1PQAI)) {
+      for (const r of stage1PQAI) {
+        const pn = r.publicationNumber || r.pn || r.patent_number || r.publication_number || r.id;
+        if (pn) pqaiByPn.set(pn, r);
+      }
+    }
+
+    // Index mappings per PN
+    const mappingsByPn: Record<string, any[]> = {};
+    for (const cell of featureMapCells || []) {
+      const pn = cell.patent_publication_number || cell.publicationNumber;
+      if (!pn) continue;
+      (mappingsByPn[pn] ||= []).push(cell);
+    }
+
+    // Determine which features have any Present evidence at all
+    const presentPossible: Record<string, boolean> = {};
+    for (const f of inventionFeatures) presentPossible[f.toLowerCase()] = false;
+    for (const cell of featureMapCells || []) {
+      const f = (cell.feature_text || cell.feature || '').toLowerCase();
+      if (!f) continue;
+      if ((cell.status || '').toString() === 'Present') presentPossible[f] = true;
+    }
+
+    // Score pool for ordering
+    const scored = perPatentCoverage
+      .filter(p => (p.present_count || 0) + (p.partial_count || 0) > 0)
+      .map(p => {
+        const maps = mappingsByPn[p.pn] || [];
+        const pq = pqaiByPn.get(p.pn) || {};
+        const pqaiRelevance = pq.relevanceScore || pq.score || pq.relevance || 0;
+        const abstract = pq.abstract || pq.snippet || pq.description || '';
+        const title = pq.title || pq.invention_title || 'Untitled Patent';
+        const overlaps = inventionFeatures.map(feat => {
+          const m = maps.find(mm => ((mm.feature_text || mm.feature || '') as string).toLowerCase() === feat.toLowerCase());
+          return m ? (m.overlap_percentage || 0) : 0;
+        });
+        const avgFeatureOverlap = overlaps.length ? overlaps.reduce((a,b)=>a+b,0)/overlaps.length : 0;
+        const relevanceScore = (p.coverage_ratio * 0.6) + (avgFeatureOverlap * 0.4);
+        return {
+          patentNumber: p.pn,
+          coverageRatio: p.coverage_ratio,
+          avgFeatureOverlap,
+          relevanceScore,
+          pqaiRelevance,
+          abstract,
+          title,
+          mappings: maps
+        };
+      })
+      .sort((a,b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+
+    const uncovered = new Set(inventionFeatures.map(f => f.toLowerCase()));
+    const selected: any[] = [];
+
+    const marginalGain = (pat: any): {gain: number; details: {feat: string; kind: 'P'|'Pt'}[]} => {
+      let gain = 0; const details: any[] = [];
+      for (const m of pat.mappings as any[]) {
+        const feat = ((m.feature_text || m.feature || '') as string).toLowerCase();
+        if (!uncovered.has(feat)) continue;
+        const status = (m.status || '').toString();
+        if (status === 'Present') { gain += 1; details.push({feat, kind: 'P'}); }
+        else if (status === 'Partial' && !presentPossible[feat]) { gain += 0.5; details.push({feat, kind: 'Pt'}); }
+      }
+      gain += (pat.pqaiRelevance || 0) * 0.01; // tiny tie‑break
+      return { gain, details };
+    };
+
+    while (uncovered.size > 0) {
+      let best: any = null; let bestGain = -1; let bestDetails: any[] = [];
+      for (const cand of scored) {
+        if (selected.find(s => s.patentNumber === cand.patentNumber)) continue;
+        const { gain, details } = marginalGain(cand);
+        if (gain > bestGain || (gain === bestGain && (cand.relevanceScore||0) > (best?.relevanceScore||0))) {
+          best = cand; bestGain = gain; bestDetails = details;
+        }
+      }
+      if (!best || bestGain <= 0) break; // no more gains
+      selected.push(best);
+      for (const d of bestDetails) uncovered.delete(d.feat);
+      // Reasonable stop: if selected reaches 5 and majority covered, let Stage 4 narrate residuals
+      if (selected.length >= 5 && uncovered.size <= Math.ceil(inventionFeatures.length * 0.1)) break;
+    }
+
+    // One extra precision pick for Partial‑only residuals
+    if (uncovered.size > 0) {
+      let best: any = null; let bestPt = -1;
+      for (const cand of scored) {
+        if (selected.find(s => s.patentNumber === cand.patentNumber)) continue;
+        let count = 0;
+      for (const m of cand.mappings as any[]) {
+          const feat = ((m.feature_text || m.feature || '') as string).toLowerCase();
+          if (!uncovered.has(feat)) continue;
+          if ((m.status || '').toString() === 'Partial' && !presentPossible[feat]) count++;
+      }
+        if (count > bestPt) { bestPt = count; best = cand; }
+      }
+      if (best && bestPt > 0) selected.push(best);
+    }
+
+    if (selected.length === 0 && scored.length > 0) {
+      // Safety net: ensure at least top 2 are passed if greedy found no gains due to schema mismatches
+      console.warn('dY"S Greedy selector produced empty set; falling back to top-2 by relevance.');
+      return scored.slice(0, Math.min(2, scored.length));
+    }
+
+    console.log(`dY"S Selected ${selected.length} patents for Stage 4 by greedy feature coverage.`);
+    return selected;
+  }
+
   private async generateReportContent(
     searchRun: any,
     stage0Data: NormalizedIdea,
@@ -2648,7 +3010,7 @@ OUTPUT JSON:
       const featureMapCells = await this.getFeatureMapCellsWithOverrides(searchRun.id);
 
       // Select top patents for detailed analysis, filtered to those with ≥1 matching feature
-      const selectedPatents = this.selectTopPatentsForDetailedAnalysis(
+      const selectedPatents = this.selectPatentsByGreedyCoverage(
         aggRes.per_patent_coverage,
         featureMapCells,
         stage0Data.inventionFeatures || [],
@@ -2701,10 +3063,15 @@ OUTPUT JSON:
           search_date: searchRun.createdAt,
           jurisdiction: config.jurisdiction,
           total_patents_found: aggregationResult.per_patent_coverage.length,
-          selected_patents_count: selectedPatents.length
+          selected_patents_count: selectedPatents.length,
+          // Added context to expand the Stage 4 summary
+          pqai_initial_count: Array.isArray(stage1Data?.pqaiResults) ? stage1Data.pqaiResults.length : undefined,
+          ai_relevance_accepted: Array.isArray(stage1Data?.aiRelevance?.accepted) ? stage1Data.aiRelevance.accepted.length : undefined,
+          ai_relevance_borderline: Array.isArray(stage1Data?.aiRelevance?.borderline) ? stage1Data.aiRelevance.borderline.length : undefined
         },
         patent_details: selectedPatents.map(patent => ({
           patent_number: patent.patentNumber,
+          title: patent.title || 'Untitled Patent',
           coverage_ratio: patent.coverageRatio,
           avg_feature_overlap: patent.avgFeatureOverlap,
           pqai_relevance: patent.pqaiRelevance || 0,
@@ -2737,6 +3104,25 @@ OUTPUT JSON:
         .replace(/SEARCH_DATE/g, enhancedReportInputs.search_metadata.search_date)
         .replace(/SEARCH_JURISDICTION/g, enhancedReportInputs.search_metadata.jurisdiction);
 
+      // Provide abstracts/evidence for selected patents as additional context (do not echo back)
+      basePrompt += "\n\nSupporting context (do not restate): PATENT_DETAILS_JSON=" + JSON.stringify(enhancedReportInputs.patent_details);
+
+      // Expand summary to describe the full pipeline and selection logic for user confidence
+      basePrompt += "\n\nOUTPUT CONTENT REQUIREMENTS:";
+      basePrompt += "\n- In executive_summary.summary, state: initial PQAI results (search_metadata.pqai_initial_count); accepted and borderline counts from AI Relevance (if present); final selected_patents_count; and the selection logic (greedy feature coverage).";
+      basePrompt += "\n- Under concluding_remarks, keep key_strengths/risks/recommendations and also include:";
+      basePrompt += "\n  • 'advisory' field: Do NOT give legal conclusions; advise deep analysis of selected patents and next steps.";
+      basePrompt += "\n  • 'patent_numbers' array listing the selected patent_number values for user review.";
+      basePrompt += "\n- Add 'per_patent_discussion' array with short entries per selected patent: {patent_number, novelty_overlap (1 sentence), gaps_or_differences (1 sentence)}. Keep it brief and factual.";
+
+      // Enforce a critical, examiner-style stance and explicit decision policy
+      basePrompt += "\n\nCRITICAL STANCE AND DECISION RULES:";
+      basePrompt += "\n- You are an objective, skeptical examiner. Do not justify the idea; challenge it.";
+      basePrompt += "\n- Be evidence-driven; avoid advocacy language and generic fluff.";
+      basePrompt += "\n- Treat unknown/insufficient-evidence cells as weaknesses that lower confidence.";
+      basePrompt += "\n- Decision policy: If any single patent covers \u2265 60% of features AND all critical features, default to 'Not Novel' unless a concrete, technical differentiator is clearly evidenced.";
+      basePrompt += "\n- If features are scattered across multiple patents without integration, state this plainly; do not imply novelty unless integration is truly absent in prior art.";
+
       // Request 3-5 new patent ideas for the Idea Bank (consistent with drafting flow JSON shape)
       basePrompt += `\n\nAdditionally, generate 3 to 5 new patent ideas based on uncovered gaps and combinations. Return them in JSON under key 'idea_bank_suggestions' as an array of objects with fields: title, core_principle, expected_advantage, tags (array of short strings), non_obvious_extension.`;
 
@@ -2745,14 +3131,22 @@ OUTPUT JSON:
         basePrompt += `\n\nNOTE_TO_MODEL: No prior art with intersecting features (Present/Partial) was found in Stage 3.5. Generate the report focusing on Stage 0 features, uniqueness rationale, and explain that no overlapping evidence was identified.`;
       }
 
-      const llmResult = await llmGateway.executeLLMOperation(
+      const primaryModel = (config.stage4?.modelPreference || 'gemini-2.5-pro') as any;
+      console.log(`dY"S [Stage4] Attempting report generation with model: ${primaryModel}`);
+      let llmResult = await llmGateway.executeLLMOperation(
         { headers: requestHeaders || {} },
-        {
-          taskCode: TaskCode.LLM5_NOVELTY_ASSESS,
-          prompt: basePrompt,
-          modelClass: (config.stage4?.modelPreference || 'gemini-2.5-pro') as any
-        }
+        { taskCode: TaskCode.LLM6_REPORT_GENERATION, prompt: basePrompt, modelClass: primaryModel }
       );
+
+      // Fallback to GPT-4o if primary fails
+      if (!llmResult.success || !llmResult.response) {
+        const fallbackModel: any = 'gpt-4o';
+        console.warn(`[Stage4] Primary model failed. Falling back to: ${fallbackModel}`);
+        llmResult = await llmGateway.executeLLMOperation(
+          { headers: requestHeaders || {} },
+          { taskCode: TaskCode.LLM6_REPORT_GENERATION, prompt: basePrompt, modelClass: fallbackModel }
+        );
+      }
 
       if (!llmResult.success || !llmResult.response) {
         console.warn('LLM report generation failed, using fallback structure');
@@ -2936,6 +3330,50 @@ OUTPUT JSON:
           abstract: patent.abstract.substring(0, 180) // Trim abstracts to ≤180 words
         });
       }
+    }
+
+    return normalized;
+  }
+
+  private normalizePatentsForFeatureMappingV2(pqaiResults: any[], maxRefsTotal: number): any[] {
+    const seen = new Set<string>();
+    const normalized: any[] = [];
+    const take = Array.isArray(pqaiResults) ? pqaiResults.slice(0, maxRefsTotal) : [];
+
+    for (const patent of take) {
+      const pnAny = patent.publicationNumber || patent.publication_number || patent.pn || patent.id || '';
+      const canonicalPn = String(pnAny).toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/[A-Z]\d*$/, '');
+      if (!canonicalPn) continue;
+      if (seen.has(canonicalPn)) continue;
+
+      const titleStr = String(
+        patent.title || (typeof patent.snippet === 'string' ? patent.snippet.split('.')[0] : '') || patent.publication_title || 'Untitled Patent'
+      );
+
+      let abstractRaw: any = (
+        patent.abstract ||
+        patent.snippet ||
+        patent.description ||
+        patent.abstract_text ||
+        patent.abstractText ||
+        patent.abstract_en ||
+        patent.abstractEnglish ||
+        ''
+      );
+      if (Array.isArray(abstractRaw)) abstractRaw = abstractRaw.join(' ');
+      let abstractStr = String(abstractRaw || '').trim();
+      if (!abstractStr) abstractStr = 'No abstract available.';
+
+      const words = abstractStr.split(/\s+/).filter(Boolean);
+      if (words.length > 180) abstractStr = words.slice(0, 180).join(' ');
+
+      seen.add(canonicalPn);
+      normalized.push({
+        ...patent,
+        canonicalPn,
+        title: titleStr.substring(0, 200),
+        abstract: abstractStr
+      });
     }
 
     return normalized;
@@ -3457,7 +3895,7 @@ Abstract: ${patent.abstract}
       return {
         title: result.title || result.snippet?.split('.')[0] || 'Untitled Patent',
         publicationNumber: result.publication_number || result.patent_number || result.pn || result.id || 'Unknown',
-        abstract: result.snippet || result.abstract || result.description || '',
+        abstract: (result.snippet || result.abstract || result.description || result.abstract_text || result.abstractText || result.abstract_en || result.abstractEnglish || ''),
         year: result.year || result.filing_date?.substring(0, 4) || result.publication_date?.substring(0, 4) || null,
         inventors: Array.isArray(result.inventors) ? result.inventors : (result.inventors ? [result.inventors] : []),
         assignees: Array.isArray(result.assignees) ? result.assignees : (result.assignees ? [result.assignees] : []),

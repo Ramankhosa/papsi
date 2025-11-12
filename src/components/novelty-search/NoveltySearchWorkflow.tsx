@@ -269,6 +269,13 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
     return { prev, next };
   };
 
+  // Helper: has Stage 1.5 (AI Relevance) been computed and attached to results?
+  const hasStage15 = (): boolean => {
+    const r: any = searchState.results || {};
+    const gate = r?.aiRelevance || r?.stage1?.aiRelevance;
+    return !!(gate && (Array.isArray(gate.accepted) || Array.isArray(gate.borderline) || Array.isArray(gate.rejected)));
+  };
+
   // Map status to specific stage execution numbers
   const getStageNumberForStatus = (status: string): string | null => {
     switch (status) {
@@ -276,9 +283,15 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
       case NoveltySearchStatus.STAGE_0_COMPLETED:
         return '1';
       case NoveltySearchStatus.STAGE_1_COMPLETED:
-        return '3.5a';
+        // If Stage 1.5 AI Relevance hasn’t been run yet, run it next; otherwise go to 3.5a
+        return hasStage15() ? '3.5a' : '1.5';
       case NoveltySearchStatus.STAGE_3_5_COMPLETED:
-        return '4';
+        // If aggregation (3.5b) results exist in stage4, proceed to 4; otherwise run 3.5b next
+        {
+          const r: any = searchState.results || {};
+          const hasAgg = !!(r?.stage4);
+          return hasAgg ? '4' : '3.5b';
+        }
       case NoveltySearchStatus.COMPLETED:
         return null; // Already at final stage
       default:
@@ -291,9 +304,11 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
       case NoveltySearchStatus.STAGE_0_COMPLETED:
         return '0';
       case NoveltySearchStatus.STAGE_1_COMPLETED:
-        return '1';
+        // Navigate back to Stage 0 view (no API call); return '0' sentinel
+        return '0';
       case NoveltySearchStatus.STAGE_3_5_COMPLETED:
-        return '3.5a';
+        // If Stage 1.5 exists, allow stepping back to it; else back to 3.5a
+        return hasStage15() ? '1.5' : '3.5a';
       case NoveltySearchStatus.COMPLETED:
         return '4';
       default:
@@ -441,6 +456,9 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
         await new Promise(resolve => setTimeout(resolve, 1200));
         setStage35aMessage(stage35aMessages[i]);
       }
+    } else if (stageNumber === '3.5b') {
+      setIsStage35Simulating(true);
+      setStage35Message('Aggregating coverage and computing novelty metrics…');
     }
 
     try {
@@ -496,17 +514,43 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
       }
 
       // Update progress first
-      const stageKey = stageNumber === '3.5' || stageNumber === '3.5a' ? 'stage3_5' : `stage${stageNumber}`;
+      const stageKey = (stageNumber === '3.5' || stageNumber === '3.5a' || stageNumber === '3.5b') ? 'stage3_5' : `stage${stageNumber}`;
       setStageProgress(prev => ({ ...prev, [stageKey]: 100 }));
 
-      // Update state with new results
-      setSearchState(prev => ({
-        ...prev,
-        status: data.status,
-        currentStage: data.currentStage,
-        results: data.results,
-        isLoading: false
-      }));
+      // Refresh full aggregated results so navigation can use all stages' data
+      try {
+        const fullRes = await fetch(`/api/novelty-search/${searchState.searchId}`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
+          cache: 'no-store'
+        });
+        const fullJson = await fullRes.json();
+        if (fullRes.ok && fullJson?.success !== false && fullJson?.search) {
+          setSearchState(prev => ({
+            ...prev,
+            status: fullJson.search.status,
+            currentStage: fullJson.search.currentStage,
+            results: fullJson.search.results,
+            isLoading: false
+          }));
+        } else {
+          // Fallback to stage response payload
+          setSearchState(prev => ({
+            ...prev,
+            status: data.status,
+            currentStage: data.currentStage,
+            results: data.results,
+            isLoading: false
+          }));
+        }
+      } catch {
+        setSearchState(prev => ({
+          ...prev,
+          status: data.status,
+          currentStage: data.currentStage,
+          results: data.results,
+          isLoading: false
+        }));
+      }
 
       console.log(`[Execution] Stage ${stageNumber} complete. New state:`, { status: data.status, currentStage: data.currentStage });
 
@@ -528,6 +572,8 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
         setIsStage35Simulating(false);
       } else if (stageNumber === '3.5a') {
         setIsStage35aSimulating(false);
+      } else if (stageNumber === '3.5b') {
+        setIsStage35Simulating(false);
       }
     }
   };
@@ -991,9 +1037,14 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
                     onClick={async () => {
                       if (!prevStage) return;
                       const stageNumber = getStageNumberForPrevStatus(prevStage);
-                      if (stageNumber) {
-                        await executeStage(stageNumber);
+                      if (!stageNumber) return;
+                      if (stageNumber === '0') {
+                        // Navigate to Stage 0 view without re-running anything
+                        await fetchSearchStatus();
+                        startEditingStage0();
+                        return;
                       }
+                      await executeStage(stageNumber);
                     }}
                     className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-75 disabled:cursor-not-allowed"
                     disabled={!prevStage}
@@ -1330,6 +1381,7 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
               <CardContent>
                 {(() => {
                   const pqaiResults = (searchState.results as any).pqaiResults || (searchState.results as any)?.stage1?.pqaiResults || [];
+                  const aiRel = (searchState.results as any)?.aiRelevance || (searchState.results as any)?.stage1?.aiRelevance || null;
                   const highRelevanceCount = pqaiResults.filter((p: any) => p.relevanceScore && p.relevanceScore > 0.5).length || 0;
                   const avgRelevance = pqaiResults.length > 0 ?
                     (pqaiResults.reduce((avg: number, p: any) => avg + (p.relevanceScore || 0), 0) / pqaiResults.length * 100) : 0;
@@ -1348,6 +1400,24 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
                         <div className="text-center p-4 bg-white rounded-lg border">
                           <div className="text-2xl font-bold text-purple-600">{avgRelevance.toFixed(1)}%</div>
                           <div className="text-sm text-gray-600">Avg Relevance</div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="text-sm text-gray-600">
+                          {aiRel ? 'AI Relevance (Stage 1.5) computed.' : 'Run AI Relevance (Stage 1.5) to filter candidates before feature mapping.'}
+                        </div>
+                        <div className="flex gap-2">
+                          {!aiRel && (
+                            <Button size="sm" variant="outline" onClick={async () => { await executeStage('1.5'); }}>
+                              Run AI Relevance (Stage 1.5)
+                            </Button>
+                          )}
+                          {aiRel && (
+                            <Button size="sm" variant="outline" onClick={async () => { await executeStage('3.5a'); }}>
+                              Proceed to Feature Mapping (3.5a)
+                            </Button>
+                          )}
                         </div>
                       </div>
 
@@ -1440,25 +1510,86 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
                           {pqaiResults.length === 0 && <p className="text-sm text-gray-500">No patent results available</p>}
                         </div>
                       </div>
-                    </>
-                  );
-                })()}
+                  </>
+                );
+              })()}
               </CardContent>
             </Card>
           )}
 
+          {/* Stage 1.5 – AI Relevance Summary */}
+          {searchState.status === NoveltySearchStatus.STAGE_1_COMPLETED && (
+            (() => {
+              const aiRel = (searchState.results as any)?.aiRelevance || (searchState.results as any)?.stage1?.aiRelevance;
+              if (!aiRel) return null;
+              const acc = Array.isArray(aiRel.accepted) ? aiRel.accepted.length : 0;
+              const bor = Array.isArray(aiRel.borderline) ? aiRel.borderline.length : 0;
+              const rej = Array.isArray(aiRel.rejected) ? aiRel.rejected.length : 0;
+              const total = acc + bor + rej;
+              const sampleList = (list: string[], max = 10) => list.slice(0, max).map((pn, i) => (
+                <li key={i} className="truncate">{pn}</li>
+              ));
+              return (
+                <Card className="mt-4">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-lg">Stage 1.5: AI Relevance</CardTitle>
+                      <div className="text-xs text-gray-500">Thresholds: High {(aiRel.thresholds?.high ?? 0.6)}, Medium {(aiRel.thresholds?.medium ?? 0.4)}</div>
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
+                      <div className="text-center p-4 bg-white rounded-lg border">
+                        <div className="text-sm text-gray-600">Accepted</div>
+                        <div className="text-2xl font-bold text-emerald-600">{acc}</div>
+                      </div>
+                      <div className="text-center p-4 bg-white rounded-lg border">
+                        <div className="text-sm text-gray-600">Borderline</div>
+                        <div className="text-2xl font-bold text-amber-600">{bor}</div>
+                      </div>
+                      <div className="text-center p-4 bg-white rounded-lg border">
+                        <div className="text-sm text-gray-600">Rejected</div>
+                        <div className="text-2xl font-bold text-red-600">{rej}</div>
+                      </div>
+                      <div className="text-center p-4 bg-white rounded-lg border">
+                        <div className="text-sm text-gray-600">Total Scored</div>
+                        <div className="text-2xl font-bold text-indigo-600">{total}</div>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div>
+                        <div className="text-sm font-semibold text-gray-700 mb-2">Accepted (sample)</div>
+                        <ul className="list-disc list-inside text-sm text-gray-800 space-y-1">
+                          {sampleList(Array.isArray(aiRel.accepted) ? aiRel.accepted : [])}
+                        </ul>
+                      </div>
+                      <div>
+                        <div className="text-sm font-semibold text-gray-700 mb-2">Borderline (sample)</div>
+                        <ul className="list-disc list-inside text-sm text-gray-800 space-y-1">
+                          {sampleList(Array.isArray(aiRel.borderline) ? aiRel.borderline : [])}
+                        </ul>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })()
+          )}
+
           {/* Stage 3.5a Results - Show only when Stage 3.5a is completed */}
           {(() => {
-            const hasResults = searchState.results?.stage35 || searchState.results?.feature_map;
+            const stage35Any: any = (searchState.results as any)?.stage35;
+            const hasResults = Array.isArray((searchState.results as any)?.feature_map) || Array.isArray(stage35Any?.feature_map);
             console.log('[Stage3.5a][UI] Status check:', {
               status: searchState.status,
               expectedStatus: NoveltySearchStatus.STAGE_3_5_COMPLETED,
               hasResults,
-              stage35: !!searchState.results?.stage35,
-              feature_map: !!searchState.results?.feature_map,
+              stage35_has_feature_map: Array.isArray(stage35Any?.feature_map),
+              top_feature_map: Array.isArray((searchState.results as any)?.feature_map),
               resultsKeys: searchState.results ? Object.keys(searchState.results) : []
             });
-            return searchState.status === NoveltySearchStatus.STAGE_3_5_COMPLETED && hasResults && (
+            const statusOk = searchState.status === NoveltySearchStatus.STAGE_3_5_COMPLETED || searchState.status === NoveltySearchStatus.COMPLETED;
+            return statusOk && hasResults && (
             <Card className="border-purple-200 bg-purple-50/30">
               <CardHeader className="pb-3">
                 <div className="flex items-center space-x-3">
@@ -1474,8 +1605,10 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
               <CardContent>
                 {(() => {
                   const stage35 = (searchState.results as any)?.stage35;
-                  const featureMap = (searchState.results as any)?.feature_map;
-                  const items = Array.isArray(stage35) ? stage35 : (Array.isArray(featureMap) ? featureMap : []);
+                  const topFeatureMap = (searchState.results as any)?.feature_map;
+                  const items = Array.isArray(stage35?.feature_map)
+                    ? stage35.feature_map
+                    : (Array.isArray(topFeatureMap) ? topFeatureMap : []);
                   const presentSum = items.reduce((sum: number, p: any) => sum + (p.coverage?.present || 0), 0);
                   const partialSum = items.reduce((sum: number, p: any) => sum + (p.coverage?.partial || 0), 0);
                   const absentSum = items.reduce((sum: number, p: any) => sum + (p.coverage?.absent || 0), 0);
@@ -1651,7 +1784,7 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
           })()}
 
           {/* Stage 4 Results (Report) */}
-          {searchState.status === NoveltySearchStatus.COMPLETED && searchState.results && (
+          {(searchState.status === NoveltySearchStatus.COMPLETED || !!(searchState.results as any)?.stage4) && searchState.results && (
             <Card className="border-teal-200 bg-teal-50/30">
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
@@ -1671,7 +1804,8 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
               </CardHeader>
               <CardContent>
                 {(() => {
-                  const r = (searchState.results as any) || {};
+                  const root: any = (searchState.results as any) || {};
+                  const r = root.stage4 || root;
                   const exec = r.executive_summary || {};
                   const cards = exec.visual_cards || {};
                   const uniq = Array.isArray(r.feature_uniqueness_table) ? r.feature_uniqueness_table : [];
@@ -1770,8 +1904,9 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
 
                       {/* Idea Bank Button */}
                       {(() => {
-                        const r = (searchState.results as any) || {};
-                        const ideaBank = r.idea_bank_suggestions || [];
+                        const root: any = (searchState.results as any) || {};
+                        const r4 = root.stage4 || root;
+                        const ideaBank = r4.idea_bank_suggestions || [];
                         if (ideaBank.length > 0) {
                           return (
                             <div className="rounded-lg border bg-white p-4">

@@ -94,6 +94,9 @@ export async function POST(
       case '1':
         result = await noveltySearchService.executeStage1(searchId, userId, requestHeaders);
         break;
+      case '1.5':
+        result = await noveltySearchService.executeStage15(searchId, userId, requestHeaders);
+        break;
       case '3.5a':
         console.log('[Stage3.5a][API] Body keys:', body ? Object.keys(body) : 'no body');
         console.log('[Stage3.5a][API] selectedPublicationNumbers length:', Array.isArray(body?.selectedPublicationNumbers) ? body.selectedPublicationNumbers.length : 'n/a');
@@ -104,12 +107,15 @@ export async function POST(
           Array.isArray(body?.selectedPublicationNumbers) ? body.selectedPublicationNumbers : undefined
         );
         break;
+      case '3.5b':
+        result = await noveltySearchService.executeStage35b(searchId, userId, requestHeaders);
+        break;
       case '4':
         result = await noveltySearchService.executeStage4(searchId, userId, requestHeaders);
         break;
       default:
         return NextResponse.json(
-          { error: 'Invalid stage number. Valid stages: 1, 3.5a, 4' },
+          { error: 'Invalid stage number. Valid stages: 1, 1.5, 3.5a, 3.5b, 4' },
           { status: 400 }
         );
     }
@@ -137,4 +143,3 @@ export async function POST(
     );
   }
 }
-
