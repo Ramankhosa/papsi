@@ -82,8 +82,11 @@ model User {
   email            String     @unique
   passwordHash     String?
   name             String?
+  firstName        String?
+  lastName         String?
   roles            UserRole[] @default([ANALYST])
   status           UserStatus @default(ACTIVE)
+  emailVerified    Boolean    @default(false)
   noveltySearchesCompleted Int @default(0) // Track successful novelty searches
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
@@ -106,6 +109,10 @@ model User {
   draftingSessions        DraftingSession[]
   draftingHistory         DraftingHistory[]
 
+  // Auth tokens
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+
   // Idea Bank relations
   createdIdeaBankIdeas    IdeaBankIdea[]         @relation("IdeaBankIdeaCreator")
   ideaBankReservations    IdeaBankReservation[]
@@ -119,6 +126,34 @@ model User {
   documents               Document[]
 
   @@map("users")
+}
+
+// Email verification tokens for new users
+model EmailVerificationToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_verification_tokens")
+}
+
+// Password reset tokens
+model PasswordResetToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("password_reset_tokens")
 }
 
 model ATIToken {

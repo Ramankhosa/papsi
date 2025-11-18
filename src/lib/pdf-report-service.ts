@@ -505,7 +505,7 @@ export class PDFReportService {
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(colors.dark[0], colors.dark[1], colors.dark[2]);
       doc.setFontSize(10);
-      doc.text(`Total PQAI results: ${pqai.length}`, 20, currentY);
+      doc.text(`Total patent database results: ${pqai.length}`, 20, currentY);
       currentY += 6;
       doc.text(`Patents shortlisted for detailed analysis: ${patentsToShow.length}`, 20, currentY);
       currentY += 10;
@@ -1267,6 +1267,49 @@ export class PDFReportService {
         }
       } catch (e) {
         // Non-fatal: skip Stage 3.5 patent details if data is unavailable
+      }
+
+      // Stage 3.5c — Patent-by-Patent Remarks (from Stage 4 snapshot)
+      try {
+        const stage4: any = (searchRun as any).stage4Results || {};
+        const remarks: any[] = Array.isArray(stage4?.per_patent_remarks) ? stage4.per_patent_remarks : [];
+        if (remarks.length > 0) {
+          checkPageSpace(60);
+          doc.addPage();
+          tocEntries.push({ label: 'Stage 3.5c - Patent Remarks', page: doc.getNumberOfPages() });
+          currentY = 20;
+
+          doc.setFillColor(colors.accent[0], colors.accent[1], colors.accent[2]);
+          doc.rect(0, 0, pageWidth, 25, 'F');
+          doc.setTextColor(colors.white[0], colors.white[1], colors.white[2]);
+          doc.setFontSize(16);
+          doc.setFont('helvetica', 'bold');
+          doc.text('STAGE 3.5c — PATENT-BY-PATENT REMARKS', 20, 17);
+          currentY = 40;
+
+          for (let i = 0; i < remarks.length; i++) {
+            const it = remarks[i] || {};
+            const pn = String(it.pn || '-');
+            const title = String(it.title || '');
+            const rem = String(it.remarks || '');
+
+            if (currentY > pageHeight - 60) { doc.addPage(); currentY = 20; }
+            const cell1 = drawLabeledCell('Patent Number', pn, 20, currentY, pageWidth - 40);
+            currentY += cell1.height + 4;
+            if (title) {
+              const cell2 = drawLabeledCell('Title', title, 20, currentY, pageWidth - 40);
+              currentY += cell2.height + 4;
+            }
+            if (rem) {
+              const cell3 = drawLabeledCell('Remarks', rem, 20, currentY, pageWidth - 40);
+              currentY += cell3.height + 8;
+            } else {
+              currentY += 6;
+            }
+          }
+        }
+      } catch (e) {
+        // Non-fatal: skip remarks section if not available
       }
 
       // Structured Narrative Section

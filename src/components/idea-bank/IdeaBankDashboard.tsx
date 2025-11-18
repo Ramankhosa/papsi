@@ -46,6 +46,8 @@ export default function IdeaBankDashboard() {
 
   // Layout
   const [layout, setLayout] = useState<LayoutType>('tile')
+  // Page size
+  const [pageSize, setPageSize] = useState<number>(20)
 
   // Search and filters
   const [filters, setFilters] = useState<IdeaSearchFilters>({})
@@ -85,12 +87,12 @@ export default function IdeaBankDashboard() {
     loadIdeas()
   }, [])
 
-  // Auto refresh ideas every 30 seconds (only when no filters active and on first page)
+  // Auto refresh ideas every 30 seconds (only when no filters active)
   useEffect(() => {
     const interval = setInterval(() => {
-      // Only auto-refresh ideas if we're on the first page and no search filters are active
-      if (currentPage === 1 && !searchQuery && !selectedDomain) {
-        loadIdeas(1, true) // Silent refresh, no loading spinner
+      // Only auto-refresh ideas when no active search filters
+      if (!searchQuery && !selectedDomain) {
+        loadIdeas(currentPage, true) // Silent refresh, no loading spinner
       }
     }, 30000) // 30 seconds
 
@@ -100,9 +102,9 @@ export default function IdeaBankDashboard() {
   // Manual refresh (subtle - only refresh ideas, not stats)
   useEffect(() => {
     if (lastRefresh > 0) {
-      loadIdeas(1, true) // Silent refresh for manual refresh
+      loadIdeas(currentPage, true) // Silent refresh for manual refresh
     }
-  }, [lastRefresh])
+  }, [lastRefresh, currentPage])
 
   // Update filters when search query changes (debounced)
   useEffect(() => {
@@ -121,10 +123,10 @@ export default function IdeaBankDashboard() {
     setCurrentPage(1)
   }, [selectedDomain])
 
-  // Load ideas whenever filters or page changes
+  // Load ideas whenever filters, page or page size change
   useEffect(() => {
-    loadIdeas()
-  }, [filters, currentPage])
+    loadIdeas(currentPage)
+  }, [filters, currentPage, pageSize])
 
   const loadStats = async () => {
     try {
@@ -154,7 +156,7 @@ export default function IdeaBankDashboard() {
     try {
       const params = new URLSearchParams({
         page: page.toString(),
-        limit: '20',
+        limit: String(pageSize),
         ...Object.fromEntries(
           Object.entries(filters).filter(([_, v]) => v !== undefined && v !== '')
         )
@@ -175,13 +177,9 @@ export default function IdeaBankDashboard() {
       if (response.ok) {
         const data = await response.json()
         console.log('✅ Idea Bank: Received', data.ideas?.length || 0, 'ideas, total:', data.totalCount)
-        if (page === 1) {
-          setIdeas(data.ideas)
-          if (silent) {
-            setFadeInKey(Date.now()) // Trigger fade-in effect for silent refreshes
-          }
-        } else {
-          setIdeas(prev => [...prev, ...data.ideas])
+        setIdeas(data.ideas || [])
+        if (silent) {
+          setFadeInKey(Date.now()) // Trigger fade-in effect for silent refreshes
         }
         setTotalPages(data.totalPages)
         setHasMore(data.currentPage < data.totalPages)
@@ -365,8 +363,10 @@ export default function IdeaBankDashboard() {
     }
   }
 
-  const handleLoadMore = () => {
-    loadIdeas(currentPage + 1)
+  // Pagination controls
+  const goToPage = (p: number) => {
+    const clamped = Math.max(1, Math.min(totalPages, p))
+    if (clamped !== currentPage) setCurrentPage(clamped)
   }
 
   if (loading) {
@@ -622,18 +622,51 @@ export default function IdeaBankDashboard() {
             </div>
           )}
 
-          {/* Load More */}
-          {hasMore && (
-            <div className="text-center">
-              <Button
-                onClick={handleLoadMore}
-                disabled={searchLoading}
-                variant="outline"
-              >
-                {searchLoading ? 'Loading...' : 'Load More Ideas'}
-              </Button>
+          {/* Pagination Controls */}
+          <div className="flex items-center justify-between mt-4">
+            {/* Page size selector */}
+            <div className="flex items-center gap-2 text-sm text-gray-600">
+              <span>Per page</span>
+              <Select value={String(pageSize)} onValueChange={(v) => { setCurrentPage(1); setPageSize(parseInt(v, 10)); }}>
+                <SelectTrigger className="w-20 h-8">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="10">10</SelectItem>
+                  <SelectItem value="20">20</SelectItem>
+                  <SelectItem value="30">30</SelectItem>
+                  <SelectItem value="50">50</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-          )}
+
+            {/* Pager */}
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" disabled={currentPage <= 1 || searchLoading} onClick={() => goToPage(currentPage - 1)}>Prev</Button>
+              {/* Simple numeric pager: show up to 7 buttons around current */}
+              {Array.from({ length: Math.min(7, totalPages) }, (_, i) => {
+                const span = 3
+                let start = Math.max(1, currentPage - span)
+                let end = Math.min(totalPages, currentPage + span)
+                if (end - start < 6) {
+                  if (start === 1) end = Math.min(totalPages, start + 6)
+                  else if (end === totalPages) start = Math.max(1, end - 6)
+                }
+                const pageNums = [] as number[]
+                for (let p = start; p <= end; p++) pageNums.push(p)
+                return (
+                  <span key={`pg-${i}`} className="flex items-center gap-2">
+                    {pageNums.map(p => (
+                      <Button key={p} variant={p === currentPage ? 'default' : 'outline'} size="sm" disabled={searchLoading} onClick={() => goToPage(p)}>
+                        {p}
+                      </Button>
+                    ))}
+                  </span>
+                )
+              })[0]}
+              <Button variant="outline" size="sm" disabled={currentPage >= totalPages || searchLoading} onClick={() => goToPage(currentPage + 1)}>Next</Button>
+            </div>
+          </div>
         </>
       )}
       </div>

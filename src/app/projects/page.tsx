@@ -14,9 +14,10 @@ interface Project {
   id: string
   name: string
   createdAt: string
-  patents?: { id: string; title?: string; status: string }[]
+  patents?: { id: string; title?: string; status?: string }[]
   collaborators?: { id: string; user: { name: string; email: string } }[]
   applicantProfile?: { applicantLegalName: string }
+  _count?: { patents: number; collaborators?: number }
 }
 
 export default function ProjectsPage() {
@@ -170,17 +171,23 @@ export default function ProjectsPage() {
                     {/* Patents Count */}
                     <div className="flex items-center space-x-2 text-sm text-[#64748B]">
                       <FileText className="w-4 h-4" />
-                      <span>{project.patents?.length || 0} patent{(project.patents?.length || 0) !== 1 ? 's' : ''}</span>
+                      <span>
+                        {(project as any)._count?.patents ?? project.patents?.length ?? 0} patent
+                        {((project as any)._count?.patents ?? project.patents?.length ?? 0) !== 1 ? 's' : ''}
+                      </span>
                     </div>
 
-                    {/* Patents Status */}
-                    {project.patents && project.patents.length > 0 && (
+                    {/* Patents Status (only if status exists) */}
+                    {project.patents && project.patents.length > 0 && project.patents.some((p: any) => (p as any).status) && (
                       <div className="flex flex-wrap gap-1">
-                        {project.patents.slice(0, 3).map((patent) => (
-                          <Badge key={patent.id} className={`text-xs ${getStatusColor(patent.status)}`}>
-                            {patent.status.replace('_', ' ')}
-                          </Badge>
-                        ))}
+                        {project.patents
+                          .filter((p: any) => (p as any).status)
+                          .slice(0, 3)
+                          .map((patent: any) => (
+                            <Badge key={patent.id} className={`text-xs ${getStatusColor(patent.status)}`}>
+                              {String(patent.status).replace('_', ' ')}
+                            </Badge>
+                          ))}
                         {project.patents.length > 3 && (
                           <Badge variant="outline" className="text-xs">
                             +{project.patents.length - 3} more

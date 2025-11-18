@@ -1,8 +1,8 @@
-'use client';
+﻿'use client';
 
 import React, { useRef, useEffect, useState } from 'react';
 import { Button } from '../ui/button';
-import { Download, Printer, Loader2 } from 'lucide-react';
+import { Printer } from 'lucide-react';
 
 interface NoveltySearchReportPageProps {
   searchId: string;
@@ -63,7 +63,7 @@ export default function NoveltySearchReportPage({
 
       const patentNumbers = Array.from(patentNumbersSet);
       
-      console.log(`🔍 Fetching database details for ${patentNumbers.length} patents:`, patentNumbers);
+      console.log(`ðŸ” Fetching database details for ${patentNumbers.length} patents:`, patentNumbers);
 
       if (patentNumbers.length === 0) return;
 
@@ -171,53 +171,6 @@ export default function NoveltySearchReportPage({
   };
 
   // Handle PDF download using html2canvas + jsPDF
-  const handleDownloadPDF = async () => {
-    if (!reportRef.current) return;
-    
-    setIsPrinting(true);
-    try {
-      // Dynamic import to avoid SSR issues
-      const html2canvas = (await import('html2canvas')).default;
-      const jsPDF = (await import('jspdf')).default;
-
-      const canvas = await html2canvas(reportRef.current, {
-        scale: 2,
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#ffffff',
-      });
-
-      const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = pdf.internal.pageSize.getHeight();
-      const imgWidth = canvas.width;
-      const imgHeight = canvas.height;
-      const ratio = Math.min(pdfWidth / imgWidth, pdfHeight / imgHeight);
-      const imgScaledWidth = imgWidth * ratio;
-      const imgScaledHeight = imgHeight * ratio;
-
-      let heightLeft = imgScaledHeight;
-      let position = 0;
-
-      pdf.addImage(imgData, 'PNG', 0, position, imgScaledWidth, imgScaledHeight);
-      heightLeft -= pdfHeight;
-
-      while (heightLeft > 0) {
-        position = heightLeft - imgScaledHeight;
-        pdf.addPage();
-        pdf.addImage(imgData, 'PNG', 0, position, imgScaledWidth, imgScaledHeight);
-        heightLeft -= pdfHeight;
-      }
-
-      pdf.save(`novelty_search_${searchId}_${Date.now()}.pdf`);
-    } catch (error) {
-      console.error('Error generating PDF:', error);
-      alert('Failed to generate PDF. Please use the print function instead.');
-    } finally {
-      setIsPrinting(false);
-    }
-  };
 
   // Helper to get status for feature matrix
   const getStatus = (pm: any, feature: string): 'P' | 'Pt' | 'A' | '-' => {
@@ -248,14 +201,6 @@ export default function NoveltySearchReportPage({
         <Button onClick={handlePrint} variant="outline" disabled={isPrinting}>
           <Printer className="mr-2 h-4 w-4" />
           Print / Save as PDF
-        </Button>
-        <Button onClick={handleDownloadPDF} variant="outline" disabled={isPrinting}>
-          {isPrinting ? (
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-          ) : (
-            <Download className="mr-2 h-4 w-4" />
-          )}
-          Download PDF
         </Button>
       </div>
 
@@ -368,10 +313,10 @@ export default function NoveltySearchReportPage({
           </div>
         </div>
 
-        {/* Stage 0 — Idea & Key Features */}
+        {/* Stage 0 â€” Idea & Key Features */}
         <div className="section page-break avoid-break mb-8">
           <div className="section-header bg-blue-600 text-white p-3 mb-4">
-            <h2 className="text-xl font-bold">STAGE 0 — IDEA & KEY FEATURES</h2>
+            <h2 className="text-xl font-bold">STAGE 0 â€” IDEA & KEY FEATURES</h2>
           </div>
           
           {stage0?.searchQuery && (
@@ -393,14 +338,14 @@ export default function NoveltySearchReportPage({
           )}
         </div>
 
-        {/* Stage 1 — Prior Art Search Overview */}
+        {/* Stage 1 â€” Prior Art Search Overview */}
         <div className="section page-break avoid-break mb-8">
           <div className="section-header bg-blue-700 text-white p-3 mb-4">
-            <h2 className="text-xl font-bold">STAGE 1 — PRIOR ART SEARCH OVERVIEW</h2>
+            <h2 className="text-xl font-bold">STAGE 1 â€” PRIOR ART SEARCH OVERVIEW</h2>
           </div>
 
           <div className="mb-4 text-sm text-gray-700">
-            <p>Total PQAI results: {pqai.length}</p>
+            <p>Total patent database results: {pqai.length}</p>
             <p>Patents shortlisted for detailed analysis: {shortlistedCount}</p>
           </div>
 
@@ -420,8 +365,8 @@ export default function NoveltySearchReportPage({
                       ((b.relevanceScore || b.score || b.relevance || 0) - (a.relevanceScore || a.score || a.relevance || 0))
                     )
                     .map((r: any, idx: number) => {
-                      const pn = String(r.publicationNumber || r.pn || r.publication_number || '—');
-                      const title = String(r.title || '—');
+                      const pn = String(r.publicationNumber || r.pn || r.publication_number || 'â€”');
+                      const title = String(r.title || 'â€”');
                       const relevance = formatRelevance(r.relevanceScore || r.score || r.relevance);
                       
                       return (
@@ -438,11 +383,11 @@ export default function NoveltySearchReportPage({
           )}
         </div>
 
-        {/* Stage 1 — Prior Art Details */}
+        {/* Stage 1 â€” Prior Art Details */}
         {patentsToShow.length > 0 && (
           <div className="section page-break avoid-break mb-8">
             <div className="section-header bg-blue-700 text-white p-3 mb-4">
-              <h2 className="text-xl font-bold">STAGE 1 — PRIOR ART DETAILS</h2>
+              <h2 className="text-xl font-bold">STAGE 1 â€” PRIOR ART DETAILS</h2>
             </div>
 
             {[...patentsToShow]
@@ -462,13 +407,13 @@ export default function NoveltySearchReportPage({
                   (r as any).abstractEnglish ||
                   ''
                 ).trim();
-                const pubDate = String(r.publication_date || r.pub_date || r.date || '—');
-                const appNo = String(r.application_number || r.applicationNumber || '—');
-                const appDate = String(r.application_date || r.filing_date || r.filingDate || '—');
+                const pubDate = String(r.publication_date || r.pub_date || r.date || 'â€”');
+                const appNo = String(r.application_number || r.applicationNumber || 'â€”');
+                const appDate = String(r.application_date || r.filing_date || r.filingDate || 'â€”');
                 const priorityNo = String(r.priority_number || r.priorityNumber || 'null');
-                const priorityDate = String(r.priority_date || r.priorityDate || pubDate || '—');
+                const priorityDate = String(r.priority_date || r.priorityDate || pubDate || 'â€”');
                 const inventors = Array.isArray(r.inventors) ? r.inventors.join(' | ') : 
-                                 (r.inventor ? String(r.inventor) : '—');
+                                 (r.inventor ? String(r.inventor) : 'â€”');
                 const familyMembers = String(r.family_members || r.familyMembers || pnFull);
 
                 return (
@@ -529,7 +474,7 @@ export default function NoveltySearchReportPage({
           </div>
         )}
 
-        {/* Stage 3.5a — Patent-wise Feature Comparison Matrix */}
+        {/* Stage 3.5a â€” Patent-wise Feature Comparison Matrix */}
         {featureMaps.length > 0 && features.length > 0 && (
           <div className="section page-break avoid-break mb-8">
             <div className="section-header bg-blue-500 text-white p-3 mb-4">
@@ -604,11 +549,11 @@ export default function NoveltySearchReportPage({
           </div>
         )}
 
-        {/* Stage 3.5 — Prior Art Patent Details (Patents Analyzed for Feature Comparison) */}
+        {/* Stage 3.5 â€” Prior Art Patent Details (Patents Analyzed for Feature Comparison) */}
         {featureMaps.length > 0 && (
           <div className="section page-break avoid-break mb-8">
             <div className="section-header bg-blue-500 text-white p-3 mb-4">
-              <h2 className="text-xl font-bold">STAGE 3.5 — PRIOR ART PATENT DETAILS</h2>
+              <h2 className="text-xl font-bold">STAGE 3.5 â€” PRIOR ART PATENT DETAILS</h2>
               <p className="text-sm mt-1 opacity-90">Patents analyzed for feature-by-feature comparison</p>
             </div>
 
@@ -690,7 +635,7 @@ export default function NoveltySearchReportPage({
                 }
               });
 
-              console.log(`📊 Patent Analysis:`);
+              console.log(`ðŸ“Š Patent Analysis:`);
               console.log(`   - Total featureMaps: ${featureMaps.length}`);
               console.log(`   - After deduplication: ${uniqueFeatureMaps.length}`);
               
@@ -705,7 +650,7 @@ export default function NoveltySearchReportPage({
 
               // Verify we have the same patents as the matrix
               if (detailPatentNumbers.length !== featureMaps.length) {
-                console.warn(`⚠️ Patent count mismatch: Matrix has ${featureMaps.length} patents, Details will show ${detailPatentNumbers.length}`);
+                console.warn(`âš ï¸ Patent count mismatch: Matrix has ${featureMaps.length} patents, Details will show ${detailPatentNumbers.length}`);
                 const matrixPns = featureMaps.map((pm: any) => 
                   String(pm.pn || pm.publicationNumber || pm.publication_number || 'PN')
                 );
@@ -843,7 +788,7 @@ export default function NoveltySearchReportPage({
                 }
                 
                 // Publication Date - prioritize DB, then PQAI
-                let pubDate = '—';
+                let pubDate = 'â€”';
                 if (dbPatentData.publicationDate) {
                   pubDate = new Date(dbPatentData.publicationDate).toLocaleDateString();
                 } else if (pqaiData.publication_date) {
@@ -859,7 +804,7 @@ export default function NoveltySearchReportPage({
                 }
                 
                 // Application/Filing Date - prioritize DB
-                let appDate = '—';
+                let appDate = 'â€”';
                 if (dbPatentData.filingDate) {
                   appDate = new Date(dbPatentData.filingDate).toLocaleDateString();
                 } else if (pqaiData.application_date) {
@@ -875,10 +820,10 @@ export default function NoveltySearchReportPage({
                 }
                 
                 // Application Number - try to extract from worldwide applications if available
-                let appNo = '—';
+                let appNo = 'â€”';
                 if (dbPatentData.worldwideApplications && Array.isArray(dbPatentData.worldwideApplications) && dbPatentData.worldwideApplications.length > 0) {
                   const firstApp = dbPatentData.worldwideApplications[0];
-                  appNo = String(firstApp.application_number || firstApp.app_no || '—');
+                  appNo = String(firstApp.application_number || firstApp.app_no || 'â€”');
                 } else if (pqaiData.application_number) {
                   appNo = String(pqaiData.application_number);
                 } else if (pqaiData.applicationNumber) {
@@ -890,7 +835,7 @@ export default function NoveltySearchReportPage({
                 }
                 
                 // Priority Date - prioritize DB
-                let priorityDate = '—';
+                let priorityDate = 'â€”';
                 if (dbPatentData.priorityDate) {
                   priorityDate = new Date(dbPatentData.priorityDate).toLocaleDateString();
                 } else if (pqaiData.priority_date) {
@@ -899,15 +844,15 @@ export default function NoveltySearchReportPage({
                   priorityDate = String(pqaiData.priorityDate);
                 } else if (pm.priority_date) {
                   priorityDate = String(pm.priority_date);
-                } else if (pubDate !== '—') {
+                } else if (pubDate !== 'â€”') {
                   priorityDate = pubDate; // Fallback to publication date
                 }
                 
                 // Priority Number - try to extract from worldwide applications
-                let priorityNo = '—';
+                let priorityNo = 'â€”';
                 if (dbPatentData.worldwideApplications && Array.isArray(dbPatentData.worldwideApplications) && dbPatentData.worldwideApplications.length > 0) {
                   const firstApp = dbPatentData.worldwideApplications[0];
-                  priorityNo = String(firstApp.priority_number || firstApp.priority_no || '—');
+                  priorityNo = String(firstApp.priority_number || firstApp.priority_no || 'â€”');
                 } else if (pqaiData.priority_number) {
                   priorityNo = String(pqaiData.priority_number);
                 } else if (pqaiData.priorityNumber) {
@@ -919,7 +864,7 @@ export default function NoveltySearchReportPage({
                 }
                 
                 // Inventors - prioritize DB data, then PQAI, then Stage 3.5
-                let inventors = '—';
+                let inventors = 'â€”';
                 if (Array.isArray(dbPatentData.inventors) && dbPatentData.inventors.length > 0) {
                   inventors = dbPatentData.inventors.filter((inv: any) => inv && String(inv).trim()).join(' | ');
                 } else if (Array.isArray(pqaiData.inventors) && pqaiData.inventors.length > 0) {
@@ -937,11 +882,11 @@ export default function NoveltySearchReportPage({
                 }
                 // If still empty, set to dash
                 if (!inventors || inventors.trim() === '') {
-                  inventors = '—';
+                  inventors = 'â€”';
                 }
                 
                 // Assignees - prioritize DB data, then PQAI
-                let assignees = '—';
+                let assignees = 'â€”';
                 if (Array.isArray(dbPatentData.assignees) && dbPatentData.assignees.length > 0) {
                   assignees = dbPatentData.assignees.filter((a: any) => a && String(a).trim()).join(' | ');
                 } else if (Array.isArray(pqaiData.assignees) && pqaiData.assignees.length > 0) {
@@ -952,20 +897,20 @@ export default function NoveltySearchReportPage({
                   assignees = pqaiData.assignee_names.join(' | ');
                 }
                 if (!assignees || assignees.trim() === '') {
-                  assignees = '—';
+                  assignees = 'â€”';
                 }
                 
                 // CPC Codes - prioritize DB data
                 const cpcCodes = Array.isArray(dbPatentData.cpcs) && dbPatentData.cpcs.length > 0 ? dbPatentData.cpcs :
                                 (Array.isArray(pqaiData.cpcCodes) ? pqaiData.cpcCodes : 
                                 (Array.isArray(pqaiData.cpc_codes) ? pqaiData.cpc_codes : []));
-                const cpcCodesStr = cpcCodes.length > 0 ? cpcCodes.join(', ') : '—';
+                const cpcCodesStr = cpcCodes.length > 0 ? cpcCodes.join(', ') : 'â€”';
                 
                 // IPC Codes - prioritize DB data
                 const ipcCodes = Array.isArray(dbPatentData.ipcs) && dbPatentData.ipcs.length > 0 ? dbPatentData.ipcs :
                                 (Array.isArray(pqaiData.ipcCodes) ? pqaiData.ipcCodes : 
                                 (Array.isArray(pqaiData.ipc_codes) ? pqaiData.ipc_codes : []));
-                const ipcCodesStr = ipcCodes.length > 0 ? ipcCodes.join(', ') : '—';
+                const ipcCodesStr = ipcCodes.length > 0 ? ipcCodes.join(', ') : 'â€”';
                 
                 // Family Members
                 const familyMembers = String(pqaiData.family_members || pqaiData.familyMembers || pm.family_members || pnFull);
@@ -975,7 +920,7 @@ export default function NoveltySearchReportPage({
                 
                 // Relevance Score
                 const relevanceScore = pqaiData.relevanceScore || pqaiData.score || pqaiData.relevance || null;
-                const relevanceStr = relevanceScore !== null ? formatRelevance(relevanceScore) : '—';
+                const relevanceStr = relevanceScore !== null ? formatRelevance(relevanceScore) : 'â€”';
 
                 // Calculate coverage statistics
                 const coverage = pm.coverage || {};
@@ -1040,25 +985,25 @@ export default function NoveltySearchReportPage({
                           <td className="border border-gray-300 p-2 font-bold bg-gray-50 align-top" colSpan={2}>Inventor(s):</td>
                           <td className="border border-gray-300 p-2 align-top" colSpan={2}>{inventors}</td>
                         </tr>
-                        {assignees !== '—' && (
+                        {assignees !== 'â€”' && (
                           <tr>
                             <td className="border border-gray-300 p-2 font-bold bg-gray-50 align-top" colSpan={2}>Assignee(s):</td>
                             <td className="border border-gray-300 p-2 align-top" colSpan={2}>{assignees}</td>
                           </tr>
                         )}
-                        {cpcCodesStr !== '—' && (
+                        {cpcCodesStr !== 'â€”' && (
                           <tr>
                             <td className="border border-gray-300 p-2 font-bold bg-gray-50" colSpan={2}>CPC Codes:</td>
                             <td className="border border-gray-300 p-2" colSpan={2}>{cpcCodesStr}</td>
                           </tr>
                         )}
-                        {ipcCodesStr !== '—' && (
+                        {ipcCodesStr !== 'â€”' && (
                           <tr>
                             <td className="border border-gray-300 p-2 font-bold bg-gray-50" colSpan={2}>IPC Codes:</td>
                             <td className="border border-gray-300 p-2" colSpan={2}>{ipcCodesStr}</td>
                           </tr>
                         )}
-                        {relevanceStr !== '—' && (
+                        {relevanceStr !== 'â€”' && (
                           <tr>
                             <td className="border border-gray-300 p-2 font-bold bg-gray-50" colSpan={2}>Relevance Score:</td>
                             <td className="border border-gray-300 p-2" colSpan={2}>{relevanceStr}</td>
@@ -1112,10 +1057,10 @@ export default function NoveltySearchReportPage({
           </div>
         )}
 
-        {/* Stage 4 — Final Concluding Remarks */}
+        {/* Stage 4 â€” Final Concluding Remarks */}
         <div className="section page-break avoid-break mb-8">
           <div className="section-header bg-blue-600 text-white p-3 mb-4">
-            <h2 className="text-xl font-bold">STAGE 4 — FINAL CONCLUDING REMARKS</h2>
+            <h2 className="text-xl font-bold">STAGE 4 â€” FINAL CONCLUDING REMARKS</h2>
           </div>
 
           {/* Executive Summary */}
@@ -1133,7 +1078,7 @@ export default function NoveltySearchReportPage({
                     <tr>
                       <td className="border border-gray-300 p-2 font-bold bg-gray-50 w-1/4">Novelty Score:</td>
                       <td className="border border-gray-300 p-2">
-                        {executiveSummary.novelty_score || '—'} {executiveSummary.confidence ? `• Confidence: ${executiveSummary.confidence}` : ''}
+                        {executiveSummary.novelty_score || 'â€”'} {executiveSummary.confidence ? `â€¢ Confidence: ${executiveSummary.confidence}` : ''}
                       </td>
                     </tr>
                   )}
@@ -1306,3 +1251,5 @@ export default function NoveltySearchReportPage({
     </>
   );
 }
+
+

@@ -18,7 +18,7 @@ export async function authenticateUser(request: NextRequest): Promise<{
         user: null,
         error: {
           code: 'NO_TOKEN',
-          message: 'Authorization token required',
+          message: 'Session missing or expired. Please log in again.',
           status: 401
         }
       }
@@ -32,7 +32,7 @@ export async function authenticateUser(request: NextRequest): Promise<{
         user: null,
         error: {
           code: 'INVALID_TOKEN',
-          message: 'Invalid or expired token',
+          message: 'Session expired or invalid. Please log in again.',
           status: 401
         }
       }
@@ -49,7 +49,7 @@ export async function authenticateUser(request: NextRequest): Promise<{
         user: null,
         error: {
           code: 'USER_NOT_FOUND',
-          message: 'User not found',
+          message: 'User not found. Please log in again.',
           status: 401
         }
       }
@@ -71,7 +71,7 @@ export async function authenticateUser(request: NextRequest): Promise<{
       user: null,
       error: {
         code: 'AUTH_ERROR',
-        message: 'Authentication failed',
+        message: 'Authentication failed. Please log in again.',
         status: 401
       }
     }

@@ -28,6 +28,9 @@ function NewPatentDraftPageContent() {
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Derived: currently selected project object from list
+  const selectedProjectObj = projects.find(p => p.id === selectedProject)
+
   useEffect(() => {
     if (!authLoading && !user) {
       router.push('/login')
@@ -314,13 +317,15 @@ function NewPatentDraftPageContent() {
                   </svg>
                 </div>
                 <div className="flex-1">
-                  <div className="font-medium text-gray-900">Default Project</div>
-                  <div className="text-xs text-gray-500">Quick drafts and searches</div>
+                  <div className="font-medium text-gray-900">{selectedProjectObj?.name || 'Project'}</div>
+                  <div className="text-xs text-gray-500">{selectedProjectObj?.name === 'Default Project' ? 'Quick drafts and searches' : 'Selected project'}</div>
                 </div>
-                <Badge variant="secondary" className="text-xs">Default</Badge>
+                {selectedProjectObj?.name === 'Default Project' && (
+                  <Badge variant="secondary" className="text-xs">Default</Badge>
+                )}
               </div>
               <p className="mt-1 text-sm text-gray-500">
-                Your patent draft will be saved to the Default Project for quick access.
+                Your patent draft will be saved to {selectedProjectObj?.name ? `the ${selectedProjectObj.name}` : 'your project'} for quick access.
               </p>
             </div>
 

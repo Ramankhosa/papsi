@@ -30,7 +30,8 @@ export abstract class BasePatentService {
       // Check if token exists and is not empty
       if (!jwtToken || jwtToken.trim() === '') {
         console.log('JWT validation failed: Token is empty or null');
-        throw new Error('Invalid authentication token - token is empty');
+        // Surface a clear, user-friendly message
+        throw new Error('Your session has expired. Please log in again.');
       }
 
       const payload = verifyJWT(jwtToken);
@@ -41,7 +42,8 @@ export abstract class BasePatentService {
           console.log('JWT validation failed in development mode - will use fallback user');
         } else {
           console.log('JWT validation failed: verifyJWT returned null - token may be invalid, expired, or secret mismatch');
-          throw new Error('Invalid authentication token - verification failed');
+          // Clear message for user
+          throw new Error('Your session has expired or is invalid. Please log in again.');
         }
       } else {
         console.log('JWT payload for validation:', payload);
@@ -51,7 +53,7 @@ export abstract class BasePatentService {
       if (payload) {
         if (!payload.email) {
           console.log('Invalid JWT payload - missing email field');
-          throw new Error('Invalid authentication token - missing email');
+          throw new Error('Your session has expired or is invalid. Please log in again.');
         }
 
         const user = await prisma.user.findUnique({
@@ -70,7 +72,7 @@ export abstract class BasePatentService {
       // In development mode, we'll proceed to use fallback user
       // In production, throw error
       if (process.env.NODE_ENV !== 'development') {
-        throw new Error('User not found');
+        throw new Error('Your session has expired or is invalid. Please log in again.');
       }
     } catch (error) {
       console.error('JWT validation error:', error);
@@ -94,15 +96,15 @@ export abstract class BasePatentService {
           console.error('Failed to get fallback user:', dbError);
         }
         // If fallback user lookup failed in development, throw error
-        throw new Error('Authentication failed - no valid user found');
+        throw new Error('Your session has expired. Please log in again.');
       }
 
       // If we reach here, authentication failed and no fallback was available
-      throw new Error('Authentication failed - no valid user found');
+      throw new Error('Your session has expired. Please log in again.');
     }
 
-    // This should never be reached, but TypeScript wants it
-    throw new Error('Unexpected end of validateUser method');
+    // Safety: if we somehow reach here, respond with a clear message
+    throw new Error('Your session has expired. Please log in again.');
   }
 
   /**

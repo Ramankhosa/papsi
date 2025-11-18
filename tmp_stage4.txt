@@ -1,0 +1,152 @@
+﻿'use client';
+
+import React from 'react';
+
+interface Stage4ResultsProps {
+  stage4Results: any;
+  searchId: string;
+  onRerun?: () => Promise<void> | void;
+}
+
+export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun }: Stage4ResultsProps) {
+  const r: any = stage4Results || {};
+  const exec = r.executive_summary || {};
+  const cards = exec.visual_cards || {};
+  const remarks: any[] = Array.isArray(r.per_patent_remarks) ? r.per_patent_remarks : [];
+  const metadata = r.report_metadata || {};
+  const concl = r.concluding_remarks || {};
+  // Basic sanitizer to avoid mojibake while preserving content
+  const sanitize = (t: any) => typeof t === 'string' ? t.normalize('NFKC').replace(/\uFFFD/g, '') : t;
+
+  // Derive search trail counts if present
+  const trail = r.search_trail || {};
+  const pqaiInitial = trail.pqai_initial_count ?? r?.search_metadata?.pqai_initial_count ?? undefined;
+  const aiAccepted = trail.ai_relevance_accepted ?? r?.search_metadata?.ai_relevance_accepted ?? undefined;
+  const aiBorderline = trail.ai_relevance_borderline ?? r?.search_metadata?.ai_relevance_borderline ?? undefined;
+  const deepAnalyzed = trail.deeply_analyzed_count ?? (Array.isArray(remarks) ? remarks.length : undefined);
+
+  return (
+    <div className="space-y-6">
+      {/* Hero */}
+      <div className="relative overflow-hidden rounded-xl border bg-gradient-to-r from-teal-600 to-purple-700 text-white">
+        <div className="p-6">
+          <div className="text-sm opacity-90">AI Novelty Assessment</div>
+          <div className="mt-1 text-2xl font-semibold tracking-tight">
+            {metadata.title || 'AI-Backed Novelty Assessment Report'}
+          </div>
+          <div className="mt-1 text-xs opacity-90">
+            Search ID: {metadata.search_id || searchId} • {metadata.date || new Date().toISOString().slice(0, 10)}
+          </div>
+        </div>
+        <div className="absolute right-0 top-0 opacity-20 pointer-events-none select-none">
+          <svg width="240" height="120" viewBox="0 0 240 120" fill="none"><circle cx="120" cy="60" r="56" stroke="white" strokeWidth="2"/><circle cx="120" cy="60" r="40" stroke="white" strokeWidth="1"/></svg>
+        </div>
+      </div>
+
+      {/* Controls */}
+      <div className="flex justify-end gap-2">
+        {onRerun && (
+          <button
+            type="button"
+            onClick={() => onRerun()}
+            className="inline-flex items-center px-3 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-sm"
+          >
+            Re-run Stage 4
+          </button>
+        )}
+      </div>
+
+      {/* KPI Cards if available */}
+      {cards && Object.keys(cards).length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          {Object.entries(cards).map(([k, v], idx) => (
+            <div key={idx} className="rounded-lg border bg-white p-3">
+              <div className="text-xs text-gray-500">{k}</div>
+              <div className="text-xl font-semibold text-gray-900">{String(v)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Executive Summary */}
+      <div className="rounded-lg border bg-white p-4">
+        <div className="text-sm font-medium text-gray-900 mb-1">Executive Summary</div>
+        <div className="text-sm text-gray-800 whitespace-pre-wrap">
+          {sanitize(exec.summary) || 'Summary not available.'}
+        </div>
+      </div>
+
+      {/* Search Trail */}
+      <div className="rounded-lg border bg-white p-4">
+        <div className="text-sm font-medium text-gray-900 mb-2">Search Trail</div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <TrailCard label="PQAI Screened" value={pqaiInitial} />
+          <TrailCard label="AI Accepted" value={aiAccepted} />
+          <TrailCard label="AI Borderline" value={aiBorderline} />
+          <TrailCard label="Deeply Analyzed" value={deepAnalyzed} />
+        </div>
+      </div>
+
+      {/* Strengths / Risks */}
+      <div className="grid md:grid-cols-2 gap-3">
+        <BulletsCard title="Key Strengths" bullets={concl.key_strengths} color="emerald" />
+        <BulletsCard title="Key Risks" bullets={concl.key_risks} color="amber" />
+      </div>
+
+      {/* Strategic Recommendations */}
+      <BulletsCard title="Strategic Recommendations" bullets={concl.strategic_recommendations} color="indigo" />
+
+      {/* Per-Patent Remarks */}
+      {Array.isArray(remarks) && remarks.length > 0 && (
+        <div className="rounded-lg border bg-white p-4">
+          <div className="text-sm font-medium text-gray-900 mb-2">Per-Patent Remarks</div>
+          <div className="space-y-2 max-h-[28rem] overflow-auto pr-1">
+            {remarks.map((it, idx) => (
+              <div key={idx} className="rounded border p-3">
+                <div className="text-sm font-semibold text-gray-900">{it.pn || it.patent_number || 'Unknown PN'}</div>
+                {it.title && <div className="text-xs text-gray-700">{it.title}</div>}
+                <div className="mt-1 text-xs text-gray-800 whitespace-pre-wrap">{sanitize(it.remarks) || '-'}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Footer Disclaimer */}
+      <div className="text-[11px] text-gray-600 border rounded-md bg-yellow-50 px-3 py-2">
+        Disclaimer: This report is AI-generated to assist novelty assessment. Please review cited prior art before
+        making legal or business decisions and consult a registered patent attorney.
+      </div>
+    </div>
+  );
+}
+
+function TrailCard({ label, value }: { label: string; value: any }) {
+  return (
+    <div className="rounded-lg border bg-white p-3">
+      <div className="text-xs text-gray-500">{label}</div>
+      <div className="text-xl font-semibold text-gray-900">{value ?? 'â€”'}</div>
+    </div>
+  );
+}
+
+function BulletsCard({ title, bullets, color }: { title: string; bullets: string[]; color: 'emerald'|'amber'|'indigo' }) {
+  const border = color === 'emerald' ? 'border-emerald-200' : color === 'amber' ? 'border-amber-200' : 'border-indigo-200';
+  const bg = color === 'emerald' ? 'bg-emerald-50/30' : color === 'amber' ? 'bg-amber-50/30' : 'bg-indigo-50/30';
+  return (
+    <div className={`rounded-lg border ${border} ${bg} p-4`}>
+      <div className="text-sm font-medium text-gray-900 mb-2">{title}</div>
+      {Array.isArray(bullets) && bullets.length > 0 ? (
+        <ul className="list-disc list-inside text-sm text-gray-800 space-y-1">
+          {bullets.map((s, i) => (
+            <li key={i}>{s}</li>
+          ))}
+        </ul>
+      ) : (
+        <div className="text-xs text-gray-600">No items.</div>
+      )}
+    </div>
+  );
+}
+
+

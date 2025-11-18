@@ -18,10 +18,18 @@ export class GeminiProvider implements LLMProvider {
     // Initialize Google Generative AI client
     if (typeof window === 'undefined') {
       // Only initialize on server side
+      console.log(`Initializing Gemini provider (${name || 'gemini'}) with API key present: ${!!config.apiKey}`)
+      if (config.apiKey) {
+        console.log(`API key length: ${config.apiKey.length}`)
+      } else {
+        console.error('No API key provided for Gemini provider!')
+      }
+
       try {
         // Dynamic import to avoid client-side issues
         const { GoogleGenerativeAI } = require('@google/generative-ai')
         this.client = new GoogleGenerativeAI(config.apiKey)
+        console.log('Gemini client initialized successfully')
       } catch (error) {
         console.warn('Google Generative AI not available:', error)
       }
@@ -79,44 +87,79 @@ export class GeminiProvider implements LLMProvider {
         contentToGenerate = request.prompt || ''
       }
 
-      const result = await model.generateContent(contentToGenerate)
-      const response = result.response
+      // Add retry logic for network issues
+      const maxRetries = 3
+      let lastError: Error | null = null
 
-      const output = response.text()
-      const usage = response.usageMetadata
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          console.log(`Attempting Gemini API call (attempt ${attempt}/${maxRetries})`)
+          const result = await model.generateContent(contentToGenerate)
+          const response = result.response
 
-      // Log response details for debugging
-      console.log('🔍 Gemini API response details:', {
-        hasCandidates: !!response.candidates,
-        candidatesCount: response.candidates?.length || 0,
-        finishReason: response.candidates?.[0]?.finishReason,
-        outputLength: output?.length || 0,
-        usage: usage
-      });
+          // If we get here, the call was successful
+          console.log(`Gemini API call successful on attempt ${attempt}`)
 
-      // Check if response is empty
-      if (!output || output.trim().length === 0) {
-        const finishReason = response.candidates?.[0]?.finishReason;
-        console.error(`❌ Gemini API returned empty response - finishReason: ${finishReason}`);
-        if (finishReason === 'MAX_TOKENS') {
-          console.warn('💡 MAX_TOKENS reached - consider increasing token limit or reducing prompt size');
+          const output = response.text()
+          const usage = response.usageMetadata
+
+          // Log response details for debugging
+          console.log('🔍 Gemini API response details:', {
+            hasCandidates: !!response.candidates,
+            candidatesCount: response.candidates?.length || 0,
+            finishReason: response.candidates?.[0]?.finishReason,
+            outputLength: output?.length || 0,
+            usage: usage
+          });
+
+          // Check if response is empty
+          if (!output || output.trim().length === 0) {
+            const finishReason = response.candidates?.[0]?.finishReason;
+            console.error(`❌ Gemini API returned empty response - finishReason: ${finishReason}`);
+            if (finishReason === 'MAX_TOKENS') {
+              console.warn('💡 MAX_TOKENS reached - consider increasing token limit or reducing prompt size');
+            }
+            throw new Error(`Gemini API returned empty response (finishReason: ${finishReason})`);
+          }
+
+          return {
+            output,
+            outputTokens: usage?.candidatesTokenCount || 0,
+            modelClass: modelClass,
+            metadata: {
+              provider: 'gemini',
+              inputTokens: usage?.promptTokenCount || 0,
+              totalTokens: usage?.totalTokenCount || 0,
+              finishReason: response.candidates?.[0]?.finishReason
+            }
+          }
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error))
+          console.error(`Attempt ${attempt} failed:`, lastError.message)
+
+          // If this is not the last attempt, wait before retrying
+          if (attempt < maxRetries) {
+            const delay = Math.min(1000 * Math.pow(2, attempt - 1), 5000) // Exponential backoff, max 5s
+            console.log(`Waiting ${delay}ms before retry...`)
+            await new Promise(resolve => setTimeout(resolve, delay))
+          }
         }
-        throw new Error(`Gemini API returned empty response (finishReason: ${finishReason})`);
       }
 
-      return {
-        output,
-        outputTokens: usage?.candidatesTokenCount || 0,
-        modelClass: modelClass,
-        metadata: {
-          provider: 'gemini',
-          inputTokens: usage?.promptTokenCount || 0,
-          totalTokens: usage?.totalTokenCount || 0,
-          finishReason: response.candidates?.[0]?.finishReason
-        }
-      }
+      // All retries failed
+      throw new Error(`Gemini API call failed after ${maxRetries} attempts. Last error: ${lastError?.message}`)
     } catch (error) {
       console.error('Gemini API error:', error)
+
+      // Provide more detailed error information
+      if (error instanceof Error) {
+        if (error.message.includes('fetch failed')) {
+          console.error('Network connectivity issue detected. Check internet connection and API endpoint availability.')
+        } else if (error.message.includes('API_KEY')) {
+          console.error('API key issue detected. Verify GOOGLE_AI_API_KEY is properly configured.')
+        }
+      }
+
       throw new Error(`Gemini API call failed: ${error instanceof Error ? error.message : String(error)}`)
     }
   }

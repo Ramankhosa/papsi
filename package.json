@@ -14,7 +14,7 @@
     "seed:adminplans": "node scripts/adminplans-seed.js"
   },
   "prisma": {
-    "seed": "node prisma/seed.js"
+    "seed": "node scripts/setup-full-hierarchy.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

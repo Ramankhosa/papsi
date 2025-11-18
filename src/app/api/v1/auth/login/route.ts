@@ -42,6 +42,14 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Require verified email (disabled by default; enable with ENFORCE_EMAIL_VERIFICATION=true)
+    if (process.env.ENFORCE_EMAIL_VERIFICATION === 'true' && !user.emailVerified) {
+      return NextResponse.json(
+        { code: 'EMAIL_NOT_VERIFIED', message: 'Please verify your email address. Check your inbox for the verification link.' },
+        { status: 401 }
+      )
+    }
+
     // Check user status
     if (user.status !== 'ACTIVE') {
       return NextResponse.json(
@@ -175,3 +183,6 @@ export async function POST(request: NextRequest) {
     )
   }
 }
+
+
+

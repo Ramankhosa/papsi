@@ -2,17 +2,22 @@ import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
 import { hashPassword, validateATIToken, incrementATITokenUsage, createAuditLog } from '@/lib/auth'
+import { generateToken, hashToken } from '@/lib/token-utils'
+import { sendEmail } from '@/lib/mailer'
+import { verificationTemplate } from '@/lib/email-templates'
 
 const signupSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
-  atiToken: z.string().min(1)
+  atiToken: z.string().min(1),
+  firstName: z.string().min(1).max(100),
+  lastName: z.string().min(1).max(100)
 })
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { email, password, atiToken } = signupSchema.parse(body)
+    const { email, password, atiToken, firstName, lastName } = signupSchema.parse(body)
 
     // Validate ATI token by finding the tenant it belongs to
     const tokenValidation = await validateATIToken(atiToken)
@@ -199,7 +204,11 @@ export async function POST(request: NextRequest) {
           tenantId: tenant.id,
           signupAtiTokenId: tokenValidation.atiToken!.id, // Track which ATI token was used
           roles: [userRole as any],
-          status: 'ACTIVE'
+          status: 'ACTIVE',
+          emailVerified: true,
+          firstName,
+          lastName,
+          name: `${firstName} ${lastName}`
         }
       })
 
@@ -258,6 +267,20 @@ export async function POST(request: NextRequest) {
 
     const user = result
 
+    // Email verification disabled by default; enable with ENFORCE_EMAIL_VERIFICATION=true
+    if (process.env.ENFORCE_EMAIL_VERIFICATION === 'true') {
+      try {
+        const raw = generateToken()
+        const tokenHash = hashToken(raw)
+        const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000)
+        await prisma.emailVerificationToken.create({ data: { userId: user.id, tokenHash, expiresAt } })
+        const tpl = verificationTemplate(user.email, user.name, raw)
+        await sendEmail({ to: user.email, toName: user.name || undefined, subject: tpl.subject, html: tpl.html, text: tpl.text })
+      } catch (e) {
+        console.warn('Failed to send verification email:', e)
+      }
+    }
+
     return NextResponse.json({
       user_id: user.id,
       tenant_id: tenant.id,
@@ -279,3 +302,4 @@ export async function POST(request: NextRequest) {
     )
   }
 }
+

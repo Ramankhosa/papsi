@@ -45,7 +45,7 @@ export default function AISpotlight({ draftsCount, latestNoveltySearch, userRese
           title: 'Review Novelty Results',
           message: `"${latestNoveltySearch.title.substring(0, 30)}..." found ${patentCount} potential match${patentCount > 1 ? 'es' : ''}. Review recommended.`,
           actions: [
-            { label: 'Review Results', action: () => router.push(`/novelty-search/${latestNoveltySearch.id}/report`) },
+            { label: 'Review Results', action: () => router.push(`/novelty-search/${latestNoveltySearch.id}`) },
             { label: 'Novelty Search', action: () => router.push('/novelty-search') }
           ]
         })

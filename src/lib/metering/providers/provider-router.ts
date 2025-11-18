@@ -28,6 +28,10 @@ export class LLMProviderRouter {
 
   private initializeProviders() {
     // Initialize providers from environment variables
+    console.log('Initializing LLM providers...')
+    console.log('GOOGLE_AI_API_KEY present:', !!process.env.GOOGLE_AI_API_KEY)
+    console.log('OPENAI_API_KEY present:', !!process.env.OPENAI_API_KEY)
+
     const configs = {
       gemini: {
         apiKey: process.env.GOOGLE_AI_API_KEY,
@@ -121,7 +125,7 @@ export class LLMProviderRouter {
     const isMultimodal = request.content && request.content.parts.some(part => part.type === 'image')
 
     // Special handling for relevance analysis (PRIOR_ART_SEARCH) - use Flash-Lite
-    const isRelevanceAnalysis = limits.featureCode === 'PRIOR_ART_SEARCH' && !isMultimodal
+    const isRelevanceAnalysis = request.taskCode === 'LLM5_NOVELTY_ASSESS' && !isMultimodal
 
     let activePriorities: ProviderPriority[]
 

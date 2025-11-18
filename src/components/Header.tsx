@@ -1,4 +1,4 @@
-'use client'
+﻿'use client'
 
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
@@ -8,6 +8,7 @@ import AnimatedLogo from '@/components/ui/animated-logo'
 export default function Header() {
   const { user, logout, isLoading } = useAuth()
   const [showUserMenu, setShowUserMenu] = useState(false)
+  const [isSendingReset, setIsSendingReset] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
 
   // Handle clicks outside dropdown to close it
@@ -29,6 +30,25 @@ export default function Header() {
 
   const handleSignOut = () => {
     logout()
+  }
+  const handlePasswordReset = async () => {
+    if (!user?.email || isSendingReset) return
+    try {
+      setIsSendingReset(true)
+      const res = await fetch('/api/v1/auth/forgot-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: user.email })
+      })
+      if (!res.ok) throw new Error('Failed to request reset')
+      setShowUserMenu(false)
+      alert('Password reset link sent to ' + user.email)
+    } catch (e) {
+      console.error('Reset request failed', e)
+      alert('Could not send reset email. Please try again.')
+    } finally {
+      setIsSendingReset(false)
+    }
   }
 
   if (isLoading) {
@@ -70,14 +90,14 @@ export default function Header() {
                   href="/dashboard"
                   className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
                 >
-                  🏠 Dashboard
+                  ðŸ  Dashboard
                 </Link>
 
                 <Link
                   href="/novelty-search"
                   className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
                 >
-                  🔍 Search
+                  ðŸ” Search
                 </Link>
 
                 {/* Compact User Dropdown */}
@@ -115,7 +135,7 @@ export default function Header() {
                       className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
                       onClick={() => setShowUserMenu(false)}
                     >
-                      <span>🏠</span>
+                      <span>ðŸ </span>
                       <span>Dashboard</span>
                     </Link>
 
@@ -124,7 +144,7 @@ export default function Header() {
                       className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
                       onClick={() => setShowUserMenu(false)}
                     >
-                      <span>🔍</span>
+                      <span>ðŸ”</span>
                       <span>Novelty Search</span>
                     </Link>
 
@@ -133,7 +153,7 @@ export default function Header() {
                       className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
                       onClick={() => setShowUserMenu(false)}
                     >
-                      <span>📁</span>
+                      <span>ðŸ“</span>
                       <span>Projects</span>
                     </Link>
 
@@ -145,15 +165,23 @@ export default function Header() {
                       className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
                       onClick={() => setShowUserMenu(false)}
                     >
-                      <span>🎨</span>
+                      <span>ðŸŽ¨</span>
                       <span>PersonaSync Training</span>
                     </Link>
+                    <button
+                      onClick={handlePasswordReset}
+                      disabled={isSendingReset}
+                      className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2 disabled:opacity-50"
+                    >
+                      <span>🔒</span>
+                      <span>{isSendingReset ? 'Sending reset link…' : 'Reset Password'}</span>
+                    </button>
 
                     <button
                       onClick={handleSignOut}
                       className="w-full px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50 flex items-center space-x-2"
                     >
-                      <span>🚪</span>
+                      <span>ðŸšª</span>
                       <span>Sign Out</span>
                     </button>
                   </div>
@@ -182,3 +210,5 @@ export default function Header() {
     </header>
   )
 }
+
+

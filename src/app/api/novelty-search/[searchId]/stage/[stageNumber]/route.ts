@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+﻿import { NextRequest, NextResponse } from 'next/server';
 import { NoveltySearchService } from '@/lib/novelty-search-service';
 import { verifyJWT } from '@/lib/auth';
 import { NoveltySearchStage } from '@prisma/client';
@@ -90,18 +90,22 @@ export async function POST(
     }
 
     // Execute the appropriate stage
-    switch (stageNumber) {
-      case '1':
-        result = await noveltySearchService.executeStage1(searchId, userId, requestHeaders);
-        break;
-      case '1.5':
-        result = await noveltySearchService.executeStage15(searchId, userId, requestHeaders);
-        break;
-      case '3.5a':
-        console.log('[Stage3.5a][API] Body keys:', body ? Object.keys(body) : 'no body');
-        console.log('[Stage3.5a][API] selectedPublicationNumbers length:', Array.isArray(body?.selectedPublicationNumbers) ? body.selectedPublicationNumbers.length : 'n/a');
-        result = await noveltySearchService.executeStage35a(
-          searchId,
+  switch (stageNumber) {
+    case '1':
+      result = await noveltySearchService.executeStage1(searchId, userId, requestHeaders);
+      break;
+    case '1.5':
+      result = await noveltySearchService.executeStage15(searchId, userId, requestHeaders);
+      break;
+    case '3.5':
+      // Combined Stage 3.5 (3.5a + 3.5b)
+      result = await noveltySearchService.executeStage35(searchId, userId, requestHeaders);
+      break;
+    case '3.5a':
+      console.log('[Stage3.5a][API] Body keys:', body ? Object.keys(body) : 'no body');
+      console.log('[Stage3.5a][API] selectedPublicationNumbers length:', Array.isArray(body?.selectedPublicationNumbers) ? body.selectedPublicationNumbers.length : 'n/a');
+      result = await noveltySearchService.executeStage35a(
+        searchId,
           userId,
           requestHeaders,
           Array.isArray(body?.selectedPublicationNumbers) ? body.selectedPublicationNumbers : undefined
@@ -110,14 +114,15 @@ export async function POST(
       case '3.5b':
         result = await noveltySearchService.executeStage35b(searchId, userId, requestHeaders);
         break;
+      case '3.5c':
+        return NextResponse.json({ success: false, error: 'Stage 3.5c is temporarily disabled. Remarks are produced in Stage 3.5a and consumed by Stage 4.' }, { status: 400 });
       case '4':
         result = await noveltySearchService.executeStage4(searchId, userId, requestHeaders);
         break;
       default:
-        return NextResponse.json(
-          { error: 'Invalid stage number. Valid stages: 1, 1.5, 3.5a, 3.5b, 4' },
-          { status: 400 }
-        );
+        return NextResponse.json({
+          error: 'Invalid stage number. Valid stages: 1, 1.5, 3.5, 3.5a, 3.5b, 3.5c, 4'
+        }, { status: 400 });
     }
 
     if (!result.success) {
@@ -143,3 +148,4 @@ export async function POST(
     );
   }
 }
+

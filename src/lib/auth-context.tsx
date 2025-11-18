@@ -16,7 +16,7 @@ interface AuthContextType {
   token: string | null
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>
   logout: () => void
-  signup: (email: string, password: string, atiToken: string) => Promise<{ success: boolean; error?: string }>
+  signup: (email: string, password: string, atiToken: string, firstName: string, lastName: string) => Promise<{ success: boolean; error?: string }>
   isLoading: boolean
   refreshUser: (authToken?: string) => Promise<void>
 }
@@ -98,14 +98,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  const signup = async (email: string, password: string, atiToken: string) => {
+  const signup = async (email: string, password: string, atiToken: string, firstName: string, lastName: string) => {
     try {
       const response = await fetch('/api/v1/auth/signup', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ email, password, atiToken })
+        body: JSON.stringify({ email, password, atiToken, firstName, lastName })
       })
 
       const data = await response.json()

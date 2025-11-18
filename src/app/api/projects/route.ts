@@ -38,6 +38,21 @@ export async function GET(request: NextRequest) {
       include: {
         projects: {
           include: {
+            // Include minimal patent info so project tiles can show counts
+            // Note: Patent model does not have a status field
+            patents: {
+              select: {
+                id: true,
+                title: true,
+                createdAt: true,
+              },
+            },
+            _count: {
+              select: {
+                patents: true,
+                collaborators: true,
+              },
+            },
             applicantProfile: {
               select: {
                 id: true,

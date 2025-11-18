@@ -1,0 +1,274 @@
+{
+  "exportedAt": "2025-11-18T09:08:53.980Z",
+  "tables": {
+    "tenant": [
+      {
+        "id": "cmgqg3vzn000051ny1ya55qfu",
+        "name": "Platform Administration",
+        "atiId": "PLATFORM",
+        "type": "ENTERPRISE",
+        "status": "ACTIVE",
+        "createdAt": "2025-10-14T10:55:03.347Z",
+        "updatedAt": "2025-10-14T10:55:03.347Z"
+      },
+      {
+        "id": "cmgqg3wcv000551nyockuewpt",
+        "name": "Test Company Inc.",
+        "atiId": "TESTTENANT",
+        "type": "ENTERPRISE",
+        "status": "ACTIVE",
+        "createdAt": "2025-10-14T10:55:03.823Z",
+        "updatedAt": "2025-10-14T10:55:03.823Z"
+      }
+    ],
+    "user": [
+      {
+        "id": "cmi4cpyie00047r7aqp2s1zqs",
+        "tenantId": "cmgqg3vzn000051ny1ya55qfu",
+        "signupAtiTokenId": "cmi4cpyi000027r7a20hlwydw",
+        "email": "superadmin@spotipr.com",
+        "passwordHash": "$2a$12$QKQz0Uqiom7J5Ridb5z7auJa86oywwuHtnMsLQs9.idRDWBpLpUVi",
+        "name": "Super Admin",
+        "roles": [
+          "SUPER_ADMIN"
+        ],
+        "status": "ACTIVE",
+        "emailVerified": false,
+        "noveltySearchesCompleted": 0,
+        "createdAt": "2025-11-18T09:08:43.382Z",
+        "updatedAt": "2025-11-18T09:08:43.382Z"
+      },
+      {
+        "id": "cmi4cpzcw000b7r7ayj2mbv5s",
+        "tenantId": "cmgqg3wcv000551nyockuewpt",
+        "signupAtiTokenId": "cmi4cpyw700097r7axc7l89kn",
+        "email": "tenantadmin@spotipr.com",
+        "passwordHash": "$2a$12$frm.1V2fqujoCHqTn0PW4uAc4aZPPG0dZ6M4j85kY.WyqcQeNxVNu",
+        "name": "Tenant Admin",
+        "roles": [
+          "ADMIN"
+        ],
+        "status": "ACTIVE",
+        "emailVerified": false,
+        "noveltySearchesCompleted": 0,
+        "createdAt": "2025-11-18T09:08:44.480Z",
+        "updatedAt": "2025-11-18T09:08:44.480Z"
+      },
+      {
+        "id": "cmi4cq03k000f7r7aqfsnq2ji",
+        "tenantId": "cmgqg3wcv000551nyockuewpt",
+        "signupAtiTokenId": "cmi4cpzqi000d7r7aznleu962",
+        "email": "analyst@spotipr.com",
+        "passwordHash": "$2a$12$H08aRl.lqEabGpwG4TMk8erOVqrVnH3iVXU8E4BMtlHJkkck.cEna",
+        "name": "Test Analyst",
+        "roles": [
+          "ANALYST"
+        ],
+        "status": "ACTIVE",
+        "emailVerified": false,
+        "noveltySearchesCompleted": 0,
+        "createdAt": "2025-11-18T09:08:45.440Z",
+        "updatedAt": "2025-11-18T09:08:45.440Z"
+      }
+    ],
+    "emailVerificationToken": [],
+    "passwordResetToken": [],
+    "aTIToken": [
+      {
+        "id": "cmi4cpyi000027r7a20hlwydw",
+        "tenantId": "cmgqg3vzn000051ny1ya55qfu",
+        "tokenHash": "$2a$12$LyP6wJ9MTDqihDTyDJ26Xu99YFiEDxXkujAeJRySsBJSFbx/9r31u",
+        "rawToken": "27B34B08C269962DE775FF02C797D528157D2746993AEFC746BC00221E06F6A0",
+        "rawTokenExpiry": "2025-11-19T09:08:43.364Z",
+        "fingerprint": "/9R31U",
+        "status": "ISSUED",
+        "expiresAt": null,
+        "maxUses": 5,
+        "usageCount": 0,
+        "planTier": "PLATFORM_ADMIN",
+        "notes": "Super Admin Onboarding Token",
+        "createdAt": "2025-11-18T09:08:43.368Z",
+        "updatedAt": "2025-11-18T09:08:43.368Z"
+      },
+      {
+        "id": "cmi4cpyw700097r7axc7l89kn",
+        "tenantId": "cmgqg3wcv000551nyockuewpt",
+        "tokenHash": "$2a$12$ndODVaaLxiNezHr5/5WXtunR/5nJ.xoSqWFIGdly7I8Vb8vpJmnD2",
+        "rawToken": "D63FEA3F297C96218C83C3B384138E37959828BAF61347AD241C8E5EE1D7999F",
+        "rawTokenExpiry": "2025-11-19T09:08:43.875Z",
+        "fingerprint": "PJMND2",
+        "status": "ISSUED",
+        "expiresAt": null,
+        "maxUses": 5,
+        "usageCount": 0,
+        "planTier": "PRO_PLAN",
+        "notes": "Tenant Admin Onboarding Token",
+        "createdAt": "2025-11-18T09:08:43.879Z",
+        "updatedAt": "2025-11-18T09:08:43.879Z"
+      },
+      {
+        "id": "cmi4cpzqi000d7r7aznleu962",
+        "tenantId": "cmgqg3wcv000551nyockuewpt",
+        "tokenHash": "$2a$12$5Cql6piy3T3qU6e8tWLwleRr6SnOKAVeCMA4Lzb3LouNricMyhYXC",
+        "rawToken": "4769987C5B61B8D19551CBBCF97F6E123F8CD0C5E2A605733C843898E2D578AD",
+        "rawTokenExpiry": "2025-11-19T09:08:44.968Z",
+        "fingerprint": "MYHYXC",
+        "status": "ISSUED",
+        "expiresAt": null,
+        "maxUses": 10,
+        "usageCount": 0,
+        "planTier": "PRO_PLAN",
+        "notes": "Analyst Onboarding Token",
+        "createdAt": "2025-11-18T09:08:44.970Z",
+        "updatedAt": "2025-11-18T09:08:44.970Z"
+      }
+    ],
+    "auditLog": [],
+    "project": [],
+    "applicantProfile": [],
+    "projectCollaborator": [],
+    "patent": [],
+    "annexureVersion": [],
+    "job": [],
+    "tokenNotification": [],
+    "plan": [
+      {
+        "id": "cmgqh9rd10000xjnkvgb2w8xp",
+        "code": "PRO_PLAN",
+        "name": "Professional Plan",
+        "cycle": "MONTHLY",
+        "status": "ACTIVE",
+        "createdAt": "2025-10-14T11:27:36.901Z",
+        "updatedAt": "2025-10-14T11:27:36.901Z"
+      },
+      {
+        "id": "cmgsxqrvo0008ga9ht3wd56lt",
+        "code": "FREE_PLAN",
+        "name": "Free Plan",
+        "cycle": "MONTHLY",
+        "status": "ACTIVE",
+        "createdAt": "2025-10-16T04:44:16.933Z",
+        "updatedAt": "2025-10-16T04:44:16.933Z"
+      }
+    ],
+    "tenantPlan": [
+      {
+        "id": "cmgqhbkku0001nayyg9nqukab",
+        "tenantId": "cmgqg3wcv000551nyockuewpt",
+        "planId": "cmgqh9rd10000xjnkvgb2w8xp",
+        "effectiveFrom": "2025-10-14T11:29:01.420Z",
+        "expiresAt": "2026-10-14T11:29:01.420Z",
+        "status": "ACTIVE",
+        "createdAt": "2025-10-14T11:29:01.422Z"
+      },
+      {
+        "id": "cmgsxqrzv000pga9hhpl13nzj",
+        "tenantId": "cmgqg3vzn000051ny1ya55qfu",
+        "planId": "cmgsxqrvo0008ga9ht3wd56lt",
+        "effectiveFrom": "2025-10-16T04:44:17.080Z",
+        "expiresAt": null,
+        "status": "ACTIVE",
+        "createdAt": "2025-10-16T04:44:17.084Z"
+      },
+      {
+        "id": "cmi4cpyiz00077r7atq82meas",
+        "tenantId": "cmgqg3wcv000551nyockuewpt",
+        "planId": "cmgqh9rd10000xjnkvgb2w8xp",
+        "effectiveFrom": "2025-11-18T09:08:43.401Z",
+        "expiresAt": null,
+        "status": "ACTIVE",
+        "createdAt": "2025-11-18T09:08:43.403Z"
+      }
+    ],
+    "feature": [
+      {
+        "id": "cmgqhkja80002bia0toz0lscz",
+        "code": "PRIOR_ART_SEARCH",
+        "name": "Prior Art Search",
+        "unit": "calls"
+      },
+      {
+        "id": "cmgqhlbku00008z31jvf2fz2y",
+        "code": "PATENT_DRAFTING",
+        "name": "Patent Drafting",
+        "unit": "tokens"
+      }
+    ],
+    "planFeature": [
+      {
+        "id": "cmgsxqrw0000cga9h6jai1fuu",
+        "planId": "cmgsxqrvo0008ga9ht3wd56lt",
+        "featureId": "cmgqhkja80002bia0toz0lscz",
+        "monthlyQuota": 50,
+        "dailyQuota": 5
+      },
+      {
+        "id": "cmgsxqrw0000dga9hdcw1250b",
+        "planId": "cmgsxqrvo0008ga9ht3wd56lt",
+        "featureId": "cmgqhlbku00008z31jvf2fz2y",
+        "monthlyQuota": 1000,
+        "dailyQuota": 100
+      },
+      {
+        "id": "cmgsxqryx000fga9hkl3dxm2z",
+        "planId": "cmgqh9rd10000xjnkvgb2w8xp",
+        "featureId": "cmgqhlbku00008z31jvf2fz2y",
+        "monthlyQuota": 50000,
+        "dailyQuota": 5000
+      },
+      {
+        "id": "cmgsxqrz1000hga9hsmjr94vq",
+        "planId": "cmgqh9rd10000xjnkvgb2w8xp",
+        "featureId": "cmgqhkja80002bia0toz0lscz",
+        "monthlyQuota": 1000,
+        "dailyQuota": 100
+      }
+    ],
+    "task": [],
+    "lLMModelClass": [],
+    "planLLMAccess": [],
+    "policyRule": [],
+    "usageReservation": [],
+    "usageMeter": [],
+    "usageLog": [],
+    "quotaAlert": [],
+    "priorArtSearchBundle": [],
+    "priorArtSearchHistory": [],
+    "priorArtQueryVariant": [],
+    "priorArtRun": [],
+    "priorArtQueryVariantExecution": [],
+    "priorArtRawResult": [],
+    "priorArtRawDetail": [],
+    "priorArtPatent": [],
+    "priorArtVariantHit": [],
+    "priorArtPatentDetail": [],
+    "priorArtUnifiedResult": [],
+    "priorArtScholarContent": [],
+    "localPatent": [],
+    "noveltyAssessmentRun": [],
+    "noveltyAssessmentLLMCall": [],
+    "noveltySearchRun": [],
+    "noveltySearchLLMCall": [],
+    "featureMapCell": [],
+    "aggregationSnapshot": [],
+    "featureMapOverride": [],
+    "featureMappingCache": [],
+    "draftingSession": [],
+    "ideaRecord": [],
+    "referenceMap": [],
+    "figurePlan": [],
+    "diagramSource": [],
+    "annexureDraft": [],
+    "relatedArtRun": [],
+    "relatedArtSelection": [],
+    "ideaBankSuggestion": [],
+    "draftingHistory": [],
+    "userCredit": [],
+    "ideaBankIdea": [],
+    "ideaBankReservation": [],
+    "ideaBankHistory": [],
+    "styleProfile": [],
+    "styleTrainingJob": [],
+    "document": []
+  }
+}

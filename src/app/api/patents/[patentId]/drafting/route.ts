@@ -2891,12 +2891,11 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
 
   // Merge user-provided instructions with PersonaSync style instructions if enabled and available
   const usePersonaStyle = (data && typeof data.usePersonaStyle === 'boolean') ? Boolean(data.usePersonaStyle) : true
-  let mergedInstructions: Record<string, string> | undefined = instructions
+  let mergedInstructions: Record<string, string> = { ...(instructions || {}) }
   if (usePersonaStyle) {
     try {
       const styleInstr = await getGatedStyleInstructions(user.tenantId, user.id)
       if (styleInstr) {
-        mergedInstructions = { ...(instructions || {}) }
         for (const [k, v] of Object.entries(styleInstr)) {
           if (!v) continue
           mergedInstructions[k] = mergedInstructions[k] ? `${mergedInstructions[k]} ; ${v}` : v
