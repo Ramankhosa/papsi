@@ -56,3 +56,4 @@ async function fixUserSignupToken() {
 }
 
 fixUserSignupToken();
+

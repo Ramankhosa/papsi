@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { hashToken } from '@/lib/token-utils'
 
+// Force dynamic rendering since this route accesses request.url
+export const dynamic = 'force-dynamic'
+
 export async function GET(request: NextRequest) {
   try {
     const url = new URL(request.url)

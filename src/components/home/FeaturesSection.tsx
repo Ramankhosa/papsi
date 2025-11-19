@@ -3,13 +3,12 @@
 import { useEffect, useState } from 'react'
 
 interface FeatureRowProps {
-  icon: string
   feature: string
   description: string
   delay?: number
 }
 
-function FeatureRow({ icon, feature, description, delay = 0 }: FeatureRowProps) {
+function FeatureRow({ feature, description, delay = 0 }: FeatureRowProps) {
   const [isVisible, setIsVisible] = useState(false)
 
   useEffect(() => {
@@ -20,18 +19,16 @@ function FeatureRow({ icon, feature, description, delay = 0 }: FeatureRowProps) 
   return (
     <tr
       className={`border-b border-gray-100 transition-all duration-700 ${
-        isVisible ? 'opacity-100 transform translate-y-0' : 'opacity-0 transform translate-y-4'
+        isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
       } hover:bg-gray-50`}
     >
-      <td className="py-6 px-6">
+      <td className="py-5 px-6">
         <div className="flex items-center">
-          <span className="text-2xl mr-4">{icon}</span>
-          <span className="font-semibold text-gray-900">{feature}</span>
+          <span className="mr-3 flex h-2 w-2 rounded-full bg-gpt-blue-600" />
+          <span className="font-semibold text-gray-900 text-sm md:text-base">{feature}</span>
         </div>
       </td>
-      <td className="py-6 px-6 text-gray-600 leading-relaxed">
-        {description}
-      </td>
+      <td className="py-5 px-6 text-gray-600 leading-relaxed text-sm md:text-base">{description}</td>
     </tr>
   )
 }
@@ -40,53 +37,45 @@ export default function FeaturesSection() {
   return (
     <section className="py-20 bg-white">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="text-center mb-16">
-          <h2 className="text-3xl md:text-4xl font-serif font-bold text-gray-900 mb-6">
-            Subtle AI Intelligence
-          </h2>
-          <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-            Advanced capabilities that work behind the scenes to make patent creation effortless
+        <div className="text-center mb-12">
+          <h2 className="text-3xl md:text-4xl font-serif font-bold text-gray-900 mb-4">Quietly powerful features</h2>
+          <p className="text-base md:text-lg text-gray-600 max-w-2xl mx-auto">
+            A focused set of tools that stay out of your way while you think through the invention.
           </p>
         </div>
 
-        <div className="bg-gray-50 rounded-xl shadow-sm overflow-hidden">
+        <div className="bg-gray-50 rounded-xl shadow-sm overflow-hidden border border-gray-100">
           <table className="w-full">
             <tbody>
               <FeatureRow
-                icon="🧭"
-                feature="Smart Novelty Search"
-                description="Understands concept, not just keywords."
+                feature="Smart novelty search"
+                description="Understands concepts instead of raw keywords, so you see the prior art that actually matters."
                 delay={0}
               />
               <FeatureRow
-                icon="📄"
-                feature="Auto Drafting"
-                description="Generates ready-to-file patent drafts with figures and claims."
-                delay={100}
+                feature="AI-assisted drafting"
+                description="Generate structured patent drafts with sections, figures, and claims you can refine."
+                delay={120}
               />
               <FeatureRow
-                icon="🔍"
-                feature="Prior Art Intelligence"
-                description="Analyzes global patent databases with contextual reasoning."
+                feature="Prior art intelligence"
+                description="Layer insights on top of search results to see where your idea is strongest."
                 delay={200}
               />
               <FeatureRow
-                icon="🧩"
-                feature="Modular Workflow"
-                description="Start from idea, continue to draft, or upload your own."
-                delay={300}
+                feature="Modular workflow"
+                description="Start from an idea, a disclosure, or an existing draft—then move seamlessly between stages."
+                delay={280}
               />
               <FeatureRow
-                icon="🌐"
-                feature="Multi-Jurisdiction Support"
-                description="Supports US, EU, Indian, and PCT formats."
-                delay={400}
+                feature="Multi-jurisdiction support"
+                description="Prepare for US, EU, Indian, and PCT formats from a single, unified workspace."
+                delay={360}
               />
               <FeatureRow
-                icon="🔐"
-                feature="Confidential & Encrypted"
-                description="Your ideas never leave our secure server."
-                delay={500}
+                feature="Security by design"
+                description="Your ideas are processed on secure infrastructure with encryption and controlled access."
+                delay={440}
               />
             </tbody>
           </table>
@@ -95,3 +84,4 @@ export default function FeaturesSection() {
     </section>
   )
 }
+

@@ -229,7 +229,7 @@
 
 **Test checklist**
 
-* Tenant with Free plan cannot run `WEB_META` or `ADVANCED` class models.
+* Tenant with Basic plan cannot run `WEB_META` or `ADVANCED` class models.
 * `LLM3_DIAGRAM` blocks > `diagram_files_per_req`.
 * Concurrency 2 → 3rd request gets a clean 429 + Retry-After header.
 * Duplicate retry with the same `idempotency_key` does not double count.

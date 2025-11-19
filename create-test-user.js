@@ -50,7 +50,7 @@ async function createTestUser() {
 
     console.log('✅ Created/Updated user:', user.email);
 
-    // Assign FREE plan to the tenant
+    // Assign BASIC (FREE_PLAN) plan to the tenant
     const freePlan = await prisma.plan.findFirst({
       where: { name: 'FREE_PLAN' }
     });

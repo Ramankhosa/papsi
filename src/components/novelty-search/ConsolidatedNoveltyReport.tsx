@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import React, { useMemo } from 'react';
 import Stage4ResultsDisplay from './Stage4ResultsDisplay';
@@ -28,7 +28,17 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
     ? (stage35 as any).feature_map
     : (Array.isArray(stage35) ? (stage35 as any) : []);
 
+  const stage4Any: any = stage4 || {};
+  const perPatentRemarks: any[] = Array.isArray(stage4Any?.per_patent_remarks) ? stage4Any.per_patent_remarks : [];
+
   const sanitizedTitle = (searchData?.title || 'Consolidated Novelty Report').toString();
+
+  const canonicalizePn = (pn: any): string => {
+    return String(pn || '')
+      .toUpperCase()
+      .replace(/[^A-Z0-9]/g, '')
+      .replace(/[A-Z]\d*$/, '');
+  };
 
   const topPqai = useMemo(() => {
     if (!Array.isArray(pqai)) return [];
@@ -38,10 +48,87 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
     }));
   }, [pqai]);
 
+  const pqaiByCanonical = useMemo(() => {
+    const map = new Map<string, any>();
+    if (!Array.isArray(pqai)) return map;
+    for (const r of pqai) {
+      const pnAny = r.publicationNumber || r.publication_number || r.pn || r.id;
+      const canon = canonicalizePn(pnAny);
+      if (canon && !map.has(canon)) {
+        map.set(canon, r);
+      }
+    }
+    return map;
+  }, [pqai]);
+
+  const remarksByCanonical = useMemo(() => {
+    const map = new Map<string, any>();
+    if (!Array.isArray(perPatentRemarks)) return map;
+    for (const r of perPatentRemarks) {
+      const canon = canonicalizePn(r.pn || r.patent_number);
+      if (canon && !map.has(canon)) {
+        map.set(canon, r);
+      }
+    }
+    return map;
+  }, [perPatentRemarks]);
+
+  const featureMappedPatents = useMemo(() => {
+    if (!Array.isArray(featureMaps) || featureMaps.length === 0) return [];
+
+    return featureMaps.map((pm: any) => {
+      const rawPn = pm.pn || pm.publicationNumber || pm.publication_number || '';
+      const canon = canonicalizePn(rawPn);
+      const pq = canon ? pqaiByCanonical.get(canon) : undefined;
+      const rm = canon ? remarksByCanonical.get(canon) : undefined;
+
+      const pnDisplay =
+        pq?.publicationNumber || pq?.publication_number || rawPn || 'Unknown PN';
+
+      const title =
+        pm.title ||
+        pq?.title ||
+        pq?.invention_title ||
+        pnDisplay ||
+        'Untitled Patent';
+
+      let abstract: string =
+        pq?.abstract ||
+        pq?.snippet ||
+        pq?.description ||
+        rm?.abstract ||
+        '';
+
+      abstract = String(abstract || '').trim();
+      const words = abstract.split(/\s+/).filter(Boolean);
+      const abstractSnippet =
+        words.length > 80 ? words.slice(0, 80).join(' ') + '…' : abstract;
+
+      const linkFromPq = pq?.link;
+      const linkFromPm = pm.link;
+      const normalizedPn = String(pnDisplay || '').replace(/\s+/g, '');
+      const link =
+        linkFromPq ||
+        linkFromPm ||
+        (normalizedPn && normalizedPn !== 'Unknown PN'
+          ? `https://patents.google.com/patent/${encodeURIComponent(normalizedPn)}`
+          : undefined);
+
+      return {
+        pn: pnDisplay,
+        title,
+        abstract,
+        abstractSnippet,
+        link,
+        remarks: rm?.remarks || '',
+        decision: rm?.decision
+      };
+    });
+  }, [featureMaps, pqaiByCanonical, remarksByCanonical]);
+
   const printPortrait = () => window.print();
 
   const printLandscape = () => {
-    // Inject temporary landscape @page rule for printing, then remove
     const style = document.createElement('style');
     style.setAttribute('data-temp-landscape', 'true');
     style.media = 'print';
@@ -53,7 +140,6 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
     }, 1000);
   };
 
-  // Helper: status code for matrix cell from Stage 3.5 feature_analysis
   const getMatrixStatus = (pm: any, feature: string): 'P' | 'Pt' | 'A' | '-' => {
     const fa = Array.isArray(pm?.feature_analysis) ? pm.feature_analysis : [];
     const cell = fa.find((c: any) => c.feature === feature);
@@ -74,20 +160,32 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
 
       {/* Header */}
       <section className="report-section">
-        <div className="rounded-xl border bg-white p-5">
-          <div className="text-xs text-gray-500">Novelty Search • Consolidated</div>
-          <h1 className="text-2xl font-semibold text-gray-900 mt-1">{sanitizedTitle}</h1>
-          <div className="text-xs text-gray-600 mt-1">Search ID: {searchId} • {new Date().toISOString().slice(0,10)}</div>
+        <div className="relative overflow-hidden rounded-xl border bg-gradient-to-r from-teal-600 to-purple-700 text-white">
+          <div className="p-6">
+            <div className="text-sm opacity-90">Consolidated Report</div>
+            <div className="mt-1 text-2xl font-semibold tracking-tight">
+              {sanitizedTitle}
+            </div>
+            <div className="mt-1 text-xs opacity-90">
+              Search ID: {searchId} · {new Date().toISOString().slice(0, 10)}
+            </div>
+          </div>
+          <div className="absolute right-0 top-0 opacity-20 pointer-events-none select-none">
+            <svg width="240" height="120" viewBox="0 0 240 120" fill="none">
+              <circle cx="120" cy="60" r="56" stroke="white" strokeWidth="2" />
+              <circle cx="120" cy="60" r="40" stroke="white" strokeWidth="1" />
+            </svg>
+          </div>
         </div>
       </section>
 
       {/* Stage 0 */}
       <section className="report-section">
-        <h2 className="section-title">Stage 0 — Invention Normalization</h2>
+        <h2 className="section-title">Stage 0 - Invention Normalization</h2>
         <div className="rounded-lg border bg-white p-4 space-y-3">
           <div>
             <div className="text-xs text-gray-500">Search Query</div>
-            <div className="text-sm text-gray-900 whitespace-pre-wrap">{stage0?.searchQuery || '—'}</div>
+            <div className="text-sm text-gray-900 whitespace-pre-wrap">{stage0?.searchQuery || '-'}</div>
           </div>
           <div>
             <div className="text-xs text-gray-500 mb-1">Invention Features</div>
@@ -104,13 +202,19 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
 
       {/* Stage 1 */}
       <section className="report-section">
-        <h2 className="section-title">Stage 1 — Patent Search (Patent Database)</h2>
+        <h2 className="section-title">Stage 1 - Patent Search (Patent Database)</h2>
         <div className="rounded-lg border bg-white p-4 space-y-3">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Kpi label="Total Results" value={Array.isArray(pqai) ? pqai.length : '—'} />
-            <Kpi label="AI Accepted" value={aiRel?.accepted?.length ?? aiRel?.accepted ?? stage1?.ai_relevance_accepted ?? '—'} />
-            <Kpi label="AI Borderline" value={aiRel?.borderline?.length ?? aiRel?.borderline ?? stage1?.ai_relevance_borderline ?? '—'} />
-            <Kpi label="Jurisdiction" value={stage0?.jurisdiction || stage1?.jurisdiction || '—'} />
+            <Kpi label="Total Results" value={Array.isArray(pqai) ? pqai.length : '-'} />
+            <Kpi
+              label="AI Accepted"
+              value={aiRel?.accepted?.length ?? aiRel?.accepted ?? stage1?.ai_relevance_accepted ?? '-'}
+            />
+            <Kpi
+              label="AI Borderline"
+              value={aiRel?.borderline?.length ?? aiRel?.borderline ?? stage1?.ai_relevance_borderline ?? '-'}
+            />
+            <Kpi label="Jurisdiction" value={stage0?.jurisdiction || stage1?.jurisdiction || '-'} />
           </div>
           <div>
             <div className="text-xs text-gray-500 mb-1">Top Results</div>
@@ -118,7 +222,7 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
               <ul className="text-sm text-gray-900 space-y-1">
                 {topPqai.map((p, idx) => (
                   <li key={idx} className="break-inside-avoid">
-                    <span className="font-medium">{p.pn}</span> — {p.title}
+                    <span className="font-medium">{p.pn}</span> - {p.title}
                   </li>
                 ))}
               </ul>
@@ -126,100 +230,8 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
               <div className="text-xs text-gray-600">No results.</div>
             )}
           </div>
-
-          {/* Detailed Results (same structure as Stage 1 UI) */}
-          <div className="pt-2">
-            <h4 className="font-medium text-gray-900 mb-3">Patent Database Results (Sorted by Relevance)</h4>
-            <div className="space-y-3 max-h-[40rem] overflow-y-auto pr-1">
-              {Array.isArray(pqai) && pqai.length > 0 ? (
-                pqai.map((r: any, i: number) => {
-                  const patentNumber = r.publicationNumber || r.pn || r.patent_number || r.publication_number || 'N/A';
-                  const title = r.title || r.invention_title || patentNumber || 'Untitled';
-                  const abstract = r.abstract || r.snippet || r.description || '';
-                  const pubDate = r.year || r.publication_date || r.filing_date || '';
-                  const relevanceScore = r.relevanceScore || r.score || r.relevance || 0;
-                  const inventors = r.inventors || r.inventor_names || [];
-                  const assignees = r.assignees || r.assignee_names || [];
-                  const cpcCodes = r.cpcCodes || r.cpc_codes || [];
-                  const ipcCodes = r.ipcCodes || r.ipc_codes || [];
-
-                  const lensHref = `https://lens.org/${encodeURIComponent(String(patentNumber)).replace(/\s+/g, '-')}`;
-
-                  return (
-                    <div key={i} className="py-4 px-3 border rounded-lg bg-gray-50 break-inside-avoid">
-                      <div className="flex items-start gap-3">
-                        <div className="flex items-center justify-center w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-semibold text-sm flex-shrink-0">
-                          {i + 1}
-                        </div>
-                        <div className="flex-1">
-                          <div className="flex items-start justify-between">
-                            <div className="flex-1">
-                              {patentNumber !== 'N/A' ? (
-                                <a className="font-medium text-indigo-700 hover:underline text-sm" href={lensHref} target="_blank" rel="noreferrer">
-                                  {title}
-                                </a>
-                              ) : (
-                                <div className="font-medium text-gray-800 text-sm">{title}</div>
-                              )}
-                              <div className="text-xs text-gray-500 mt-1">
-                                {patentNumber !== 'N/A' && `Patent: ${patentNumber}`}
-                                {pubDate && `${patentNumber !== 'N/A' ? ' • ' : ''}Published: ${String(pubDate).slice(0,10)}`}
-                                {relevanceScore !== null && ` • Relevance: ${(Number(relevanceScore) * 100).toFixed(1)}%`}
-                              </div>
-                            </div>
-                          </div>
-
-                          {abstract && (
-                            <div className="mt-3">
-                              <div className="text-xs font-medium text-gray-700 mb-1">Abstract/Summary:</div>
-                              <div className="text-sm text-gray-700 whitespace-pre-wrap bg-white p-3 rounded border leading-relaxed">
-                                {abstract}
-                              </div>
-                            </div>
-                          )}
-
-                          {((Array.isArray(inventors) && inventors.length) ||
-                            (Array.isArray(assignees) && assignees.length) ||
-                            (Array.isArray(cpcCodes) && cpcCodes.length) ||
-                            (Array.isArray(ipcCodes) && ipcCodes.length)) && (
-                            <div className="mt-3 text-xs text-gray-600">
-                              {Array.isArray(inventors) && inventors.length > 0 && (
-                                <div><strong>Inventors:</strong> {inventors.join(', ')}</div>
-                              )}
-                              {Array.isArray(assignees) && assignees.length > 0 && (
-                                <div><strong>Assignees:</strong> {assignees.join(', ')}</div>
-                              )}
-                              {Array.isArray(cpcCodes) && cpcCodes.length > 0 && (
-                                <div>
-                                  <strong>CPC Codes:</strong>
-                                  <div className="flex flex-wrap gap-1 mt-1">
-                                    {cpcCodes.map((code: string, idx: number) => (
-                                      <span key={idx} className="bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs">{code}</span>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                              {Array.isArray(ipcCodes) && ipcCodes.length > 0 && (
-                                <div>
-                                  <strong>IPC Codes:</strong>
-                                  <div className="flex flex-wrap gap-1 mt-1">
-                                    {ipcCodes.map((code: string, idx: number) => (
-                                      <span key={idx} className="bg-purple-50 text-purple-700 px-2 py-1 rounded text-xs">{code}</span>
-                                    ))}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })
-              ) : (
-                <p className="text-sm text-gray-500">No patent results available</p>
-              )}
-            </div>
+          <div className="pt-2 text-[11px] text-gray-600">
+            Detailed patent-by-patent analysis for shortlisted references is shown under Stage 3.5 below.
           </div>
         </div>
       </section>
@@ -228,6 +240,79 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
       <section className="report-section">
         <h2 className="section-title">Stage 3.5 - Feature Mapping & Aggregation</h2>
         <div className="rounded-lg border bg-white p-4 space-y-4">
+          {/* Shortlisted patents with remarks */}
+          <div>
+            <div className="text-xs text-gray-500 mb-2">Shortlisted Patents (Feature Mapping & Remarks)</div>
+            {Array.isArray(featureMappedPatents) && featureMappedPatents.length > 0 ? (
+              <div className="space-y-3">
+                {featureMappedPatents.map((p, idx) => (
+                  <div key={idx} className="border rounded-lg bg-gray-50 p-3 break-inside-avoid">
+                    <div className="flex flex-col md:flex-row gap-3">
+                      <div className="md:w-5/12">
+                        <div className="text-xs text-gray-500 mb-1">Patent</div>
+                        <div className="text-sm font-semibold text-gray-900 break-words leading-snug">
+                          {p.link ? (
+                            <a
+                              href={p.link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-indigo-700 hover:underline"
+                            >
+                              {p.title}
+                            </a>
+                          ) : (
+                            p.title
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {p.pn && <>Patent: {p.pn}</>}
+                        </div>
+                        {p.abstractSnippet && (
+                          <div className="mt-2">
+                            <div className="text-[11px] font-medium text-gray-700 mb-1">
+                              Abstract snapshot (PQAI)
+                            </div>
+                            <div className="text-xs text-gray-700 whitespace-pre-wrap bg-white border rounded p-2">
+                              {p.abstractSnippet}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <div className="md:w-7/12">
+                        <div className="text-xs text-gray-500 mb-1">PatentNest Analysis Remarks</div>
+                        {p.remarks ? (
+                          <div className="text-xs text-gray-800 whitespace-pre-wrap bg-white border rounded p-2">
+                            {p.remarks}
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-gray-500 italic">
+                            No Stage 3.5 remarks were generated for this patent.
+                          </div>
+                        )}
+                        {p.link && (
+                          <div className="mt-2 text-[11px]">
+                            <a
+                              href={p.link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-indigo-600 hover:underline"
+                            >
+                              Open in Google Patents
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-gray-600">
+                No patents were selected for Stage 3.5 feature mapping.
+              </div>
+            )}
+          </div>
+
           {/* Feature Uniqueness Table */}
           <div>
             <div className="text-xs text-gray-500 mb-2">Per-feature Uniqueness</div>
@@ -244,9 +329,13 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
                   <tbody>
                     {featureUniq.map((u: any, idx: number) => (
                       <tr key={idx} className="align-top border-b break-inside-avoid">
-                        <td className="py-2 pr-3 min-w-[12rem]">{u.feature || u.name || `Feature ${idx+1}`}</td>
-                        <td className="py-2 pr-3">{typeof u.uniqueness === 'number' ? (Math.round(u.uniqueness * 1000)/10).toFixed(1) + '%' : (u.uniqueness || '—')}</td>
-                        <td className="py-2 whitespace-pre-wrap">{u.notes || u.rationale || '—'}</td>
+                        <td className="py-2 pr-3 min-w-[12rem]">{u.feature || u.name || `Feature ${idx + 1}`}</td>
+                        <td className="py-2 pr-3">
+                          {typeof u.uniqueness === 'number'
+                            ? (Math.round(u.uniqueness * 1000) / 10).toFixed(1) + '%'
+                            : (u.uniqueness || '-')}
+                        </td>
+                        <td className="py-2 whitespace-pre-wrap">{u.notes || u.rationale || '-'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -274,10 +363,12 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
                   <tbody>
                     {perPatentCov.map((p: any, idx: number) => (
                       <tr key={idx} className="align-top border-b break-inside-avoid">
-                        <td className="py-2 pr-3 min-w-[10rem]">{p.pn || p.publicationNumber || p.patent_number || 'Unknown PN'}</td>
-                        <td className="py-2 pr-3">{p.present_count ?? '—'}</td>
-                        <td className="py-2 pr-3">{p.partial_count ?? '—'}</td>
-                        <td className="py-2">{p.absent_count ?? '—'}</td>
+                        <td className="py-2 pr-3 min-w-[10rem]">
+                          {p.pn || p.publicationNumber || p.patent_number || 'Unknown PN'}
+                        </td>
+                        <td className="py-2 pr-3">{p.present_count ?? '-'}</td>
+                        <td className="py-2 pr-3">{p.partial_count ?? '-'}</td>
+                        <td className="py-2">{p.absent_count ?? '-'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -288,7 +379,7 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
             )}
           </div>
 
-          {/* Patent-wise Feature Comparison Matrix (Patents as rows, Features as columns) */}
+          {/* Patent-wise Feature Comparison Matrix */}
           <div>
             <div className="text-xs text-gray-500 mb-2">Patent-wise Feature Comparison Matrix</div>
             {Array.isArray(featureMaps) && featureMaps.length > 0 && Array.isArray(features) && features.length > 0 ? (
@@ -300,7 +391,9 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
                       {features.map((f: string, idx: number) => {
                         const label = f.length > 18 ? f.substring(0, 16) + '..' : f;
                         return (
-                          <th key={idx} className="border p-1 text-center font-semibold text-[11px]">{label}</th>
+                          <th key={idx} className="border p-1 text-center font-semibold text-[11px]">
+                            {label}
+                          </th>
                         );
                       })}
                     </tr>
@@ -323,7 +416,9 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
                                 ? 'bg-red-100 text-red-700 border-red-300'
                                 : 'bg-gray-100 text-gray-600 border-gray-300';
                             return (
-                              <td key={cIdx} className={`border p-1 text-center font-semibold ${bg}`}>{status}</td>
+                              <td key={cIdx} className={`border p-1 text-center font-semibold ${bg}`}>
+                                {status}
+                              </td>
                             );
                           })}
                         </tr>
@@ -331,11 +426,10 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
                     })}
                   </tbody>
                 </table>
-                {/* Legend */}
                 <div className="mt-2 flex gap-4 text-[11px] text-gray-700">
-                  <span><span className="inline-block w-3 h-3 mr-1 align-middle bg-green-500"></span>P = Present</span>
-                  <span><span className="inline-block w-3 h-3 mr-1 align-middle bg-yellow-400"></span>Pt = Partial</span>
-                  <span><span className="inline-block w-3 h-3 mr-1 align-middle bg-red-500"></span>A = Absent</span>
+                  <span><span className="inline-block w-3 h-3 mr-1 align-middle bg-green-500" />P = Present</span>
+                  <span><span className="inline-block w-3 h-3 mr-1 align-middle bg-yellow-400" />Pt = Partial</span>
+                  <span><span className="inline-block w-3 h-3 mr-1 align-middle bg-red-500" />A = Absent</span>
                 </div>
               </div>
             ) : (
@@ -345,10 +439,10 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
         </div>
       </section>
 
-      {/* Stage 4 (reuse existing display) */}
+      {/* Stage 4 */}
       <section className="report-section">
-        <h2 className="section-title">Stage 4 — Final Assessment</h2>
-        <Stage4ResultsDisplay stage4Results={stage4} searchId={searchId} />
+        <h2 className="section-title">Stage 4 - Final Assessment</h2>
+        <Stage4ResultsDisplay stage4Results={stage4} searchId={searchId} hidePerPatentRemarks />
       </section>
 
       {/* Print-specific styles */}
@@ -360,13 +454,12 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
           .report-section { page-break-inside: auto; break-inside: auto; }
           .report-section .rounded-xl,
           .report-section .rounded-lg { box-shadow: none !important; }
-          .report-section .max-h-\[28rem\] { max-height: none !important; }
+          .report-section .max-h-[28rem] { max-height: none !important; }
           .report-section .max-h-96 { max-height: none !important; }
-          .report-section .max-h-\[40rem\] { max-height: none !important; }
+          .report-section .max-h-[40rem] { max-height: none !important; }
           .report-section .overflow-auto { overflow: visible !important; }
           .report-section .overflow-y-auto { overflow: visible !important; }
 
-          /* Avoid breaking inside small repeated items */
           .report-section .space-y-2 > div,
           .report-section .space-y-3 > div,
           .report-section li,
@@ -379,7 +472,12 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
           @page { size: A4 portrait; margin: 12mm; }
         }
         .report-section { margin-bottom: 1rem; }
-        .section-title { font-size: 1.125rem; font-weight: 600; color: rgb(17 24 39); margin: 0 0 0.5rem 0; }
+        .section-title {
+          font-size: 1.125rem;
+          font-weight: 600;
+          color: rgb(17 24 39);
+          margin: 0 0 0.5rem 0;
+        }
       `}</style>
     </div>
   );
@@ -389,11 +487,7 @@ function Kpi({ label, value }: { label: string; value: any }) {
   return (
     <div className="rounded-md border bg-white p-3">
       <div className="text-xs text-gray-500">{label}</div>
-      <div className="text-lg font-semibold text-gray-900">{String(value ?? '�')}</div>
+      <div className="text-lg font-semibold text-gray-900">{String(value ?? '?')}</div>
     </div>
   );
 }
-
-
-
-

@@ -245,6 +245,18 @@ export default function SuperAdminDashboard() {
                 📊 Analytics
               </button>
               <button
+                onClick={() => router.push('/super-admin/quota-controller')}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-orange-500 hover:bg-orange-600"
+              >
+                Quota Controller
+              </button>
+              <button
+                onClick={() => router.push('/super-admin/user-service-usage')}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700"
+              >
+                User wise service usage
+              </button>
+              <button
                 onClick={() => setShowCreateTenant(true)}
                 className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700"
               >

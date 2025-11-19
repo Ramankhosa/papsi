@@ -3090,6 +3090,7 @@ RESPONSE:`;
         const pqaiRelevance = pq.relevanceScore || pq.score || pq.relevance || 0;
         const abstract = pq.abstract || pq.snippet || pq.description || '';
         const title = pq.title || pq.invention_title || 'Untitled Patent';
+        const link = pq.link || `https://patents.google.com/patent/${p.pn}`;
         const overlaps = inventionFeatures.map(feat => {
           const m = maps.find(mm => ((mm.feature_text || mm.feature || '') as string).toLowerCase() === feat.toLowerCase());
           return m ? (m.overlap_percentage || 0) : 0;
@@ -3104,7 +3105,8 @@ RESPONSE:`;
           pqaiRelevance,
           abstract,
           title,
-          mappings: maps
+          mappings: maps,
+          link
         };
       })
       .sort((a,b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
@@ -3302,21 +3304,44 @@ OUTPUT JSON:
   }
 
   private computeNoveltyScore(perFeatureUniqueness: PerFeatureUniqueness[], criticalFeatures: string[]): number {
-    const featureWeights = perFeatureUniqueness.map(uniqueness => {
-      const isCritical = criticalFeatures.includes(uniqueness.feature);
-      const weight = isCritical ? 2 : 1;
-      return {
-        uniqueness: uniqueness.uniqueness,
-        weight
-      };
-    });
+    // New definition (column-wise / feature-wise):
+    // - Treat each feature as a fixed-weight slice of novelty.
+    // - If a feature appears as Present in any prior-art patent, its novelty contribution is 0.
+    // - If it appears only as Partial (and never Present), it keeps 50% of its novelty weight.
+    // - Only features with no Present or Partial hits across all patents contribute with 100% of their weight.
+    //
+    // Critical features (if configured) are given double weight, but still follow the same all-or-nothing rule.
 
-    const totalWeight = featureWeights.reduce((sum, fw) => sum + fw.weight, 0);
+    if (!Array.isArray(perFeatureUniqueness) || perFeatureUniqueness.length === 0) {
+      return 1;
+    }
+
+    let totalWeight = 0;
+    let novelWeight = 0;
+
+    for (const u of perFeatureUniqueness) {
+      const isCritical = criticalFeatures.includes(u.feature);
+      const weight = isCritical ? 2 : 1;
+      totalWeight += weight;
+
+      let noveltyFactor = 1;
+      if (u.present_in > 0) {
+        // Any Present evidence kills novelty for this feature
+        noveltyFactor = 0;
+      } else if (u.partial_in > 0) {
+        // Only Partial evidence: retain 50% novelty
+        noveltyFactor = 0.5;
+      } else {
+        // No Present or Partial evidence: fully novel
+        noveltyFactor = 1;
+      }
+
+      novelWeight += weight * noveltyFactor;
+    }
+
     if (totalWeight === 0) return 1;
 
-    const weightedSum = featureWeights.reduce((sum, fw) => sum + (fw.uniqueness * fw.weight), 0);
-    const noveltyScore = weightedSum / totalWeight;
-
+    const noveltyScore = novelWeight / totalWeight;
     return Math.round(noveltyScore * 100) / 100;
   }
 
@@ -3569,6 +3594,7 @@ OUTPUT JSON:
         patent_details: selectedPatents.map(patent => ({
           patent_number: patent.patentNumber,
           title: patent.title || 'Untitled Patent',
+          link: patent.link || `https://patents.google.com/patent/${patent.patentNumber}`,
           coverage_ratio: patent.coverageRatio,
           avg_feature_overlap: patent.avgFeatureOverlap,
           pqai_relevance: patent.pqaiRelevance || 0,
@@ -4423,9 +4449,17 @@ Abstract: ${patent.abstract}
       const relevanceScore = typeof result.score === 'number' ? result.score :
                             (typeof result.relevance === 'number' ? result.relevance : null)
 
+      const publicationNumber = result.publication_number || result.patent_number || result.pn || result.id || 'Unknown';
+      const link =
+        result.link ||
+        result.url ||
+        result.patent_url ||
+        result.google_patent_url ||
+        `https://patents.google.com/patent/${publicationNumber}`;
+
       return {
         title: result.title || result.snippet?.split('.')[0] || 'Untitled Patent',
-        publicationNumber: result.publication_number || result.patent_number || result.pn || result.id || 'Unknown',
+        publicationNumber,
         abstract: (result.snippet || result.abstract || result.description || result.abstract_text || result.abstractText || result.abstract_en || result.abstractEnglish || ''),
         year: result.year || result.filing_date?.substring(0, 4) || result.publication_date?.substring(0, 4) || null,
         inventors: Array.isArray(result.inventors) ? result.inventors : (result.inventors ? [result.inventors] : []),
@@ -4433,7 +4467,8 @@ Abstract: ${patent.abstract}
         cpcCodes: Array.isArray(result.cpc_codes) ? result.cpc_codes : [],
         ipcCodes: Array.isArray(result.ipc_codes) ? result.ipc_codes : [],
         relevanceScore: relevanceScore,
-        rawScore: result.score || result.relevance // Keep raw value for debugging
+        rawScore: result.score || result.relevance, // Keep raw value for debugging
+        link
       }
     })
 

@@ -101,7 +101,7 @@ async function seedPlansAndHierarchy() {
     const plans = [
       {
         code: 'FREE_PLAN',
-        name: 'Free Plan',
+        name: 'Basic Plan',
         cycle: 'MONTHLY',
         status: 'ACTIVE',
         description: 'Basic access with limited features'
@@ -147,19 +147,17 @@ async function seedPlansAndHierarchy() {
     // 5. Set up plan features
     console.log('\n🔗 Step 5: Setting up Plan Features...');
     const planFeatures = [
-      // FREE PLAN - Limited access
+      // BASIC PLAN (FREE_PLAN) - Patent drafting + novelty search
       { planCode: 'FREE_PLAN', featureCode: 'PRIOR_ART_SEARCH', monthlyQuota: 50, dailyQuota: 10 },
       { planCode: 'FREE_PLAN', featureCode: 'PATENT_DRAFTING', monthlyQuota: 1000, dailyQuota: 100 },
-      { planCode: 'FREE_PLAN', featureCode: 'IDEA_BANK', monthlyQuota: 5, dailyQuota: 1 },
 
-      // PRO PLAN - Full access
+      // PRO PLAN - Basic services + Idea Bank + Diagram generation
       { planCode: 'PRO_PLAN', featureCode: 'PRIOR_ART_SEARCH', monthlyQuota: 1000, dailyQuota: 100 },
       { planCode: 'PRO_PLAN', featureCode: 'PATENT_DRAFTING', monthlyQuota: 10000, dailyQuota: 1000 },
-      { planCode: 'PRO_PLAN', featureCode: 'DIAGRAM_GENERATION', monthlyQuota: 100, dailyQuota: 20 },
+      { planCode: 'PRO_PLAN', featureCode: 'DIAGRAM_GENERATION', monthlyQuota: 200, dailyQuota: 40 },
       { planCode: 'PRO_PLAN', featureCode: 'IDEA_BANK', monthlyQuota: 50, dailyQuota: 10 },
-      { planCode: 'PRO_PLAN', featureCode: 'PERSONA_SYNC', monthlyQuota: 10, dailyQuota: 2 },
 
-      // ENTERPRISE PLAN - Unlimited access
+      // ENTERPRISE PLAN - Everything (all features)
       { planCode: 'ENTERPRISE_PLAN', featureCode: 'PRIOR_ART_SEARCH', monthlyQuota: 5000, dailyQuota: 500 },
       { planCode: 'ENTERPRISE_PLAN', featureCode: 'PATENT_DRAFTING', monthlyQuota: 50000, dailyQuota: 5000 },
       { planCode: 'ENTERPRISE_PLAN', featureCode: 'DIAGRAM_GENERATION', monthlyQuota: 500, dailyQuota: 100 },
@@ -191,12 +189,14 @@ async function seedPlansAndHierarchy() {
     // 6. Set up LLM access for plans
     console.log('\n🤖 Step 6: Setting up LLM Access...');
     const llmAccess = [
-      // FREE PLAN - Basic access
+      // BASIC PLAN (FREE_PLAN) - Patent drafting + novelty search
       { planCode: 'FREE_PLAN', taskCode: 'LLM1_PRIOR_ART', allowedClasses: ['BASE_S'], defaultClass: 'BASE_S' },
       { planCode: 'FREE_PLAN', taskCode: 'LLM2_DRAFT', allowedClasses: ['BASE_S'], defaultClass: 'BASE_S' },
-      { planCode: 'FREE_PLAN', taskCode: 'IDEA_BANK_ACCESS', allowedClasses: ['BASE_S'], defaultClass: 'BASE_S' },
+      { planCode: 'FREE_PLAN', taskCode: 'LLM4_NOVELTY_SCREEN', allowedClasses: ['BASE_S'], defaultClass: 'BASE_S' },
+      { planCode: 'FREE_PLAN', taskCode: 'LLM5_NOVELTY_ASSESS', allowedClasses: ['BASE_S'], defaultClass: 'BASE_S' },
+      { planCode: 'FREE_PLAN', taskCode: 'LLM6_REPORT_GENERATION', allowedClasses: ['BASE_S'], defaultClass: 'BASE_S' },
 
-      // PRO PLAN - Full access
+      // PRO PLAN - Basic services + Idea Bank + Diagram generation
       { planCode: 'PRO_PLAN', taskCode: 'LLM1_PRIOR_ART', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M'], defaultClass: 'PRO_M' },
       { planCode: 'PRO_PLAN', taskCode: 'LLM2_DRAFT', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M', 'PRO_L'], defaultClass: 'PRO_L' },
       { planCode: 'PRO_PLAN', taskCode: 'LLM3_DIAGRAM', allowedClasses: ['BASE_M', 'PRO_M'], defaultClass: 'PRO_M' },
@@ -206,9 +206,8 @@ async function seedPlansAndHierarchy() {
       { planCode: 'PRO_PLAN', taskCode: 'IDEA_BANK_ACCESS', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_M' },
       { planCode: 'PRO_PLAN', taskCode: 'IDEA_BANK_RESERVE', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_M' },
       { planCode: 'PRO_PLAN', taskCode: 'IDEA_BANK_EDIT', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_M' },
-      { planCode: 'PRO_PLAN', taskCode: 'PERSONA_SYNC_LEARN', allowedClasses: ['BASE_M', 'PRO_M', 'PRO_L'], defaultClass: 'PRO_L' },
 
-      // ENTERPRISE PLAN - All access
+      // ENTERPRISE PLAN - All access (everything)
       { planCode: 'ENTERPRISE_PLAN', taskCode: 'LLM1_PRIOR_ART', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' },
       { planCode: 'ENTERPRISE_PLAN', taskCode: 'LLM2_DRAFT', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' },
       { planCode: 'ENTERPRISE_PLAN', taskCode: 'LLM3_DIAGRAM', allowedClasses: ['BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' },

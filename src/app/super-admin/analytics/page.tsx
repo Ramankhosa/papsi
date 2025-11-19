@@ -93,7 +93,7 @@ export default function SuperAdminAnalyticsPage() {
           <h3 className="text-sm font-medium text-gray-600 mb-2">Active Plans</h3>
           <div className="text-2xl font-bold text-gray-900">3</div>
           <p className="text-sm text-gray-500 mt-1">
-            FREE, PRO, ENTERPRISE tiers
+            BASIC, PRO, ENTERPRISE tiers
           </p>
         </div>
       </div>

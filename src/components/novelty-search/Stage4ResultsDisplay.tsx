@@ -7,9 +7,10 @@ interface Stage4ResultsProps {
   stage4Results: any;
   searchId: string;
   onRerun?: () => Promise<void> | void;
+  hidePerPatentRemarks?: boolean;
 }
 
-export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun }: Stage4ResultsProps) {
+export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun, hidePerPatentRemarks }: Stage4ResultsProps) {
   const r: any = stage4Results || {};
   const exec = r.executive_summary || {};
   const cards = exec.visual_cards || {};
@@ -110,14 +111,34 @@ export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun 
       )}
 
       {/* Per-Patent Remarks */}
-      {Array.isArray(remarks) && remarks.length > 0 && (
+      {!hidePerPatentRemarks && Array.isArray(remarks) && remarks.length > 0 && (
         <div className="rounded-lg border bg-white p-4">
           <div className="text-sm font-medium text-gray-900 mb-2">Per-Patent Remarks</div>
           <div className="space-y-2 max-h-[28rem] overflow-auto pr-1">
             {remarks.map((it, idx) => (
               <div key={idx} className="rounded border p-3">
-                <div className="text-sm font-semibold text-gray-900">{it.pn || it.patent_number || 'Unknown PN'}</div>
-                {it.title && <div className="text-xs text-gray-700">{it.title}</div>}
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <div className="text-sm font-semibold text-gray-900">
+                      {it.pn || it.patent_number || 'Unknown PN'}
+                    </div>
+                    {it.title && <div className="text-xs text-gray-700">{it.title}</div>}
+                  </div>
+                  {(() => {
+                    const pn = it.pn || it.patent_number;
+                    if (!pn) return null;
+                    const href = `https://patents.google.com/patent/${encodeURIComponent(String(pn).replace(/\s+/g, ''))}`;
+                    return (
+                      <Link
+                        href={href}
+                        target="_blank"
+                        className="text-[11px] text-indigo-600 hover:underline flex-shrink-0"
+                      >
+                        Open in Google Patents
+                      </Link>
+                    );
+                  })()}
+                </div>
                 <div className="mt-1 text-xs text-gray-800 whitespace-pre-wrap">{sanitize(it.remarks) || '-'}</div>
               </div>
             ))}
@@ -161,4 +182,3 @@ function BulletsCard({ title, bullets, color }: { title: string; bullets: string
     </div>
   );
 }
-

@@ -18,23 +18,19 @@ function StatCard({ number, label, delay = 0 }: StatCardProps) {
 
   return (
     <div
-      className={`text-center p-8 rounded-xl bg-white shadow-sm border border-gray-100 transition-all duration-700 ${
-        isVisible ? 'opacity-100 transform translate-y-0' : 'opacity-0 transform translate-y-8'
-      } hover:shadow-lg hover:scale-105`}
+      className={`text-center p-8 rounded-xl bg-white/90 shadow-sm border border-gray-100 transition-all duration-700 ${
+        isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'
+      } hover:shadow-md hover:scale-[1.02]`}
     >
-      <div className="text-4xl md:text-5xl font-bold text-blue-600 mb-2 font-serif">
-        {number}
-      </div>
-      <div className="text-gray-600 font-medium">
-        {label}
-      </div>
+      <div className="text-4xl md:text-5xl font-bold text-gpt-blue-600 mb-2 font-serif">{number}</div>
+      <div className="text-gray-600 font-medium">{label}</div>
     </div>
   )
 }
 
 export default function TrustSection() {
   return (
-    <section className="py-20 bg-gray-50">
+    <section className="py-20 bg-gpt-gray-50">
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
           <StatCard number="6,000+" label="ideas analyzed for novelty" delay={0} />
@@ -51,3 +47,4 @@ export default function TrustSection() {
     </section>
   )
 }
+

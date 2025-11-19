@@ -35,7 +35,12 @@ export class LLMGateway {
         }
       }
 
-      // 2. Create feature request for metering
+      // 2. Ensure we have a reasonable input token estimate if caller did not supply one
+      if (typeof llmRequest.inputTokens !== 'number' || llmRequest.inputTokens <= 0) {
+        llmRequest.inputTokens = this.estimateInputTokens(llmRequest)
+      }
+
+      // 3. Create feature request for metering
       const featureRequest: FeatureRequest = {
         tenantId: tenantContext.tenantId,
         featureCode: this.getFeatureForTask(llmRequest.taskCode),
@@ -46,7 +51,7 @@ export class LLMGateway {
         }
       }
 
-      // 3. Enforce metering policies (existing Module 5)
+      // 4. Enforce metering policies (existing Module 5)
       const decision = await this.system.policy.evaluateAccess(featureRequest)
 
       if (!decision.allowed) {
@@ -56,10 +61,10 @@ export class LLMGateway {
         }
       }
 
-      // 4. Route to LLM provider with enforcement limits
+      // 5. Route to LLM provider with enforcement limits
       const response = await llmProviderRouter.routeAndExecute(llmRequest, decision)
 
-      // 5. Record usage (existing Module 7)
+      // 6. Record usage (existing Module 7)
       if (decision.reservationId) {
         const usageStats: UsageStats = {
           inputTokens: llmRequest.inputTokens || 0,
@@ -81,6 +86,30 @@ export class LLMGateway {
       const wrappedError = new MeteringError('SERVICE_UNAVAILABLE', 'LLM gateway error')
       return { success: false, error: wrappedError }
     }
+  }
+
+  /**
+   * Lightweight heuristic to estimate input tokens when callers don't provide them.
+   * This keeps metering accurate enough for billing without burdening every call site.
+   */
+  private estimateInputTokens(llmRequest: LLMRequest): number {
+    let text = ''
+
+    if (llmRequest.prompt) {
+      text += llmRequest.prompt
+    }
+
+    if (llmRequest.content?.parts?.length) {
+      for (const part of llmRequest.content.parts) {
+        if (part.type === 'text') {
+          text += ' ' + part.text
+        }
+      }
+    }
+
+    // Very rough heuristic: ~4 characters per token
+    const approx = text ? Math.ceil(text.length / 4) : 0
+    return approx
   }
 
   private getFeatureForTask(taskCode: TaskCode): FeatureCode {

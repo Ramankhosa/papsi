@@ -29,7 +29,7 @@ async function ensureFeaturesAndTasks() {
 }
 
 async function ensurePlans() {
-  const free = await prisma.plan.upsert({ where: { code: 'FREE_PLAN' }, update: {}, create: { code: 'FREE_PLAN', name: 'Free Plan', cycle: 'MONTHLY', status: 'ACTIVE' } })
+  const free = await prisma.plan.upsert({ where: { code: 'FREE_PLAN' }, update: { name: 'Basic Plan' }, create: { code: 'FREE_PLAN', name: 'Basic Plan', cycle: 'MONTHLY', status: 'ACTIVE' } })
   const pro = await prisma.plan.upsert({ where: { code: 'PRO_PLAN' }, update: {}, create: { code: 'PRO_PLAN', name: 'Professional Plan', cycle: 'MONTHLY', status: 'ACTIVE' } })
   const ent = await prisma.plan.upsert({ where: { code: 'ENTERPRISE_PLAN' }, update: {}, create: { code: 'ENTERPRISE_PLAN', name: 'Enterprise Plan', cycle: 'MONTHLY', status: 'ACTIVE' } })
   return { free, pro, ent }
