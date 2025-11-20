@@ -1,145 +1,189 @@
 'use client';
 
-import React, { useMemo } from 'react';
-import Stage4ResultsDisplay from './Stage4ResultsDisplay';
+import React, { useState } from 'react';
+import Link from 'next/link';
+import Cookies from 'js-cookie';
+
+// Print styles for PDF generation
+const printStyles = `
+  @media print {
+    @page {
+      size: A4;
+      margin: 1cm;
+    }
+
+    body {
+      font-size: 12px !important;
+      line-height: 1.4 !important;
+    }
+
+    .no-print {
+      display: none !important;
+    }
+
+    .print-break-before {
+      page-break-before: always;
+    }
+
+    .print-break-after {
+      page-break-after: always;
+    }
+
+    .print-break-inside-avoid {
+      break-inside: avoid;
+    }
+
+    /* Hide scrollbars */
+    * {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+
+    *::-webkit-scrollbar {
+      display: none;
+    }
+
+    /* Ensure text is readable */
+    .text-slate-900 {
+      color: black !important;
+    }
+
+    .text-slate-600 {
+      color: #374151 !important;
+    }
+
+    .text-slate-500 {
+      color: #6b7280 !important;
+    }
+
+    /* Make sure backgrounds print properly */
+    .bg-blue-50 {
+      background-color: #eff6ff !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    .bg-green-50 {
+      background-color: #f0fdf4 !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    .bg-red-50 {
+      background-color: #fef2f2 !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    .bg-amber-50 {
+      background-color: #fffbeb !important;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+  }
+`;
 
 interface ConsolidatedNoveltyReportProps {
   searchId: string;
-  searchData: any; // full search payload or results blob
+  searchData: any;
+}
+
+// --- Reusable Premium Components ---
+
+function SectionCard({ title, children, className = '' }: { title: string; children: React.ReactNode; className?: string }) {
+  return (
+    <section className={`mb-8 break-inside-avoid ${className}`}>
+      <div className="flex items-center mb-4">
+        <div className="h-6 w-1 bg-blue-600 rounded-full mr-3"></div>
+        <h2 className="text-lg font-bold text-slate-900 uppercase tracking-wide">{title}</h2>
+      </div>
+      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="p-6">
+          {children}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MetricBadge({ label, value, subtext, trend }: { label: string; value: string; subtext?: string; trend?: 'up' | 'down' | 'neutral' }) {
+  return (
+    <div className="flex flex-col p-4 bg-slate-50 rounded-lg border border-slate-100">
+      <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1">{label}</span>
+      <div className="flex items-baseline gap-2">
+        <span className="text-2xl font-bold text-slate-900">{value}</span>
+        {trend && (
+          <span className={`text-xs font-medium ${trend === 'up' ? 'text-emerald-600' : trend === 'down' ? 'text-rose-600' : 'text-slate-600'}`}>
+            {trend === 'up' ? 'High' : trend === 'down' ? 'Low' : 'Avg'}
+          </span>
+        )}
+      </div>
+      {subtext && <span className="text-xs text-slate-400 mt-1">{subtext}</span>}
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const s = status.toLowerCase();
+  let classes = 'bg-slate-100 text-slate-600';
+  if (s === 'present' || s === 'p') classes = 'bg-emerald-100 text-emerald-700 border-emerald-200';
+  if (s === 'partial' || s === 'pt') classes = 'bg-amber-100 text-amber-700 border-amber-200';
+  if (s === 'absent' || s === 'a') classes = 'bg-rose-100 text-rose-700 border-rose-200';
+  
+  const label = s === 'p' ? 'Present' : s === 'pt' ? 'Partial' : s === 'a' ? 'Absent' : status;
+
+  return (
+    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${classes}`}>
+      {label}
+    </span>
+  );
 }
 
 export default function ConsolidatedNoveltyReport({ searchId, searchData }: ConsolidatedNoveltyReportProps) {
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [isGeneratingShare, setIsGeneratingShare] = useState(false);
+  const [showShareModal, setShowShareModal] = useState(false);
+
+  // --- Data Parsing ---
   const stage0 = searchData?.stage0Results || searchData?.stage0 || {};
   const stage1 = searchData?.stage1Results || searchData?.stage1 || {};
   const stage35 = searchData?.stage35Results || searchData?.stage35 || {};
   const stage4 = searchData?.stage4Results || searchData?.stage4 || {};
-
+  
   const features: string[] = Array.isArray(stage0?.inventionFeatures) ? stage0.inventionFeatures : [];
   const pqai: any[] = Array.isArray(stage1?.pqaiResults) ? stage1.pqaiResults : [];
-  const aiRel = stage1?.aiRelevance || null;
-
-  const featureUniq: any[] = Array.isArray(stage35?.per_feature_uniqueness)
-    ? stage35.per_feature_uniqueness
-    : (Array.isArray(stage35) ? [] : []);
-  const perPatentCov: any[] = Array.isArray(stage35?.per_patent_coverage)
-    ? stage35.per_patent_coverage
-    : (Array.isArray(stage35) ? [] : []);
+  
+  // Stage 3.5 Data
   const featureMaps: any[] = Array.isArray((stage35 as any)?.feature_map)
     ? (stage35 as any).feature_map
     : (Array.isArray(stage35) ? (stage35 as any) : []);
+    
+  const featureUniq: any[] = Array.isArray(stage35?.per_feature_uniqueness)
+    ? stage35.per_feature_uniqueness
+    : stage4?.per_feature_uniqueness || [];
 
-  const stage4Any: any = stage4 || {};
-  const perPatentRemarks: any[] = Array.isArray(stage4Any?.per_patent_remarks) ? stage4Any.per_patent_remarks : [];
+  // Stage 4 Data
+  const execSummary = stage4?.executive_summary || {};
+  const finalRemarks = stage4?.final_remarks || stage4?.concluding_remarks || {};
+  const riskFactors = stage4?.risk_factors || finalRemarks?.key_risks || [];
 
-  const sanitizedTitle = (searchData?.title || 'Consolidated Novelty Report').toString();
+  // Handle recommendations - could be in structured format or array format
+  let recommendations = [];
+  if (stage4?.recommendations) {
+    // Structured format with filing_strategy and search_expansion
+    const filingStrategy = stage4.recommendations.filing_strategy || [];
+    const searchExpansion = stage4.recommendations.search_expansion || [];
+    recommendations = [...filingStrategy, ...searchExpansion];
+  } else if (finalRemarks?.strategic_recommendations) {
+    // Array format
+    recommendations = Array.isArray(finalRemarks.strategic_recommendations)
+      ? finalRemarks.strategic_recommendations
+      : [];
+  }
+  
+  const sanitizedTitle = (searchData?.title || 'Novelty Assessment Report').toString();
 
-  const canonicalizePn = (pn: any): string => {
-    return String(pn || '')
-      .toUpperCase()
-      .replace(/[^A-Z0-9]/g, '')
-      .replace(/[A-Z]\d*$/, '');
-  };
-
-  const topPqai = useMemo(() => {
-    if (!Array.isArray(pqai)) return [];
-    return pqai.slice(0, 8).map((p) => ({
-      pn: p.pn || p.publicationNumber || p.publication_number || 'Unknown PN',
-      title: p.title || '(untitled)'
-    }));
-  }, [pqai]);
-
-  const pqaiByCanonical = useMemo(() => {
-    const map = new Map<string, any>();
-    if (!Array.isArray(pqai)) return map;
-    for (const r of pqai) {
-      const pnAny = r.publicationNumber || r.publication_number || r.pn || r.id;
-      const canon = canonicalizePn(pnAny);
-      if (canon && !map.has(canon)) {
-        map.set(canon, r);
-      }
-    }
-    return map;
-  }, [pqai]);
-
-  const remarksByCanonical = useMemo(() => {
-    const map = new Map<string, any>();
-    if (!Array.isArray(perPatentRemarks)) return map;
-    for (const r of perPatentRemarks) {
-      const canon = canonicalizePn(r.pn || r.patent_number);
-      if (canon && !map.has(canon)) {
-        map.set(canon, r);
-      }
-    }
-    return map;
-  }, [perPatentRemarks]);
-
-  const featureMappedPatents = useMemo(() => {
-    if (!Array.isArray(featureMaps) || featureMaps.length === 0) return [];
-
-    return featureMaps.map((pm: any) => {
-      const rawPn = pm.pn || pm.publicationNumber || pm.publication_number || '';
-      const canon = canonicalizePn(rawPn);
-      const pq = canon ? pqaiByCanonical.get(canon) : undefined;
-      const rm = canon ? remarksByCanonical.get(canon) : undefined;
-
-      const pnDisplay =
-        pq?.publicationNumber || pq?.publication_number || rawPn || 'Unknown PN';
-
-      const title =
-        pm.title ||
-        pq?.title ||
-        pq?.invention_title ||
-        pnDisplay ||
-        'Untitled Patent';
-
-      let abstract: string =
-        pq?.abstract ||
-        pq?.snippet ||
-        pq?.description ||
-        rm?.abstract ||
-        '';
-
-      abstract = String(abstract || '').trim();
-      const words = abstract.split(/\s+/).filter(Boolean);
-      const abstractSnippet =
-        words.length > 80 ? words.slice(0, 80).join(' ') + '…' : abstract;
-
-      const linkFromPq = pq?.link;
-      const linkFromPm = pm.link;
-      const normalizedPn = String(pnDisplay || '').replace(/\s+/g, '');
-      const link =
-        linkFromPq ||
-        linkFromPm ||
-        (normalizedPn && normalizedPn !== 'Unknown PN'
-          ? `https://patents.google.com/patent/${encodeURIComponent(normalizedPn)}`
-          : undefined);
-
-      return {
-        pn: pnDisplay,
-        title,
-        abstract,
-        abstractSnippet,
-        link,
-        remarks: rm?.remarks || '',
-        decision: rm?.decision
-      };
-    });
-  }, [featureMaps, pqaiByCanonical, remarksByCanonical]);
-
-  const printPortrait = () => window.print();
-
-  const printLandscape = () => {
-    const style = document.createElement('style');
-    style.setAttribute('data-temp-landscape', 'true');
-    style.media = 'print';
-    style.innerHTML = `@page { size: A4 landscape; margin: 12mm; }`;
-    document.head.appendChild(style);
-    window.print();
-    setTimeout(() => {
-      style.remove();
-    }, 1000);
-  };
-
+  // Helper to resolve status for matrix
   const getMatrixStatus = (pm: any, feature: string): 'P' | 'Pt' | 'A' | '-' => {
     const fa = Array.isArray(pm?.feature_analysis) ? pm.feature_analysis : [];
     const cell = fa.find((c: any) => c.feature === feature);
@@ -150,344 +194,509 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
     return '-';
   };
 
+  // Print webpage to PDF using browser's print feature
+  const handleGeneratePDF = () => {
+    window.print();
+  };
+
+  // Handle Share Link Generation
+  const handleGenerateShareLink = async () => {
+    try {
+      setIsGeneratingShare(true);
+      const token = Cookies.get('token') ||
+                   localStorage.getItem('auth_token') ||
+                   localStorage.getItem('token');
+
+      const response = await fetch(`/api/novelty-search/${searchId}/share`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.ok) throw new Error('Failed to generate share link');
+
+      const data = await response.json();
+      if (data.shareUrl) {
+        setShareUrl(data.shareUrl);
+        setShowShareModal(true);
+        // Copy to clipboard automatically
+        navigator.clipboard.writeText(data.shareUrl).catch(() => {
+          // Silently fail if clipboard access is denied
+        });
+      }
+    } catch (err) {
+      console.error('Share link generation error:', err);
+      alert('Failed to generate share link. Please try again.');
+    } finally {
+      setIsGeneratingShare(false);
+    }
+  };
+
+  // Copy share link to clipboard
+  const copyShareLink = async () => {
+    if (shareUrl) {
+      try {
+        await navigator.clipboard.writeText(shareUrl);
+        alert('Share link copied to clipboard!');
+      } catch (err) {
+        alert('Failed to copy to clipboard. Please copy the link manually.');
+      }
+    }
+  };
+
   return (
-    <div className="consolidated-wrapper">
-      {/* Controls (hidden in print) */}
-      <div className="no-print flex items-center justify-end gap-2 mb-4">
-        <button onClick={printPortrait} className="px-3 py-2 bg-slate-700 text-white rounded-md text-sm">Print</button>
-        <button onClick={printLandscape} className="px-3 py-2 bg-slate-700 text-white rounded-md text-sm">Print (Landscape)</button>
+    <>
+      <style dangerouslySetInnerHTML={{ __html: printStyles }} />
+      <div className="min-h-screen bg-slate-50/50 font-sans text-slate-900 print:bg-white print:p-0">
+      {/* Print Controls */}
+      <div className="no-print fixed bottom-6 right-6 z-50 flex gap-3">
+        <button
+          onClick={handleGenerateShareLink}
+          disabled={isGeneratingShare}
+          className="flex items-center gap-2 px-6 py-3 bg-green-600 text-white rounded-full shadow-xl hover:bg-green-700 transition-all font-bold text-sm disabled:opacity-70 disabled:cursor-not-allowed"
+        >
+          {isGeneratingShare ? (
+            <>
+              <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              Generating Link...
+            </>
+          ) : (
+            <>
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+              Share Public Link
+            </>
+          )}
+        </button>
+
+        <button
+          onClick={handleGeneratePDF}
+          className="flex items-center gap-2 px-6 py-3 bg-blue-900 text-white rounded-full shadow-xl hover:bg-blue-800 transition-all font-bold text-sm"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+          Download Official Report
+        </button>
       </div>
 
-      {/* Header */}
-      <section className="report-section">
-        <div className="relative overflow-hidden rounded-xl border bg-gradient-to-r from-teal-600 to-purple-700 text-white">
-          <div className="p-6">
-            <div className="text-sm opacity-90">Consolidated Report</div>
-            <div className="mt-1 text-2xl font-semibold tracking-tight">
-              {sanitizedTitle}
+      <div className="max-w-5xl mx-auto p-8 md:p-12 print:max-w-none print:p-0">
+        
+        {/* --- HEADER --- */}
+        <header className="mb-12 border-b border-slate-200 pb-8">
+          <div className="flex justify-between items-start">
+            <div>
+              <div className="flex items-center gap-3 mb-2">
+                <span className="px-2 py-1 rounded bg-slate-100 text-slate-600 text-[10px] font-bold tracking-wider uppercase border border-slate-200">Confidential</span>
+                <span className="text-xs text-slate-400 uppercase tracking-wide">ID: {searchId.slice(0,8)}</span>
+              </div>
+              <h1 className="text-3xl md:text-4xl font-bold text-slate-900 tracking-tight mb-2">{sanitizedTitle}</h1>
+              <div className="text-sm text-slate-500 flex gap-4">
+                <span>Generated: {new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</span>
+                <span>•</span>
+                <span>Jurisdiction: {stage0?.jurisdiction || 'US'}</span>
+              </div>
             </div>
-            <div className="mt-1 text-xs opacity-90">
-              Search ID: {searchId} · {new Date().toISOString().slice(0, 10)}
+            <div className="text-right hidden md:block">
+              <div className="text-xl font-bold text-slate-900">PatentNest.ai</div>
+              <div className="text-xs text-slate-400">Premium Intelligence</div>
             </div>
           </div>
-          <div className="absolute right-0 top-0 opacity-20 pointer-events-none select-none">
-            <svg width="240" height="120" viewBox="0 0 240 120" fill="none">
-              <circle cx="120" cy="60" r="56" stroke="white" strokeWidth="2" />
-              <circle cx="120" cy="60" r="40" stroke="white" strokeWidth="1" />
-            </svg>
-          </div>
-        </div>
-      </section>
+        </header>
 
-      {/* Stage 0 */}
-      <section className="report-section">
-        <h2 className="section-title">Stage 0 - Invention Normalization</h2>
-        <div className="rounded-lg border bg-white p-4 space-y-3">
-          <div>
-            <div className="text-xs text-gray-500">Search Query</div>
-            <div className="text-sm text-gray-900 whitespace-pre-wrap">{stage0?.searchQuery || '-'}</div>
+        {/* --- EXECUTIVE SUMMARY --- */}
+        <SectionCard title="Executive Summary">
+          <div className="grid md:grid-cols-3 gap-6 mb-6">
+            <MetricBadge 
+              label="Novelty Score" 
+              value={execSummary.novelty_score || stage4.novelty_score || 'N/A'} 
+              trend={(parseFloat(execSummary.novelty_score) > 70) ? 'up' : 'neutral'}
+              subtext="Based on feature uniqueness"
+            />
+            <MetricBadge 
+              label="Patents Analyzed" 
+              value={pqai.length.toString()} 
+              subtext={`${featureMaps.length} mapped in detail`}
+            />
+            <MetricBadge 
+              label="Key Risk Level" 
+              value={riskFactors.length > 2 ? 'High' : 'Moderate'} 
+              trend={riskFactors.length > 2 ? 'down' : 'neutral'}
+              subtext={`${riskFactors.length} risk factors identified`}
+            />
           </div>
-          <div>
-            <div className="text-xs text-gray-500 mb-1">Invention Features</div>
-            {Array.isArray(features) && features.length > 0 ? (
-              <ul className="list-disc list-inside text-sm text-gray-900">
-                {features.map((f, idx) => (<li key={idx}>{f}</li>))}
-              </ul>
-            ) : (
-              <div className="text-xs text-gray-600">No features available.</div>
+          
+          <div className="prose prose-slate prose-sm max-w-none text-slate-700">
+            <p className="lead text-base">{execSummary.summary || 'No executive summary available.'}</p>
+            {execSummary.key_findings && (
+              <div className="mt-4">
+                <h4 className="text-sm font-bold text-slate-900 uppercase mb-2">Key Findings</h4>
+                <ul className="grid md:grid-cols-2 gap-x-8 gap-y-2">
+                  {execSummary.key_findings.map((f: string, i: number) => (
+                    <li key={i} className="flex items-start gap-2">
+                      <span className="mt-1.5 w-1.5 h-1.5 bg-blue-500 rounded-full flex-shrink-0"></span>
+                      <span>{f}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             )}
           </div>
-        </div>
-      </section>
+        </SectionCard>
 
-      {/* Stage 1 */}
-      <section className="report-section">
-        <h2 className="section-title">Stage 1 - Patent Search (Patent Database)</h2>
-        <div className="rounded-lg border bg-white p-4 space-y-3">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Kpi label="Total Results" value={Array.isArray(pqai) ? pqai.length : '-'} />
-            <Kpi
-              label="AI Accepted"
-              value={aiRel?.accepted?.length ?? aiRel?.accepted ?? stage1?.ai_relevance_accepted ?? '-'}
-            />
-            <Kpi
-              label="AI Borderline"
-              value={aiRel?.borderline?.length ?? aiRel?.borderline ?? stage1?.ai_relevance_borderline ?? '-'}
-            />
-            <Kpi label="Jurisdiction" value={stage0?.jurisdiction || stage1?.jurisdiction || '-'} />
+        {/* --- INVENTION SCOPE --- */}
+        <div className="grid md:grid-cols-3 gap-8 mb-8 break-inside-avoid">
+          <div className="md:col-span-2">
+            <SectionCard title="Invention Scope" className="h-full mb-0">
+              <div className="mb-4">
+                <div className="text-xs font-semibold text-slate-500 uppercase mb-1">Search Query</div>
+                <div className="bg-slate-50 p-3 rounded text-xs font-mono text-slate-600 border border-slate-100 whitespace-pre-wrap">
+                  {stage0?.searchQuery || 'N/A'}
+                </div>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-slate-500 uppercase mb-2">Key Technical Features</div>
+                <div className="flex flex-wrap gap-2">
+                  {features.map((f, i) => (
+                    <span key={i} className="px-3 py-1.5 bg-blue-50 text-blue-700 text-xs font-medium rounded-md border border-blue-100">
+                      {f}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </SectionCard>
           </div>
-          <div>
-            <div className="text-xs text-gray-500 mb-1">Top Results</div>
-            {topPqai.length > 0 ? (
-              <ul className="text-sm text-gray-900 space-y-1">
-                {topPqai.map((p, idx) => (
-                  <li key={idx} className="break-inside-avoid">
-                    <span className="font-medium">{p.pn}</span> - {p.title}
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <div className="text-xs text-gray-600">No results.</div>
+
+          <div className="md:col-span-1">
+            <SectionCard title="Prior Art Stats" className="h-full mb-0">
+              <div className="space-y-4">
+                <div>
+                  <div className="text-xs text-slate-400 uppercase">Total Hits</div>
+                  <div className="text-2xl font-bold text-slate-900">{pqai.length}</div>
+                </div>
+                <div className="h-px bg-slate-100"></div>
+                <div>
+                  <div className="text-xs text-slate-400 uppercase">Relevant Citations</div>
+                  <div className="text-2xl font-bold text-slate-900">{featureMaps.length}</div>
+                </div>
+                <div className="h-px bg-slate-100"></div>
+                <div>
+                  <div className="text-xs text-slate-400 uppercase">Top Assignees</div>
+                  <div className="text-sm text-slate-600 mt-1">
+                   {/* Simple extraction of assignees if available, else placeholder */}
+                   Multiple entities
+                  </div>
+                </div>
+              </div>
+            </SectionCard>
+          </div>
+        </div>
+
+        {/* --- STAGE 4 ANALYSIS --- */}
+        <div className="grid md:grid-cols-2 gap-8 mb-8 break-inside-avoid">
+          <SectionCard title="Key Strengths">
+            <div className="space-y-3">
+              {(finalRemarks.key_strengths || []).length > 0 ? (finalRemarks.key_strengths || []).map((s: string, i: number) => (
+                <div key={i} className="flex gap-3">
+                  <div className="mt-1 text-emerald-500 flex-shrink-0">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                  </div>
+                  <p className="text-sm text-slate-700">{s}</p>
+                </div>
+              )) : (
+                <div className="text-slate-500 text-sm italic">No key strengths identified.</div>
+              )}
+            </div>
+          </SectionCard>
+
+          <SectionCard title="Key Risks">
+            <div className="space-y-3">
+              {riskFactors.length > 0 ? riskFactors.map((r: string, i: number) => (
+                <div key={i} className="p-3 bg-rose-50 border border-rose-100 rounded-lg text-sm text-rose-800 flex gap-3">
+                  <svg className="flex-shrink-0 mt-0.5" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+                  <span>{r}</span>
+                </div>
+              )) : (
+                <div className="text-slate-500 text-sm italic">No significant risks identified.</div>
+              )}
+            </div>
+          </SectionCard>
+        </div>
+
+        <SectionCard title="Strategic Recommendations" className="mb-8">
+          <div className="space-y-4">
+            {recommendations.length > 0 ? recommendations.map((r: string, i: number) => (
+              <div key={i} className="flex gap-3">
+                <div className="mt-1 text-emerald-500">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                </div>
+                <p className="text-sm text-slate-700">{r}</p>
+              </div>
+            )) : (
+              <div className="text-slate-500 text-sm italic">No specific recommendations generated.</div>
             )}
           </div>
-          <div className="pt-2 text-[11px] text-gray-600">
-            Detailed patent-by-patent analysis for shortlisted references is shown under Stage 3.5 below.
-          </div>
-        </div>
-      </section>
+        </SectionCard>
 
-      {/* Stage 3.5 */}
-      <section className="report-section">
-        <h2 className="section-title">Stage 3.5 - Feature Mapping & Aggregation</h2>
-        <div className="rounded-lg border bg-white p-4 space-y-4">
-          {/* Shortlisted patents with remarks */}
-          <div>
-            <div className="text-xs text-gray-500 mb-2">Shortlisted Patents (Feature Mapping & Remarks)</div>
-            {Array.isArray(featureMappedPatents) && featureMappedPatents.length > 0 ? (
-              <div className="space-y-3">
-                {featureMappedPatents.map((p, idx) => (
-                  <div key={idx} className="border rounded-lg bg-gray-50 p-3 break-inside-avoid">
-                    <div className="flex flex-col md:flex-row gap-3">
-                      <div className="md:w-5/12">
-                        <div className="text-xs text-gray-500 mb-1">Patent</div>
-                        <div className="text-sm font-semibold text-gray-900 break-words leading-snug">
-                          {p.link ? (
-                            <a
-                              href={p.link}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-indigo-700 hover:underline"
-                            >
-                              {p.title}
-                            </a>
-                          ) : (
-                            p.title
-                          )}
+        {/* --- FEATURE MATRIX --- */}
+        <SectionCard title="Feature Comparison Matrix">
+          {featureMaps.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left">
+                <thead>
+                  <tr className="border-b border-slate-200">
+                    <th className="py-3 px-4 font-semibold text-slate-900 bg-slate-50/50 min-w-[200px]">Patent Reference</th>
+                    {features.map((f, i) => (
+                      <th key={i} className="py-3 px-2 font-semibold text-slate-600 text-[10px] uppercase tracking-wide text-center min-w-[80px] max-w-[120px]">
+                        Feature {i + 1}
+                        <div className="font-normal normal-case truncate text-slate-400 mt-1" title={f}>
+                          {f.length > 15 ? f.slice(0,15)+'...' : f}
                         </div>
-                        <div className="text-xs text-gray-500 mt-0.5">
-                          {p.pn && <>Patent: {p.pn}</>}
-                        </div>
-                        {p.abstractSnippet && (
-                          <div className="mt-2">
-                            <div className="text-[11px] font-medium text-gray-700 mb-1">
-                              Abstract snapshot (PQAI)
-                            </div>
-                            <div className="text-xs text-gray-700 whitespace-pre-wrap bg-white border rounded p-2">
-                              {p.abstractSnippet}
-                            </div>
-                          </div>
-                        )}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {featureMaps.map((pm, idx) => {
+                    const pn = pm.pn || pm.publicationNumber || 'Unknown';
+                    return (
+                      <tr key={idx} className="border-b border-slate-100 hover:bg-slate-50/50 transition-colors">
+                        <td className="py-3 px-4">
+                          <div className="font-medium text-slate-900">{pn}</div>
+                          <div className="text-xs text-slate-500 truncate max-w-[180px]" title={pm.title}>{pm.title}</div>
+                        </td>
+                        {features.map((f, i) => {
+                          const status = getMatrixStatus(pm, f);
+                          return (
+                            <td key={i} className="py-3 px-2 text-center">
+                              <div className="flex justify-center">
+                                <span className={`
+                                  w-6 h-6 flex items-center justify-center rounded text-[10px] font-bold
+                                  ${status === 'P' ? 'bg-emerald-100 text-emerald-700' : 
+                                    status === 'Pt' ? 'bg-amber-100 text-amber-700' : 
+                                    status === 'A' ? 'bg-rose-50 text-rose-300' : 'bg-slate-100 text-slate-400'}
+                                `}>
+                                  {status}
+                                </span>
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div className="mt-4 flex gap-4 text-xs text-slate-500 justify-end">
+                <div className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-emerald-500"></span>Present</div>
+                <div className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-amber-500"></span>Partial</div>
+                <div className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-rose-300"></span>Absent</div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-8 text-slate-500 italic">No feature mapping data available.</div>
+          )}
+        </SectionCard>
+
+        {/* --- FEATURE UNIQUENESS ANALYSIS --- */}
+        <SectionCard title="Feature Novelty Analysis">
+          <div className="space-y-6">
+            {featureUniq && featureUniq.length > 0 ? featureUniq.map((u: any, i: number) => {
+              const val = typeof u.uniqueness === 'string' ? parseFloat(u.uniqueness) : u.uniqueness;
+              const pct = val < 1 ? val * 100 : val; // Handle 0.8 vs 80
+              const color = pct > 75 ? 'bg-emerald-500' : pct > 40 ? 'bg-amber-500' : 'bg-rose-500';
+              
+              return (
+                <div key={i} className="break-inside-avoid">
+                  <div className="flex justify-between items-end mb-1">
+                    <div className="font-medium text-sm text-slate-800">{u.feature || u.name}</div>
+                    <div className="text-xs font-bold text-slate-600">{pct.toFixed(1)}% Unique</div>
+                  </div>
+                  <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                    <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }}></div>
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">{u.notes || u.rationale}</div>
+                </div>
+              );
+            }) : (
+               <div className="text-center py-4 text-slate-500">No uniqueness data.</div>
+            )}
+          </div>
+        </SectionCard>
+
+        {/* --- DETAILED EVIDENCE (Prior Art) --- */}
+        <section className="mb-8">
+          <div className="flex items-center mb-6">
+            <div className="h-6 w-1 bg-blue-600 rounded-full mr-3"></div>
+            <h2 className="text-lg font-bold text-slate-900 uppercase tracking-wide">Detailed Prior Art Evidence</h2>
+          </div>
+          
+          <div className="space-y-6">
+            {featureMaps.map((pm, idx) => {
+              const pn = pm.pn || pm.publicationNumber || 'Unknown';
+              const cpn = pn.replace(/[^A-Z0-9]/g, '');
+              // Find matching metadata from stage1/stage4 remarks
+              const meta = pqai.find((p: any) => (p.publicationNumber||p.pn||'').replace(/[^A-Z0-9]/g, '').includes(cpn)) || {};
+              const remark = (stage4?.per_patent_remarks || []).find((r: any) => (r.pn||'').replace(/[^A-Z0-9]/g, '').includes(cpn));
+              
+              return (
+                <div key={idx} className="bg-white rounded-xl border border-slate-200 shadow-sm p-6 break-inside-avoid">
+                  <div className="flex flex-col md:flex-row gap-6">
+                    {/* Left: Meta */}
+                    <div className="md:w-1/3 space-y-3">
+                      <div>
+                        <div className="text-lg font-bold text-slate-900 leading-tight">{pm.title || meta.title}</div>
+                        <div className="text-sm font-mono text-blue-600 mt-1">{pn}</div>
                       </div>
-                      <div className="md:w-7/12">
-                        <div className="text-xs text-gray-500 mb-1">PatentNest Analysis Remarks</div>
-                        {p.remarks ? (
-                          <div className="text-xs text-gray-800 whitespace-pre-wrap bg-white border rounded p-2">
-                            {p.remarks}
-                          </div>
-                        ) : (
-                          <div className="text-[11px] text-gray-500 italic">
-                            No Stage 3.5 remarks were generated for this patent.
-                          </div>
-                        )}
-                        {p.link && (
-                          <div className="mt-2 text-[11px]">
-                            <a
-                              href={p.link}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-indigo-600 hover:underline"
-                            >
-                              Open in Google Patents
-                            </a>
-                          </div>
-                        )}
+                      
+                      <div className="flex flex-wrap gap-2">
+                        <StatusBadge status={`Relevance: ${Math.round((meta.relevanceScore || meta.score || 0) * 100)}%`} />
+                        <span className="text-xs text-slate-500 border border-slate-100 px-2 py-0.5 rounded">
+                          {meta.publicationDate || meta.date || 'Date Unknown'}
+                        </span>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 rounded text-xs text-slate-600 leading-relaxed italic border border-slate-100">
+                        <span className="font-semibold not-italic text-slate-400 block mb-1 text-[10px] uppercase">Abstract Snippet</span>
+                        {meta.abstract?.slice(0, 200) || pm.abstractSnippet || 'No abstract available.'}...
+                      </div>
+                      
+                      <a 
+                        href={pm.link || meta.link || `https://patents.google.com/patent/${pn}`} 
+                        target="_blank" 
+                        rel="noreferrer"
+                        className="inline-flex items-center text-xs font-medium text-blue-600 hover:underline"
+                      >
+                        View Source Document →
+                      </a>
+                    </div>
+
+                    {/* Right: Analysis */}
+                    <div className="md:w-2/3 border-l border-slate-100 pl-0 md:pl-6 pt-4 md:pt-0">
+                      <div className="mb-4">
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">AI Analysis</h4>
+                        <div className="prose prose-sm text-slate-700 leading-relaxed">
+                          {remark?.remarks || pm.remarks || 'No detailed remarks available for this reference.'}
+                        </div>
+                      </div>
+
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Feature Map</h4>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                          {features.slice(0, 6).map((f, i) => {
+                            const s = getMatrixStatus(pm, f);
+                            if (s === '-') return null;
+                            return (
+                              <div key={i} className="flex items-center gap-2 text-xs">
+                                <span className={`w-2 h-2 rounded-full flex-shrink-0 ${s==='P'?'bg-emerald-500':s==='Pt'?'bg-amber-500':'bg-rose-400'}`}></span>
+                                <span className="truncate text-slate-600" title={f}>{f}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     </div>
                   </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-xs text-gray-600">
-                No patents were selected for Stage 3.5 feature mapping.
-              </div>
-            )}
+                </div>
+              );
+            })}
           </div>
+        </section>
 
-          {/* Feature Uniqueness Table */}
-          <div>
-            <div className="text-xs text-gray-500 mb-2">Per-feature Uniqueness</div>
-            {Array.isArray(featureUniq) && featureUniq.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm border-collapse">
-                  <thead>
-                    <tr className="text-left border-b">
-                      <th className="py-2 pr-3">Feature</th>
-                      <th className="py-2 pr-3">Uniqueness</th>
-                      <th className="py-2">Notes</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {featureUniq.map((u: any, idx: number) => (
-                      <tr key={idx} className="align-top border-b break-inside-avoid">
-                        <td className="py-2 pr-3 min-w-[12rem]">{u.feature || u.name || `Feature ${idx + 1}`}</td>
-                        <td className="py-2 pr-3">
-                          {typeof u.uniqueness === 'number'
-                            ? (Math.round(u.uniqueness * 1000) / 10).toFixed(1) + '%'
-                            : (u.uniqueness || '-')}
-                        </td>
-                        <td className="py-2 whitespace-pre-wrap">{u.notes || u.rationale || '-'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+        {/* --- FOOTER --- */}
+        <footer className="mt-12 pt-8 border-t border-slate-200 text-center text-xs text-slate-400">
+          <p className="mb-2">Generated by PatentNest.ai • AI-Assisted Analysis</p>
+          <p>Confidential • For Informational Purposes Only • Consult a Qualified Attorney</p>
+        </footer>
+
+      </div>
+
+      {/* Share Link Modal */}
+      {showShareModal && shareUrl && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+                    <svg className="w-6 h-6 text-green-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <h3 className="text-xl font-semibold text-gray-900">Share Link Generated</h3>
+                </div>
+                <button
+                  onClick={() => setShowShareModal(false)}
+                  className="text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <svg className="w-6 h-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
               </div>
-            ) : (
-              <div className="text-xs text-gray-600">No feature aggregation available.</div>
-            )}
-          </div>
 
-          {/* Per-Patent Coverage Summary */}
-          <div>
-            <div className="text-xs text-gray-500 mb-2">Per-patent Coverage</div>
-            {Array.isArray(perPatentCov) && perPatentCov.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm border-collapse">
-                  <thead>
-                    <tr className="text-left border-b">
-                      <th className="py-2 pr-3">Patent</th>
-                      <th className="py-2 pr-3">Present</th>
-                      <th className="py-2 pr-3">Partial</th>
-                      <th className="py-2">Absent</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {perPatentCov.map((p: any, idx: number) => (
-                      <tr key={idx} className="align-top border-b break-inside-avoid">
-                        <td className="py-2 pr-3 min-w-[10rem]">
-                          {p.pn || p.publicationNumber || p.patent_number || 'Unknown PN'}
-                        </td>
-                        <td className="py-2 pr-3">{p.present_count ?? '-'}</td>
-                        <td className="py-2 pr-3">{p.partial_count ?? '-'}</td>
-                        <td className="py-2">{p.absent_count ?? '-'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="text-xs text-gray-600">No coverage data available.</div>
-            )}
-          </div>
+              <div className="space-y-4">
+                <p className="text-gray-600">
+                  Your report is now publicly accessible. Share this link with others to view the report without requiring them to log in.
+                </p>
 
-          {/* Patent-wise Feature Comparison Matrix */}
-          <div>
-            <div className="text-xs text-gray-500 mb-2">Patent-wise Feature Comparison Matrix</div>
-            {Array.isArray(featureMaps) && featureMaps.length > 0 && Array.isArray(features) && features.length > 0 ? (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs border-collapse">
-                  <thead>
-                    <tr className="bg-gray-100">
-                      <th className="border p-2 text-left">Patent</th>
-                      {features.map((f: string, idx: number) => {
-                        const label = f.length > 18 ? f.substring(0, 16) + '..' : f;
-                        return (
-                          <th key={idx} className="border p-1 text-center font-semibold text-[11px]">
-                            {label}
-                          </th>
-                        );
-                      })}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {featureMaps.map((pm: any, rIdx: number) => {
-                      const pn = String(pm.pn || pm.publicationNumber || pm.publication_number || 'PN');
-                      const pnLabel = pn.length > 16 ? pn.substring(0, 14) + '..' : pn;
-                      return (
-                        <tr key={rIdx} className={rIdx % 2 === 0 ? 'bg-gray-50' : ''}>
-                          <td className="border p-2 align-top text-[11px] font-medium">{pnLabel}</td>
-                          {features.map((f: string, cIdx: number) => {
-                            const status = getMatrixStatus(pm, f);
-                            const bg =
-                              status === 'P'
-                                ? 'bg-green-100 text-green-700 border-green-300'
-                                : status === 'Pt'
-                                ? 'bg-yellow-100 text-yellow-800 border-yellow-300'
-                                : status === 'A'
-                                ? 'bg-red-100 text-red-700 border-red-300'
-                                : 'bg-gray-100 text-gray-600 border-gray-300';
-                            return (
-                              <td key={cIdx} className={`border p-1 text-center font-semibold ${bg}`}>
-                                {status}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-                <div className="mt-2 flex gap-4 text-[11px] text-gray-700">
-                  <span><span className="inline-block w-3 h-3 mr-1 align-middle bg-green-500" />P = Present</span>
-                  <span><span className="inline-block w-3 h-3 mr-1 align-middle bg-yellow-400" />Pt = Partial</span>
-                  <span><span className="inline-block w-3 h-3 mr-1 align-middle bg-red-500" />A = Absent</span>
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium text-gray-700">Share URL</span>
+                    <button
+                      onClick={copyShareLink}
+                      className="flex items-center gap-2 px-3 py-1.5 bg-blue-600 text-white text-xs rounded-md hover:bg-blue-700 transition-colors"
+                    >
+                      <svg className="w-3 h-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                      Copy
+                    </button>
+                  </div>
+                  <div className="bg-white border border-gray-300 rounded p-3 font-mono text-sm text-gray-800 break-all">
+                    {shareUrl}
+                  </div>
+                </div>
+
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+                  <div className="flex items-start gap-3">
+                    <svg className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                    </svg>
+                    <div>
+                      <h4 className="text-sm font-medium text-amber-900 mb-1">Important Security Notice</h4>
+                      <p className="text-sm text-amber-700">
+                        This link will expire in 1 week for security reasons. After expiration, you'll need to generate a new share link.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-end gap-3 pt-4 border-t border-gray-200">
+                  <button
+                    onClick={() => setShowShareModal(false)}
+                    className="px-4 py-2 text-gray-600 hover:text-gray-800 transition-colors"
+                  >
+                    Close
+                  </button>
+                  <button
+                    onClick={() => {
+                      copyShareLink();
+                      setShowShareModal(false);
+                    }}
+                    className="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 transition-colors"
+                  >
+                    Copy & Close
+                  </button>
                 </div>
               </div>
-            ) : (
-              <div className="text-xs text-gray-600">Feature mapping matrix not available.</div>
-            )}
+            </div>
           </div>
         </div>
-      </section>
-
-      {/* Stage 4 */}
-      <section className="report-section">
-        <h2 className="section-title">Stage 4 - Final Assessment</h2>
-        <Stage4ResultsDisplay stage4Results={stage4} searchId={searchId} hidePerPatentRemarks />
-      </section>
-
-      {/* Print-specific styles */}
-      <style jsx global>{`
-        @media print {
-          .no-print { display: none !important; }
-          body, html { background: #fff; }
-          .consolidated-wrapper { padding: 0 !important; }
-          .report-section { page-break-inside: auto; break-inside: auto; }
-          .report-section .rounded-xl,
-          .report-section .rounded-lg { box-shadow: none !important; }
-          .report-section .max-h-[28rem] { max-height: none !important; }
-          .report-section .max-h-96 { max-height: none !important; }
-          .report-section .max-h-[40rem] { max-height: none !important; }
-          .report-section .overflow-auto { overflow: visible !important; }
-          .report-section .overflow-y-auto { overflow: visible !important; }
-
-          .report-section .space-y-2 > div,
-          .report-section .space-y-3 > div,
-          .report-section li,
-          .report-section .py-4.px-3.border { break-inside: avoid; page-break-inside: avoid; }
-          .report-section table thead { display: table-header-group; }
-          .report-section table tfoot { display: table-footer-group; }
-          table { page-break-inside: auto; }
-          tr { page-break-inside: avoid; break-inside: avoid; }
-          h1, h2, h3 { break-after: avoid; }
-          @page { size: A4 portrait; margin: 12mm; }
-        }
-        .report-section { margin-bottom: 1rem; }
-        .section-title {
-          font-size: 1.125rem;
-          font-weight: 600;
-          color: rgb(17 24 39);
-          margin: 0 0 0.5rem 0;
-        }
-      `}</style>
+      )}
     </div>
-  );
-}
-
-function Kpi({ label, value }: { label: string; value: any }) {
-  return (
-    <div className="rounded-md border bg-white p-3">
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className="text-lg font-semibold text-gray-900">{String(value ?? '?')}</div>
-    </div>
+    </>
   );
 }

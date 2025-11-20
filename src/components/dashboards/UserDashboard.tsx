@@ -9,6 +9,8 @@ import AISpotlight from './AISpotlight'
 import ActivityFeed from './ActivityFeed'
 import KishoWidget from './KishoWidget'
 import LoadingBird from '../ui/loading-bird'
+import { motion } from 'framer-motion'
+import { Sparkles, Plus, Search, Lightbulb, FileText } from 'lucide-react'
 
 interface DashboardStats {
   draftsCount: number
@@ -187,118 +189,147 @@ export default function UserDashboard() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-[#FAFAFB] to-[#F2F4F7] flex items-center justify-center">
-        <LoadingBird message="Preparing your workspace..." useKishoFallback={true} />
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <LoadingBird message="Initializing workspace..." useKishoFallback={true} />
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#FAFAFB] to-[#F2F4F7] relative overflow-hidden">
-      {/* Subtle ambient light elements */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-1/4 left-1/4 w-3 h-3 bg-[#D9E2FF]/20 rounded-full animate-pulse"></div>
-        <div className="absolute top-3/4 right-1/4 w-2 h-2 bg-[#E9EDF4]/30 rounded-full animate-pulse" style={{ animationDelay: '1s' }}></div>
-        <div className="absolute top-1/2 left-1/2 w-2.5 h-2.5 bg-[#F2F4F7]/25 rounded-full animate-pulse" style={{ animationDelay: '2s' }}></div>
-      </div>
+    <div className="min-h-screen bg-slate-50 relative overflow-hidden">
+      {/* Subtle Background Grid */}
+      <div className="absolute inset-0 pointer-events-none opacity-30" style={{ backgroundImage: 'radial-gradient(#cbd5e1 1px, transparent 1px)', backgroundSize: '30px 30px' }}></div>
 
       <main className="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8 relative z-10">
-        {/* Hero Greeting Section */}
-        <div className="mb-8 relative">
-          {/* Soft animated light gradient */}
-          <div className="absolute inset-0 bg-gradient-to-r from-[#FAFAFB] via-[#F2F4F7] to-[#E9EDF4] rounded-2xl opacity-50 animate-pulse" style={{ animationDuration: '15s' }}></div>
+        
+        {/* Header Section */}
+        <div className="mb-10">
+           <motion.div 
+             initial={{ opacity: 0, y: -10 }}
+             animate={{ opacity: 1, y: 0 }}
+             transition={{ duration: 0.5 }}
+             className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8"
+           >
+             <div>
+               <div className="flex items-center gap-2 text-sm font-mono text-ai-blue-600 mb-1">
+                 <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></span>
+                 SYSTEM ONLINE
+               </div>
+               <h1 className="text-3xl font-bold text-ai-graphite-900 tracking-tight">
+                 {greeting}
+               </h1>
+               <p className="text-ai-graphite-500">
+                 Ready to accelerate your invention cycle, {user?.email?.split('@')[0]}.
+               </p>
+             </div>
 
-          <div className="relative bg-white border border-[#E5E7EB] rounded-2xl p-8 shadow-sm">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex-1 relative">
-                {/* Radial gradient glow behind Kisho avatar */}
-                <div
-                  className="absolute -top-4 -left-4 w-32 h-32 opacity-25 pointer-events-none"
-                  style={{
-                    background: 'radial-gradient(circle at 30% 40%, rgba(166,190,255,0.25), transparent 70%)'
-                  }}
-                ></div>
+             <div className="flex items-center gap-4 bg-white px-4 py-2 rounded-lg border border-slate-200 shadow-sm">
+               <div className="text-right">
+                 <div className="text-xs text-slate-400 font-mono uppercase tracking-wider">Local Time</div>
+                 <div className="text-sm font-semibold text-ai-graphite-800 font-mono">{currentTime}</div>
+               </div>
+             </div>
+           </motion.div>
 
-                <h2 className="text-3xl font-bold text-[#1E293B] mb-2 leading-tight" style={{ fontFamily: 'Playfair Display, serif' }}>
-                  {greeting}
-                </h2>
-                <p className="text-[#64748B] text-lg" style={{ fontFamily: 'Inter, sans-serif', fontWeight: 500 }}>
-                  Welcome back, {user?.email?.split('@')[0]}
-                </p>
-              </div>
-              <div className="text-right text-[#64748B]">
-                <div className="text-sm" style={{ fontFamily: 'Inter, sans-serif', fontWeight: 300 }}>{new Date().toLocaleDateString('en-US', {
-                  weekday: 'long',
-                  year: 'numeric',
-                  month: 'long',
-                  day: 'numeric'
-                })}</div>
-                <div className="text-lg font-mono" style={{ fontFamily: 'Inter, sans-serif', fontWeight: 300 }}>{currentTime}</div>
-              </div>
-            </div>
-
-            {/* Quick Action Buttons */}
-            <div className="flex flex-wrap gap-4">
-              <button
-                onClick={() => router.push('/projects')}
-                className="px-6 py-3 bg-[#10B981] text-white rounded-xl font-medium hover:bg-[#059669] transition-all duration-200 shadow-sm hover:shadow-md transform hover:-translate-y-0.5"
-                style={{ fontFamily: 'Inter, sans-serif', fontWeight: 500 }}
-              >
-                📁 My Projects
-              </button>
-              <button
+           {/* Quick Actions Bar */}
+           <motion.div 
+             initial={{ opacity: 0, y: 10 }}
+             animate={{ opacity: 1, y: 0 }}
+             transition={{ delay: 0.1, duration: 0.5 }}
+             className="grid grid-cols-2 md:grid-cols-4 gap-4"
+           >
+             <button
                 onClick={() => router.push('/patents/draft/new')}
-                className="px-6 py-3 bg-[#4C5EFF] text-white rounded-xl font-medium hover:bg-[#3B4ACC] transition-all duration-200 shadow-sm hover:shadow-md transform hover:-translate-y-0.5"
-                style={{ fontFamily: 'Inter, sans-serif', fontWeight: 500 }}
+                className="group flex flex-col items-start p-4 bg-white border border-slate-200 rounded-xl hover:border-ai-blue-500/50 hover:shadow-md hover:shadow-ai-blue-500/10 transition-all duration-200"
               >
-                ✍️ Draft Patent
+                <div className="p-2 bg-ai-blue-50 rounded-lg text-ai-blue-600 mb-3 group-hover:bg-ai-blue-600 group-hover:text-white transition-colors">
+                  <Plus className="w-5 h-5" />
+                </div>
+                <span className="font-semibold text-slate-900">New Draft</span>
+                <span className="text-xs text-slate-500 mt-1">Start a fresh application</span>
               </button>
+
               <button
                 onClick={() => router.push('/novelty-search')}
-                className="px-6 py-3 bg-[#7A5AF8] text-white rounded-xl font-medium hover:bg-[#6B4AD6] transition-all duration-200 shadow-sm hover:shadow-md transform hover:-translate-y-0.5"
-                style={{ fontFamily: 'Inter, sans-serif', fontWeight: 500 }}
+                className="group flex flex-col items-start p-4 bg-white border border-slate-200 rounded-xl hover:border-purple-500/50 hover:shadow-md hover:shadow-purple-500/10 transition-all duration-200"
               >
-                🔍 Novelty Search
+                <div className="p-2 bg-purple-50 rounded-lg text-purple-600 mb-3 group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                  <Search className="w-5 h-5" />
+                </div>
+                <span className="font-semibold text-slate-900">Novelty Search</span>
+                <span className="text-xs text-slate-500 mt-1">Check prior art</span>
               </button>
+
               <button
                 onClick={() => router.push('/idea-bank')}
-                className="px-6 py-3 bg-[#CBB67C] text-[#334155] rounded-xl font-medium hover:bg-[#B8A36A] transition-all duration-200 shadow-sm hover:shadow-md transform hover:-translate-y-0.5"
-                style={{ fontFamily: 'Inter, sans-serif', fontWeight: 500 }}
+                className="group flex flex-col items-start p-4 bg-white border border-slate-200 rounded-xl hover:border-amber-500/50 hover:shadow-md hover:shadow-amber-500/10 transition-all duration-200"
               >
-                💡 Idea Bank
+                <div className="p-2 bg-amber-50 rounded-lg text-amber-600 mb-3 group-hover:bg-amber-600 group-hover:text-white transition-colors">
+                  <Lightbulb className="w-5 h-5" />
+                </div>
+                <span className="font-semibold text-slate-900">Idea Bank</span>
+                <span className="text-xs text-slate-500 mt-1">Capture concepts</span>
               </button>
+
+              <button
+                onClick={() => router.push('/projects')}
+                className="group flex flex-col items-start p-4 bg-white border border-slate-200 rounded-xl hover:border-emerald-500/50 hover:shadow-md hover:shadow-emerald-500/10 transition-all duration-200"
+              >
+                <div className="p-2 bg-emerald-50 rounded-lg text-emerald-600 mb-3 group-hover:bg-emerald-600 group-hover:text-white transition-colors">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <span className="font-semibold text-slate-900">All Projects</span>
+                <span className="text-xs text-slate-500 mt-1">View portfolio</span>
+              </button>
+           </motion.div>
+        </div>
+
+        {/* Main Content Grid */}
+        <div className="space-y-8">
+          
+          {/* Stats Overview */}
+          <section>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-ai-graphite-800 flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-ai-blue-500" />
+                System Status
+              </h2>
             </div>
+            <InsightGrid onCardHover={handleCardHover} />
+          </section>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+             {/* Left Column: Activity */}
+             <div className="lg:col-span-2">
+               <h2 className="text-lg font-semibold text-ai-graphite-800 mb-4">Recent Transmissions</h2>
+               <ActivityFeed />
+             </div>
+
+             {/* Right Column: AI Spotlight */}
+             <div className="lg:col-span-1">
+               <h2 className="text-lg font-semibold text-ai-graphite-800 mb-4">Intelligence Feed</h2>
+               <AISpotlight
+                draftsCount={stats.draftsCount}
+                latestNoveltySearch={stats.latestNoveltySearch}
+                userReservations={stats.ideaReservations}
+              />
+             </div>
           </div>
         </div>
 
-        {/* Insight Grid */}
-        <InsightGrid onCardHover={handleCardHover} />
-
-        {/* AI Spotlight */}
-        <AISpotlight
-          draftsCount={stats.draftsCount}
-          latestNoveltySearch={stats.latestNoveltySearch}
-          userReservations={stats.ideaReservations}
-        />
-
-        {/* Activity Feed */}
-        <ActivityFeed />
-
-        {/* Hover Tooltip */}
+        {/* Hover Tooltip (retained functionality) */}
         {hoverTooltip && (
-          <div className="fixed top-20 right-6 bg-gray-900 text-white px-4 py-2 rounded-lg shadow-xl z-50 max-w-xs">
+          <div className="fixed top-20 right-6 bg-ai-graphite-900 text-white px-4 py-2 rounded-lg shadow-xl z-50 max-w-xs text-sm border border-ai-graphite-700">
             {hoverTooltip}
           </div>
         )}
 
         {/* Idle Message */}
         {showIdleMessage && (
-          <div className="fixed top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 bg-cyan-900/90 backdrop-blur-md border border-cyan-400/30 rounded-xl p-6 shadow-2xl z-50 max-w-md animate-fade-in">
+          <div className="fixed bottom-8 left-1/2 transform -translate-x-1/2 bg-ai-graphite-900/90 backdrop-blur-md border border-ai-blue-500/30 rounded-full px-6 py-3 shadow-2xl z-50 max-w-md animate-fade-in">
             <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 bg-cyan-500 rounded-full flex items-center justify-center">
-                💭
-              </div>
-              <p className="text-cyan-100 text-sm leading-relaxed">
+              <div className="w-2 h-2 bg-ai-blue-500 rounded-full animate-pulse" />
+              <p className="text-white text-sm leading-none">
                 {idleMessage}
               </p>
             </div>

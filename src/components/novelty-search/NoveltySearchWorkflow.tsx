@@ -61,6 +61,7 @@ interface NoveltySearchWorkflowProps {
   patentId?: string;
   projectId?: string;
   onComplete?: (searchId: string) => void;
+  initialSearchId?: string;
 }
 
 interface SearchState {
@@ -82,7 +83,12 @@ const STATUS_COLORS = {
   [NoveltySearchStatus.FAILED]: 'bg-red-500'
 } as const;
 
-export default function NoveltySearchWorkflow({ patentId, projectId: initialProjectId, onComplete }: NoveltySearchWorkflowProps) {
+export default function NoveltySearchWorkflow({
+  patentId,
+  projectId: initialProjectId,
+  onComplete,
+  initialSearchId
+}: NoveltySearchWorkflowProps) {
   const [formData, setFormData] = useState({
     title: '',
     inventionDescription: '',
@@ -111,6 +117,14 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
   const [completedStages, setCompletedStages] = useState<string[]>([]);
   // Stage view tabs: 0, 1, 1.5, 3.5, 4
   const STAGE_TABS = ['0','1','1.5','3.5','4'] as const;
+  type StageTab = (typeof STAGE_TABS)[number];
+  const STAGE_TAB_LABELS: Record<StageTab, string> = {
+    '0': 'Idea Setup',
+    '1': 'Patent Search',
+    '1.5': 'AI Relevance',
+    '3.5': 'Feature Analysis',
+    '4': 'Final Report'
+  };
   const [selectedStageTab, setSelectedStageTab] = useState<string>('0');
 
   // selectedProject is derived after state initializations (memoized)
@@ -180,6 +194,10 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
   const [editingFeatureIndex, setEditingFeatureIndex] = useState<number | null>(null);
   const [newFeatureText, setNewFeatureText] = useState('');
 
+  // Auto progression and Stage 0 approval
+  const [autoMode, setAutoMode] = useState(false);
+  const [stage0Approved, setStage0Approved] = useState(false);
+
 
   const stage35Messages = [
     'Comparing invention claims with patent claimsÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦',
@@ -195,6 +213,83 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
   // Derive the selected project object for display (memoized)
   const selectedProject = useMemo(() => projects.find(p => p.id === selectedProjectId), [projects, selectedProjectId]);
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
+
+  // If an existing searchId is provided (view mode from history), preload its status/results
+  useEffect(() => {
+    if (!initialSearchId) return;
+
+    const authToken = localStorage.getItem('auth_token');
+    if (!authToken) {
+      setSearchState(prev => ({
+        ...prev,
+        error: 'Authentication token missing. Please log in again.'
+      }));
+      return;
+    }
+
+    const loadExistingSearch = async () => {
+      try {
+        setSearchState(prev => ({
+          ...prev,
+          searchId: initialSearchId,
+          isLoading: true,
+          error: null
+        }));
+
+        const response = await fetch(`/api/novelty-search/${initialSearchId}`, {
+          headers: {
+            'Authorization': `Bearer ${authToken}`
+          },
+          cache: 'no-store'
+        });
+
+        const data = await response.json();
+
+        if (response.ok && data.search) {
+          const search = data.search;
+
+          setSearchState(prev => ({
+            ...prev,
+            searchId: initialSearchId,
+            status: search.status,
+            currentStage: search.currentStage,
+            results: search.results,
+            isLoading: false
+          }));
+
+          const completed: string[] = [];
+          if (search.stage0CompletedAt) completed.push('stage0');
+          if (search.stage1CompletedAt) completed.push('stage1');
+          if (search.stage35CompletedAt) completed.push('stage3_5');
+          if (search.stage4CompletedAt) completed.push('stage4');
+
+          setCompletedStages(completed);
+          setStageProgress(prev => {
+            const next = { ...prev };
+            completed.forEach(stage => {
+              (next as any)[stage] = 100;
+            });
+            return next;
+          });
+        } else {
+          setSearchState(prev => ({
+            ...prev,
+            error: data.error || 'Failed to load search status',
+            isLoading: false
+          }));
+        }
+      } catch (error) {
+        console.error('[Init] Failed to load existing novelty search:', error);
+        setSearchState(prev => ({
+          ...prev,
+          error: error instanceof Error ? error.message : 'Failed to load search status',
+          isLoading: false
+        }));
+      }
+    };
+
+    loadExistingSearch();
+  }, [initialSearchId]);
 
 
   // Helper function to get current stage display info
@@ -462,6 +557,9 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
       setStageProgress(prev => ({ ...prev, [stageKey]: 100 }));
 
       // Refresh full aggregated results so navigation can use all stages' data
+      let effectiveStatus = data.status;
+      let effectiveCurrentStage = data.currentStage;
+      let effectiveResults = data.results;
       try {
         const fullRes = await fetch(`/api/novelty-search/${searchState.searchId}`, {
           headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
@@ -469,37 +567,49 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
         });
         const fullJson = await fullRes.json();
         if (fullRes.ok && fullJson?.success !== false && fullJson?.search) {
+          effectiveStatus = fullJson.search.status;
+          effectiveCurrentStage = fullJson.search.currentStage;
+          effectiveResults = fullJson.search.results;
           setSearchState(prev => ({
             ...prev,
-            status: fullJson.search.status,
-            currentStage: fullJson.search.currentStage,
-            results: fullJson.search.results,
+            status: effectiveStatus,
+            currentStage: effectiveCurrentStage,
+            results: effectiveResults,
             isLoading: false
           }));
         } else {
           // Fallback to stage response payload
           setSearchState(prev => ({
             ...prev,
-            status: data.status,
-            currentStage: data.currentStage,
-            results: data.results,
+            status: effectiveStatus,
+            currentStage: effectiveCurrentStage,
+            results: effectiveResults,
             isLoading: false
           }));
         }
       } catch {
         setSearchState(prev => ({
           ...prev,
-          status: data.status,
-          currentStage: data.currentStage,
-          results: data.results,
+          status: effectiveStatus,
+          currentStage: effectiveCurrentStage,
+          results: effectiveResults,
           isLoading: false
         }));
       }
 
-      console.log(`[Execution] Stage ${stageNumber} complete. New state:`, { status: data.status, currentStage: data.currentStage });
+      console.log(`[Execution] Stage ${stageNumber} complete. New state:`, { status: effectiveStatus, currentStage: effectiveCurrentStage });
 
-      if (data.status === NoveltySearchStatus.COMPLETED && onComplete) {
+      if (effectiveStatus === NoveltySearchStatus.COMPLETED && onComplete) {
         onComplete(data.searchId);
+      }
+
+      // Optional automatic progression through later stages (after Stage 0)
+      if (autoMode) {
+        const next = getStageNumberForStatus(effectiveStatus);
+        if (next) {
+          // Only auto-run from Stage 1 onward; Stage 0 always requires manual confirmation
+          await executeStage(next);
+        }
       }
 
     } catch (error) {
@@ -663,6 +773,9 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
           inventionFeatures: editedFeatures
         }
       }));
+
+      // Mark Stage 0 as user-approved after explicit save
+      setStage0Approved(true);
 
       setIsEditingStage0(false);
     } catch (error) {
@@ -963,29 +1076,48 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
   const { prev: prevStage, next: nextStage } = getPrevNextStages();
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center py-6">
-            <div className="flex items-center space-x-4">
-              <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-teal-600 rounded-xl flex items-center justify-center">
-                <Search className="h-6 w-6 text-white" />
+    <div className="bg-gray-50">
+      {/* Compact Status Card */}
+      <div className="bg-white shadow rounded-lg overflow-hidden mb-4 mx-4 sm:mx-0 mt-4 sm:mt-0">
+        <div className="px-4 py-3 sm:px-6">
+          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
+            <div className="flex items-center space-x-3">
+              <div className="w-8 h-8 bg-gradient-to-br from-purple-500 to-teal-600 rounded-lg flex items-center justify-center shadow-sm">
+                <Search className="h-4 w-4 text-white" />
               </div>
               <div>
-                <h1 className="text-2xl font-bold text-gray-900">AI Novelty Search</h1>
-                <p className="text-sm text-gray-600">Intelligent patent novelty assessment</p>
+                <h2 className="text-base font-bold text-gray-900 leading-none">AI Novelty Search</h2>
+                <p className="text-[10px] text-gray-500 mt-1">Intelligent patent novelty assessment</p>
               </div>
             </div>
-            <div className="flex items-center space-x-4">
-              <div className="text-right">
-                <div className="text-sm text-gray-500">Stage: {currentStageInfo.label}</div>
-                <div className="text-xs text-gray-400">Progress: {currentStageInfo.progress}%</div>
+
+            <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto">
+              <div className="text-right hidden sm:block">
+                <div className="text-xs font-medium text-gray-700">{currentStageInfo.label}</div>
+              </div>
+
+              {/* Auto mode toggle */}
+              <div className="flex items-center space-x-2 border-l pl-4 border-gray-200">
+                <span className="text-[10px] font-medium text-gray-500 uppercase tracking-wider">Auto</span>
+                <button
+                  type="button"
+                  onClick={() => setAutoMode(prev => !prev)}
+                  className={`relative inline-flex h-4 w-7 rounded-full border transition-colors duration-150 ${
+                    autoMode ? 'bg-purple-600 border-purple-600' : 'bg-gray-200 border-gray-300'
+                  }`}
+                  aria-pressed={autoMode}
+                >
+                  <span
+                    className={`inline-block h-3 w-3 rounded-full bg-white shadow transform transition-transform duration-150 ${
+                      autoMode ? 'translate-x-3' : 'translate-x-0'
+                    } mt-0.5 ml-0.5`}
+                  />
+                </button>
               </div>
 
               {/* Stage Navigation Buttons */}
               {searchState.searchId && (
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center space-x-2 border-l pl-4 border-gray-200">
                   <button
                     onClick={async () => {
                       if (!prevStage) return;
@@ -999,14 +1131,14 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
                       }
                       await executeStage(stageNumber);
                     }}
-                    className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-75 disabled:cursor-not-allowed"
+                    className="inline-flex items-center px-2 py-1 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed h-7"
                     disabled={!prevStage}
-                    title="Go to previous stage"
+                    title="Previous"
                   >
-                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <svg className="w-3 h-3 sm:mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                     </svg>
-                    Previous
+                    <span className="hidden sm:inline">Prev</span>
                   </button>
 
                   <button
@@ -1018,12 +1150,12 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
                         await executeStage(stageNumber);
                       }
                     }}
-                    className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-75 disabled:cursor-not-allowed"
+                    className="inline-flex items-center px-2 py-1 border border-transparent text-xs font-medium rounded text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed h-7 shadow-sm"
                     disabled={!nextStage}
-                    title="Go to next stage"
+                    title="Next"
                   >
-                    Next
-                    <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <span className="hidden sm:inline">Next</span>
+                    <svg className="w-3 h-3 sm:ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                     </svg>
                   </button>
@@ -1031,41 +1163,42 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
               )}
             </div>
           </div>
-        </div>
-      </header>
-
-      {/* Progress Bar */}
-      <div className="bg-white border-b border-gray-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex items-center space-x-4">
-            <div className="flex-1">
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div
-                  className="bg-gradient-to-r from-purple-600 to-teal-600 h-2 rounded-full transition-all duration-300"
-                  style={{ width: `${currentStageInfo.progress}%` }}
-                ></div>
-              </div>
+          
+          {/* Integrated Progress Bar */}
+          <div className="mt-3 flex items-center gap-3">
+            <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+              <div
+                className="bg-gradient-to-r from-purple-600 to-teal-600 h-full transition-all duration-500 ease-out"
+                style={{ width: `${currentStageInfo.progress}%` }}
+              ></div>
             </div>
-            <div className="text-sm text-gray-600">
-              {currentStageInfo.progress}% Complete
+            <div className="text-[10px] font-medium text-gray-400 w-8 text-right">
+              {currentStageInfo.progress}%
             </div>
           </div>
         </div>
       </div>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
+      <div className="space-y-4">
         {/* Stage Tabs */}
         <div className="bg-white rounded-lg border p-3 mb-4">
           <div className="flex flex-wrap gap-2">
-            {STAGE_TABS.map(tab => (
+            {STAGE_TABS.map((tab, index) => (
               <button
                 key={tab}
                 onClick={() => setSelectedStageTab(tab)}
                 className={`px-3 py-1.5 rounded-md text-sm border ${selectedStageTab === tab ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
-                title={`View Stage ${tab}`}
+                title={STAGE_TAB_LABELS[tab]}
               >
-                Stage {tab}
+                <span
+                  className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-xs font-semibold mr-2 ${
+                    selectedStageTab === tab ? 'bg-white text-purple-600' : 'bg-gray-200 text-gray-700'
+                  }`}
+                >
+                  {index + 1}
+                </span>
+                <span>{STAGE_TAB_LABELS[tab]}</span>
               </button>
             ))}
           </div>
@@ -1153,25 +1286,38 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
                       <CheckCircle className="h-4 w-4 text-white" />
                     </div>
                     <div>
-                      <CardTitle className="text-lg">Stage 0: Query Generation</CardTitle>
+                      <CardTitle className="text-lg">Idea Setup & Query Generation</CardTitle>
                       <CardDescription>
                         {isEditingStage0 ? 'Edit search query and features before proceeding' : 'Search query and feature extraction completed'}
                       </CardDescription>
                     </div>
                   </div>
-                  {!isEditingStage0 && searchState.status === NoveltySearchStatus.STAGE_0_COMPLETED && (
-                    <Button
-                      onClick={startEditingStage0}
-                      variant="outline"
-                      size="sm"
-                      className="text-green-700 border-green-300 hover:bg-green-50"
-                    >
-                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                      </svg>
-                      Edit Results
-                    </Button>
-                  )}
+                  <div className="flex items-center space-x-3">
+                    {searchState.status === NoveltySearchStatus.STAGE_0_COMPLETED && (
+                      <span
+                        className={`text-xs px-2 py-1 rounded-full border ${
+                          stage0Approved
+                            ? 'bg-green-100 text-green-700 border-green-200'
+                            : 'bg-yellow-50 text-yellow-700 border-yellow-200'
+                        }`}
+                      >
+                        {stage0Approved ? 'Search terms approved' : 'Awaiting approval'}
+                      </span>
+                    )}
+                    {!isEditingStage0 && searchState.status === NoveltySearchStatus.STAGE_0_COMPLETED && (
+                      <Button
+                        onClick={startEditingStage0}
+                        variant="outline"
+                        size="sm"
+                        className="text-green-700 border-green-300 hover:bg-green-50"
+                      >
+                        <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                        Edit Results
+                      </Button>
+                    )}
+                  </div>
                 </div>
               </CardHeader>
               <CardContent>
@@ -1391,12 +1537,50 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
                     </div>
                   </div>
                 )}
+
+                {/* Stage 0 approval control (non-editing view) */}
+                {!isEditingStage0 && searchState.status === NoveltySearchStatus.STAGE_0_COMPLETED && (
+                  <div className="mt-6 flex justify-end">
+                    <Button
+                      size="sm"
+                      className={stage0Approved ? 'bg-green-600 hover:bg-green-700' : 'bg-indigo-600 hover:bg-indigo-700'}
+                      onClick={() => setStage0Approved(true)}
+                    >
+                      <CheckCircle className="w-4 h-4 mr-2" />
+                      {stage0Approved ? 'Stage 0 Approved' : 'Approve Search Terms'}
+                    </Button>
+                  </div>
+                )}
               </CardContent>
             </Card>
           )}
 
           {/* Stage 1 Results (tab-gated) */}
-          {selectedStageTab === '1' && (((searchState.results as any).pqaiResults || (searchState.results as any)?.stage1?.pqaiResults)) && (
+          {selectedStageTab === '1' && (() => {
+            const root: any = (searchState.results as any) || {};
+            const pqaiResults = root.pqaiResults || root.stage1?.pqaiResults || [];
+            const hasStage1 = Array.isArray(pqaiResults) && pqaiResults.length > 0;
+            const aiRel = root.aiRelevance || root.stage1?.aiRelevance || null;
+
+            if (!hasStage1) {
+              return (
+                <Card className="border-blue-100 bg-blue-50/40">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-lg">Patent Search</CardTitle>
+                    <CardDescription>
+                      This stage has not been run yet. Execute the patent search to view results here.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm text-gray-600">
+                      Use the controls above to run the Patent Search stage once you are satisfied with your idea setup.
+                    </p>
+                  </CardContent>
+                </Card>
+              );
+            }
+
+            return (
             <Card className="border-blue-200 bg-blue-50/30">
               <CardHeader className="pb-3">
                 <div className="flex items-center space-x-3">
@@ -1404,15 +1588,13 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
                     <CheckCircle className="h-4 w-4 text-white" />
                   </div>
                   <div>
-                    <CardTitle className="text-lg">Stage 1: Patent Search</CardTitle>
+                    <CardTitle className="text-lg">Patent Search</CardTitle>
                     <CardDescription>Patent database search and relevance-based selection</CardDescription>
                   </div>
                 </div>
               </CardHeader>
               <CardContent>
                 {(() => {
-                  const pqaiResults = (searchState.results as any).pqaiResults || (searchState.results as any)?.stage1?.pqaiResults || [];
-                  const aiRel = (searchState.results as any)?.aiRelevance || (searchState.results as any)?.stage1?.aiRelevance || null;
                   const highRelevanceCount = pqaiResults.filter((p: any) => p.relevanceScore && p.relevanceScore > 0.5).length || 0;
                   const avgRelevance = pqaiResults.length > 0 ?
                     (pqaiResults.reduce((avg: number, p: any) => avg + (p.relevanceScore || 0), 0) / pqaiResults.length * 100) : 0;
@@ -1541,12 +1723,12 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
                           {pqaiResults.length === 0 && <p className="text-sm text-gray-500">No patent results available</p>}
                         </div>
                       </div>
-                  </>
-                );
-              })()}
+                    </>
+                  );
+                })()}
               </CardContent>
             </Card>
-          )}
+          );})()}
 
           {/* Stage 1.5 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â AI Relevance Summary (tab-gated) */}
           {selectedStageTab === '1.5' && (
@@ -1564,7 +1746,7 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
                 <Card className="mt-4">
                   <CardHeader className="pb-3">
                     <div className="flex items-center justify-between">
-                      <CardTitle className="text-lg">Stage 1.5: AI Relevance</CardTitle>
+                      <CardTitle className="text-lg">AI Relevance</CardTitle>
                       <div className="text-xs text-gray-500">Thresholds: High {(aiRel.thresholds?.high ?? 0.6)}, Medium {(aiRel.thresholds?.medium ?? 0.4)}</div>
                     </div>
                   </CardHeader>
@@ -1918,11 +2100,10 @@ export default function NoveltySearchWorkflow({ patentId, projectId: initialProj
 
           {/* Legacy Stage 4 (removed) */}
         </div>
-      </main>
+      </div>
     </div>
   );
 }
-
 
 
 

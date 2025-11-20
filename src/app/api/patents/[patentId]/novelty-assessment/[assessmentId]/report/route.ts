@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyJWT } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
-import { PDFReportService } from '@/lib/pdf-report-service';
 import { NoveltyAssessmentStatus } from '@prisma/client';
-import fs from 'fs';
-import path from 'path';
 
 async function getUserFromRequest(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
@@ -83,29 +80,13 @@ export async function GET(
       }, { status: 400 });
     }
 
-    // Generate PDF report
-    const reportUrl = await PDFReportService.generateNoveltyReport(assessmentId);
-
-    // Extract file path from URL
-    const filename = path.basename(reportUrl);
-    const reportsDir = path.join(process.cwd(), 'uploads', 'reports');
-    const filepath = path.join(reportsDir, filename);
-
-    // Check if file exists
-    if (!fs.existsSync(filepath)) {
-      return NextResponse.json({ error: 'Report file not found' }, { status: 404 });
-    }
-
-    // Read and serve the PDF file
-    const fileBuffer = fs.readFileSync(filepath);
-
-    return new NextResponse(fileBuffer, {
-      headers: {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="novelty_assessment_${assessmentId}.pdf"`,
-        'Content-Length': fileBuffer.length.toString(),
-      },
-    });
+    // PDF generation has been replaced with browser print functionality
+    // Users should now use the "Download Official Report" button in the consolidated report
+    // which will open the browser's print dialog for saving as PDF
+    return NextResponse.json({
+      error: 'PDF generation is no longer available via this endpoint. Please use the "Download Official Report" button in the consolidated report view, which will open your browser\'s print dialog to save the report as PDF.',
+      message: 'Use browser print functionality instead'
+    }, { status: 410 }); // 410 Gone - resource no longer available
 
   } catch (error) {
     console.error('GET /api/patents/[patentId]/novelty-assessment/[assessmentId]/report error:', error);

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { MessageSquare, Sparkles } from 'lucide-react'
 
 interface KishoWidgetProps {
   onTipClick?: (tip: string) => void
@@ -53,84 +54,51 @@ export default function KishoWidget({ onTipClick }: KishoWidgetProps) {
   }
 
   return (
-    <div className="fixed bottom-6 right-6 z-50">
+    <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end">
       {/* Speech Bubble */}
       {showSpeechBubble && (
-        <div className="absolute bottom-full right-0 mb-4 max-w-xs animate-fade-in">
-          <div className="bg-white/90 border border-[#E5E7EB] rounded-2xl p-4 shadow-sm">
-            <div className="flex items-start space-x-3">
-              <div className="w-6 h-6 bg-[#4C5EFF] rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
-                💭
+        <div className="mb-4 max-w-xs animate-fade-in origin-bottom-right">
+          <div className="bg-white border border-ai-blue-200 rounded-2xl rounded-br-none p-4 shadow-lg shadow-ai-blue-900/5">
+            <div className="flex items-start gap-3">
+              <div className="p-1.5 bg-ai-blue-50 rounded-full shrink-0">
+                <Sparkles className="w-4 h-4 text-ai-blue-600" />
               </div>
-              <p className="text-sm text-[#334155] leading-relaxed" style={{ fontFamily: 'Inter, sans-serif', fontWeight: 400 }}>
+              <p className="text-sm text-ai-graphite-700 leading-relaxed font-medium">
                 {currentTip}
               </p>
             </div>
-
-            {/* Speech bubble pointer */}
-            <div className="absolute top-full right-8 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-white/90"></div>
           </div>
         </div>
       )}
 
-      {/* Kisho Avatar */}
-      <div
+      {/* Kisho Avatar Button */}
+      <button
         className={`
-          relative group cursor-pointer transition-all duration-300
+          relative group flex items-center justify-center w-14 h-14 rounded-full 
+          bg-white border-2 border-ai-blue-100 hover:border-ai-blue-300 shadow-lg hover:shadow-xl
+          transition-all duration-300 ease-out
           ${isHovered ? 'scale-110' : 'scale-100'}
-          ${isAnimating ? 'animate-bounce' : ''}
+          ${isAnimating ? 'scale-90' : ''}
         `}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
         onClick={handleClick}
+        aria-label="Ask AI Assistant"
       >
-        {/* Drop shadow */}
-        <div className={`
-          absolute inset-0 rounded-full bg-black/10
-          blur-sm opacity-30 -bottom-2
-          ${isHovered ? 'opacity-40 scale-125' : ''}
-          transition-all duration-300
-        `}></div>
-
-        {/* Avatar container */}
-        <div className={`
-          relative w-16 h-16 bg-white
-          rounded-full flex items-center justify-center shadow-md
-          border-2 border-[#E5E7EB] overflow-hidden
-          ${isHovered ? 'shadow-lg' : ''}
-          transition-all duration-300
-        `}>
-          {/* Kisho image */}
-          <img
-            src="/images/kisho.jpg"
-            alt="Kisho - Your AI Assistant"
-            className={`
-              w-full h-full object-cover rounded-full transition-transform duration-300
-              ${isHovered ? 'scale-110' : 'scale-100'}
-            `}
-          />
-
-          {/* Silver-blue shimmer effect */}
-          <div className={`
-            absolute inset-2 rounded-full bg-gradient-to-r from-[#B4C6FF] to-[#A8E2D5]
-            opacity-10 animate-pulse
-            ${isHovered ? 'opacity-20' : ''}
-          `}></div>
+        {/* Inner Glow */}
+        <div className="absolute inset-1 bg-gradient-to-br from-ai-blue-50 to-white rounded-full" />
+        
+        {/* Icon or Image */}
+        <div className="relative z-10 text-ai-blue-600">
+           {/* Fallback to icon if no image, or generic AI icon */}
+           <MessageSquare className="w-6 h-6" />
         </div>
 
-        {/* Hover tooltip */}
-        {isHovered && (
-          <div className="absolute bottom-full right-0 mb-3 px-3 py-2 bg-white text-[#334155] text-xs rounded-lg whitespace-nowrap shadow-sm border border-[#E5E7EB]">
-            Click for a tip!
-            <div className="absolute top-full right-4 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-white"></div>
-          </div>
-        )}
-
-        {/* Status indicator */}
-        <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 border-2 border-white rounded-full animate-pulse">
-          <div className="absolute inset-0 bg-green-400 rounded-full animate-ping opacity-75"></div>
+        {/* Status Indicator */}
+        <div className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-500 border-2 border-white rounded-full">
+           <div className="absolute inset-0 bg-emerald-400 rounded-full animate-ping opacity-75" />
         </div>
-      </div>
+      </button>
     </div>
   )
 }

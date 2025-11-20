@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { IdeaBankIdeaWithDetails } from '@/lib/idea-bank-service'
+import { motion } from 'framer-motion'
 
 interface IdeaCardProps {
   idea: IdeaBankIdeaWithDetails
@@ -32,12 +33,12 @@ export default function IdeaCard({
   const isReservedByUser = idea._isReservedByCurrentUser
   const isRedacted = isReserved && !isReservedByUser
 
-  const handleReserve = async () => {
+  const handleReserve = async (e: React.MouseEvent) => {
+    e.stopPropagation()
     setIsReserving(true)
     try {
       await onReserve()
       setReservationSuccess(true)
-      // Reset success state after a delay
       setTimeout(() => setReservationSuccess(false), 3000)
     } catch (error) {
       console.error('Reservation failed:', error)
@@ -48,161 +49,172 @@ export default function IdeaCard({
 
   const getStatusColor = () => {
     switch (idea.status) {
-      case 'PUBLIC': return 'bg-green-100 text-green-800'
-      case 'RESERVED': return 'bg-orange-100 text-orange-800'
-      case 'LICENSED': return 'bg-blue-100 text-blue-800'
-      case 'ARCHIVED': return 'bg-gray-100 text-gray-800'
-      default: return 'bg-gray-100 text-gray-800'
+      case 'PUBLIC': return 'bg-emerald-50 text-emerald-700 border-emerald-200'
+      case 'RESERVED': return 'bg-amber-50 text-amber-700 border-amber-200'
+      case 'LICENSED': return 'bg-blue-50 text-blue-700 border-blue-200'
+      case 'ARCHIVED': return 'bg-slate-50 text-slate-600 border-slate-200'
+      default: return 'bg-slate-50 text-slate-600 border-slate-200'
     }
   }
 
   const getNoveltyColor = (score?: number | null) => {
-    if (!score) return 'bg-gray-100 text-gray-600'
-    if (score >= 0.8) return 'bg-green-100 text-green-800'
-    if (score >= 0.6) return 'bg-yellow-100 text-yellow-800'
-    return 'bg-red-100 text-red-800'
+    if (!score) return 'text-slate-400'
+    if (score >= 0.8) return 'text-emerald-600'
+    if (score >= 0.6) return 'text-amber-600'
+    return 'text-red-500'
   }
 
   return (
-    <Card className={`transition-all duration-200 hover:shadow-lg ${
-      isReserved ? 'border-orange-200 bg-orange-50' : 'border-gray-200'
-    } ${isReservedByUser ? 'ring-2 ring-orange-300' : ''}`}>
-      <CardHeader className="pb-3">
-        <div className="flex justify-between items-start mb-2">
-          <Badge className={getStatusColor()}>
-            {idea.status.toLowerCase()}
-          </Badge>
-          {idea.noveltyScore && (
-            <Badge className={getNoveltyColor(idea.noveltyScore)}>
-              Novelty: {(idea.noveltyScore * 100).toFixed(0)}%
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ y: -4 }}
+      transition={{ duration: 0.3 }}
+    >
+      <Card 
+        className={`h-full bg-white border border-slate-200 hover:border-slate-300 hover:shadow-xl transition-all duration-300 overflow-hidden group flex flex-col ${
+          isReservedByUser ? 'ring-1 ring-amber-400' : ''
+        }`}
+      >
+        {/* Top decoration line */}
+        <div className={`h-1 w-full bg-gradient-to-r ${
+          isReservedByUser ? 'from-amber-400 via-orange-400 to-amber-500' : 
+          isReserved ? 'from-slate-300 via-slate-400 to-slate-300' :
+          'from-cyan-500 via-blue-500 to-purple-500'
+        }`} />
+        
+        <CardHeader className="pb-3 space-y-3">
+          <div className="flex justify-between items-start">
+            <Badge variant="outline" className={`${getStatusColor()} font-medium text-[10px] tracking-wider uppercase border`}>
+              {idea.status}
             </Badge>
-          )}
-        </div>
-        <h3 className="font-semibold text-lg text-gray-900 line-clamp-2">
-          {isRedacted ? `${idea.title.split(' ').slice(0, 3).join(' ')}...` : idea.title}
-        </h3>
-      </CardHeader>
-
-      <CardContent className="space-y-4">
-        {/* Description */}
-        <div>
-          <p className="text-sm text-gray-600 line-clamp-3">
-            {idea._redactedDescription || idea.description}
-          </p>
-          {isRedacted && (
-            <p className="text-xs text-orange-600 mt-1">
-              Content reserved • {idea.reservedCount} reservations
-            </p>
-          )}
-        </div>
-
-        {/* Domain Tags */}
-        {idea.domainTags.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {idea.domainTags.slice(0, 3).map(tag => (
-              <Badge key={tag} variant="secondary" className="text-xs">
-                {tag}
-              </Badge>
-            ))}
-            {idea.domainTags.length > 3 && (
-              <Badge variant="secondary" className="text-xs">
-                +{idea.domainTags.length - 3}
-              </Badge>
+            {idea.noveltyScore && (
+              <div className="flex items-center gap-2 bg-slate-50 px-2 py-1 rounded-full border border-slate-100">
+                <div className={`text-xs font-bold font-mono ${getNoveltyColor(idea.noveltyScore)}`}>
+                  {(idea.noveltyScore * 100).toFixed(0)}%
+                </div>
+                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-medium">NOVELTY</div>
+              </div>
             )}
           </div>
-        )}
+          
+          <h3 className="font-bold text-lg text-slate-900 leading-tight group-hover:text-indigo-600 transition-colors line-clamp-2">
+            {isRedacted ? (
+              <span className="blur-[2px] select-none text-slate-400">Protected Invention Title</span>
+            ) : (
+              idea.title
+            )}
+          </h3>
+        </CardHeader>
 
-        {/* Technical Field */}
-        {idea.technicalField && (
-          <div className="text-xs text-gray-500">
-            Field: {idea.technicalField}
+        <CardContent className="flex-1 flex flex-col space-y-4">
+          {/* Description */}
+          <div className="flex-1 relative">
+            <p className="text-sm text-slate-600 line-clamp-3 leading-relaxed">
+              {idea._redactedDescription || idea.description}
+            </p>
+            {isRedacted && (
+              <div className="absolute inset-0 flex items-center justify-center bg-white/80 backdrop-blur-[1px] rounded">
+                <div className="text-center p-3 bg-amber-50 rounded-lg border border-amber-100 shadow-sm">
+                  <div className="text-xl mb-1">🔒</div>
+                  <div className="text-xs text-amber-800 font-bold tracking-wide uppercase">Reserved Asset</div>
+                </div>
+              </div>
+            )}
           </div>
-        )}
 
-        {/* Creator Info */}
-        <div className="text-xs text-gray-500">
-          By {idea.creator.name || idea.creator.email} • {new Date(idea.createdAt).toLocaleDateString()}
-        </div>
+          {/* Metadata Grid */}
+          <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-500 font-medium border-t border-slate-100 pt-3 mt-auto">
+            <div>
+              <div className="uppercase tracking-wider text-slate-400 mb-0.5">Origin</div>
+              <div className="text-slate-700 truncate">{idea.creator.name || 'System AI'}</div>
+            </div>
+            <div>
+              <div className="uppercase tracking-wider text-slate-400 mb-0.5">Date</div>
+              <div className="text-slate-700">{new Date(idea.createdAt).toLocaleDateString()}</div>
+            </div>
+          </div>
 
-        {/* Action Buttons */}
-        <div className="flex flex-wrap gap-2 pt-2">
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={onView}
-            className="flex-1"
-          >
-            View Details
-          </Button>
-
-          {isReservedByUser ? (
-            <>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={onRelease}
-                className="text-orange-600 border-orange-300 hover:bg-orange-50"
-              >
-                Release
-              </Button>
-              <Button
-                size="sm"
-                onClick={onSendToSearch}
-                className="bg-blue-600 hover:bg-blue-700"
-              >
-                🔍 Search
-              </Button>
-              <Button
-                size="sm"
-                onClick={onSendToDrafting}
-                className="bg-green-600 hover:bg-green-700"
-              >
-                ✍️ Draft
-              </Button>
-            </>
-          ) : !isReserved ? (
-            <Button
-              size="sm"
-              onClick={handleReserve}
-              disabled={isReserving}
-              className={`bg-orange-600 hover:bg-orange-700 ${
-                reservationSuccess ? 'bg-green-600 hover:bg-green-700' : ''
-              }`}
-            >
-              {isReserving ? (
-                <div className="flex items-center gap-1">
-                  <div className="animate-spin rounded-full h-3 w-3 border border-white border-t-transparent"></div>
-                  <span>Reserving...</span>
-                </div>
-              ) : reservationSuccess ? (
-                <div className="flex items-center gap-1">
-                  <span>✓ Reserved</span>
-                </div>
-              ) : (
-                'Reserve'
+          {/* Domain Tags */}
+          {idea.domainTags.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {idea.domainTags.slice(0, 3).map(tag => (
+                <span key={tag} className="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                  {tag}
+                </span>
+              ))}
+              {idea.domainTags.length > 3 && (
+                <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                  +{idea.domainTags.length - 3}
+                </span>
               )}
-            </Button>
-          ) : isReservedByUser ? (
+            </div>
+          )}
+
+          {/* Action Buttons */}
+          <div className="pt-2 grid grid-cols-2 gap-2">
             <Button
               size="sm"
-              onClick={onReserve}
-              disabled
-              className="bg-green-600 hover:bg-green-700 cursor-not-allowed flex items-center gap-1"
+              variant="ghost"
+              onClick={onView}
+              className="w-full text-slate-500 hover:text-slate-900 hover:bg-slate-100"
             >
-              <span>✓ Reserved</span>
+              View Data
             </Button>
-          ) : null}
 
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onEdit}
-            className="text-gray-600"
-          >
-            ✏️ Edit
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
+            {isReservedByUser ? (
+              <div className="flex gap-1">
+                <Button
+                  size="sm"
+                  onClick={onSendToDrafting}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs shadow-sm"
+                >
+                  Draft
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={onRelease}
+                  className="px-2 text-amber-600 hover:bg-amber-50"
+                >
+                  ✕
+                </Button>
+              </div>
+            ) : !isReserved ? (
+              <Button
+                size="sm"
+                onClick={handleReserve}
+                disabled={isReserving}
+                className={`w-full relative overflow-hidden transition-all duration-300 shadow-sm ${
+                  reservationSuccess 
+                    ? 'bg-emerald-600 hover:bg-emerald-700' 
+                    : 'bg-slate-900 hover:bg-slate-800 text-white'
+                }`}
+              >
+                {isReserving ? (
+                  <div className="flex items-center gap-2">
+                    <div className="animate-spin rounded-full h-3 w-3 border border-white border-t-transparent"></div>
+                  </div>
+                ) : reservationSuccess ? (
+                  <span className="flex items-center gap-1">✓ Acquired</span>
+                ) : (
+                  <span className="flex items-center gap-1 font-semibold tracking-wide text-xs uppercase">
+                    Reserve
+                  </span>
+                )}
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                disabled
+                className="w-full bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200"
+              >
+                Locked
+              </Button>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </motion.div>
   )
 }

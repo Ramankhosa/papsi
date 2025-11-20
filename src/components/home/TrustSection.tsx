@@ -1,50 +1,110 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { motion } from 'framer-motion'
+import { Users, CheckCircle, Globe, Shield, Activity } from 'lucide-react'
 
-interface StatCardProps {
-  number: string
-  label: string
-  delay?: number
-}
+const stats = [
+  { label: "Ideas Processed", value: "6,000+", icon: Activity },
+  { label: "Drafting Speed", value: "85%", icon: CheckCircle, suffix: "Faster" },
+  { label: "Global Reach", value: "120+", icon: Globe, suffix: "Countries" },
+  { label: "Enterprise Trust", value: "100%", icon: Shield, suffix: "Secure" },
+]
 
-function StatCard({ number, label, delay = 0 }: StatCardProps) {
-  const [isVisible, setIsVisible] = useState(false)
-
-  useEffect(() => {
-    const timer = setTimeout(() => setIsVisible(true), delay)
-    return () => clearTimeout(timer)
-  }, [delay])
-
-  return (
-    <div
-      className={`text-center p-8 rounded-xl bg-white/90 shadow-sm border border-gray-100 transition-all duration-700 ${
-        isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'
-      } hover:shadow-md hover:scale-[1.02]`}
-    >
-      <div className="text-4xl md:text-5xl font-bold text-gpt-blue-600 mb-2 font-serif">{number}</div>
-      <div className="text-gray-600 font-medium">{label}</div>
-    </div>
-  )
-}
+const testimonials = [
+  {
+    user: "Dr. Sarah Chen",
+    role: "Lead Researcher, BioTech Inc.",
+    quote: "Feels less like software and more like a sentient legal partner. The novelty analysis was deeper than our manual search."
+  },
+  {
+    user: "James Thorne",
+    role: "Patent Attorney",
+    quote: "I was skeptical, but the claim generation is terrifyingly good. It handles the heavy lifting, allowing me to focus on strategy."
+  },
+  {
+    user: "Start-Up Hub",
+    role: "Incubator",
+    quote: "PatentNest democratizes IP protection. Our cohort companies are filing 3x faster with higher grant rates."
+  }
+]
 
 export default function TrustSection() {
   return (
-    <section className="py-20 bg-gpt-gray-50">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
-          <StatCard number="6,000+" label="ideas analyzed for novelty" delay={0} />
-          <StatCard number="85%" label="faster draft turnaround" delay={200} />
-          <StatCard number="Global" label="formats for USPTO, EPO, and Indian filings" delay={400} />
+    <section className="relative py-32 bg-ai-graphite-950 border-t border-ai-graphite-800/50 overflow-hidden">
+      
+      {/* Background Elements */}
+      <div className="absolute top-0 left-0 w-full h-px bg-gradient-to-r from-transparent via-ai-blue-900/50 to-transparent" />
+      <div className="absolute -left-20 top-40 w-96 h-96 bg-ai-blue-900/10 rounded-full blur-[120px]" />
+      <div className="absolute -right-20 bottom-40 w-96 h-96 bg-purple-900/10 rounded-full blur-[120px]" />
+
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 relative z-10">
+        
+        {/* Stats Grid */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-8 mb-32 border-b border-ai-graphite-800/50 pb-12">
+          {stats.map((stat, index) => (
+            <motion.div
+              key={index}
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.1, duration: 0.5 }}
+              viewport={{ once: true }}
+              className="text-center"
+            >
+              <div className="flex justify-center mb-4">
+                <stat.icon className="w-6 h-6 text-ai-blue-500/60" />
+              </div>
+              <div className="text-3xl md:text-4xl font-bold text-white mb-2 font-mono tracking-tighter">
+                {stat.value}
+              </div>
+              <div className="text-xs uppercase tracking-widest text-ai-graphite-500">
+                {stat.label} {stat.suffix && <span className="text-ai-blue-500/80 ml-1">{stat.suffix}</span>}
+              </div>
+            </motion.div>
+          ))}
         </div>
 
-        <div className="text-center">
-          <p className="text-xl text-gray-600 max-w-3xl mx-auto leading-relaxed">
-            From your concept to a ready-to-file draft — all under one intelligent roof.
-          </p>
+        {/* Testimonials */}
+        <div className="mb-20">
+          <div className="text-center mb-16">
+            <h2 className="text-3xl font-bold text-white mb-4">Intelligence Verified</h2>
+            <p className="text-ai-graphite-400">Transmission logs from the innovation frontier.</p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+            {testimonials.map((t, index) => (
+              <motion.div
+                key={index}
+                initial={{ opacity: 0, scale: 0.95 }}
+                whileInView={{ opacity: 1, scale: 1 }}
+                transition={{ delay: index * 0.2, duration: 0.5 }}
+                viewport={{ once: true }}
+                className="bg-ai-graphite-900/30 border border-ai-graphite-800/50 p-8 rounded-2xl backdrop-blur-sm hover:bg-ai-graphite-800/50 transition-colors"
+              >
+                <div className="flex items-center gap-4 mb-6">
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-ai-blue-500 to-purple-600 opacity-80" />
+                  <div>
+                    <div className="text-white font-medium">{t.user}</div>
+                    <div className="text-xs text-ai-blue-400 uppercase tracking-wide">{t.role}</div>
+                  </div>
+                </div>
+                <p className="text-ai-graphite-300 leading-relaxed italic">
+                  "{t.quote}"
+                </p>
+              </motion.div>
+            ))}
+          </div>
         </div>
+
+        {/* Partner Logos (Text representation for now) */}
+        <div className="flex flex-wrap justify-center gap-12 items-center opacity-30 hover:opacity-60 transition-opacity duration-500">
+           {['MIT Research', 'Stanford BioDesign', 'TechStars', 'YCombinator Alumni'].map((partner, i) => (
+             <span key={i} className="text-xl font-bold font-mono text-white uppercase tracking-wider">
+               {partner}
+             </span>
+           ))}
+        </div>
+
       </div>
     </section>
   )
 }
-

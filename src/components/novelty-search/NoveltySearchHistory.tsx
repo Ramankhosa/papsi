@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { FileText, Download, Calendar, FolderOpen, Search, Eye } from 'lucide-react';
+import Link from 'next/link';
 import { format } from 'date-fns';
 
 interface NoveltySearchHistoryItem {
@@ -169,13 +170,13 @@ export default function NoveltySearchHistory({ projectId, showStats = true }: No
               </div>
               <div className="text-center">
                 <div className="text-2xl font-bold text-green-600">{history.length}</div>
-                <div className="text-sm text-gray-600">Completed Searches</div>
+                <div className="text-sm text-gray-600">Advanced Searches</div>
               </div>
               <div className="text-center">
                 <div className="text-2xl font-bold text-purple-600">
-                  {history.filter(h => h.hasReport).length}
+                  {history.filter(h => h.status === 'COMPLETED' || h.status === 'STAGE_3_5_COMPLETED').length}
                 </div>
-                <div className="text-sm text-gray-600">Reports Generated</div>
+                <div className="text-sm text-gray-600">Reports Available</div>
               </div>
             </div>
           </CardContent>
@@ -192,7 +193,7 @@ export default function NoveltySearchHistory({ projectId, showStats = true }: No
           <CardDescription>
             {projectId
               ? 'Searches performed within this project'
-              : 'All your completed novelty searches'
+              : 'Your novelty searches with available reports'
             }
           </CardDescription>
         </CardHeader>
@@ -246,6 +247,32 @@ export default function NoveltySearchHistory({ projectId, showStats = true }: No
                     </div>
 
                     <div className="flex items-center gap-2 ml-4">
+                      {(search.status === 'COMPLETED' || search.status === 'STAGE_3_5_COMPLETED') && (
+                        <>
+                          <Link href={`/novelty-search/${search.id}/report`}>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="flex items-center gap-1"
+                            >
+                              <FileText className="h-3 w-3" />
+                              View Step-by-Step
+                            </Button>
+                          </Link>
+
+                          <Link href={`/novelty-search/${search.id}/consolidated`}>
+                          <Button
+                            size="sm"
+                            variant="default"
+                            className="flex items-center gap-1"
+                          >
+                            <Eye className="h-3 w-3" />
+                              Consolidated Report
+                          </Button>
+                        </Link>
+                        </>
+                      )}
+
                       {search.hasReport && search.reportUrl && (
                         <Button
                           size="sm"
@@ -254,7 +281,7 @@ export default function NoveltySearchHistory({ projectId, showStats = true }: No
                           className="flex items-center gap-1"
                         >
                           <Download className="h-3 w-3" />
-                          Download
+                          Download PDF
                         </Button>
                       )}
 

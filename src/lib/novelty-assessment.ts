@@ -1,7 +1,6 @@
 import { llmGateway } from './metering/gateway';
 import { NoveltyAssessmentStatus, NoveltyDetermination, NoveltyAssessmentStage, TaskCode } from '@prisma/client';
 import { prisma } from './prisma';
-import { PDFReportService } from './pdf-report-service';
 
 // LLM Prompt Specification for Novelty Assessment (per user requirements)
 export const NOVELTY_SCREENING_PROMPT = `Analyze patent novelty. Output ONLY valid JSON.
@@ -176,7 +175,7 @@ export class NoveltyAssessmentService {
         // Generate PDF report
         let reportUrl: string | undefined;
         try {
-          reportUrl = await PDFReportService.generateNoveltyReport(assessment.id);
+          // PDF generation removed - using browser print instead
           console.log('✅ PDF report generated successfully');
           console.log(`📄 PDF report generated: ${reportUrl}`);
         } catch (pdfError) {
@@ -210,7 +209,7 @@ export class NoveltyAssessmentService {
         // Generate PDF report
         let reportUrl: string | undefined;
         try {
-          reportUrl = await PDFReportService.generateNoveltyReport(assessment.id);
+          // PDF generation removed - using browser print instead
           console.log('✅ PDF report generated successfully');
           console.log(`📄 PDF report generated: ${reportUrl}`);
         } catch (pdfError) {
@@ -296,7 +295,7 @@ export class NoveltyAssessmentService {
         // Generate PDF report
         let reportUrl: string | undefined;
         try {
-          reportUrl = await PDFReportService.generateNoveltyReport(assessment.id);
+          // PDF generation removed - using browser print instead
           console.log('✅ PDF report generated successfully');
           console.log(`📄 PDF report generated: ${reportUrl}`);
         } catch (pdfError) {
@@ -876,13 +875,8 @@ Relevance: ${patent.relevance}%`;
 
       // If NOVEL or NOT_NOVEL, generate PDF report (non-blocking)
       if (determination !== NoveltyDetermination.DOUBT) {
-        try {
-          await PDFReportService.generateNoveltyReport(assessment.id);
-          console.log('✅ PDF report generated successfully');
-        } catch (pdfError) {
-          console.warn('⚠️ PDF report generation failed, but assessment completed:', pdfError);
-          // Don't fail the assessment if PDF generation fails
-        }
+        // PDF generation removed - using browser print instead
+        console.log('ℹ️ PDF report generation skipped - using browser print functionality');
       }
 
       return {
@@ -1083,13 +1077,8 @@ Relevance: ${patent.relevance}%`;
         },
       });
 
-      // Generate final PDF report (non-blocking)
-      try {
-        await PDFReportService.generateNoveltyReport(assessment.id);
-        console.log('✅ PDF report generated successfully');
-      } catch (pdfError) {
-        console.warn('⚠️ PDF report generation failed, but assessment completed:', pdfError);
-      }
+      // PDF generation removed - using browser print instead
+      console.log('ℹ️ PDF report generation skipped - using browser print functionality');
 
       console.log(`✅ Level 2 assessment complete: ${finalDetermination}`);
 

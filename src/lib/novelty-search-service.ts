@@ -1483,7 +1483,13 @@ export class NoveltySearchService extends BasePatentService {
     try {
       const whereClause: any = {
         userId,
-        status: NoveltySearchStatus.COMPLETED
+        status: {
+          in: [
+            NoveltySearchStatus.STAGE_1_COMPLETED,
+            NoveltySearchStatus.STAGE_3_5_COMPLETED,
+            NoveltySearchStatus.COMPLETED
+          ]
+        }
       };
 
       if (projectId) {

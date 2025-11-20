@@ -53,7 +53,6 @@ export default function ProjectDashboardPage() {
   const [deleteDialog, setDeleteDialog] = useState<{ patentId: string; patentTitle: string; hasDrafts: boolean } | null>(null)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
   const [isDeleting, setIsDeleting] = useState(false)
-  const [showNoveltyHistory, setShowNoveltyHistory] = useState(false)
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -509,23 +508,14 @@ export default function ProjectDashboardPage() {
         )}
 
         {/* Novelty Search History Section */}
-        <div className="mt-8">
+        <div className="mt-8" id="novelty-search-history">
           <div className="bg-white rounded-lg shadow-sm p-6">
-            <div className="flex items-center justify-between mb-4">
+            <div className="mb-4">
               <h2 className="text-xl font-semibold text-gray-900">Novelty Search History</h2>
-              <button
-                onClick={() => setShowNoveltyHistory(!showNoveltyHistory)}
-                className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all duration-200"
-              >
-                {showNoveltyHistory ? 'Hide Search History' : 'Show Search History'}
-              </button>
+              <p className="text-sm text-gray-600 mt-1">View and access reports from previous novelty searches in this project</p>
             </div>
 
-            {showNoveltyHistory && (
-              <div className="mt-4">
-                <NoveltySearchHistory projectId={projectId} showStats={false} />
-              </div>
-            )}
+            <NoveltySearchHistory projectId={projectId} showStats={false} />
           </div>
         </div>
       </div>

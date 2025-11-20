@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
+import { Sparkles, X, ArrowRight, BrainCircuit } from 'lucide-react'
 
 interface AISpotlightProps {
   draftsCount: number
@@ -25,11 +26,11 @@ export default function AISpotlight({ draftsCount, latestNoveltySearch, userRese
     if (draftsCount > 0) {
       suggestions.push({
         type: 'draft',
-        title: 'Resume Your Draft',
-        message: `You have ${draftsCount} draft${draftsCount > 1 ? 's' : ''} waiting. Your latest draft is 78% complete.`,
+        title: 'Resume Drafting',
+        message: `You have ${draftsCount} draft${draftsCount > 1 ? 's' : ''} pending. Your latest draft is waiting for review.`,
         actions: [
           { label: 'Resume Draft', action: () => router.push('/patents/draft/new') },
-          { label: 'View All Drafts', action: () => router.push('/projects') }
+          { label: 'View Projects', action: () => router.push('/projects') }
         ]
       })
     }
@@ -42,104 +43,78 @@ export default function AISpotlight({ draftsCount, latestNoveltySearch, userRese
       if (patentCount > 0) {
         suggestions.push({
           type: 'novelty',
-          title: 'Review Novelty Results',
-          message: `"${latestNoveltySearch.title.substring(0, 30)}..." found ${patentCount} potential match${patentCount > 1 ? 'es' : ''}. Review recommended.`,
+          title: 'Analysis Complete',
+          message: `"${latestNoveltySearch.title.substring(0, 25)}..." returned ${patentCount} citations. Review the findings to proceed.`,
           actions: [
-            { label: 'Review Results', action: () => router.push(`/novelty-search/${latestNoveltySearch.id}`) },
-            { label: 'Novelty Search', action: () => router.push('/novelty-search') }
+            { label: 'View Report', action: () => router.push(`/novelty-search/${latestNoveltySearch.id}/consolidated`) },
+            { label: 'New Search', action: () => router.push('/novelty-search') }
           ]
         })
       }
-    }
-
-    // Idea bank suggestion
-    if (userReservations === 0) {
-      suggestions.push({
-        type: 'idea',
-        title: 'Explore Ideas',
-        message: 'Discover AI-generated patent ideas with prior art analysis. Transform ideas into patents.',
-        actions: [
-          { label: 'Browse Ideas', action: () => router.push('/idea-bank') },
-          { label: 'Generate New', action: () => router.push('/idea-bank') }
-        ]
-      })
     }
 
     // Default suggestion
     if (suggestions.length === 0) {
       suggestions.push({
         type: 'welcome',
-        title: 'Welcome Back!',
-        message: 'Ready to innovate? Start with a novelty search or explore the idea bank.',
+        title: 'Intelligence Ready',
+        message: 'The neural engine is idle. Initiate a new novelty search or explore high-potential concepts.',
         actions: [
-          { label: 'Start Novelty Search', action: () => router.push('/novelty-search') },
+          { label: 'Start Search', action: () => router.push('/novelty-search') },
           { label: 'Explore Ideas', action: () => router.push('/idea-bank') }
         ]
       })
     }
 
-    // Pick random suggestion
     const randomIndex = Math.floor(Math.random() * suggestions.length)
     setCurrentSuggestion(suggestions[randomIndex])
-  }
-
-  const dismiss = () => {
-    setIsVisible(false)
   }
 
   if (!isVisible || !currentSuggestion) return null
 
   return (
-    <div className="mb-8 relative">
-      <div className="relative bg-white border border-[#E5E7EB] rounded-xl p-6 shadow-sm overflow-hidden">
-        {/* Subtle top accent */}
-        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-[#4C5EFF] to-[#7A5AF8] opacity-20"></div>
+    <div className="relative bg-white border border-ai-blue-200 rounded-xl p-6 shadow-sm overflow-hidden">
+      {/* Decorative Elements */}
+      <div className="absolute top-0 right-0 w-32 h-32 bg-ai-blue-50 rounded-bl-full opacity-50 pointer-events-none" />
+      
+      <div className="flex justify-between items-start mb-4">
+         <div className="flex items-center gap-2 text-ai-blue-600">
+            <BrainCircuit className="w-5 h-5" />
+            <h3 className="font-bold text-sm uppercase tracking-wider">System Recommendation</h3>
+         </div>
+         <button 
+           onClick={() => setIsVisible(false)}
+           className="text-slate-400 hover:text-slate-600 transition-colors"
+         >
+           <X className="w-4 h-4" />
+         </button>
+      </div>
 
-        <div className="flex items-start justify-between">
-          <div className="flex-1">
-            <div className="flex items-center mb-3">
-              <div className="w-8 h-8 bg-[#4C5EFF] rounded-full flex items-center justify-center mr-3">
-                🧠
-              </div>
-              <h3 className="text-lg font-semibold text-[#1E293B]" style={{ fontFamily: 'Inter, sans-serif', fontWeight: 500 }}>
-                Kisho suggests:
-              </h3>
-            </div>
+      <h4 className="text-lg font-bold text-ai-graphite-900 mb-2">
+        {currentSuggestion.title}
+      </h4>
+      
+      <p className="text-slate-600 text-sm leading-relaxed mb-6">
+        {currentSuggestion.message}
+      </p>
 
-            <p className="text-[#334155] mb-4 leading-relaxed" style={{ fontFamily: 'Source Sans Pro, sans-serif', fontWeight: 400 }}>
-              <strong>{currentSuggestion.title}:</strong> {currentSuggestion.message}
-            </p>
-
-            <div className="flex flex-wrap gap-3">
-              {currentSuggestion.actions.map((action: any, index: number) => (
-                <button
-                  key={index}
-                  onClick={action.action}
-                  className={`
-                    px-4 py-2 rounded-lg font-medium transition-all duration-200
-                    ${index === 0
-                      ? 'bg-[#4C5EFF] text-white hover:bg-[#3B4ACC] shadow-sm hover:shadow-md'
-                      : 'bg-white text-[#334155] hover:bg-[#F8FAFC] border border-[#E5E7EB]'
-                    }
-                  `}
-                  style={{ fontFamily: 'Inter, sans-serif', fontWeight: 500 }}
-                >
-                  {action.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
+      <div className="flex flex-col gap-3">
+        {currentSuggestion.actions.map((action: any, index: number) => (
           <button
-            onClick={dismiss}
-            className="text-[#64748B] hover:text-[#334155] transition-colors p-1 hover:bg-[#F1F5F9] rounded-full"
-            title="Dismiss suggestion"
+            key={index}
+            onClick={action.action}
+            className={`
+              w-full flex items-center justify-between px-4 py-3 rounded-lg text-sm font-medium transition-all duration-200
+              ${index === 0
+                ? 'bg-ai-blue-600 text-white hover:bg-ai-blue-700 shadow-sm hover:shadow-md'
+                : 'bg-slate-50 text-slate-700 hover:bg-slate-100 border border-slate-200'
+              }
+            `}
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
+            {action.label}
+            {index === 0 && <ArrowRight className="w-4 h-4" />}
           </button>
-        </div>
+        ))}
       </div>
     </div>
   )

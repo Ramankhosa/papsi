@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import { FileText, Lightbulb, Search, Clock, Sparkles } from 'lucide-react'
 
 interface ActivityItem {
   id: string
@@ -8,7 +9,7 @@ interface ActivityItem {
   title: string
   description: string
   timestamp: Date
-  icon: string
+  icon: any
   kishoNote?: string
 }
 
@@ -26,56 +27,54 @@ export default function ActivityFeed({ limit = 5 }: ActivityFeedProps) {
 
   const generateMockActivities = async () => {
     // In a real implementation, this would fetch from various APIs
-    // For now, we'll generate some mock recent activities
     const mockActivities: ActivityItem[] = [
       {
         id: '1',
         type: 'idea',
-        title: '3 new ideas auto-added',
-        description: 'AI discovered patent-worthy concepts in medical devices',
+        title: 'New Concept Detected',
+        description: 'AI cross-referenced your notes with medical device trends.',
         timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000), // 2 hours ago
-        icon: '🧩',
+        icon: Lightbulb,
         kishoNote: 'Potential overlap with Project Bio-Mesh — review recommended.'
       },
       {
         id: '2',
         type: 'draft',
-        title: 'Smart Bandage System draft',
-        description: 'Reached 60% completion with automated sections',
+        title: 'Smart Bandage System',
+        description: 'Draft auto-saved at 60% completion.',
         timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000), // 4 hours ago
-        icon: '📜',
-        kishoNote: 'Claims section ready for your expert touch.'
+        icon: FileText,
+        kishoNote: 'Claims section is structured. Ready for manual refinement.'
       },
       {
         id: '3',
         type: 'novelty',
-        title: 'AI Classroom Monitor search',
-        description: 'Completed with 2 unique patent matches found',
+        title: 'Classroom Monitor Search',
+        description: 'Search complete. 2 unique patent matches found.',
         timestamp: new Date(Date.now() - 6 * 60 * 60 * 1000), // 6 hours ago
-        icon: '🔍',
-        kishoNote: 'One match shows 85% similarity — consider differentiation strategy.'
+        icon: Search,
+        kishoNote: 'One match shows 85% similarity — differentiation strategy needed.'
       },
       {
         id: '4',
         type: 'reservation',
         title: 'IoT Security Framework',
-        description: 'Idea reserved for 28 days remaining',
+        description: 'Reservation active. 28 days remaining.',
         timestamp: new Date(Date.now() - 24 * 60 * 60 * 1000), // 1 day ago
-        icon: '⏰',
-        kishoNote: 'Similar patents filed last quarter — timing is perfect.'
+        icon: Clock,
+        kishoNote: 'Similar patents filed recently in EU. Recommend prioritizing.'
       },
       {
         id: '5',
         type: 'idea',
-        title: 'Sustainable Packaging concept',
-        description: 'Generated from recent industry trends analysis',
+        title: 'Sustainable Packaging',
+        description: 'Concept captured from recent session.',
         timestamp: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago
-        icon: '🌱',
+        icon: Lightbulb,
         kishoNote: 'Market gap identified in biodegradable composites.'
       }
     ]
 
-    // Simulate API delay
     setTimeout(() => {
       setActivities(mockActivities.slice(0, limit))
       setLoading(false)
@@ -95,20 +94,14 @@ export default function ActivityFeed({ limit = 5 }: ActivityFeedProps) {
 
   if (loading) {
     return (
-      <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-xl p-6 mb-8">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-          <span className="mr-2">🕊</span>
-          While you were away
-        </h3>
-        <div className="space-y-4">
+      <div className="bg-white border border-slate-200 rounded-xl p-6">
+        <div className="space-y-6">
           {[1, 2, 3].map((i) => (
-            <div key={i} className="animate-pulse">
-              <div className="flex items-start space-x-3">
-                <div className="w-8 h-8 bg-gray-200 rounded-full"></div>
-                <div className="flex-1">
-                  <div className="h-4 bg-gray-200 rounded w-3/4 mb-2"></div>
-                  <div className="h-3 bg-gray-200 rounded w-1/2"></div>
-                </div>
+            <div key={i} className="animate-pulse flex gap-4">
+              <div className="w-8 h-8 bg-slate-100 rounded-full shrink-0" />
+              <div className="flex-1 space-y-2">
+                <div className="h-4 bg-slate-100 rounded w-3/4" />
+                <div className="h-3 bg-slate-100 rounded w-1/2" />
               </div>
             </div>
           ))}
@@ -118,51 +111,49 @@ export default function ActivityFeed({ limit = 5 }: ActivityFeedProps) {
   }
 
   return (
-    <div className="bg-white/10 backdrop-blur-md border border-white/20 rounded-xl p-6 mb-8">
-      <h3 className="text-lg font-semibold text-gray-900 mb-6 flex items-center">
-        <span className="mr-2">🕊</span>
-        While you were away
-      </h3>
-
-      <div className="space-y-6">
+    <div className="bg-white border border-slate-200 rounded-xl p-0 overflow-hidden shadow-sm">
+      <div className="divide-y divide-slate-100">
         {activities.map((activity, index) => (
-          <div key={activity.id} className="relative">
-            {/* Timeline dot */}
-            {index < activities.length - 1 && (
-              <div className="absolute left-4 top-10 bottom-0 w-px bg-gradient-to-b from-gray-200 to-transparent"></div>
-            )}
-
-            <div className="flex items-start space-x-4">
-              <div className="flex-shrink-0">
-                <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-cyan-500 rounded-full flex items-center justify-center text-white text-sm shadow-lg">
-                  {activity.icon}
+          <div key={activity.id} className="group p-4 hover:bg-slate-50 transition-colors">
+            <div className="flex items-start gap-4">
+              {/* Icon */}
+              <div className="relative shrink-0">
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center border ${
+                  activity.type === 'idea' ? 'bg-amber-50 border-amber-100 text-amber-600' :
+                  activity.type === 'draft' ? 'bg-ai-blue-50 border-ai-blue-100 text-ai-blue-600' :
+                  activity.type === 'novelty' ? 'bg-purple-50 border-purple-100 text-purple-600' :
+                  'bg-slate-50 border-slate-100 text-slate-500'
+                }`}>
+                  <activity.icon className="w-5 h-5" />
                 </div>
+                
+                {/* Connector Line */}
+                {index < activities.length - 1 && (
+                   <div className="absolute top-10 left-1/2 -translate-x-1/2 w-px h-12 bg-slate-100 group-hover:bg-slate-200 transition-colors md:block hidden" />
+                )}
               </div>
 
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between mb-1">
-                  <h4 className="text-sm font-medium text-gray-900 truncate">
+                  <h4 className="text-sm font-semibold text-ai-graphite-900">
                     {activity.title}
                   </h4>
-                  <span className="text-xs text-gray-500 ml-2 flex-shrink-0">
+                  <span className="text-xs font-mono text-slate-400 whitespace-nowrap ml-2">
                     {formatTimeAgo(activity.timestamp)}
                   </span>
                 </div>
 
-                <p className="text-sm text-gray-600 mb-2">
+                <p className="text-sm text-slate-500 mb-3 leading-relaxed">
                   {activity.description}
                 </p>
 
+                {/* Kisho Insight Box */}
                 {activity.kishoNote && (
-                  <div className="bg-gradient-to-r from-cyan-50 to-blue-50 border border-cyan-200/50 rounded-lg p-3 mt-2">
-                    <div className="flex items-start space-x-2">
-                      <span className="text-cyan-600 text-xs font-medium flex-shrink-0 mt-0.5">
-                        💭 Kisho:
-                      </span>
-                      <p className="text-xs text-cyan-700 leading-relaxed">
-                        {activity.kishoNote}
-                      </p>
-                    </div>
+                  <div className="flex gap-3 bg-ai-blue-50/50 rounded-lg p-3 border border-ai-blue-100/50">
+                    <Sparkles className="w-4 h-4 text-ai-blue-500 shrink-0 mt-0.5" />
+                    <p className="text-xs text-ai-blue-700/90 leading-relaxed font-medium">
+                      {activity.kishoNote}
+                    </p>
                   </div>
                 )}
               </div>
@@ -170,17 +161,6 @@ export default function ActivityFeed({ limit = 5 }: ActivityFeedProps) {
           </div>
         ))}
       </div>
-
-      {activities.length === 0 && (
-        <div className="text-center py-8">
-          <div className="text-gray-400 mb-2">
-            <svg className="mx-auto h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-            </svg>
-          </div>
-          <p className="text-sm text-gray-500">No recent activity to show</p>
-        </div>
-      )}
     </div>
   )
 }
