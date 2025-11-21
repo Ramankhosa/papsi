@@ -22,26 +22,31 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
           }
         }
 
-        // 2. Get tenant's plan (via ATI token inheritance)
-        const atiToken = await prisma.aTIToken.findFirst({
+        // 2. Get tenant's current active plan assignment
+        const tenantPlan = await prisma.tenantPlan.findFirst({
           where: {
             tenantId: request.tenantId,
-            status: 'ISSUED'
+            status: 'ACTIVE'
           },
-          select: { planTier: true }
+          include: {
+            plan: true
+          },
+          orderBy: {
+            effectiveFrom: 'desc'
+          }
         })
 
-        if (!atiToken?.planTier) {
+        if (!tenantPlan?.plan) {
           return {
             allowed: false,
-            reason: 'No plan found for tenant'
+            reason: 'No active plan found for tenant'
           }
         }
 
         // 3. Get plan details
         const plan = await prisma.plan.findFirst({
           where: {
-            code: atiToken.planTier,
+            id: tenantPlan.planId,
             status: 'ACTIVE'
           },
           include: {
@@ -55,12 +60,7 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
           }
         })
 
-        if (!plan) {
-          return {
-            allowed: false,
-            reason: `Plan '${atiToken.planTier}' not found`
-          }
-        }
+        // Plan is already validated from tenantPlan above
 
         // 4. Check feature availability
         const planFeature = plan.planFeatures.find(
@@ -130,16 +130,21 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
 
     async getPolicyLimits(tenantId: string, taskCode?: any): Promise<PolicyLimits> {
       try {
-        // Get tenant's plan
-        const atiToken = await prisma.aTIToken.findFirst({
+        // Get tenant's current active plan
+        const tenantPlan = await prisma.tenantPlan.findFirst({
           where: {
             tenantId,
-            status: 'ISSUED'
+            status: 'ACTIVE'
           },
-          select: { planTier: true }
+          include: {
+            plan: true
+          },
+          orderBy: {
+            effectiveFrom: 'desc'
+          }
         })
 
-        if (!atiToken?.planTier) {
+        if (!tenantPlan?.plan) {
           return config.defaultLimits
         }
 
@@ -147,7 +152,7 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
         const policyRules = await prisma.policyRule.findMany({
           where: {
             OR: [
-              { scope: 'plan', scopeId: atiToken.planTier },
+              { scope: 'plan', scopeId: tenantPlan.plan.code },
               { scope: 'tenant', scopeId: tenantId }
             ],
             ...(taskCode && { taskCode })

@@ -102,15 +102,20 @@ export function createReservationService(config: MeteringConfig): ReservationSer
     async getConcurrencyLimit(tenantId: string, taskCode?: string): Promise<number> {
       try {
         // Get tenant's plan
-        const atiToken = await prisma.aTIToken.findFirst({
+        const tenantPlan = await prisma.tenantPlan.findFirst({
           where: {
             tenantId,
-            status: 'ISSUED'
+            status: 'ACTIVE'
           },
-          select: { planTier: true }
+          include: {
+            plan: true
+          },
+          orderBy: {
+            effectiveFrom: 'desc'
+          }
         })
 
-        if (!atiToken?.planTier) {
+        if (!tenantPlan?.plan) {
           return 1 // Default low limit
         }
 
@@ -118,7 +123,7 @@ export function createReservationService(config: MeteringConfig): ReservationSer
         const concurrencyRule = await prisma.policyRule.findFirst({
           where: {
             OR: [
-              { scope: 'plan', scopeId: atiToken.planTier },
+              { scope: 'plan', scopeId: tenantPlan.plan.code },
               { scope: 'tenant', scopeId: tenantId }
             ],
             key: 'concurrency_limit',

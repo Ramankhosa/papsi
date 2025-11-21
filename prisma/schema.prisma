@@ -14,6 +14,7 @@ enum TenantStatus {
 
 enum UserRole {
   SUPER_ADMIN
+  SUPER_ADMIN_VIEWER
   OWNER
   ADMIN
   MANAGER

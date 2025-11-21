@@ -49,7 +49,7 @@ export default function QuotaControllerPage() {
       window.location.href = '/login'
       return
     }
-    if (!user.roles?.includes('SUPER_ADMIN')) {
+    if (!user.roles?.some(role => role === 'SUPER_ADMIN' || role === 'SUPER_ADMIN_VIEWER')) {
       window.location.href = '/dashboard'
       return
     }
@@ -164,7 +164,7 @@ export default function QuotaControllerPage() {
     )
   }
 
-  if (!user.roles?.includes('SUPER_ADMIN')) {
+  if (!user.roles?.some(role => role === 'SUPER_ADMIN' || role === 'SUPER_ADMIN_VIEWER')) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-red-600">Access denied. Super admin privileges required.</div>
@@ -320,4 +320,3 @@ export default function QuotaControllerPage() {
     </div>
   )
 }
-

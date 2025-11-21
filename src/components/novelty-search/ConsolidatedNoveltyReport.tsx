@@ -166,6 +166,7 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
   const execSummary = stage4?.executive_summary || {};
   const finalRemarks = stage4?.final_remarks || stage4?.concluding_remarks || {};
   const riskFactors = stage4?.risk_factors || finalRemarks?.key_risks || [];
+  const ideaSuggestions: any[] = Array.isArray(stage4?.idea_bank_suggestions) ? stage4.idea_bank_suggestions : [];
 
   // Handle recommendations - could be in structured format or array format
   let recommendations = [];
@@ -368,7 +369,6 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
               </div>
             </SectionCard>
           </div>
-
           <div className="md:col-span-1">
             <SectionCard title="Prior Art Stats" className="h-full mb-0">
               <div className="space-y-4">
@@ -604,6 +604,69 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
             })}
           </div>
         </section>
+
+        {/* --- IDEA BANK SUGGESTIONS --- */}
+        {(ideaSuggestions.length > 0) && (
+          <SectionCard title="Idea Bank: White Space Opportunities" className="mb-8 bg-gradient-to-r from-indigo-50 to-violet-50 border-indigo-100">
+            <div className="space-y-4">
+              <p className="text-sm text-indigo-800 mb-4">
+                Based on the analysis of prior art gaps, here are potential non-obvious invention directions:
+              </p>
+              <div className="grid md:grid-cols-2 gap-4">
+                {ideaSuggestions.map((idea: any, idx: number) => (
+                  <div key={idx} className="bg-white p-4 rounded-lg border border-indigo-100 shadow-sm hover:shadow-md transition-shadow">
+                    <div className="flex items-start justify-between mb-2">
+                      <h4 className="font-bold text-indigo-900 text-sm">{idea.title || 'Untitled Idea'}</h4>
+                      <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] rounded-full font-medium uppercase tracking-wider">
+                        New Concept
+                      </span>
+                    </div>
+                    
+                    {/* New structure fields */}
+                    {idea.problem_solved && (
+                       <div className="mb-2">
+                        <span className="text-xs font-semibold text-slate-500 uppercase">Problem: </span>
+                        <span className="text-xs text-slate-700">{idea.problem_solved}</span>
+                      </div>
+                    )}
+
+                    <div className="mb-2">
+                      <span className="text-xs font-semibold text-slate-500 uppercase">Mechanism: </span>
+                      <p className="text-xs text-slate-600 mt-1 line-clamp-3">{idea.core_principle}</p>
+                    </div>
+
+                    {idea.novel_mechanism && (
+                       <div className="mb-2">
+                        <span className="text-xs font-semibold text-slate-500 uppercase">Novelty: </span>
+                         <p className="text-xs text-slate-600 mt-1 line-clamp-3">{idea.novel_mechanism}</p>
+                      </div>
+                    )}
+
+                    <div className="mb-2">
+                      <span className="text-xs font-semibold text-slate-500 uppercase">Advantage: </span>
+                      <p className="text-xs text-slate-600 mt-1">{idea.expected_advantage}</p>
+                    </div>
+
+                    {idea.non_obvious_extension && (
+                      <div className="mb-3 p-2 bg-amber-50 border border-amber-100 rounded text-xs">
+                        <span className="font-semibold text-amber-800">Cross-Ref Killshot: </span>
+                        <span className="text-amber-900">{idea.non_obvious_extension}</span>
+                      </div>
+                    )}
+                    
+                    <div className="flex flex-wrap gap-1.5 mt-3">
+                      {(idea.tags || []).map((t: string, i: number) => (
+                        <span key={i} className="px-2 py-0.5 bg-slate-100 text-slate-500 text-[10px] rounded">
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </SectionCard>
+        )}
 
         {/* --- FOOTER --- */}
         <footer className="mt-12 pt-8 border-t border-slate-200 text-center text-xs text-slate-400">

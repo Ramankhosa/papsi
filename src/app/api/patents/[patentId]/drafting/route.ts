@@ -11,6 +11,7 @@ import crypto from 'crypto';
 import plantumlEncoder from 'plantuml-encoder';
 import path from 'path';
 import fs from 'fs/promises';
+import { imageSize } from 'image-size';
 
 export async function GET(
   request: NextRequest,
@@ -525,45 +526,52 @@ ${batchText}`
 
   // STEP 2: Idea Generation (separate call)
   console.log('Starting idea generation with Gemini 2.5 Flash-Lite...')
-  const ideaPrompt = `You are an expert patent strategist and creative technologist.
-Your task is to propose out-of-the-box, non-obvious, patent-worthy invention ideas inspired byÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Âbut not limited toÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Âthe patterns, gaps, and limitations in the references.
+  const ideaPrompt = `You are a dual-headed entity:
+- Left brain: ruthless patent examiner who kills any idea that is obvious under 35 U.S.C. §103 or abstract under §101.
+- Right brain: visionary CTO who invents only “white-space” solutions that make the cited references obsolete.
+
+Both brains must co-sign every concept or it is rejected.
 
 INVENTION CONTEXT:
 Title: ${title}
 Search Query: ${query}
 
-CREATIVITY & NOVELTY CONSTRAINTS:
-- Do NOT reference specific patent numbers or identifiers (no "patent #1" etc.).
-- Avoid incremental tweaks; prefer concept shifts, cross-domain transfers, and surprising combinations.
-- Ensure ideas are technically feasible with current or near-term technology.
-- Favor solutions that would likely pass a non-obviousness test.
-- Each idea must stand alone (no citations) and be understandable to a patent examiner.
+CORE OBJECTIVE:
+The user is looking for "White Space" inventions—areas where no patent currently exists.
+Do not just improve the references. Make them obsolete.
+Think from First Principles: What is the fundamental physics/logic limit here, and how do we bypass it?
 
-IDEA GENERATION BRIEFS (use at least two per idea):
-- Cross-domain transfer (e.g., environmental sensing ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ medical diagnostics)
-- Invert control or data flow (edge ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ cloud, cloud ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ edge, passive ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ active)
-- New constraint satisfaction (e.g., ultra-low power, privacy-by-design, zero-calibration)
-- Hybridize modalities (e.g., RF + vision, vibrometry + thermal)
-- Self-adaptive or self-healing mechanism (continuous learning, closed-loop)
-- System-level re-architecture (coordination, marketplaces, incentive design)
+INVENTION BRIEFING:
+Generate exactly 5 patent-grade concepts that:
+1. Are **orthogonal** to every mechanism disclosed in REFERENCES.
+2. Contain at least one **physical structure** or **chemical composition** (no pure algorithms, no “AI to optimize”).
+3. Can be **enabled** by a PHOSITA with only routine experimentation (no perpetual motion, no room-temperature superconductors unless you supply the formula).
+4. Pass the **“cold shower” test**: if you woke up tomorrow and read the claim on the front page of TechCrunch, you would think “wow, that’s clever—and nobody did that before.”
+
+CREATIVITY FILTERS (apply ≥1 per idea):
+A. **Anti-Solution**: Invert the primary physical state (e.g., if it's rigid, make it fluid; if it's centralized, make it swarm-based).
+B. **Resource Starvation**: Design for zero electricity, zero RF bandwidth, or zero rare-earth materials.
+C. **Biomimicry**: Copy a biological mechanism that has **no** existing engineering analog in the field.
+D. **Dimensional Shift**: Replace spatial hardware with temporal encoding, or vice-versa.
+E. **Cross-Pollination**: Import a physical phenomenon from an unrelated domain (e.g., high-frequency trading latency-arbitrage → ultrasonic acoustic arbitrage in concrete sensing).
 
 OUTPUT SPECIFICATION:
 Return ONLY valid JSON with exactly this schema.
 {
   "idea_bank_suggestions": [
     {
-      "title": "Short inventive concept (ÃƒÂ¢Ã¢â‚¬Â°Ã‚Â¤15 words)",
-      "core_principle": "2ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“3 sentences on the technical mechanism; avoid citations",
-      "expected_advantage": "1ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“2 sentences on measurable benefits vs current art",
-      "tags": ["technical-domain", "application", "novelty-type", "cross-discipline"],
-      "non_obvious_extension": "1ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Å“2 sentences applying the principle in an unrelated field"
+      "title": "≤12 words, technical, no fluff",
+      "core_principle": "One sentence problem statement anchored in white space, followed by: Unlike standard approaches that use X, this embodiment uses Y (2-3 sentences, physical detail)",
+      "expected_advantage": "Concrete commercial scenario with $-size if possible",
+      "tags": ["technical-domain", "application", "disruption-type", "cross-discipline"],
+      "non_obvious_extension": "Exact sentence from REFERENCES that this idea avoids (Cross-ref Killshot)"
     }
   ]
 }
 
-GENERATE 5 IDEAS.
+GENERATE 5 RADICAL IDEAS.
 
-REFERENCE SNAPSHOTS (for inspiration; do not cite):
+REFERENCE SNAPSHOTS (Analyze these to find what to AVOID or DISRUPT):
 ${candidatesText}`
 
   const ideaResult = await llmGateway.executeLLMOperation(request, {
@@ -572,7 +580,11 @@ ${candidatesText}`
     modelClass: 'gemini-2.5-flash-lite',
     idempotencyKey: crypto.randomUUID(),
     inputTokens: Math.ceil(ideaPrompt.length / 4),
-    parameters: { maxOutputTokens: 5000 }
+    parameters: { 
+      maxOutputTokens: 5000,
+      temperature: 0.9,
+      topP: 0.95
+    }
   })
 
   console.log('Idea generation model used:', ideaResult?.response?.modelClass || 'unknown')
@@ -1114,14 +1126,41 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
         try {
           const imgBuffer = await fs.readFile(candidatePath)
 
-          // Calculate size: use intrinsic pixel size at 300 DPI, scale down only if necessary
-          // For now, use a reasonable default size and let docx handle scaling
+          // Calculate size: preserve aspect ratio
           const img = imgBuffer instanceof Buffer ? new Uint8Array(imgBuffer) : imgBuffer
+          
+          let width = 500 // default fallback
+          let height = 400 // default fallback
+
+          try {
+            const dims = imageSize(imgBuffer)
+            if (dims.width && dims.height) {
+              width = dims.width
+              height = dims.height
+
+              // Calculate max width in pixels based on page settings
+              // Page width (11906 TWIPS) - 2 * Margin (1440 TWIPS) = 9026 TWIPS available
+              // 1440 TWIPS = 1 inch. 
+              // Standard docx image resolution is often 96 DPI.
+              // Max Width in Pixels = (Available TWIPS / 1440) * 96
+              const availableTwips = 11906 - (pageMargin * 2)
+              const maxWidth = Math.floor(availableTwips / 1440 * 96)
+              
+              if (width > maxWidth) {
+                const ratio = maxWidth / width
+                width = maxWidth
+                height = Math.round(height * ratio)
+              }
+            }
+          } catch (e) {
+            console.warn('Failed to calculate image dimensions', e)
+          }
+
           imageElement = new ImageRun({
             data: img,
             transformation: {
-              width: 500, // Will be scaled by docx if needed to fit content area
-              height: 400
+              width: width,
+              height: height
             }
           })
           break

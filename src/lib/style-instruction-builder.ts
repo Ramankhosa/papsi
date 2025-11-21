@@ -125,17 +125,25 @@ export async function getGatedStyleInstructions(
   tenantId: string,
   userId: string
 ): Promise<SectionInstructions | null> {
-  // Check plan tier via ATI token
-  const ati = await prisma.aTIToken.findFirst({
-    where: { tenantId, status: 'ISSUED' },
-    select: { planTier: true }
+  // Check tenant's current active plan
+  const tenantPlan = await prisma.tenantPlan.findFirst({
+    where: {
+      tenantId,
+      status: 'ACTIVE'
+    },
+    include: {
+      plan: true
+    },
+    orderBy: {
+      effectiveFrom: 'desc'
+    }
   })
-  const planTier = ati?.planTier
-  if (!planTier) return null
+
+  if (!tenantPlan?.plan) return null
 
   const planHasFeature = await prisma.planFeature.findFirst({
     where: {
-      plan: { code: planTier, status: 'ACTIVE' },
+      planId: tenantPlan.plan.id,
       feature: { code: 'PERSONA_SYNC' }
     }
   })

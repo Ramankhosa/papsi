@@ -172,8 +172,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Token expired' }, { status: 401 })
     }
 
-    // Check if user is super admin
-    if (!payload.roles?.includes('SUPER_ADMIN')) {
+    // Check if user is super admin or super admin viewer
+    if (!payload.roles?.some((role: string) => role === 'SUPER_ADMIN' || role === 'SUPER_ADMIN_VIEWER')) {
       return NextResponse.json({ error: 'Super admin access required' }, { status: 403 })
     }
 

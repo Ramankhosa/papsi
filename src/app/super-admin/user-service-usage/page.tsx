@@ -64,7 +64,7 @@ export default function UserServiceUsagePage() {
       return
     }
 
-    if (!user.roles?.includes('SUPER_ADMIN')) {
+    if (!user.roles?.some(role => role === 'SUPER_ADMIN' || role === 'SUPER_ADMIN_VIEWER')) {
       window.location.href = '/dashboard'
       return
     }
@@ -73,7 +73,7 @@ export default function UserServiceUsagePage() {
   }, [user])
 
   useEffect(() => {
-    if (user && user.roles?.includes('SUPER_ADMIN')) {
+    if (user && user.roles?.some(role => role === 'SUPER_ADMIN' || role === 'SUPER_ADMIN_VIEWER')) {
       fetchUsage()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -173,7 +173,7 @@ export default function UserServiceUsagePage() {
     )
   }
 
-  if (!user.roles?.includes('SUPER_ADMIN')) {
+  if (!user.roles?.some(role => role === 'SUPER_ADMIN' || role === 'SUPER_ADMIN_VIEWER')) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-red-600">Access denied. Super admin privileges required.</div>
@@ -425,4 +425,3 @@ export default function UserServiceUsagePage() {
     </div>
   )
 }
-

@@ -7,7 +7,7 @@ export interface User {
   user_id: string
   email: string
   tenant_id: string | null
-  roles: ('SUPER_ADMIN' | 'OWNER' | 'ADMIN' | 'MANAGER' | 'ANALYST' | 'VIEWER')[]
+  roles: ('SUPER_ADMIN' | 'SUPER_ADMIN_VIEWER' | 'OWNER' | 'ADMIN' | 'MANAGER' | 'ANALYST' | 'VIEWER')[]
   ati_id: string | null
 }
 
@@ -181,7 +181,10 @@ export function useRoleAccess() {
   }
 
   return {
-    isSuperAdmin: hasAnyRole(user, ['SUPER_ADMIN']),
+    // Treat SUPER_ADMIN_VIEWER as a super admin for navigation/visibility,
+    // but permissions are enforced separately in the API layer.
+    isSuperAdmin: hasAnyRole(user, ['SUPER_ADMIN', 'SUPER_ADMIN_VIEWER']),
+    isSuperAdminViewer: hasAnyRole(user, ['SUPER_ADMIN_VIEWER']),
     isTenantOwner: hasAnyRole(user, ['OWNER']),
     isTenantAdmin: hasAnyRole(user, ['OWNER', 'ADMIN']),
     isManager: hasAnyRole(user, ['MANAGER']),

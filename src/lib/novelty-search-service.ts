@@ -3658,24 +3658,43 @@ OUTPUT JSON:
         .join('\n\n');
 
       basePrompt += `\n\nIDEA GENERATION (for idea_bank_suggestions):\n`;
-      basePrompt += `You are an expert patent strategist and creative technologist. Propose non-obvious, patent-worthy ideas inspired by gaps and patterns in the analyzed references.\n`;
+      basePrompt += `You are a dual-headed entity:\n`;
+      basePrompt += `- Left brain: ruthless patent examiner who kills any idea that is obvious under 35 U.S.C. §103 or abstract under §101.\n`;
+      basePrompt += `- Right brain: visionary CTO who invents only “white-space” solutions that make the cited references obsolete.\n`;
+      basePrompt += `Both brains must co-sign every concept or it is rejected.\n`;
+
       basePrompt += `\nINVENTION CONTEXT:\nTitle: ${String(searchRun.title || '')}\nSearch Query: ${String((stage0Data as any)?.searchQuery || '')}\n`;
-      basePrompt += `\nCREATIVITY & NOVELTY CONSTRAINTS:\n`;
-      basePrompt += `- Avoid incremental tweaks; favor cross-domain transfers and surprising combinations.\n`;
-      basePrompt += `- Ensure technical feasibility (present or near-term).\n`;
-      basePrompt += `- Prefer ideas likely to pass non-obviousness.\n`;
-      basePrompt += `- Do NOT cite specific patent numbers in titles or text.\n`;
-      basePrompt += `\nIDEA GENERATION BRIEFS (use ≥2 per idea):\n`;
-      basePrompt += `- Cross-domain transfer (e.g., technique from domain A applied to domain B).\n`;
-      basePrompt += `- Invert control/data flow (edge↔cloud, passive↔active).\n`;
-      basePrompt += `- New constraint satisfaction (e.g., ultra-low power, privacy-by-design, zero-calibration).\n`;
-      basePrompt += `- Hybridize modalities (e.g., RF+vision, vibrometry+thermal).\n`;
-      basePrompt += `- Self-adaptive/self-healing mechanism (closed-loop, continuous learning).\n`;
-      basePrompt += `- System-level re-architecture (coordination, marketplaces, incentives).\n`;
+      
+      basePrompt += `\nCORE OBJECTIVE:\n`;
+      basePrompt += `The user is looking for "White Space" inventions—areas where no patent currently exists.\n`;
+      basePrompt += `Do not just improve the references. Make them obsolete.\n`;
+      basePrompt += `Think from First Principles: What is the fundamental physics/logic limit here, and how do we bypass it?\n`;
+
+      basePrompt += `\nINVENTION BRIEFING:\n`;
+      basePrompt += `Generate exactly 5 patent-grade concepts that:\n`;
+      basePrompt += `1. Are **orthogonal** to every mechanism disclosed in REFERENCES.\n`;
+      basePrompt += `2. Contain at least one **physical structure** or **chemical composition** (no pure algorithms, no “AI to optimize”).\n`;
+      basePrompt += `3. Can be **enabled** by a PHOSITA with only routine experimentation (no perpetual motion, no room-temperature superconductors unless you supply the formula).\n`;
+      basePrompt += `4. Pass the **“cold shower” test**: if you woke up tomorrow and read the claim on the front page of TechCrunch, you would think “wow, that’s clever—and nobody did that before.”\n`;
+
+      basePrompt += `\nCREATIVITY FILTERS (apply ≥1 per idea):\n`;
+      basePrompt += `A. **Anti-Solution**: Invert the primary physical state (e.g., if it's rigid, make it fluid; if it's centralized, make it swarm-based).\n`;
+      basePrompt += `B. **Resource Starvation**: Design for zero electricity, zero RF bandwidth, or zero rare-earth materials.\n`;
+      basePrompt += `C. **Biomimicry**: Copy a biological mechanism that has **no** existing engineering analog in the field.\n`;
+      basePrompt += `D. **Dimensional Shift**: Replace spatial hardware with temporal encoding, or vice-versa.\n`;
+      basePrompt += `E. **Cross-Pollination**: Import a physical phenomenon from an unrelated domain (e.g., high-frequency trading latency-arbitrage → ultrasonic acoustic arbitrage in concrete sensing).\n`;
+
       basePrompt += `\nOUTPUT SCHEMA (embed inside the overall JSON under key 'idea_bank_suggestions'):\n`;
-      basePrompt += `Array of 3-5 objects with fields: { title, core_principle (2-3 sentences on mechanism), expected_advantage (1-2 sentences on measurable benefits), tags: [short strings], non_obvious_extension (1-2 sentences applying the principle in an unrelated field) }.\n`;
-      basePrompt += `Do not include citations or patent numbers in ideas.\n`;
-      basePrompt += `\nREFERENCE SNAPSHOTS (for inspiration; do not cite):\n${__ideaGenRefs}`;
+      basePrompt += `Array of 3-5 objects with fields:\n`;
+      basePrompt += `{\n`;
+      basePrompt += `  "title": "≤12 words, technical, no fluff",\n`;
+      basePrompt += `  "core_principle": "One sentence problem statement anchored in white space, followed by: Unlike standard approaches that use X, this embodiment uses Y (2-3 sentences, physical detail)",\n`;
+      basePrompt += `  "expected_advantage": "Concrete commercial scenario with $-size if possible",\n`;
+      basePrompt += `  "tags": ["technical-domain", "application", "disruption-type", "cross-discipline"],\n`;
+      basePrompt += `  "non_obvious_extension": "Exact sentence from REFERENCES that this idea avoids (Cross-ref Killshot)"\n`;
+      basePrompt += `}\n`;
+
+      basePrompt += `\nREFERENCE SNAPSHOTS (Analyze these to find what to AVOID or DISRUPT):\n${__ideaGenRefs}`;
 
       // If no intersecting patents, add explicit instruction for the report
       if (!selectedPatents || selectedPatents.length === 0) {

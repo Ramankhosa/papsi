@@ -104,12 +104,26 @@ export function requirePlatformScope() {
       )
     }
 
-    // Ensure user has SUPER_ADMIN role for platform operations
-    if (!user!.roles?.includes('SUPER_ADMIN')) {
-      return NextResponse.json(
-        { code: 'FORBIDDEN', message: 'Super Admin role required for platform operations' },
-        { status: 403 }
-      )
+    const roles = user!.roles || []
+    const isSuperAdmin = roles.includes('SUPER_ADMIN')
+    const isSuperAdminViewer = roles.includes('SUPER_ADMIN_VIEWER')
+
+    // For read-only (GET) platform operations, allow both SUPER_ADMIN and SUPER_ADMIN_VIEWER
+    if (request.method === 'GET') {
+      if (!isSuperAdmin && !isSuperAdminViewer) {
+        return NextResponse.json(
+          { code: 'FORBIDDEN', message: 'Super Admin or Super Admin Viewer role required for platform read operations' },
+          { status: 403 }
+        )
+      }
+    } else {
+      // For write operations (POST/PUT/DELETE/etc.), require full SUPER_ADMIN
+      if (!isSuperAdmin) {
+        return NextResponse.json(
+          { code: 'FORBIDDEN', message: 'Super Admin role required for platform write operations' },
+          { status: 403 }
+        )
+      }
     }
 
     return null // Continue to next handler

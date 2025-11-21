@@ -20,7 +20,7 @@ export default function SuperAdminAnalyticsPage() {
       return
     }
 
-    if (!user.roles?.includes('SUPER_ADMIN')) {
+    if (!user.roles?.some(role => role === 'SUPER_ADMIN' || role === 'SUPER_ADMIN_VIEWER')) {
       // Redirect to appropriate dashboard if not super admin
       window.location.href = '/dashboard'
       return
@@ -54,7 +54,7 @@ export default function SuperAdminAnalyticsPage() {
     )
   }
 
-  if (!user.roles?.includes('SUPER_ADMIN')) {
+  if (!user.roles?.some(role => role === 'SUPER_ADMIN' || role === 'SUPER_ADMIN_VIEWER')) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-red-600">Access denied. Super admin privileges required.</div>

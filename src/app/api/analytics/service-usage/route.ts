@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    const isSuperAdmin = user.roles?.includes('SUPER_ADMIN')
+    const isSuperAdmin = user.roles?.some((role: string) => role === 'SUPER_ADMIN' || role === 'SUPER_ADMIN_VIEWER')
     if (!isSuperAdmin) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 })
     }
@@ -231,4 +231,3 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
-

@@ -53,7 +53,8 @@ export class GeminiProvider implements LLMProvider {
     const providerLimits = this.getTokenLimits(modelClass)
     const requested = limits.maxTokensOut || providerLimits.output
     const maxTokens = Math.min(requested, providerLimits.output)
-    const temperature = 0.7 // Default temperature
+    const temperature = request.parameters?.temperature ?? 0.7 // Default temperature 0.7 if not specified
+    const topP = request.parameters?.topP ?? 0.95 // Default topP 0.95
 
     try {
       const model = this.client.getGenerativeModel({
@@ -61,6 +62,7 @@ export class GeminiProvider implements LLMProvider {
         generationConfig: {
           maxOutputTokens: maxTokens,
           temperature: temperature,
+          topP: topP
         }
       })
 

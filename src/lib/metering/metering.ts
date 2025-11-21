@@ -148,23 +148,28 @@ export function createMeteringService(config: MeteringConfig): MeteringService {
 
     async checkQuota(request: FeatureRequest): Promise<QuotaCheckResult> {
       try {
-        // Get tenant's plan
-        const atiToken = await prisma.aTIToken.findFirst({
+        // Get tenant's current active plan
+        const tenantPlan = await prisma.tenantPlan.findFirst({
           where: {
             tenantId: request.tenantId,
-            status: 'ISSUED'
+            status: 'ACTIVE'
           },
-          select: { planTier: true }
+          include: {
+            plan: true
+          },
+          orderBy: {
+            effectiveFrom: 'desc'
+          }
         })
 
-        if (!atiToken?.planTier) {
+        if (!tenantPlan?.plan) {
           return { allowed: false, remaining: { monthly: 0, daily: 0 } }
         }
 
         // Get plan feature limits
         const planFeature = await prisma.planFeature.findFirst({
           where: {
-            plan: { code: atiToken.planTier },
+            planId: tenantPlan.plan.id,
             feature: { code: request.featureCode }
           }
         })
@@ -225,15 +230,23 @@ export function createMeteringService(config: MeteringConfig): MeteringService {
       // Get plan limits
       let limit: number | undefined
       if (featureCode) {
-        const atiToken = await prisma.aTIToken.findFirst({
-          where: { tenantId, status: 'ISSUED' },
-          select: { planTier: true }
+        const tenantPlan = await prisma.tenantPlan.findFirst({
+          where: {
+            tenantId,
+            status: 'ACTIVE'
+          },
+          include: {
+            plan: true
+          },
+          orderBy: {
+            effectiveFrom: 'desc'
+          }
         })
 
-        if (atiToken?.planTier) {
+        if (tenantPlan?.plan) {
           const planFeature = await prisma.planFeature.findFirst({
             where: {
-              plan: { code: atiToken.planTier },
+              planId: tenantPlan.plan.id,
               feature: { code: featureCode }
             }
           })
@@ -337,13 +350,21 @@ export function createMeteringService(config: MeteringConfig): MeteringService {
         // Get current usage
         const monthlyUsage = await this.getCurrentUsage(tenantId, featureId, 'MONTHLY')
 
-        // Get plan limits
-        const atiToken = await prisma.aTIToken.findFirst({
-          where: { tenantId, status: 'ISSUED' },
-          select: { planTier: true }
+        // Get tenant's current active plan
+        const tenantPlan = await prisma.tenantPlan.findFirst({
+          where: {
+            tenantId,
+            status: 'ACTIVE'
+          },
+          include: {
+            plan: true
+          },
+          orderBy: {
+            effectiveFrom: 'desc'
+          }
         })
 
-        if (!atiToken?.planTier) return
+        if (!tenantPlan?.plan) return
 
         // Look up feature code from feature ID
         const feature = await prisma.feature.findUnique({
@@ -355,7 +376,7 @@ export function createMeteringService(config: MeteringConfig): MeteringService {
 
         const planFeature = await prisma.planFeature.findFirst({
           where: {
-            plan: { code: atiToken.planTier },
+            planId: tenantPlan.plan.id,
             feature: { code: feature.code }
           }
         })

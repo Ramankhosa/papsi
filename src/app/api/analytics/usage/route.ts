@@ -111,7 +111,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    const isSuperAdmin = user.roles?.includes('SUPER_ADMIN')
+    const isSuperAdmin = user.roles?.some((role: string) => role === 'SUPER_ADMIN' || role === 'SUPER_ADMIN_VIEWER')
     const isTenantAdmin = user.roles?.includes('ADMIN')
 
     if (!isSuperAdmin && !isTenantAdmin) {

@@ -30,8 +30,8 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Token expired' }, { status: 401 })
     }
 
-    // Only super admins can access this endpoint
-    if (!payload.roles?.includes('SUPER_ADMIN')) {
+    // Only super admins and super admin viewers can access this endpoint
+    if (!payload.roles?.some((role: string) => role === 'SUPER_ADMIN' || role === 'SUPER_ADMIN_VIEWER')) {
       return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 })
     }
 

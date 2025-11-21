@@ -11,7 +11,8 @@ type FeatureCode = (typeof FEATURE_CODES)[number]
 type PlanCode = (typeof PLAN_CODES)[number]
 
 export async function GET(request: NextRequest) {
-  const roleCheck = await requireRole(['SUPER_ADMIN'])(request)
+  // Allow both SUPER_ADMIN and SUPER_ADMIN_VIEWER to view plan quotas
+  const roleCheck = await requireRole(['SUPER_ADMIN', 'SUPER_ADMIN_VIEWER'])(request)
   if (roleCheck) return roleCheck
 
   try {
@@ -91,6 +92,7 @@ export async function GET(request: NextRequest) {
 }
 
 export async function PUT(request: NextRequest) {
+  // Only full SUPER_ADMIN can modify plan quotas
   const roleCheck = await requireRole(['SUPER_ADMIN'])(request)
   if (roleCheck) return roleCheck
 
@@ -189,4 +191,3 @@ export async function PUT(request: NextRequest) {
     )
   }
 }
-

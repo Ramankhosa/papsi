@@ -122,26 +122,28 @@ export class IdeaBankService extends BasePatentService {
    */
   private async checkBasicIdeaBankAccess(user: User): Promise<void> {
     try {
-      // Get tenant's plan through ATI token
-      const atiToken = await prisma.aTIToken.findFirst({
+      // Get tenant's current active plan
+      const tenantPlan = await prisma.tenantPlan.findFirst({
         where: {
           tenantId: user.tenantId || 'default-tenant',
-          status: 'ISSUED'
+          status: 'ACTIVE'
         },
-        select: { planTier: true }
+        include: {
+          plan: true
+        },
+        orderBy: {
+          effectiveFrom: 'desc'
+        }
       });
 
-      if (!atiToken?.planTier) {
-        throw new Error('No plan found for tenant');
+      if (!tenantPlan?.plan) {
+        throw new Error('No active plan found for tenant');
       }
 
       // Check if plan includes IDEA_BANK feature
       const planFeature = await prisma.planFeature.findFirst({
         where: {
-          plan: {
-            code: atiToken.planTier,
-            status: 'ACTIVE'
-          },
+          planId: tenantPlan.plan.id,
           feature: {
             code: 'IDEA_BANK'
           }

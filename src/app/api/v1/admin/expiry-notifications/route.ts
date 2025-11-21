@@ -4,7 +4,7 @@ import { ExpiryNotificationService } from '@/lib/notification-service'
 
 export async function POST(request: NextRequest) {
   try {
-    // Only super admins can trigger expiry notifications
+    // Only full super admins can trigger expiry notifications
     const roleCheck = await requireRole(['SUPER_ADMIN'])(request)
     if (roleCheck) return roleCheck
 
@@ -33,8 +33,8 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   try {
-    // Only super admins can check notification status
-    const roleCheck = await requireRole(['SUPER_ADMIN'])(request)
+    // Allow SUPER_ADMIN and SUPER_ADMIN_VIEWER to view notification status
+    const roleCheck = await requireRole(['SUPER_ADMIN', 'SUPER_ADMIN_VIEWER'])(request)
     if (roleCheck) return roleCheck
 
     const { searchParams } = new URL(request.url)
