@@ -20,6 +20,195 @@ const updateTokenSchema = z.object({
   notes: z.string().optional()
 })
 
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    // Authenticate and check role
+    const authResult = await authenticateRequest(request)
+    if (authResult.error) return authResult.error
+
+    const user = authResult.user!
+    const roleCheck = await requireTenantRole(['OWNER', 'ADMIN'])(request)
+    if (roleCheck) return roleCheck
+
+    const tokenId = params.id
+
+    if (!user.tenant_id) {
+      return NextResponse.json(
+        { code: 'FORBIDDEN', message: 'You must belong to a tenant to view this token' },
+        { status: 403 }
+      )
+    }
+
+    const token = await prisma.aTIToken.findFirst({
+      where: {
+        id: tokenId,
+        tenantId: user.tenant_id
+      },
+      include: {
+        signupUsers: {
+          select: {
+            id: true,
+            email: true,
+            firstName: true,
+            lastName: true,
+            roles: true,
+            createdAt: true
+          }
+        }
+      }
+    })
+
+    if (!token) {
+      return NextResponse.json(
+        { code: 'NOT_FOUND', message: 'ATI token not found' },
+        { status: 404 }
+      )
+    }
+
+    const signupUsers = token.signupUsers
+    const userIds = signupUsers.map(u => u.id)
+
+    const userMetrics: Record<string, {
+      patentsDrafted: number
+      noveltySearches: number
+      totalInputTokens: number
+      totalOutputTokens: number
+      tokensByModel: Array<{ model: string; inputTokens: number; outputTokens: number }>
+      tokensByTask: Array<{ task: string; inputTokens: number; outputTokens: number }>
+    }> = {}
+
+    if (userIds.length > 0) {
+      // Initialize metrics map
+      for (const id of userIds) {
+        userMetrics[id] = {
+          patentsDrafted: 0,
+          noveltySearches: 0,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          tokensByModel: [],
+          tokensByTask: []
+        }
+      }
+
+      // Patents drafted (by creator)
+      const patentsByUser = await prisma.patent.groupBy({
+        by: ['createdBy'],
+        where: {
+          createdBy: { in: userIds }
+        },
+        _count: { _all: true }
+      })
+
+      for (const row of patentsByUser) {
+        const metrics = userMetrics[row.createdBy]
+        if (metrics) {
+          metrics.patentsDrafted = row._count._all
+        }
+      }
+
+      // Novelty searches run (completed)
+      const noveltyByUser = await prisma.noveltySearchRun.groupBy({
+        by: ['userId'],
+        where: {
+          userId: { in: userIds },
+          status: 'COMPLETED'
+        },
+        _count: { _all: true }
+      })
+
+      for (const row of noveltyByUser) {
+        const metrics = userMetrics[row.userId]
+        if (metrics) {
+          metrics.noveltySearches = row._count._all
+        }
+      }
+
+      // LLM token usage by user/model/task from UsageLog
+      const usageByUser = await prisma.usageLog.groupBy({
+        by: ['userId', 'modelClass', 'taskCode', 'tenantId', 'status'],
+        where: {
+          userId: { in: userIds },
+          tenantId: user.tenant_id,
+          status: 'COMPLETED'
+        },
+        _sum: {
+          inputTokens: true,
+          outputTokens: true
+        }
+      })
+
+      for (const row of usageByUser) {
+        const uid = row.userId
+        const metrics = uid ? userMetrics[uid] : undefined
+        if (!metrics) continue
+
+        const input = row._sum.inputTokens || 0
+        const output = row._sum.outputTokens || 0
+
+        metrics.totalInputTokens += input
+        metrics.totalOutputTokens += output
+
+        const modelKey = row.modelClass || 'UNKNOWN_MODEL'
+        let modelEntry = metrics.tokensByModel.find(m => m.model === modelKey)
+        if (!modelEntry) {
+          modelEntry = { model: modelKey, inputTokens: 0, outputTokens: 0 }
+          metrics.tokensByModel.push(modelEntry)
+        }
+        modelEntry.inputTokens += input
+        modelEntry.outputTokens += output
+
+        const taskKey = row.taskCode || 'UNKNOWN_TASK'
+        let taskEntry = metrics.tokensByTask.find(t => t.task === taskKey)
+        if (!taskEntry) {
+          taskEntry = { task: taskKey, inputTokens: 0, outputTokens: 0 }
+          metrics.tokensByTask.push(taskEntry)
+        }
+        taskEntry.inputTokens += input
+        taskEntry.outputTokens += output
+      }
+    }
+
+    return NextResponse.json({
+      id: token.id,
+      fingerprint: token.fingerprint,
+      status: token.status,
+      expires_at: token.expiresAt?.toISOString(),
+      max_uses: token.maxUses,
+      usage_count: token.usageCount,
+      plan_tier: token.planTier,
+      notes: token.notes,
+      created_at: token.createdAt.toISOString(),
+      updated_at: token.updatedAt.toISOString(),
+      signup_users: signupUsers.map(su => ({
+        id: su.id,
+        email: su.email,
+        first_name: su.firstName,
+        last_name: su.lastName,
+        roles: su.roles,
+        created_at: su.createdAt.toISOString(),
+        usage_metrics: userMetrics[su.id] || {
+          patentsDrafted: 0,
+          noveltySearches: 0,
+          totalInputTokens: 0,
+          totalOutputTokens: 0,
+          tokensByModel: [],
+          tokensByTask: []
+        }
+      }))
+    }, { status: 200 })
+
+  } catch (error) {
+    console.error('ATI detail error:', error)
+    return NextResponse.json(
+      { code: 'INTERNAL_ERROR', message: 'Internal server error' },
+      { status: 500 }
+    )
+  }
+}
+
 export async function POST(
   request: NextRequest,
   { params }: { params: { id: string } }

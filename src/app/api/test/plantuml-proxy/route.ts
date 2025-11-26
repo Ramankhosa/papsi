@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
 
     // Minimal sanitization similar to server: remove captions/titles, forbidden directives, and entire skinparam blocks
     let cleaned = code
-      .replace(/^(title|caption).*$/gmi, '')
+      .replace(/^title.*$/gmi, '')
       .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
     // Remove multi-line skinparam blocks like: skinparam X { ... }
     cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
@@ -46,4 +46,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Bad request' }, { status: 400 })
   }
 }
-

@@ -12,10 +12,19 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
   const [issues, setIssues] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [rich, setRich] = useState<any>(null)
+  const [sections, setSections] = useState<any[] | null>(null)
   const [showExportModal, setShowExportModal] = useState(false)
+  const availableJurisdictions = (Array.isArray(session?.draftingJurisdictions) && session.draftingJurisdictions.length > 0 ? session.draftingJurisdictions : ['IN']).map((c: string) => (c || '').toUpperCase())
+  const [selectedJurisdiction, setSelectedJurisdiction] = useState<string>(() => (session?.activeJurisdiction || availableJurisdictions[0] || 'IN'))
   const [exportOptions, setExportOptions] = useState({
     autoNumberParagraphs: false
   })
+  const jurisdictionKey = availableJurisdictions.join(',')
+
+  useEffect(() => {
+    const next = (session?.activeJurisdiction || availableJurisdictions[0] || 'IN').toUpperCase()
+    setSelectedJurisdiction(next)
+  }, [session?.activeJurisdiction, jurisdictionKey])
 
   const loadPreview = async () => {
     setLoading(true)
@@ -23,7 +32,7 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
       const res = await fetch(`/api/patents/${patent.id}/drafting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
-        body: JSON.stringify({ action: 'preview_export', sessionId: session?.id })
+        body: JSON.stringify({ action: 'preview_export', sessionId: session?.id, jurisdiction: selectedJurisdiction })
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error || 'Preview failed')
@@ -40,14 +49,17 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
       const res = await fetch(`/api/patents/${patent.id}/drafting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
-        body: JSON.stringify({ action: 'get_export_preview', sessionId: session?.id })
+        body: JSON.stringify({ action: 'get_export_preview', sessionId: session?.id, jurisdiction: selectedJurisdiction })
       })
       const data = await res.json()
-      if (res.ok) setRich(data)
+      if (res.ok) {
+        setRich(data)
+        setSections(Array.isArray(data.sections) ? data.sections : null)
+      }
     } catch {}
   }
 
-  useEffect(() => { loadPreview(); loadRich() }, [])
+  useEffect(() => { loadPreview(); loadRich() }, [selectedJurisdiction])
 
   const handleExport = async () => {
     if (!showExportModal) {
@@ -65,7 +77,8 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
         body: JSON.stringify({
           action: 'export_docx',
           sessionId: session?.id,
-          autoNumberParagraphs: exportOptions.autoNumberParagraphs
+          autoNumberParagraphs: exportOptions.autoNumberParagraphs,
+          jurisdiction: selectedJurisdiction
         })
       })
       if (!res.ok) {
@@ -102,6 +115,21 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Export Options</h3>
 
             <div className="space-y-4">
+              {availableJurisdictions.length > 1 && (
+                <div className="flex items-center">
+                  <label htmlFor="jurisdiction" className="mr-3 text-sm text-gray-900">Jurisdiction</label>
+                  <select
+                    id="jurisdiction"
+                    className="border rounded px-3 py-2 text-sm text-gray-900 bg-white"
+                    value={selectedJurisdiction}
+                    onChange={(e) => setSelectedJurisdiction(e.target.value.toUpperCase())}
+                  >
+                    {availableJurisdictions.map((code: string) => (
+                      <option key={code} value={code}>{code}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div className="flex items-center">
                 <input
                   type="checkbox"
@@ -139,6 +167,18 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
         <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">Stage 7: Export Center</h2>
           <div className="flex items-center gap-2">
+            {availableJurisdictions.length > 1 && (
+              <select
+                className="border rounded px-3 py-2 text-sm text-gray-900 bg-white"
+                value={selectedJurisdiction}
+                onChange={(e) => setSelectedJurisdiction(e.target.value.toUpperCase())}
+                aria-label="Select jurisdiction to export"
+              >
+                {availableJurisdictions.map((code: string) => (
+                  <option key={code} value={code}>{code}</option>
+                ))}
+              </select>
+            )}
             <button onClick={loadPreview} className="px-4 py-2 rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50">Refresh Preview</button>
             <button onClick={handleExport} className="px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700">Export DOCX</button>
           </div>
@@ -179,20 +219,26 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
             {rich ? (
               <div className="prose max-w-none">
                 <h2 className="text-xl font-bold">{String(rich.title||'').toUpperCase()}</h2>
-                <h3 className="font-semibold text-gray-900">FIELD OF THE INVENTION</h3>
-                <p className="whitespace-pre-wrap">{rich.fieldOfInvention}</p>
-                <h3 className="font-semibold text-gray-900">BACKGROUND OF THE INVENTION</h3>
-                <p className="whitespace-pre-wrap">{rich.background}</p>
-                <h3 className="font-semibold text-gray-900">SUMMARY OF THE INVENTION</h3>
-                <p className="whitespace-pre-wrap">{rich.summary}</p>
-                <h3 className="font-semibold text-gray-900">BRIEF DESCRIPTION OF THE DRAWINGS</h3>
-                <p className="whitespace-pre-wrap">{rich.briefDescriptionOfDrawings}</p>
-                <h3 className="font-semibold text-gray-900">DETAILED DESCRIPTION OF THE INVENTION</h3>
-                <p className="whitespace-pre-wrap">{rich.detailedDescription}</p>
-                <h3 className="font-semibold text-gray-900">INDUSTRIAL APPLICABILITY</h3>
-                <p className="whitespace-pre-wrap">{rich.industrialApplicability}</p>
-                <h3 className="font-semibold text-gray-900">CLAIMS</h3>
-                <p className="whitespace-pre-wrap">{rich.claims}</p>
+                {(sections && sections.length
+                  ? sections.filter(s => s.key !== 'title' && s.key !== 'abstract')
+                  : [
+                      { key: 'fieldOfInvention', label: 'FIELD OF THE INVENTION' },
+                      { key: 'background', label: 'BACKGROUND OF THE INVENTION' },
+                      { key: 'summary', label: 'SUMMARY OF THE INVENTION' },
+                      { key: 'briefDescriptionOfDrawings', label: 'BRIEF DESCRIPTION OF THE DRAWINGS' },
+                      { key: 'detailedDescription', label: 'DETAILED DESCRIPTION OF THE INVENTION' },
+                      { key: 'industrialApplicability', label: 'INDUSTRIAL APPLICABILITY' },
+                      { key: 'bestMethod', label: 'BEST METHOD' },
+                      { key: 'claims', label: 'CLAIMS' },
+                      { key: 'listOfNumerals', label: 'LIST OF REFERENCE NUMERALS' }
+                    ]
+                ).map(sec => (
+                  <div key={sec.key}>
+                    <h3 className="font-semibold text-gray-900">{String(sec.label || sec.key).toUpperCase()}</h3>
+                    <p className="whitespace-pre-wrap">{rich[sec.key]}</p>
+                  </div>
+                ))}
+
                 <h3 className="font-semibold text-gray-900">DRAWINGS / FIGURES</h3>
                 <div className="space-y-6">
                   {(rich.figures||[]).map((f:any)=>(
@@ -206,8 +252,12 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
                     </div>
                   ))}
                 </div>
-                <h3 className="font-semibold text-gray-900">ABSTRACT</h3>
-                <p className="whitespace-pre-wrap">{rich.abstract}</p>
+                {(sections || []).find(s => s.key === 'abstract') || (!sections && true) ? (
+                  <>
+                    <h3 className="font-semibold text-gray-900">ABSTRACT</h3>
+                    <p className="whitespace-pre-wrap">{rich.abstract}</p>
+                  </>
+                ) : null}
               </div>
             ) : (
               <div className="text-sm text-gray-500">No visual preview yet. Click Refresh.</div>

@@ -9,8 +9,8 @@ import { PageLoadingBird } from '@/components/ui/loading-bird';
 
 // Component that uses search params, wrapped in Suspense
 function NoveltySearchContent() {
-  const searchParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
-  const projectId = searchParams.get('projectId');
+  const searchParams = useSearchParams();
+  const projectId = searchParams?.get('projectId');
 
   return <NoveltySearchWorkflow projectId={projectId || undefined} />;
 }
@@ -18,8 +18,11 @@ function NoveltySearchContent() {
 export default function NoveltySearchPage() {
   const { user, isLoading } = useAuth();
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const projectId = searchParams?.get('projectId');
+
+  // Get projectId from URL for the history link (client-side only)
+  const projectId = typeof window !== 'undefined'
+    ? new URLSearchParams(window.location.search).get('projectId')
+    : null;
 
   useEffect(() => {
     if (!isLoading && !user) {

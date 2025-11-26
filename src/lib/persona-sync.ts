@@ -548,6 +548,19 @@ Based on both the text and visual elements, return ONLY a minified JSON object w
     return match ? match[0] : null;
   }
 
+  /**
+   * Smart sample text to ensure Claims (often at end) and Intro (start) are captured.
+   */
+  private static getSmartSample(text: string): string {
+    const limit = 15000;
+    if (text.length <= limit) return text;
+    
+    const startChunk = text.substring(0, 6000);
+    const endChunk = text.substring(text.length - 8000);
+    
+    return `${startChunk}\n\n[...SKIPPED MIDDLE SECTION...]\n\n${endChunk}`;
+  }
+
   // LLM forensic analyzer using the provided strict schema prompt (text-only)
   private static async llmForensicAnalyze(
     text: string,
@@ -557,49 +570,55 @@ Based on both the text and visual elements, return ONLY a minified JSON object w
     const gateway = new LLMGateway();
 
     const systemPrompt = `You are a forensic patent-writing style analyst.
-Return ONLY valid JSON (no commentary, no fences) conforming to the schema below. Learn generic stylistic signals only; do NOT include domain-specific technical vocabulary. Keep recurring phrases generic (e.g., "configured to", "wherein", "comprising").
+Return ONLY valid JSON (no commentary, no fences) conforming to the schema below. Learn generic stylistic signals only; do NOT include domain-specific technical vocabulary. Keep recurring phrases generic.
 
 Schema (strict):
 {
-  "version": "5.1",
+  "version": "5.2",
   "created_at": "<ISO8601>",
-  "samples_used": 0,
   "global_style": {
     "tone": "concise | detailed | explanatory | formal | neutral",
     "verbosity": "low | medium | high",
+    "hedging_level": "high | medium | low",
     "avg_sentence_length": 0,
-    "sentence_variation": "low | medium | high",
-    "punctuation_usage": {
-      "comma_per_sentence": 0.0,
-      "dash_per_sentence": 0.0,
-      "semicolon_per_sentence": 0.0
-    },
+    "punctuation_usage": { "comma_per_sentence": 0.0, "semicolon_per_sentence": 0.0, "dash_per_sentence": 0.0 },
     "connectors_freq": {},
-    "phrases": { "recurring": [] },
     "formatting": { "lists_used": false, "paragraph_structure": "single | multi" }
   },
   "sections": {
-    "ABSTRACT": { "word_range": [0,0], "recurring_phrases": [], "evidence": [] },
-    "BACKGROUND_OF_THE_INVENTION": { "word_range": [0,0], "structure_outline": [], "recurring_phrases": [], "evidence": [] },
-    "SUMMARY_OF_THE_INVENTION": { "word_range": [0,0], "structure_outline": [], "recurring_phrases": [], "evidence": [] },
-    "BRIEF_DESCRIPTION_OF_THE_DRAWINGS": { "word_range": [0,0], "figure_caption_template": "", "recurring_phrases": [], "evidence": [] },
-    "DETAILED_DESCRIPTION_OF_THE_INVENTION": { "word_range": [0,0], "embodiment_phrases": [], "figure_numbering": { "style": "(100) | 100 | C100", "series_hint": "", "start": 0, "end": 0, "average_gap": 0.0 }, "recurring_phrases": [], "evidence": [] },
-    "CLAIMS": { "word_range": [0,0], "opening_style": "", "numbering_pattern": { "start": 0, "end": 0, "average_gap": 0.0, "dependencies_style": "all_dependent_on_1 | chained | mixed" }, "recurring_phrases": [], "connectors_freq": {}, "evidence": [] },
-    "INDUSTRIAL_APPLICABILITY": { "word_range": [0,0], "recurring_phrases": [], "evidence": [] }
-  },
-  "metadata": {
-    "style_confidence": 0.0,
-    "style_metrics": { "writing_complexity_level": 0, "readability_scale": "Flesch", "readability_score": 0.0, "interpretation": "" },
-    "gaps": []
+    "ABSTRACT": { "word_range": [0,0], "recurring_phrases": [], "evidence": [], "few_shot_snippet": "Anonymized abstract text (replace nouns with [Device]/[Component])" },
+    "BACKGROUND_OF_THE_INVENTION": { "word_range": [0,0], "structure_outline": [], "prior_art_tone": "neutral | critical | constructive", "few_shot_snippet": "Anonymized background snippet" },
+    "SUMMARY_OF_THE_INVENTION": { "word_range": [0,0], "structure_outline": [], "evidence": [] },
+    "BRIEF_DESCRIPTION_OF_THE_DRAWINGS": { "word_range": [0,0], "figure_caption_template": "", "evidence": [] },
+    "DETAILED_DESCRIPTION_OF_THE_INVENTION": { 
+      "word_range": [0,0], 
+      "embodiment_phrases": [], 
+      "figure_numbering": { "style": "(100) | 100 | C100", "series_hint": "", "start": 0, "end": 0, "average_gap": 0.0 }, 
+      "boilerplate_location": "summary | detailed_desc_start | detailed_desc_end",
+      "cross_linking_density": "high | medium | low",
+      "few_shot_snippet": "Anonymized paragraph showing dense cross-linking (Fig. X + Fig. Y)"
+    },
+    "CLAIMS": { 
+      "word_range": [0,0], 
+      "opening_style": "", 
+      "numbering_pattern": { "start": 0, "end": 0, "average_gap": 0.0, "dependencies_style": "all_dependent_on_1 | chained | mixed" }, 
+      "claim_ordering": ["method", "system", "medium"],
+      "preamble_type": "configured_to | arranged_to | for",
+      "use_numerals": false,
+      "few_shot_snippet": "Anonymized independent claim"
+    },
+    "INDUSTRIAL_APPLICABILITY": { "word_range": [0,0] }
   }
 }
 
 Constraints:
 - Numbers must be numbers. created_at is ISO8601.
 - Omit fields you cannot infer; do not invent.
+- few_shot_snippet must be generic (replace specific invention terms with placeholders like [Widget], [Material]).
 - Output JSON only.`
 
-    const truncated = text.substring(0, 12000);
+    const truncated = this.getSmartSample(text);
+
     const content = {
       parts: [
         { type: 'text' as const, text: systemPrompt },
@@ -640,6 +659,7 @@ Constraints:
     // Prefer new schema global_style; fallback to legacy global
     const gs = forensic?.global_style || forensic?.global || {};
     if (gs.tone) outGlobal.tone = String(gs.tone) as any;
+    if (gs.hedging_level) outGlobal.hedging_level = String(gs.hedging_level) as any;
     if (gs.verbosity) {
       const map: Record<string, any> = { terse: 'low', low: 'low', medium: 'medium', high: 'high', elaborate: 'high' };
       outGlobal.verbosity = (map[String(gs.verbosity).toLowerCase()] || outGlobal.verbosity) as any;
@@ -682,6 +702,9 @@ Constraints:
       if (internal === 'CLAIMS') {
         if ((data as any).opening_style) micro.opening = (data as any).opening_style;
         if ((data as any).numbering_pattern) micro.numbering_pattern = (data as any).numbering_pattern;
+        if ((data as any).claim_ordering) micro.claim_ordering = (data as any).claim_ordering;
+        if ((data as any).preamble_type) micro.preamble_type = (data as any).preamble_type;
+        if (typeof (data as any).use_numerals === 'boolean') micro.use_numerals = (data as any).use_numerals;
         if (Array.isArray((data as any).recurring_phrases)) micro.lexical_rules = (data as any).recurring_phrases;
         if ((data as any).connectors_freq && typeof (data as any).connectors_freq === 'object') {
           micro.connectors_freq = (data as any).connectors_freq
@@ -692,6 +715,8 @@ Constraints:
       }
       if (internal === 'DETAILED_DESCRIPTION') {
         if (Array.isArray((data as any).embodiment_phrases)) micro.embodiment_markers = (data as any).embodiment_phrases;
+        if ((data as any).boilerplate_location) micro.boilerplate_location = (data as any).boilerplate_location;
+        if ((data as any).cross_linking_density) micro.cross_linking_density = (data as any).cross_linking_density;
         if ((data as any).figure_numbering) {
           micro.figure_numbering = (data as any).figure_numbering;
           if ((data as any).figure_numbering.style) micro.reference_numeral_style = (data as any).figure_numbering.style;
@@ -699,10 +724,22 @@ Constraints:
       }
       if (internal === 'BACKGROUND' || internal === 'SUMMARY') {
         if (Array.isArray((data as any).structure_outline)) micro.structure_outline = (data as any).structure_outline;
+        if ((data as any).prior_art_tone) micro.prior_art_tone = (data as any).prior_art_tone;
       }
       if (internal === 'ABSTRACT') {
         if (Array.isArray((data as any).recurring_phrases)) micro.style_rules = (data as any).recurring_phrases;
       }
+
+      // Store few-shot snippet if available
+      if ((data as any).few_shot_snippet && typeof (data as any).few_shot_snippet === 'string') {
+        const snippet = (data as any).few_shot_snippet;
+        if (snippet && snippet.length > 20 && !snippet.includes('Anonymized')) {
+             // Simple check to ensure LLM actually extracted something
+             if(!cur.few_shot_examples) cur.few_shot_examples = [];
+             cur.few_shot_examples.push(snippet);
+        }
+      }
+
       cur.micro_rules = micro;
       outSections[internal] = cur as SectionStyleRules;
     }

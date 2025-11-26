@@ -15,6 +15,7 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
   const [showNormalized, setShowNormalized] = useState(false)
   const [isEditing, setIsEditing] = useState(false)
   const [isRegenerating, setIsRegenerating] = useState(false)
+  const [showOriginal, setShowOriginal] = useState(false)
 
   // Editable fields
   const [problem, setProblem] = useState('')
@@ -65,403 +66,375 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
     }
   }, [session])
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) return
-
-    if (file.size > 5 * 1024 * 1024) { // 5MB limit
-      setError('File size must be less than 5MB')
-      return
-    }
-
-    const reader = new FileReader()
-    reader.onload = async (e) => {
-      const content = e.target?.result as string
-      // Clean the content to remove BOM and normalize line endings
-      const cleanContent = content.replace(/^\uFEFF/, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
-
-      if (cleanContent.length > 50000) {
-        setError('File content exceeds 50,000 characters. Please reduce the file size or split into smaller sections.')
-        return
-      }
-
-      if (cleanContent.length === 0) {
-        setError('File appears to be empty or unreadable')
-        return
-      }
-
-      try {
-        // Update the idea record with the uploaded content
-        await onComplete({
-          action: 'update_idea_record',
-          sessionId: session?.id,
-          patch: { rawInput: cleanContent }
-        })
-
-        // Refresh to get updated data
-        await onRefresh()
-        setError(null) // Clear any previous errors
-      } catch (err) {
-        setError('Failed to save uploaded content')
-      }
-    }
-
-    reader.onerror = () => {
-      setError('Failed to read file. Please check the file format and try again.')
-    }
-
-    reader.readAsText(file, 'UTF-8')
-  }
-
   const canProceed = normalizedData && normalizedData.extractedFields
 
   return (
-    <div className="p-8">
-      <div className="mb-8">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Stage 1: Idea Review</h2>
-        <p className="text-gray-600">
-          Review the AI-normalized structure of your invention idea.
-        </p>
+    <div className="px-6 py-8 max-w-[1200px] mx-auto">
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-semibold text-gray-900">Idea Review</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            Review and refine the AI-structured breakdown of your invention.
+          </p>
+        </div>
+        <div className="flex items-center space-x-3">
+          {/* Actions moved to header area if needed, or kept here */}
+        </div>
       </div>
 
       {error && (
-        <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4">
-          <div className="flex">
-            <div className="flex-shrink-0">
-              <svg className="h-5 w-5 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-              </svg>
-            </div>
-            <div className="ml-3">
-              <p className="text-sm text-red-800">{error}</p>
-            </div>
+        <div className="mb-6 bg-red-50 border border-red-100 rounded-lg p-4 flex items-start">
+          <div className="flex-shrink-0 mt-0.5">
+            <svg className="h-4 w-4 text-red-400" viewBox="0 0 20 20" fill="currentColor">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+            </svg>
+          </div>
+          <div className="ml-3">
+            <p className="text-sm text-red-700">{error}</p>
           </div>
         </div>
       )}
 
       {(!showNormalized || !normalizedData) && (
-        <div className="mb-6 bg-indigo-50 border border-indigo-200 rounded-lg p-4 text-sm text-indigo-800 animate-pulse">
-          AI is structuring your idea into a patent-ready outline (problem, objectives, logic, best method, components). Hang tight—this usually takes a few seconds.
+        <div className="mb-8 bg-indigo-50/50 border border-indigo-100 rounded-lg p-4 flex items-center justify-center text-sm text-indigo-700 animate-pulse">
+          <svg className="animate-spin -ml-1 mr-3 h-4 w-4 text-indigo-600" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
+          </svg>
+          Structuring your idea into a patent-ready outline...
         </div>
       )}
 
-      <div className="max-w-4xl mx-auto">
-        {/* Original Input Display */}
-        <div className="mb-6">
-          <h3 className="text-lg font-medium text-gray-900 mb-3">Your Original Input</h3>
-          <div className="bg-gray-50 rounded-lg p-4">
-            <div className="mb-3">
-              <span className="font-medium text-gray-700">Title:</span>
-              <p className="mt-1 text-gray-900">{title}</p>
-            </div>
-            <div>
-              <span className="font-medium text-gray-700">Description:</span>
-              <div className="mt-1 max-h-32 overflow-y-auto bg-white p-3 rounded border text-sm text-gray-700">
-                {rawIdea}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Main Content Column */}
+        <div className="lg:col-span-12 space-y-6">
+          
+          {/* Collapsible Original Input */}
+          <div className="border border-gray-200 rounded-lg overflow-hidden bg-white shadow-sm hover:shadow transition-shadow duration-200">
+            <button 
+              onClick={() => setShowOriginal(!showOriginal)} 
+              className="w-full flex justify-between items-center px-5 py-3 bg-gray-50/50 hover:bg-gray-50 transition-colors text-left"
+            >
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span className="text-sm font-medium text-gray-700">Original Input Reference</span>
               </div>
-            </div>
-          </div>
-        </div>
-
-        {/* AI-Normalized Results */}
-        {showNormalized && normalizedData && (
-          <div className="bg-blue-50 rounded-lg p-6">
-            <div className="flex items-center mb-4">
-              <svg className="w-6 h-6 text-blue-600 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+              <svg className={`w-4 h-4 text-gray-400 transform transition-transform duration-200 ${showOriginal ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
               </svg>
-              <h3 className="text-lg font-medium text-blue-900">AI-Normalized Structure</h3>
-              <div className="ml-auto flex items-center space-x-2">
-                <button
-                  onClick={() => setIsEditing((v) => !v)}
-                  className="inline-flex items-center px-3 py-1 border border-blue-300 text-sm font-medium rounded-md text-blue-700 bg-white hover:bg-blue-50"
-                >
-                  {isEditing ? 'Stop Editing' : 'Edit'}
-                </button>
-                <button
-                  onClick={async () => {
-                    try {
-                      setError(null)
-                      if (!session?.id) return
-                      const currentRaw = session?.ideaRecord?.rawInput || rawIdea || ''
-                      const currentTitle = session?.ideaRecord?.title || title || ''
-                      if (!currentRaw || !currentTitle) {
-                        setError('Cannot regenerate: missing title or description.')
-                        return
+            </button>
+            {showOriginal && (
+              <div className="p-5 border-t border-gray-100 bg-gray-50/30">
+                <div className="mb-4">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 block mb-1">Title</span>
+                  <p className="text-sm text-gray-900">{title}</p>
+                </div>
+                <div>
+                  <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 block mb-1">Description</span>
+                  <div className="bg-white p-4 rounded border border-gray-200 text-sm text-gray-600 whitespace-pre-wrap font-mono leading-relaxed max-h-60 overflow-y-auto">
+                    {rawIdea}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* AI-Normalized Results */}
+          {showNormalized && normalizedData && (
+            <div className="bg-white rounded-xl border border-indigo-100 shadow-sm overflow-hidden">
+              {/* Toolbar */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-white to-indigo-50/30">
+                <div className="flex items-center gap-2">
+                  <div className="h-6 w-6 rounded-full bg-indigo-100 flex items-center justify-center">
+                     <svg className="w-3.5 h-3.5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                     </svg>
+                  </div>
+                  <h3 className="text-sm font-semibold text-gray-900">AI Structure Analysis</h3>
+                </div>
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={() => setIsEditing((v) => !v)}
+                    className={`inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${isEditing ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-100 bg-white border border-gray-200'}`}
+                  >
+                    {isEditing ? 'Done Editing' : 'Edit Fields'}
+                  </button>
+                  <button
+                    onClick={async () => {
+                      try {
+                        setError(null)
+                        if (!session?.id) return
+                        const currentRaw = session?.ideaRecord?.rawInput || rawIdea || ''
+                        const currentTitle = session?.ideaRecord?.title || title || ''
+                        if (!currentRaw || !currentTitle) {
+                          setError('Cannot regenerate: missing title or description.')
+                          return
+                        }
+                        setIsRegenerating(true)
+                        setShowNormalized(false)
+                        setNormalizedData(null)
+                        await onComplete({
+                          action: 'normalize_idea',
+                          sessionId: session.id,
+                          rawIdea: currentRaw,
+                          title: currentTitle
+                        })
+                        await onRefresh()
+                        setShowNormalized(true)
+                      } catch (e) {
+                        setError('Failed to regenerate AI output. Please try again.')
+                      } finally {
+                        setIsRegenerating(false)
                       }
-                      setIsRegenerating(true)
-                      setShowNormalized(false)
-                      setNormalizedData(null)
-                      await onComplete({
-                        action: 'normalize_idea',
-                        sessionId: session.id,
-                        rawIdea: currentRaw,
-                        title: currentTitle
-                      })
-                      await onRefresh()
-                      setShowNormalized(true)
-                    } catch (e) {
-                      setError('Failed to regenerate AI output. Please try again.')
-                    } finally {
-                      setIsRegenerating(false)
-                    }
-                  }}
-                  className="inline-flex items-center px-3 py-1 border border-indigo-300 text-sm font-medium rounded-md text-indigo-700 bg-white hover:bg-indigo-50 disabled:opacity-60"
-                  disabled={isRegenerating}
-                  title="Re-run AI normalization for this idea"
-                >
-                  {isRegenerating ? (
-                    <>
-                      <svg className="animate-spin h-4 w-4 mr-2 text-indigo-600" viewBox="0 0 24 24">
+                    }}
+                    className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-md text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-60"
+                    disabled={isRegenerating}
+                    title="Regenerate AI Structure"
+                  >
+                    {isRegenerating ? (
+                      <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
                       </svg>
-                      Regenerating...
-                    </>
-                  ) : (
-                    'Regenerate AI Normalization'
-                  )}
-                </button>
+                    ) : (
+                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
               </div>
-            </div>
 
-            {/* Vertically stacked tiles for readability */}
-            <div className="space-y-6">
-              {/* Search Query moved to the bottom of the section */}
-
-              <div className="bg-white p-4 rounded border">
-                <h4 className="font-medium text-blue-800 mb-2">Classification Codes</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-6 space-y-8">
+                {/* Codes */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <label className="block text-xs text-blue-800 mb-1">CPC Codes</label>
+                    <label className="block text-xs font-medium text-gray-500 mb-1.5">CPC Codes</label>
                     {isEditing ? (
                       <input
-                        className="w-full text-sm text-blue-700 bg-white p-3 rounded border"
-                        placeholder="e.g., H04L 29/08, G06F 17/30"
+                        className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
+                        placeholder="e.g., H04L 29/08"
                         value={cpcCodes.join(', ')}
                         onChange={(e) => setCpcCodes(e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
                       />
                     ) : (
-                      <div className="text-sm text-blue-700 bg-white p-3 rounded border">
-                        {(cpcCodes && cpcCodes.length) ? cpcCodes.join(', ') : 'None'}
+                      <div className="text-sm font-mono bg-gray-50 px-3 py-2 rounded border border-gray-100 text-gray-700">
+                        {(cpcCodes && cpcCodes.length) ? cpcCodes.join(', ') : <span className="text-gray-400">None</span>}
                       </div>
                     )}
                   </div>
                   <div>
-                    <label className="block text-xs text-blue-800 mb-1">IPC Codes</label>
+                    <label className="block text-xs font-medium text-gray-500 mb-1.5">IPC Codes</label>
                     {isEditing ? (
                       <input
-                        className="w-full text-sm text-blue-700 bg-white p-3 rounded border"
-                        placeholder="e.g., G06F 17/30, H04L 29/08"
+                        className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
+                        placeholder="e.g., G06F 17/30"
                         value={ipcCodes.join(', ')}
                         onChange={(e) => setIpcCodes(e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
                       />
                     ) : (
-                      <div className="text-sm text-blue-700 bg-white p-3 rounded border">
-                        {(ipcCodes && ipcCodes.length) ? ipcCodes.join(', ') : 'None'}
+                      <div className="text-sm font-mono bg-gray-50 px-3 py-2 rounded border border-gray-100 text-gray-700">
+                        {(ipcCodes && ipcCodes.length) ? ipcCodes.join(', ') : <span className="text-gray-400">None</span>}
                       </div>
                     )}
                   </div>
                 </div>
-                <p className="mt-2 text-xs text-blue-600">These codes will be used to link with patent search APIs.</p>
-              </div>
 
-              <div className="bg-white p-4 rounded border">
-                <h4 className="font-medium text-blue-800 mb-2">Problem Statement</h4>
-                {isEditing ? (
-                  <textarea
-                    className="w-full text-sm text-blue-700 bg-white p-3 rounded border"
-                    rows={4}
-                    value={problem}
-                    onChange={(e) => setProblem(e.target.value)}
-                    onInput={(e: any) => { e.currentTarget.style.height = 'auto'; e.currentTarget.style.height = e.currentTarget.scrollHeight + 'px' }}
-                  />
-                ) : (
-                  <p className="text-sm text-blue-700 bg-white p-3 rounded border whitespace-pre-wrap">
-                    {problem || 'Not specified'}
-                  </p>
-                )}
-              </div>
+                {/* Fields */}
+                <div className="space-y-6">
+                  <div className="group">
+                    <h4 className="text-sm font-medium text-gray-900 mb-2">Problem Statement</h4>
+                    {isEditing ? (
+                      <textarea
+                        className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
+                        rows={4}
+                        value={problem}
+                        onChange={(e) => setProblem(e.target.value)}
+                      />
+                    ) : (
+                      <div className="text-sm text-gray-700 leading-relaxed border-l-2 border-transparent group-hover:border-indigo-200 pl-3 transition-colors">
+                        {problem || <span className="text-gray-400 italic">Not specified</span>}
+                      </div>
+                    )}
+                  </div>
 
-              <div className="bg-white p-4 rounded border">
-                <h4 className="font-medium text-blue-800 mb-2">Objectives</h4>
-                {isEditing ? (
-                  <textarea
-                    className="w-full text-sm text-blue-700 bg-white p-3 rounded border"
-                    rows={3}
-                    value={objectives}
-                    onChange={(e) => setObjectives(e.target.value)}
-                    onInput={(e: any) => { e.currentTarget.style.height = 'auto'; e.currentTarget.style.height = e.currentTarget.scrollHeight + 'px' }}
-                  />
-                ) : (
-                  <p className="text-sm text-blue-700 bg-white p-3 rounded border whitespace-pre-wrap">
-                    {objectives || 'Not specified'}
-                  </p>
-                )}
-              </div>
+                  <div className="group">
+                    <h4 className="text-sm font-medium text-gray-900 mb-2">Objectives</h4>
+                    {isEditing ? (
+                      <textarea
+                        className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
+                        rows={3}
+                        value={objectives}
+                        onChange={(e) => setObjectives(e.target.value)}
+                      />
+                    ) : (
+                      <div className="text-sm text-gray-700 leading-relaxed border-l-2 border-transparent group-hover:border-indigo-200 pl-3 transition-colors">
+                        {objectives || <span className="text-gray-400 italic">Not specified</span>}
+                      </div>
+                    )}
+                  </div>
 
-              <div className="bg-white p-4 rounded border">
-                <h4 className="font-medium text-blue-800 mb-2">Technical Logic</h4>
-                {isEditing ? (
-                  <textarea
-                    className="w-full text-sm text-blue-700 bg-white p-3 rounded border"
-                    rows={4}
-                    value={logic}
-                    onChange={(e) => setLogic(e.target.value)}
-                    onInput={(e: any) => { e.currentTarget.style.height = 'auto'; e.currentTarget.style.height = e.currentTarget.scrollHeight + 'px' }}
-                  />
-                ) : (
-                  <p className="text-sm text-blue-700 bg-white p-3 rounded border whitespace-pre-wrap">
-                    {logic || 'Not specified'}
-                  </p>
-                )}
-              </div>
+                  <div className="group">
+                    <h4 className="text-sm font-medium text-gray-900 mb-2">Technical Logic</h4>
+                    {isEditing ? (
+                      <textarea
+                        className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
+                        rows={4}
+                        value={logic}
+                        onChange={(e) => setLogic(e.target.value)}
+                      />
+                    ) : (
+                      <div className="text-sm text-gray-700 leading-relaxed border-l-2 border-transparent group-hover:border-indigo-200 pl-3 transition-colors">
+                        {logic || <span className="text-gray-400 italic">Not specified</span>}
+                      </div>
+                    )}
+                  </div>
 
-              <div className="bg-white p-4 rounded border">
-                <h4 className="font-medium text-blue-800 mb-2">Key Components ({components?.length || 0})</h4>
-                <div>
-                  {components?.length > 0 ? (
-                    <ul className="text-sm text-blue-700 space-y-2">
-                      {components.map((comp: any, idx: number) => (
-                        <li key={idx} className="flex items-center space-x-2">
-                          {isEditing ? (
-                            <>
-                              <input
-                                className="flex-1 border rounded px-2 py-1"
-                                value={comp.name || ''}
-                                onChange={(e) => {
-                                  const arr = [...components]
-                                  arr[idx] = { ...arr[idx], name: e.target.value }
-                                  setComponents(arr)
-                                }}
-                              />
-                              <input
-                                className="w-40 border rounded px-2 py-1"
-                                value={comp.type || ''}
-                                onChange={(e) => {
-                                  const arr = [...components]
-                                  arr[idx] = { ...arr[idx], type: e.target.value }
-                                  setComponents(arr)
-                                }}
-                              />
-                            </>
-                          ) : (
-                            <>
-                              <span className="font-medium flex-1">{comp.name}</span>
-                              <span className="text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded">
-                                {(comp.type || '').toString().replace('_', ' ').toLowerCase()}
-                              </span>
-                            </>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-sm text-blue-600">No components identified</p>
-                  )}
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-900 mb-3">Key Components <span className="text-gray-400 font-normal text-xs ml-2">({components?.length || 0})</span></h4>
+                    {components?.length > 0 ? (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {components.map((comp: any, idx: number) => (
+                          <div key={idx} className="p-3 bg-gray-50 rounded-lg border border-gray-100 flex flex-col space-y-1 hover:border-indigo-200 transition-colors">
+                            {isEditing ? (
+                              <>
+                                <input
+                                  className="text-sm font-medium bg-white border border-gray-200 rounded px-2 py-1 w-full mb-1"
+                                  value={comp.name || ''}
+                                  placeholder="Component Name"
+                                  onChange={(e) => {
+                                    const arr = [...components]
+                                    arr[idx] = { ...arr[idx], name: e.target.value }
+                                    setComponents(arr)
+                                  }}
+                                />
+                                <input
+                                  className="text-xs text-gray-500 bg-white border border-gray-200 rounded px-2 py-1 w-full"
+                                  value={comp.type || ''}
+                                  placeholder="Type"
+                                  onChange={(e) => {
+                                    const arr = [...components]
+                                    arr[idx] = { ...arr[idx], type: e.target.value }
+                                    setComponents(arr)
+                                  }}
+                                />
+                              </>
+                            ) : (
+                              <>
+                                <span className="font-medium text-sm text-gray-900">{comp.name}</span>
+                                <span className="text-xs text-gray-500 bg-white self-start px-1.5 py-0.5 rounded border border-gray-200">
+                                  {(comp.type || '').toString().replace('_', ' ').toLowerCase()}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-500 italic">No components identified</p>
+                    )}
+                  </div>
+
+                  <div className="group">
+                    <h4 className="text-sm font-medium text-gray-900 mb-2">Best Method</h4>
+                    {isEditing ? (
+                      <textarea
+                        className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
+                        rows={3}
+                        value={bestMethod}
+                        onChange={(e) => setBestMethod(e.target.value)}
+                      />
+                    ) : (
+                      <div className="text-sm text-gray-700 leading-relaxed border-l-2 border-transparent group-hover:border-indigo-200 pl-3 transition-colors">
+                        {bestMethod || <span className="text-gray-400 italic">Not specified</span>}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Search Query */}
+                  <div className="pt-6 border-t border-gray-100">
+                    <div className="flex items-baseline justify-between mb-2">
+                      <h4 className="text-sm font-medium text-gray-900">Search Query Recommendation</h4>
+                      <span className="text-xs text-gray-400">Max 25 words</span>
+                    </div>
+                    {isEditing ? (
+                      <input
+                        className="w-full text-sm font-mono bg-gray-50 border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                      />
+                    ) : (
+                      <div className="text-sm font-mono text-gray-600 bg-gray-50/50 p-3 rounded border border-gray-200">
+                        {searchQuery || <span className="text-gray-400 italic">Not specified</span>}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
-
-              <div className="bg-white p-4 rounded border">
-                <h4 className="font-medium text-blue-800 mb-2">Best Method</h4>
-                {isEditing ? (
-                  <textarea
-                    className="w-full text-sm text-blue-700 bg-white p-3 rounded border"
-                    rows={3}
-                    value={bestMethod}
-                    onChange={(e) => setBestMethod(e.target.value)}
-                    onInput={(e: any) => { e.currentTarget.style.height = 'auto'; e.currentTarget.style.height = e.currentTarget.scrollHeight + 'px' }}
-                  />
-                ) : (
-                  <p className="text-sm text-blue-700 bg-white p-3 rounded border whitespace-pre-wrap">
-                    {bestMethod || 'Not specified'}
-                  </p>
-                )}
-              </div>
+              
+              {/* Edit Actions Footer */}
+              {isEditing && (
+                <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end">
+                  <button
+                    onClick={async () => {
+                      try {
+                        await onComplete({
+                          action: 'update_idea_record',
+                          sessionId: session?.id,
+                          patch: {
+                            problem,
+                            objectives,
+                            logic,
+                            bestMethod,
+                            components,
+                            searchQuery,
+                            abstract: abstractText,
+                            cpcCodes,
+                            ipcCodes
+                          }
+                        })
+                        setShowNormalized(true)
+                        setIsEditing(false)
+                        onRefresh()
+                      } catch (err) {
+                        console.error('Failed to save edits:', err)
+                        setError('Failed to save edits')
+                      }
+                    }}
+                    className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm"
+                  >
+                    Save Changes
+                  </button>
+                </div>
+              )}
             </div>
-
-            {isEditing && (
-              <div className="mt-4 flex justify-end">
-                <button
-                  onClick={async () => {
-                    try {
-                      await onComplete({
-                        action: 'update_idea_record',
-                        sessionId: session?.id,
-                        patch: {
-                          problem,
-                          objectives,
-                          logic,
-                          bestMethod,
-                          components,
-                          searchQuery,
-                          abstract: abstractText,
-                          cpcCodes,
-                          ipcCodes
-                        }
-                      })
-                      setShowNormalized(true)
-                      setIsEditing(false)
-                      onRefresh()
-                    } catch (err) {
-                      console.error('Failed to save edits:', err)
-                      setError('Failed to save edits')
-                    }
-                  }}
-                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
-                >
-                  Save Edits
-                </button>
-              </div>
-            )}
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* Navigation */}
-      <div className="mt-8 pt-6 border-t border-gray-200">
-      {/* Search Query placed at bottom for reference */}
-      <div className="mb-6">
-        <div className="bg-white p-4 rounded border">
-          <h4 className="font-medium text-blue-800 mb-2">Search Query (≤25 words)</h4>
-          {isEditing ? (
-            <input
-              className="w-full text-sm text-blue-700 bg-white p-3 rounded border"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          ) : (
-            <p className="text-sm text-blue-700 bg-white p-3 rounded border whitespace-pre-wrap">
-              {searchQuery || 'Not specified'}
-            </p>
-          )}
-          <p className="mt-1 text-xs text-blue-600">Plain text, ASCII-safe; no quotes/brackets/CPC/IPC; include only essential technical terms.</p>
-        </div>
-      </div>
-        <div className="flex justify-between items-center">
-          <div className="text-sm text-gray-600">
-            Review the AI-normalized structure and proceed to component planning
-          </div>
-          <button
-            onClick={async () => {
-              try {
-                await onComplete({
-                  action: 'proceed_to_components',
-                  sessionId: session?.id
-                });
-                onRefresh(); // Refresh to show new stage
-              } catch (error) {
-                console.error('Failed to proceed:', error);
-              }
-            }}
-            className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-          >
-            Continue to Components
-            <svg className="w-5 h-5 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-          </button>
-        </div>
+      <div className="mt-10 flex items-center justify-end">
+        <button
+          onClick={async () => {
+            try {
+              await onComplete({
+                action: 'proceed_to_components',
+                sessionId: session?.id
+              });
+              onRefresh();
+            } catch (error) {
+              console.error('Failed to proceed:', error);
+            }
+          }}
+          className="inline-flex items-center px-6 py-2.5 border border-transparent text-sm font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-all hover:shadow focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+        >
+          Start Component Planning
+          <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+          </svg>
+        </button>
       </div>
     </div>
   )

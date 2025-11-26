@@ -16,105 +16,130 @@ function asPercent(n?: number): string | null {
 export function buildStyleInstructions(profile: StyleProfile): SectionInstructions {
   const instr: SectionInstructions = {}
 
-  // Build a compact general header
+  // --- 1. Build Global Natural Language Instructions ---
   const g = profile.global || ({} as any)
-  const genParts: string[] = []
-  if (g.tone) genParts.push(`tone=${g.tone}`)
-  if (g.verbosity) genParts.push(`verbosity=${g.verbosity}`)
-  if (g.sentence_length_stats?.mean) genParts.push(`avg_sentence_length≈${Math.round(g.sentence_length_stats.mean)}`)
-  if (typeof g.passive_ratio === 'number') {
-    const pr = asPercent(g.passive_ratio)
-    if (pr) genParts.push(`passive≈${pr}`)
+  const rules: string[] = []
+
+  // Tone & Hedging
+  if (g.tone) rules.push(`Adopt a ${g.tone} tone.`)
+  if (g.hedging_level === 'high') {
+    rules.push(`Use cautious language frequently (e.g., "may", "can", "optionally"). Avoid absolute terms like "must" or "always".`)
+  } else if (g.hedging_level === 'low') {
+    rules.push(`Use direct and definitive language (e.g., "is configured to", "comprises"). Minimize usage of "may" or "might".`)
   }
+
+  // Sentence Structure
+  if (g.sentence_length_stats?.mean) {
+    const len = Math.round(g.sentence_length_stats.mean)
+    if (len > 35) rules.push(`Write in long, complex sentences (avg ${len} words).`)
+    else if (len < 15) rules.push(`Write in short, concise sentences (avg ${len} words).`)
+  }
+
+  // Connectors
   if (Array.isArray(g.preferred_connectors) && g.preferred_connectors.length > 0) {
-    genParts.push(`connectors={${truncateList(g.preferred_connectors, 6).join(', ')}}`)
+    const top = truncateList(g.preferred_connectors, 5).join('", "')
+    rules.push(`Frequently use transition words such as "${top}".`)
   }
-  if (g.formatting_habits) {
-    const f: string[] = []
-    if (g.formatting_habits.numbered_lists) f.push('numbered-lists')
-    if (g.formatting_habits.bullet_points) f.push('bullets')
-    if (f.length) genParts.push(`formatting=${f.join('+')}`)
+
+  // Formatting
+  if (g.formatting_habits?.bullet_points) rules.push('Use bullet points for lists where appropriate.')
+  if (g.formatting_habits?.numbered_lists) rules.push('Use numbered lists for sequential steps.')
+
+  const generalInstructions = rules.join(' ')
+
+  // --- 2. Helper to append section-specifics ---
+  const compose = (specificRules: string[], examples?: string[]) => {
+    let out = generalInstructions
+    if (specificRules.length) out += '\n' + specificRules.join(' ')
+    if (examples && examples.length) {
+      out += `\n\nFEW-SHOT EXAMPLES (Mimic this style):\n${examples.map(e => `"${e}"`).join('\n\n')}`
+    }
+    return out
   }
-  const general = genParts.join('; ')
 
-  // Helper to compose per-section with general
-  const withGeneral = (specific: string) => (general ? `${general}; ${specific}` : specific)
-
-  // Map sections
+  // --- 3. Map Sections ---
   const sec = profile.sections || ({} as any)
 
-  // ABSTRACT → abstract
+  // ABSTRACT
   if (sec.ABSTRACT) {
     const s = sec.ABSTRACT
-    const cap = s.micro_rules?.word_cap
-    const avoidCit = s.micro_rules?.avoid_citations === true
-    const parts: string[] = []
-    if (cap) parts.push(`word_cap=${cap}`)
-    if (avoidCit) parts.push('avoid_citations=true')
-    const phr = truncateList(s.micro_rules?.style_rules, 6)
-    if (phr.length) parts.push(`style_rules={${phr.join(', ')}}`)
-    instr.abstract = withGeneral(parts.join('; '))
+    const r: string[] = []
+    if (s.micro_rules?.word_cap) r.push(`Limit length to approx ${s.micro_rules.word_cap} words.`)
+    if (s.micro_rules?.avoid_citations) r.push('Do not cite references.')
+    instr.abstract = compose(r, s.micro_rules?.few_shot_examples)
   }
 
-  // BACKGROUND → background
+  // BACKGROUND
   if (sec.BACKGROUND) {
     const s = sec.BACKGROUND
-    const outline = truncateList(s.micro_rules?.structure_outline, 8)
-    const parts: string[] = []
-    if (outline.length) parts.push(`structure=${outline.join(' → ')}`)
-    instr.background = withGeneral(parts.join('; '))
+    const r: string[] = []
+    if (s.micro_rules?.prior_art_tone === 'critical') r.push('Critique prior art limitations aggressively ("suffer from", "drawbacks").')
+    else if (s.micro_rules?.prior_art_tone === 'neutral') r.push('Describe prior art neutrally ("Conventionally...", "Existing systems include...").')
+    
+    if (s.micro_rules?.structure_outline) {
+       r.push(`Follow this structure: ${truncateList(s.micro_rules.structure_outline, 5).join(' -> ')}.`)
+    }
+    instr.background = compose(r, s.micro_rules?.few_shot_examples)
   }
 
-  // SUMMARY → summary
+  // SUMMARY
   if (sec.SUMMARY) {
     const s = sec.SUMMARY
-    const outline = truncateList(s.micro_rules?.structure_outline, 8)
-    const parts: string[] = []
-    if (outline.length) parts.push(`structure=${outline.join(' → ')}`)
-    instr.summary = withGeneral(parts.join('; '))
+    instr.summary = compose([], s.micro_rules?.few_shot_examples)
   }
 
-  // BRIEF_DESCRIPTION → briefDescriptionOfDrawings (do not change numbering policy)
-  if (sec.BRIEF_DESCRIPTION) {
-    const s = sec.BRIEF_DESCRIPTION
-    const tpl = s.micro_rules?.figure_caption_template
-    const parts: string[] = []
-    if (tpl) parts.push(`figure_caption_template="${String(tpl)}"`)
-    instr.briefDescriptionOfDrawings = withGeneral(parts.join('; '))
-  }
-
-  // DETAILED_DESCRIPTION → detailedDescription (no figure numbering overrides)
+  // DETAILED DESCRIPTION
   if (sec.DETAILED_DESCRIPTION) {
     const s = sec.DETAILED_DESCRIPTION
-    const markers = truncateList(s.micro_rules?.embodiment_markers, 6)
-    const parts: string[] = []
-    if (markers.length) parts.push(`embodiment_markers={${markers.join(', ')}}`)
-    instr.detailedDescription = withGeneral(parts.join('; '))
+    const r: string[] = []
+    
+    // Boilerplate Location
+    if (s.micro_rules?.boilerplate_location === 'detailed_desc_start') {
+      r.push('Place general disclaimers/boilerplate at the START of this section.')
+    } else if (s.micro_rules?.boilerplate_location === 'detailed_desc_end') {
+      r.push('Place general disclaimers/boilerplate at the END of this section.')
+    }
+
+    // Cross-linking
+    if (s.micro_rules?.cross_linking_density === 'high') {
+      r.push('Densely cross-link descriptions to figures (e.g., "As shown in FIG. 1...").')
+    }
+    
+    instr.detailedDescription = compose(r, s.micro_rules?.few_shot_examples)
   }
 
-  // CLAIMS → claims (informative hints only)
+  // CLAIMS
   if (sec.CLAIMS) {
     const s = sec.CLAIMS
-    const parts: string[] = []
-    const lex = truncateList(s.micro_rules?.lexical_rules, 8)
-    if (lex.length) parts.push(`lexical_rules={${lex.join(', ')}}`)
-    if (s.micro_rules?.opening) parts.push(`opening_style="${String(s.micro_rules.opening)}"`)
-    if (s.micro_rules?.numbering_pattern?.dependencies_style) {
-      parts.push(`dependencies=${String(s.micro_rules.numbering_pattern.dependencies_style)}`)
+    const r: string[] = []
+    const mr = s.micro_rules || {}
+
+    // Ordering
+    if (mr.claim_ordering && mr.claim_ordering.length) {
+      r.push(`Order independent claim families as: ${mr.claim_ordering.join(' -> ')}.`)
     }
-    instr.claims = withGeneral(parts.join('; '))
+    
+    // Preamble
+    if (mr.preamble_type) {
+      r.push(`Use preamble style: "${mr.preamble_type.replace('_', ' ')}".`)
+    }
+
+    // Numerals
+    if (mr.use_numerals === true) r.push('Include reference numerals in parentheses in the claims.')
+    else if (mr.use_numerals === false) r.push('Do NOT use reference numerals in claims.')
+
+    instr.claims = compose(r, mr.few_shot_examples)
+  }
+  
+  // BRIEF DESCRIPTION
+  if (sec.BRIEF_DESCRIPTION) {
+     instr.briefDescriptionOfDrawings = compose([], sec.BRIEF_DESCRIPTION.micro_rules?.few_shot_examples)
   }
 
-  // Fallbacks for sections not present in style: apply only general
-  const keysNeedingGeneral = [
-    'title',
-    'fieldOfInvention',
-    'bestMethod',
-    'industrialApplicability',
-    'listOfNumerals'
-  ]
+  // Fallbacks
+  const keysNeedingGeneral = ['title', 'fieldOfInvention', 'bestMethod', 'industrialApplicability', 'listOfNumerals']
   for (const k of keysNeedingGeneral) {
-    if (!instr[k]) instr[k] = general
+    if (!instr[k]) instr[k] = generalInstructions
   }
 
   return instr

@@ -21,6 +21,23 @@ interface ATIToken {
   }
 }
 
+interface SignupUser {
+  id: string
+  email: string
+  first_name: string | null
+  last_name: string | null
+  roles: string[]
+  created_at: string
+  usage_metrics?: {
+    patentsDrafted: number
+    noveltySearches: number
+    totalInputTokens: number
+    totalOutputTokens: number
+    tokensByModel: Array<{ model: string; inputTokens: number; outputTokens: number }>
+    tokensByTask: Array<{ task: string; inputTokens: number; outputTokens: number }>
+  }
+}
+
 export default function SuperAdminATIDashboard() {
   const { user, logout } = useAuth()
   const [tokens, setTokens] = useState<ATIToken[]>([])
@@ -38,6 +55,10 @@ export default function SuperAdminATIDashboard() {
     plan_tier: '',
     notes: ''
   })
+  const [selectedTokenId, setSelectedTokenId] = useState<string | null>(null)
+  const [selectedTokenUsers, setSelectedTokenUsers] = useState<SignupUser[]>([])
+  const [isLoadingUsers, setIsLoadingUsers] = useState(false)
+  const [usersError, setUsersError] = useState<string | null>(null)
 
   useEffect(() => {
     fetchTokens()
@@ -73,7 +94,7 @@ export default function SuperAdminATIDashboard() {
     setEditingToken(token)
     setEditForm({
       status: token.status,
-      expires_at: token.expires_at || '',
+      expires_at: token.expires_at ? new Date(token.expires_at).toISOString().slice(0, 16) : '',
       max_uses: token.max_uses?.toString() || '',
       plan_tier: token.plan_tier || '',
       notes: token.notes || ''
@@ -139,6 +160,42 @@ export default function SuperAdminATIDashboard() {
     } catch (error) {
       console.error('Failed to revoke token:', error)
       alert('Failed to revoke token')
+    }
+  }
+
+  const handleViewUsers = async (token: ATIToken) => {
+    if (selectedTokenId === token.id) {
+      setSelectedTokenId(null)
+      setSelectedTokenUsers([])
+      setUsersError(null)
+      return
+    }
+
+    setSelectedTokenId(token.id)
+    setIsLoadingUsers(true)
+    setUsersError(null)
+
+    try {
+      const response = await fetch(`/api/v1/platform/ati/${token.id}`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+        }
+      })
+
+      const data = await response.json()
+
+      if (response.ok) {
+        setSelectedTokenUsers(data.signup_users || [])
+      } else {
+        setUsersError(data.message || 'Failed to load users for this token')
+        setSelectedTokenUsers([])
+      }
+    } catch (error) {
+      console.error('Failed to load token users:', error)
+      setUsersError('Network error: Unable to load users for this token')
+      setSelectedTokenUsers([])
+    } finally {
+      setIsLoadingUsers(false)
     }
   }
 
@@ -542,6 +599,12 @@ export default function SuperAdminATIDashboard() {
                     </div>
                     <div className="flex space-x-2">
                       <button
+                        onClick={() => handleViewUsers(token)}
+                        className="inline-flex items-center px-3 py-1 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                      >
+                        Users
+                      </button>
+                      <button
                         onClick={() => handleEditToken(token)}
                         className="inline-flex items-center px-3 py-1 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
                       >
@@ -566,6 +629,42 @@ export default function SuperAdminATIDashboard() {
                       )}
                     </div>
                   </div>
+                  {selectedTokenId === token.id && (
+                    <div className="mt-3 border-t border-gray-200 pt-3">
+                      <h5 className="text-xs font-semibold text-gray-700 mb-2">Users joined using this token</h5>
+                      {isLoadingUsers ? (
+                        <p className="text-xs text-gray-500">Loading users...</p>
+                      ) : usersError ? (
+                        <p className="text-xs text-red-600">{usersError}</p>
+                      ) : selectedTokenUsers.length === 0 ? (
+                        <p className="text-xs text-gray-500">No users have joined using this token yet.</p>
+                      ) : (
+                        <ul className="space-y-1">
+                          {selectedTokenUsers.map(user => {
+                            const name = [user.first_name, user.last_name].filter(Boolean).join(' ').trim()
+                            const m = user.usage_metrics
+                            return (
+                              <li key={user.id} className="text-xs text-gray-700 flex justify-between">
+                                <div>
+                                  <div>
+                                    {name || user.email} ({user.email})
+                                  </div>
+                                  {m && (
+                                    <div className="text-[10px] text-gray-500 mt-0.5">
+                                      Patents: {m.patentsDrafted} · Novelty: {m.noveltySearches} · Tokens (in/out): {m.totalInputTokens}/{m.totalOutputTokens}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="text-right text-gray-500">
+                                  <div>{new Date(user.created_at).toLocaleDateString()}</div>
+                                </div>
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      )}
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

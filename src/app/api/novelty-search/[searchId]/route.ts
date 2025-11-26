@@ -16,60 +16,30 @@ export async function GET(
   try {
     const { searchId } = params;
 
-    // Get JWT token from authorization header
     const authHeader = request.headers.get('authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return NextResponse.json(
-        { error: 'Authorization token required' },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: 'Authorization token required' }, { status: 401 });
     }
-
     const jwtToken = authHeader.substring(7);
 
-    // Validate user from JWT token
     const payload = verifyJWT(jwtToken);
-    if (!payload || !payload.sub) {
-      return NextResponse.json(
-        { error: 'Invalid token' },
-        { status: 401 }
-      );
+    if (!payload?.sub) {
+      return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
 
     const user = await prisma.user.findUnique({
       where: { id: payload.sub },
       select: { id: true, email: true, name: true, tenantId: true }
     });
+    if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
-    if (!user) {
-      return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
-      );
-    }
-
-    const userId = user.id;
-
-    // Get novelty search with all related data
     const searchRun = await prisma.noveltySearchRun.findFirst({
-      where: {
-        id: searchId,
-        userId: userId
-      },
+      where: { id: searchId, userId: user.id },
       include: {
-        llmCalls: {
-          orderBy: { calledAt: 'desc' },
-          take: 10 // Last 10 LLM calls
-        }
+        llmCalls: { orderBy: { calledAt: 'desc' }, take: 10 }
       }
     });
-
-    if (!searchRun) {
-      return NextResponse.json(
-        { error: 'Novelty search not found' },
-        { status: 404 }
-      );
-    }
+    if (!searchRun) return NextResponse.json({ error: 'Novelty search not found' }, { status: 404 });
 
     return NextResponse.json({
       success: true,
@@ -100,13 +70,9 @@ export async function GET(
         }))
       }
     });
-
   } catch (error) {
     console.error('Get novelty search API error:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
@@ -121,54 +87,29 @@ export async function POST(
   try {
     const { searchId } = params;
 
-    // Get JWT token from authorization header
     const authHeader = request.headers.get('authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return NextResponse.json(
-        { error: 'Authorization token required' },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: 'Authorization token required' }, { status: 401 });
     }
-
     const jwtToken = authHeader.substring(7);
 
-    // Validate user from JWT token
     const payload = verifyJWT(jwtToken);
-    if (!payload || !payload.sub) {
-      return NextResponse.json(
-        { error: 'Invalid token' },
-        { status: 401 }
-      );
+    if (!payload?.sub) {
+      return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
 
     const user = await prisma.user.findUnique({
       where: { id: payload.sub },
       select: { id: true, email: true, name: true, tenantId: true }
     });
+    if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
-    if (!user) {
-      return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
-      );
-    }
-
-    const userId = user.id;
-
-    // Extract request headers for LLM gateway
     const requestHeaders: Record<string, string> = {};
-    request.headers.forEach((value, key) => {
-      requestHeaders[key] = value;
-    });
+    request.headers.forEach((value, key) => { requestHeaders[key] = value; });
 
-    // Resume the search
-    const result = await noveltySearchService.resumeNoveltySearch(searchId, userId, requestHeaders);
-
+    const result = await noveltySearchService.resumeNoveltySearch(searchId, user.id, requestHeaders);
     if (!result.success) {
-      return NextResponse.json(
-        { error: result.error },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: result.error }, { status: 500 });
     }
 
     return NextResponse.json({
@@ -179,13 +120,9 @@ export async function POST(
       results: result.results,
       message: 'Search resumed successfully'
     });
-
   } catch (error) {
     console.error('Resume search API error:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
@@ -200,83 +137,54 @@ export async function PATCH(
   try {
     const { searchId } = params;
 
-    // Get JWT token from authorization header
     const authHeader = request.headers.get('authorization');
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      return NextResponse.json(
-        { error: 'Authorization token required' },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: 'Authorization token required' }, { status: 401 });
     }
-
     const jwtToken = authHeader.substring(7);
 
-    // Validate user from JWT token
     const payload = verifyJWT(jwtToken);
-    if (!payload || !payload.sub) {
-      return NextResponse.json(
-        { error: 'Invalid token' },
-        { status: 401 }
-      );
+    if (!payload?.sub) {
+      return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
 
     const user = await prisma.user.findUnique({
       where: { id: payload.sub },
       select: { id: true, email: true, name: true, tenantId: true }
     });
+    if (!user) return NextResponse.json({ error: 'User not found' }, { status: 404 });
 
-    if (!user) {
-      return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
-      );
-    }
-
-    const userId = user.id;
-
-    // Parse request body
     const body = await request.json();
     const { stage, searchQuery, inventionFeatures } = body;
 
-    console.log('🔄 PATCH API called with:', {
-      searchId,
-      stage,
-      searchQuery,
-      inventionFeatures
-    });
-
-    // Update the novelty search run with edited data
     if (stage === 'stage0') {
-      console.log('💾 Updating database with stage0Results...');
-      const updatedRecord = await prisma.noveltySearchRun.update({
-        where: {
-          id: searchId,
-          userId: userId
-        },
+      // Preserve LLM-detected archetype so user edits don't wipe it out
+      const existing = await prisma.noveltySearchRun.findFirst({
+        where: { id: searchId, userId: user.id }
+      });
+      const existingStage0 = (existing?.stage0Results as any) || {};
+      const inventionType = Array.isArray(existingStage0.inventionType)
+        ? existingStage0.inventionType
+        : (existingStage0.inventionType ? [existingStage0.inventionType] : undefined);
+
+      await prisma.noveltySearchRun.update({
+        where: { id: searchId, userId: user.id },
         data: {
           stage0Results: {
-            searchQuery: searchQuery,
-            inventionFeatures: inventionFeatures
+            searchQuery,
+            inventionFeatures,
+            ...(inventionType ? { inventionType } : {})
           }
         }
-      });
-      console.log('✅ Database update successful:', {
-        id: updatedRecord.id,
-        stage0Results: updatedRecord.stage0Results
       });
     }
 
     return NextResponse.json({
       success: true,
-      message: 'Stage 0 data updated successfully'
+      message: 'Stage data updated successfully'
     });
-
   } catch (error) {
     console.error('PATCH /api/novelty-search/[searchId] error:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
-

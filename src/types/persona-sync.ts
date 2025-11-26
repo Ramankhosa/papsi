@@ -26,6 +26,7 @@ export interface GlobalStyleRules {
   };
   preferred_connectors: string[]; // e.g., ["furthermore", "additionally", "however"]
   avoid_connectors: string[]; // e.g., ["so", "like", "basically"]
+  hedging_level?: 'high' | 'medium' | 'low'; // Frequency of "may", "can", "optionally"
   punctuation_cadence: {
     comma_per_sentence: number;
     semicolon_per_sentence: number;
@@ -57,11 +58,12 @@ export interface SectionStyleRules {
   word_count_range: [number, number]; // [min, max] words
   sentence_count_range: [number, number]; // [min, max] sentences
   paragraph_structure: 'single' | 'multi' | 'mixed';
+  few_shot_examples?: string[]; // Anonymized snippets of user's writing
   micro_rules: Record<string, any>; // Section-specific rules
   // Examples of micro-rules by section:
   // ABSTRACT: { word_cap: 150, avoid_citations: true }
-  // CLAIMS: { opening_phrases: ["A system comprising", "A method for"], numeral_policy: "arabic" }
-  // BACKGROUND: { problem_solution_format: true }
+  // CLAIMS: { opening_phrases: ["A system comprising"], claim_ordering: ["method", "system"], preamble_type: "configured_to" }
+  // BACKGROUND: { prior_art_tone: "critical" }
 }
 
 // Safety constraints to preserve meaning and compliance

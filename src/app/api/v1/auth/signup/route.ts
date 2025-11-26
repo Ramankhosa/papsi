@@ -19,6 +19,18 @@ export async function POST(request: NextRequest) {
     const body = await request.json()
     const { email, password, atiToken, firstName, lastName } = signupSchema.parse(body)
 
+    // Check if email is already in use globally
+    const existingUser = await prisma.user.findUnique({
+      where: { email }
+    })
+
+    if (existingUser) {
+      return NextResponse.json(
+        { code: 'EMAIL_IN_USE', message: 'Email address is already registered' },
+        { status: 400 }
+      )
+    }
+
     // Validate ATI token by finding the tenant it belongs to
     const tokenValidation = await validateATIToken(atiToken)
 
@@ -64,18 +76,6 @@ export async function POST(request: NextRequest) {
     if (tenant.status !== 'ACTIVE') {
       return NextResponse.json(
         { code: 'TENANT_INACTIVE', message: 'Tenant is not active' },
-        { status: 400 }
-      )
-    }
-
-    // Check if email is already in use globally
-    const existingUser = await prisma.user.findUnique({
-      where: { email }
-    })
-
-    if (existingUser) {
-      return NextResponse.json(
-        { code: 'EMAIL_IN_USE', message: 'Email address is already registered' },
         { status: 400 }
       )
     }

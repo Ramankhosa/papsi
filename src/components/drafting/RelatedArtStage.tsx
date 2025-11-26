@@ -90,6 +90,7 @@ export default function RelatedArtStage({ session, patent, onComplete, onRefresh
   const [noveltyThreatFilters, setNoveltyThreatFilters] = useState<string[]>([])
   const [itemsPerPage, setItemsPerPage] = useState(10)
   const [currentPage, setCurrentPage] = useState(1)
+  const [countryWiseDrafting, setCountryWiseDrafting] = useState(false)
 
   // DEBUG: Log renders
   console.log('RelatedArtStage render - ideaBank:', ideaBank.length, 'ideaBankOpen:', ideaBankOpen, 'version:', ideaBankVersion)
@@ -1409,7 +1410,20 @@ export default function RelatedArtStage({ session, patent, onComplete, onRefresh
 
       {/* Footer actions */}
       <div className="mt-6 flex items-center justify-between">
-        <div className="text-sm text-gray-600">Select references to include before drafting.</div>
+        <div className="flex flex-col gap-1">
+          <div className="text-sm text-gray-600">Select references to include before drafting.</div>
+          <label className="inline-flex items-center gap-2 text-xs text-gray-700">
+            <input
+              type="checkbox"
+              className="h-4 w-4 text-indigo-600 border-gray-300 rounded"
+              checked={countryWiseDrafting}
+              onChange={e => setCountryWiseDrafting(e.target.checked)}
+            />
+            <span>
+              Country Wise Drafting – insert an intermediate stage to choose jurisdictions (Stage 3.7a) before Annexure Draft.
+            </span>
+          </label>
+        </div>
         <div className="flex items-center gap-3">
           {/* Idea Bank Button */}
           <button
@@ -1440,7 +1454,7 @@ export default function RelatedArtStage({ session, patent, onComplete, onRefresh
               await onComplete({
                 action: 'set_stage',
                 sessionId: session?.id,
-                stage: 'ANNEXURE_DRAFT',
+                stage: countryWiseDrafting ? 'COUNTRY_WISE_DRAFTING' : 'ANNEXURE_DRAFT',
                 manualPriorArt: manualPriorArtData,
                 selectedPatents: selectedPatentsArray
               });

@@ -126,6 +126,10 @@ model User {
   styleTrainingJobs       StyleTrainingJob[]
   documents               Document[]
 
+  // Country Profile relations
+  createdCountryProfiles  CountryProfile[]       @relation("CountryProfileCreator")
+  updatedCountryProfiles  CountryProfile[]       @relation("CountryProfileUpdater")
+
   @@map("users")
 }
 
@@ -571,6 +575,7 @@ model UsageLog {
   error          String?
   idempotencyKey String?
   reservationId  String?
+  meta           Json?
 
   tenant  Tenant   @relation(fields: [tenantId], references: [id])
   user    User?    @relation(fields: [userId], references: [id])
@@ -578,6 +583,20 @@ model UsageLog {
   task    Task?    @relation(fields: [taskCode], references: [code])
 
   @@map("usage_logs")
+}
+
+model LLMModelPrice {
+  id                      String   @id @default(cuid())
+  provider                String
+  modelClass              String
+  inputPricePerMTokens    Float    // USD per 1M input tokens
+  outputPricePerMTokens   Float    // USD per 1M output tokens
+  currency                String   @default("USD")
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  @@unique([provider, modelClass])
+  @@map("llm_model_prices")
 }
 
 model QuotaAlert {
@@ -1153,6 +1172,7 @@ enum DraftingSessionStatus {
   COMPONENT_PLANNER
   FIGURE_PLANNER
   RELATED_ART
+  COUNTRY_WISE_DRAFTING
   DIAGRAM_GENERATOR
   ANNEXURE_DRAFT
   REVIEW_FIX
@@ -1193,6 +1213,8 @@ model DraftingSession {
   userId   String
   tenantId String?
   status   DraftingSessionStatus @default(IDEA_ENTRY)
+  draftingJurisdictions String[]   @default([])
+  activeJurisdiction    String?
 
   // Metadata
   createdAt   DateTime  @default(now())
@@ -1204,6 +1226,8 @@ model DraftingSession {
 
   // AI analysis data for related art (Stage 3.5)
   aiAnalysisData Json?
+  // Per-jurisdiction draft status (e.g., {"IN":{status:"done",latestVersion:2}})
+  jurisdictionDraftStatus Json?
 
   // Relations
   patent               Patent                @relation(fields: [patentId], references: [id], onDelete: Cascade)
@@ -1322,6 +1346,7 @@ model AnnexureDraft {
   id        String @id @default(cuid())
   sessionId String
   version   Int    @default(1)
+  jurisdiction String @default("IN")
 
   // Draft sections
   title                      String
@@ -1661,4 +1686,34 @@ model Document {
   @@index([tenantId, userId, type])
   @@index([hash])
   @@map("documents")
+}
+
+// === COUNTRY PROFILES FOR JURISDICTION-AWARE DRAFTING ===
+
+enum CountryProfileStatus {
+  ACTIVE
+  INACTIVE
+  DRAFT
+}
+
+model CountryProfile {
+  id          String              @id @default(cuid())
+  countryCode String              @unique // e.g., "US", "IN", "EP"
+  name        String              // e.g., "United States", "India", "European Patent Office"
+  profileData Json                // Complete country_profile.json structure
+  version     Int                 @default(1)
+  status      CountryProfileStatus @default(DRAFT)
+  createdBy   String
+  updatedBy   String?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  // Relations
+  creator User @relation("CountryProfileCreator", fields: [createdBy], references: [id])
+  updater User? @relation("CountryProfileUpdater", fields: [updatedBy], references: [id])
+
+  // Indexes
+  @@index([countryCode])
+  @@index([status])
+  @@map("country_profiles")
 }

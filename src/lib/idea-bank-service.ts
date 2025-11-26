@@ -151,7 +151,7 @@ export class IdeaBankService extends BasePatentService {
       });
 
       if (!planFeature) {
-        throw new Error(`Feature 'IDEA_BANK' not available in plan '${atiToken.planTier}'`);
+        throw new Error(`Feature 'IDEA_BANK' not available in plan '${tenantPlan.plan.code}'`);
       }
 
       // Check tenant status

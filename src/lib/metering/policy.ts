@@ -60,7 +60,12 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
           }
         })
 
-        // Plan is already validated from tenantPlan above
+        if (!plan) {
+          return {
+            allowed: false,
+            reason: 'Plan not found or inactive'
+          }
+        }
 
         // 4. Check feature availability
         const planFeature = plan.planFeatures.find(

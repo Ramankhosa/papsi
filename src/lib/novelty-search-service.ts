@@ -22,13 +22,22 @@ OUTPUT FORMAT â€” Return ONLY valid JSON (one object). No markdown fences, 
 
   "searchQuery": "plain-English query ≤35 words describing what the invention is and how it works, suitable for patent database search",
 
-  "invention_features": ["feature 1", "feature 2", "feature 3"]
+  "invention_features": ["feature 1", "feature 2", "feature 3"],
+
+  "inventionType": ["MECHANICAL", "SOFTWARE"]
 
 }
 
 GLOBAL RULES
 
 - Output must be valid JSON (double-quoted keys/values, comma-separated).
+- "inventionType": Select 1-2 best fit archetypes for the invention logic.
+  - MECHANICAL: Physical structures, moving parts, tools, housing, hinges.
+  - SOFTWARE: Algorithms, data processing, AI, cloud platforms, blockchain.
+  - CHEMICAL: Compounds, compositions, formulations, synthesis methods.
+  - ELECTRICAL: Circuits, sensors, power systems, semiconductors, signal processing.
+  - BIO: Genetics, proteins, medical treatments, diagnostics, organisms.
+  - GENERAL: Fallback if no specific fit.
 
 - Return only the JSON object; nothing else.
 
@@ -604,6 +613,7 @@ export interface NoveltySearchResponse {
 export interface NormalizedIdea {
   searchQuery: string;
   inventionFeatures?: string[];
+  inventionType?: string[];
 }
 
 export interface ScreeningResult {
@@ -977,23 +987,25 @@ export class NoveltySearchService extends BasePatentService {
       const nextStage: NoveltySearchStage = hasResults ? NoveltySearchStage.STAGE_3_5 : NoveltySearchStage.STAGE_4;
       const status: NoveltySearchStatus = NoveltySearchStatus.STAGE_1_COMPLETED;
 
-      await prisma.noveltySearchRun.update({
-        where: { id: searchId },
-        data: {
-          currentStage: nextStage,
-          status: status,
-          stage1CompletedAt: new Date(),
-          stage1Results: screeningData as any
-        }
-      });
+        const mergedStage1 = { ...(screeningData || {}), stage0: stage0Data };
 
-      return {
-        success: true,
-        searchId,
-        status,
-        currentStage: nextStage,
-        results: screeningData
-      };
+        await prisma.noveltySearchRun.update({
+          where: { id: searchId },
+          data: {
+            currentStage: nextStage,
+            status: status,
+            stage1CompletedAt: new Date(),
+            stage1Results: mergedStage1 as any
+          }
+        });
+
+        return {
+          success: true,
+          searchId,
+          status,
+          currentStage: nextStage,
+          results: mergedStage1
+        };
 
     } catch (error) {
       console.error('Stage 1 execution error:', error);
@@ -1967,7 +1979,10 @@ RESPONSE:`;
         searchQuery: normalizedData?.searchQuery || normalizedData?.query || '',
         inventionFeatures: Array.isArray(normalizedData?.invention_features)
           ? (normalizedData.invention_features as string[]).filter(Boolean)
-          : undefined
+          : undefined,
+        inventionType: Array.isArray(normalizedData?.inventionType) 
+          ? normalizedData.inventionType 
+          : (normalizedData?.inventionType ? [normalizedData.inventionType] : ['GENERAL'])
       };
 
       if (!extractedFields.searchQuery) {

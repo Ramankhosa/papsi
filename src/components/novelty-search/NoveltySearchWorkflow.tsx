@@ -1601,6 +1601,26 @@ export default function NoveltySearchWorkflow({
 
                   return (
                     <>
+                      {(() => {
+                        const s0 = (searchState.results as any)?.stage0 || (searchState.results as any) || {};
+                        const types = Array.isArray(s0.inventionType)
+                          ? s0.inventionType
+                          : (typeof s0.inventionType === 'string' && s0.inventionType ? [s0.inventionType] : []);
+                        if (!types.length) return null;
+                        return (
+                          <div className="mb-3 text-sm text-gray-700">
+                            <span className="font-medium mr-2">Detected invention type:</span>
+                            {types.map((t: string) => (
+                              <span
+                                key={t}
+                                className="inline-flex items-center px-2 py-0.5 mr-1 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100"
+                              >
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        );
+                      })()}
                       <div className="grid md:grid-cols-3 gap-4 mb-6">
                         <div className="text-center p-4 bg-white rounded-lg border">
                           <div className="text-2xl font-bold text-blue-600">{pqaiResults.length}</div>
@@ -2104,7 +2124,6 @@ export default function NoveltySearchWorkflow({
     </div>
   );
 }
-
 
 
 

@@ -135,8 +135,18 @@ export async function GET(request: NextRequest) {
       orderBy: { startedAt: 'desc' }
     })
 
+    // Load dynamic model pricing (if configured)
+    const modelPrices = await prisma.lLMModelPrice.findMany()
+    const priceMap = new Map<string, { input: number; output: number }>()
+    for (const p of modelPrices) {
+      priceMap.set(p.modelClass, {
+        input: p.inputPricePerMTokens,
+        output: p.outputPricePerMTokens
+      })
+    }
+
     // Process data
-    const analyticsData = processUsageData(usageLogs, query.groupBy, isSuperAdmin)
+    const analyticsData = processUsageData(usageLogs, query.groupBy, isSuperAdmin, priceMap)
 
     return NextResponse.json(analyticsData)
 
@@ -208,7 +218,12 @@ function buildWhereClause(user: any, query: AnalyticsQuery, isSuperAdmin: boolea
   return where
 }
 
-function processUsageData(usageLogs: any[], groupBy: string, isSuperAdmin: boolean): AnalyticsData {
+function processUsageData(
+  usageLogs: any[],
+  groupBy: string,
+  isSuperAdmin: boolean,
+  priceMap?: Map<string, { input: number; output: number }>
+): AnalyticsData {
   // Calculate summary metrics
   const summary: UsageMetrics = {
     totalTokens: 0,
@@ -230,7 +245,7 @@ function processUsageData(usageLogs: any[], groupBy: string, isSuperAdmin: boole
     summary.inputTokens += log.inputTokens || 0
     summary.outputTokens += log.outputTokens || 0
     summary.totalTokens += (log.inputTokens || 0) + (log.outputTokens || 0)
-    summary.cost += calculateCost(log)
+    summary.cost += calculateCost(log, priceMap)
 
     // Group by entity
     let entityKey: string
@@ -287,7 +302,7 @@ function processUsageData(usageLogs: any[], groupBy: string, isSuperAdmin: boole
     group.metrics.totalTokens += (log.inputTokens || 0) + (log.outputTokens || 0)
     group.metrics.apiCalls += 1
     group.metrics.requests += 1
-    group.metrics.cost += calculateCost(log)
+    group.metrics.cost += calculateCost(log, priceMap)
   }
 
   // Convert to breakdown array
@@ -299,10 +314,10 @@ function processUsageData(usageLogs: any[], groupBy: string, isSuperAdmin: boole
   }))
 
   // Generate trends data (simplified - group by day/week/month)
-  const trends = generateTrendsData(usageLogs)
+  const trends = generateTrendsData(usageLogs, priceMap)
 
   // Get top users (only relevant for tenant admin view)
-  const topUsers = isSuperAdmin ? [] : getTopUsers(usageLogs)
+  const topUsers = isSuperAdmin ? [] : getTopUsers(usageLogs, priceMap)
 
   return {
     summary,
@@ -312,14 +327,30 @@ function processUsageData(usageLogs: any[], groupBy: string, isSuperAdmin: boole
   }
 }
 
-function calculateCost(log: any): number {
-  // Simplified cost calculation - in production, this would use actual pricing
-  const inputCost = (log.inputTokens || 0) * 0.000005 // $5 per million tokens
-  const outputCost = (log.outputTokens || 0) * 0.000015 // $15 per million tokens
+function calculateCost(
+  log: any,
+  priceMap?: Map<string, { input: number; output: number }>
+): number {
+  const inputTokens = log.inputTokens || 0
+  const outputTokens = log.outputTokens || 0
+
+  if (priceMap && log.modelClass && priceMap.has(log.modelClass)) {
+    const price = priceMap.get(log.modelClass)!
+    const inputCost = inputTokens * (price.input / 1_000_000)
+    const outputCost = outputTokens * (price.output / 1_000_000)
+    return inputCost + outputCost
+  }
+
+  // Fallback: static pricing if no dynamic config
+  const inputCost = inputTokens * 0.000005 // $5 per million tokens
+  const outputCost = outputTokens * 0.000015 // $15 per million tokens
   return inputCost + outputCost
 }
 
-function generateTrendsData(usageLogs: any[]): Array<{ period: string, metrics: UsageMetrics }> {
+function generateTrendsData(
+  usageLogs: any[],
+  priceMap?: Map<string, { input: number; output: number }>
+): Array<{ period: string; metrics: UsageMetrics }> {
   const trends = new Map<string, UsageMetrics>()
 
   for (const log of usageLogs) {
@@ -345,7 +376,7 @@ function generateTrendsData(usageLogs: any[]): Array<{ period: string, metrics: 
     metrics.totalTokens += (log.inputTokens || 0) + (log.outputTokens || 0)
     metrics.apiCalls += 1
     metrics.requests += 1
-    metrics.cost += calculateCost(log)
+    metrics.cost += calculateCost(log, priceMap)
   }
 
   return Array.from(trends.entries())
@@ -353,7 +384,10 @@ function generateTrendsData(usageLogs: any[]): Array<{ period: string, metrics: 
     .sort((a, b) => a.period.localeCompare(b.period))
 }
 
-function getTopUsers(usageLogs: any[]): Array<{ userId: string, userName: string, metrics: UsageMetrics }> {
+function getTopUsers(
+  usageLogs: any[],
+  priceMap?: Map<string, { input: number; output: number }>
+): Array<{ userId: string; userName: string; metrics: UsageMetrics }> {
   const userMetrics = new Map<string, { user: any, metrics: UsageMetrics }>()
 
   for (const log of usageLogs) {
@@ -380,7 +414,7 @@ function getTopUsers(usageLogs: any[]): Array<{ userId: string, userName: string
     data.metrics.totalTokens += (log.inputTokens || 0) + (log.outputTokens || 0)
     data.metrics.apiCalls += 1
     data.metrics.requests += 1
-    data.metrics.cost += calculateCost(log)
+    data.metrics.cost += calculateCost(log, priceMap)
   }
 
   return Array.from(userMetrics.values())

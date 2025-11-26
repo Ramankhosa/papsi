@@ -19,8 +19,22 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   const [isGenerating, setIsGenerating] = useState(false)
   const [figures, setFigures] = useState<LLMFigure[]>([])
   const [error, setError] = useState<string | null>(null)
+  const sanitizeFigureLabel = (text?: string | null) => {
+    const raw = typeof text === 'string' ? text : ''
+    if (!raw.trim()) return ''
+    const cpcIpcPattern = /\b(?:CPC|IPC)?\s*(?:class\s*)?[A-H][0-9]{1,2}[A-Z]\s*\d+\/\d+\b/gi
+    let cleaned = raw.replace(cpcIpcPattern, '')
+    cleaned = cleaned.replace(/\b(?:CPC|IPC)\b[:\-]?\s*/gi, '')
+    cleaned = cleaned.replace(/\s{2,}/g, ' ').replace(/\s+([,.;:])/g, '$1')
+    cleaned = cleaned.replace(/^[\s,:;.-]+|[\s,:;.-]+$/g, '')
+    return cleaned.trim()
+  }
+
   const diagramSources = session?.diagramSources || []
-  const figurePlans = session?.figurePlans || []
+  const figurePlans = (session?.figurePlans || []).map((plan: any) => ({
+    ...plan,
+    title: sanitizeFigureLabel(plan.title) || `Figure ${plan.figureNo}`
+  }))
   const [isUploading, setIsUploading] = useState(false)
   const [uploaded, setUploaded] = useState<Record<number, boolean>>({})
   const [modifyIdx, setModifyIdx] = useState<number | null>(null)
@@ -45,6 +59,26 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   const [showManual, setShowManual] = useState(false)
   const [manualBusy, setManualBusy] = useState<Record<number, boolean>>({})
   const [showPlantUML, setShowPlantUML] = useState<Record<number, boolean>>({})
+  const [countryProfile, setCountryProfile] = useState<any | null>(null)
+
+  const activeJurisdiction = (session?.activeJurisdiction || session?.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+
+  useEffect(() => {
+    const loadProfile = async () => {
+      try {
+        const res = await fetch(`/api/country-profiles/${activeJurisdiction}`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}` }
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setCountryProfile(data?.profile || null)
+        }
+      } catch (e) {
+        console.warn('Failed to load country profile for figures', e)
+      }
+    }
+    loadProfile()
+  }, [activeJurisdiction])
 
   const countWords = (text: string) => (text || '').trim().split(/\s+/).filter(Boolean).length
 
@@ -152,7 +186,19 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
       const components = session?.referenceMap?.components || []
       const numeralsPreview = components.map((c: any) => `${c.name} (${c.numeral || '?'})`).join(', ')
 
-      const prompt = `You are generating PlantUML diagrams for a patent specification.
+      const drawingRules = countryProfile?.rules?.drawings || {}
+      const figureLabelFormat = countryProfile?.profileData?.diagrams?.figureLabelFormat || countryProfile?.profileData?.rules?.drawings?.figureLabelFormat || 'Fig. {number}'
+      const colorAllowed = drawingRules.colorAllowed !== undefined ? drawingRules.colorAllowed : false
+      const lineStyle = drawingRules.lineStyle || 'black_and_white_solid'
+      const refNumeralsMandatory = drawingRules.referenceNumeralsMandatoryWhenDrawings !== false
+      const minTextSize = drawingRules.minReferenceTextSizePt || 8
+      const allowedPageSizeList = [
+        ...normalizePageSizes(drawingRules.allowedPageSizes),
+        ...normalizePageSizes(drawingRules.paperSize)
+      ]
+      const allowedPageSizes = allowedPageSizeList.join(', ')
+
+      const prompt = `You are generating PlantUML diagrams for a patent specification in jurisdiction ${activeJurisdiction}.
 Return a JSON array of 5 simple, standard patent-style diagrams (no fancy rendering).
 Each item must be: {"title":"Fig.X - title","purpose":"one-line purpose","plantuml":"@startuml...@enduml"}.
 
@@ -160,6 +206,10 @@ Strict content & labeling:
 - Use only components and numerals: ${numeralsPreview}.
 - Use labels with numerals exactly as assigned (e.g., C100). Avoid undefined references.
 - Do NOT include !theme, !include, !import, skinparam, captions, figure numbers, or titles inside the PlantUML code.
+- Figure label format: ${figureLabelFormat}. Use this for titles and any in-figure references.
+- Color policy: ${colorAllowed ? 'color permitted if essential' : 'monochrome only (no color)'}; line style: ${lineStyle}.
+- Reference numerals in drawings: ${refNumeralsMandatory ? 'MANDATORY' : 'Optional'}. Text size at least ${minTextSize} pt.
+- Page size guidance (if applicable): ${allowedPageSizes || 'A4/Letter safe defaults'}.
 
 Diagram selection (prefer in this order):
 - Fig.1: high-level block diagram (root modules).
@@ -198,7 +248,10 @@ Output: JSON only, no markdown fences.`
         throw new Error('LLM did not return valid figure list')
       }
 
-      setFigures(res.figures)
+      setFigures(res.figures.map((fig: LLMFigure) => ({
+        ...fig,
+        title: sanitizeFigureLabel(fig.title) || fig.title
+      })))
       // Refresh to pull saved plans and sources immediately
       await onRefresh()
     } catch (e) {
@@ -214,7 +267,7 @@ Output: JSON only, no markdown fences.`
         action: 'save_plantuml',
         sessionId: session?.id,
         figureNo: index + 1,
-        title: figure.title,
+        title: sanitizeFigureLabel(figure.title) || figure.title,
         plantumlCode: figure.plantuml
       })
 
@@ -730,7 +783,7 @@ Output: JSON only, no markdown fences.`
                 }
                 for (let i = 0; i < manualCount; i++) {
                   const item = manualInputs[i]
-                  const resp = await onComplete({ action: 'create_manual_figure', sessionId: session?.id, title: item.title, description: item.description })
+                            const resp = await onComplete({ action: 'create_manual_figure', sessionId: session?.id, title: sanitizeFigureLabel(item.title) || item.title, description: item.description })
                   const createdNo = resp?.created?.figureNo
                   if (createdNo && manualFiles[i]) {
                     await handleUploadImage(createdNo, manualFiles[i] as File)
@@ -771,7 +824,7 @@ Output: JSON only, no markdown fences.`
                     if (!item || !item.description || countWords(item.description) < 20) { setError('Description needs at least 20 words'); return }
                     if (!file) { setError('Please choose an image file to upload'); return }
                     setManualBusy((prev) => ({ ...prev, [i]: true }))
-                    const resp = await onComplete({ action: 'create_manual_figure', sessionId: session?.id, title: item.title, description: item.description })
+                    const resp = await onComplete({ action: 'create_manual_figure', sessionId: session?.id, title: sanitizeFigureLabel(item.title) || item.title, description: item.description })
                     const createdNo = resp?.created?.figureNo
                     if (createdNo) {
                       await handleUploadImage(createdNo, file)
@@ -873,3 +926,17 @@ Output: JSON only, no markdown fences.`
     </div>
   )
 }
+  const normalizePageSizes = (input: any): string[] => {
+    if (!input) return []
+    if (Array.isArray(input)) {
+      return input.flatMap((val) => normalizePageSizes(val))
+    }
+    if (typeof input === 'string') {
+      const trimmed = input.trim()
+      return trimmed ? [trimmed] : []
+    }
+    if (typeof input === 'object') {
+      return Object.values(input).flatMap((val) => normalizePageSizes(val))
+    }
+    return []
+  }

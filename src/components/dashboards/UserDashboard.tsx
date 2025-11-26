@@ -33,6 +33,8 @@ export default function UserDashboard() {
   const [isLoading, setIsLoading] = useState(true)
   const [idleMessage, setIdleMessage] = useState('')
   const [showIdleMessage, setShowIdleMessage] = useState(false)
+  const [projectsList, setProjectsList] = useState<any[]>([])
+  const projectsScrollRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     if (user) {
@@ -144,6 +146,7 @@ export default function UserDashboard() {
       if (projectsResponse.ok) {
         const projectsData = await projectsResponse.json()
         const projects = projectsData.projects || []
+        setProjectsList(projects)
 
         // Count patents across all projects that are in draft status
         for (const project of projects) {
@@ -231,13 +234,13 @@ export default function UserDashboard() {
              </div>
            </motion.div>
 
-           {/* Quick Actions Bar */}
-           <motion.div 
-             initial={{ opacity: 0, y: 10 }}
-             animate={{ opacity: 1, y: 0 }}
-             transition={{ delay: 0.1, duration: 0.5 }}
-             className="grid grid-cols-2 md:grid-cols-4 gap-4"
-           >
+          {/* Quick Actions Bar */}
+          <motion.div 
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1, duration: 0.5 }}
+            className="grid grid-cols-2 md:grid-cols-4 gap-4"
+          >
              <button
                 onClick={() => router.push('/patents/draft/new')}
                 className="group flex flex-col items-start p-4 bg-white border border-slate-200 rounded-xl hover:border-ai-blue-500/50 hover:shadow-md hover:shadow-ai-blue-500/10 transition-all duration-200"
@@ -283,6 +286,50 @@ export default function UserDashboard() {
               </button>
            </motion.div>
         </div>
+
+        {/* Projects scroller */}
+        {projectsList.length > 0 && (
+          <div className="mb-10">
+            <div className="flex items-center justify-between mb-3">
+              <div className="text-lg font-semibold text-ai-graphite-800 flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-ai-blue-500" />
+                Your Projects
+              </div>
+              <span className="text-xs text-slate-500">Hover and scroll to browse</span>
+            </div>
+            <div
+              ref={projectsScrollRef}
+              onWheel={(e) => {
+                if (projectsScrollRef.current) {
+                  projectsScrollRef.current.scrollLeft += e.deltaY
+                }
+              }}
+              className="group relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
+            >
+              <div className="absolute inset-y-0 left-0 w-12 pointer-events-none bg-gradient-to-r from-white to-transparent opacity-0 group-hover:opacity-80 transition-opacity" />
+              <div className="absolute inset-y-0 right-0 w-12 pointer-events-none bg-gradient-to-l from-white to-transparent opacity-0 group-hover:opacity-80 transition-opacity" />
+              <div className="flex gap-3 px-4 py-3 overflow-x-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-transparent scroll-smooth">
+                {projectsList.map((project: any) => (
+                  <div
+                    key={project.id}
+                    onClick={() => router.push(`/projects/${project.id}`)}
+                    className="min-w-[220px] cursor-pointer rounded-lg border border-slate-200 bg-slate-50 hover:bg-white hover:border-ai-blue-500/60 hover:shadow-md transition-all p-3"
+                  >
+                    <div className="text-sm font-semibold text-slate-900 truncate">{project.name}</div>
+                    <div className="text-[11px] text-slate-500 mt-1 truncate">{project.applicantProfile?.applicantLegalName || 'No applicant set'}</div>
+                    <div className="mt-2 flex items-center justify-between text-xs text-slate-600">
+                      <span>{(project.patents || []).length} patents</span>
+                      <span className="flex items-center gap-1 text-ai-blue-600">
+                        <Lightbulb className="w-3 h-3" />
+                        Open
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Main Content Grid */}
         <div className="space-y-8">

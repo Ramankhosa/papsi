@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 
 interface ReviewFixStageProps {
   session: any
@@ -9,44 +9,155 @@ interface ReviewFixStageProps {
   onRefresh: () => Promise<void>
 }
 
+type CheckItem = {
+  label: string
+  ok: boolean
+  remark: string
+  status: 'pending' | 'pass' | 'fail'
+}
+
 export default function ReviewFixStage({ session, patent, onComplete, onRefresh }: ReviewFixStageProps) {
   const [extReport, setExtReport] = useState<any>(null)
-  const [checkList, setCheckList] = useState<Array<{ label: string; ok: boolean; remark: string; status: 'pending'|'pass'|'fail' }>>([])
-  const runChecks = async () => {
-    const res = await onComplete({ action: 'run_review_checks', sessionId: session?.id })
-    setExtReport(res)
-    // Build check items and animate one-by-one
-    const er = res?.extendedReport || {}
-    const rows: Array<{label:string; ok:boolean; remark:string}> = []
-    const wc = (v:number, lo:number, hi:number) => v>=lo && v<=hi
-    // Abstract
-    rows.push({ label: 'Abstract length 130–150', ok: wc(er.abstract?.length||0,130,150), remark: `length=${er.abstract?.length}` })
-    rows.push({ label: 'Abstract starts with Title', ok: !!er.abstract?.startsWithTitle, remark: er.abstract?.startsWithTitle ? '' : 'Must begin exactly with approved title' })
-    rows.push({ label: 'Abstract forbidden terms absent', ok: !(er.abstract?.forbiddenHits||[]).length, remark: (er.abstract?.forbiddenHits||[]).join(', ') })
-    // BDOD
-    rows.push({ label: 'BDOD has all figures', ok: !(er.bdod?.missingFigures||[]).length, remark: (er.bdod?.missingFigures||[]).join(', ') })
-    rows.push({ label: 'BDOD has no extra figures', ok: !(er.bdod?.extraFigures||[]).length, remark: (er.bdod?.extraFigures||[]).join(', ') })
-    const bdodFormatOk = !(er.bdod?.formatViolations||[]).length && !(er.bdod?.overlengthLines||[]).length
-    rows.push({ label: 'BDOD format/length OK', ok: bdodFormatOk, remark: `formatViolations=${(er.bdod?.formatViolations||[]).join(', ')||'0'} overlengthLines=${(er.bdod?.overlengthLines||[]).join(', ')||'0'}` })
-    // IA
-    rows.push({ label: 'Industrial Applicability present', ok: !!er.industrialApplicability?.present, remark: er.industrialApplicability?.present ? '' : 'Add 50–100 words section' })
-    rows.push({ label: 'IA starts with required phrase', ok: !!er.industrialApplicability?.startsWith, remark: er.industrialApplicability?.startsWith ? '' : 'Must begin with required phrase' })
-    rows.push({ label: 'IA length 50–100', ok: wc(er.industrialApplicability?.length||0,50,100), remark: `length=${er.industrialApplicability?.length}` })
-    // Figures/Numerals
-    rows.push({ label: 'No invalid figure references', ok: !(er.figures?.invalidReferences||[]).length, remark: (er.figures?.invalidReferences||[]).join(', ') })
-    rows.push({ label: 'No numerals used-not-declared', ok: !(er.numerals?.usedNotDeclared||[]).length, remark: (er.numerals?.usedNotDeclared||[]).join(', ') })
-    rows.push({ label: 'No duplicate numerals in text', ok: !(er.numerals?.duplicates||[]).length, remark: (er.numerals?.duplicates||[]).join(', ') })
-    // Claims
-    rows.push({ label: 'Claims ≤ 12', ok: (er.claims?.total||0) <= 12, remark: `total=${er.claims?.total||0}` })
-    rows.push({ label: 'Independent claim ≤150 words', ok: (er.claims?.maxIndependentWords||0) <= 150, remark: `independentWords=${er.claims?.maxIndependentWords||0}` })
-    rows.push({ label: 'No forbidden claim tokens', ok: !(er.claims?.forbiddenHits||[]).length, remark: (er.claims?.forbiddenHits||[]).join(', ') })
+  const [checkList, setCheckList] = useState<CheckItem[]>([])
+  const availableJurisdictions: string[] = (Array.isArray(session?.draftingJurisdictions) && session.draftingJurisdictions.length > 0
+    ? session.draftingJurisdictions
+    : ['IN']
+  ).map((c: string) => (c || '').toUpperCase())
+  const [selectedJurisdiction, setSelectedJurisdiction] = useState<string>(() => (session?.activeJurisdiction || availableJurisdictions[0] || 'IN'))
 
-    setCheckList(rows.map(r => ({ ...r, status: 'pending' })))
+  useEffect(() => {
+    const next = (session?.activeJurisdiction || availableJurisdictions[0] || 'IN').toUpperCase()
+    setSelectedJurisdiction(next)
+  }, [session?.activeJurisdiction, availableJurisdictions.join(',')])
+
+  useEffect(() => {
+    setExtReport(null)
+    setCheckList([])
+  }, [selectedJurisdiction])
+
+  const runChecks = async () => {
+    const res = await onComplete({ action: 'run_review_checks', sessionId: session?.id, jurisdiction: selectedJurisdiction })
+    setExtReport(res)
+
+    const er = res?.extendedReport || {}
+    const activeJurisdiction = selectedJurisdiction || (session?.activeJurisdiction || session?.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+    const rows: Array<Omit<CheckItem, 'status'>> = []
+
+    // Abstract vs profile limits
+    const absLen = er.abstract?.length || 0
+    const absMax = er.abstract?.maxWords as number | undefined
+    rows.push({
+      label: absMax ? `Abstract length ≤ ${absMax} words` : 'Abstract length (informational)',
+      ok: absMax ? absLen <= absMax : true,
+      remark: `length=${absLen}${absMax ? `, max=${absMax}` : ''}`
+    })
+    if (activeJurisdiction === 'IN') {
+      rows.push({
+        label: 'Abstract starts with Title (IN practice)',
+        ok: !!er.abstract?.startsWithTitle,
+        remark: er.abstract?.startsWithTitle ? '' : 'For IN practice, abstract should begin with the approved title.'
+      })
+    }
+    rows.push({
+      label: 'Abstract forbidden terms absent',
+      ok: !(er.abstract?.forbiddenHits || []).length,
+      remark: (er.abstract?.forbiddenHits || []).join(', ')
+    })
+
+    // BDOD
+    rows.push({
+      label: 'BDOD has all figures',
+      ok: !(er.bdod?.missingFigures || []).length,
+      remark: (er.bdod?.missingFigures || []).join(', ')
+    })
+    rows.push({
+      label: 'BDOD has no extra figures',
+      ok: !(er.bdod?.extraFigures || []).length,
+      remark: (er.bdod?.extraFigures || []).join(', ')
+    })
+    const bdodFormatOk = !(er.bdod?.formatViolations || []).length && !(er.bdod?.overlengthLines || []).length
+    rows.push({
+      label: 'BDOD format/line length OK',
+      ok: bdodFormatOk,
+      remark: `formatViolations=${(er.bdod?.formatViolations || []).join(', ') || '0'} overlengthLines=${(er.bdod?.overlengthLines || []).join(', ') || '0'}`
+    })
+
+    // Industrial Applicability (if provided by profile)
+    if (er.industrialApplicability) {
+      const iaLen = er.industrialApplicability?.length || 0
+      const iaMax = er.industrialApplicability?.maxWords as number | undefined
+      rows.push({
+        label: 'Industrial Applicability present',
+        ok: !!er.industrialApplicability?.present,
+        remark: er.industrialApplicability?.present ? '' : 'Add Industrial Applicability as required by the office.'
+      })
+      if (iaMax) {
+        rows.push({
+          label: `Industrial Applicability length ≤ ${iaMax} words`,
+          ok: iaLen <= iaMax,
+          remark: `length=${iaLen}, max=${iaMax}`
+        })
+      }
+      if (activeJurisdiction === 'IN') {
+        rows.push({
+          label: 'IA starts with required IN phrase',
+          ok: !!er.industrialApplicability?.startsWith,
+          remark: er.industrialApplicability?.startsWith ? '' : 'For IN, start with "The invention is industrially applicable to ...".'
+        })
+      }
+    }
+
+    // Figures / numerals
+    rows.push({
+      label: 'No invalid figure references',
+      ok: !(er.figures?.invalidReferences || []).length,
+      remark: (er.figures?.invalidReferences || []).join(', ')
+    })
+    rows.push({
+      label: 'No numerals used-not-declared',
+      ok: !(er.numerals?.usedNotDeclared || []).length,
+      remark: (er.numerals?.usedNotDeclared || []).join(', ')
+    })
+    rows.push({
+      label: 'No duplicate numerals in text',
+      ok: !(er.numerals?.duplicates || []).length,
+      remark: (er.numerals?.duplicates || []).join(', ')
+    })
+
+    // Claims
+    const claimsMax = er.claims?.maxCount as number | undefined
+    rows.push({
+      label: claimsMax ? `Claims count ≤ ${claimsMax} (profile)` : 'Claims count (informational)',
+      ok: claimsMax ? (er.claims?.total || 0) <= claimsMax : true,
+      remark: `total=${er.claims?.total || 0}${claimsMax ? `, max=${claimsMax}` : ''}`
+    })
+    rows.push({
+      label: 'No forbidden claim tokens (and/or, etc., approximately, substantially)',
+      ok: !(er.claims?.forbiddenHits || []).length,
+      remark: (er.claims?.forbiddenHits || []).join(', ')
+    })
+
+    setCheckList(
+      rows.map(r => ({
+        ...r,
+        status: 'pending'
+      }))
+    )
     rows.forEach((r, idx) => {
       setTimeout(() => {
-        setCheckList(prev => prev.map((it, i) => i===idx ? ({ ...it, status: r.ok ? 'pass' : 'fail' }) : it))
+        setCheckList(prev =>
+          prev.map((it, i) =>
+            i === idx
+              ? {
+                  ...it,
+                  status: r.ok ? 'pass' : 'fail'
+                }
+              : it
+          )
+        )
       }, 120 * idx)
     })
+
     return res
   }
 
@@ -55,26 +166,41 @@ export default function ReviewFixStage({ session, patent, onComplete, onRefresh 
     await onRefresh()
   }
 
-  const lastDraft = session?.annexureDrafts?.[0]
+  const effectiveJurisdiction = selectedJurisdiction || (session?.activeJurisdiction || session?.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+  const drafts = Array.isArray(session?.annexureDrafts) ? session.annexureDrafts : []
+  const lastDraft = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction) || drafts[0]
   const report = lastDraft?.validationReport
 
   return (
     <div className="p-8">
       <div className="mb-8">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">Stage 6: Review & Fix</h2>
-        <p className="text-gray-600">
-          Review consistency and fix any validation issues.
-        </p>
+        <p className="text-gray-600">Review consistency and fix any validation issues.</p>
       </div>
 
       <div className="border rounded-lg p-6 bg-white">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-gray-900">Consistency & Validation</h3>
-          <div className="space-x-2">
-            <button onClick={runChecks} className="px-3 py-2 text-sm rounded bg-indigo-600 text-white">Run Checks</button>
-            <button onClick={handleAutoFix} className="px-3 py-2 text-sm rounded border border-gray-200 text-gray-700">Apply Quick Fixes</button>
+          <div className="flex items-center gap-2">
+            {availableJurisdictions.length > 1 && (
+              <select
+                className="border rounded px-3 py-2 text-sm text-gray-900 bg-white"
+                value={effectiveJurisdiction}
+                onChange={(e) => setSelectedJurisdiction(e.target.value.toUpperCase())}
+                aria-label="Select jurisdiction for review"
+              >
+                {availableJurisdictions.map(code => <option key={code} value={code}>{code}</option>)}
+              </select>
+            )}
+            <button onClick={runChecks} className="px-3 py-2 text-sm rounded bg-indigo-600 text-white">
+              Run Checks
+            </button>
+            <button onClick={handleAutoFix} className="px-3 py-2 text-sm rounded border border-gray-200 text-gray-700">
+              Apply Quick Fixes
+            </button>
           </div>
         </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="p-3 rounded bg-gray-50">
             <div className="text-xs text-gray-500">Numeral Consistency</div>
@@ -86,117 +212,56 @@ export default function ReviewFixStage({ session, patent, onComplete, onRefresh 
           </div>
           <div className="p-3 rounded bg-gray-50">
             <div className="text-xs text-gray-500">Issues</div>
-            <div className="text-sm">Missing: {(report?.missingNumerals||[]).join(', ') || '—'} | Unused: {(report?.unusedNumerals||[]).join(', ') || '—'}</div>
+            <div className="text-sm">
+              Missing: {(report?.missingNumerals || []).join(', ') || '—'} | Unused:{' '}
+              {(report?.unusedNumerals || []).join(', ') || '—'}
+            </div>
           </div>
         </div>
-        {extReport?.extendedReport && (
-          <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="p-4 rounded border">
-              <div className="font-medium text-gray-900 mb-2">Abstract</div>
-              <div className="text-sm text-gray-700">Starts with title: {String(extReport.extendedReport.abstract?.startsWithTitle)}</div>
-              <div className="text-sm text-gray-700">Length: {extReport.extendedReport.abstract?.length}</div>
-              <div className="text-sm text-gray-700">Digits: {String(extReport.extendedReport.abstract?.digits)}</div>
-            </div>
-            <div className="p-4 rounded border">
-              <div className="font-medium text-gray-900 mb-2">BDOD</div>
-              <div className="text-sm text-gray-700">Missing: {(extReport.extendedReport.bdod?.missingFigures||[]).join(', ') || '—'}</div>
-              <div className="text-sm text-gray-700">Extra: {(extReport.extendedReport.bdod?.extraFigures||[]).join(', ') || '—'}</div>
-              <div className="text-sm text-gray-700">Overlength lines: {(extReport.extendedReport.bdod?.overlengthLines||[]).join(', ') || '—'}</div>
-            </div>
-            <div className="p-4 rounded border">
-              <div className="font-medium text-gray-900 mb-2">Claims</div>
-              <div className="text-sm text-gray-700">Total: {extReport.extendedReport.claims?.total}</div>
-              <div className="text-sm text-gray-700">Max independent words: {extReport.extendedReport.claims?.maxIndependentWords}</div>
-              <div className="text-sm text-gray-700">Forbidden: {(extReport.extendedReport.claims?.forbiddenHits||[]).join(', ') || '—'}</div>
-            </div>
-            <div className="p-4 rounded border">
-              <div className="font-medium text-gray-900 mb-2">Industrial Applicability</div>
-              <div className="text-sm text-gray-700">Present: {String(extReport.extendedReport.industrialApplicability?.present)}</div>
-              <div className="text-sm text-gray-700">Starts with phrase: {String(extReport.extendedReport.industrialApplicability?.startsWith)}</div>
-              <div className="text-sm text-gray-700">Length: {extReport.extendedReport.industrialApplicability?.length}</div>
-            </div>
-          </div>
-        )}
-        {checkList.length>0 && (
+
+        {checkList.length > 0 && (
           <div className="mt-6">
-            <div className="font-medium text-gray-900 mb-2">Checklist (sequential)</div>
+            <div className="font-medium text-gray-900 mb-2">Checklist (profile-aware)</div>
             <ul className="space-y-1">
               {checkList.map((c, i) => (
                 <li key={i} className="flex items-center justify-between p-2 rounded border bg-white">
                   <div className="text-sm text-gray-800">{c.label}</div>
                   <div className="flex items-center gap-3">
-                    {c.status==='pending' && <span className="text-xs text-gray-500">…</span>}
-                    {c.status==='pass' && <span className="text-green-600">✔</span>}
-                    {c.status==='fail' && <span className="text-red-600">✖</span>}
+                    {c.status === 'pending' && <span className="text-xs text-gray-500">…</span>}
+                    {c.status === 'pass' && <span className="text-green-600">✔</span>}
+                    {c.status === 'fail' && <span className="text-red-600">✖</span>}
                   </div>
                 </li>
               ))}
             </ul>
           </div>
         )}
-        {extReport?.extendedReport && (
-          <div className="mt-6">
-            <div className="font-medium text-gray-900 mb-2">Detailed checks</div>
-            <div className="overflow-x-auto border rounded">
-              <table className="min-w-full text-sm">
-                <thead className="bg-gray-50 text-gray-600">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Check</th>
-                    <th className="px-3 py-2">Status</th>
-                    <th className="px-3 py-2 text-left">Remarks</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y">
-                  {(() => {
-                    const er = extReport.extendedReport || {}
-                    const rows: Array<{label:string; ok:boolean; remark:string}> = []
-                    const ok = (v:boolean) => !!v
-                    // Abstract
-                    rows.push({ label: 'Abstract length 130–150', ok: er.abstract?.length>=130 && er.abstract?.length<=150, remark: `length=${er.abstract?.length}` })
-                    rows.push({ label: 'Abstract starts with Title', ok: er.abstract?.startsWithTitle, remark: er.abstract?.startsWithTitle ? '' : 'Must begin exactly with approved title' })
-                    rows.push({ label: 'Abstract forbidden terms absent', ok: !(er.abstract?.forbiddenHits||[]).length, remark: (er.abstract?.forbiddenHits||[]).join(', ') })
-                    // BDOD
-                    rows.push({ label: 'BDOD has all figures', ok: !(er.bdod?.missingFigures||[]).length, remark: (er.bdod?.missingFigures||[]).join(', ') })
-                    rows.push({ label: 'BDOD has no extra figures', ok: !(er.bdod?.extraFigures||[]).length, remark: (er.bdod?.extraFigures||[]).join(', ') })
-                    rows.push({ label: 'BDOD format/length OK', ok: !(er.bdod?.formatViolations||[]).length && !(er.bdod?.overlengthLines||[]).length, remark: `formatViolations=${(er.bdod?.formatViolations||[]).join(', ')||'0'} overlengthLines=${(er.bdod?.overlengthLines||[]).join(', ')||'0'}` })
-                    // Industrial Applicability
-                    rows.push({ label: 'IA present', ok: er.industrialApplicability?.present, remark: er.industrialApplicability?.present ? '' : 'Add Industrial Applicability (50–100 words)' })
-                    rows.push({ label: 'IA starts with required phrase', ok: er.industrialApplicability?.startsWith, remark: er.industrialApplicability?.startsWith ? '' : 'Must begin: "The invention is industrially applicable to"' })
-                    rows.push({ label: 'IA length 50–100', ok: er.industrialApplicability?.length>=50 && er.industrialApplicability?.length<=100, remark: `length=${er.industrialApplicability?.length}` })
-                    // Figures/numerals
-                    rows.push({ label: 'No invalid figure references', ok: !(er.figures?.invalidReferences||[]).length, remark: (er.figures?.invalidReferences||[]).join(', ') })
-                    rows.push({ label: 'No numerals used-not-declared', ok: !(er.numerals?.usedNotDeclared||[]).length, remark: (er.numerals?.usedNotDeclared||[]).join(', ') })
-                    rows.push({ label: 'No duplicate numerals in text', ok: !(er.numerals?.duplicates||[]).length, remark: (er.numerals?.duplicates||[]).join(', ') })
-                    // Claims
-                    rows.push({ label: 'Claims ≤ 12', ok: (er.claims?.total||0) <= 12, remark: `total=${er.claims?.total||0}` })
-                    rows.push({ label: 'Independent claim ≤150 words', ok: (er.claims?.maxIndependentWords||0) <= 150, remark: `independentWords=${er.claims?.maxIndependentWords||0}` })
-                    rows.push({ label: 'No forbidden claim tokens', ok: !(er.claims?.forbiddenHits||[]).length, remark: (er.claims?.forbiddenHits||[]).join(', ') })
-                    // Best Method
-                    rows.push({ label: 'Best Method has numeric parameter', ok: !!er.bestMethod?.hasNumeric, remark: er.bestMethod?.hasNumeric ? '' : 'Add at least one numeric/procedural setting' })
-                    rows.push({ label: 'Best Method hedging density ≤3%', ok: (er.bestMethod?.hedgingDensity||0) <= 0.03, remark: `density=${(er.bestMethod?.hedgingDensity||0).toFixed(3)}` })
 
-                    return rows.map((r, idx) => (
-                      <tr key={idx} className="text-gray-800">
-                        <td className="px-3 py-2 align-top">{r.label}</td>
-                        <td className="px-3 py-2 text-center">{r.ok ? <span className="text-green-600">✔</span> : <span className="text-red-600">✖</span>}</td>
-                        <td className="px-3 py-2 text-gray-600">{r.ok ? '' : (r.remark || 'Please adjust to meet IPO guidelines')}</td>
-                      </tr>
-                    ))
-                  })()}
-                </tbody>
-              </table>
-          </div>
-        </div>
-        )}
         {extReport?.extendedReport && (
           <div className="mt-6 p-4 rounded bg-gray-50">
             <div className="font-medium text-gray-900 mb-2">Recommendations</div>
             <ul className="list-disc ml-6 text-sm text-gray-700 space-y-1">
-              {!extReport.extendedReport.abstract?.startsWithTitle && <li>Abstract should begin exactly with the approved Title.</li>}
-              {extReport.extendedReport.abstract?.length>150 && <li>Trim Abstract to ≤150 words.</li>}
-              {(extReport.extendedReport.bdod?.missingFigures||[]).length>0 && <li>Add BDOD lines for all figures and ensure format “Fig. X — …”.</li>}
-              {(extReport.extendedReport.claims?.forbiddenHits||[]).length>0 && <li>Remove forbidden claim terms (and/or, etc., approximately, substantially).</li>}
-              {!extReport.extendedReport.industrialApplicability?.present && <li>Add Industrial Applicability (50–100 words) starting with the required phrase.</li>}
+              {(() => {
+                const er = extReport.extendedReport || {}
+                const items: string[] = []
+                const absMax = er.abstract?.maxWords as number | undefined
+                if (absMax && er.abstract?.length > absMax) {
+                  items.push(`Trim Abstract to ≤ ${absMax} words as per the country profile.`)
+                }
+                if ((er.bdod?.missingFigures || []).length > 0) {
+                  items.push('Add BDOD lines for all figures and ensure they follow the required "Fig. X - ..." format.')
+                }
+                if ((er.claims?.forbiddenHits || []).length > 0) {
+                  items.push('Remove forbidden claim terms (and/or, etc., approximately, substantially) from the claims.')
+                }
+                if (!er.industrialApplicability?.present) {
+                  items.push('Add an Industrial Applicability section consistent with the selected jurisdiction.')
+                }
+                if (items.length === 0) {
+                  items.push('No major issues detected against the current country profile; focus on minor wording and style improvements.')
+                }
+                return items.map((t, idx) => <li key={idx}>{t}</li>)
+              })()}
             </ul>
           </div>
         )}

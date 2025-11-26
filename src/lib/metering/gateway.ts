@@ -70,7 +70,8 @@ export class LLMGateway {
           inputTokens: llmRequest.inputTokens || 0,
           outputTokens: response.outputTokens,
           modelClass: response.modelClass as any,
-          apiCalls: 1
+          apiCalls: 1,
+          metadata: llmRequest.metadata
         }
 
         await this.system.metering.recordUsage(decision.reservationId, usageStats, tenantContext.userId)

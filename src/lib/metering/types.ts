@@ -61,6 +61,7 @@ export interface LLMRequest {
   modelClass?: string
   parameters?: Record<string, any>
   idempotencyKey?: string
+  metadata?: Record<string, any>
 }
 
 export interface LLMResponse {
@@ -97,6 +98,7 @@ export interface UsageStats {
   apiCalls?: number
   modelClass?: ModelClass
   apiCode?: string // PATENT_OPEN, NPL_OPEN, etc.
+  metadata?: Record<string, any>
 }
 
 export interface MeteringContext {

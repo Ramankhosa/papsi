@@ -62,7 +62,8 @@ export function createMeteringService(config: MeteringConfig): MeteringService {
               completedAt: new Date(),
               status: 'COMPLETED',
               idempotencyKey: reservation.idempotencyKey,
-              reservationId: reservation.id
+              reservationId: reservation.id,
+              meta: stats.metadata ? JSON.parse(JSON.stringify(stats.metadata)) : null
             }
           })
         } catch (logError: any) {

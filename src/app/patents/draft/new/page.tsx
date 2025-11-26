@@ -6,6 +6,16 @@ import { useAuth } from '@/lib/auth-context'
 import Link from 'next/link'
 import { Badge } from '@/components/ui/badge'
 
+type CountryOption = {
+  code: string
+  label: string
+  description: string
+  continent: string
+  office: string
+  applicationTypes: string[]
+  languages: string[]
+}
+
 interface Project {
   id: string
   name: string
@@ -24,9 +34,13 @@ function NewPatentDraftPageContent() {
   const [selectedProject, setSelectedProject] = useState<string>(initialProjectId)
   const [patentTitle, setPatentTitle] = useState('')
   const [rawIdea, setRawIdea] = useState('')
-  const [areaOfInvention, setAreaOfInvention] = useState('')
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [availableCountries, setAvailableCountries] = useState<CountryOption[]>([])
+  const [selectedCodes, setSelectedCodes] = useState<string[]>([])
+  const [mode, setMode] = useState<'single' | 'multi'>('single')
+  const [loadingCountries, setLoadingCountries] = useState<boolean>(true)
+  const [allowRefine, setAllowRefine] = useState<boolean>(true)
 
   // Derived: currently selected project object from list
   const selectedProjectObj = projects.find(p => p.id === selectedProject)
@@ -48,6 +62,44 @@ function NewPatentDraftPageContent() {
       setSelectedProject(initialProjectId)
     }
   }, [initialProjectId])
+
+  // Load country profiles for jurisdiction selection
+  useEffect(() => {
+    const fetchCountries = async () => {
+      try {
+        setLoadingCountries(true)
+        const res = await fetch('/api/country-profiles', {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}` }
+        })
+        if (!res.ok) throw new Error(`Failed to load country profiles (${res.status})`)
+        const data = await res.json()
+        const countries: CountryOption[] = Array.isArray(data?.countries) ? data.countries.map((meta: any) => ({
+          code: (meta.code || '').toUpperCase(),
+          label: `${meta.name || meta.code} (${(meta.code || '').toUpperCase()})`,
+          description: `${meta.office || 'Patent Office'} format. Languages: ${(meta.languages || []).join(', ') || 'N/A'}. Applications: ${(meta.applicationTypes || []).join(', ') || 'N/A'}.`,
+          continent: meta.continent || 'Unknown',
+          office: meta.office || 'Patent Office',
+          applicationTypes: meta.applicationTypes || [],
+          languages: meta.languages || []
+        })) : []
+        countries.sort((a, b) => {
+          if (a.continent !== b.continent) return a.continent.localeCompare(b.continent)
+          return a.label.localeCompare(b.label)
+        })
+        setAvailableCountries(countries)
+        if (countries.length > 0) {
+          const defaultSel = countries.find(c => c.code === 'IN')?.code || countries[0].code
+          setSelectedCodes([defaultSel])
+        }
+      } catch (e) {
+        console.error('Failed to load country profiles:', e)
+        setError('Failed to load country profiles. Please try again.')
+      } finally {
+        setLoadingCountries(false)
+      }
+    }
+    fetchCountries()
+  }, [])
 
   const fetchProjects = async () => {
     try {
@@ -182,6 +234,13 @@ function NewPatentDraftPageContent() {
       return
     }
 
+    const normalizedCodes = selectedCodes.map(c => c.toUpperCase())
+    const finalSelection = mode === 'single' ? normalizedCodes.slice(0, 1) : normalizedCodes
+    if (finalSelection.length === 0) {
+      setError('Please select at least one jurisdiction')
+      return
+    }
+
     setIsCreating(true)
     setError(null)
 
@@ -222,21 +281,44 @@ function NewPatentDraftPageContent() {
         throw new Error('Failed to start drafting session')
       }
 
-      // Normalize the idea
-      const normalizeResponse = await fetch(`/api/patents/${patentId}/drafting`, {
+      const draftSessionData = await draftingResponse.json()
+      const sessionId = draftSessionData.session.id
+
+      // Persist jurisdiction choice immediately
+      const setStageResponse = await fetch(`/api/patents/${patentId}/drafting`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
         },
         body: JSON.stringify({
-          action: 'normalize_idea',
-          sessionId: (await draftingResponse.json()).session.id,
-          rawIdea: rawIdea.trim(),
-          title: patentTitle.trim(),
-          areaOfInvention: areaOfInvention.trim() || undefined
+          action: 'set_stage',
+          sessionId,
+          stage: 'COUNTRY_WISE_DRAFTING',
+          draftingJurisdictions: finalSelection,
+          activeJurisdiction: finalSelection[0]
         })
       })
+
+      if (!setStageResponse.ok) {
+        throw new Error('Failed to persist jurisdiction selection')
+      }
+
+      // Normalize the idea
+        const normalizeResponse = await fetch(`/api/patents/${patentId}/drafting`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+          },
+          body: JSON.stringify({
+            action: 'normalize_idea',
+            sessionId,
+            rawIdea: rawIdea.trim(),
+            title: patentTitle.trim(),
+            allowRefine
+          })
+        })
 
       if (!normalizeResponse.ok) {
         throw new Error('Failed to normalize idea')
@@ -305,28 +387,102 @@ function NewPatentDraftPageContent() {
           )}
 
           <div className="space-y-6">
-            {/* Project Display */}
+            {/* Jurisdiction Selection */}
+            <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+              <div className="flex items-center justify-between mb-3">
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Jurisdiction & Mode</div>
+                  <p className="text-xs text-gray-600">Choose single or multiple jurisdictions; this controls downstream prompts, figures, and rules.</p>
+                </div>
+                <div className="flex items-center gap-3 text-sm text-gray-700">
+                  <label className="flex items-center gap-1">
+                    <input type="radio" className="h-4 w-4" checked={mode === 'single'} onChange={() => {
+                      setMode('single')
+                      if (selectedCodes.length > 1) setSelectedCodes([selectedCodes[0]])
+                    }} />
+                    Single
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <input type="radio" className="h-4 w-4" checked={mode === 'multi'} onChange={() => setMode('multi')} />
+                    Multiple
+                  </label>
+                </div>
+              </div>
+              {loadingCountries ? (
+                <div className="text-sm text-gray-500">Loading jurisdictions...</div>
+              ) : availableCountries.length === 0 ? (
+                <div className="text-sm text-red-600">No country profiles available. Please ask an admin to add them.</div>
+              ) : (
+                <div className="grid sm:grid-cols-2 gap-2 max-h-56 overflow-auto">
+                  {availableCountries.map(c => (
+                    <label key={c.code} className="flex items-start gap-2 p-2 border border-gray-200 rounded hover:bg-white cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                        checked={selectedCodes.includes(c.code)}
+                        onChange={() => {
+                          if (mode === 'single') {
+                            setSelectedCodes([c.code])
+                          } else {
+                            setSelectedCodes(prev => prev.includes(c.code) ? prev.filter(x => x !== c.code) : [...prev, c.code])
+                          }
+                        }}
+                        disabled={mode === 'single' && !selectedCodes.includes(c.code) && selectedCodes.length >= 1}
+                      />
+                      <div>
+                        <div className="text-sm font-medium text-gray-900">{c.label}</div>
+                        <div className="text-xs text-gray-600">{c.description}</div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-gray-500 mt-2">
+                Your chosen active jurisdiction will drive figures and validation; you can generate other jurisdictions later.
+              </p>
+            </div>
+
+            {/* Project Display / Selector */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Project
               </label>
-              <div className="flex items-center space-x-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                  <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-                  </svg>
+              {initialProjectId ? (
+                <>
+                  <div className="flex items-center space-x-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                    <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
+                      <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                      </svg>
+                    </div>
+                    <div className="flex-1">
+                      <div className="font-medium text-gray-900">{selectedProjectObj?.name || 'Project'}</div>
+                      <div className="text-xs text-gray-500">Linked from project context</div>
+                    </div>
+                    <Badge variant="secondary" className="text-xs">Locked</Badge>
+                  </div>
+                  <p className="mt-1 text-sm text-gray-500">
+                    This draft will be saved to {selectedProjectObj?.name || 'the selected project'}.
+                  </p>
+                </>
+              ) : (
+                <div className="space-y-2">
+                  <select
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                    value={selectedProject}
+                    onChange={(e) => setSelectedProject(e.target.value)}
+                  >
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-xs text-gray-500">
+                    Choose a project to store this draft. Select “Default Project” for quick drafts.
+                  </p>
                 </div>
-                <div className="flex-1">
-                  <div className="font-medium text-gray-900">{selectedProjectObj?.name || 'Project'}</div>
-                  <div className="text-xs text-gray-500">{selectedProjectObj?.name === 'Default Project' ? 'Quick drafts and searches' : 'Selected project'}</div>
-                </div>
-                {selectedProjectObj?.name === 'Default Project' && (
-                  <Badge variant="secondary" className="text-xs">Default</Badge>
-                )}
-              </div>
-              <p className="mt-1 text-sm text-gray-500">
-                Your patent draft will be saved to {selectedProjectObj?.name ? `the ${selectedProjectObj.name}` : 'your project'} for quick access.
-              </p>
+              )}
             </div>
 
             {/* Patent Title */}
@@ -347,26 +503,6 @@ function NewPatentDraftPageContent() {
                 {patentTitle.trim().split(/\s+/).length} words (max 15) • This will be the title of your patent application
               </p>
             </div>
-
-            {/* Fields of Invention (optional) */}
-            <div>
-              <label htmlFor="area" className="block text-sm font-medium text-gray-700 mb-2">
-                Fields of invention (optional)
-              </label>
-              <input
-                type="text"
-                id="area"
-                value={areaOfInvention}
-                onChange={(e) => setAreaOfInvention(e.target.value)}
-                placeholder="e.g., AI; IoT; Medical device; Genetics; Materials; Nanotech"
-                className="w-full px-3 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
-                maxLength={120}
-              />
-              <p className="mt-1 text-sm text-gray-500">
-                We’ll inject this into the prompt so the AI uses domain‑specific expertise. Separate multiple areas with commas/semicolons.
-              </p>
-            </div>
-
             {/* Invention Description */}
             <div>
               <label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-2">
@@ -414,72 +550,56 @@ function NewPatentDraftPageContent() {
               </p>
             </div>
 
-            {/* Info Cards */}
-            <div className="grid md:grid-cols-3 gap-4 mt-8">
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                <div className="flex items-center mb-2">
-                  <svg className="w-5 h-5 text-blue-600 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                  <h3 className="text-sm font-medium text-blue-800">AI-Powered</h3>
-                </div>
-                <p className="text-sm text-blue-700">
-                  Advanced AI analyzes your invention and structures it for patent drafting
-                </p>
-              </div>
-
-              <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                <div className="flex items-center mb-2">
-                  <svg className="w-5 h-5 text-green-600 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  <h3 className="text-sm font-medium text-green-800">IPO Compliant</h3>
-                </div>
-                <p className="text-sm text-green-700">
-                  Generates complete Indian patent annexures following IPO Form-2 requirements
-                </p>
-              </div>
-
-              <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
-                <div className="flex items-center mb-2">
-                  <svg className="w-5 h-5 text-purple-600 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.746 0 3.332.477 4.5 1.253v13C19.832 18.477 18.246 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-                  </svg>
-                  <h3 className="text-sm font-medium text-purple-800">8-Stage Process</h3>
-                </div>
-                <p className="text-sm text-purple-700">
-                  Step-by-step workflow from idea to complete patent draft with figure integration
-                </p>
-              </div>
-            </div>
-
             {/* Action Buttons */}
-            <div className="flex justify-end space-x-4 pt-6 border-t border-gray-200">
-              <Link
-                href="/dashboard"
-                className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
-              >
-                Cancel
-              </Link>
-              <button
-                onClick={handleCreateDraft}
-                disabled={isCreating || !selectedProject || !patentTitle.trim()}
-                className="inline-flex items-center px-6 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {isCreating ? (
-                  <>
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-3"></div>
-                    Creating...
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                    Create Patent Draft
-                  </>
-                )}
-              </button>
+            <div className="flex flex-col gap-3 pt-6 border-t border-gray-200">
+              <div className="flex flex-wrap items-center gap-4 text-sm text-gray-700">
+                <span className="font-medium text-gray-900">Idea handling:</span>
+                <label className="inline-flex items-center gap-2">
+                  <input
+                    type="radio"
+                    className="h-4 w-4"
+                    checked={allowRefine === true}
+                    onChange={() => setAllowRefine(true)}
+                  />
+                  Let Kisho improve/structure my idea
+                </label>
+                <label className="inline-flex items-center gap-2">
+                  <input
+                    type="radio"
+                    className="h-4 w-4"
+                    checked={allowRefine === false}
+                    onChange={() => setAllowRefine(false)}
+                  />
+                  Keep exactly what I provided
+                </label>
+              </div>
+              <div className="flex justify-end space-x-4">
+                <Link
+                  href="/dashboard"
+                  className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
+                >
+                  Cancel
+                </Link>
+                <button
+                  onClick={handleCreateDraft}
+                  disabled={isCreating || !selectedProject || !patentTitle.trim()}
+                  className="inline-flex items-center px-6 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isCreating ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-3"></div>
+                      Creating...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                      </svg>
+                      Initiate Patent Drafting
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

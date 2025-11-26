@@ -7,11 +7,157 @@ import { DraftingService } from '@/lib/drafting-service';
 import { IdeaBankService } from '@/lib/idea-bank-service';
 import { llmGateway } from '@/lib/metering/gateway';
 import { getGatedStyleInstructions } from '@/lib/style-instruction-builder'
+import { getDocumentTypeConfig, getSupportedCountryCodes, getCountryProfile } from '@/lib/country-profile-service';
 import crypto from 'crypto';
 import plantumlEncoder from 'plantuml-encoder';
 import path from 'path';
 import fs from 'fs/promises';
 import { imageSize } from 'image-size';
+
+const sanitizeFigureTitleInput = (title?: string | null): string => {
+  const raw = typeof title === 'string' ? title : ''
+  if (!raw.trim()) return ''
+  const cpcIpcPattern = /\b(?:CPC|IPC)?\s*(?:class\s*)?[A-H][0-9]{1,2}[A-Z]\s*\d+\/\d+\b/gi
+  let cleaned = raw.replace(cpcIpcPattern, '')
+  cleaned = cleaned.replace(/\b(?:CPC|IPC)\b[:\-]?\s*/gi, '')
+  cleaned = cleaned.replace(/\s{2,}/g, ' ').replace(/\s+([,.;:])/g, '$1')
+  cleaned = cleaned.replace(/^[\s,:;.-]+|[\s,:;.-]+$/g, '')
+  return cleaned.trim()
+}
+
+function getPreferredLanguageForJurisdiction(session: any, jurisdictionCode: string): string | undefined {
+  try {
+    const status = (session as any)?.jurisdictionDraftStatus || {}
+    const lang = status?.[jurisdictionCode]?.language
+    if (typeof lang === 'string' && lang.trim()) return lang.trim()
+  } catch {}
+  return undefined
+}
+
+function applyPreferredLanguage(profile: any, preferred?: string) {
+  if (!preferred) return profile
+  const langs: string[] = Array.isArray(profile?.profileData?.meta?.languages)
+    ? profile.profileData.meta.languages
+    : []
+  const reordered = [preferred, ...langs.filter(l => l !== preferred)]
+  return {
+    ...profile,
+    profileData: {
+      ...(profile?.profileData || {}),
+      meta: {
+        ...(profile?.profileData?.meta || {}),
+        languages: reordered
+      }
+    }
+  }
+}
+
+function resolveSourceOfTruth(session: any, fallback?: string): string {
+  try {
+    const status = (session as any)?.jurisdictionDraftStatus || {}
+    const preferred = typeof status.__sourceOfTruth === 'string' ? String(status.__sourceOfTruth).toUpperCase() : undefined
+    const list: string[] = Array.isArray(session?.draftingJurisdictions)
+      ? session.draftingJurisdictions.map((c: string) => (c || '').toUpperCase())
+      : []
+    if (preferred && list.includes(preferred)) return preferred
+    const normalizedFallback = fallback ? fallback.toUpperCase() : undefined
+    if (normalizedFallback && list.includes(normalizedFallback)) return normalizedFallback
+    if (list.length > 0) return list[0]
+  } catch {}
+  return (fallback || 'IN').toUpperCase()
+}
+
+type ExportSectionDef = { key: string; label: string; required?: boolean }
+
+const canonicalSectionMap: Record<string, string> = {
+  title: 'title',
+  abstract: 'abstract',
+  technical_field: 'fieldOfInvention',
+  field_of_invention: 'fieldOfInvention',
+  field: 'fieldOfInvention',
+  background: 'background',
+  background_art: 'background',
+  summary_of_invention: 'summary',
+  summary: 'summary',
+  brief_drawings: 'briefDescriptionOfDrawings',
+  brief_description_of_drawings: 'briefDescriptionOfDrawings',
+  description: 'detailedDescription',
+  detailed_description: 'detailedDescription',
+  best_mode: 'bestMethod',
+  best_method: 'bestMethod',
+  industrial_applicability: 'industrialApplicability',
+  utility: 'industrialApplicability',
+  claims: 'claims',
+  abstract_section: 'abstract',
+  reference_numerals: 'listOfNumerals',
+  reference_signs: 'listOfNumerals',
+  list_of_numerals: 'listOfNumerals'
+}
+
+const defaultExportSections: ExportSectionDef[] = [
+  { key: 'title', label: 'Title', required: true },
+  { key: 'fieldOfInvention', label: 'Field of the Invention', required: true },
+  { key: 'background', label: 'Background of the Invention', required: true },
+  { key: 'summary', label: 'Summary of the Invention', required: true },
+  { key: 'briefDescriptionOfDrawings', label: 'Brief Description of the Drawings', required: false },
+  { key: 'detailedDescription', label: 'Detailed Description of the Invention', required: true },
+  { key: 'bestMethod', label: 'Best Method of Performing the Invention', required: false },
+  { key: 'claims', label: 'Claims', required: true },
+  { key: 'abstract', label: 'Abstract', required: true },
+  { key: 'industrialApplicability', label: 'Industrial Applicability', required: false },
+  { key: 'listOfNumerals', label: 'List of Reference Numerals', required: false }
+]
+
+async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<ExportSectionDef[]> {
+  try {
+    const profile = await getCountryProfile(jurisdiction)
+    const variant = profile?.profileData?.structure?.variants?.find((v: any) => v.id === profile?.profileData?.structure?.defaultVariant) || profile?.profileData?.structure?.variants?.[0]
+    const promptSections = profile?.profileData?.prompts?.sections || {}
+    if (variant?.sections?.length) {
+      const sections: ExportSectionDef[] = []
+      for (const sec of variant.sections) {
+        const keys = (sec.canonicalKeys || []).map((k: string) => k.toLowerCase())
+        let mapped: string | undefined
+        for (const k of keys) {
+          if (canonicalSectionMap[k]) { mapped = canonicalSectionMap[k]; break }
+        }
+        if (!mapped && canonicalSectionMap[sec.id]) mapped = canonicalSectionMap[sec.id]
+        if (!mapped) continue
+        sections.push({
+          key: mapped,
+          label: sec.label || sec.id,
+          required: sec.required ?? promptSections?.[sec.id]?.required ?? true
+        })
+      }
+      // Ensure title/abstract appear even if profile omits them
+      const keys = new Set(sections.map(s => s.key))
+      if (!keys.has('title')) sections.unshift({ key: 'title', label: 'Title', required: true })
+      if (!keys.has('abstract')) sections.push({ key: 'abstract', label: 'Abstract', required: true })
+      return sections
+    }
+  } catch (err) {
+    console.warn('Failed to load export sections for jurisdiction', jurisdiction, err)
+  }
+  return defaultExportSections
+}
+
+function getSectionHeadingDynamic(sectionName: string, sections?: ExportSectionDef[]): string {
+  const found = sections?.find(s => s.key === sectionName)
+  if (found) return String(found.label || sectionName).toUpperCase()
+  const fallbackMap: Record<string, string> = {
+    fieldOfInvention: 'FIELD OF THE INVENTION',
+    background: 'BACKGROUND OF THE INVENTION',
+    summary: 'SUMMARY OF THE INVENTION',
+    briefDescriptionOfDrawings: 'BRIEF DESCRIPTION OF THE DRAWINGS',
+    detailedDescription: 'DETAILED DESCRIPTION OF THE INVENTION',
+    industrialApplicability: 'INDUSTRIAL APPLICABILITY',
+    bestMethod: 'BEST METHOD OF PERFORMING THE INVENTION',
+    claims: 'CLAIMS',
+    listOfNumerals: 'LIST OF REFERENCE NUMERALS',
+    abstract: 'ABSTRACT'
+  }
+  return fallbackMap[sectionName] || sectionName.toUpperCase()
+}
 
 export async function GET(
   request: NextRequest,
@@ -116,8 +262,8 @@ export async function GET(
         figurePlans: true,
         diagramSources: true,
         annexureDrafts: {
-          orderBy: { version: 'desc' },
-          take: 1
+          // Keep all versions so UI can select the latest per jurisdiction
+          orderBy: { version: 'desc' }
         },
         relatedArtRuns: {
           orderBy: { ranAt: 'desc' },
@@ -146,8 +292,12 @@ export async function POST(
   request: NextRequest,
   { params }: { params: { patentId: string } }
 ) {
+  let authResult: any = null;
+  let body: any = null;
+  let patentId: string = params.patentId;
+
   try {
-    const authResult = await authenticateUser(request);
+    authResult = await authenticateUser(request);
     if (!authResult.user) {
       return NextResponse.json(
         { error: authResult.error?.message },
@@ -155,8 +305,7 @@ export async function POST(
       );
     }
 
-    const { patentId } = params;
-    const body = await request.json();
+    body = await request.json();
     const { action, ...data } = body;
 
     // Verify patent access
@@ -247,6 +396,9 @@ export async function POST(
       case 'autosave_sections':
         return await handleAutosaveSections(authResult.user, patentId, data);
 
+      case 'delete_annexure_draft':
+        return await handleDeleteAnnexureDraft(authResult.user, patentId, data);
+
       case 'generate_diagrams_llm':
         return await handleGenerateDiagramsLLM(authResult.user, patentId, data, requestHeaders);
 
@@ -300,6 +452,10 @@ export async function POST(
 
   } catch (error) {
     console.error('POST /api/patents/[patentId]/drafting error:', error);
+    console.error('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+    console.error('Request body:', body || 'Not parsed yet');
+    console.error('User ID:', authResult?.user?.id || 'Not authenticated yet');
+    console.error('Patent ID:', patentId);
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }
@@ -459,7 +615,13 @@ ${batchText}`
       modelClass: 'gemini-2.5-flash-lite',
       idempotencyKey: crypto.randomUUID(),
       inputTokens: Math.ceil(batchRelevancePrompt.length / 4),
-      parameters: { maxOutputTokens: 3000 }
+      parameters: { maxOutputTokens: 3000 },
+      metadata: {
+        patentId,
+        sessionId,
+        runId: useRunId,
+        purpose: 'related_art_relevance_batch'
+      }
     })
 
     console.log(`Relevance analysis batch ${Math.floor(i/effectiveBatchSize) + 1} model used:`, relevanceResult?.response?.modelClass || 'unknown')
@@ -584,6 +746,12 @@ ${candidatesText}`
       maxOutputTokens: 5000,
       temperature: 0.9,
       topP: 0.95
+    },
+    metadata: {
+      patentId,
+      sessionId,
+      runId: useRunId,
+      purpose: 'related_art_idea_generation'
     }
   })
 
@@ -685,16 +853,26 @@ ${candidatesText}`
   return NextResponse.json(response)
 }
 async function handleRunReview(user: any, patentId: string, data: any) {
-  const { sessionId } = data
+  const { sessionId, jurisdiction: requestedJurisdiction } = data
   if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
 
   const session = await prisma.draftingSession.findFirst({
     where: { id: sessionId, patentId, userId: user.id },
-    include: { annexureDrafts: { orderBy: { version: 'desc' }, take: 1 }, referenceMap: true, figurePlans: true }
+    include: { annexureDrafts: { orderBy: { version: 'desc' } }, referenceMap: true, figurePlans: true }
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const last = session.annexureDrafts?.[0]
+  const effectiveJurisdiction = (requestedJurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+  const preferredLanguage = getPreferredLanguageForJurisdiction(session, effectiveJurisdiction)
+  const baseProfile = await getCountryProfile(effectiveJurisdiction)
+  const profile = applyPreferredLanguage(baseProfile, preferredLanguage)
+
+  const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
+  const last = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction)
+  if (!last) {
+    return NextResponse.json({ error: `No draft found for jurisdiction ${effectiveJurisdiction}` }, { status: 400 })
+  }
+
   const fullText = last?.fullDraftText || [
     last?.fieldOfInvention && `FIELD OF INVENTION\n\n${last.fieldOfInvention}`,
     last?.background && `BACKGROUND\n\n${last.background}`,
@@ -709,7 +887,7 @@ async function handleRunReview(user: any, patentId: string, data: any) {
   ].filter(Boolean).join('\n\n')
 
   const validation = DraftingService.validateDraftConsistencyPublic({ fullText }, session as any)
-  const extended = DraftingService.validateDraftExtended(session.annexureDrafts?.[0] || {}, session)
+  const extended = DraftingService.validateDraftExtended(last || {}, session, profile, effectiveJurisdiction)
   return NextResponse.json({
     validationReport: validation.report,
     isValid: validation.valid,
@@ -719,25 +897,20 @@ async function handleRunReview(user: any, patentId: string, data: any) {
 }
 
 // Pre-export normalizer: prepares content blocks with blank space control and color sanitization
-function preExportNormalizer(content: Record<string, string>): { blocks: Array<{ type: string; section: string; subtype?: string; content: string; blockId: string }> } {
+function preExportNormalizer(
+  content: Record<string, string>,
+  sections?: ExportSectionDef[]
+): { blocks: Array<{ type: string; section: string; subtype?: string; content: string; blockId: string }> } {
   const blocks: Array<{ type: string; section: string; subtype?: string; content: string; blockId: string }> = []
   let blockCounter = 0
 
-  const sections = [
-    { key: 'title', section: 'title', type: 'heading' },
-    { key: 'fieldOfInvention', section: 'fieldOfInvention', type: 'body' },
-    { key: 'background', section: 'background', type: 'body' },
-    { key: 'summary', section: 'summary', type: 'body' },
-    { key: 'briefDescriptionOfDrawings', section: 'briefDescriptionOfDrawings', type: 'body' },
-    { key: 'detailedDescription', section: 'detailedDescription', type: 'body' },
-    { key: 'industrialApplicability', section: 'industrialApplicability', type: 'body' },
-    { key: 'bestMethod', section: 'bestMethod', type: 'body' },
-    { key: 'claims', section: 'claims', type: 'body' },
-    { key: 'listOfNumerals', section: 'listOfNumerals', type: 'body' },
-    { key: 'abstract', section: 'abstract', type: 'body' }
-  ]
+  const order = (sections && sections.length ? sections : defaultExportSections).map(s => ({
+    key: s.key,
+    section: s.key,
+    type: s.key === 'title' ? 'heading' : 'body'
+  }))
 
-  for (const { key, section, type } of sections) {
+  for (const { key, section, type } of order) {
     const rawContent = content[key] || ''
     const cleanedContent = sanitizeContent(rawContent)
 
@@ -807,73 +980,58 @@ function injectParagraphNumbering(blocks: Array<{ type: string; section: string;
   }
 }
 
-// Get proper section heading text
-function getSectionHeading(sectionName: string): string {
-  const headingMap: Record<string, string> = {
-    fieldOfInvention: 'FIELD OF THE INVENTION',
-    background: 'BACKGROUND OF THE INVENTION',
-    summary: 'SUMMARY OF THE INVENTION',
-    briefDescriptionOfDrawings: 'BRIEF DESCRIPTION OF THE DRAWINGS',
-    detailedDescription: 'DETAILED DESCRIPTION OF THE INVENTION',
-    industrialApplicability: 'INDUSTRIAL APPLICABILITY',
-    bestMethod: 'BEST METHOD OF PERFORMING THE INVENTION',
-    claims: 'CLAIMS',
-    listOfNumerals: 'LIST OF REFERENCE NUMERALS',
-    abstract: 'ABSTRACT'
-  }
-  return headingMap[sectionName] || sectionName.toUpperCase()
-}
-
 async function handleExportDOCX(user: any, patentId: string, data: any, request?: NextRequest) {
-  const { sessionId, autoNumberParagraphs = false } = data
+  const { sessionId, autoNumberParagraphs = false, jurisdiction: requestedJurisdiction } = data
   if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
 
   const session = await prisma.draftingSession.findFirst({
     where: { id: sessionId, patentId, userId: user.id },
-    include: { annexureDrafts: { orderBy: { version: 'desc' }, take: 1 }, figurePlans: true, diagramSources: true }
+    include: { annexureDrafts: { orderBy: { version: 'desc' } }, figurePlans: true, diagramSources: true }
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const last = session.annexureDrafts?.[0]
-  if (!last) return NextResponse.json({ error: 'No draft to export' }, { status: 400 })
+  // Determine the active jurisdiction for export (defaults to first selection)
+  const fallbackJurisdiction = (session as any).activeJurisdiction || (session as any).draftingJurisdictions?.[0] || 'IN'
+  const effectiveJurisdiction = String(requestedJurisdiction || fallbackJurisdiction || 'IN').toUpperCase()
+  const sections = await getExportSectionsForJurisdiction(effectiveJurisdiction)
+
+  const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
+  const last = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction)
+  if (!last) {
+    return NextResponse.json({ error: `No draft to export for jurisdiction ${effectiveJurisdiction}` }, { status: 400 })
+  }
 
   const figuresSorted = [...(session.figurePlans||[])].sort((a,b)=>a.figureNo-b.figureNo)
 
   // Prepare content for normalization
-  const rawContent = {
-    title: last.title || 'Untitled',
-    fieldOfInvention: last.fieldOfInvention || '',
-    background: last.background || '',
-    summary: last.summary || '',
-    briefDescriptionOfDrawings: last.briefDescriptionOfDrawings || '',
-    detailedDescription: last.detailedDescription || '',
-    bestMethod: last.bestMethod || '',
-    claims: last.claims || '',
-    industrialApplicability: (last as any).industrialApplicability || '',
-    listOfNumerals: last.listOfNumerals || '',
-    abstract: last.abstract || ''
+  const rawContent: Record<string, string> = {}
+  for (const s of sections) {
+    switch (s.key) {
+      case 'title': rawContent[s.key] = last.title || 'Untitled'; break
+      case 'fieldOfInvention': rawContent[s.key] = last.fieldOfInvention || ''; break
+      case 'background': rawContent[s.key] = last.background || ''; break
+      case 'summary': rawContent[s.key] = last.summary || ''; break
+      case 'briefDescriptionOfDrawings': rawContent[s.key] = last.briefDescriptionOfDrawings || ''; break
+      case 'detailedDescription': rawContent[s.key] = last.detailedDescription || ''; break
+      case 'bestMethod': rawContent[s.key] = last.bestMethod || ''; break
+      case 'claims': rawContent[s.key] = last.claims || ''; break
+      case 'industrialApplicability': rawContent[s.key] = (last as any).industrialApplicability || ''; break
+      case 'listOfNumerals': rawContent[s.key] = last.listOfNumerals || ''; break
+      case 'abstract': rawContent[s.key] = last.abstract || ''; break
+      default:
+        rawContent[s.key] = (last as any)?.[s.key] || ''
+    }
   }
 
   // Run pre-export normalizer
-  const { blocks } = preExportNormalizer(rawContent)
+  const { blocks } = preExportNormalizer(rawContent, sections)
 
   // Apply paragraph numbering if enabled
   if (autoNumberParagraphs) {
     injectParagraphNumbering(blocks)
   }
 
-  const exportInput = {
-    title: last.title || 'Untitled',
-    fieldOfInvention: last.fieldOfInvention || '',
-    background: last.background || '',
-    summary: last.summary || '',
-    briefDescriptionOfDrawings: last.briefDescriptionOfDrawings || '',
-    detailedDescription: last.detailedDescription || '',
-    bestMethod: last.bestMethod || '',
-    claims: last.claims || '',
-    abstract: last.abstract || '',
-    industrialApplicability: (last as any).industrialApplicability || '',
-    listOfNumerals: last.listOfNumerals || '',
+  const exportInput: any = {
     figures: figuresSorted.map(f => {
       const ds = (session.diagramSources||[]).find((d:any)=>d.figureNo===f.figureNo)
       return {
@@ -884,10 +1042,14 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
       }
     }),
     blocks, // Include normalized blocks
-    exportOptions: { autoNumberParagraphs }
+    exportOptions: { autoNumberParagraphs },
+    sections
+  }
+  for (const s of sections) {
+    exportInput[s.key] = rawContent[s.key] || ''
   }
 
-  const guards = preExportGuards(exportInput)
+  const guards = preExportGuards(exportInput, sections)
   // Note: Do not block export on pending issues; proceed regardless
 
   // Attempt rich DOCX export; fall back to plain text if library unavailable
@@ -907,8 +1069,35 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
       PageBreak, Footer, Header, PageNumber, NumberOfPages, SectionType
     } = docx as any
 
-    // Create document with A4 page size and 2.54cm margins (1 inch = 1440 twips, 2.54cm = ~1 inch)
-    const pageMargin = 1440 // 2.54cm = 1 inch = 1440 twips
+    // Get document type configuration from country profile
+    const documentTypeConfig = await getDocumentTypeConfig(effectiveJurisdiction, 'spec_pdf')
+
+    // Convert cm to twips (1 inch = 1440 twips = 2.54 cm)
+    const cmToTwips = (cm: number) => Math.round(cm * 1440 / 2.54)
+
+    // Use document type margins if available, otherwise use fallback values
+    const margins = documentTypeConfig?.margins || {
+      top: 2.5,
+      bottom: 1.0,
+      left: 2.5,
+      right: 1.5
+    }
+
+    const pageMargin = {
+      top: cmToTwips(margins.top),
+      bottom: cmToTwips(margins.bottom),
+      left: cmToTwips(margins.left),
+      right: cmToTwips(margins.right)
+    }
+
+    // Determine page size (convert to twips: A4 = 595.28 x 841.89 pt, LETTER = 612 x 792 pt)
+    let pageSize = { width: 595.28, height: 841.89 } // Default A4 in points
+    const pageSizeStr = documentTypeConfig?.pageSize?.toUpperCase()
+    if (pageSizeStr === 'LETTER') {
+      pageSize = { width: 612, height: 792 }
+    } else if (pageSizeStr === 'A4') {
+      pageSize = { width: 595.28, height: 841.89 }
+    }
 
     // Page header with "Page X of Y" format
     const header = new Header({
@@ -1015,15 +1204,11 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
       properties: {
         type: SectionType.NEXT_PAGE,
         page: {
-          margin: {
-            top: pageMargin,
-            right: pageMargin,
-            bottom: pageMargin,
-            left: pageMargin
-          },
+          margin: pageMargin,
           size: {
-            width: 11906, // A4 width in twips (210mm)
-            height: 16838 // A4 height in twips (297mm)
+            width: Math.round(pageSize.width * 20), // Convert points to twips (1 pt = 20 twips)
+            height: Math.round(pageSize.height * 20),
+            orientation: pageSize.width > pageSize.height ? docx.PageOrientation.LANDSCAPE : docx.PageOrientation.PORTRAIT
           }
         },
         headers: {
@@ -1034,7 +1219,7 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
     }
 
     // Add title
-    const titleBlock = blocks.find(b => b.section === 'title')
+    const titleBlock = blocks.find((b: { type: string; section: string; subtype?: string; content: string; blockId: string }) => b.section === 'title')
     if (titleBlock) {
       ;(titleSection.children as any[]).push(
         new Paragraph({
@@ -1045,11 +1230,13 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
       )
     }
 
-    // Add body sections in correct sequence: TITLE, FIELD, BACKGROUND, SUMMARY, BRIEF_DESCRIPTION, DETAILED_DESCRIPTION, INDUSTRIAL_APPLICABILITY, CLAIMS
-    const bodySections = ['fieldOfInvention', 'background', 'summary', 'briefDescriptionOfDrawings', 'detailedDescription', 'industrialApplicability', 'claims']
+    // Add body sections in jurisdiction-specific sequence
+    const bodySections = sections
+      .map(s => s.key)
+      .filter(k => k !== 'title' && k !== 'abstract')
     for (const sectionName of bodySections) {
-      const sectionHeading = getSectionHeading(sectionName)
-      const sectionBlocks = blocks.filter(b => b.section === sectionName)
+      const sectionHeading = getSectionHeadingDynamic(sectionName, sections)
+      const sectionBlocks = blocks.filter((b: { type: string; section: string; subtype?: string; content: string; blockId: string }) => b.section === sectionName)
 
       if (sectionBlocks.length > 0) {
         // Add section heading
@@ -1094,15 +1281,11 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
         properties: {
           type: SectionType.NEXT_PAGE,
           page: {
-            margin: {
-              top: pageMargin,
-              right: pageMargin,
-              bottom: pageMargin,
-              left: pageMargin
-            },
+            margin: pageMargin,
             size: {
-              width: 11906,
-              height: 16838
+              width: Math.round(pageSize.width * 20),
+              height: Math.round(pageSize.height * 20),
+              orientation: pageSize.width > pageSize.height ? docx.PageOrientation.LANDSCAPE : docx.PageOrientation.PORTRAIT
             }
           },
           headers: {
@@ -1143,7 +1326,7 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
               // 1440 TWIPS = 1 inch. 
               // Standard docx image resolution is often 96 DPI.
               // Max Width in Pixels = (Available TWIPS / 1440) * 96
-              const availableTwips = 11906 - (pageMargin * 2)
+              const availableTwips = 11906 - (pageMargin.left + pageMargin.right)
               const maxWidth = Math.floor(availableTwips / 1440 * 96)
               
               if (width > maxWidth) {
@@ -1194,77 +1377,76 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
       documentSections.push(figureSection)
     }
 
-    // Add abstract section at the end (last page)
-    const abstractSection = {
-      properties: {
-        type: SectionType.NEXT_PAGE,
-        page: {
-          margin: {
-            top: pageMargin,
-            right: pageMargin,
-            bottom: pageMargin,
-            left: pageMargin
+    // Add abstract section at the end (last page) if applicable
+    const hasAbstractSection = sections.some(s => s.key === 'abstract')
+    if (hasAbstractSection) {
+      const abstractSection = {
+        properties: {
+          type: SectionType.NEXT_PAGE,
+          page: {
+            margin: pageMargin,
+            size: {
+              width: Math.round(pageSize.width * 20),
+              height: Math.round(pageSize.height * 20),
+              orientation: pageSize.width > pageSize.height ? docx.PageOrientation.LANDSCAPE : docx.PageOrientation.PORTRAIT
+            }
           },
-          size: {
-            width: 11906,
-            height: 16838
+          headers: {
+            default: header
           }
         },
-        headers: {
-          default: header
-        }
-      },
-      children: []
-    }
+        children: []
+      }
 
-    // Add patent title (repeated on abstract page)
-    const titleBlockForAbstract = blocks.find(b => b.section === 'title')
-    if (titleBlockForAbstract) {
+      // Add patent title (repeated on abstract page)
+      const titleBlockForAbstract = blocks.find((b: { type: string; section: string; subtype?: string; content: string; blockId: string }) => b.section === 'title')
+      if (titleBlockForAbstract) {
+        ;(abstractSection.children as any[]).push(
+          new Paragraph({
+            children: [new TextRun({
+              text: titleBlockForAbstract.content,
+              size: 24,
+              color: '000000',
+              bold: true
+            })],
+            spacing: { after: 120 }
+          })
+        )
+      }
+
+      // Add ABSTRACT heading
       ;(abstractSection.children as any[]).push(
         new Paragraph({
           children: [new TextRun({
-            text: titleBlockForAbstract.content,
+            text: getSectionHeadingDynamic('abstract', sections),
             size: 24,
             color: '000000',
             bold: true
           })],
-          spacing: { after: 120 }
+          spacing: { before: 120, after: 120 }
         })
       )
-    }
 
-    // Add ABSTRACT heading
-    ;(abstractSection.children as any[]).push(
-      new Paragraph({
-        children: [new TextRun({
-          text: 'ABSTRACT',
-          size: 24,
-          color: '000000',
-          bold: true
-        })],
-        spacing: { before: 120, after: 120 }
-      })
-    )
+      // Add abstract content (no numbering for abstract)
+      const abstractBlocks = blocks.filter((b: { type: string; section: string; subtype?: string; content: string; blockId: string }) => b.section === 'abstract')
 
-    // Add abstract content (no numbering for abstract)
-    const abstractBlocks = blocks.filter(b => b.section === 'abstract')
-
-    for (const block of abstractBlocks) {
-      if (block.type === 'paragraph') {
-        ;(abstractSection.children as any[]).push(
-          new Paragraph({
-            children: [new TextRun({
-              text: block.content,
-              size: 24,
-              color: '000000'
-            })],
-            style: 'bodyStyle'
-          })
-        )
+      for (const block of abstractBlocks) {
+        if (block.type === 'paragraph') {
+          ;(abstractSection.children as any[]).push(
+            new Paragraph({
+              children: [new TextRun({
+                text: block.content,
+                size: 24,
+                color: '000000'
+              })],
+              style: 'bodyStyle'
+            })
+          )
+        }
       }
-    }
 
-    documentSections.push(abstractSection)
+      documentSections.push(abstractSection)
+    }
 
     // Add all sections to document
     for (const section of documentSections) {
@@ -1282,7 +1464,7 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
   } catch (e) {
     console.error('DOCX export error:', e)
     // Fallback to plain text packaging when docx is unavailable
-    const docContent = buildAnnexurePlainText(exportInput)
+    const docContent = buildAnnexurePlainText(exportInput, sections)
 
     const fileBuffer = Buffer.from(docContent, 'utf8')
     return new NextResponse(fileBuffer, {
@@ -1296,54 +1478,48 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
 }
 
 // Preview export builder and guards
-function buildAnnexurePlainText(doc: any): string {
+function buildAnnexurePlainText(doc: any, sections?: ExportSectionDef[]): string {
   const H = (s: string) => String(s||'').toUpperCase()
-  const SECTIONS: Array<[string, string]> = [
-    [H('Title of the Invention'), doc.title||''],
-    [H('Field of the Invention'), doc.fieldOfInvention||''],
-    [H('Background of the Invention'), doc.background||''],
-    [H('Summary of the Invention'), doc.summary||''],
-    [H('Brief Description of the Drawings'), doc.briefDescriptionOfDrawings||''],
-    [H('Detailed Description of the Invention'), doc.detailedDescription||''],
-    [H('Best Method of Performing the Invention'), doc.bestMethod||''],
-    [H('Claims'), doc.claims||''],
-    [H('Abstract'), doc.abstract||''],
-    [H('Industrial Applicability'), doc.industrialApplicability||''],
-    [H('List of Reference Numerals'), doc.listOfNumerals||'']
-  ]
+  const orderedSections = (sections && sections.length ? sections : defaultExportSections)
+  const SECTIONS: Array<[string, string]> = orderedSections.map(s => [H(s.label || s.key), doc[s.key] || ''])
   const BODY = SECTIONS.filter(([_,v]) => String(v||'').trim()).map(([h,v]) => `${h}\n\n${String(v).trim()}`).join('\n\n')
   const PAGE_BREAK = '\n\n<<<PAGE_BREAK>>>\n\n'
   const DRAWINGS_HEADER = H('Drawings / Figures')
-  const FIGURE_PAGES = [ `${DRAWINGS_HEADER}\n\n` ].concat(
-    (doc.figures||[]).sort((a:any,b:any)=>a.figureNo-b.figureNo).map((f:any)=>`Fig. ${f.figureNo} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ${String(f.caption||'').replace(/^Fig\.\s*\d+\s*ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â\s*/i,'')}`)
-  ).join(PAGE_BREAK)
+  const FIGURE_PAGES = [`${DRAWINGS_HEADER}\n\n`]
+    .concat(
+      (doc.figures || [])
+        .sort((a:any,b:any)=>a.figureNo-b.figureNo)
+        .map((f:any)=>`Fig. ${f.figureNo} - ${String(f.caption||'').replace(/^Fig\.\s*\d+\s*-\s*/i,'')}`)
+    )
+    .join(PAGE_BREAK)
   return [BODY, PAGE_BREAK, FIGURE_PAGES].join('')
 }
 
-function preExportGuards(doc: any): { ok: boolean; issues: string[] } {
+function preExportGuards(doc: any, sections?: ExportSectionDef[]): { ok: boolean; issues: string[] } {
   const issues: string[] = []
-  const req = (key: keyof typeof doc, label: string) => { if (!String(doc[key]||'').trim()) issues.push(`Missing: ${label}`) }
-  req('title','Title')
-  req('fieldOfInvention','Field of the Invention')
-  req('background','Background of the Invention')
-  req('summary','Summary of the Invention')
-  req('detailedDescription','Detailed Description of the Invention')
-  req('bestMethod','Best Method of Performing the Invention')
-  req('claims','Claims')
-  req('abstract','Abstract')
-  req('industrialApplicability','Industrial Applicability')
+  const orderedSections = (sections && sections.length ? sections : defaultExportSections)
+  const req = (key: string, label: string, required?: boolean) => { if (required === false) return; if (!String(doc[key]||'').trim()) issues.push(`Missing: ${label}`) }
+  for (const s of orderedSections) {
+    req(s.key, s.label || s.key, s.required)
+  }
 
-  const absWords = String(doc.abstract||'').trim().split(/\s+/).length
-  if (absWords>150) issues.push(`Abstract exceeds 150 words (${absWords})`)
+  const hasAbstract = orderedSections.some(s => s.key === 'abstract')
+  if (hasAbstract) {
+    const absWords = String(doc.abstract||'').trim().split(/\s+/).filter(Boolean).length
+    if (absWords>150) issues.push(`Abstract exceeds 150 words (${absWords})`)
+  }
 
   const declared = (doc.figures||[]).map((f:any)=>f.figureNo).sort((a:number,b:number)=>a-b)
   const bdod = String(doc.briefDescriptionOfDrawings||'')
-  if (bdod.trim()) {
-    const bdodFigs = Array.from(bdod.matchAll(/\b(Fig\.?|Figure)\s*0*(\d+)\b/gi)).map(m=>Number(m[2])).sort((a,b)=>a-b)
-    const missing = declared.filter((n:number)=>!bdodFigs.includes(n))
-    if (missing.length) issues.push(`BDOD missing figure lines for: ${missing.join(', ')}`)
-  } else if (declared.length) {
-    issues.push('BDOD missing while figures are present')
+  const hasBDOD = orderedSections.some(s => s.key === 'briefDescriptionOfDrawings')
+  if (hasBDOD) {
+    if (bdod.trim()) {
+      const bdodFigs = Array.from(bdod.matchAll(/\b(Fig\.?|Figure)\s*0*(\d+)\b/gi)).map(m=>Number(m[2])).sort((a,b)=>a-b)
+      const missing = declared.filter((n:number)=>!bdodFigs.includes(n))
+      if (missing.length) issues.push(`BDOD missing figure lines for: ${missing.join(', ')}`)
+    } else if (declared.length) {
+      issues.push('BDOD missing while figures are present')
+    }
   }
 
   if (String(doc.listOfNumerals||'').trim()) {
@@ -1355,51 +1531,60 @@ function preExportGuards(doc: any): { ok: boolean; issues: string[] } {
 }
 
 async function handlePreviewExport(user: any, patentId: string, data: any) {
-  const { sessionId } = data
+  const { sessionId, jurisdiction: requestedJurisdiction } = data
   if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
   const session = await prisma.draftingSession.findFirst({
     where: { id: sessionId, patentId, userId: user.id },
-    include: { annexureDrafts: { orderBy: { version: 'desc' }, take: 1 }, figurePlans: true, diagramSources: true }
+    include: { annexureDrafts: { orderBy: { version: 'desc' } }, figurePlans: true, diagramSources: true }
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
-  const last = session.annexureDrafts?.[0]
-  if (!last) return NextResponse.json({ error: 'No draft to export' }, { status: 400 })
 
-  const exportInput = {
-    title: last.title || 'Untitled',
-    fieldOfInvention: last.fieldOfInvention || '',
-    background: last.background || '',
-    summary: last.summary || '',
-    briefDescriptionOfDrawings: last.briefDescriptionOfDrawings || '',
-    detailedDescription: last.detailedDescription || '',
-    bestMethod: last.bestMethod || '',
-    claims: last.claims || '',
-    abstract: last.abstract || '',
-    industrialApplicability: (last as any).industrialApplicability || '',
-    listOfNumerals: last.listOfNumerals || '',
+  const jurisdiction = requestedJurisdiction || (session as any).activeJurisdiction || (session as any).draftingJurisdictions?.[0] || 'IN'
+  const effectiveJurisdiction = String(jurisdiction || 'IN').toUpperCase()
+  const sections = await getExportSectionsForJurisdiction(effectiveJurisdiction)
+
+  const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
+  const last = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction)
+  if (!last) {
+    return NextResponse.json({ error: `No draft to export for jurisdiction ${effectiveJurisdiction}` }, { status: 400 })
+  }
+
+  const exportInput: any = {
     figures: [...(session.figurePlans||[])].sort((a,b)=>a.figureNo-b.figureNo).map(f=>({
       figureNo: f.figureNo,
       caption: f.title || `Figure ${f.figureNo}`,
       imagePathOrBuffer: (session.diagramSources||[]).find((d:any)=>d.figureNo===f.figureNo)?.imagePath || ''
-    }))
+    })),
+    sections
+  }
+  for (const s of sections) {
+    exportInput[s.key] = (last as any)?.[s.key] || ''
   }
 
-  const guards = preExportGuards(exportInput)
-  const plain = buildAnnexurePlainText(exportInput)
-  return NextResponse.json({ ok: guards.ok, issues: guards.issues, preview: plain, input: exportInput })
+  const guards = preExportGuards(exportInput, sections)
+  const plain = buildAnnexurePlainText(exportInput, sections)
+  return NextResponse.json({ ok: guards.ok, issues: guards.issues, preview: plain, input: exportInput, sections })
 }
 
 // Rich preview payload with figure data (for inline HTML preview)
 async function handleGetExportPreview(user: any, patentId: string, data: any) {
-  const { sessionId } = data
+  const { sessionId, jurisdiction: requestedJurisdiction } = data
   if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
   const session = await prisma.draftingSession.findFirst({
     where: { id: sessionId, patentId, userId: user.id },
-    include: { annexureDrafts: { orderBy: { version: 'desc' }, take: 1 }, figurePlans: true, diagramSources: true }
+    include: { annexureDrafts: { orderBy: { version: 'desc' } }, figurePlans: true, diagramSources: true }
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
-  const last = session.annexureDrafts?.[0]
-  if (!last) return NextResponse.json({ error: 'No draft to export' }, { status: 400 })
+
+  const jurisdiction = requestedJurisdiction || (session as any).activeJurisdiction || (session as any).draftingJurisdictions?.[0] || 'IN'
+  const effectiveJurisdiction = String(jurisdiction || 'IN').toUpperCase()
+  const sections = await getExportSectionsForJurisdiction(effectiveJurisdiction)
+
+  const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
+  const last = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction)
+  if (!last) {
+    return NextResponse.json({ error: `No draft to export for jurisdiction ${effectiveJurisdiction}` }, { status: 400 })
+  }
 
   const figures = [...(session.figurePlans||[])].sort((a,b)=>a.figureNo-b.figureNo).map(f=>{
     const ds = (session.diagramSources||[]).find((d:any)=>d.figureNo===f.figureNo)
@@ -1411,20 +1596,11 @@ async function handleGetExportPreview(user: any, patentId: string, data: any) {
       imageUrl: url
     }
   })
-  return NextResponse.json({
-    title: last.title || 'Untitled',
-    fieldOfInvention: last.fieldOfInvention || '',
-    background: last.background || '',
-    summary: last.summary || '',
-    briefDescriptionOfDrawings: last.briefDescriptionOfDrawings || '',
-    detailedDescription: last.detailedDescription || '',
-    bestMethod: last.bestMethod || '',
-    claims: last.claims || '',
-    abstract: last.abstract || '',
-    industrialApplicability: (last as any).industrialApplicability || '',
-    listOfNumerals: last.listOfNumerals || '',
-    figures
-  })
+  const payload: any = { figures, sections }
+  for (const s of sections) {
+    payload[s.key] = (last as any)?.[s.key] || ''
+  }
+  return NextResponse.json(payload)
 }
 
 function sanitizePlantUML(input: string): string {
@@ -1468,7 +1644,8 @@ async function handleStartSession(user: any, patentId: string, data: any) {
       patentId,
       userId: user.id,
       tenantId: user.tenantId,
-      status: 'IDEA_ENTRY'
+      draftingJurisdictions: ['IN'],
+      activeJurisdiction: 'IN'
     }
   });
 
@@ -1564,12 +1741,29 @@ async function handleUpdateIdeaRecord(user: any, patentId: string, data: any) {
 }
 
 async function handleSetStage(user: any, patentId: string, data: any) {
-  const { sessionId, stage, manualPriorArt, selectedPatents } = data
+  const {
+    sessionId,
+    stage,
+    manualPriorArt,
+    selectedPatents,
+    draftingJurisdictions,
+    activeJurisdiction,
+    languageByJurisdiction,
+    sourceOfTruth
+  } = data
 
   console.log('handleSetStage called with:', { sessionId, stage, patentId, userId: user.id, manualPriorArt: !!manualPriorArt, selectedPatentsCount: selectedPatents?.length || 0 })
 
   const allowedStages = [
-    'IDEA_ENTRY','COMPONENT_PLANNER','FIGURE_PLANNER','RELATED_ART','ANNEXURE_DRAFT','REVIEW_FIX','EXPORT_READY','COMPLETED'
+    'IDEA_ENTRY',
+    'COMPONENT_PLANNER',
+    'FIGURE_PLANNER',
+    'RELATED_ART',
+    'COUNTRY_WISE_DRAFTING',
+    'ANNEXURE_DRAFT',
+    'REVIEW_FIX',
+    'EXPORT_READY',
+    'COMPLETED'
   ]
 
   if (!sessionId || !allowedStages.includes(stage)) {
@@ -1601,6 +1795,82 @@ async function handleSetStage(user: any, patentId: string, data: any) {
 
   // Prepare update data
   const updateData: any = { status: stage }
+
+  // Normalize and persist jurisdiction choices (Stage 3.7a)
+  try {
+    const statusMap: Record<string, any> = { ...(session.jurisdictionDraftStatus as any) || {} }
+    const supported = new Set((await getSupportedCountryCodes()).map(c => c.toUpperCase()))
+    const languagePrefs: Record<string, string> = {}
+    let normalizedJurisdictions: string[] | undefined
+    if (Array.isArray(draftingJurisdictions)) {
+      normalizedJurisdictions = Array.from(new Set(
+        draftingJurisdictions
+          .map((c: string) => (c || '').toUpperCase())
+          .filter((c: string) => supported.has(c))
+      ))
+    }
+
+    if (normalizedJurisdictions && normalizedJurisdictions.length > 0) {
+      updateData.draftingJurisdictions = normalizedJurisdictions
+    } else if (!session.draftingJurisdictions || session.draftingJurisdictions.length === 0) {
+      updateData.draftingJurisdictions = ['IN'] // backward-compatible default
+    }
+
+    const chosenList = Array.from(new Set(((updateData.draftingJurisdictions as string[] | undefined) || session.draftingJurisdictions || []).map((c: string) => (c || '').toUpperCase())))
+    if (!updateData.draftingJurisdictions && chosenList.length > 0) {
+      updateData.draftingJurisdictions = chosenList
+    }
+
+    const requestedActive = (activeJurisdiction || '').toUpperCase()
+    const resolvedActive = (supported.has(requestedActive) && chosenList.includes(requestedActive))
+      ? requestedActive
+      : (chosenList[0] || session.activeJurisdiction || 'IN')
+
+    updateData.activeJurisdiction = resolvedActive
+
+    // Resolve preferred languages per jurisdiction (if provided)
+    for (const code of chosenList) {
+      try {
+        const profile = await getCountryProfile(code)
+        const langs: string[] = Array.isArray((profile as any)?.profileData?.meta?.languages)
+          ? (profile as any).profileData.meta.languages
+          : []
+        if (!langs.length) continue
+        const requestedLang = (languageByJurisdiction && typeof languageByJurisdiction[code] === 'string')
+          ? String(languageByJurisdiction[code]).trim()
+          : ''
+        const normalized = requestedLang && langs.includes(requestedLang) ? requestedLang : langs[0]
+        if (normalized) languagePrefs[code] = normalized
+      } catch (err) {
+        console.warn('Failed to resolve languages for', code, err)
+      }
+    }
+
+    if (Object.keys(languagePrefs).length > 0) {
+      for (const [code, lang] of Object.entries(languagePrefs)) {
+        statusMap[code] = { ...(statusMap?.[code] || {}), language: lang }
+      }
+    }
+
+    // Resolve and persist source-of-truth jurisdiction (order drives reference draft selection)
+    const requestedSource = typeof sourceOfTruth === 'string' ? sourceOfTruth.toUpperCase() : undefined
+    let resolvedSource = (requestedSource && chosenList.includes(requestedSource))
+      ? requestedSource
+      : (typeof statusMap.__sourceOfTruth === 'string' && chosenList.includes(String(statusMap.__sourceOfTruth).toUpperCase())
+        ? String(statusMap.__sourceOfTruth).toUpperCase()
+        : undefined)
+    if (!resolvedSource && chosenList.length > 0) resolvedSource = chosenList[0]
+    if (resolvedSource) {
+      statusMap.__sourceOfTruth = resolvedSource
+      const ordered = [resolvedSource, ...chosenList.filter(c => c !== resolvedSource)]
+      updateData.draftingJurisdictions = ordered
+    }
+
+    updateData.jurisdictionDraftStatus = statusMap
+  } catch (e) {
+    console.warn('Failed to persist drafting jurisdictions; continuing with defaults.', e)
+  }
+
   if (manualPriorArt !== undefined) {
     updateData.manualPriorArt = manualPriorArt
   }
@@ -1621,6 +1891,17 @@ async function handleResume(user: any, patentId: string) {
   })
 
   if (existing) {
+    // Backfill jurisdiction defaults for legacy sessions
+    if (!existing.draftingJurisdictions || existing.draftingJurisdictions.length === 0 || !existing.activeJurisdiction) {
+      const updated = await prisma.draftingSession.update({
+        where: { id: existing.id },
+        data: {
+          draftingJurisdictions: existing.draftingJurisdictions?.length ? existing.draftingJurisdictions : ['IN'],
+          activeJurisdiction: existing.activeJurisdiction || existing.draftingJurisdictions?.[0] || 'IN'
+        }
+      })
+      return NextResponse.json({ session: updated })
+    }
     return NextResponse.json({ session: existing })
   }
 
@@ -1629,7 +1910,8 @@ async function handleResume(user: any, patentId: string) {
       patentId,
       userId: user.id,
       tenantId: user.tenantId,
-      status: 'IDEA_ENTRY'
+      draftingJurisdictions: ['IN'],
+      activeJurisdiction: 'IN'
     }
   })
 
@@ -1672,7 +1954,7 @@ async function handleProceedToComponents(user: any, patentId: string, data: any)
 }
 
 async function handleNormalizeIdea(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
-  const { sessionId, rawIdea, title, areaOfInvention } = data;
+  const { sessionId, rawIdea, title, areaOfInvention, allowRefine } = data;
 
   if (!sessionId || !rawIdea || !title) {
     return NextResponse.json(
@@ -1709,7 +1991,7 @@ async function handleNormalizeIdea(user: any, patentId: string, data: any, reque
   // Use LLM to normalize the idea
   console.log('Starting idea normalization for patent:', patentId, 'session:', sessionId);
 
-  const result = await DraftingService.normalizeIdea(rawIdea, title, user.tenantId, requestHeaders, areaOfInvention);
+  const result = await DraftingService.normalizeIdea(rawIdea, title, user.tenantId, requestHeaders, areaOfInvention, allowRefine);
 
   if (!result.success) {
     console.error('Idea normalization failed:', result.error);
@@ -1864,6 +2146,8 @@ async function handleUpdateFigurePlan(user: any, patentId: string, data: any) {
     );
   }
 
+  const cleanedTitle = sanitizeFigureTitleInput(title) || `Figure ${figureNo}`
+
   // Create or update figure plan
   const figurePlan = await prisma.figurePlan.upsert({
     where: {
@@ -1873,7 +2157,7 @@ async function handleUpdateFigurePlan(user: any, patentId: string, data: any) {
       }
     },
     update: {
-      title,
+      title: cleanedTitle,
       nodes,
       edges,
       description
@@ -1881,7 +2165,7 @@ async function handleUpdateFigurePlan(user: any, patentId: string, data: any) {
     create: {
       sessionId,
       figureNo,
-      title,
+      title: cleanedTitle,
       nodes,
       edges,
       description
@@ -2242,7 +2526,8 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
       figurePlans: {
         where: { figureNo }
       },
-      referenceMap: true
+      referenceMap: true,
+      ideaRecord: true
     }
   });
 
@@ -2253,10 +2538,14 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
     );
   }
 
-  // Generate PlantUML code
+  // Generate PlantUML code – pass archetype / field as hint if available
+  const ideaNorm = session.ideaRecord?.normalizedData as any
+  const inventionTypeHint = ideaNorm?.inventionType
+  const fieldHint = ideaNorm?.fieldOfRelevance
   const result = await DraftingService.generatePlantUML(
     session.figurePlans[0],
-    session.referenceMap
+    session.referenceMap,
+    inventionTypeHint || fieldHint
   );
 
   if (!result.success) {
@@ -2291,7 +2580,7 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
     try {
       // Clean the PlantUML code (remove titles, themes, etc.)
       let cleaned = result.plantumlCode
-        .replace(/^(title|caption).*$/gmi, '')
+        .replace(/^title.*$/gmi, '')
         .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
       // Remove multi-line skinparam blocks
       cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
@@ -2347,11 +2636,48 @@ async function handleGenerateDiagramsLLM(user: any, patentId: string, data: any,
   }
 
   // Verify session
-  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id }, include: { referenceMap: true } })
+  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id }, include: { referenceMap: true, ideaRecord: true } })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
+  // Determine Diagram Archetype
+  const idea = session.ideaRecord?.normalizedData as any
+  const types = Array.isArray(idea?.inventionType) ? idea.inventionType : (idea?.inventionType ? [idea.inventionType] : [])
+  const archetype = types.length > 0 ? types.join('+') : 'GENERAL'
+
+  let styleGuide = 'Use standard UML blocks.'
+  let nomenclature = 'Use standard technical terms.'
+
+  if (archetype.includes('SOFTWARE')) {
+    styleGuide += ' Use Flowcharts (activity diagrams) or System Blocks (component diagrams).'
+    nomenclature += ' Use: Module, Engine, Database, API, Interface, Server, Client (and similar logical units).'
+  }
+  if (archetype.includes('MECHANICAL')) {
+    styleGuide += ' Use Block Definition Diagrams or Internal Block Diagrams (SysML style) to show physical parts.'
+    nomenclature += ' Use: Housing, Shaft, Assembly, Coupler, Mechanism, Actuator (and similar physical components).'
+  }
+  if (archetype.includes('ELECTRICAL')) {
+    styleGuide += ' Use high-level circuit blocks or signal flow diagrams.'
+    nomenclature += ' Use: Circuit, Terminal, Bus, Transceiver, Node, Sensor (and similar electronic parts).'
+  }
+  if (archetype.includes('BIO') || archetype.includes('CHEMICAL')) {
+    styleGuide += ' Use process flows or reaction schemas.'
+    nomenclature += ' Use: Reagent, Compound, Stage, Phase, Catalyst, Reactor (and similar domain entities).'
+  }
+
+  const finalPrompt = `${prompt}\n\nDIAGRAM STYLE GUIDE: This is a ${archetype} invention. ${styleGuide}\nNOMENCLATURE GUIDE: ${nomenclature}\nINSTRUCTION: Use these as style examples. You are encouraged to use more precise domain-specific terms if applicable.`
+
   const request = { headers: requestHeaders || {} }
-  const result = await llmGateway.executeLLMOperation(request, { taskCode: 'LLM3_DIAGRAM', prompt, idempotencyKey: crypto.randomUUID(), inputTokens: Math.ceil(prompt.length / 4) })
+  const result = await llmGateway.executeLLMOperation(request, {
+    taskCode: 'LLM3_DIAGRAM',
+    prompt: finalPrompt,
+    idempotencyKey: crypto.randomUUID(),
+    inputTokens: Math.ceil(finalPrompt.length / 4),
+    metadata: {
+      patentId,
+      sessionId,
+      purpose: 'generate_diagrams_llm'
+    }
+  })
   if (!result.success || !result.response) return NextResponse.json({ error: result.error?.message || 'LLM failed' }, { status: 400 })
 
   // Parse JSON array of figures
@@ -2408,11 +2734,12 @@ async function handleGenerateDiagramsLLM(user: any, patentId: string, data: any,
 
       const figureNo = nextNo()
       const checksum = crypto.createHash('sha256').update(code).digest('hex')
+      const safeTitle = sanitizeFigureTitleInput(title) || `Figure ${figureNo}`
 
       await prisma.figurePlan.upsert({
         where: { sessionId_figureNo: { sessionId, figureNo } },
-        update: { title, ...(description ? { description } : {}) },
-        create: { sessionId, figureNo, title, ...(description ? { description } : {}), nodes: [], edges: [] }
+        update: { title: safeTitle, ...(description ? { description } : {}) },
+        create: { sessionId, figureNo, title: safeTitle, ...(description ? { description } : {}), nodes: [], edges: [] }
       })
 
       await prisma.diagramSource.upsert({
@@ -2421,10 +2748,16 @@ async function handleGenerateDiagramsLLM(user: any, patentId: string, data: any,
         create: { sessionId, figureNo, plantumlCode: code, checksum }
       })
 
-      saved.push({ figureNo, title })
+      saved.push({ figureNo, title: safeTitle })
     }
 
-    return NextResponse.json({ figures, saved })
+    const responseFigures = Array.isArray(figures)
+      ? figures.map((fig: any) => ({
+          ...fig,
+          title: sanitizeFigureTitleInput(fig?.title) || fig?.title
+        }))
+      : figures
+    return NextResponse.json({ figures: responseFigures, saved })
   } catch (persistErr) {
     console.error('Persist diagrams error:', persistErr)
     // Even if persistence fails, return figures so UI shows codes
@@ -2449,17 +2782,19 @@ async function handleSavePlantUML(user: any, patentId: string, data: any) {
     create: { sessionId, figureNo, plantumlCode, checksum: crypto.createHash('sha256').update(plantumlCode).digest('hex') }
   })
 
+  const cleanedTitle = sanitizeFigureTitleInput(title) || `Figure ${figureNo}`
+
   await prisma.figurePlan.upsert({
     where: { sessionId_figureNo: { sessionId, figureNo } },
-    update: { title: title || `Figure ${figureNo}` },
-    create: { sessionId, figureNo, title: title || `Figure ${figureNo}`, nodes: [], edges: [] }
+    update: { title: cleanedTitle },
+    create: { sessionId, figureNo, title: cleanedTitle, nodes: [], edges: [] }
   })
 
   // Generate and save image from PlantUML code
   try {
     // Clean the PlantUML code (remove titles, themes, etc.)
     let cleaned = plantumlCode
-      .replace(/^(title|caption).*$/gmi, '')
+      .replace(/^title.*$/gmi, '')
       .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
     // Remove multi-line skinparam blocks
     cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
@@ -2511,7 +2846,7 @@ async function handleRegenerateDiagramLLM(user: any, patentId: string, data: any
   if (!sessionId || !figureNo) return NextResponse.json({ error: 'Session ID and figure number required' }, { status: 400 })
 
   // Verify session and pull numerals
-  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id }, include: { referenceMap: true, figurePlans: true, diagramSources: true } })
+  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id }, include: { referenceMap: true, figurePlans: true, diagramSources: true, ideaRecord: true } })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
   const componentsRaw = (session.referenceMap as any)?.components
@@ -2519,14 +2854,41 @@ async function handleRegenerateDiagramLLM(user: any, patentId: string, data: any
   const numeralsPreview = components.map((c: any) => `${c.name} (${c.numeral || '?'})`).join(', ')
   const title = session.figurePlans?.find((f: any) => f.figureNo === figureNo)?.title || `Figure ${figureNo}`
 
+  // Determine Diagram Archetype
+  const idea = session.ideaRecord?.normalizedData as any
+  const types = Array.isArray(idea?.inventionType) ? idea.inventionType : (idea?.inventionType ? [idea.inventionType] : [])
+  const archetype = types.length > 0 ? types.join('+') : 'GENERAL'
+
   const prompt = `You are refining a PlantUML diagram for a patent figure.
-Keep the diagram simple and valid. Use only these components/numerals: ${numeralsPreview}.
-Existing title: ${title}
-User instructions: ${instructions || 'none'}
-Output ONLY the PlantUML code (@startuml..@enduml).`
+  Keep the diagram simple and valid. Use only these components/numerals: ${numeralsPreview}.
+  Invention Type: ${archetype}
+  
+  NOMENCLATURE GUIDE (Apply based on Invention Type):
+  - MECHANICAL: Housing, Shaft, Assembly, Coupler, Actuator (and similar physical components).
+  - SOFTWARE: Module, Engine, Database, API, Interface (and similar logical units).
+  - ELECTRICAL: Circuit, Terminal, Bus, Transceiver, Sensor (and similar electronic parts).
+  - BIO: Reagent, Cell, Sequence, Assay, Vector (and similar biological entities).
+  - CHEMICAL: Compound, Catalyst, Phase, Solution, Reactor (and similar chemical substances).
+  
+  INSTRUCTION: Use these as style examples. You are encouraged to use more precise domain-specific terms if applicable (e.g., 'Piston' instead of 'Actuator').
+  
+  Existing title: ${title}
+  User instructions: ${instructions || 'none'}
+  Output ONLY the PlantUML code (@startuml..@enduml).`
 
   const request = { headers: requestHeaders || {} }
-  const result = await llmGateway.executeLLMOperation(request, { taskCode: 'LLM3_DIAGRAM', prompt, idempotencyKey: crypto.randomUUID(), inputTokens: Math.ceil(prompt.length / 4) })
+  const result = await llmGateway.executeLLMOperation(request, {
+    taskCode: 'LLM3_DIAGRAM',
+    prompt,
+    idempotencyKey: crypto.randomUUID(),
+    inputTokens: Math.ceil(prompt.length / 4),
+    metadata: {
+      patentId,
+      sessionId,
+      figureNo,
+      purpose: 'regenerate_diagram_llm'
+    }
+  })
   if (!result.success || !result.response) return NextResponse.json({ error: result.error?.message || 'LLM failed' }, { status: 400 })
 
   const text = (result.response.output || '').trim()
@@ -2549,19 +2911,46 @@ async function handleAddFigureLLM(user: any, patentId: string, data: any, reques
   const { sessionId, instructions } = data
   if (!sessionId) return NextResponse.json({ error: 'Session ID required' }, { status: 400 })
 
-  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id }, include: { referenceMap: true, figurePlans: true } })
+  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id }, include: { referenceMap: true, figurePlans: true, ideaRecord: true } })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
   const componentsRaw2 = (session.referenceMap as any)?.components
   const components2 = Array.isArray(componentsRaw2) ? componentsRaw2 : []
   const numeralsPreview = components2.map((c: any) => `${c.name} (${c.numeral || '?'})`).join(', ')
+
+  // Determine Diagram Archetype
+  const idea = session.ideaRecord?.normalizedData as any
+  const types = Array.isArray(idea?.inventionType) ? idea.inventionType : (idea?.inventionType ? [idea.inventionType] : [])
+  const archetype = types.length > 0 ? types.join('+') : 'GENERAL'
+
   const prompt = `Add one new simple PlantUML figure for a patent.
-Use only numerals: ${numeralsPreview}.
-User instructions: ${instructions || 'none'}
-Return ONLY PlantUML code.`
+  Use only numerals: ${numeralsPreview}.
+  Invention Type: ${archetype}
+  
+  NOMENCLATURE GUIDE (Apply based on Invention Type):
+  - MECHANICAL: Housing, Shaft, Assembly, Coupler, Actuator (and similar physical components).
+  - SOFTWARE: Module, Engine, Database, API, Interface (and similar logical units).
+  - ELECTRICAL: Circuit, Terminal, Bus, Transceiver, Sensor (and similar electronic parts).
+  - BIO: Reagent, Cell, Sequence, Assay, Vector (and similar biological entities).
+  - CHEMICAL: Compound, Catalyst, Phase, Solution, Reactor (and similar chemical substances).
+  
+  INSTRUCTION: Use these as style examples. You are encouraged to use more precise domain-specific terms if applicable (e.g., 'Piston' instead of 'Actuator').
+  
+  User instructions: ${instructions || 'none'}
+  Return ONLY PlantUML code.`
 
   const request = { headers: requestHeaders || {} }
-  const result = await llmGateway.executeLLMOperation(request, { taskCode: 'LLM3_DIAGRAM', prompt, idempotencyKey: crypto.randomUUID(), inputTokens: Math.ceil(prompt.length / 4) })
+  const result = await llmGateway.executeLLMOperation(request, {
+    taskCode: 'LLM3_DIAGRAM',
+    prompt,
+    idempotencyKey: crypto.randomUUID(),
+    inputTokens: Math.ceil(prompt.length / 4),
+    metadata: {
+      patentId,
+      sessionId,
+      purpose: 'add_figure_llm'
+    }
+  })
   if (!result.success || !result.response) return NextResponse.json({ error: result.error?.message || 'LLM failed' }, { status: 400 })
 
   const text = (result.response.output || '').trim()
@@ -2597,7 +2986,10 @@ async function handleAddFiguresLLM(user: any, patentId: string, data: any, reque
   const componentsRaw3 = (session.referenceMap as any)?.components
   const components3 = Array.isArray(componentsRaw3) ? componentsRaw3 : []
   const numeralsPreview = components3.map((c: any) => `${c.name} (${c.numeral || '?'})`).join(', ')
-  const existingNames = session.figurePlans?.map((f: any) => `Fig.${f.figureNo}: ${f.title}`).join('; ')
+  const existingNames = session.figurePlans?.map((f: any) => {
+    const clean = sanitizeFigureTitleInput(f.title) || `Figure ${f.figureNo}`
+    return `Fig.${f.figureNo}: ${clean}`
+  }).join('; ')
   const inventionTitle = session.ideaRecord?.title || ''
 
   const aggregatePrompt = `You are adding ${instructionsList.length} new simple PlantUML figures to a patent.
@@ -2608,7 +3000,17 @@ For each item below, return ONLY PlantUML (@startuml..@enduml), one block per it
 Items:\n- ${instructionsList.join('\n- ')}`
 
   const request = { headers: requestHeaders || {} }
-  const result = await llmGateway.executeLLMOperation(request, { taskCode: 'LLM3_DIAGRAM', prompt: aggregatePrompt, idempotencyKey: crypto.randomUUID(), inputTokens: Math.ceil(aggregatePrompt.length / 4) })
+  const result = await llmGateway.executeLLMOperation(request, {
+    taskCode: 'LLM3_DIAGRAM',
+    prompt: aggregatePrompt,
+    idempotencyKey: crypto.randomUUID(),
+    inputTokens: Math.ceil(aggregatePrompt.length / 4),
+    metadata: {
+      patentId,
+      sessionId,
+      purpose: 'add_figures_llm'
+    }
+  })
   if (!result.success || !result.response) return NextResponse.json({ error: result.error?.message || 'LLM failed' }, { status: 400 })
 
   const text = (result.response.output || '').trim()
@@ -2635,8 +3037,9 @@ Items:\n- ${instructionsList.join('\n- ')}`
     const code = blocks[i]
     const no = nextNo()
     const title = `Figure ${no}`
+    const safeTitle = sanitizeFigureTitleInput(title) || title
     const checksum = crypto.createHash('sha256').update(code).digest('hex')
-    await prisma.figurePlan.upsert({ where: { sessionId_figureNo: { sessionId, figureNo: no } }, update: { title }, create: { sessionId, figureNo: no, title, nodes: [], edges: [] } })
+    await prisma.figurePlan.upsert({ where: { sessionId_figureNo: { sessionId, figureNo: no } }, update: { title: safeTitle }, create: { sessionId, figureNo: no, title: safeTitle, nodes: [], edges: [] } })
     const diagramSource = await prisma.diagramSource.upsert({ where: { sessionId_figureNo: { sessionId, figureNo: no } }, update: { plantumlCode: code, checksum }, create: { sessionId, figureNo: no, plantumlCode: code, checksum } })
     created.push({ figureNo: no, diagramSource })
   }
@@ -2675,10 +3078,12 @@ async function handleCreateManualFigure(user: any, patentId: string, data: any) 
     while (used.has(no)) no++
   }
 
+  const cleanedTitle = sanitizeFigureTitleInput(title) || `Figure ${no}`
+
   await prisma.figurePlan.upsert({
     where: { sessionId_figureNo: { sessionId, figureNo: no } },
-    update: { title: title || `Figure ${no}`, description },
-    create: { sessionId, figureNo: no, title: title || `Figure ${no}`, description, nodes: [], edges: [] }
+    update: { title: cleanedTitle, description },
+    create: { sessionId, figureNo: no, title: cleanedTitle, description, nodes: [], edges: [] }
   })
 
   // Create empty source to allow upload linkage later
@@ -2768,7 +3173,7 @@ async function handleGenerateDraft(user: any, patentId: string, data: any, reque
   }
 
   // Verify session ownership and get all required data
-  const session = await prisma.draftingSession.findFirst({
+  const baseSession = await prisma.draftingSession.findFirst({
     where: {
       id: sessionId,
       patentId,
@@ -2787,20 +3192,44 @@ async function handleGenerateDraft(user: any, patentId: string, data: any, reque
     }
   });
 
-  if (!session) {
+  if (!baseSession) {
     return NextResponse.json(
       { error: 'Session not found or access denied' },
       { status: 404 }
     );
   }
 
+  const session = baseSession
+  // Determine effective jurisdiction (Stage 3.7b)
+  const effectiveJurisdiction = (jurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+  const preferredLanguage = getPreferredLanguageForJurisdiction(session, effectiveJurisdiction)
+  const sourceJurisdiction = resolveSourceOfTruth(session, effectiveJurisdiction)
+
+  // Load reference draft for source-of-truth jurisdiction (first selection or user override) when generating other jurisdictions
+  let referenceDraft = effectiveJurisdiction === sourceJurisdiction
+    ? null
+    : await prisma.annexureDraft.findFirst({
+        where: { sessionId, jurisdiction: sourceJurisdiction },
+        orderBy: { version: 'desc' }
+      })
+  if (!referenceDraft && effectiveJurisdiction !== sourceJurisdiction) {
+    // Fallback to any other available draft (excluding the active one) so users can add jurisdictions later
+    referenceDraft = await prisma.annexureDraft.findFirst({
+      where: { sessionId, NOT: { jurisdiction: effectiveJurisdiction } },
+      orderBy: { version: 'desc' }
+    }) || null
+  }
+
   // Generate draft
   const result = await DraftingService.generateAnnexureDraft(
     session,
-    jurisdiction,
+    effectiveJurisdiction,
     filingType,
     user.tenantId,
-    requestHeaders
+    requestHeaders,
+    referenceDraft || undefined,
+    preferredLanguage,
+    sourceJurisdiction
   );
 
   if (!result.success) {
@@ -2811,11 +3240,20 @@ async function handleGenerateDraft(user: any, patentId: string, data: any, reque
   }
 
   // Create new draft version
-  const version = (session.annexureDrafts[0]?.version || 0) + 1;
+  const extraSections = { ...(result.validationReport?.extraSections || {}) }
+  if (result.draft?.crossReference) {
+    extraSections.crossReference = result.draft.crossReference
+  }
+  const lastForJurisdiction = await prisma.annexureDraft.findFirst({
+    where: { sessionId, jurisdiction: effectiveJurisdiction },
+    orderBy: { version: 'desc' }
+  })
+  const version = ((lastForJurisdiction?.version) || 0) + 1;
   const draft = await prisma.annexureDraft.create({
     data: {
       sessionId,
       version,
+      jurisdiction: effectiveJurisdiction,
       title: result.draft?.title || session.ideaRecord?.title || 'Untitled',
       fieldOfInvention: result.draft?.fieldOfInvention || '',
       background: result.draft?.background || '',
@@ -2828,7 +3266,10 @@ async function handleGenerateDraft(user: any, patentId: string, data: any, reque
       listOfNumerals: result.draft?.listOfNumerals || '',
       fullDraftText: result.draft?.fullText || '',
       isValid: !!result.isValid,
-      validationReport: result.validationReport || {},
+      validationReport: {
+        ...(result.validationReport || {}),
+        ...(Object.keys(extraSections).length ? { extraSections } : {})
+      },
       llmPromptUsed: result.llmPrompt || '',
       llmResponse: result.llmResponse || {},
       tokensUsed: result.tokensUsed || 0
@@ -2838,7 +3279,17 @@ async function handleGenerateDraft(user: any, patentId: string, data: any, reque
   // Update session status
   await prisma.draftingSession.update({
     where: { id: sessionId },
-    data: { status: 'REVIEW_FIX' }
+    data: {
+      status: 'REVIEW_FIX',
+      jurisdictionDraftStatus: {
+        ...(session.jurisdictionDraftStatus as any || {}),
+        [effectiveJurisdiction]: {
+          status: 'done',
+          latestVersion: version,
+          updatedAt: new Date().toISOString()
+        }
+      }
+    }
   });
 
   return NextResponse.json({ draft });
@@ -2853,11 +3304,13 @@ async function handleAutosaveSections(user: any, patentId: string, data: any) {
 
   const session = await prisma.draftingSession.findFirst({
     where: { id: sessionId, patentId, userId: user.id },
-    include: { annexureDrafts: { orderBy: { version: 'desc' }, take: 1 } }
+    include: { annexureDrafts: { orderBy: { version: 'desc' } } }
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const last = session.annexureDrafts?.[0]
+  const effectiveJurisdiction = (session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+  const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
+  const last = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction)
   const merge: any = {
     title: last?.title || '',
     fieldOfInvention: last?.fieldOfInvention || null,
@@ -2872,6 +3325,7 @@ async function handleAutosaveSections(user: any, patentId: string, data: any) {
     listOfNumerals: last?.listOfNumerals || null,
     ...patch
   }
+  const crossReferenceText = typeof patch?.crossReference === 'string' ? patch.crossReference.trim() : ''
 
   // Create or update a working draft in place: if last exists, update it; else create version 1
   let draft
@@ -2897,6 +3351,7 @@ async function handleAutosaveSections(user: any, patentId: string, data: any) {
       data: {
         session: { connect: { id: sessionId } },
         version: 1,
+        jurisdiction: effectiveJurisdiction,
         title: merge.title || 'Untitled',
         fullDraftText: '',
         isValid: false
@@ -2904,28 +3359,99 @@ async function handleAutosaveSections(user: any, patentId: string, data: any) {
     })
   }
 
+  if (crossReferenceText) {
+    const existingVR = (draft.validationReport as any) || {}
+    const nextVR = { ...existingVR, extraSections: { ...(existingVR.extraSections || {}), crossReference: crossReferenceText } }
+    draft = await prisma.annexureDraft.update({ where: { id: draft.id }, data: { validationReport: nextVR } })
+  }
+
   return NextResponse.json({ draft })
+}
+
+// Allow users to reset/delete a jurisdiction-specific draft (without removing the jurisdiction unless explicitly asked)
+async function handleDeleteAnnexureDraft(user: any, patentId: string, data: any) {
+  const { sessionId, jurisdiction, removeFromList } = data
+  if (!sessionId || !jurisdiction) {
+    return NextResponse.json({ error: 'sessionId and jurisdiction are required' }, { status: 400 })
+  }
+  const normalized = String(jurisdiction).toUpperCase()
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { annexureDrafts: true }
+  })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const existingStatus = (session.jurisdictionDraftStatus as any) || {}
+  const retainedLanguage = existingStatus?.[normalized]?.language
+
+  await prisma.annexureDraft.deleteMany({ where: { sessionId, jurisdiction: normalized } })
+
+  const statusMap: Record<string, any> = { ...existingStatus }
+  delete statusMap[normalized]
+  if (retainedLanguage) statusMap[normalized] = { language: retainedLanguage }
+
+  const shouldRemove = Boolean(removeFromList)
+  let jurisdictions = Array.isArray(session.draftingJurisdictions)
+    ? Array.from(new Set(session.draftingJurisdictions.map((c: string) => (c || '').toUpperCase())))
+    : []
+  if (shouldRemove) {
+    jurisdictions = jurisdictions.filter(c => c !== normalized)
+  }
+  if (!jurisdictions.includes(normalized) && !shouldRemove && normalized) {
+    jurisdictions.push(normalized)
+  }
+  if (jurisdictions.length === 0) {
+    jurisdictions = ['IN']
+  }
+
+  const priorSource = typeof statusMap.__sourceOfTruth === 'string'
+    ? String(statusMap.__sourceOfTruth).toUpperCase()
+    : resolveSourceOfTruth(session)
+  let nextSource = priorSource
+  if (nextSource === normalized || !jurisdictions.includes(nextSource)) {
+    nextSource = jurisdictions.find(c => c !== normalized) || jurisdictions[0]
+  }
+  if (nextSource) {
+    statusMap.__sourceOfTruth = nextSource
+    jurisdictions = [nextSource, ...jurisdictions.filter(c => c !== nextSource)]
+  }
+
+  const nextActive = jurisdictions.includes((session.activeJurisdiction || '').toUpperCase())
+    ? (session.activeJurisdiction || '').toUpperCase()
+    : (statusMap.__sourceOfTruth || jurisdictions[0])
+
+  const updatedSession = await prisma.draftingSession.update({
+    where: { id: sessionId },
+    data: {
+      draftingJurisdictions: jurisdictions,
+      activeJurisdiction: nextActive,
+      jurisdictionDraftStatus: statusMap
+    }
+  })
+
+  return NextResponse.json({ success: true, session: updatedSession })
 }
 
 // New: Generate specific annexure sections without persisting (e.g., ["title","abstract"]) with backend debug steps
 async function handleGenerateSections(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
-  const { sessionId, sections, instructions, selectedPatents } = data
+  const { sessionId, sections, instructions, selectedPatents, jurisdiction } = data
 
   if (!sessionId || !Array.isArray(sections) || sections.length === 0) {
     return NextResponse.json({ error: 'sessionId and sections[] are required' }, { status: 400 })
   }
 
-  const session = await prisma.draftingSession.findFirst({
+  const baseSession = await prisma.draftingSession.findFirst({
     where: { id: sessionId, patentId, userId: user.id },
     include: {
       ideaRecord: true,
       referenceMap: true,
       figurePlans: true,
-      annexureDrafts: { orderBy: { version: 'desc' }, take: 1 },
       // Needed for prior-art selection logic in DraftingService
       relatedArtSelections: true
     }
   })
+  const session = baseSession
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
   // Merge user-provided instructions with PersonaSync style instructions if enabled and available
@@ -2954,12 +3480,32 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
     }
   }
 
-  const result = await DraftingService.generateSections(session, sections, mergedInstructions, user.tenantId, requestHeaders, selectedPatents)
+  const effectiveJurisdiction = (jurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+
+  // Load latest draft for this jurisdiction (if any) and inject into session for context
+  const lastDraftForJurisdiction = await prisma.annexureDraft.findFirst({
+    where: { sessionId, jurisdiction: effectiveJurisdiction },
+    orderBy: { version: 'desc' }
+  })
+  const sessionWithDrafts: any = { ...session, annexureDrafts: lastDraftForJurisdiction ? [lastDraftForJurisdiction] : [] }
+
+  const preferredLanguage = getPreferredLanguageForJurisdiction(session, effectiveJurisdiction)
+
+  const result = await DraftingService.generateSections(
+    sessionWithDrafts,
+    sections,
+    mergedInstructions,
+    user.tenantId,
+    requestHeaders,
+    selectedPatents,
+    effectiveJurisdiction,
+    preferredLanguage
+  )
   if (!result.success) return NextResponse.json({ error: result.error, debugSteps: result.debugSteps }, { status: 400 })
 
   // Autosave generated sections into latest draft without bumping version
   try {
-    const last = session.annexureDrafts?.[0]
+    const last = lastDraftForJurisdiction
     if (last && result.generated) {
       const updateData: any = {}
       // Only update fields that exist in the database schema
@@ -2970,6 +3516,12 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
           updateData[k] = v.trim()
         }
       }
+      // Persist cross-reference in validationReport.extraSections to avoid schema changes
+      if (typeof result.generated?.crossReference === 'string' && result.generated.crossReference.trim()) {
+        const existingVR = (last.validationReport as any) || {}
+        const extras = { ...(existingVR.extraSections || {}), crossReference: result.generated.crossReference.trim() }
+        updateData.validationReport = { ...existingVR, extraSections: extras }
+      }
       console.log('Autosave updateData keys:', Object.keys(updateData))
       console.log('Last draft ID:', last.id)
       console.log('Last draft exists:', !!last)
@@ -2978,7 +3530,7 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
       }
     } else if (result.generated) {
       // Create initial draft if none present
-      const createData: any = { sessionId, version: 1, fullDraftText: '' }
+      const createData: any = { sessionId, version: 1, jurisdiction: effectiveJurisdiction, fullDraftText: '' }
 
       // Set title
       createData.title = result.generated.title || session.ideaRecord?.title || 'Untitled'
@@ -2990,6 +3542,9 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
         if (result.generated[field] && typeof result.generated[field] === 'string') {
           createData[field] = (result.generated[field] as string).trim()
         }
+      }
+      if (typeof result.generated?.crossReference === 'string' && result.generated.crossReference.trim()) {
+        createData.validationReport = { extraSections: { crossReference: result.generated.crossReference.trim() } }
       }
 
       console.log('Creating new draft with keys:', Object.keys(createData))
@@ -3012,17 +3567,20 @@ async function handleSaveSections(user: any, patentId: string, data: any) {
 
   const session = await prisma.draftingSession.findFirst({
     where: { id: sessionId, patentId, userId: user.id },
-    include: { annexureDrafts: { orderBy: { version: 'desc' }, take: 1 }, referenceMap: true, figurePlans: true }
+    include: { annexureDrafts: { orderBy: { version: 'desc' } }, referenceMap: true, figurePlans: true }
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const last = session.annexureDrafts?.[0]
+  const effectiveJurisdiction = (session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+  const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
+  const last = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction)
   const nextVersion = (last?.version || 0) + 1
 
   // Merge patch into latest (or start new)
   const merged: any = {
     title: last?.title || '',
     fieldOfInvention: last?.fieldOfInvention || null,
+    crossReference: typeof patch?.crossReference === 'string' ? patch.crossReference : (last?.validationReport as any)?.extraSections?.crossReference || null,
     background: last?.background || null,
     summary: last?.summary || null,
     briefDescriptionOfDrawings: last?.briefDescriptionOfDrawings || null,
@@ -3037,6 +3595,7 @@ async function handleSaveSections(user: any, patentId: string, data: any) {
 
   // Assemble full text for validation
   const fullDraftText = [
+    merged.crossReference ? `CROSS-REFERENCE TO RELATED APPLICATIONS\n\n${merged.crossReference}` : '',
     merged.fieldOfInvention ? `FIELD OF INVENTION\n\n${merged.fieldOfInvention}` : '',
     merged.background ? `BACKGROUND\n\n${merged.background}` : '',
     merged.summary ? `SUMMARY\n\n${merged.summary}` : '',
@@ -3051,11 +3610,16 @@ async function handleSaveSections(user: any, patentId: string, data: any) {
 
   // Lightweight consistency validation using service
   const validation = DraftingService.validateDraftConsistencyPublic({ fullText: fullDraftText }, session as any)
+  const validationReport = {
+    ...(validation.report || {}),
+    ...(merged.crossReference ? { extraSections: { ...(validation.report as any)?.extraSections || {}, crossReference: merged.crossReference } } : {})
+  }
 
   const draft = await prisma.annexureDraft.create({
     data: {
       sessionId,
       version: nextVersion,
+      jurisdiction: effectiveJurisdiction,
       title: merged.title || last?.title || 'Untitled',
       fieldOfInvention: merged.fieldOfInvention || undefined,
       background: merged.background || undefined,
@@ -3069,7 +3633,21 @@ async function handleSaveSections(user: any, patentId: string, data: any) {
       listOfNumerals: merged.listOfNumerals || undefined,
       fullDraftText,
       isValid: !!validation.valid,
-      validationReport: validation.report
+      validationReport
+    }
+  })
+
+  await prisma.draftingSession.update({
+    where: { id: sessionId },
+    data: {
+      jurisdictionDraftStatus: {
+        ...(session.jurisdictionDraftStatus as any || {}),
+        [effectiveJurisdiction]: {
+          status: 'done',
+          latestVersion: nextVersion,
+          updatedAt: new Date().toISOString()
+        }
+      }
     }
   })
 
@@ -3078,6 +3656,5 @@ async function handleSaveSections(user: any, patentId: string, data: any) {
     await prisma.draftingSession.update({ where: { id: sessionId }, data: { status: 'ANNEXURE_DRAFT' } })
   }
 
-  return NextResponse.json({ draft, validationReport: validation.report })
+  return NextResponse.json({ draft, validationReport })
 }
-

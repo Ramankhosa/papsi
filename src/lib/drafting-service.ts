@@ -1,6 +1,13 @@
 import { llmGateway, executePatentDrafting } from './metering/gateway';
 import { prisma } from './prisma';
 import { verifyJWT } from './auth';
+import {
+  getCountryProfile,
+  getDraftingPrompts,
+  getBaseStyle,
+  getGlobalRules,
+  getSectionRules
+} from '@/lib/country-profile-service';
 import crypto from 'crypto';
 
 export interface IdeaNormalizationRequest {
@@ -21,6 +28,7 @@ export interface IdeaNormalizationResult {
     inputs?: string;
     outputs?: string;
     variants?: string;
+    inventionType?: string[];
       bestMethod?: string;
       fieldOfRelevance?: string;
       subfield?: string;
@@ -57,6 +65,7 @@ export interface AnnexureDraftResult {
   draft?: {
     title: string;
     fieldOfInvention?: string;
+    crossReference?: string;
     background?: string;
     summary?: string;
     briefDescriptionOfDrawings?: string;
@@ -75,6 +84,19 @@ export interface AnnexureDraftResult {
   error?: string;
 }
 
+interface SectionPromptContext {
+  jurisdiction: string;
+  countryProfile?: any | null;
+  baseStyle?: any | null;
+  sectionPrompt?: { instruction?: string; constraints?: string[] } | null;
+  sectionRules?: any | null;
+  sectionMeta?: any | null;
+  globalRules?: any | null;
+  sectionChecks?: any[] | null;
+  crossChecksFrom?: any[] | null;
+  claimsRules?: any | null;
+}
+
 export interface SectionGenerationResult {
   success: boolean;
   generated?: Record<string, string>;
@@ -84,6 +106,30 @@ export interface SectionGenerationResult {
 }
 
 export class DraftingService {
+  private static sectionKeyMap: Record<string, string[]> = {
+    title: ['title'],
+    abstract: ['abstract'],
+    fieldOfInvention: ['fieldOfInvention', 'field', 'technical_field', 'field_of_invention', 'technical_field_of_the_invention'],
+    background: ['background', 'background_art'],
+    crossReference: ['cross_reference', 'cross reference', 'cross-reference'],
+    summary: ['summary', 'summary_of_invention'],
+    briefDescriptionOfDrawings: ['briefDescriptionOfDrawings', 'brief_drawings', 'brief_description_of_drawings'],
+    detailedDescription: ['detailedDescription', 'detailed_description', 'description'],
+    bestMethod: ['bestMethod', 'best_mode', 'best_method'],
+    claims: ['claims'],
+    industrialApplicability: ['industrialApplicability', 'industrial_applicability', 'utility'],
+    listOfNumerals: ['listOfNumerals', 'reference_numerals', 'reference_signs', 'list_of_numerals']
+  }
+
+  private static mapToInternalKey(candidate: string): string | undefined {
+    const lc = (candidate || '').toLowerCase()
+    for (const [internal, aliases] of Object.entries(this.sectionKeyMap)) {
+      if (aliases.map(a => a.toLowerCase()).includes(lc) || internal.toLowerCase() === lc) {
+        return internal
+      }
+    }
+    return undefined
+  }
 
   /**
    * Execute drafting workflow - creates session and initializes drafting process
@@ -99,6 +145,7 @@ export class DraftingService {
     technicalFeatures: any[];
     jurisdiction: string;
     filingType: string;
+    inventionType?: string;
   }): Promise<{ success: boolean; draftId?: string; error?: string }> {
     try {
       // Verify JWT token
@@ -165,12 +212,37 @@ export class DraftingService {
       const normalizationResult = await this.normalizeIdea(
         `Title: ${params.title}\nProblem: ${params.problem}\nSolution: ${params.solution}\nTechnical Features: ${params.technicalFeatures.join(', ')}`,
         params.title,
-        user.tenantId || undefined
+        user.tenantId || undefined,
+        undefined,
+        params.inventionType
       );
 
       if (!normalizationResult.success) {
         return { success: false, error: normalizationResult.error || 'Failed to normalize idea' };
       }
+
+      // Persist normalization output on the idea record for downstream use (including archetype)
+      await prisma.ideaRecord.update({
+        where: { sessionId: session.id },
+        data: {
+          normalizedData: normalizationResult.normalizedData || {},
+          problem: normalizationResult.extractedFields?.problem,
+          objectives: normalizationResult.extractedFields?.objectives,
+          components: normalizationResult.extractedFields?.components || [],
+          logic: normalizationResult.extractedFields?.logic,
+          inputs: normalizationResult.extractedFields?.inputs,
+          outputs: normalizationResult.extractedFields?.outputs,
+          variants: normalizationResult.extractedFields?.variants,
+          bestMethod: normalizationResult.extractedFields?.bestMethod,
+          abstract: normalizationResult.extractedFields?.abstract,
+          searchQuery: normalizationResult.extractedFields?.searchQuery,
+          cpcCodes: normalizationResult.extractedFields?.cpcCodes || [],
+          ipcCodes: normalizationResult.extractedFields?.ipcCodes || [],
+          llmPromptUsed: normalizationResult.llmPrompt,
+          llmResponse: normalizationResult.llmResponse,
+          tokensUsed: normalizationResult.tokensUsed
+        }
+      })
 
       // Update session with normalized data
       await prisma.draftingSession.update({
@@ -217,7 +289,8 @@ export class DraftingService {
     title: string,
     tenantId?: string,
     requestHeaders?: Record<string, string>,
-    areaOfInvention?: string
+    areaOfInvention?: string,
+    allowRefine: boolean = true
   ): Promise<IdeaNormalizationResult> {
     try {
       // Debug logging
@@ -235,7 +308,10 @@ export class DraftingService {
         };
       }
       
-          const domainExpertise = (areaOfInvention && areaOfInvention.trim()) ? ` with core expertise in ${areaOfInvention.trim()}` : '';
+      const domainExpertise = (areaOfInvention && areaOfInvention.trim()) ? ` with core expertise in ${areaOfInvention.trim()}` : '';
+      const refinementNote = allowRefine
+        ? ''
+        : '\n- Do NOT invent or add new components/claims beyond what is provided. Preserve the user-described invention faithfully; paraphrase only for clarity.';
 
       const prompt = `You are an expert patent attorney specializing in drafting and structuring patent disclosures across all domains (mechanical, electrical, software, biotech, chemistry, medical devices, materials, aerospace, etc.)${domainExpertise}.
 
@@ -244,11 +320,12 @@ Task: Read the invention description and output ONLY a valid JSON object capturi
 Rules (must follow strictly):
 - Output MUST be a single JSON object, no code fences, no backticks, no prose.
 - Use concise, formal patent language suitable for specification drafting.
-- Keep each field as a single string (no arrays), except: "components" (array of objects), "cpcCodes" (array of strings), and "ipcCodes" (array of strings).
-- Additionally, provide a compact "searchQuery" string (≤ 25 words) optimized for PQAI prior-art search. This should be plain text, ASCII-safe, no quotes, no brackets, no CPC/IPC codes, no labels. Include only essential technical nouns/verbs.
+- Keep each field as a single string (no arrays), except: "components" (array of objects), "cpcCodes" (array of strings), "ipcCodes" (array of strings), and "inventionType" (array of archetype tags).
+- Include "inventionType" as the archetype classification (one or more of: MECHANICAL, ELECTRICAL, SOFTWARE, CHEMICAL, BIO, GENERAL). Allow multiple using either an array or a "+"-joined string (e.g., "MECHANICAL+SOFTWARE"); uppercase the values.
+- Additionally, provide a compact "searchQuery" string (<= 25 words) optimized for PQAI prior-art search. This should be plain text, ASCII-safe, no quotes, no brackets, no CPC/IPC codes, no labels. Include only essential technical nouns/verbs.
 - Use double-quoted keys and strings; avoid line breaks mid-sentence when possible.
  - Keep content succinct; avoid redundancy and marketing language.
- - Components: return up to 8 items maximum by default (more only if essential). Use hierarchy when helpful (module → submodule → sub-submodule). Keep each item's description to one sentence.
+ - Components: return up to 8 items maximum by default (more only if essential). Use hierarchy when helpful (module → submodule → sub-submodule). Keep each item's description to one sentence.${refinementNote}
 
 TITLE: ${title}
 
@@ -257,7 +334,7 @@ ${rawIdea}
 
 Respond in this exact JSON shape:
 {
-  "searchQuery": "concise plain-text search query (≤25 words, ASCII, no quotes/brackets)",
+  "searchQuery": "concise plain-text search query (G25 words, ASCII, no quotes/brackets)",
   "problem": "concise statement of the technical problem",
   "objectives": "succinct objectives of the invention",
   "components": [{
@@ -273,6 +350,7 @@ Respond in this exact JSON shape:
     "sequence": "optional: order within its level (1-based)",
     "numberingHint": "optional: preferred hundreds bucket e.g., 100|200|300|400|500|600|700|800|900"
   }],
+  "inventionType": ["MECHANICAL", "SOFTWARE"],
   "logic": "how components interact to achieve the objectives",
   "inputs": "key inputs/signals/data required",
   "outputs": "key outputs/actions/data produced",
@@ -285,7 +363,7 @@ Respond in this exact JSON shape:
   "drawingsFocus": "what figures should emphasize given the field",
   "claimStrategy": "high-level claim drafting approach suited to this field",
   "riskFlags": "any potential enablement or patentability risks to watch",
-  "abstract": "≤150 words abstract that begins exactly with the title; neutral tone; no claims/advantages/numerals",
+  "abstract": "G150 words abstract that begins exactly with the title; neutral tone; no claims/advantages/numerals",
   "cpcCodes": ["primary CPC code like H04L 29/08", "optional secondary"],
   "ipcCodes": ["primary IPC code like G06F 17/30", "optional secondary"]
 }`;
@@ -297,7 +375,7 @@ Respond in this exact JSON shape:
       const llmResult = await llmGateway.executeLLMOperation(request, {
         taskCode: 'LLM2_DRAFT',
         prompt,
-        parameters: { tenantId },
+        parameters: { tenantId, ...(allowRefine ? { temperature: 0.4 } : { temperature: 0.0 }) },
         idempotencyKey: crypto.randomUUID()
       });
 
@@ -389,6 +467,13 @@ Respond in this exact JSON shape:
       }
 
       // Extract fields for easy database querying
+      // Auto-detect archetype/invention type so downstream drafting/diagramming can use it without user input
+      const detectedArchetype = this.normalizeArchetypeList(
+        normalizedData?.inventionType,
+        normalizedData?.fieldOfRelevance || areaOfInvention || ''
+      )
+      normalizedData.inventionType = detectedArchetype
+
       const extractedFields = {
         searchQuery: typeof normalizedData.searchQuery === 'string' ? String(normalizedData.searchQuery).trim() : undefined,
         problem: normalizedData.problem,
@@ -398,6 +483,7 @@ Respond in this exact JSON shape:
         inputs: normalizedData.inputs,
         outputs: normalizedData.outputs,
         variants: normalizedData.variants,
+        inventionType: detectedArchetype,
         bestMethod: normalizedData.bestMethod,
         fieldOfRelevance: normalizedData.fieldOfRelevance,
         subfield: normalizedData.subfield,
@@ -436,13 +522,63 @@ Respond in this exact JSON shape:
     instructions?: Record<string, string>,
     tenantId?: string,
     requestHeaders?: Record<string, string>,
-    selectedPatents?: any[]
+    selectedPatents?: any[],
+    jurisdiction: string = 'IN',
+    preferredLanguage?: string
   ): Promise<SectionGenerationResult> {
     const debugSteps: Array<{ step: string; status: 'ok'|'fail'; meta?: any }> = []
     try {
       // Step: gather context
       const idea = session.ideaRecord || {}
       const referenceMap = session.referenceMap || { components: [] }
+      const jurisdictionCode = (jurisdiction || (session as any).activeJurisdiction || (session as any).draftingJurisdictions?.[0] || 'IN').toUpperCase()
+      let countryProfile: any = await getCountryProfile(jurisdictionCode)
+      if (preferredLanguage) {
+        const langs: string[] = Array.isArray((countryProfile as any)?.profileData?.meta?.languages)
+          ? (countryProfile as any).profileData.meta.languages
+          : []
+        const reordered = [preferredLanguage, ...langs.filter(l => l !== preferredLanguage)]
+        countryProfile = {
+          ...countryProfile,
+          profileData: {
+            ...(countryProfile as any)?.profileData || {},
+            meta: {
+              ...(countryProfile as any)?.profileData?.meta || {},
+              languages: reordered
+            }
+          }
+        }
+      }
+      const baseStyle = countryProfile ? await getBaseStyle(jurisdictionCode) : null
+      const globalRules = countryProfile ? await getGlobalRules(jurisdictionCode) : null
+      if (!countryProfile) {
+        debugSteps.push({ step: 'jurisdiction_fallback', status: 'fail', meta: { jurisdiction: jurisdictionCode } })
+      }
+
+      const crossSectionChecks = countryProfile?.profileData?.validation?.crossSectionChecks || []
+      const claimsRules = countryProfile?.profileData?.rules?.claims || null
+
+      const sectionResources: Record<string, { prompt: any; rules: any; meta: any; altKeys: string[]; checks?: any[]; cross?: any[]; claimsRules?: any }> = {}
+      for (const s of sections) {
+        const sectionMeta = this.resolveSectionMeta(countryProfile, s)
+        const sectionKey = sectionMeta?.id || this.getFallbackSectionKey(s)
+        const promptCfg = sectionKey ? await getDraftingPrompts(jurisdictionCode, sectionKey) : null
+        const sectionRules = sectionKey ? await getSectionRules(jurisdictionCode, sectionKey) : null
+        const checks = countryProfile?.profileData?.validation?.sectionChecks?.[sectionKey] || countryProfile?.profileData?.validation?.sectionChecks?.[s]
+        const cross = Array.isArray(crossSectionChecks) ? crossSectionChecks.filter((c: any) => (c?.from === sectionKey) || (c?.from === s)) : []
+        sectionResources[s] = {
+          prompt: promptCfg,
+          rules: sectionRules,
+          meta: sectionMeta,
+          altKeys: Array.isArray(sectionMeta?.canonicalKeys) ? sectionMeta.canonicalKeys.map((k: string) => k.toLowerCase()) : [],
+          checks: Array.isArray(checks) ? checks : undefined,
+          cross: cross.length ? cross : undefined,
+          claimsRules: s === 'claims' ? claimsRules : undefined
+        }
+        if (!sectionMeta) {
+          debugSteps.push({ step: `section_unmapped_${s}`, status: 'fail', meta: { jurisdiction: jurisdictionCode } })
+        }
+      }
 
       // Gather prior art data for background section
       const manualPriorArt = (session as any).manualPriorArt || null
@@ -502,10 +638,17 @@ Respond in this exact JSON shape:
       }
 
       // Merge figures from plans and uploaded images
-      const planFigures = session.figurePlans || []
+      const planFigures = (session.figurePlans || []).map((f: any) => ({
+        figureNo: f.figureNo,
+        title: this.sanitizeFigureTitle(f.title) || `Figure ${f.figureNo}`
+      }))
       const imageBacked = (session.diagramSources || [])
         .filter((d: any) => d?.imageUploadedAt)
-        .map((d: any) => ({ figureNo: d.figureNo, title: planFigures.find((f:any)=>f.figureNo===d.figureNo)?.title || `Figure ${d.figureNo}` }))
+        .map((d: any) => {
+          const found = planFigures.find((f: any) => f.figureNo === d.figureNo)
+          const sanitized = this.sanitizeFigureTitle(found?.title || d.title)
+          return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}` }
+        })
       const mergedByNo = new Map<number, any>()
       for (const f of planFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
       for (const f of imageBacked) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
@@ -530,6 +673,11 @@ Respond in this exact JSON shape:
           }))
         }
       })
+      debugSteps.push({
+        step: 'jurisdiction_context',
+        status: 'ok',
+        meta: { jurisdiction: jurisdictionCode, hasCountryProfile: !!countryProfile }
+      })
 
       // Build payload available across sections
       const payload = { idea, referenceMap, figures, approved: session.annexureDrafts?.[0] || {}, instructions: instructions || {}, manualPriorArt, selectedPriorArtPatents }
@@ -540,7 +688,18 @@ Respond in this exact JSON shape:
       let llmMeta: any = undefined
 
       for (const s of sections) {
-        const prompt = this.buildSectionPrompt(s, payload)
+        const prompt = this.buildSectionPrompt(s, payload, {
+          jurisdiction: jurisdictionCode,
+          countryProfile,
+          baseStyle,
+          sectionPrompt: sectionResources[s]?.prompt,
+          sectionRules: sectionResources[s]?.rules,
+          sectionMeta: sectionResources[s]?.meta,
+          globalRules,
+          sectionChecks: sectionResources[s]?.checks,
+          crossChecksFrom: sectionResources[s]?.cross,
+          claimsRules: sectionResources[s]?.claimsRules
+        })
         debugSteps.push({ step: `build_prompt_${s}`, status: 'ok' })
 
         // Increase tokens for long sections
@@ -550,7 +709,13 @@ Respond in this exact JSON shape:
           taskCode: 'LLM2_DRAFT',
           prompt,
           parameters: { tenantId, ...(sectionMaxTokens && { maxOutputTokens: sectionMaxTokens }) },
-          idempotencyKey: crypto.randomUUID()
+          idempotencyKey: crypto.randomUUID(),
+          metadata: {
+            patentId: session.patentId,
+            sessionId: session.id,
+            section: s,
+            purpose: 'draft_section'
+          }
         })
         if (!result.success || !result.response) {
           debugSteps.push({ step: `llm_call_${s}`, status: 'fail', meta: { error: result.error?.message } })
@@ -629,6 +794,32 @@ Respond in this exact JSON shape:
 
         // Guardrails + Background D-label normalization
         let val = typeof parsed?.[s] === 'string' ? parsed[s].trim() : ''
+        if (!val && sectionResources[s]?.altKeys?.length) {
+          for (const alt of sectionResources[s].altKeys) {
+            if (typeof parsed?.[alt] === 'string' && parsed[alt].trim()) {
+              val = parsed[alt].trim()
+              debugSteps.push({ step: `alt_key_used_${s}`, status: 'ok', meta: { alt } })
+              break
+            }
+          }
+        }
+        if (val && sectionResources[s]?.checks) {
+          for (const check of sectionResources[s].checks) {
+            if (check?.type === 'maxWords' && typeof check.limit === 'number') {
+              const words = val.split(/\s+/)
+              if (words.length > check.limit) {
+                val = words.slice(0, check.limit).join(' ')
+                debugSteps.push({ step: `clip_words_${s}`, status: 'ok', meta: { limit: check.limit } })
+              }
+            }
+            if (check?.type === 'maxChars' && typeof check.limit === 'number') {
+              if (val.length > check.limit) {
+                val = val.slice(0, check.limit)
+                debugSteps.push({ step: `clip_chars_${s}`, status: 'ok', meta: { limit: check.limit } })
+              }
+            }
+          }
+        }
         if (s === 'background' && val) {
           // Normalize any D-labels to incremental order of first use and show identifier only on first mention
           const normalizeDLabels = (text: string) => {
@@ -667,7 +858,7 @@ Respond in this exact JSON shape:
               const re = new RegExp(`\\b${oldD}\\b`, 'g')
               replaced = replaced.replace(re, tmp)
             })
-            // Drop old parentheses IDs tied to old labels, they’ll be reattached on first mention
+            // Drop old parentheses IDs tied to old labels, they'll be reattached on first mention
             replaced = replaced.replace(/@@D(\d+)@@\s*\(([^)]+)\)/g, '@@D$1@@')
 
             // Now finalize markers back to new labels
@@ -694,20 +885,34 @@ Respond in this exact JSON shape:
           debugSteps.push({ step: `fallback_${s}`, status: 'ok', meta: { used: true } })
         }
         const approvedTitle = s === 'abstract' ? (payload.approved?.title || idea?.title) : undefined
-        let check = this.guardrailCheck(s, val, referenceMap, figures, approvedTitle)
+        let check = this.guardrailCheck(
+          s,
+          val,
+          referenceMap,
+          figures,
+          approvedTitle,
+          { sectionChecks: sectionResources[s]?.checks, claimsRules: sectionResources[s]?.claimsRules }
+        )
         if (!check.ok) {
           debugSteps.push({ step: `critic_${s}`, status: 'fail', meta: { reason: check.reason } })
-          const fixed = this.minimalFix(s, val, { reason: check.reason, approvedTitle, referenceMap, figures })
+          const fixed = this.minimalFix(s, val, { reason: check.reason, approvedTitle, referenceMap, figures, sectionChecks: sectionResources[s]?.checks, claimsRules: sectionResources[s]?.claimsRules })
           if (fixed && fixed.trim() && fixed !== val) {
             val = fixed.trim()
-            const recheck = this.guardrailCheck(s, val, referenceMap, figures, approvedTitle)
+            const recheck = this.guardrailCheck(
+              s,
+              val,
+              referenceMap,
+              figures,
+              approvedTitle,
+              { sectionChecks: sectionResources[s]?.checks, claimsRules: sectionResources[s]?.claimsRules }
+            )
             if (recheck.ok) {
               debugSteps.push({ step: `fixer_${s}`, status: 'ok', meta: { applied: true, fixedTo: val.substring(0, 100) + '...' } })
               generated[s] = val
               debugSteps.push({ step: `guard_${s}`, status: 'ok' })
               // Enforce section hard word limits post-guard
               try {
-                const enforced = this.enforceMaxWords(s, generated[s])
+                const enforced = this.enforceMaxWords(s, generated[s], sectionResources[s]?.checks, sectionResources[s]?.rules)
                 if (enforced.clipped) {
                   generated[s] = enforced.text
                   debugSteps.push({ step: `limit_enforce_${s}`, status: 'ok', meta: { before: enforced.before, after: enforced.after, maxEnforced: true } })
@@ -720,7 +925,7 @@ Respond in this exact JSON shape:
                 generated[s] = val
                 // Enforce section hard word limits post-guard
                 try {
-                  const enforced = this.enforceMaxWords(s, generated[s])
+                  const enforced = this.enforceMaxWords(s, generated[s], sectionResources[s]?.checks, sectionResources[s]?.rules)
                   if (enforced.clipped) {
                     generated[s] = enforced.text
                     debugSteps.push({ step: `limit_enforce_${s}`, status: 'ok', meta: { before: enforced.before, after: enforced.after, maxEnforced: true } })
@@ -738,7 +943,7 @@ Respond in this exact JSON shape:
           debugSteps.push({ step: `guard_${s}`, status: 'ok' })
           // Enforce section hard word limits post-guard
           try {
-            const enforced = this.enforceMaxWords(s, generated[s])
+            const enforced = this.enforceMaxWords(s, generated[s], sectionResources[s]?.checks, sectionResources[s]?.rules)
             if (enforced.clipped) {
               generated[s] = enforced.text
               debugSteps.push({ step: `limit_enforce_${s}`, status: 'ok', meta: { before: enforced.before, after: enforced.after, maxEnforced: true } })
@@ -780,406 +985,482 @@ Respond in this exact JSON shape:
     }
   }
 
-  private static buildSectionPrompt(section: string, payload: any): string {
+  private static resolveSectionMeta(profile: any | null, section: string) {
+    if (!profile) return null
+    const variants = profile?.profileData?.structure?.variants || []
+    const defaultVariantId = profile?.profileData?.structure?.defaultVariant
+    const variant = variants.find((v: any) => v.id === defaultVariantId) || variants[0]
+    if (!variant?.sections) return null
+    const candidates = this.sectionKeyMap[section] || [section]
+    return variant.sections.find((s: any) =>
+      candidates.some(key => s.id === key || (Array.isArray(s.canonicalKeys) && s.canonicalKeys.includes(key)))
+    ) || null
+  }
+
+  private static getFallbackSectionKey(section: string): string {
+    const candidates = this.sectionKeyMap[section]
+    return candidates?.[0] || section
+  }
+
+  private static describeVoice(voice?: string): string {
+    const val = (voice || '').toLowerCase()
+    if (val.includes('impersonal')) return 'impersonal third person'
+    if (val.includes('first')) return 'first person (avoid unless required)'
+    if (val.includes('active')) return 'active voice'
+    return voice || 'impersonal third person'
+  }
+
+  private static getSectionGuidance(section: string, sectionRules?: any): { label: string; target?: string } {
+    const defaults: Record<string, { label: string; target?: string }> = {
+      title: { label: 'Title', target: '<= 15 words' },
+      abstract: { label: 'Abstract', target: '130-150 words' },
+      fieldOfInvention: { label: 'Technical Field', target: '40-80 words' },
+      background: { label: 'Background', target: '250-400 words' },
+      summary: { label: 'Summary', target: '120-200 words' },
+      briefDescriptionOfDrawings: { label: 'Brief Description of Drawings', target: '80-150 words' },
+      detailedDescription: { label: 'Detailed Description', target: '600-1200 words' },
+      bestMethod: { label: 'Best Mode', target: '150-300 words' },
+      claims: { label: 'Claims' },
+      industrialApplicability: { label: 'Industrial Applicability', target: '80-150 words' },
+      listOfNumerals: { label: 'List of Reference Numerals' }
+    }
+    const base = { ...(defaults[section] || { label: section }) }
+    if (sectionRules?.wordRange?.min || sectionRules?.wordRange?.max) {
+      const min = sectionRules.wordRange?.min
+      const max = sectionRules.wordRange?.max
+      base.target = `${min || '~'}-${max || '~'} words`
+    } else if (sectionRules?.maxWords) {
+      base.target = `<= ${sectionRules.maxWords} words`
+    }
+    return base
+  }
+
+  private static normalizeArchetypeList(input: any, fallbackField?: string): string[] {
+    const set = new Set<string>()
+    const add = (raw?: string) => {
+      if (!raw) return
+      String(raw)
+        .split('+')
+        .map((p) => p.trim().toUpperCase())
+        .filter(Boolean)
+        .forEach((p) => set.add(p))
+    }
+    if (Array.isArray(input)) input.forEach((v) => add(typeof v === 'string' ? v : String(v)))
+    else if (typeof input === 'string') add(input)
+    if (set.size === 0 && fallbackField) add(this.determineArchetype(fallbackField))
+    if (set.size === 0) set.add('GENERAL')
+    if (set.size > 1 && set.has('GENERAL')) set.delete('GENERAL')
+    return Array.from(set)
+  }
+
+  private static sanitizeFigureTitle(title?: string | null): string {
+    const raw = typeof title === 'string' ? title : (title ?? '').toString()
+    if (!raw.trim()) return ''
+    const cpcIpcPattern = /\b(?:CPC|IPC)?\s*(?:class\s*)?[A-H][0-9]{1,2}[A-Z]\s*\d+\/\d+\b/gi
+    let cleaned = raw.replace(cpcIpcPattern, '')
+    cleaned = cleaned.replace(/\b(?:CPC|IPC)\b[:\-]?\s*/gi, '')
+    cleaned = cleaned.replace(/\s{2,}/g, ' ').replace(/\s+([,.;:])/g, '$1')
+    cleaned = cleaned.replace(/^[\s,:;.-]+|[\s,:;.-]+$/g, '')
+    return cleaned.trim()
+  }
+
+  private static determineArchetype(field: string): string {
+    const f = field?.toLowerCase() || ''
+    if (/(software|computer|internet|app|data|ai|algorithm|blockchain|network|platform|server|cloud|processor)/.test(f)) return 'SOFTWARE'
+    if (/(chem|pharma|compound|composition|material|polymer|alloy|drug|molecule|synthesis)/.test(f)) return 'CHEMICAL'
+    if (/(bio|gene|cell|protein|dna|rna|medical|diagnostic|therapeutic|antibody|sequence)/.test(f)) return 'BIO'
+    if (/(electric|circuit|semiconductor|voltage|power|sensor|transistor|communication|wireless|signal)/.test(f)) return 'ELECTRICAL'
+    if (/(mechanic|device|apparatus|tool|machine|engine|structure|fastener|assembly|housing)/.test(f)) return 'MECHANICAL'
+    return 'GENERAL'
+  }
+
+  private static getArchetypeInstructions(archetype: string): string {
+    const base = 'CRITICAL: You are executing a DEEP DRAFTING PROTOCOL. Apply the following mental models where relevant to the component/step being described. Do not force-fit attributes (e.g., do not invent "force transmission" for a static label).'
+    
+    // Handle hybrid types (e.g., "MECHANICAL+SOFTWARE")
+    const types = archetype.split('+')
+    let instructions = base + '\n'
+
+    if (types.includes('MECHANICAL')) {
+      instructions += `
+        [MECHANICAL PROTOCOL]
+        For physical assemblies, consider this KINEMATIC CHAIN pattern:
+        1. **Geometric Definition**: Define shape, orientation, and connectivity.
+        2. **Force/Motion Transmission**: Explain how movement/force flows between parts.
+        3. **Constraint Logic**: Describe how degrees of freedom are restricted.
+        4. **Material Alternatives**: List functional equivalents (e.g., "fastener -> screw, weld").
+      `
+    }
+    if (types.includes('SOFTWARE')) {
+      instructions += `
+        [SOFTWARE PROTOCOL]
+        For algorithmic steps, consider this DATA-FLOW pattern:
+        1. **I/O Contract**: Define inputs and outputs.
+        2. **Transformation Logic**: Explain the step-by-step processing.
+        3. **State Management**: Describe triggers and state transitions.
+        4. **Hardware Tether**: Link logic to physical hardware (processor/memory) for eligibility.
+      `
+    }
+    if (types.includes('CHEMICAL')) {
+      instructions += `
+        [CHEMICAL PROTOCOL]
+        For substances, consider this FORMULATION pattern:
+        1. **Range Definitions**: State broad/preferred ranges and optimal values.
+        2. **Functional Role**: Explain the technical purpose of the ingredient.
+        3. **Equivalents (Markush)**: List chemical analogs with similar function.
+        4. **Synthesis Parameters**: Define critical conditions (temp, pressure, pH).
+      `
+    }
+    if (types.includes('ELECTRICAL')) {
+      instructions += `
+        [ELECTRICAL PROTOCOL]
+        For circuits, consider this SIGNAL-PATH pattern:
+        1. **Topological Connection**: Describe series/parallel connections.
+        2. **Signal Characteristics**: Define voltage/frequency/logic states.
+        3. **Operational Logic**: Explain gating or switching behavior.
+        4. **Component Values**: Mention typical ratings/values if enabling.
+      `
+    }
+    if (types.includes('BIO')) {
+      instructions += `
+        [BIO PROTOCOL]
+        For biological entities, consider this ENABLEMENT pattern:
+        1. **Sequence/Structure**: Refer to IDs or structural formulas.
+        2. **Functional Activity**: Quantify the biological effect or affinity.
+        3. **Homology/Variants**: Define acceptable identity percentages.
+        4. **Preparation**: Reference isolation or synthesis methods.
+      `
+    }
+    
+    if (types.includes('GENERAL') || instructions === base + '\n') {
+       instructions += `
+        [GENERAL PROTOCOL]
+        1. Structural/Logical Definition: Define it by connection to neighbors.
+        2. Configuration Sprawl: List material/structural alternatives.
+        3. Interaction Dynamics: Explain system behavior when this acts.
+        4. Reference Chaining: Use phrases like "With simultaneous reference to FIGS. 1 and 2...".
+       `
+    }
+
+    return instructions
+  }
+
+  private static buildSectionPrompt(section: string, payload: any, ctx: SectionPromptContext): string {
     const { idea, referenceMap, figures, approved, instructions, manualPriorArt, selectedPriorArtPatents } = payload
+    
+    // Priority: 1. Manually confirmed types (array/string) -> 2. Normalized data -> 3. Auto-detected (regex)
+    const archetypeList = this.normalizeArchetypeList(
+      idea?.inventionType ?? idea?.normalizedData?.inventionType,
+      idea?.fieldOfRelevance || idea?.normalizedData?.fieldOfRelevance || ''
+    )
+    const archetype = archetypeList.join('+') || 'GENERAL'
+
     const numerals = (referenceMap?.components || []).map((c: any) => `${c.name} (${c.numeral})`).join(', ')
     const figs = (figures || []).map((f: any) => `Fig.${f.figureNo}: ${f.title}`).join('; ')
     const instr = (instructions && instructions[section]) ? String(instructions[section]) : 'none'
 
+    const jurisdiction = (ctx?.jurisdiction || 'IN').toUpperCase()
+    const countryName = ctx?.countryProfile?.name || jurisdiction
+    const officeName = ctx?.countryProfile?.profileData?.meta?.office || 'Patent Office'
+    const language = (ctx?.countryProfile?.profileData?.meta?.languages?.[0] || 'English')
+    const tone = ctx?.baseStyle?.tone || 'technical, neutral, precise'
+    const voice = this.describeVoice(ctx?.baseStyle?.voice || 'impersonal third person')
+    const avoid = Array.isArray(ctx?.baseStyle?.avoid) ? ctx.baseStyle.avoid.join(', ') : (ctx?.baseStyle?.avoid || 'marketing language, unsupported advantages, unsubstantiated claims')
+    const guidance = this.getSectionGuidance(section, ctx?.sectionRules || undefined)
+    const sectionLabel = (guidance as any)?.label || section
+    const promptInstruction = ctx?.sectionPrompt?.instruction ? `Instruction: ${ctx.sectionPrompt.instruction}` : ''
+    const promptConstraints = ctx?.sectionPrompt?.constraints?.length ? `Constraints: ${ctx.sectionPrompt.constraints.join('; ')}` : ''
+    const targetLine = (guidance as any)?.target || ''
+    const targetDisplay = targetLine ? `Target length: ${targetLine}.` : ''
+
+    const ruleLines: string[] = []
+    if (Array.isArray(ctx?.sectionChecks)) {
+      for (const c of ctx.sectionChecks) {
+        if (c?.type === 'maxWords' && typeof c.limit === 'number') ruleLines.push(`- Do not exceed ${c.limit} words.`)
+        if (c?.type === 'maxChars' && typeof c.limit === 'number') ruleLines.push(`- Do not exceed ${c.limit} characters.`)
+        if (c?.type === 'maxCount' && typeof c.limit === 'number') ruleLines.push(`- Do not exceed ${c.limit} items/paragraphs.`)
+      }
+    }
+    if (Array.isArray(ctx?.crossChecksFrom) && ctx.crossChecksFrom.length) {
+      for (const c of ctx.crossChecksFrom) {
+        if (c?.type === 'support' && Array.isArray(c.mustBeSupportedBy)) {
+          ruleLines.push(`- Must be fully supported by: ${c.mustBeSupportedBy.join(', ')}.`)
+        }
+        if (c?.type === 'consistency' && Array.isArray(c.mustBeConsistentWith)) {
+          ruleLines.push(`- Must be consistent with: ${c.mustBeConsistentWith.join(', ')}.`)
+        }
+      }
+    }
+    if (section === 'claims' && ctx?.claimsRules) {
+      const cr = ctx.claimsRules
+      if (cr.twoPartFormPreferred === false) ruleLines.push('- Avoid two-part "characterized in that" format; use single-part claims.')
+      if (cr.allowMultipleDependent === false) ruleLines.push('- Each dependent claim must reference a single prior claim (no multiple dependency).')
+      if (Array.isArray(cr.discouragedConnectors) && cr.discouragedConnectors.length) {
+        ruleLines.push(`- Discouraged connectors: ${cr.discouragedConnectors.join(', ')}.`)
+      }
+      if (Array.isArray(cr.forbiddenPhrases) && cr.forbiddenPhrases.length) {
+        ruleLines.push(`- Forbidden phrases: ${cr.forbiddenPhrases.join(', ')}.`)
+      }
+      if (typeof cr.maxIndependentClaimsBeforeExtraFee === 'number') {
+        ruleLines.push(`- Keep independent claims ≤ ${cr.maxIndependentClaimsBeforeExtraFee} before extra fees.`)
+      }
+      if (typeof cr.maxTotalClaimsRecommended === 'number') {
+        ruleLines.push(`- Recommended total claims ≤ ${cr.maxTotalClaimsRecommended}.`)
+      }
+      if (cr.requireSupportInDescription) {
+        ruleLines.push('- Every claim element must be supported in the Detailed Description.')
+      }
+      if (cr.allowReferenceNumeralsInClaims === false) {
+        ruleLines.push('- Do not use reference numerals inside claims.')
+      } else if (cr.allowReferenceNumeralsInClaims === true) {
+        ruleLines.push('- You may include reference numerals where helpful.')
+      }
+    }
+    const ruleBlock = ruleLines.length ? `Additional Rules:\n${ruleLines.join('\n')}` : ''
+
     const roleToneHeader = `
-You are a **Senior Indian Patent Attorney and Technical Drafter** preparing the "${section}" section
-of an **Indian Patent Form-2 Complete Specification** (as per the Patents Rules, 2003).
-Maintain a **precise, formal, and neutral tone** throughout.
-Write in the **impersonal third person** (no “I”, “we”, or “our”).
-Prefer **short, declarative sentences**. Avoid marketing, advocacy, speculation, or emotional adjectives.
-Use **Indian English** spelling and conventions.
-Follow all professional drafting norms used in the Indian Patent Office.
-
-Before emitting output, apply this internal self-checklist:
-1. Confirm compliance with section-specific word range (±20% tolerance).
-2. Confirm forbidden words (novel, inventive, best, unique, advantage, benefit, claim, claims, etc.) are absent.
-3. Confirm all numerals appear in parentheses, match declared ReferenceMap numerals, and no invented numerals appear.
-4. Confirm all figure references correspond to existing figures only, using “Fig. X” format.
-5. Confirm tone is technical, objective, and impersonal.
-6. Confirm no claim language appears outside the Claims section.
-7. Confirm JSON format matches the requested output schema exactly.
-8. Confirm units are SI; ranges are closed (e.g., 5–10 °C, not “about 10”).
-9. Confirm antecedent basis and logical consistency where applicable.
-10. Confirm the text would be legally and technically acceptable for filing at the Indian Patent Office.
-
-Good tone example: "The controller (110) regulates voltage based on feedback from sensor (120)."
-Bad tone example: "This innovative controller smartly manages voltage in the best way possible."
-`
+You are a senior patent attorney drafting the "${sectionLabel}" section for a ${countryName} patent specification handled by the ${officeName}.
+- Jurisdiction: ${jurisdiction}
+- Language: ${language}
+- Tone: ${tone}
+- Voice: ${voice}
+- Archetype: ${archetype}
+- Avoid: ${avoid}
+${targetDisplay}
+${promptInstruction}
+${promptConstraints}
+${ruleBlock ? `${ruleBlock}\n` : ''}
+Ensure the writing is objective, precise, and ready for filing.`
 
     switch (section) {
       case 'title':
         return `
 ${roleToneHeader}
-Task: Generate the Title of the invention for Indian Patent Form-2.
-Role: You are drafting this specific section as a professional Indian patent attorney trained in scientific accuracy and legal neutrality.
+Task: Generate the Title of the invention for this jurisdiction.
 Rules:
-- ≤15 words.
-- Must clearly indicate subject matter and function.
-- No marketing or evaluative terms (“novel”, “improved”, “smart”, etc.).
+- Keep it clear and functional; <=15 words.
+- No marketing or evaluative terms ("novel", "improved", "smart", etc.).
 - Use nouns/adjectives only as needed for precision.
 Context:
-title idea=${idea?.title||''}; problem=${idea?.problem||''}; objectives=${idea?.objectives||''}.
+title idea=${idea?.title || ''}; problem=${idea?.problem || ''}; objectives=${idea?.objectives || ''}.
 Instructions(title): ${instr}.
-Target length: ≤15 words.
+${targetDisplay || 'Target length: <=15 words.'}
 Output JSON: { "title": "..." }
-Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, comments, or line breaks outside JSON.
-Ensure total word count remains within ±20% of target length. If exceeding, truncate only closing descriptive sentences, not definitions.
-`
+Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, comments, or line breaks outside JSON.`
       case 'abstract':
         return `
 ${roleToneHeader}
-Task: Generate the Abstract for Indian Patent Form-2.
-Role: You are drafting this specific section as a professional Indian patent attorney trained in scientific accuracy and legal neutrality.
+Task: Generate the Abstract for this jurisdiction.
 Rules:
-- 130–150 words (hard cap 150).
-- Must **begin exactly** with the approved Title (case- and space-normalized).
-- Avoid numeric data unless essential to describe architecture (e.g., layer count, dimension, or temperature).
+- 130-150 words (hard cap 150).
+- Must begin exactly with the approved Title (case- and space-normalized).
+- Avoid numeric data unless essential to describe architecture.
 - No numerals, figure references, or claim terms.
-- No evaluative adjectives (“novel”, “inventive”, “unique”, “best”, “advantage”, “benefit”).
-- Neutral tone: describe purpose, configuration, and effect briefly.
+- Neutral tone; no evaluative adjectives ("novel", "inventive", "unique", "best", "advantage", "benefit").
 Context:
-approvedTitle=${approved?.title||idea?.title||''}; problem=${idea?.problem||''}; objectives=${idea?.objectives||''}; numerals=[${numerals}]; figures=[${figs}].
+approvedTitle=${approved?.title || idea?.title || ''}; problem=${idea?.problem || ''}; objectives=${idea?.objectives || ''}; numerals=[${numerals}]; figures=[${figs}].
 Instructions(abstract): ${instr}.
-Target length: 130–150 words.
+${targetDisplay || 'Target length: 130-150 words.'}
 Output JSON: { "abstract": "..." }
-Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, comments, or line breaks outside JSON.
-Ensure total word count remains within ±20% of target length. If exceeding, truncate only closing descriptive sentences, not definitions.
-`
+Return ONLY a valid JSON object exactly matching the schema above.`
       case 'fieldOfInvention':
         return `
 ${roleToneHeader}
-Task: Write the Field of Invention.
-Role: You are drafting this specific section as a professional Indian patent attorney trained in scientific accuracy and legal neutrality.
+Task: Write the Technical Field / Field of Invention.
 Rules:
-- 40–80 words.
-- One short paragraph describing the domain and subdomain.
+- 40-80 words; one short paragraph describing domain and subdomain.
 - Avoid claims or advantages.
-- No prior art discussion here; just classification.
-Context: field=${idea?.fieldOfRelevance||''}; subfield=${idea?.subfield||''}.
+- No prior art discussion; just classification.
+Context: field=${idea?.fieldOfRelevance || ''}; subfield=${idea?.subfield || ''}.
 Instructions(fieldOfInvention): ${instr}.
-Target length: 40–80 words.
+${targetDisplay || 'Target length: 40-80 words.'}
 Output JSON: { "fieldOfInvention": "..." }
-Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, comments, or line breaks outside JSON.
-Ensure total word count remains within ±20% of target length. If exceeding, truncate only closing descriptive sentences, not definitions.
-`
+Return ONLY a valid JSON object exactly matching the schema above.`
       case 'background': {
-        // Prepare prior art references for background section (limit to 5-6 most relevant)
         let priorArtRefs = ''
         let priorArtCount = 0
-
-        // Check if user has manual prior art and their selection
-          if (manualPriorArt) {
-            if (manualPriorArt.useOnlyManualPriorArt) {
-              // Use only manual prior art - extract up to 5-6 most relevant patents
-              priorArtRefs = `Available prior-art pool (select 5–6 most relevant):\nManual analysis (user-provided): ${manualPriorArt.manualPriorArtText}`
-              priorArtCount = 1 // Represents the manual analysis as one reference block
-            } else if (manualPriorArt.useManualAndAISearch) {
-              // Use manual prior art + selected prior art patents (total 5-6 references)
-              const maxAdditionalPatents = 4 // Reserve slots for manual analysis
-              const additionalPatents = selectedPriorArtPatents.slice(0, maxAdditionalPatents)
-
-              const aiLines = additionalPatents.map((patent: any) => {
-                const patentNumber = patent.patentNumber || patent.pn || 'Unknown'
-                return `- ${patentNumber} — AI relevance: ${patent.aiSummary.substring(0, 200)}... | Novelty: ${patent.noveltyComparison.substring(0, 200)}...`
-              }).join('\n')
-
-              priorArtRefs = `Available prior-art pool (select total 5–6 most relevant):\nManual analysis (user-provided): ${manualPriorArt.manualPriorArtText}\n${aiLines ? `\nAI-adjacent patents:\n${aiLines}` : ''}`
-              priorArtCount = 2 + additionalPatents.length // Manual (1-2) + additional patents
-            }
-          } else {
-            // No manual prior art
-            const maxPatents = 6
-            const selectedPatents = selectedPriorArtPatents.slice(0, maxPatents)
-
-            if (selectedPatents.length > 0) {
-              const aiLines = selectedPatents.map((patent: any) => {
-                const patentNumber = patent.patentNumber || patent.pn || 'Unknown'
-                return `- ${patentNumber} — AI relevance: ${patent.aiSummary.substring(0, 200)}... | Novelty: ${patent.noveltyComparison.substring(0, 200)}...`
-              }).join('\n')
-              priorArtRefs = `Available prior-art pool (select top 5–6 most relevant):\n${aiLines}`
-              priorArtCount = selectedPatents.length
-            }
+        if (manualPriorArt) {
+          if (manualPriorArt.useOnlyManualPriorArt) {
+            priorArtRefs = `Available prior-art pool (select 5-6 most relevant):
+Manual analysis (user-provided): ${manualPriorArt.manualPriorArtText}`
+            priorArtCount = 1
+          } else if (manualPriorArt.useManualAndAISearch) {
+            const maxAdditionalPatents = 4
+            const additionalPatents = selectedPriorArtPatents.slice(0, maxAdditionalPatents)
+            const aiLines = additionalPatents.map((patent: any) => {
+              const patentNumber = patent.patentNumber || patent.pn || 'Unknown'
+              return `- ${patentNumber} - AI relevance: ${String(patent.aiSummary || '').substring(0, 200)}... | Novelty: ${String(patent.noveltyComparison || '').substring(0, 200)}...`
+            }).join('\n')
+            priorArtRefs = `Available prior-art pool (select total 5-6 most relevant):
+Manual analysis (user-provided): ${manualPriorArt.manualPriorArtText}
+${aiLines ? `AI-adjacent patents:
+${aiLines}` : ''}`
+            priorArtCount = 2 + additionalPatents.length
           }
-
-        // Debug: emit what we're about to pass to the LLM for prior art
-        try {
-          const refsForDebug: Array<{label: string; patentNumber?: string}> = []
-          // Best-effort parse of the priorArtRefs lines
-          priorArtRefs.split('\n').forEach(line => {
-            const m = line.match(/^D(\d+):\s*([^\s]+)?/)
-            if (m) refsForDebug.push({ label: `D${m[1]}`, patentNumber: m[2] })
-          })
-          // Log for diagnostics (buildSectionPrompt has no access to debugSteps scope)
-          try { console.log('prior_art_refs_built', { count: refsForDebug.length, refs: refsForDebug }) } catch {}
-        } catch {}
+        } else {
+          const topAIRefs = selectedPriorArtPatents.slice(0, 6)
+          priorArtRefs = `Available prior-art pool (select 5-6 most relevant):
+${topAIRefs.map((patent: any) => {
+            const patentNumber = patent.patentNumber || patent.pn || 'Unknown'
+            return `- ${patentNumber} - AI relevance: ${String(patent.aiSummary || '').substring(0, 200)}... | Novelty: ${String(patent.noveltyComparison || '').substring(0, 200)}...`
+          }).join('\n')}`
+          priorArtCount = topAIRefs.length
+        }
 
         return `
 ${roleToneHeader}
-Task: Write the Background of the Invention.
-Role: You are drafting this specific section as a professional Indian patent attorney trained in scientific accuracy and legal neutrality.
+Task: Draft the Background / Prior Art section.
 Rules:
-- 250–400 words (±20%).
-- Describe state of the art and the problem to be solved.
-- Do not describe the invention itself.
-- Use neutral, factual language ("Existing systems rely on…", "However, these methods…").
-- No evaluative terms ("inefficient", "obsolete") unless technically grounded.
-- PARAGRAPH STRUCTURE (CRITICAL for patent formatting):
-  • Break content into logical paragraphs of 50-120 words each.
-  • Each paragraph should contain a complete thought about prior art or problem analysis.
-  • Use paragraph breaks (\n\n) to separate distinct prior art references or problem aspects.
-  • Ensure content is properly paragraphed for DOCX export processing.
- - Assign labels incrementally by order of first use: D1, then D2, then D3, and so on.
- - On the FIRST mention of a prior-art item, include its unique identifier in parentheses immediately after the label, e.g., "D1 (CN115164845A)", "D2 (US2020379124A1)". After the first mention, refer to the same item only as D1, D2, etc., WITHOUT the identifier.
- - Do NOT invent identifiers. Use exactly the identifiers provided in the "Available Prior Art References" list below. If an identifier is not present for a manual prior-art item, use the D-label without parentheses.
- - IMPORTANT: Use ONLY 5–6 prior-art references total, selecting the most relevant ones that clearly establish novelty and improve patent grant chances.
-${priorArtRefs ? `Available Prior Art References:\n${priorArtRefs}\n` : ''}
-IMPORTANT: Use ONLY 5–6 total references. If the user's manual prior art includes multiple patents, extract the 1–2 most probative entries that best establish novelty. If additional AI-suggested adjacent references are provided, select the next most relevant 3–4 among them by technical closeness (not by text similarity alone). Do not pre-assign D-labels from the list; assign D1, D2, … in the order you first cite them in the paragraph.
-Context: problem=${idea?.problem||''}; field=${idea?.fieldOfRelevance||''}; availablePriorArtReferences=${priorArtCount}.
+- 250-400 words, 2-3 paragraphs max.
+- Para 1: Context/problem space; Para 2+: Prior art comparison (5-6 references), identify drawbacks/gaps; Final sentence: segue to invention.
+- Avoid claiming novelty; focus on shortcomings of prior art.
+- No claim-like language or self-praise.
+Available prior art (${priorArtCount} references available):
+${priorArtRefs || 'No prior art supplied; objectively describe the problem space.'}
+Context:
+problem=${idea?.problem || ''}; objectives=${idea?.objectives || ''}; numerals=[${numerals}]; figures=[${figs}].
 Instructions(background): ${instr}.
-Target length: 250–400 words.
+${targetDisplay || 'Target length: 250-400 words.'}
 Output JSON: { "background": "..." }
-Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, comments, or line breaks outside JSON.
-Ensure total word count remains within ±20% of target length. If exceeding, truncate only closing descriptive sentences, not definitions.
-`
+Return ONLY a valid JSON object exactly matching the schema above.`
       }
       case 'summary':
         return `
 ${roleToneHeader}
 Task: Write the Summary of the Invention.
-Role: You are drafting this specific section as a professional Indian patent attorney trained in scientific accuracy and legal neutrality.
 Rules:
-- 200–300 words (±20%).
-- High-level description of the inventive concept.
-- Use numerals in parentheses, e.g., controller (110).
-- Mention only declared components; no invented elements.
-- Avoid claims or marketing tone.
-- PARAGRAPH STRUCTURE (CRITICAL for patent formatting):
-  • Break content into logical paragraphs of 50-120 words each.
-  • Each paragraph should contain a complete aspect of the invention summary.
-  • Use paragraph breaks (\n\n) to separate distinct components or operational concepts.
-  • Ensure content is properly paragraphed for DOCX export processing.
-Context numerals=[${numerals}] figures=[${figs}] approvedTitle=${approved?.title||''}.
+- 120-200 words, 2-3 paragraphs maximum.
+- Cover: high-level architecture, control/data flow, key differentiators, safety/compliance, and improvements over prior art (without marketing tone).
+- Avoid claims formatting; keep concise and technical.
+Context:
+title=${idea?.title || ''}; problem=${idea?.problem || ''}; objectives=${idea?.objectives || ''}; numerals=[${numerals}]; figures=[${figs}].
 Instructions(summary): ${instr}.
-Target length: 200–300 words.
+${targetDisplay || 'Target length: 120-200 words.'}
 Output JSON: { "summary": "..." }
-Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, comments, or line breaks outside JSON.
-Ensure total word count remains within ±20% of target length. If exceeding, truncate only closing descriptive sentences, not definitions.
-`
+Return ONLY a valid JSON object exactly matching the schema above.`
       case 'briefDescriptionOfDrawings':
         return `
 ${roleToneHeader}
-Task: Write the Brief Description of Drawings (BDOD).
-Role: You are drafting this specific section as a professional Indian patent attorney trained in scientific accuracy and legal neutrality.
+Task: Write the Brief Description of Drawings.
 Rules:
-- One line per figure, format exactly as: "Fig. X — …".
-- Each line ≤40 words.
-- Mention only existing figures; no extras.
-- No advantages or claim verbs.
-- If there are N figures, provide N lines in order.
-Context figures=[${figs}].
+- Mention every figure number sequentially; for each, provide 1-2 sentences on what it depicts.
+- No functionality analysis; just descriptive.
+- Use "Fig. X" format; ensure numerals referenced exist.
+Context: figures=[${figs}].
 Instructions(briefDescriptionOfDrawings): ${instr}.
-Target length: 40–80 words total (≤40 per line).
+${targetDisplay || 'Target length: 80-150 words.'}
 Output JSON: { "briefDescriptionOfDrawings": "..." }
-Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, comments, or line breaks outside JSON.
-Ensure total word count remains within ±20% of target length. If exceeding, truncate only closing descriptive sentences, not definitions.
-`
+Return ONLY a valid JSON object exactly matching the schema above.`
       case 'detailedDescription':
+        const deepProto = this.getArchetypeInstructions(archetype)
         return `
 ${roleToneHeader}
-Task: Write the Detailed Description of the Invention.
-Role: You are drafting this specific section as a professional Indian patent attorney trained in scientific accuracy and legal neutrality.
+Task: Draft the Detailed Description of the Invention.
 Rules:
-- 800–1200 words (±20%).
-- Describe complete working of the invention referencing figures and numerals.
-- Use numerals in parentheses; all must exist in ReferenceMap.
-- No invented numerals/components.
- - Use ONLY the declared components and numerals from ReferenceMap: [${numerals}]. Do not rename, add, or infer any new component beyond this list.
- - Every component mention MUST include its numeral in parentheses on first mention and thereafter at reasonable frequency; do not mention components without numerals.
- - Reference ONLY existing figures: [${figs}]. Do not cite any other figure numbers.
- - Ensure all figure references correspond exactly to declared figures and each figure is cited at least once.
- - If a concept appears necessary but is not present in the declared components, describe behavior using existing components without introducing a new element.
-- Use formal stepwise explanation.
-- Avoid hedging ("may", "could", "might") unless technically required.
-- Describe the technical effect or result produced by the interaction of major components, in neutral, factual terms.
-- Frame the description broadly so that analogous embodiments in other technical fields remain encompassed.
-- Use causal or sequential connectors to maintain logical flow.
-- If applicable, conclude with an optional paragraph on alternative embodiments or permissible variations.
-- Ensure all descriptions comply with Section 10(4)(a)–(c) and Rule 13(6) of the Indian Patents Act and Rules, maintaining clarity, sufficiency, and proper reference numerals.
-- Maintain unity of invention as per Section 10(5) of the Indian Patents Act; all paragraphs must relate to a single inventive concept.
-- Describe each figure's purpose briefly (e.g., "Fig. 1 illustrates system architecture"), ensuring figure references are consistent and sequential.
-- Highlight the functional relationship between components using cause–effect phrasing (e.g., "When X occurs, Y is triggered, resulting in Z") to make technical logic clear.
-- Include one paragraph describing the technical effect achieved by the cooperative action of key components, using neutral, factual language.
-- If the invention involves computation or software, describe the hardware interaction or measurable technical effect to ensure compliance with Section 3(k) exclusions.
-- If the invention involves chemical or biological processes, explain measurable outcomes (e.g., reaction rates, yields) without introducing unlisted materials.
-- Avoid comparative, subjective, or promotional terms ("better", "improved", "advanced").
-- Maintain consistent terminology across all paragraphs; do not alternate between synonyms for the same component.
-- If multiple embodiments or use-cases exist, include an "Alternative Embodiments" paragraph to describe permissible modifications while retaining the core inventive concept.
-- PARAGRAPH STRUCTURE (CRITICAL for patent formatting):
-  • Break content into logical paragraphs of 50-120 words each.
-  • Each paragraph should contain a complete thought or step in the description.
-  • Use paragraph breaks (\n\n) to separate distinct concepts, components, or operational steps.
-  • Ensure content is properly paragraphed for DOCX export processing.
-Context numerals=[${numerals}] figures=[${figs}] variants=${idea?.variants||''}.
+- Structure: overview -> components/functions -> control/data flow -> variations -> fail-safes/edge cases -> method steps (if any) -> hardware/software considerations.
+- Use numerals for every component mention; reference figures appropriately (Fig. X).
+- Avoid claim language; describe embodiments and enablement.
+- Avoid repetition; be concise but enabling.
+Context:
+idea.title=${idea?.title || ''}; numerals=[${numerals}]; figures=[${figs}]; objectives=${idea?.objectives || ''}; logic=${idea?.logic || ''}; variants=${idea?.variants || ''}; bestMethod=${idea?.bestMethod || ''}.
 Instructions(detailedDescription): ${instr}.
-Target length: 800–1200 words (±20%).
-Output Format (MANDATORY):
-Return ONLY a valid JSON object in this exact format:
-{"detailedDescription": "paragraph1 content here.\n\nparagraph2 content here.\n\nparagraph3 content here."}
-Do NOT include explanations, markdown, comments, or any text outside the JSON object.
-The detailedDescription value should contain paragraphs separated by \n\n (double newlines).
-Ensure total word count remains within ±20% of target length. If exceeding, truncate only closing descriptive sentences, not definitions.
-`
+${deepProto}
+${targetDisplay || 'Target length: 600-1200 words (apply judgment based on complexity).'}
+Output JSON: { "detailedDescription": "..." }
+Return ONLY a valid JSON object exactly matching the schema above.`
       case 'bestMethod':
         return `
 ${roleToneHeader}
-Task: Write the Best Method (Best Mode) of performing the invention.
-Role: You are drafting this specific section as a professional Indian patent attorney trained in scientific accuracy and legal neutrality.
+Task: Describe the Best Mode / Preferred Implementation.
 Rules:
-- 200–350 words (±20%).
-- Must include at least one numeric parameter or reproducible step.
-- Avoid vague statements ("may", "could", "preferred", "ideally") unless accompanied by specific conditions.
-- Describe the embodiment actually considered best by the inventor.
-- PARAGRAPH STRUCTURE (CRITICAL for patent formatting):
-  • Break content into logical paragraphs of 50-120 words each.
-  • Each paragraph should contain a complete thought or step in the method.
-  • Use paragraph breaks (\n\n) to separate distinct operational steps or concepts.
-  • Ensure content is properly paragraphed for DOCX export processing.
-Context numerals=[${numerals}] figures=[${figs}] variants=${idea?.variants||''}.
+- 150-300 words.
+- Focus on the most effective implementation: key parameters, configurations, and operating conditions.
+- Ensure consistency with Detailed Description; avoid claim-like language.
+- Mention materials/software versions if relevant.
+Context: bestMethod=${idea?.bestMethod || ''}; objectives=${idea?.objectives || ''}; numerals=[${numerals}].
 Instructions(bestMethod): ${instr}.
-Target length: 200–350 words (±20%).
-Output Format (MANDATORY):
-Return ONLY a valid JSON object in this exact format:
-{"bestMethod": "paragraph1 content here.\n\nparagraph2 content here.\n\nparagraph3 content here."}
-Do NOT include explanations, markdown, comments, or any text outside the JSON object.
-The bestMethod value should contain paragraphs separated by \n\n (double newlines).
-Ensure total word count remains within ±20% of target length. If exceeding, truncate only closing descriptive sentences, not definitions.
-`
+${targetDisplay || 'Target length: 150-300 words.'}
+Output JSON: { "bestMethod": "..." }
+Return ONLY a valid JSON object exactly matching the schema above.`
       case 'claims':
         return `
 ${roleToneHeader}
-Task: Draft the Claims section.
-Role: You are drafting this section as a professional Indian patent attorney trained in precision drafting under the Indian Patents Act and WIPO-PCT norms.
-
+Task: Draft Claims aligned to this jurisdiction (clear, concise, supported).
 Rules:
-- Structure and length:
-  • 1 independent claim (≤150 words) defining the invention as a complete system, device, method, or composition, depending on the context.
-  • 6–11 dependent claims (40–80 words each) elaborating specific structural or functional features.
-  • Total length: 500–900 words.
-
-- Claim hygiene (MANDATORY):
-  • Avoid vague or relative terms such as "and/or", "etc.", "approximately", "substantially", "roughly", or "essentially".
-  • Use SI units and closed numeric ranges (e.g., 5–10 °C, 2–4 GHz, 1–3 μm).
-  • Maintain clear antecedent basis: first mention uses "a"/"an", all later references use "the" or "said".
-  • Each dependent claim must refer directly to the immediately preceding claim (e.g., "The system of claim X, wherein ...").
-  • Avoid multi-branch dependencies unless logically required; never create circular references.
-  • Keep dependency depth ≤3.
-  • Use only the components, steps, materials, numerals, or figures defined in the Detailed Description.
-  • Do NOT introduce unlisted elements, undefined acronyms, or speculative functions.
-  • Avoid marketing or advantage language ("improves", "enhances", "optimises", etc.).
-  • Use technically neutral verbs: "configured to", "adapted to", "operable to", "arranged for", etc.
-
-- Formatting and numbering:
-  • Begin with an independent claim numbered "1." followed by dependent claims "2.", "3.", etc., each as a new paragraph.
-  • Do not write "Claim (X)" or use parentheses in claim numbers.
-  • Dependent claims must begin EXACTLY with: "The [system/device/method/composition] of claim X, wherein ..." using the correct subject from claim 1.
-  • Never repeat the preamble verbatim within dependent claims.
-  • Parentheses are reserved **only** for component numerals (e.g., sensor (100)); write all other numbers without parentheses or commas inside numeric ranges.
-
-- Legal and structural constraints:
-  • Select the most appropriate preamble term among system, device, method, apparatus, network, or composition based on invention context.
-  • The independent claim may optionally use a two-part format: "A [system/device/method/composition] ... characterised in that ...".
-  • Avoid mixed claim types; if claim 1 defines a "method", dependents must continue as "The method of claim X".
-  • Ensure all features claimed have explicit support in the Detailed Description and correspond to declared numerals and figures.
-  • Each dependent claim must introduce a new structural or functional limitation that contributes logically to the technical effect described in the invention objectives.
-  • Express relationships using functional causality where possible ("configured to X so as to Y") to clarify the invention's technical contribution.
-  • Maintain logical progression: start from broad architecture → key subsystems/steps → specific refinements → parameter ranges → implementation details.
-  • For method claims, list steps using gerunds (e.g., "receiving", "processing", "transmitting") instead of component nouns.
-  • For compositions or materials, focus on constituents, proportions, and functional relationships.
-  • The final claim set must be self-contained, technically coherent, and free of redundancy.
-
-Context numerals=[${numerals}] figures=[${figs}] objectives=${idea?.objectives||''}.
+- Provide 6-8 claims: 1 independent system/apparatus claim + dependent claims; include one method claim if appropriate.
+- Use one-part claim structure; ensure strict antecedent basis.
+- Independent claim must capture essential components/steps; dependent claims add technical limitations only.
+- Avoid result-oriented language; no business method framing.
+- Number claims sequentially; no missing numbers.
+Context:
+components=[${numerals}]; figures=[${figs}]; objectives=${idea?.objectives || ''}; logic=${idea?.logic || ''}.
 Instructions(claims): ${instr}.
-Target length: 500–900 words total.
 Output JSON: { "claims": "..." }
-Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, comments, or text outside JSON.
-Ensure total word count remains within ±20% of the target. If exceeding, compress secondary dependent claims instead of truncating definitions.
-`
+Return ONLY a valid JSON object exactly matching the schema above.`
       case 'industrialApplicability':
         return `
 ${roleToneHeader}
-Task: Write the Industrial Applicability statement.
-Role: You are drafting this specific section as a professional Indian patent attorney trained in scientific accuracy, WIPO-PCT compliance, and legal neutrality.
+Task: Draft Industrial Applicability / Usefulness.
 Rules:
-- Output length: 50–100 words.
-- Must begin exactly with the phrase: "The invention is industrially applicable to" (verbatim, lowercase "to").
-- Mention only sectors that are contextually relevant to the given invention, derived from:
-    field=${idea?.fieldOfRelevance||'general engineering'}; subfield=${idea?.subfield||'applied technology'}.
-- Include a brief explanation of how the invention can be made or used in such industries (e.g., manufactured, deployed, or integrated).
-- Maintain a legally neutral tone; do NOT mention benefits, advantages, or performance claims.
-- Avoid listing unrelated sectors (e.g., medical or automotive) unless directly tied to the field context.
-- Use a single cohesive paragraph; no bullet points or line breaks.
-- Ensure grammatical completeness; if near word limit, compress phrasing rather than truncate mid-sentence.
-- Word range tolerance ±20% of target.
-Context:
-title=${idea?.title||''}; abstract=${idea?.abstract||''}; field=${idea?.fieldOfRelevance||''}; subfield=${idea?.subfield||''}.
+- 80-150 words.
+- Describe concrete industrial domains and use-cases; focus on practical deployment.
+- Avoid marketing terms; keep tone factual.
+Context: objectives=${idea?.objectives || ''}; numerals=[${numerals}].
 Instructions(industrialApplicability): ${instr}.
-Target length: 50–100 words.
+${targetDisplay || 'Target length: 80-150 words.'}
 Output JSON: { "industrialApplicability": "..." }
-Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, or text outside JSON.
-`
+Return ONLY a valid JSON object exactly matching the schema above.`
       case 'listOfNumerals':
         return `
 ${roleToneHeader}
-Task: Generate the List of Reference Numerals.
-Role: You are drafting this specific section as a professional Indian patent attorney trained in scientific accuracy and legal neutrality.
+Task: Prepare List of Reference Numerals.
 Rules:
-- One line per component in ascending order.
-- Format exactly: "(###) — Component Name".
-- Use only declared numerals; no duplicates or missing entries.
-Context numerals=[${numerals}].
+- Include every numeral from Reference Map and drawings.
+- Format: "[numeral] - [component name]: [1-line function/use]".
+- Keep to <=1 line each; sorted ascending by numeral.
+Context: numerals=[${numerals}]; figures=[${figs}].
 Instructions(listOfNumerals): ${instr}.
 Output JSON: { "listOfNumerals": "..." }
-Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, comments, or line breaks outside JSON.
-Ensure total word count remains within ±20% of target length. If exceeding, truncate only closing descriptive sentences, not definitions.
-`
+Return ONLY a valid JSON object exactly matching the schema above.`
       default:
-        return `
-${roleToneHeader}
-Task: ${section}.
-Role: You are drafting this specific section as a professional Indian patent attorney trained in scientific accuracy and legal neutrality.
-Output JSON with key "${section}".
-Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, comments, or line breaks outside JSON.
-Ensure total word count remains within ±20% of target length. If exceeding, truncate only closing descriptive sentences, not definitions.
-`
+        return `{"${section}": ""}`
     }
   }
 
   // Enforce conservative hard upper word limits per section to avoid overflows
   private static enforceMaxWords(
     section: string,
-    text: string
+    text: string,
+    sectionChecks?: any[] | null,
+    sectionRules?: any | null
   ): { text: string; clipped: boolean; before: number; after: number } {
     const wc = (t: string) => (String(t || '').trim().length ? String(t).trim().split(/\s+/).length : 0)
     const before = wc(text)
-    const maxMap: Record<string, number> = {
-      title: 15,
-      abstract: 150,
-      fieldOfInvention: 80,
-      background: 400,
-      summary: 300,
-      briefDescriptionOfDrawings: 80,
-      detailedDescription: 1200,
-      bestMethod: 350,
-      claims: 900,
-      industrialApplicability: 100,
-      listOfNumerals: 1000 // effectively no cap; list is usually short
+    let max: number | undefined
+    const maxWordLimiter = (sectionChecks || []).find((c: any) => c?.type === 'maxWords' && typeof c.limit === 'number')
+    if (maxWordLimiter) {
+      max = maxWordLimiter.limit
+    } else if (sectionRules?.wordRange?.max) {
+      max = sectionRules.wordRange.max
+    } else if (sectionRules?.maxWords) {
+      max = sectionRules.maxWords
     }
-    const max = maxMap[section] ?? 0
+    if (!max) {
+      const fallback: Record<string, number> = {
+        title: 15,
+        abstract: 150,
+        fieldOfInvention: 80,
+        background: 400,
+        summary: 300,
+        briefDescriptionOfDrawings: 80,
+        detailedDescription: 1200,
+        bestMethod: 350,
+        claims: 900,
+        industrialApplicability: 100,
+        listOfNumerals: 1000
+      }
+      max = fallback[section]
+    }
     if (!max || before <= max) return { text, clipped: false, before, after: before }
 
     const sentenceSplit = (t: string) => t.split(/(?<=[\.!?;:])\s+/).filter(Boolean)
@@ -1255,18 +1536,63 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
     return `You are a senior Indian Patent Attorney (IN, Form-2). Return a single JSON object with only the requested keys. No markdown, no commentary.\n\n${entries}`
   }
 
-  private static guardrailCheck(section: string, text: string, referenceMap: any, figures: any[], approvedTitle?: string): { ok: boolean; reason?: string } {
+  private static guardrailCheck(
+    section: string,
+    text: string,
+    referenceMap: any,
+    figures: any[],
+    approvedTitle?: string,
+    ctx?: { sectionChecks?: any[]; claimsRules?: any }
+  ): { ok: boolean; reason?: string } {
+    const fallbackMax: Record<string, number> = {
+      title: 15,
+      abstract: 150,
+      fieldOfInvention: 80,
+      background: 400,
+      summary: 300,
+      briefDescriptionOfDrawings: 80,
+      detailedDescription: 1200,
+      bestMethod: 350,
+      claims: 900,
+      industrialApplicability: 100,
+      listOfNumerals: 1000
+    }
+    const extractLimits = (checks?: any[]) => {
+      const limits: { maxWords?: number; maxChars?: number; maxCount?: number } = {}
+      if (Array.isArray(checks)) {
+        for (const c of checks) {
+          if (c?.type === 'maxWords' && typeof c.limit === 'number') limits.maxWords = c.limit
+          if (c?.type === 'maxChars' && typeof c.limit === 'number') limits.maxChars = c.limit
+          if (c?.type === 'maxCount' && typeof c.limit === 'number') limits.maxCount = c.limit
+        }
+      }
+      return limits
+    }
+    const limits = extractLimits(ctx?.sectionChecks)
     const onlyExistingFigures = (s: string) => {
       const set = new Set((figures||[]).map((f:any)=>String(f.figureNo)))
       const refs = Array.from(s.matchAll(/Fig\.?\s*(\d+)/gi)).map(m=>m[1])
       return refs.every(r=>set.has(String(r)))
     }
     if (section === 'title') {
-      if (text.trim().split(/\s+/).length > 15) return { ok: false, reason: 'Title exceeds 15 words' }
+      const maxWords = typeof limits.maxWords === 'number' ? limits.maxWords : fallbackMax.title
+      const maxChars = typeof limits.maxChars === 'number' ? limits.maxChars : undefined
+      if (maxWords && text.trim().split(/\s+/).length > maxWords) {
+        return { ok: false, reason: `Title exceeds ${maxWords} words` }
+      }
+      if (maxChars && text.length > maxChars) {
+        return { ok: false, reason: `Title exceeds ${maxChars} characters` }
+      }
     }
     if (section === 'abstract') {
-      if (approvedTitle && !text.startsWith(approvedTitle)) return { ok: false, reason: 'Abstract must start with title' }
-      if (text.split(/\s+/).length > 150) return { ok: false, reason: 'Abstract exceeds 150 words' }
+      const maxWords = typeof limits.maxWords === 'number' ? limits.maxWords : fallbackMax.abstract
+      const maxChars = typeof limits.maxChars === 'number' ? limits.maxChars : undefined
+      if (maxWords && text.split(/\s+/).length > maxWords) {
+        return { ok: false, reason: `Abstract exceeds ${maxWords} words` }
+      }
+      if (maxChars && text.length > maxChars) {
+        return { ok: false, reason: `Abstract exceeds ${maxChars} characters` }
+      }
       // Note: numerals/figure refs check relaxed for partial generation - will be enforced in full draft
       if (/(novel|inventive|best|unique|claim|claims)/i.test(text)) return { ok: false, reason: 'Improper tone in abstract' }
     }
@@ -1285,6 +1611,7 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
       // Sequential numbering and immediate dependency enforcement
       const blocks = text.split(/\n\s*(?=\d+\.)/).map(s=>s.trim()).filter(Boolean)
       let expected = 1
+      const allowMultipleDependent = ctx?.claimsRules?.allowMultipleDependent !== false
       for (let i=0; i<blocks.length; i++) {
         const b = blocks[i]
         const m = b.match(/^(\d+)\./)
@@ -1292,12 +1619,18 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
         const num = parseInt(m[1],10)
         if (num !== expected) return { ok: false, reason: 'Claims numbering not sequential' }
         if (i >= 1) {
-          const dep = b.match(/^\d+\.\s*The\s+(system|device|method)\s+of\s+claim\s+(\d+)\b/i)
-          if (!dep) return { ok: false, reason: 'Dependent claim must start with “The system of claim X, wherein …”' }
-          const ref = parseInt(dep[2],10)
-          if (ref !== expected - 1) return { ok: false, reason: 'Dependent claim must depend on immediately preceding claim' }
+          const dep = b.match(/^\d+\.\s*The\s+(system|device|method)\s+of\s+claim\s+(\d+)(?:\s+and\s+claim\s+\d+)*/i)
+          if (!dep) return { ok: false, reason: 'Dependent claim must start with "The system/device/method of claim X, ..."' }
+          const refs = Array.from(dep[0].matchAll(/claim\s+(\d+)/gi)).map(r=>parseInt(r[1],10))
+          if (!refs.length) return { ok: false, reason: 'Dependent claim must reference an earlier claim' }
+          if (!allowMultipleDependent && refs.length > 1) return { ok: false, reason: 'Multiple dependency not allowed by jurisdiction' }
+          if (refs.some(r => r >= num || r < 1)) return { ok: false, reason: 'Dependent claim must reference an earlier claim' }
+          if (!allowMultipleDependent && refs[0] !== expected - 1) return { ok: false, reason: 'Dependent claim must depend on immediately preceding claim' }
         }
         expected++
+      }
+      if (typeof limits.maxCount === 'number' && blocks.length > limits.maxCount) {
+        return { ok: false, reason: `Claims exceed ${limits.maxCount} count limit` }
       }
     }
     if (section === 'listOfNumerals') {
@@ -1317,11 +1650,14 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
       }
     }
     if (section === 'industrialApplicability') {
-      if (!text.toLowerCase().startsWith('the invention is industrially applicable to')) {
-        return { ok: false, reason: 'Must start with "The invention is industrially applicable to"' }
+      const maxWords = typeof limits.maxWords === 'number' ? limits.maxWords : fallbackMax.industrialApplicability
+      const maxChars = typeof limits.maxChars === 'number' ? limits.maxChars : undefined
+      if (maxWords && text.split(/\s+/).length > maxWords) {
+        return { ok: false, reason: `Industrial applicability exceeds ${maxWords} words` }
       }
-      if (text.split(/\s+/).length > 100) return { ok: false, reason: 'Industrial applicability exceeds 100 words' }
-      if (text.split(/\s+/).length < 20) return { ok: false, reason: 'Industrial applicability too short (minimum 20 words)' }
+      if (maxChars && text.length > maxChars) {
+        return { ok: false, reason: `Industrial applicability exceeds ${maxChars} characters` }
+      }
     }
     return { ok: true }
   }
@@ -1329,9 +1665,14 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
   private static minimalFix(
     section: string,
     text: string,
-    ctx: { reason?: string; approvedTitle?: string; referenceMap?: any; figures?: any[] }
+    ctx: { reason?: string; approvedTitle?: string; referenceMap?: any; figures?: any[]; sectionChecks?: any[]; claimsRules?: any }
   ): string | null {
     let out = String(text || '')
+    const extractLimit = (checks: any[] | undefined, type: 'maxWords' | 'maxChars') => {
+      if (!Array.isArray(checks)) return undefined
+      const rule = checks.find(c => c?.type === type && typeof c.limit === 'number')
+      return rule?.limit
+    }
     if (section === 'abstract') {
       // Remove prohibited tone words and claims language
       out = out.replace(/\b(novel|inventive|best|unique|claim|claims)\b/gi, '')
@@ -1339,23 +1680,20 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
       // Collapse extra spaces and clean up
       out = out.replace(/\s{2,}/g, ' ').trim()
       // Enforce starts with title if available
-      if (ctx.approvedTitle && !out.startsWith(ctx.approvedTitle)) {
+      if (ctx.approvedTitle && ctx.reason && ctx.reason.toLowerCase().includes('title') && !out.startsWith(ctx.approvedTitle)) {
         out = `${ctx.approvedTitle} ${out}`.trim()
       }
-      // Enforce ≤150 words, and ensure it's meaningful
+      // Enforce max words, and ensure it's meaningful
+      const maxWords = extractLimit(ctx.sectionChecks, 'maxWords')
       const words = out.split(/\s+/).filter(w=>w.length>0)
-      if (words.length > 150) out = words.slice(0,150).join(' ')
+      if (maxWords && words.length > maxWords) out = words.slice(0, maxWords).join(' ')
       if (words.length < 5) out = ctx.approvedTitle || 'Patent invention description.' // Fallback if too short
       return out
     }
     if (section === 'industrialApplicability') {
-      // Ensure it starts with the required phrase
-      if (!out.toLowerCase().startsWith('the invention is industrially applicable to')) {
-        out = `The invention is industrially applicable to ${out}`.trim()
-      }
-      // Ensure reasonable length
+      const maxWords = extractLimit(ctx.sectionChecks, 'maxWords')
       const words = out.split(/\s+/).filter(w=>w.length>0)
-      if (words.length > 100) out = words.slice(0,100).join(' ')
+      if (maxWords && words.length > maxWords) out = words.slice(0, maxWords).join(' ')
       return out
     }
     if (section === 'briefDescriptionOfDrawings') {
@@ -1437,8 +1775,8 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
       case 'claims':
         return '1. A system comprising: components as described.'
       case 'listOfNumerals':
-        const nums = (referenceMap?.components || []).map((c: any) => `( ${c.numeral} ) — ${c.name}`).join('\n')
-        return nums || '(100) — Main component'
+        const nums = (referenceMap?.components || []).map((c: any) => `( ${c.numeral} ) G ${c.name}`).join('\n')
+        return nums || '(100) G Main component'
       default:
         return 'Content not available.'
     }
@@ -1470,7 +1808,15 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
         continue;
       }
       const id = comp.id || crypto.randomUUID();
-      nodes[id] = { id, name: comp.name.trim(), description: comp.description || '', parentId: (comp as any).parentId || null, children: [] };
+      nodes[id] = {
+        id,
+        name: comp.name.trim(),
+        description: comp.description || '',
+        parentId: (comp as any).parentId || null,
+        numeral: typeof (comp as any).numeral === 'number' ? (comp as any).numeral : undefined,
+        type: (comp as any).type || 'OTHER',
+        children: []
+      };
     }
 
     // Link children
@@ -1482,7 +1828,7 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
       }
     });
 
-    // Assign numerals in 100-blocks per root to avoid overlap
+    // Assign numerals in 100-blocks per root to avoid overlap; respect user-supplied numerals when unique/valid
     const usedNumerals = new Set<number>();
     let rootIndex = 1; // 100, 200, ... 900
 
@@ -1494,11 +1840,21 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
           errors.push(`Too many subcomponents under root block ${base}`);
           return;
         }
-        // Assign numeral
-        while (usedNumerals.has(cursor) && cursor <= base + 99) cursor++;
-        n.numeral = cursor;
-        usedNumerals.add(cursor);
-        cursor++;
+        // Respect user-supplied numeral if valid and unique
+        if (typeof n.numeral === 'number' && n.numeral >= 1 && n.numeral <= 999) {
+          if (usedNumerals.has(n.numeral)) {
+            errors.push(`Duplicate numeral ${n.numeral} detected`);
+          } else {
+            usedNumerals.add(n.numeral);
+            cursor = Math.max(cursor, n.numeral + 1);
+          }
+        } else {
+          // Assign numeral automatically
+          while (usedNumerals.has(cursor) && cursor <= base + 99) cursor++;
+          n.numeral = cursor;
+          usedNumerals.add(cursor);
+          cursor++;
+        }
         // Children
         if (Array.isArray(n.children) && n.children.length > 0) {
           // Stable order
@@ -1534,7 +1890,7 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
       processedComponents.push({
         id: n.id,
         name: n.name,
-        type: 'OTHER',
+        type: n.type || 'OTHER',
         description: n.description,
         numeral: n.numeral,
         range: `${Math.floor(n.numeral / 100) * 100}s`,
@@ -1556,9 +1912,16 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
    */
   static async generatePlantUML(
     figurePlan: any,
-    referenceMap: any
+    referenceMap: any,
+    archetype?: string | string[]
   ): Promise<PlantUMLGenerationResult> {
     try {
+      const archetypeList = this.normalizeArchetypeList(
+        archetype ?? referenceMap?.inventionType ?? referenceMap?.normalizedData?.inventionType,
+        referenceMap?.fieldOfRelevance
+      )
+      const archetypeLabel = archetypeList.join('+')
+
       // Build component lookup by numeral
       const componentLookup: Record<number, any> = {};
       if (referenceMap?.components) {
@@ -1572,6 +1935,9 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
 
       // Add title
       plantumlCode += `title ${figurePlan.title}\n\n`;
+      if (archetypeLabel) {
+        plantumlCode += `caption Archetype: ${archetypeLabel}\n\n`
+      }
 
       // Add components as rectangles or other shapes
       if (figurePlan.nodes && Array.isArray(figurePlan.nodes)) {
@@ -1649,11 +2015,16 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
     jurisdiction: string = 'IN',
     filingType: string = 'utility',
     tenantId?: string,
-    requestHeaders?: Record<string, string>
+    requestHeaders?: Record<string, string>,
+    referenceDraft?: any,
+    preferredLanguage?: string,
+    sourceJurisdiction?: string
   ): Promise<AnnexureDraftResult> {
     try {
+      const sectionDefs = await this.buildSectionDefinitions(jurisdiction)
+
       // Build comprehensive prompt
-      const prompt = this.buildAnnexurePrompt(session, jurisdiction, filingType);
+      const prompt = await this.buildAnnexurePrompt(session, jurisdiction, filingType, sectionDefs, referenceDraft, preferredLanguage, sourceJurisdiction);
 
       // Execute through LLM gateway
       const request = { headers: requestHeaders || {} };
@@ -1661,7 +2032,14 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
         taskCode: 'LLM2_DRAFT',
         prompt,
         parameters: { tenantId, jurisdiction, filingType },
-        idempotencyKey: crypto.randomUUID()
+        idempotencyKey: crypto.randomUUID(),
+        metadata: {
+          patentId: session.patentId,
+          sessionId: session.id,
+          jurisdiction,
+          filingType,
+          purpose: 'annexure_draft'
+        }
       });
 
       if (!result.success || !result.response) {
@@ -1672,7 +2050,7 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
       }
 
       // Parse and structure the draft
-      const draftResult = this.parseDraftResponse(result.response.output);
+      const draftResult = this.parseDraftResponse(result.response.output, sectionDefs);
 
       if (!draftResult.success) {
         return {
@@ -1682,6 +2060,9 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
       }
 
       // Validate draft consistency
+      // Apply basic section-level validation from profile if available
+      await this.applySectionChecks(draftResult.draft, jurisdiction);
+
       const validation = this.validateDraftConsistency(draftResult.draft, session);
 
       return {
@@ -1704,130 +2085,238 @@ Ensure total word count remains within ±20% of target length. If exceeding, tru
   }
 
   /**
-   * Build comprehensive annexure generation prompt
+   * Build section definitions from country profile (or fallback)
    */
-  private static buildAnnexurePrompt(session: any, jurisdiction: string, filingType: string): string {
+  private static async buildSectionDefinitions(jurisdiction: string): Promise<Array<{ key: string; label: string; required: boolean; constraints?: string[]; altKeys: string[] }>> {
+    const profile = await getCountryProfile(jurisdiction)
+    const defs: Array<{ key: string; label: string; required: boolean; constraints?: string[]; altKeys: string[] }> = []
+    const promptSections = profile?.profileData?.prompts?.sections || {}
+    const variant = profile?.profileData?.structure?.variants?.find((v: any) => v.id === profile?.profileData?.structure?.defaultVariant) || profile?.profileData?.structure?.variants?.[0]
+    if (variant?.sections?.length) {
+      for (const sec of variant.sections) {
+        const keys = (sec.canonicalKeys || []).map((k: string) => k.toLowerCase())
+        let mapped: string | undefined
+        for (const k of keys) {
+          mapped = this.mapToInternalKey(k)
+          if (mapped) break
+        }
+        if (!mapped) mapped = this.mapToInternalKey(sec.id)
+        if (!mapped) continue
+        const altKeys = Array.from(new Set([sec.id, ...(sec.canonicalKeys || [])].map((k: string) => k.toLowerCase())))
+        defs.push({
+          key: mapped,
+          label: sec.label || sec.id,
+          required: !!sec.required,
+          constraints: promptSections?.[sec.id]?.constraints || [],
+          altKeys
+        })
+      }
+    }
+    if (defs.length === 0) {
+      return [
+        { key: 'title', label: 'Title', required: true, altKeys: [] },
+        { key: 'abstract', label: 'Abstract', required: true, altKeys: [] },
+        { key: 'fieldOfInvention', label: 'Technical Field', required: true, altKeys: ['technical_field'] },
+        { key: 'background', label: 'Background', required: true, altKeys: [] },
+        { key: 'summary', label: 'Summary', required: true, altKeys: [] },
+        { key: 'briefDescriptionOfDrawings', label: 'Brief Description of Drawings', required: false, altKeys: [] },
+        { key: 'detailedDescription', label: 'Detailed Description', required: true, altKeys: [] },
+        { key: 'bestMethod', label: 'Best Mode', required: false, altKeys: ['best_mode'] },
+        { key: 'industrialApplicability', label: 'Industrial Applicability', required: false, altKeys: ['utility'] },
+        { key: 'claims', label: 'Claims', required: true, altKeys: [] },
+        { key: 'listOfNumerals', label: 'List of Reference Numerals', required: false, altKeys: ['reference_numerals'] }
+      ]
+    }
+    return defs
+  }
+
+  private static async applySectionChecks(draft: any, jurisdiction: string) {
+    const profile = await getCountryProfile(jurisdiction)
+    const checks = profile?.profileData?.validation?.sectionChecks || {}
+    if (!checks) return
+    const enforce = (key: string, rules: any[]) => {
+      const val = draft[key]
+      if (!val || typeof val !== 'string') return
+      for (const rule of rules) {
+        if (rule.type === 'maxWords' && typeof rule.limit === 'number') {
+          const words = val.trim().split(/\s+/)
+          if (words.length > rule.limit) {
+            draft[key] = words.slice(0, rule.limit).join(' ')
+          }
+        }
+        if (rule.type === 'maxChars' && typeof rule.limit === 'number') {
+          if (val.length > rule.limit) draft[key] = val.slice(0, rule.limit)
+        }
+        if (rule.type === 'maxCount' && typeof rule.limit === 'number' && key === 'claims') {
+          const blocks = val.split(/\n\s*(?=\d+\.)/).map(s => s.trim()).filter(Boolean)
+          if (blocks.length > rule.limit) {
+            draft[key] = blocks.slice(0, rule.limit).join('\n')
+          }
+        }
+      }
+    }
+    for (const [sectionId, ruleList] of Object.entries(checks) as Array<[string, any[]]>) {
+      const mapped = this.mapToInternalKey(sectionId) || sectionId
+      if (Array.isArray(ruleList)) enforce(mapped, ruleList)
+    }
+  }
+
+  /**
+   * Build comprehensive annexure generation prompt using jurisdiction-aware sections
+   */
+  private static async buildAnnexurePrompt(
+    session: any,
+    jurisdiction: string,
+    filingType: string,
+    sections: Array<{ key: string; label: string; required: boolean; constraints?: string[] }>,
+    referenceDraft?: any,
+    preferredLanguage?: string,
+    sourceJurisdiction?: string
+  ): Promise<string> {
     const idea = session.ideaRecord;
     const components: any[] = session.referenceMap?.components || [];
-    // Merge planned figures with any uploaded image records to capture all figures
-    const planFigures: any[] = session.figurePlans || [];
+    const planFigures: any[] = (session.figurePlans || []).map((f: any) => ({
+      figureNo: f.figureNo,
+      title: this.sanitizeFigureTitle(f.title) || `Figure ${f.figureNo}`
+    }));
     const imageBacked: any[] = (session.diagramSources || [])
       .filter((d: any) => d?.imageUploadedAt)
-      .map((d: any) => ({ figureNo: d.figureNo, title: planFigures.find((f:any)=>f.figureNo===d.figureNo)?.title || `Figure ${d.figureNo}` }))
+      .map((d: any) => {
+        const found = planFigures.find((f: any) => f.figureNo === d.figureNo)
+        const sanitized = this.sanitizeFigureTitle(found?.title || d.title)
+        return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}` }
+      })
     const mergedByNo = new Map<number, any>()
     for (const f of planFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
     for (const f of imageBacked) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
     const figures: any[] = Array.from(mergedByNo.values()).sort((a,b)=>a.figureNo-b.figureNo)
 
-    // Load selected prior art (Stage 3.5)
+    let profile = await getCountryProfile(jurisdiction)
+    if (profile && preferredLanguage) {
+      const langs: string[] = Array.isArray(profile?.profileData?.meta?.languages)
+        ? profile.profileData.meta.languages
+        : []
+      const normalizedPref = preferredLanguage.trim()
+      const reordered = [normalizedPref, ...langs.filter((l: string) => l !== normalizedPref)]
+      profile = {
+        ...profile,
+        profileData: {
+          ...(profile?.profileData || {}),
+          meta: {
+            ...(profile?.profileData?.meta || {}),
+            languages: reordered.length ? reordered : langs
+          }
+        }
+      }
+    }
+    const primaryLanguage = (profile?.profileData?.meta?.languages?.[0]) || preferredLanguage || 'English'
+    const baseStyle = profile ? await getBaseStyle(jurisdiction) : null
+    const archetypeList = this.normalizeArchetypeList(
+      (idea as any)?.normalizedData?.inventionType ?? (idea as any)?.inventionType,
+      (idea as any)?.fieldOfRelevance || (idea as any)?.normalizedData?.fieldOfRelevance || ''
+    )
+    const archetype = archetypeList.join('+')
+    const archetypeGuidance = this.getArchetypeInstructions(archetype)
     const priorArtSelections: Array<{ patentNumber: string; title?: string; snippet?: string; score?: number; tags?: string[]; userNotes?: string }> = ((session as any).relatedArtSelections || (session as any).priorArt || [])
 
-    let prompt = `Draft complete ${jurisdiction} patent specification.
+    const styleLines = [
+      `Language: ${primaryLanguage}`,
+      `Tone: ${baseStyle?.tone || 'technical, neutral, precise'}`,
+      `Voice: ${baseStyle?.voice || 'impersonal third person'}`,
+      `Avoid: ${Array.isArray(baseStyle?.avoid) ? baseStyle?.avoid.join(', ') : (baseStyle?.avoid || 'marketing language, unsupported advantages')}`
+    ].join('\n')
 
-INVENTION:
+    const sectionLines = sections.map((s, idx) => {
+      const constraintText = (s.constraints && s.constraints.length) ? `Constraints: ${s.constraints.join('; ')}` : ''
+      return `${idx + 1}. ${s.label} (${s.key})${s.required ? ' [required]' : ''}${constraintText ? `\n   ${constraintText}` : ''}`
+    }).join('\n')
+
+    const requiredKeys = sections.map(s => `"${s.key}"`).join(', ')
+
+    const referenceSource = (sourceJurisdiction || session?.jurisdictionDraftStatus?.__sourceOfTruth || session?.draftingJurisdictions?.[0] || jurisdiction || '').toString().toUpperCase()
+    const referenceBlock = referenceDraft
+      ? `\nREFERENCE DRAFT (source jurisdiction ${referenceSource}):\n${String(referenceDraft.fullDraftText || '').slice(0, 2000)}${String(referenceDraft.fullDraftText || '').length > 2000 ? '... [truncated]' : ''}\n\nUse this as the baseline; adapt ordering/headings/limits to ${jurisdiction} but do not invent new content beyond the reference.`
+      : ''
+
+    return `You are drafting a ${jurisdiction} patent specification.
+Apply these style rules:
+${styleLines}
+
+ARCHETYPE PROTOCOL:
+- Archetype: ${archetype}
+${archetypeGuidance}
+
+INVENTION CONTEXT:
 Title: ${idea.title}
 Problem: ${idea.problem || 'Not specified'}
 Objectives: ${idea.objectives || 'Not specified'}
 Components: ${components.map(c => `${c.name} (${c.numeral})`).join(', ')}
 Logic: ${idea.logic || 'Not specified'}
 ${figures.length > 0 ? `Figures: ${figures.map(f => `Fig.${f.figureNo}: ${f.title}`).join(', ')}` : ''}
-${priorArtSelections.length > 0 ? `
-PRIOR ART FOR BACKGROUND/COMPARISON (user-approved):
-${priorArtSelections.slice(0,8).map((p,idx)=>{
-  const aiContext = p.userNotes && p.userNotes.trim() ? ` | AI: ${p.userNotes.trim()}` : '';
-  return `- ${p.patentNumber}${p.title?`: ${p.title}`:''}${typeof p.score==='number'?` (relevance ${(p.score * 100).toFixed(1)}%)`:''}${p.snippet?` — ${p.snippet.slice(0,150)}...`:''}${aiContext}`;
-}).join('\n')}
-` : ''}
+${priorArtSelections.length > 0 ? `Prior art for context (approved): ${priorArtSelections.slice(0,6).map(p=>`${p.patentNumber}${p.title?`: ${p.title}`:''}`).join(' | ')}` : ''}
 
-REQUIRED SECTIONS:
-1. TITLE (≤15 words)
-2. FIELD OF INVENTION
-3. BACKGROUND
-4. SUMMARY
-5. BRIEF DESCRIPTION OF DRAWINGS
-6. DETAILED DESCRIPTION (include BEST METHOD subsection)
-7. CLAIMS (independent + dependent)
-8. ABSTRACT (≤150 words, start with title)
-9. LIST OF REFERENCE NUMERALS
+${referenceBlock}
 
-Use reference numerals consistently. Follow ${jurisdiction} format.`;
+REQUIRED SECTIONS AND ORDER (return all keys even if blank):
+${sectionLines}
 
-    return prompt;
+OUTPUT FORMAT:
+- Return ONLY JSON object with keys: ${requiredKeys}
+- Do not include markdown or explanations.
+`
   }
 
   /**
-   * Parse LLM response into structured draft sections
+   * Parse LLM response into structured draft sections (JSON-first, profile-aware)
    */
-  private static parseDraftResponse(output: string): { success: boolean; draft?: any; error?: string } {
+  private static parseDraftResponse(output: string, sectionDefs: Array<{ key: string; altKeys: string[] }>): { success: boolean; draft?: any; error?: string } {
     try {
-      // Split response into sections
-      const sections = {
-        title: '',
-        fieldOfInvention: '',
-        background: '',
-        summary: '',
-        briefDescriptionOfDrawings: '',
-        detailedDescription: '',
-        bestMethod: '',
-        claims: '',
-        abstract: '',
-        listOfNumerals: ''
-      };
+      let parsed: any = null
+      let text = (output || '').trim()
+      // Extract fenced JSON if present
+      const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi
+      let merged: Record<string, any> = {}
+      let fenceCount = 0
+      let m: RegExpExecArray | null
+      while ((m = fenceRegex.exec(text)) !== null) {
+        let block = (m[1] || '').trim()
+        if (!block) continue
+        block = block.replace(/,(\s*[}\]])/g, '$1').replace(/([\x00-\x08\x0B\x0C\x0E-\x1F])/g, '')
+        try {
+          let obj: any
+          try { obj = JSON.parse(block) } catch { obj = JSON.parse(block.replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:/g, '$1"$2":')) }
+          if (obj && typeof obj === 'object') { merged = { ...merged, ...obj }; fenceCount++ }
+        } catch {}
+      }
+      if (fenceCount > 0) {
+        parsed = merged
+      } else {
+        let jsonText = text
+        const start = jsonText.indexOf('{')
+        if (start !== -1) jsonText = jsonText.slice(start)
+        jsonText = jsonText.replace(/```/g, '').replace(/,(\s*[}\]])/g, '$1').replace(/([\x00-\x08\x0B\x0C\x0E-\x1F])/g, '')
+        parsed = JSON.parse(jsonText)
+      }
 
-      // Simple section extraction (in production, use more robust parsing)
-      const sectionPatterns = {
-        title: /TITLE:?\s*([\s\S]*?)(?=\n[A-Z ]+:|\n\n[A-Z]|$)/i,
-        fieldOfInvention: /FIELD OF INVENTION:?\s*([\s\S]*?)(?=\n[A-Z ]+:|\n\n[A-Z]|$)/i,
-        background: /BACKGROUND:?\s*([\s\S]*?)(?=\n[A-Z ]+:|\n\n[A-Z]|$)/i,
-        summary: /SUMMARY:?\s*([\s\S]*?)(?=\n[A-Z ]+:|\n\n[A-Z]|$)/i,
-        briefDescriptionOfDrawings: /BRIEF DESCRIPTION OF DRAWINGS:?\s*([\s\S]*?)(?=\n[A-Z ]+:|\n\n[A-Z]|$)/i,
-        detailedDescription: /DETAILED DESCRIPTION:?\s*([\s\S]*?)(?=\n[A-Z ]+:|\n\n[A-Z]|$)/i,
-        bestMethod: /BEST METHOD:?\s*([\s\S]*?)(?=\n[A-Z ]+:|\n\n[A-Z]|$)/i,
-        claims: /CLAIMS:?\s*([\s\S]*?)(?=\n[A-Z ]+:|\n\n[A-Z]|$)/i,
-        abstract: /ABSTRACT:?\s*([\s\S]*?)(?=\n[A-Z ]+:|\n\n[A-Z]|$)/i,
-        listOfNumerals: /LIST OF.*NUMERALS:?\s*([\s\S]*?)(?=\n[A-Z ]+:|\n\n[A-Z]|$|$)/i
-      };
-
-      for (const [key, pattern] of Object.entries(sectionPatterns) as Array<[keyof typeof sectionPatterns, RegExp]>) {
-        const match = output.match(pattern);
-        if (match) {
-          sections[key] = match[1].trim();
+      const draft: Record<string, string> = {}
+      for (const def of sectionDefs) {
+        const keysToCheck = [def.key, ...def.altKeys]
+        let val = ''
+        for (const k of keysToCheck) {
+          if (typeof parsed?.[k] === 'string' && parsed[k].trim()) { val = parsed[k].trim(); break }
         }
-      }
-
-      // Validate critical sections
-      if (!sections.title || !sections.claims || !sections.abstract) {
-        return {
-          success: false,
-          error: 'Draft missing required sections (title, claims, abstract)'
-        };
-      }
-
-      // Validate abstract word count
-      const abstractWords = sections.abstract.split(/\s+/).length;
-      if (abstractWords > 150) {
-        sections.abstract = sections.abstract.split(/\s+/).slice(0, 150).join(' ') + '...';
+        draft[def.key] = val || ''
       }
 
       // Build full text
-      const fullText = Object.entries(sections as Record<string, string>)
+      const fullText = Object.entries(draft)
         .filter(([key, value]) => value && key !== 'title')
         .map(([key, value]) => `${key.toUpperCase().replace(/([A-Z])/g, ' $1').trim()}:\n\n${value}`)
         .join('\n\n');
 
-      return {
-        success: true,
-        draft: {
-          ...sections,
-          fullText
-        }
-      };
-
+      return { success: true, draft: { ...draft, fullText } }
     } catch (error) {
-      return {
-        success: false,
-        error: 'Failed to parse draft response'
-      };
+      return { success: false, error: 'Failed to parse draft response' }
     }
   }
 
@@ -1911,9 +2400,17 @@ Use reference numerals consistently. Follow ${jurisdiction} format.`;
   /**
    * Extended rule-based validator (no LLM) covering IPO-focused checks
    */
-  static validateDraftExtended(draftObj: any, session: any): { valid: boolean; report: any } {
+  static validateDraftExtended(draftObj: any, session: any, profile?: any | null, jurisdiction?: string): { valid: boolean; report: any } {
     const textNorm = (s: string) => (s || '').replace(/[\u2013\u2014]/g, '-').replace(/\u00A0/g, ' ').replace(/\s+/g, ' ').trim()
     const wordCount = (s: string) => (textNorm(s).match(/\b\w+\b/g) || []).length
+    const activeJurisdiction = (jurisdiction || session?.activeJurisdiction || session?.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+    const sectionChecks = profile?.profileData?.validation?.sectionChecks || {}
+    const getLimit = (sectionId: string, type: 'maxWords' | 'maxChars' | 'maxCount') => {
+      const internal = this.mapToInternalKey(sectionId) || sectionId
+      const arr = sectionChecks[internal] || sectionChecks[sectionId] || []
+      const rule = Array.isArray(arr) ? arr.find((c: any) => c?.type === type && typeof c.limit === 'number') : undefined
+      return rule?.limit
+    }
 
     const last = draftObj || {}
     const report: any = {
@@ -1958,21 +2455,39 @@ Use reference numerals consistently. Follow ${jurisdiction} format.`;
       listOfNumerals: wordCount(numeralsList)
     }
 
+    const titleMaxWords = getLimit('title', 'maxWords')
+    const titleMaxChars = getLimit('title', 'maxChars')
+    report.title = { length: report.wordCounts.title, maxWords: titleMaxWords, maxChars: titleMaxChars }
+    if ((titleMaxWords && report.wordCounts.title > titleMaxWords) || (titleMaxChars && title.length > titleMaxChars)) {
+      report.hardFail = true; report.complianceScore -= 5
+    }
+
     // P0: Abstract discipline
-    const normalizeTitle = (s: string) => s
-      .toLowerCase()
-      .replace(/[“”‘’"']/g, '') // strip quotes
-      .replace(/\s+/g, ' ')
-      .replace(/^[\s:–—-]+/, '') // strip leading punctuation/space
-      .replace(/[.,;:!?]+$/,'')
-      .trim()
     const abstractForbidden = /(\bnovel\b|\binventive\b|\bunique\b|\bbest\b|\badvantage\b|\bbenefit\b|\bclaim\b|\bclaims\b)/i
     const abstractDigits = /\d/
     const absLen = report.wordCounts.abstract
-    const absStarts = normalizeTitle(abstract).startsWith(normalizeTitle(title))
     const absForbiddenHits = (abstractForbidden.test(abstract) ? ['lexicon'] : [])
-    report.abstract = { startsWithTitle: absStarts, digits: abstractDigits.test(abstract), forbiddenHits: absForbiddenHits, length: absLen }
-    if (absLen > 150 || !absStarts || absForbiddenHits.length > 0) { report.hardFail = true; report.complianceScore -= 10 }
+    const absMaxWords = getLimit('abstract', 'maxWords')
+    const absMaxChars = getLimit('abstract', 'maxChars')
+    const abstractStartsWithTitle = !!(title && abstract && abstract.startsWith(title))
+    report.abstract = {
+      digits: abstractDigits.test(abstract),
+      forbiddenHits: absForbiddenHits,
+      length: absLen,
+      maxWords: absMaxWords,
+      maxChars: absMaxChars,
+      startsWithTitle: abstractStartsWithTitle
+    }
+    if ((absMaxWords && absLen > absMaxWords) || absForbiddenHits.length > 0) {
+      report.hardFail = true; report.complianceScore -= 10
+    }
+    if (absMaxChars && abstract.length > absMaxChars) {
+      report.hardFail = true; report.complianceScore -= 5
+    }
+    // Only treat "must start with title" as a strict rule for Indian practice
+    if (activeJurisdiction === 'IN' && !abstractStartsWithTitle) {
+      report.complianceScore -= 3
+    }
 
     // P0: BDOD format & coverage
     const planFigures = (session.figurePlans || []).map((f:any)=>f.figureNo)
@@ -1987,7 +2502,7 @@ Use reference numerals consistently. Follow ${jurisdiction} format.`;
     normalizedLines.forEach((l: string, idx: number) => {
       const wc = wordCount(l)
       if (wc > 40) overlength.push(idx+1)
-      const m = l.match(/^Fig\.\s*(\d+)\s*[—-]/)
+      const m = l.match(/^Fig\.\s*(\d+)\s*[G-]/)
       if (!m) { formatViolations.push(idx+1); return }
       const num = parseInt(m[1], 10)
       if (!planFigures.includes(num)) extra.push(num)
@@ -1999,13 +2514,28 @@ Use reference numerals consistently. Follow ${jurisdiction} format.`;
 
     // P0: Industrial Applicability
     const iaPresent = industrial.length>0
-    const iaStarts = industrial.startsWith('The invention is industrially applicable to')
     const iaLen = report.wordCounts.industrialApplicability
     const iaForbidden = abstractForbidden.test(industrial)
-    report.industrialApplicability = { present: iaPresent, startsWith: iaStarts, length: iaLen, forbiddenHits: iaForbidden?['lexicon']:[] }
-    if (!iaPresent || !iaStarts || iaLen<50 || iaLen>100 || iaForbidden) { report.hardFail = true; report.complianceScore -= 10 }
+    const iaMaxWords = getLimit('industrialApplicability', 'maxWords')
+    const iaMaxChars = getLimit('industrialApplicability', 'maxChars')
+    report.industrialApplicability = {
+      present: iaPresent,
+      length: iaLen,
+      forbiddenHits: iaForbidden ? ['lexicon'] : [],
+      maxWords: iaMaxWords,
+      maxChars: iaMaxChars,
+      startsWith: undefined as boolean | undefined
+    }
+    if (!iaPresent) { report.hardFail = true; report.complianceScore -= 10 }
+    if (iaMaxWords && iaLen > iaMaxWords) { report.hardFail = true; report.complianceScore -= 5 }
+    if (iaMaxChars && industrial.length > iaMaxChars) { report.hardFail = true; report.complianceScore -= 5 }
+    if (activeJurisdiction === 'IN') {
+      const iaStarts = industrial.startsWith('The invention is industrially applicable to')
+      report.industrialApplicability.startsWith = iaStarts
+      if (!iaStarts || iaLen < 50) { report.hardFail = true; report.complianceScore -= 5 }
+    }
 
-    // P0: Numeral integrity expanded (treat only three-digit numerals 100–999 as reference numerals)
+    // P0: Numeral integrity expanded (treat only three-digit numerals 100G999 as reference numerals)
     const numRegex = /\((\d{3})\)/g
     const used = new Map<number, number>()
     const fullText = textNorm([
@@ -2042,6 +2572,7 @@ Use reference numerals consistently. Follow ${jurisdiction} format.`;
     const claimBlocks = claims.split(/\n\s*(?=\d+\.)/).map((s: string)=>s.trim()).filter(Boolean)
     const totalClaims = claimBlocks.length
     const independentWords = claimBlocks[0] ? wordCount(claimBlocks[0].replace(/^\d+\./,'')) : 0
+    const claimsMaxCount = getLimit('claims', 'maxCount')
     // naive dependency depth: count "claim X" chains
     const depDepthRegex = /claim\s+(\d+)/ig
     let depthMax = 1
@@ -2062,9 +2593,10 @@ Use reference numerals consistently. Follow ${jurisdiction} format.`;
       maxIndependentWords: independentWords,
       dependencyDepthMax: depthMax,
       forbiddenHits,
-      antecedentFailures
+      antecedentFailures,
+      maxCount: claimsMaxCount
     }
-    if (totalClaims>12 || independentWords>150 || forbiddenHits.length>0) { report.hardFail = true; report.complianceScore -= 10 }
+    if ((claimsMaxCount && totalClaims > claimsMaxCount) || forbiddenHits.length>0) { report.hardFail = true; report.complianceScore -= 10 }
 
     // P0: Best Method sufficiency
     const hasNumeric = /\d/.test(bestMethod)
@@ -2077,24 +2609,31 @@ Use reference numerals consistently. Follow ${jurisdiction} format.`;
     // P1: Field/Background tone (simple)
     const badTone = /(holistic|breakthrough|revolutionary)/i
     if (badTone.test(background)) report.complianceScore -= 2
-    if (wordCount(fieldOfInvention) < 40 || wordCount(fieldOfInvention) > 80) report.complianceScore -= 2
+    // If a field/technical-field maxWords rule exists in the profile, use that; otherwise do not enforce a hard 40–80 range globally
+    const fieldMaxWords = getLimit('fieldOfInvention', 'maxWords') || getLimit('technical_field', 'maxWords') || getLimit('field', 'maxWords')
+    if (fieldMaxWords && report.wordCounts.fieldOfInvention > fieldMaxWords) {
+      report.complianceScore -= 2
+    }
 
     // P1: List of numerals hygiene
     const listLines = numeralsList.split(/\n+/).map((l: string)=>l.trim()).filter(Boolean)
-    const listNums = listLines.map((l: string) => { const m = l.match(/\((\d{1,5})\)\s*[—-]\s*/); return m?parseInt(m[1],10):null }).filter((n: number | null)=>n!==null) as number[]
+    const listNums = listLines.map((l: string) => { const m = l.match(/\((\d{1,5})\)\s*[G-]\s*/); return m?parseInt(m[1],10):null }).filter((n: number | null)=>n!==null) as number[]
     const ascending = listNums.every((n: number, i: number, arr: number[])=> i===0 || arr[i-1]<=n)
     const dupList = listNums.filter((n: number, i: number, arr: number[])=> arr.indexOf(n) !== i)
     report.numerals.list = { ascending, duplicates: dupList }
     if (!ascending || dupList.length>0) report.complianceScore -= 4
 
-    // P1: Section 3 India red-flags (simple regex)
+    // P1: Section 3 India red-flags (simple regex) – only for IN
     const s3Flags: any[] = []
-    const addFlag = (clause:string, phrase:string, location:string, severity:'warn'|'fail')=> s3Flags.push({ clause, phrase, location, severity })
-    if (/algorithm\s+per\s*se/i.test(claims)) addFlag('3(k)','algorithm per se','claims','fail')
-    if (/computer\s+program\s+product/i.test(claims)) addFlag('3(k)','computer program product','claims','warn')
-    if (/diagnos|therapy/i.test(claims)) addFlag('3(i)','diagnosis/therapy','claims','warn')
+    if (activeJurisdiction === 'IN') {
+      const addFlag = (clause: string, phrase: string, location: string, severity: 'warn' | 'fail') =>
+        s3Flags.push({ clause, phrase, location, severity })
+      if (/algorithm\s+per\s*se/i.test(claims)) addFlag('3(k)', 'algorithm per se', 'claims', 'fail')
+      if (/computer\s+program\s+product/i.test(claims)) addFlag('3(k)', 'computer program product', 'claims', 'warn')
+      if (/diagnos|therapy/i.test(claims)) addFlag('3(i)', 'diagnosis/therapy', 'claims', 'warn')
+      if (s3Flags.some(f => f.severity === 'fail')) { report.hardFail = true; report.complianceScore -= 10 }
+    }
     report.section3Flags = s3Flags
-    if (s3Flags.some(f=>f.severity==='fail')) { report.hardFail = true; report.complianceScore -= 10 }
 
     // Final decision
     return { valid: !report.hardFail, report }
