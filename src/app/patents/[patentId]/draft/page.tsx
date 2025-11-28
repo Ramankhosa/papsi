@@ -19,6 +19,7 @@ import RelatedArtStage from '@/components/drafting/RelatedArtStage'
 import CountryWiseDraftStage from '@/components/drafting/CountryWiseDraftStage'
 import ReviewFixStage from '@/components/drafting/ReviewFixStage'
 import ExportCenterStage from '@/components/drafting/ExportCenterStage'
+import FloatingStageNavigation from '@/components/drafting/FloatingStageNavigation'
 
 interface DraftingSession {
   id: string
@@ -509,6 +510,24 @@ export default function PatentDraftingPage() {
             </div>
           )}
         </div>
+
+        {/* Floating Stage Navigation */}
+        {session && (
+          <FloatingStageNavigation
+            onNavigatePrev={async () => {
+              const { prev } = getPrevNextStages()
+              if (!prev || !session) return
+              await handleStageComplete({ action: 'set_stage', sessionId: session.id, stage: prev })
+            }}
+            onNavigateNext={async () => {
+              const { next } = getPrevNextStages()
+              if (!next || !session) return
+              await handleStageComplete({ action: 'set_stage', sessionId: session.id, stage: next })
+            }}
+            canGoPrev={!!getPrevNextStages().prev}
+            canGoNext={!!getPrevNextStages().next}
+          />
+        )}
 
         {/* Bottom Navigation (Contextual) */}
         <div className="mt-8 mb-12 flex items-center justify-between px-2 opacity-60 hover:opacity-100 transition-opacity duration-300">

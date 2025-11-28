@@ -173,7 +173,37 @@ export async function getSectionRules(countryCode: string, sectionType: string):
   const profile = await getCountryProfile(countryCode)
   if (!profile) return null
 
-  return profile.profileData.rules?.[sectionType] || null
+  const rules = profile.profileData.rules || {}
+
+  // Helper to normalize keys for flexible lookup (handles underscores/casing)
+  const normalize = (key: string) => key.toLowerCase().replace(/[^a-z0-9]/g, '')
+  const target = normalize(sectionType)
+
+  // Direct hit first
+  if (rules[sectionType]) return rules[sectionType]
+
+  // Known aliases between profile section ids and rule block ids
+  const aliasMap: Record<string, string[]> = {
+    detaileddescription: ['description'],
+    briefdescriptionofdrawings: ['drawings'],
+    fieldofinvention: ['field', 'technicalfield'],
+    industrialapplicability: ['utility'],
+    crossreference: ['cross_reference', 'crossreference'],
+    background: ['backgroundofinvention', 'descriptionbackground']
+  }
+  const aliasKeys = aliasMap[target] || []
+
+  // Try alias keys
+  for (const alias of aliasKeys) {
+    if (rules[alias]) return rules[alias]
+  }
+
+  // Try normalized match across all rule keys
+  for (const [key, value] of Object.entries(rules)) {
+    if (normalize(key) === target) return value
+  }
+
+  return null
 }
 
 /**

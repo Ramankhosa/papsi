@@ -582,18 +582,29 @@ Respond in this exact JSON shape:
 
       // Gather prior art data for background section
       const manualPriorArt = (session as any).manualPriorArt || null
-      const relatedArtSelections = session.relatedArtSelections || []
+      const rawRelatedArtSelections = Array.isArray(session.relatedArtSelections)
+        ? session.relatedArtSelections
+        : []
+      // Only treat USER_SELECTED records as approved prior art for drafting
+      const relatedArtSelections = rawRelatedArtSelections.filter(
+        (sel: any) => Array.isArray(sel.tags) && sel.tags.includes('USER_SELECTED')
+      )
       const aiAnalysis = (session as any).aiAnalysisData || {}
 
-      // Strategy: Use user-selected patents first, fallback to adjacent patents
-      let selectedPriorArtPatents = []
+      // Strategy: Use user-selected patents first; fallback to any available related art if none explicitly marked
+      let selectedPriorArtPatents: any[] = []
+
+      const userSelectedPool = rawRelatedArtSelections.filter(
+        (sel: any) => Array.isArray(sel.tags) && sel.tags.includes('USER_SELECTED')
+      )
+      const fallbackPool = userSelectedPool.length ? userSelectedPool : rawRelatedArtSelections
 
       if (selectedPatents && selectedPatents.length > 0) {
-        // User has explicitly selected patents - use those (up to 5-6 most relevant)
+        // User explicitly picked patents in the UI
         selectedPriorArtPatents = selectedPatents
           .map((sel: any) => {
-            // Find the full patent data from relatedArtSelections and merge with AI analysis
-            const fullPatentData = relatedArtSelections.find((r: any) => r.patentNumber === sel.patentNumber) || sel
+            const fullPatentData =
+              rawRelatedArtSelections.find((r: any) => r.patentNumber === sel.patentNumber) || sel
             return {
               ...fullPatentData,
               aiSummary: aiAnalysis[sel.patentNumber]?.aiSummary || '',
@@ -601,40 +612,22 @@ Respond in this exact JSON shape:
               noveltyThreat: aiAnalysis[sel.patentNumber]?.noveltyThreat || 'unknown'
             }
           })
-          .sort((a: any, b: any) => {
-            // Sort by relevance score (higher first)
-            const scoreA = a.score || 0
-            const scoreB = b.score || 0
-            return scoreB - scoreA
-          })
-          .slice(0, 6) // Take top 6 user-selected patents
+          .sort((a: any, b: any) => (b.score || 0) - (a.score || 0))
+          .slice(0, 6)
+      } else if (manualPriorArt?.useOnlyManualPriorArt) {
+        // Respect user preference: no AI/related art
+        selectedPriorArtPatents = []
       } else {
-        // No user selections
-        if (manualPriorArt?.useOnlyManualPriorArt) {
-          // Respect user preference: do not include AI prior art
-          selectedPriorArtPatents = []
-        } else {
-          // Fallback to adjacent category patents (top 6)
-          selectedPriorArtPatents = relatedArtSelections
-            .filter((sel: any) => {
-              // Find AI analysis for this patent
-              const analysis = aiAnalysis[sel.patentNumber]
-              return analysis?.noveltyThreat === 'adjacent'
-            })
-            .map((sel: any) => ({
-              ...sel,
-              aiSummary: aiAnalysis[sel.patentNumber]?.aiSummary || '',
-              noveltyComparison: aiAnalysis[sel.patentNumber]?.noveltyComparison || '',
-              noveltyThreat: aiAnalysis[sel.patentNumber]?.noveltyThreat || 'adjacent'
-            }))
-            .sort((a: any, b: any) => {
-              // Sort by relevance score (higher first)
-              const scoreA = a.score || 0
-              const scoreB = b.score || 0
-              return scoreB - scoreA
-            })
-            .slice(0, 6) // Take top 6 adjacent patents as fallback
-        }
+        // Use the best available pool (user-selected if present; otherwise all related art)
+        selectedPriorArtPatents = fallbackPool
+          .map((sel: any) => ({
+            ...sel,
+            aiSummary: aiAnalysis[sel.patentNumber]?.aiSummary || '',
+            noveltyComparison: aiAnalysis[sel.patentNumber]?.noveltyComparison || '',
+            noveltyThreat: aiAnalysis[sel.patentNumber]?.noveltyThreat || 'unknown'
+          }))
+          .sort((a: any, b: any) => (b.score || 0) - (a.score || 0))
+          .slice(0, 6)
       }
 
       // Merge figures from plans and uploaded images
@@ -1016,6 +1009,7 @@ Respond in this exact JSON shape:
       abstract: { label: 'Abstract', target: '130-150 words' },
       fieldOfInvention: { label: 'Technical Field', target: '40-80 words' },
       background: { label: 'Background', target: '250-400 words' },
+      crossReference: { label: 'Cross-Reference to Related Applications', target: '<= 120 words' },
       summary: { label: 'Summary', target: '120-200 words' },
       briefDescriptionOfDrawings: { label: 'Brief Description of Drawings', target: '80-150 words' },
       detailedDescription: { label: 'Detailed Description', target: '600-1200 words' },
@@ -1324,6 +1318,26 @@ ${targetDisplay || 'Target length: 250-400 words.'}
 Output JSON: { "background": "..." }
 Return ONLY a valid JSON object exactly matching the schema above.`
       }
+      case 'crossReference': {
+        const priorArtList = (selectedPriorArtPatents || []).map((p: any, idx: number) => {
+          const pn = p.patentNumber || p.pn || `Ref-${idx + 1}`
+          const title = p.title ? `: ${String(p.title).substring(0, 120)}...` : ''
+          return `- ${pn}${title}`
+        }).join('\n')
+        return `
+${roleToneHeader}
+Task: Draft the Cross-Reference to Related Applications / cited references.
+Rules:
+- 60-120 words.
+- Mention related applications or cited patents by number; keep concise.
+- Do not assert priority unless provided by the user; avoid legal conclusions.
+Available references:
+${priorArtList || '- None supplied; keep section minimal and generic.'}
+Instructions(crossReference): ${instr}.
+${targetDisplay || 'Target length: 60-120 words.'}
+Output JSON: { "crossReference": "..." }
+Return ONLY a valid JSON object exactly matching the schema above.`
+      }
       case 'summary':
         return `
 ${roleToneHeader}
@@ -1549,6 +1563,7 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       abstract: 150,
       fieldOfInvention: 80,
       background: 400,
+      crossReference: 120,
       summary: 300,
       briefDescriptionOfDrawings: 80,
       detailedDescription: 1200,
@@ -1768,6 +1783,8 @@ Return ONLY a valid JSON object exactly matching the schema above.`
         return 'The invention relates to the field of technology.'
       case 'background':
         return 'Conventional approaches have limitations.'
+      case 'crossReference':
+        return 'This application is related to prior filings and references identified by the applicant.'
       case 'detailedDescription':
         return 'The invention comprises several components working together.'
       case 'bestMethod':
@@ -2118,6 +2135,7 @@ Return ONLY a valid JSON object exactly matching the schema above.`
         { key: 'abstract', label: 'Abstract', required: true, altKeys: [] },
         { key: 'fieldOfInvention', label: 'Technical Field', required: true, altKeys: ['technical_field'] },
         { key: 'background', label: 'Background', required: true, altKeys: [] },
+        { key: 'crossReference', label: 'Cross-Reference', required: false, altKeys: ['cross_reference'] },
         { key: 'summary', label: 'Summary', required: true, altKeys: [] },
         { key: 'briefDescriptionOfDrawings', label: 'Brief Description of Drawings', required: false, altKeys: [] },
         { key: 'detailedDescription', label: 'Detailed Description', required: true, altKeys: [] },
@@ -2217,7 +2235,10 @@ Return ONLY a valid JSON object exactly matching the schema above.`
     )
     const archetype = archetypeList.join('+')
     const archetypeGuidance = this.getArchetypeInstructions(archetype)
-    const priorArtSelections: Array<{ patentNumber: string; title?: string; snippet?: string; score?: number; tags?: string[]; userNotes?: string }> = ((session as any).relatedArtSelections || (session as any).priorArt || [])
+    const priorArtSelections: Array<{ patentNumber: string; title?: string; snippet?: string; score?: number; tags?: string[]; userNotes?: string }> =
+      (((session as any).relatedArtSelections || (session as any).priorArt || []) as any[]).filter(
+        (sel: any) => Array.isArray(sel.tags) && sel.tags.includes('USER_SELECTED')
+      )
 
     const styleLines = [
       `Language: ${primaryLanguage}`,

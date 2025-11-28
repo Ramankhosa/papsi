@@ -76,7 +76,7 @@ export default function CountryWiseDraftStage({ session, patent, onComplete, onR
           : []
         const defaultSelection = preset.length > 0
           ? preset
-          : (countries.find(c => c.code === 'IN')?.code ? ['IN'] : (fallback.length > 0 ? fallback : (countries[0]?.code ? [countries[0].code] : [])))
+          : (fallback.length > 0 ? fallback : (countries.find(c => c.code === 'US')?.code ? ['US'] : (countries.find(c => c.code === 'PCT')?.code ? ['PCT'] : (countries[0]?.code ? [countries[0].code] : []))))
 
         if (defaultSelection.length > 0) {
           setSelectedCodes(defaultSelection)
@@ -247,7 +247,7 @@ export default function CountryWiseDraftStage({ session, patent, onComplete, onR
                           toggleCode(c.code)
                         }
                       }}
-                      disabled={mode === 'single' && !selectedCodes.includes(c.code) && selectedCodes.length >= 1}
+                      disabled={false}
                     />
                     <div className="flex-1">
                       <div className="text-sm font-medium text-gray-900">{c.label}</div>

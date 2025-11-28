@@ -1717,3 +1717,26 @@ model CountryProfile {
   @@index([status])
   @@map("country_profiles")
 }
+
+// Mapping of canonical superset sections to country-specific headings/labels
+model CountrySectionMapping {
+  id           String   @id @default(cuid())
+  countryCode  String   @map("country_code")
+  supersetCode String   @map("superset_code") // e.g., "01. Title", "05. Background"
+  heading      String   // Country-specific heading text (may be N/A)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([countryCode, supersetCode])
+  @@map("country_section_mappings")
+}
+
+// Mapping of country codes to display names
+model CountryName {
+  code      String   @id @map("code")
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("country_names")
+}

@@ -64,7 +64,7 @@ function resolveSourceOfTruth(session: any, fallback?: string): string {
     if (normalizedFallback && list.includes(normalizedFallback)) return normalizedFallback
     if (list.length > 0) return list[0]
   } catch {}
-  return (fallback || 'IN').toUpperCase()
+  return (fallback || 'US').toUpperCase()
 }
 
 type ExportSectionDef = { key: string; label: string; required?: boolean }
@@ -862,13 +862,13 @@ async function handleRunReview(user: any, patentId: string, data: any) {
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const effectiveJurisdiction = (requestedJurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+  const effectiveJurisdiction = (requestedJurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'US').toUpperCase()
   const preferredLanguage = getPreferredLanguageForJurisdiction(session, effectiveJurisdiction)
   const baseProfile = await getCountryProfile(effectiveJurisdiction)
   const profile = applyPreferredLanguage(baseProfile, preferredLanguage)
 
   const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
-  const last = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction)
+  const last = drafts.find((d: any) => (d.jurisdiction || 'US').toUpperCase() === effectiveJurisdiction)
   if (!last) {
     return NextResponse.json({ error: `No draft found for jurisdiction ${effectiveJurisdiction}` }, { status: 400 })
   }
@@ -991,12 +991,12 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
   // Determine the active jurisdiction for export (defaults to first selection)
-  const fallbackJurisdiction = (session as any).activeJurisdiction || (session as any).draftingJurisdictions?.[0] || 'IN'
-  const effectiveJurisdiction = String(requestedJurisdiction || fallbackJurisdiction || 'IN').toUpperCase()
+  const fallbackJurisdiction = (session as any).activeJurisdiction || (session as any).draftingJurisdictions?.[0] || 'US'
+  const effectiveJurisdiction = String(requestedJurisdiction || fallbackJurisdiction || 'US').toUpperCase()
   const sections = await getExportSectionsForJurisdiction(effectiveJurisdiction)
 
   const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
-  const last = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction)
+  const last = drafts.find((d: any) => (d.jurisdiction || 'US').toUpperCase() === effectiveJurisdiction)
   if (!last) {
     return NextResponse.json({ error: `No draft to export for jurisdiction ${effectiveJurisdiction}` }, { status: 400 })
   }
@@ -1539,12 +1539,12 @@ async function handlePreviewExport(user: any, patentId: string, data: any) {
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const jurisdiction = requestedJurisdiction || (session as any).activeJurisdiction || (session as any).draftingJurisdictions?.[0] || 'IN'
-  const effectiveJurisdiction = String(jurisdiction || 'IN').toUpperCase()
+  const jurisdiction = requestedJurisdiction || (session as any).activeJurisdiction || (session as any).draftingJurisdictions?.[0] || 'US'
+  const effectiveJurisdiction = String(jurisdiction || 'US').toUpperCase()
   const sections = await getExportSectionsForJurisdiction(effectiveJurisdiction)
 
   const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
-  const last = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction)
+  const last = drafts.find((d: any) => (d.jurisdiction || 'US').toUpperCase() === effectiveJurisdiction)
   if (!last) {
     return NextResponse.json({ error: `No draft to export for jurisdiction ${effectiveJurisdiction}` }, { status: 400 })
   }
@@ -1576,12 +1576,12 @@ async function handleGetExportPreview(user: any, patentId: string, data: any) {
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const jurisdiction = requestedJurisdiction || (session as any).activeJurisdiction || (session as any).draftingJurisdictions?.[0] || 'IN'
-  const effectiveJurisdiction = String(jurisdiction || 'IN').toUpperCase()
+  const jurisdiction = requestedJurisdiction || (session as any).activeJurisdiction || (session as any).draftingJurisdictions?.[0] || 'US'
+  const effectiveJurisdiction = String(jurisdiction || 'US').toUpperCase()
   const sections = await getExportSectionsForJurisdiction(effectiveJurisdiction)
 
   const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
-  const last = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction)
+  const last = drafts.find((d: any) => (d.jurisdiction || 'US').toUpperCase() === effectiveJurisdiction)
   if (!last) {
     return NextResponse.json({ error: `No draft to export for jurisdiction ${effectiveJurisdiction}` }, { status: 400 })
   }
@@ -1644,8 +1644,8 @@ async function handleStartSession(user: any, patentId: string, data: any) {
       patentId,
       userId: user.id,
       tenantId: user.tenantId,
-      draftingJurisdictions: ['IN'],
-      activeJurisdiction: 'IN'
+      draftingJurisdictions: ['US'],
+      activeJurisdiction: 'US'
     }
   });
 
@@ -1813,7 +1813,7 @@ async function handleSetStage(user: any, patentId: string, data: any) {
     if (normalizedJurisdictions && normalizedJurisdictions.length > 0) {
       updateData.draftingJurisdictions = normalizedJurisdictions
     } else if (!session.draftingJurisdictions || session.draftingJurisdictions.length === 0) {
-      updateData.draftingJurisdictions = ['IN'] // backward-compatible default
+      updateData.draftingJurisdictions = ['US'] // backward-compatible default
     }
 
     const chosenList = Array.from(new Set(((updateData.draftingJurisdictions as string[] | undefined) || session.draftingJurisdictions || []).map((c: string) => (c || '').toUpperCase())))
@@ -1824,7 +1824,7 @@ async function handleSetStage(user: any, patentId: string, data: any) {
     const requestedActive = (activeJurisdiction || '').toUpperCase()
     const resolvedActive = (supported.has(requestedActive) && chosenList.includes(requestedActive))
       ? requestedActive
-      : (chosenList[0] || session.activeJurisdiction || 'IN')
+      : (chosenList[0] || session.activeJurisdiction || 'US')
 
     updateData.activeJurisdiction = resolvedActive
 
@@ -1896,8 +1896,8 @@ async function handleResume(user: any, patentId: string) {
       const updated = await prisma.draftingSession.update({
         where: { id: existing.id },
         data: {
-          draftingJurisdictions: existing.draftingJurisdictions?.length ? existing.draftingJurisdictions : ['IN'],
-          activeJurisdiction: existing.activeJurisdiction || existing.draftingJurisdictions?.[0] || 'IN'
+          draftingJurisdictions: existing.draftingJurisdictions?.length ? existing.draftingJurisdictions : ['US'],
+          activeJurisdiction: existing.activeJurisdiction || existing.draftingJurisdictions?.[0] || 'US'
         }
       })
       return NextResponse.json({ session: updated })
@@ -1910,8 +1910,8 @@ async function handleResume(user: any, patentId: string) {
       patentId,
       userId: user.id,
       tenantId: user.tenantId,
-      draftingJurisdictions: ['IN'],
-      activeJurisdiction: 'IN'
+      draftingJurisdictions: ['US'],
+      activeJurisdiction: 'US'
     }
   })
 
@@ -2710,17 +2710,22 @@ async function handleGenerateDiagramsLLM(user: any, patentId: string, data: any,
     return NextResponse.json({ error: 'Invalid LLM response format' }, { status: 400 })
   }
 
+  // Clear existing figures before generating new ones
+  try {
+    await prisma.figurePlan.deleteMany({ where: { sessionId } })
+    await prisma.diagramSource.deleteMany({ where: { sessionId } })
+  } catch (clearErr) {
+    console.error('Error clearing old figures:', clearErr)
+    // Continue with generation even if clearing fails
+  }
+
   // Persist immediately: assign figure numbers and save PlantUML + titles
   try {
-    const existingPlans = await prisma.figurePlan.findMany({ where: { sessionId } })
-    const occupied = new Set(existingPlans.map(fp => fp.figureNo))
     const saved: Array<{ figureNo: number; title: string }> = []
 
     let candidate = 1
     const nextNo = () => {
-      while (occupied.has(candidate)) candidate++
       const n = candidate
-      occupied.add(n)
       candidate++
       return n
     }
@@ -3163,7 +3168,7 @@ async function handleUploadDiagram(user: any, patentId: string, data: any) {
 }
 
 async function handleGenerateDraft(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
-  const { sessionId, jurisdiction = 'IN', filingType = 'utility' } = data;
+  const { sessionId, jurisdiction = 'US', filingType = 'utility' } = data;
 
   if (!sessionId) {
     return NextResponse.json(
@@ -3201,7 +3206,7 @@ async function handleGenerateDraft(user: any, patentId: string, data: any, reque
 
   const session = baseSession
   // Determine effective jurisdiction (Stage 3.7b)
-  const effectiveJurisdiction = (jurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+  const effectiveJurisdiction = (jurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'US').toUpperCase()
   const preferredLanguage = getPreferredLanguageForJurisdiction(session, effectiveJurisdiction)
   const sourceJurisdiction = resolveSourceOfTruth(session, effectiveJurisdiction)
 
@@ -3308,9 +3313,9 @@ async function handleAutosaveSections(user: any, patentId: string, data: any) {
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const effectiveJurisdiction = (session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+  const effectiveJurisdiction = (session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'US').toUpperCase()
   const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
-  const last = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction)
+  const last = drafts.find((d: any) => (d.jurisdiction || 'US').toUpperCase() === effectiveJurisdiction)
   const merge: any = {
     title: last?.title || '',
     fieldOfInvention: last?.fieldOfInvention || null,
@@ -3402,7 +3407,7 @@ async function handleDeleteAnnexureDraft(user: any, patentId: string, data: any)
     jurisdictions.push(normalized)
   }
   if (jurisdictions.length === 0) {
-    jurisdictions = ['IN']
+    jurisdictions = ['US']
   }
 
   const priorSource = typeof statusMap.__sourceOfTruth === 'string'
@@ -3480,7 +3485,7 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
     }
   }
 
-  const effectiveJurisdiction = (jurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+  const effectiveJurisdiction = (jurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'US').toUpperCase()
 
   // Load latest draft for this jurisdiction (if any) and inject into session for context
   const lastDraftForJurisdiction = await prisma.annexureDraft.findFirst({
@@ -3571,9 +3576,9 @@ async function handleSaveSections(user: any, patentId: string, data: any) {
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  const effectiveJurisdiction = (session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+  const effectiveJurisdiction = (session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'US').toUpperCase()
   const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
-  const last = drafts.find((d: any) => (d.jurisdiction || 'IN').toUpperCase() === effectiveJurisdiction)
+  const last = drafts.find((d: any) => (d.jurisdiction || 'US').toUpperCase() === effectiveJurisdiction)
   const nextVersion = (last?.version || 0) + 1
 
   // Merge patch into latest (or start new)

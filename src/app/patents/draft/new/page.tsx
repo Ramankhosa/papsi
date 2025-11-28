@@ -88,7 +88,7 @@ function NewPatentDraftPageContent() {
         })
         setAvailableCountries(countries)
         if (countries.length > 0) {
-          const defaultSel = countries.find(c => c.code === 'IN')?.code || countries[0].code
+          const defaultSel = countries.find(c => c.code === 'US')?.code || countries.find(c => c.code === 'PCT')?.code || countries[0].code
           setSelectedCodes([defaultSel])
         }
       } catch (e) {
@@ -427,7 +427,7 @@ function NewPatentDraftPageContent() {
                             setSelectedCodes(prev => prev.includes(c.code) ? prev.filter(x => x !== c.code) : [...prev, c.code])
                           }
                         }}
-                        disabled={mode === 'single' && !selectedCodes.includes(c.code) && selectedCodes.length >= 1}
+                        disabled={false}
                       />
                       <div>
                         <div className="text-sm font-medium text-gray-900">{c.label}</div>
