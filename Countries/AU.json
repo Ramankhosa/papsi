@@ -318,13 +318,38 @@
           "overly legalistic boilerplate"
         ]
       },
+      "promptMergeStrategy": "append",
       "sections": {
         "title": {
           "instruction": "Draft a concise technical title for the Australian standard patent application.",
           "constraints": [
             "Do not exceed 500 characters.",
             "Do not use trademarks or the word 'patent'."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Per IP Australia guidelines and Patents Act 1990, draft a title that is brief, technically descriptive, and identifies the subject matter.",
+            "constraints": [
+              "Maximum 500 characters",
+              "No trade names, trade marks, or personal names",
+              "Sentence case, no terminal period"
+            ],
+            "additions": [
+              "Title should align with technical field and claims"
+            ]
+          }
+        },
+        "fieldOfInvention": {
+          "topUp": {
+            "instruction": "Per IP Australia specification guidelines, draft a Technical Field identifying the technical area of the invention.",
+            "constraints": [
+              "1-3 sentences maximum",
+              "State technical field objectively",
+              "No features or advantages"
+            ],
+            "additions": [
+              "May reference IPC/CPC classification areas"
+            ]
+          }
         },
         "field": {
           "instruction": "Draft the Technical Field section.",
@@ -339,14 +364,50 @@
             "Describe relevant prior art and its limitations.",
             "Avoid explicit admissions that particular documents are prior art unless clearly signalled.",
             "Do not state that the invention is obvious or trivial."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Per IP Australia guidelines, draft Background Art describing relevant prior technology without prejudicing patentability.",
+            "constraints": [
+              "Use objective, neutral language",
+              "Avoid suggesting the invention is obvious",
+              "No harmful admissions against novelty/inventive step"
+            ],
+            "additions": [
+              "Australia has no formal IDS requirement but applicants should not deliberately mislead",
+              "Use hedging language where appropriate"
+            ]
+          }
         },
         "summary": {
           "instruction": "Draft the Summary of the Invention section.",
           "constraints": [
             "Outline the technical problem, the solution provided by the invention and its advantageous effects.",
             "Ensure consistency with the independent claims."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Per IP Australia practice, draft a Summary stating technical problem, inventive solution, and advantageous effects.",
+            "constraints": [
+              "Align with independent claims scope",
+              "Use flexible language ('in embodiments', 'according to aspects')",
+              "Include brief statement of advantages"
+            ],
+            "additions": [
+              "Structure: problem → solution → advantages"
+            ]
+          }
+        },
+        "briefDescriptionOfDrawings": {
+          "topUp": {
+            "instruction": "Per IP Australia formatting guidelines, briefly describe each drawing figure.",
+            "constraints": [
+              "One sentence per figure",
+              "Format: 'Fig. X is a [view type] showing [subject]'",
+              "Match figure order in drawings"
+            ],
+            "additions": [
+              "Required if drawings are present"
+            ]
+          }
         },
         "detailed_description": {
           "instruction": "Draft the Description of Embodiments section.",
@@ -355,7 +416,21 @@
             "Disclose the best method known to the applicant of performing the invention.",
             "Include examples and industrial applicability where appropriate.",
             "Reference drawings and reference numerals where applicable."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Per Section 40(2)(a) of the Patents Act 1990, draft a Description of Embodiments fully describing the invention including best method.",
+            "constraints": [
+              "Sufficient detail for skilled person to perform invention",
+              "Disclose best method known to applicant (mandatory in AU)",
+              "Consistent reference numerals matching drawings",
+              "Include practical examples where applicable"
+            ],
+            "additions": [
+              "Australia requires 'best method' disclosure (s.40(2)(aa))",
+              "Description must be clear and complete enough to perform invention",
+              "Include industrial applicability where not self-evident"
+            ]
+          }
         },
         "claims": {
           "instruction": "Draft a full set of claims compliant with Australian patent practice.",
@@ -364,7 +439,21 @@
             "Draft each claim as a single sentence.",
             "Dependent claims may refer to one or more previous claims, including other multiple dependent claims.",
             "All claim features must be supported by the description of embodiments and define a single inventive concept."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Draft claims compliant with Section 40 of the Patents Act 1990. Claims must be clear, succinct, and fairly based on description.",
+            "constraints": [
+              "Each claim as single sentence",
+              "Multiple dependent claims permitted (including on other multiple dependents)",
+              "Claims must be fairly based on disclosed matter",
+              "All claims relate to single inventive concept"
+            ],
+            "additions": [
+              "Australia allows multiple dependent claims on two or more other claims",
+              "Unity follows 'single inventive concept' standard",
+              "Claims must be clear and succinct per s.40(3)"
+            ]
+          }
         },
         "abstract": {
           "instruction": "Draft the Abstract section.",
@@ -372,7 +461,20 @@
             "Aim for 50\u2013150 words; do not exceed 150 words.",
             "Summarize the invention so that key technical features and use can be quickly understood.",
             "Do not use claim-style language."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Per IP Australia guidelines, draft an Abstract of 50-150 words summarizing technical disclosure.",
+            "constraints": [
+              "50-150 words preferred, max 150",
+              "Single paragraph",
+              "Technical summary only—no advantages/marketing",
+              "Enable quick understanding of field and main features"
+            ],
+            "additions": [
+              "IP Australia may amend abstracts exceeding 150 words",
+              "Reference most illustrative figure if drawings present"
+            ]
+          }
         }
       }
     },

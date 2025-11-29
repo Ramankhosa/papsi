@@ -194,16 +194,27 @@ export async function GET(
       return NextResponse.json({ error: 'Project not found' }, { status: 404 })
     }
 
-    const baseDir = path.join(process.cwd(), 'uploads', 'projects', projectId, 'patents', patentId, 'figures')
-    const filePath = path.join(baseDir, filename)
+    const projectDir = path.join(process.cwd(), 'uploads', 'projects', projectId, 'patents', patentId, 'figures')
+    const patentDir = path.join(process.cwd(), 'uploads', 'patents', patentId, 'figures')
+    const primaryPath = path.join(projectDir, filename)
+    const fallbackPath = path.join(patentDir, filename)
 
-    try {
-      const buf = await fs.readFile(filePath)
-      const contentType = isPng ? 'image/png' : 'image/svg+xml'
-      return new Response(buf as any, { status: 200, headers: { 'Content-Type': contentType, 'Cache-Control': 'private, max-age=0' } })
-    } catch {
-      return NextResponse.json({ error: 'File not found' }, { status: 404 })
+    const tryRead = async (p: string) => {
+      try {
+        const buf = await fs.readFile(p)
+        const contentType = isPng ? 'image/png' : 'image/svg+xml'
+        return new Response(buf as any, { status: 200, headers: { 'Content-Type': contentType, 'Cache-Control': 'private, max-age=0' } })
+      } catch {
+        return null
+      }
     }
+
+    const primaryResp = await tryRead(primaryPath)
+    if (primaryResp) return primaryResp
+    const fallbackResp = await tryRead(fallbackPath)
+    if (fallbackResp) return fallbackResp
+
+    return NextResponse.json({ error: 'File not found' }, { status: 404 })
   } catch (error) {
     console.error('GET image error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

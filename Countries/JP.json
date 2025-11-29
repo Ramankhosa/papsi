@@ -530,6 +530,180 @@
     },
     "prompts": {
     "systemPrompt": "You are an expert Japanese patent drafter assisting in the preparation of a Japanese patent specification in compliance with the Japan Patent Office (JPO) practice. Follow the section structure, rules, and validation constraints given in the JSON configuration. Use neutral, technical language, ensure enablement for a person skilled in the art, and maintain consistency across sections.",
+    "promptMergeStrategy": "append",
+    "sections": {
+      "title": {
+        "topUp": {
+          "instruction": "Per JPO practice and Patent Act Article 36, draft a concise technical title that identifies the invention without marketing language or trademarks.",
+          "constraints": [
+            "Maximum 500 characters",
+            "No trade names, trade marks, personal names, or superlatives",
+            "Must be technical and descriptive",
+            "Avoid fanciful or abstract terms"
+          ],
+          "additions": [
+            "Title will be translated to Japanese for official filing"
+          ]
+        }
+      },
+      "fieldOfInvention": {
+        "topUp": {
+          "instruction": "Per JPO specification guidelines, draft a Technical Field section stating the technical area of the invention.",
+          "constraints": [
+            "Neutral technical terminology",
+            "No advantages or problem discussion",
+            "May include classification terms"
+          ],
+          "additions": [
+            "This section corresponds to 【技術分野】 in Japanese filings"
+          ]
+        }
+      },
+      "background": {
+        "topUp": {
+          "instruction": "Per JPO practice, draft Background Art describing conventional technology and prior art relevant to understanding the invention.",
+          "constraints": [
+            "Describe limitations objectively without disparaging specific patents",
+            "Do not fully state problem/solution here - reserve for Summary",
+            "Use neutral language about prior art drawbacks"
+          ],
+          "additions": [
+            "Japan has no formal IDS requirement but applicants should not deliberately conceal known prior art",
+            "This section corresponds to 【背景技術】 in Japanese filings",
+            "Consider separate Citation List section for prior art references"
+          ]
+        }
+      },
+      "summary": {
+        "topUp": {
+          "instruction": "Per JPO practice, draft Summary of Invention with clear problem-solution structure including Technical Problem, Solution to Problem, and Advantageous Effects.",
+          "constraints": [
+            "Use problem-solution structure required by JPO",
+            "Technical Problem: state objective technical problem",
+            "Solution to Problem: describe how invention solves it",
+            "Advantageous Effects: list technical benefits",
+            "Align with independent claims"
+          ],
+          "additions": [
+            "This section corresponds to 【発明の概要】 in Japanese filings",
+            "JPO strongly prefers explicit problem-solution format",
+            "Effects should be technical, not commercial"
+          ]
+        }
+      },
+      "technicalProblem": {
+        "topUp": {
+          "instruction": "Draft the Technical Problem sub-section per JPO requirements, stating the objective technical problem to be solved.",
+          "constraints": [
+            "State problem objectively, not subjectively",
+            "Problem should be recognizable by skilled person",
+            "Solvable by the distinguishing features of the invention"
+          ],
+          "additions": [
+            "This corresponds to 【発明が解決しようとする課題】"
+          ]
+        }
+      },
+      "technicalSolution": {
+        "topUp": {
+          "instruction": "Draft the Solution to Problem sub-section per JPO requirements, describing how the invention solves the technical problem.",
+          "constraints": [
+            "Directly address the Technical Problem",
+            "Explain cause-effect relationship",
+            "Describe technical mechanism"
+          ],
+          "additions": [
+            "This corresponds to 【課題を解決するための手段】"
+          ]
+        }
+      },
+      "advantageousEffects": {
+        "topUp": {
+          "instruction": "Draft the Advantageous Effects sub-section per JPO requirements, listing specific technical advantages.",
+          "constraints": [
+            "List specific, measurable technical advantages",
+            "Support with specification features",
+            "No marketing or commercial language"
+          ],
+          "additions": [
+            "This corresponds to 【発明の効果】"
+          ]
+        }
+      },
+      "briefDescriptionOfDrawings": {
+        "topUp": {
+          "instruction": "Per JPO formatting, provide brief one-sentence description for each drawing figure.",
+          "constraints": [
+            "One sentence per figure",
+            "Format: 'FIG. X is a [view type] of [subject]'",
+            "No detailed operation - reserve for Description of Embodiments"
+          ],
+          "additions": [
+            "This corresponds to 【図面の簡単な説明】"
+          ]
+        }
+      },
+      "detailedDescription": {
+        "topUp": {
+          "instruction": "Per Patent Act Article 36(4)(i), draft Description of Embodiments enabling a skilled person to carry out the invention without undue experimentation.",
+          "constraints": [
+            "Include embodiment regarded as best mode",
+            "Sufficient detail for enablement",
+            "Use consistent reference numerals matching drawings",
+            "Avoid claim-style language"
+          ],
+          "additions": [
+            "This corresponds to 【発明を実施するための形態】",
+            "Japan requires best mode disclosure integrated in this section",
+            "Consider paragraph numbering in format 【0001】"
+          ]
+        }
+      },
+      "industrialApplicability": {
+        "topUp": {
+          "instruction": "Draft Industrial Applicability section if applicability is not self-evident from other sections.",
+          "constraints": [
+            "Explain how invention can be used in industry",
+            "Specific practical applications"
+          ],
+          "additions": [
+            "This corresponds to 【産業上の利用可能性】",
+            "Optional - can be omitted if self-evident"
+          ]
+        }
+      },
+      "claims": {
+        "topUp": {
+          "instruction": "Draft claims per Patent Act Article 36 and JPO Examination Guidelines, ensuring support and clarity.",
+          "constraints": [
+            "Each claim supported by description",
+            "Clear, consistent terminology",
+            "Single general inventive concept (unity)",
+            "Multiple dependent claims allowed but cannot depend on other multiple dependents"
+          ],
+          "additions": [
+            "Fee based on total number of claims, not just independents",
+            "Multiple independent claims for different categories (product, method) are acceptable",
+            "Reference numerals may be included in claims"
+          ]
+        }
+      },
+      "abstract": {
+        "topUp": {
+          "instruction": "Per JPO practice, draft a concise Abstract summarizing the gist of the invention.",
+          "constraints": [
+            "Single paragraph, ~150 words recommended (max 200)",
+            "Technical summary only",
+            "No advantages, marketing language, or claim references",
+            "~800 characters maximum for Japanese version"
+          ],
+          "additions": [
+            "Abstract may be shortened by JPO/JAPIO on publication",
+            "This is for information/searching purposes only"
+          ]
+        }
+      }
+    },
     "sectionPrompts": {
     "title": {
     "role": "assistant",

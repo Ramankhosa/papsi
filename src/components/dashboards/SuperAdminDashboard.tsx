@@ -257,6 +257,24 @@ export default function SuperAdminDashboard() {
                 User wise service usage
               </button>
               <button
+                onClick={() => router.push('/super-admin/jurisdiction-config')}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-amber-600 hover:bg-amber-700"
+              >
+                🏗️ Jurisdiction Config
+              </button>
+              <button
+                onClick={() => router.push('/super-admin/countries')}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700"
+              >
+                🌍 Countries
+              </button>
+              <button
+                onClick={() => router.push('/super-admin/section-prompts')}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-pink-600 hover:bg-pink-700"
+              >
+                📝 Section Prompts
+              </button>
+              <button
                 onClick={() => setShowCreateTenant(true)}
                 className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700"
               >

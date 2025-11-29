@@ -33,17 +33,17 @@ export default function CountryWiseDraftStage({ session, patent, onComplete, onR
   const relatedCount = Array.isArray(session?.relatedArtSelections) ? session.relatedArtSelections.length : 0
 
   useEffect(() => {
-    const fetchCountryProfiles = async () => {
+    const fetchCountries = async () => {
       try {
         setLoading(true)
-        const res = await fetch('/api/country-profiles', {
+        const res = await fetch('/api/country-names', {
           headers: {
             'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
           }
         })
 
         if (!res.ok) {
-          throw new Error(`Failed to load country profiles (${res.status})`)
+          throw new Error(`Failed to load countries (${res.status})`)
         }
 
         const data = await res.json()
@@ -65,18 +65,34 @@ export default function CountryWiseDraftStage({ session, patent, onComplete, onR
           return a.label.localeCompare(b.label)
         })
 
-        setAvailableCountries(countries)
+        // Add a test-only superset option to draft all base sections (falls back when no profile)
+        const supersetOption: CountryOption = {
+          code: 'SUPERSET',
+          label: 'Superset (All Sections)',
+          description: 'Test mode: drafts against the full superset with default prompts (no country profile).',
+          continent: 'Test',
+          office: 'Test Harness',
+          applicationTypes: [],
+          languages: ['en']
+        }
 
-        // Default selection - use saved selections or prefer IN if available
+        setAvailableCountries([...countries, supersetOption])
+
+        // Default selection - use saved selections or prefer IN (India) as default
         const preset = Array.isArray(session?.draftingJurisdictions) && session.draftingJurisdictions.length > 0
           ? session.draftingJurisdictions.map((c: string) => (c || '').toUpperCase())
           : []
         const fallback = session?.activeJurisdiction
           ? [String(session.activeJurisdiction).toUpperCase()]
           : []
+        // Default to IN (India) if no selections exist
         const defaultSelection = preset.length > 0
           ? preset
-          : (fallback.length > 0 ? fallback : (countries.find(c => c.code === 'US')?.code ? ['US'] : (countries.find(c => c.code === 'PCT')?.code ? ['PCT'] : (countries[0]?.code ? [countries[0].code] : []))))
+          : (fallback.length > 0 
+              ? fallback 
+              : (countries.find(c => c.code === 'IN')?.code 
+                  ? ['IN'] 
+                  : (countries[0]?.code ? [countries[0].code] : [])))
 
         if (defaultSelection.length > 0) {
           setSelectedCodes(defaultSelection)
@@ -95,14 +111,14 @@ export default function CountryWiseDraftStage({ session, patent, onComplete, onR
         }
 
       } catch (err) {
-        console.error('Error fetching country profiles:', err)
-        setError('Failed to load country profiles. Please try again.')
+        console.error('Error fetching countries:', err)
+        setError('Failed to load countries. Please try again.')
       } finally {
         setLoading(false)
       }
     }
 
-    fetchCountryProfiles()
+    fetchCountries()
   }, [session?.draftingJurisdictions, session?.activeJurisdiction])
 
   const toggleCode = (code: string) => {
@@ -183,9 +199,9 @@ export default function CountryWiseDraftStage({ session, patent, onComplete, onR
   return (
     <div className="p-8">
       <div className="mb-8">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Jurisdiction Selection</h2>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Stage 3.7: Jurisdiction & Language</h2>
         <p className="text-gray-600">
-          Set jurisdictions before drafting anything else so prompts, figures, and exports follow the right country specifications.
+          Choose the country/countries and preferred language before drafting so downstream prompts, figures, and exports follow the correct rules.
         </p>
       </div>
 
@@ -230,58 +246,72 @@ export default function CountryWiseDraftStage({ session, patent, onComplete, onR
                 </p>
               </div>
             ) : (
-              <div className="space-y-3">
-                {availableCountries.map(c => (
-                  <label
-                    key={c.code}
-                    className="flex items-start gap-3 rounded-md border border-gray-200 px-3 py-2 hover:bg-gray-50 cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-1 h-4 w-4 text-indigo-600 border-gray-300 rounded"
-                      checked={selectedCodes.includes(c.code)}
-                      onChange={() => {
-                        if (mode === 'single') {
-                          setSelectedCodes([c.code])
-                        } else {
-                          toggleCode(c.code)
-                        }
-                      }}
-                      disabled={false}
-                    />
-                    <div className="flex-1">
-                      <div className="text-sm font-medium text-gray-900">{c.label}</div>
-                      <div className="text-xs text-gray-600">{c.description}</div>
-                      <div className="text-xs text-gray-600 mt-1">
-                        Languages: {c.languages?.length ? c.languages.join(', ') : 'N/A'}
-                      </div>
-                      {Array.isArray(c.languages) && c.languages.length > 1 && (
-                        <div className="mt-2">
-                          <label className="text-xs text-gray-700 mr-2">Preferred language</label>
-                          <select
-                            value={languageByCode[c.code] || c.languages[0]}
-                            onChange={(e) => {
-                              const val = e.target.value
-                              setLanguageByCode(prev => ({ ...prev, [c.code]: val }))
+              <div className="space-y-4">
+                {Object.entries(
+                  availableCountries.reduce<Record<string, CountryOption[]>>((acc, c) => {
+                    const key = c.continent || 'Unknown'
+                    acc[key] = acc[key] || []
+                    acc[key].push(c)
+                    return acc
+                  }, {})
+                ).sort(([a], [b]) => a.localeCompare(b)).map(([continent, list]) => (
+                  <div key={continent} className="space-y-2">
+                    <div className="text-xs font-semibold text-gray-700 uppercase tracking-wide">{continent}</div>
+                    <div className="space-y-3">
+                      {list.map(c => (
+                        <label
+                          key={c.code}
+                          className="flex items-start gap-3 rounded-md border border-gray-200 px-3 py-2 hover:bg-gray-50 cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            className="mt-1 h-4 w-4 text-indigo-600 border-gray-300 rounded"
+                            checked={selectedCodes.includes(c.code)}
+                            onChange={() => {
+                              if (mode === 'single') {
+                                setSelectedCodes([c.code])
+                              } else {
+                                toggleCode(c.code)
+                              }
                             }}
-                            className="text-xs border rounded px-2 py-1"
-                          >
-                            {c.languages.map(lang => (
-                              <option key={lang} value={lang}>{lang}</option>
-                            ))}
-                          </select>
-                        </div>
-                      )}
-                      {Array.isArray(c.languages) && c.languages.length === 1 && (
-                        <div className="mt-2 text-xs text-gray-700">
-                          Preferred language: {c.languages[0]}
-                        </div>
-                      )}
-                      <div className="text-xs text-gray-500 mt-1">
-                        {c.continent} • {c.office}
-                      </div>
+                            disabled={false}
+                          />
+                          <div className="flex-1">
+                            <div className="text-sm font-medium text-gray-900">{c.label}</div>
+                            <div className="text-xs text-gray-600">{c.description}</div>
+                            <div className="text-xs text-gray-600 mt-1">
+                              Languages: {c.languages?.length ? c.languages.join(', ') : 'N/A'}
+                            </div>
+                            {Array.isArray(c.languages) && c.languages.length > 1 && (
+                              <div className="mt-2">
+                                <label className="text-xs text-gray-700 mr-2">Preferred language</label>
+                                <select
+                                  value={languageByCode[c.code] || c.languages[0]}
+                                  onChange={(e) => {
+                                    const val = e.target.value
+                                    setLanguageByCode(prev => ({ ...prev, [c.code]: val }))
+                                  }}
+                                  className="text-xs border rounded px-2 py-1"
+                                >
+                                  {c.languages.map(lang => (
+                                    <option key={lang} value={lang}>{lang}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
+                            {Array.isArray(c.languages) && c.languages.length === 1 && (
+                              <div className="mt-2 text-xs text-gray-700">
+                                Preferred language: {c.languages[0]}
+                              </div>
+                            )}
+                            <div className="text-xs text-gray-500 mt-1">
+                              {c.continent} • {c.office}
+                            </div>
+                          </div>
+                        </label>
+                      ))}
                     </div>
-                  </label>
+                  </div>
                 ))}
               </div>
             )}

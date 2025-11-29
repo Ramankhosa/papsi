@@ -282,27 +282,72 @@
           "comparisons implying obviousness"
         ]
       },
+      "promptMergeStrategy": "append",
       "sections": {
         "title": {
           "instruction": "Draft a concise technical title suitable for a Canadian patent application.",
           "constraints": [
             "Under 500 characters.",
             "Avoid trademarks and the word 'patent'."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Per CIPO guidelines and Patent Rules, draft a title that is brief, technically descriptive, and identifies the invention.",
+            "constraints": [
+              "Maximum 500 characters",
+              "No trade names, trade marks, or personal names",
+              "Suitable for both English and French examination"
+            ],
+            "additions": [
+              "Canada is bilingual - title should be clear in both languages"
+            ]
+          }
         },
         "field": {
           "instruction": "Draft the Technical Field section.",
           "constraints": [
             "Limit to 1–3 sentences.",
             "Specify the technical field without describing embodiments or advantages."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Per CIPO practice, draft Technical Field indicating the area to which the invention pertains.",
+            "constraints": [
+              "1-3 sentences",
+              "Technical area only",
+              "No features or advantages"
+            ],
+            "additions": [
+              "Should align with abstract requirements"
+            ]
+          }
+        },
+        "fieldOfInvention": {
+          "topUp": {
+            "instruction": "Per CIPO practice, draft Technical Field indicating the technical area of the invention.",
+            "constraints": [
+              "1-3 sentences",
+              "No embodiments or advantages"
+            ],
+            "additions": []
+          }
         },
         "background": {
           "instruction": "Draft the Background Art section.",
           "constraints": [
             "Summarize prior art known to the applicant and key limitations.",
             "Avoid explicit admissions that cited references are prior art unless intentional."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Per CIPO guidelines, draft Background Art describing relevant prior technology without prejudicing patentability.",
+            "constraints": [
+              "Use objective, neutral language",
+              "Summarize relevant prior art and limitations",
+              "Avoid harmful admissions"
+            ],
+            "additions": [
+              "Canada has duty of candour but no formal IDS like USPTO",
+              "Do not deliberately conceal material prior art"
+            ]
+          }
         },
         "summary": {
           "instruction": "Draft the Disclosure of Invention section.",
@@ -310,7 +355,29 @@
             "State the technical problem and the inventive solution.",
             "Ensure consistency with the independent claims.",
             "Avoid promotional or value-based wording."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Per Canadian Patent Rules, draft Disclosure of Invention explaining the problem, solution, and essential features.",
+            "constraints": [
+              "Technical problem and solution",
+              "Align with independent claims",
+              "No promotional language"
+            ],
+            "additions": [
+              "Disclosure should meet s.27(3) of the Patent Act requirements"
+            ]
+          }
+        },
+        "briefDescriptionOfDrawings": {
+          "importFiguresDirectly": true,
+          "topUp": {
+            "instruction": "Per CIPO formatting guidelines, briefly describe each drawing figure.",
+            "constraints": [
+              "One sentence per figure",
+              "Required if drawings are present"
+            ],
+            "additions": []
+          }
         },
         "modes_for_carrying_out": {
           "instruction": "Draft the Mode(s) for Carrying Out the Invention.",
@@ -318,7 +385,34 @@
             "Describe embodiments with enough detail for a skilled person to work the invention (s.27(3)).",
             "Reference drawings where applicable.",
             "Ensure each independent claim has at least one supporting embodiment."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Per s.27(3) of the Canadian Patent Act, draft Mode(s) for Carrying Out the Invention correctly and fully describing the invention.",
+            "constraints": [
+              "At least one workable mode must be described",
+              "Sufficient detail for skilled person to work invention",
+              "Each independent claim needs supporting embodiment",
+              "Reference drawings with consistent numerals"
+            ],
+            "additions": [
+              "Canada does NOT require best mode disclosure (unlike US)",
+              "But must correctly and fully describe at least one workable mode",
+              "Preferred embodiments encouraged but not mandatory"
+            ]
+          }
+        },
+        "detailedDescription": {
+          "topUp": {
+            "instruction": "Per s.27(3) of the Canadian Patent Act, draft detailed description correctly and fully describing the invention.",
+            "constraints": [
+              "At least one workable mode",
+              "Sufficient for skilled person to practice",
+              "Support for all claims"
+            ],
+            "additions": [
+              "No best mode requirement in Canada"
+            ]
+          }
         },
         "claims": {
           "instruction": "Draft a full set of claims compliant with Canadian practice.",
@@ -326,7 +420,21 @@
             "Use 'comprising' unless a closed transition is required.",
             "Multiple dependent claims permitted.",
             "Claims must be clear, concise and supported by the description."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Per Patent Rules and CIPO Manual of Patent Office Practice (MOPOP), draft claims that are clear, concise, and supported.",
+            "constraints": [
+              "Clear and concise language",
+              "Multiple dependent claims allowed (including on other multiple dependents)",
+              "Single inventive concept (unity)",
+              "All features supported by description"
+            ],
+            "additions": [
+              "No per-claim fees for excess claims in Canada",
+              "Unity assessed under 'single general inventive concept' standard",
+              "Reference numerals may be included"
+            ]
+          }
         },
         "abstract": {
           "instruction": "Draft the Abstract.",
@@ -335,7 +443,20 @@
             "Single paragraph.",
             "State the technical field, problem, solution and principal use.",
             "Do not include advantages, value statements or claim language."
-          ]
+          ],
+          "topUp": {
+            "instruction": "Per CIPO abstract guidelines, draft an Abstract summarizing the technical disclosure for searching purposes.",
+            "constraints": [
+              "Maximum 150 words",
+              "Single paragraph",
+              "Technical field, problem, solution, principal use",
+              "No advantages, value statements, or claim language"
+            ],
+            "additions": [
+              "Abstract is for information/search purposes only",
+              "Reference illustrative figure if drawings present"
+            ]
+          }
         }
       }
     },

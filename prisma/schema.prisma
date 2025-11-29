@@ -1242,6 +1242,8 @@ model DraftingSession {
   // Stage 3.5 relations
   relatedArtRuns       RelatedArtRun[]
   relatedArtSelections RelatedArtSelection[]
+  // User section instructions
+  userSectionInstructions UserSectionInstruction[]
 
   @@map("drafting_sessions")
 }
@@ -1348,7 +1350,8 @@ model AnnexureDraft {
   version   Int    @default(1)
   jurisdiction String @default("IN")
 
-  // Draft sections
+  // === LEGACY COLUMNS (kept for backward compatibility) ===
+  // These columns are still used for common sections across all jurisdictions
   title                      String
   fieldOfInvention           String?
   background                 String?
@@ -1360,6 +1363,12 @@ model AnnexureDraft {
   abstract                   String?
   industrialApplicability    String?
   listOfNumerals             String?
+
+  // === SCALABLE SECTION STORAGE ===
+  // JSON column for dynamic sections not covered by legacy columns
+  // Stores: { "preamble": "...", "objectsOfInvention": "...", "technicalProblem": "...", etc. }
+  // This allows new jurisdictions to add custom sections without schema changes
+  extraSections Json? @default("{}")
 
   // Metadata
   fullDraftText    String // Complete assembled draft
@@ -1718,16 +1727,52 @@ model CountryProfile {
   @@map("country_profiles")
 }
 
+// Superset sections - the universal foundation for all patent drafting
+// These are the canonical sections that all countries map to
+model SupersetSection {
+  id            String   @id @default(cuid())
+  sectionKey    String   @unique @map("section_key") // e.g., "title", "background", "claims"
+  displayOrder  Int      @map("display_order") // Order in the drafting flow
+  label         String   // Display label: "Title of the Invention"
+  description   String?  @db.Text // Description of what this section contains
+  instruction   String   @db.Text // Base prompt instruction for LLM
+  constraints   Json     @default("[]") // Base constraints array
+  isRequired    Boolean  @default(true) @map("is_required") // Default required status
+  isActive      Boolean  @default(true) @map("is_active") // Can be disabled without deleting
+  createdBy     String?  @map("created_by")
+  updatedBy     String?  @map("updated_by")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  // Note: Mappings relation defined at application level for flexibility
+  // mappings CountrySectionMapping[]
+
+  @@index([displayOrder])
+  @@index([isActive])
+  @@map("superset_sections")
+}
+
 // Mapping of canonical superset sections to country-specific headings/labels
 model CountrySectionMapping {
   id           String   @id @default(cuid())
   countryCode  String   @map("country_code")
   supersetCode String   @map("superset_code") // e.g., "01. Title", "05. Background"
+  sectionKey   String   @map("section_key") // canonical superset key, e.g., "title", "background"
   heading      String   // Country-specific heading text (may be N/A)
+  isRequired   Boolean  @default(true) @map("is_required") // Whether this section is required for this country
+  isEnabled    Boolean  @default(true) @map("is_enabled") // Whether to include in drafting for this country
+  displayOrder Int?     @map("display_order") // Country-specific order override
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
+  // Relation to superset section (optional - can be enforced later after seeding)
+  // Note: Foreign key relationship is intentionally soft to allow incremental data migration
+  // supersetSection SupersetSection? @relation(fields: [sectionKey], references: [sectionKey], onDelete: Restrict)
+
   @@unique([countryCode, supersetCode])
+  @@unique([countryCode, sectionKey])
+  @@index([countryCode])
+  @@index([sectionKey])
   @@map("country_section_mappings")
 }
 
@@ -1735,8 +1780,88 @@ model CountrySectionMapping {
 model CountryName {
   code      String   @id @map("code")
   name      String
+  continent String   @default("Unknown")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
   @@map("country_names")
+}
+
+// Country-specific top-up prompts for sections (database-driven)
+model CountrySectionPrompt {
+  id          String   @id @default(cuid())
+  countryCode String   @map("country_code")
+  sectionKey  String   @map("section_key") // canonical key: "title", "background", "objectsOfInvention", etc.
+  instruction String   @db.Text // Top-up instruction to merge with base superset prompt
+  constraints Json     @default("[]") // Array of constraint strings
+  additions   Json?    @default("[]") // Array of additional guidance strings
+  importFiguresDirectly Boolean @default(false) @map("import_figures_directly") // When true, bypass LLM and directly import figure titles
+  version     Int      @default(1)
+  status      CountrySectionPromptStatus @default(ACTIVE)
+  createdBy   String?  @map("created_by")
+  updatedBy   String?  @map("updated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Version history relation
+  history     CountrySectionPromptHistory[]
+
+  @@unique([countryCode, sectionKey], name: "country_section_unique")
+  @@index([countryCode])
+  @@index([sectionKey])
+  @@index([status])
+  @@map("country_section_prompts")
+}
+
+enum CountrySectionPromptStatus {
+  ACTIVE
+  DRAFT
+  ARCHIVED
+}
+
+// Audit trail for prompt changes
+model CountrySectionPromptHistory {
+  id           String   @id @default(cuid())
+  promptId     String   @map("prompt_id")
+  countryCode  String   @map("country_code")
+  sectionKey   String   @map("section_key")
+  instruction  String   @db.Text
+  constraints  Json     @default("[]")
+  additions    Json?    @default("[]")
+  version      Int
+  changeType   String   @map("change_type") // CREATE, UPDATE, ARCHIVE, RESTORE
+  changeReason String?  @map("change_reason")
+  changedBy    String?  @map("changed_by")
+  changedAt    DateTime @default(now()) @map("changed_at")
+
+  // Relation to parent prompt
+  prompt       CountrySectionPrompt @relation(fields: [promptId], references: [id], onDelete: Cascade)
+
+  @@index([promptId])
+  @@index([countryCode, sectionKey])
+  @@map("country_section_prompt_history")
+}
+
+// User-specific section instructions per drafting session
+// This allows users to customize prompts for individual drafts
+model UserSectionInstruction {
+  id          String   @id @default(cuid())
+  sessionId   String   @map("session_id")
+  sectionKey  String   @map("section_key")
+  instruction String   @db.Text // User's custom instruction for this section
+  emphasis    String?  @db.Text // What to emphasize/focus on
+  avoid       String?  @db.Text // What to avoid/exclude
+  style       String?  // "formal", "technical", "concise", etc.
+  wordCount   Int?     @map("word_count") // Target word count override
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // Relation to drafting session
+  session     DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, sectionKey])
+  @@index([sessionId])
+  @@index([sectionKey])
+  @@map("user_section_instructions")
 }

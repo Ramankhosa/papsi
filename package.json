@@ -19,6 +19,8 @@
     "superadminviewerbirth": "node scripts/create-super-admin-viewer.js ramandeep.singh@lpu.co.in",
     "db:migrate": "prisma migrate dev",
     "db:seed": "node scripts/seed-plans-hierarchy.js",
+    "db:seed:comprehensive": "node scripts/comprehensive-seed.js",
+    "db:export": "node scripts/comprehensive-seed.js --export-only",
     "import:local-patents": "node scripts/import-local-patents-from-csv.js patients11.csv",
     "seed:adminplans": "node scripts/adminplans-seed.js"
   },
@@ -56,6 +58,7 @@
     "bcryptjs": "^2.4.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "csv-parser": "^3.2.0",
     "date-fns": "^4.1.0",
     "docx": "^9.5.1",
     "dotenv": "^17.2.3",

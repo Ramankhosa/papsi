@@ -125,15 +125,94 @@ export async function getValidationRules(countryCode: string, sectionId: string)
 
 /**
  * Get drafting prompts for a specific country and section
+ * 
+ * UPDATED: Now uses prompt merger to combine base superset prompts
+ * with country-specific top-up instructions for jurisdiction compliance.
+ * 
+ * @param countryCode - ISO country code (e.g., "IN", "US", "EP")
+ * @param sectionId - Section identifier (supports various formats)
+ * @param sessionId - Optional session ID for user instructions
+ * @returns Merged prompt with instruction, constraints, and debug info
  */
-export async function getDraftingPrompts(countryCode: string, sectionId: string): Promise<{
+export async function getDraftingPrompts(countryCode: string, sectionId: string, sessionId?: string): Promise<{
   instruction: string
   constraints: string[]
+  importFiguresDirectly?: boolean // When true, bypass LLM and import figure titles directly
+  // Debug info for B+T+U panel
+  debug?: {
+    hasBase: boolean
+    hasTopUp: boolean
+    hasUser: boolean
+    topUpSource: 'db' | 'json' | null
+    basePreview?: string
+    topUpPreview?: string
+    sectionKey: string
+    mergeStrategy: string
+  }
 } | null> {
+  // Use the new prompt merger for combined base + country top-up
+  const { getMergedPrompt } = await import('./prompt-merger-service')
+  
+  const mergedPrompt = await getMergedPrompt(countryCode, sectionId, sessionId)
+  
+  if (mergedPrompt) {
+    return {
+      instruction: mergedPrompt.instruction,
+      constraints: mergedPrompt.constraints,
+      importFiguresDirectly: mergedPrompt.importFiguresDirectly,
+      debug: {
+        hasBase: mergedPrompt.hasBase,
+        hasTopUp: mergedPrompt.hasTopUp,
+        hasUser: mergedPrompt.hasUser,
+        topUpSource: mergedPrompt.topUpSource || null,
+        basePreview: mergedPrompt.basePreview,
+        topUpPreview: mergedPrompt.topUpPreview,
+        sectionKey: mergedPrompt.sectionKey,
+        mergeStrategy: mergedPrompt.mergeStrategy
+      }
+    }
+  }
+  
+  // Fallback: try superset prompts directly
+  const { SUPERSET_PROMPTS } = await import('./drafting-service')
+  if (SUPERSET_PROMPTS[sectionId]) {
+    return {
+      ...SUPERSET_PROMPTS[sectionId],
+      debug: {
+        hasBase: true,
+        hasTopUp: false,
+        hasUser: false,
+        topUpSource: null,
+        basePreview: SUPERSET_PROMPTS[sectionId].instruction?.substring(0, 100),
+        sectionKey: sectionId,
+        mergeStrategy: 'none'
+      }
+    }
+  }
+
+  // Final fallback: country-specific prompts from JSON only
   const profile = await getCountryProfile(countryCode)
   if (!profile) return null
 
-  return profile.profileData.prompts?.sections?.[sectionId] || null
+  const jsonPrompt = profile.profileData.prompts?.sections?.[sectionId]
+  if (jsonPrompt) {
+    return {
+      instruction: jsonPrompt.instruction || '',
+      constraints: jsonPrompt.constraints || [],
+      importFiguresDirectly: jsonPrompt.importFiguresDirectly === true,
+      debug: {
+        hasBase: false,
+        hasTopUp: true,
+        hasUser: false,
+        topUpSource: 'json',
+        topUpPreview: jsonPrompt.instruction?.substring(0, 100),
+        sectionKey: sectionId,
+        mergeStrategy: 'json-only'
+      }
+    }
+  }
+  
+  return null
 }
 
 /**

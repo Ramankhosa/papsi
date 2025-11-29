@@ -10,6 +10,374 @@ import {
 } from '@/lib/country-profile-service';
 import crypto from 'crypto';
 
+// Hard-coded Superset Section Prompts (Country-Neutral Base Prompts)
+// Exported for use by prompt-merger-service and country-profile-service
+export const SUPERSET_PROMPTS: Record<string, { instruction: string; constraints: string[] }> = {
+  'title': {
+    instruction: `**Role:** Formalities Officer (US/EP/PCT Compliance).
+
+**Task:** Generate a strict, descriptive Title.
+
+**Input Data:** {{ABSTRACT_OR_SUMMARY}}
+
+**Drafting Logic (Chain-of-Thought):**
+
+1. **Analyze Subject:** Is this a System, Method, Apparatus, or Composition?
+
+2. **Identify Core Function:** What is the technical function (e.g., "compressing video"), not the result (e.g., "watching movies faster").
+
+3. **Filter Profanity:** Check for and remove banned words: *Novel, Improved, Smart, Intelligent, New, Best*.
+
+4. **Format:** Remove any starting articles ("A", "The").
+
+**Output Constraint:** Maximum 15 words. Sentence case. No period at the end.`,
+    constraints: [
+      'Maximum 15 words',
+      'Sentence case',
+      'No period at the end',
+      'No banned words: Novel, Improved, Smart, Intelligent, New, Best',
+      'Remove starting articles (A, The)'
+    ]
+  },
+
+  'preamble': {
+    instruction: `**Role:** Legal Formalities Engine.
+
+**Task:** Generate the mandatory statutory preamble *only if required*.
+
+**Input Data:** {{COUNTRY_CODE}}, {{FILING_TYPE}} (Provisional/Complete)
+
+**Drafting Logic:**
+
+1. **Check Jurisdiction:**
+
+   * IF Country == 'IN' (India) OR 'PK' (Pakistan):
+
+       * IF Filing == 'Provisional': Output "The following specification describes the invention."
+
+       * IF Filing == 'Complete': Output "The following specification particularly describes the invention and the manner in which it is to be performed."
+
+   * IF Country == 'BD' (Bangladesh): Output "The following specification particularly describes and ascertains the nature of the invention and the manner in which the same is to be performed."
+
+   * IF Country == 'ZA' (South Africa) OR 'NZ': Output "The following statement is a full description of this invention, including the best method of performing it known to me/us:"
+
+2. **Default:** ELSE Return [EMPTY_STRING].`,
+    constraints: [
+      'Only output preamble if required by jurisdiction',
+      'Use exact legal wording for each country',
+      'Return empty string if not required'
+    ]
+  },
+
+  'cross_reference': {
+    instruction: `**Role:** Patent Paralegal.
+
+**Task:** Draft the Priority and Government Rights paragraph.
+
+**Input Data:** {{PARENT_APPS_LIST}}, {{GOV_CONTRACT_DETAILS}}
+
+**Drafting Logic:**
+
+1. **Priority Chain:**
+
+   * Sort parent apps from Newest to Oldest.
+
+   * Draft a single continuous sentence: *"This application claims the benefit of priority to [App X], filed [Date]..."*
+
+   * *Constraint:* Ensure correct relationship terms (Continuation, Divisional, CIP).
+
+2. **Gov Rights Check:**
+
+   * IF contract details exist, draft: *"This invention was made with government support under [Contract ID] awarded by [Agency]. The government has certain rights in the invention."*
+
+   * ELSE output nothing for this part.`,
+    constraints: [
+      'Sort parent applications from newest to oldest',
+      'Use correct relationship terms (Continuation, Divisional, CIP)',
+      'Include government rights only if contract details exist'
+    ]
+  },
+
+  'field': {
+    instruction: `**Role:** Patent Drafter (Neutral Tone).
+
+**Task:** Draft the "Technical Field" section using the Funnel Method.
+
+**Input Data:** {{INVENTION_TITLE}}, {{CORE_KEYWORDS}}
+
+**Drafting Logic:**
+
+1. **Broad Category:** Identify the general IPC class area (e.g., "Wireless Communication").
+
+2. **Specific Niche:** Identify the specific sub-field (e.g., "Antenna modulation techniques").
+
+3. **Combine:** Draft "The present disclosure relates generally to [Broad], and more particularly to [Specific]."
+
+4. **Safety Check:** Do NOT use the word "Invention" (use "Disclosure" or "Subject Matter"). Do NOT use "Novel" or "New".`,
+    constraints: [
+      'Use funnel method: broad to specific',
+      'Do not use word "Invention"',
+      'Do not use "Novel" or "New"',
+      'Maximum 1-2 sentences'
+    ]
+  },
+
+  'background': {
+    instruction: `**Role:** Defensive Patent Strategist.
+
+**Task:** Draft the Background *without* admitting obviousness.
+
+**Input Data:** {{PRIOR_ART_SUMMARY}}, {{PROBLEM_STATEMENT}}
+
+**Drafting Logic (Chain-of-Thought):**
+
+1. **Describe Convention:** Describe how the task is typically performed currently. Use safe words: *"Conventionally," "Typically," "In some scenarios."*
+
+   * *Constraint:* NEVER say "It is well known that..." or "Prior art teaches..."
+
+   * *Do NOT use legal/claim-like structure (e.g., "A system comprising…") in background language.
+
+2. **Identify the Gap:** State the limitation of the conventional method objectively.
+
+   * *Bad:* "The old way is slow."
+
+   * *Good:* "Conventional systems may experience increased latency under high load."
+
+3. **Stop:** Do NOT summarize the solution here.`,
+    constraints: [
+      'Never admit obviousness',
+      'Use safe words: Conventionally, Typically, In some scenarios',
+      'Do not use legal/claim-like structure',
+      'Maximum 2 paragraphs',
+      'State limitations objectively'
+    ]
+  },
+
+  'objects': {
+    instruction: `**Role:** Patent Agent (Commonwealth Specialist).
+
+**Task:** List the objectives (required for India/Pakistan/Mexico/South Africa/UAE).
+
+**Input Data:** {{ADVANTAGES_LIST}}, {{PROBLEM_STATEMENT}}, {{PRIOR_ART_SUMMARY}}
+
+**Drafting Logic:**
+
+1. **Format:** Create a numbered or bulleted list of objectives.
+
+2. **Phrasing:** Start every sentence with *"The principal object of the present invention is to..."*, *"An object of the present disclosure is to..."* or *"Another object of this invention is to..."*
+
+   * *Constraint:* NEVER say "The object..." (singular definite article implies there is only one, and if you fail it, the patent may be weakened).
+
+3. **Focus:** Describe the *result* achieved (e.g., "to improve efficiency", "to overcome the limitations of prior art"), not the *means* of achieving it.
+
+4. **Connection to Claims:** Each objective should correlate directly with features mentioned in the claims.
+
+5. **Prior Art Acknowledgment:** Briefly acknowledge the closest prior art and clearly distinguish how the invention improves upon it.`,
+    constraints: [
+      'Start with "The principal object", "An object" or "Another object" (never just "The object")',
+      'Describe results achieved, not the means of achieving them',
+      'Use list format (numbered or bulleted)',
+      'Each objective should correlate with claim features',
+      'Do not admit non-patentability or that invention is obvious',
+      'Avoid vague or non-technical goals',
+      'Do not overstate benefits beyond what is demonstrable'
+    ]
+  },
+
+  // Alias for objectsOfInvention (same as 'objects')
+  'objectsOfInvention': {
+    instruction: `**Role:** Patent Agent (Commonwealth Specialist).
+
+**Task:** List the objectives (required for India/Pakistan/Mexico/South Africa/UAE).
+
+**Input Data:** {{ADVANTAGES_LIST}}, {{PROBLEM_STATEMENT}}, {{PRIOR_ART_SUMMARY}}
+
+**Drafting Logic:**
+
+1. **Format:** Create a numbered or bulleted list of objectives.
+
+2. **Phrasing:** Start every sentence with *"The principal object of the present invention is to..."*, *"An object of the present disclosure is to..."* or *"Another object of this invention is to..."*
+
+   * *Constraint:* NEVER say "The object..." (singular definite article implies there is only one, and if you fail it, the patent may be weakened).
+
+3. **Focus:** Describe the *result* achieved (e.g., "to improve efficiency", "to overcome the limitations of prior art"), not the *means* of achieving it.
+
+4. **Connection to Claims:** Each objective should correlate directly with features mentioned in the claims.
+
+5. **Prior Art Acknowledgment:** Briefly acknowledge the closest prior art and clearly distinguish how the invention improves upon it.`,
+    constraints: [
+      'Start with "The principal object", "An object" or "Another object" (never just "The object")',
+      'Describe results achieved, not the means of achieving them',
+      'Use list format (numbered or bulleted)',
+      'Each objective should correlate with claim features',
+      'Do not admit non-patentability or that invention is obvious',
+      'Avoid vague or non-technical goals',
+      'Do not overstate benefits beyond what is demonstrable'
+    ]
+  },
+
+  'summary': {
+    instruction: `**Role:** Senior Patent Attorney.
+
+**Task:** Draft a Summary that strictly mirrors the Independent Claims.
+
+**Input Data:** {{INDEPENDENT_CLAIMS}}, {{KEY_EMBODIMENTS}}
+
+**Drafting Logic (Chain-of-Thought):**
+
+1. **Mirroring:** Paraphrase the Independent Claim 1 into a narrative sentence. *"In one aspect, a method comprises..."*
+
+2. **Softening:** Change definitive words ("consisting of") to permissive words ("including", "can", "may").
+
+3. **Variations:** Add 1-2 sentences about key dependent claims using: *"In some embodiments..."*
+
+4. **Safety Check:** Ensure NO feature is listed here that is not also in the Claims or Description.`,
+    constraints: [
+      'Strictly mirror independent claims',
+      'Use permissive language (including, can, may)',
+      'Add variations with "In some embodiments"',
+      'Maximum 1-3 paragraphs',
+      'No features not in claims or description'
+    ]
+  },
+
+  'brief_drawings': {
+    instruction: `**Role:** Formalities Specialist.
+
+**Task:** Create the standard figure list.
+
+**Input Data:** {{FIGURE_LIST}} (e.g., "Fig 1: System", "Fig 2: Flowchart")
+
+**Drafting Logic:**
+
+1. **Iterate:** Loop through every figure in the input.
+
+2. **Format:** Apply standard template: *"FIG. [X] is a [Type] view of [Subject], in accordance with an embodiment."*
+
+3. **Consistency:** Ensure strict matching of Figure Numbers to descriptions.`,
+    constraints: [
+      'Use standard template format',
+      'Strict figure number matching',
+      'Include "in accordance with an embodiment"'
+    ]
+  },
+
+  'detailed_description': {
+    instruction: `**Role:** Technical Writer (Anti-Hallucination).
+
+**Task:** Draft the detailed enablement.
+
+**Input Data:** {{FULL_DISCLOSURE_TEXT}}, {{ELEMENT_MAP}} (e.g., 10=Sensor)
+
+**Drafting Logic (Chain-of-Thought):**
+
+1. **Grounding Rule:** You may ONLY describe features found in the Input Data. If a specific detail (e.g., "Temperature = 50C") is missing, do NOT invent it. Use generic terms ("a suitable temperature").
+
+2. **Structure:** Describe the *Apparatus* (Structure) first, then the *Method* (Operation) second.
+
+3. **Reference Numeral Check:** Every time a listed element is named, append its number (e.g., "The sensor (10)...").
+
+4. **Expansion:** Use non-limiting language: *"The processor may be X, Y, or Z."*`,
+    constraints: [
+      'Only use features from input data',
+      'Do not invent details',
+      'Structure: Apparatus first, then Method',
+      'Always include reference numerals in parentheses',
+      'Use non-limiting language'
+    ]
+  },
+
+  'best_mode': {
+    instruction: `**Role:** Patent Attorney (US/India Compliance).
+
+**Task:** Explicitly describe the preferred embodiment.
+
+**Input Data:** {{PREFERRED_PARAMS}}, {{BEST_EXAMPLE}}
+
+**Drafting Logic:**
+
+1. **Identify:** Select the most detailed example provided in the input.
+
+2. **Flagging:** Introduce it with: *"In a preferred non-limiting embodiment..."* or *"According to the best mode contemplated..."*
+
+3. **Detail:** Include specific metrics (e.g., "using a 12V battery", "using the AES-256 algorithm") to satisfy the 'Best Mode' requirement.`,
+    constraints: [
+      'Use most detailed example from input',
+      'Include specific metrics/parameters',
+      'Introduce with preferred embodiment language',
+      'Maximum 1 paragraph'
+    ]
+  },
+
+  'industrial_applicability': {
+    instruction: `**Role:** EPO/PCT Agent.
+
+**Task:** Statement of utility.
+
+**Input Data:** {{USE_CASES}}
+
+**Drafting Logic:**
+
+1. **Statement:** Explicitly state the field of use. *"The present subject matter is suitable for use in the field of [Industry]..."*
+
+2. **Capability:** State *how* it is used. *"The system can be manufactured and utilized to [Function]..."*`,
+    constraints: [
+      'State field of use explicitly',
+      'State how it is used/capable',
+      'Maximum 1 paragraph'
+    ]
+  },
+
+  'claims': {
+    instruction: `**Role:** Claim Master (Strict Logic).
+
+**Task:** Draft Independent and Dependent Claims.
+
+**Input Data:** {{NOVELTY_POINT}}, {{ELEMENT_LIST}}
+
+**Drafting Logic (Self-Correction):**
+
+1. **Draft:** Write the Independent Claim using "comprising".
+
+2. **Antecedent Check (Mandatory):** Scan the text.
+
+   * *Correction:* If you wrote "the widget" but haven't introduced "a widget" earlier in the same claim, change "the" to "a".
+
+3. **Broadening:** Ensure no unnecessary adjectives are used in the main claim (e.g., use "fastener" instead of "steel screw").`,
+    constraints: [
+      'Use "comprising" for open-ended claims',
+      'Perform antecedent check and correction',
+      'Avoid unnecessary adjectives in independent claims',
+      'Use numbered format'
+    ]
+  },
+
+  'abstract': {
+    instruction: `**Role:** Abstract Specialist.
+
+**Task:** Concise summary for publication.
+
+**Input Data:** {{FULL_DRAFT_TEXT}}
+
+**Drafting Logic:**
+
+1. **Constraint:** Count words. Must be 50-150 words.
+
+2. **Formatting:** Single paragraph.
+
+3. **Editing:** Remove "legal" phrases like *"The present invention relates to..."* Start directly with the subject: *"A system for [Function] is disclosed, comprising..."*
+
+4. **Reference Numerals:** If Figure 1 is the main figure, optionally add numerals in parentheses after main elements (e.g., "A lever (10)...").`,
+    constraints: [
+      '50-150 words',
+      'Single paragraph',
+      'Remove legal phrases',
+      'Start directly with subject',
+      'Optionally include reference numerals'
+    ]
+  }
+};
+
 export interface IdeaNormalizationRequest {
   rawIdea: string;
   title: string;
@@ -111,12 +479,18 @@ export class DraftingService {
     abstract: ['abstract'],
     fieldOfInvention: ['fieldOfInvention', 'field', 'technical_field', 'field_of_invention', 'technical_field_of_the_invention'],
     background: ['background', 'background_art'],
+    preamble: ['preamble', 'opening_statement'],
     crossReference: ['cross_reference', 'cross reference', 'cross-reference'],
     summary: ['summary', 'summary_of_invention'],
     briefDescriptionOfDrawings: ['briefDescriptionOfDrawings', 'brief_drawings', 'brief_description_of_drawings'],
     detailedDescription: ['detailedDescription', 'detailed_description', 'description'],
+    modeOfCarryingOut: ['mode_of_carrying_out', 'mode_for_carrying_out', 'modes_for_carrying_out', 'specific_mode_for_carrying_out_the_invention'],
     bestMethod: ['bestMethod', 'best_mode', 'best_method'],
     claims: ['claims'],
+    objectsOfInvention: ['objects', 'objects_of_invention', 'object_of_the_invention'],
+    technicalProblem: ['technical_problem', 'problem_to_be_solved'],
+    technicalSolution: ['technical_solution', 'solution_to_problem'],
+    advantageousEffects: ['advantageous_effects', 'advantages', 'effects_of_invention'],
     industrialApplicability: ['industrialApplicability', 'industrial_applicability', 'utility'],
     listOfNumerals: ['listOfNumerals', 'reference_numerals', 'reference_signs', 'list_of_numerals']
   }
@@ -558,7 +932,7 @@ Respond in this exact JSON shape:
       const crossSectionChecks = countryProfile?.profileData?.validation?.crossSectionChecks || []
       const claimsRules = countryProfile?.profileData?.rules?.claims || null
 
-      const sectionResources: Record<string, { prompt: any; rules: any; meta: any; altKeys: string[]; checks?: any[]; cross?: any[]; claimsRules?: any }> = {}
+      const sectionResources: Record<string, { prompt: any; rules: any; meta: any; altKeys: string[]; checks?: any[]; cross?: any[]; claimsRules?: any; importFiguresDirectly?: boolean }> = {}
       for (const s of sections) {
         const sectionMeta = this.resolveSectionMeta(countryProfile, s)
         const sectionKey = sectionMeta?.id || this.getFallbackSectionKey(s)
@@ -566,6 +940,17 @@ Respond in this exact JSON shape:
         const sectionRules = sectionKey ? await getSectionRules(jurisdictionCode, sectionKey) : null
         const checks = countryProfile?.profileData?.validation?.sectionChecks?.[sectionKey] || countryProfile?.profileData?.validation?.sectionChecks?.[s]
         const cross = Array.isArray(crossSectionChecks) ? crossSectionChecks.filter((c: any) => (c?.from === sectionKey) || (c?.from === s)) : []
+        
+        // Check if this section should import figures directly without LLM
+        // Priority: 1. Database CountrySectionPrompt, 2. JSON country profile
+        const sectionPromptCfg = countryProfile?.profileData?.prompts?.sections?.[s] || 
+                                 countryProfile?.profileData?.prompts?.sections?.[sectionKey] ||
+                                 countryProfile?.profileData?.prompts?.sections?.['briefDescriptionOfDrawings']
+        // Check database first (via promptCfg which comes from getDraftingPrompts)
+        const dbImportFigures = (promptCfg as any)?.importFiguresDirectly === true
+        const jsonImportFigures = sectionPromptCfg?.importFiguresDirectly === true
+        const importFiguresDirectly = dbImportFigures || jsonImportFigures
+        
         sectionResources[s] = {
           prompt: promptCfg,
           rules: sectionRules,
@@ -573,7 +958,8 @@ Respond in this exact JSON shape:
           altKeys: Array.isArray(sectionMeta?.canonicalKeys) ? sectionMeta.canonicalKeys.map((k: string) => k.toLowerCase()) : [],
           checks: Array.isArray(checks) ? checks : undefined,
           cross: cross.length ? cross : undefined,
-          claimsRules: s === 'claims' ? claimsRules : undefined
+          claimsRules: s === 'claims' ? claimsRules : undefined,
+          importFiguresDirectly
         }
         if (!sectionMeta) {
           debugSteps.push({ step: `section_unmapped_${s}`, status: 'fail', meta: { jurisdiction: jurisdictionCode } })
@@ -630,21 +1016,23 @@ Respond in this exact JSON shape:
           .slice(0, 6)
       }
 
-      // Merge figures from plans and uploaded images
+      // Merge figures from plans AND diagram sources (regardless of upload status)
+      // This ensures ALL figures are available for drafting, not just uploaded ones
       const planFigures = (session.figurePlans || []).map((f: any) => ({
         figureNo: f.figureNo,
         title: this.sanitizeFigureTitle(f.title) || `Figure ${f.figureNo}`
       }))
-      const imageBacked = (session.diagramSources || [])
-        .filter((d: any) => d?.imageUploadedAt)
-        .map((d: any) => {
-          const found = planFigures.find((f: any) => f.figureNo === d.figureNo)
-          const sanitized = this.sanitizeFigureTitle(found?.title || d.title)
-          return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}` }
-        })
+      // Include ALL diagram sources, not just uploaded ones - a figure with PlantUML code is still valid
+      const diagramFigures = (session.diagramSources || []).map((d: any) => {
+        const found = planFigures.find((f: any) => f.figureNo === d.figureNo)
+        const sanitized = this.sanitizeFigureTitle(found?.title || d.title)
+        return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}` }
+      })
       const mergedByNo = new Map<number, any>()
+      // Add all plan figures first
       for (const f of planFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
-      for (const f of imageBacked) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
+      // Add/overwrite with diagram figures (may have additional metadata or corrected titles)
+      for (const f of diagramFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
       const figures = Array.from(mergedByNo.values()).sort((a:any,b:any)=>a.figureNo-b.figureNo)
       debugSteps.push({
         step: 'load_context',
@@ -681,6 +1069,43 @@ Respond in this exact JSON shape:
       let llmMeta: any = undefined
 
       for (const s of sections) {
+        // Check if this section should import figures directly without LLM
+        if (sectionResources[s]?.importFiguresDirectly && figures.length > 0) {
+          // Direct import: Format figures as Brief Description of Drawings
+          // This preserves the exact titles from figure planning stage
+          const figureLines = figures.map((f: any) => {
+            const figNo = f.figureNo
+            let title = f.title || `a view of Figure ${figNo}`
+            
+            // Clean up title: remove any existing "FIG. X is" prefix if present
+            title = title.replace(/^(FIG\.?\s*\d+\s*(is\s*)?|Figure\s*\d+\s*(is\s*)?)/i, '').trim()
+            
+            // Ensure title starts with an article if it doesn't already
+            if (!/^(a|an|the)\s/i.test(title)) {
+              // Check if first word suggests it needs 'a' or 'an'
+              const firstWord = title.split(/\s+/)[0]?.toLowerCase() || ''
+              const needsAn = /^[aeiou]/i.test(firstWord)
+              title = `${needsAn ? 'an' : 'a'} ${title}`
+            }
+            
+            // Ensure proper punctuation
+            const line = `FIG. ${figNo} is ${title}`
+            return line.endsWith('.') ? line : `${line}.`
+          }).join('\n\n')
+          
+          generated[s] = figureLines
+          debugSteps.push({ 
+            step: `direct_import_${s}`, 
+            status: 'ok', 
+            meta: { 
+              figuresCount: figures.length, 
+              method: 'importFiguresDirectly',
+              preview: figureLines.substring(0, 200) 
+            } 
+          })
+          continue // Skip LLM call for this section
+        }
+
         const prompt = this.buildSectionPrompt(s, payload, {
           jurisdiction: jurisdictionCode,
           countryProfile,
@@ -693,7 +1118,22 @@ Respond in this exact JSON shape:
           crossChecksFrom: sectionResources[s]?.cross,
           claimsRules: sectionResources[s]?.claimsRules
         })
-        debugSteps.push({ step: `build_prompt_${s}`, status: 'ok' })
+        // Add debug info about prompt injection (B+T+U)
+        const promptDebug = sectionResources[s]?.prompt?.debug
+        debugSteps.push({ 
+          step: `build_prompt_${s}`, 
+          status: 'ok',
+          meta: {
+            promptInjection: promptDebug ? {
+              B: promptDebug.hasBase,
+              T: promptDebug.hasTopUp,
+              U: promptDebug.hasUser,
+              source: promptDebug.topUpSource,
+              key: promptDebug.sectionKey,
+              strategy: promptDebug.mergeStrategy
+            } : { B: true, T: false, U: false, source: null }
+          }
+        })
 
         // Increase tokens for long sections
         const sectionMaxTokens = s === 'detailedDescription' ? 6000 : undefined
@@ -1007,12 +1447,18 @@ Respond in this exact JSON shape:
     const defaults: Record<string, { label: string; target?: string }> = {
       title: { label: 'Title', target: '<= 15 words' },
       abstract: { label: 'Abstract', target: '130-150 words' },
+      preamble: { label: 'Preamble', target: '<= 40 words' },
+      objectsOfInvention: { label: 'Objects of the Invention', target: '50-120 words' },
       fieldOfInvention: { label: 'Technical Field', target: '40-80 words' },
       background: { label: 'Background', target: '250-400 words' },
       crossReference: { label: 'Cross-Reference to Related Applications', target: '<= 120 words' },
       summary: { label: 'Summary', target: '120-200 words' },
+      technicalProblem: { label: 'Technical Problem', target: '40-80 words' },
+      technicalSolution: { label: 'Technical Solution', target: '60-120 words' },
+      advantageousEffects: { label: 'Advantageous Effects', target: '60-120 words' },
       briefDescriptionOfDrawings: { label: 'Brief Description of Drawings', target: '80-150 words' },
       detailedDescription: { label: 'Detailed Description', target: '600-1200 words' },
+      modeOfCarryingOut: { label: 'Mode of Carrying Out the Invention', target: '300-500 words' },
       bestMethod: { label: 'Best Mode', target: '150-300 words' },
       claims: { label: 'Claims' },
       industrialApplicability: { label: 'Industrial Applicability', target: '80-150 words' },
@@ -1141,7 +1587,7 @@ Respond in this exact JSON shape:
 
   private static buildSectionPrompt(section: string, payload: any, ctx: SectionPromptContext): string {
     const { idea, referenceMap, figures, approved, instructions, manualPriorArt, selectedPriorArtPatents } = payload
-    
+
     // Priority: 1. Manually confirmed types (array/string) -> 2. Normalized data -> 3. Auto-detected (regex)
     const archetypeList = this.normalizeArchetypeList(
       idea?.inventionType ?? idea?.normalizedData?.inventionType,
@@ -1162,8 +1608,47 @@ Respond in this exact JSON shape:
     const avoid = Array.isArray(ctx?.baseStyle?.avoid) ? ctx.baseStyle.avoid.join(', ') : (ctx?.baseStyle?.avoid || 'marketing language, unsupported advantages, unsubstantiated claims')
     const guidance = this.getSectionGuidance(section, ctx?.sectionRules || undefined)
     const sectionLabel = (guidance as any)?.label || section
-    const promptInstruction = ctx?.sectionPrompt?.instruction ? `Instruction: ${ctx.sectionPrompt.instruction}` : ''
-    const promptConstraints = ctx?.sectionPrompt?.constraints?.length ? `Constraints: ${ctx.sectionPrompt.constraints.join('; ')}` : ''
+
+    // Handle superset prompts with template variables
+    let promptInstruction = ''
+    let promptConstraints = ''
+
+    if (ctx?.sectionPrompt?.instruction) {
+      promptInstruction = ctx.sectionPrompt.instruction
+
+      // Replace template variables in superset prompts
+      const templateVars: Record<string, string> = {
+        '{{COUNTRY_CODE}}': jurisdiction,
+        '{{FILING_TYPE}}': idea?.filingType || 'Complete', // Default to Complete if not specified
+        '{{ABSTRACT_OR_SUMMARY}}': idea?.abstract || idea?.description || idea?.title || 'No summary available',
+        '{{INVENTION_TITLE}}': idea?.title || 'Untitled Invention',
+        '{{CORE_KEYWORDS}}': (idea?.keywords || idea?.normalizedData?.keywords || []).join(', ') || 'invention, technology',
+        '{{PRIOR_ART_SUMMARY}}': manualPriorArt || 'No prior art specified',
+        '{{PROBLEM_STATEMENT}}': idea?.problemStatement || idea?.description || 'Technical problem to be solved',
+        '{{ADVANTAGES_LIST}}': (idea?.advantages || idea?.benefits || []).join('; ') || 'Improved efficiency, better performance',
+        '{{INDEPENDENT_CLAIMS}}': 'Claims data not available', // Would need to be populated from claims section
+        '{{KEY_EMBODIMENTS}}': 'Key embodiments data not available', // Would need to be populated from description
+        '{{FIGURE_LIST}}': figs || 'No figures available',
+        '{{FULL_DISCLOSURE_TEXT}}': idea?.description || idea?.detailedDescription || 'Full disclosure not available',
+        '{{ELEMENT_MAP}}': numerals || 'No element mapping available',
+        '{{PREFERRED_PARAMS}}': 'Preferred parameters not specified',
+        '{{BEST_EXAMPLE}}': 'Best example not specified',
+        '{{USE_CASES}}': (idea?.useCases || idea?.applications || []).join('; ') || 'General technical applications',
+        '{{NOVELTY_POINT}}': idea?.noveltyPoint || 'Novel technical features',
+        '{{ELEMENT_LIST}}': numerals || 'No elements specified',
+        '{{FULL_DRAFT_TEXT}}': 'Full draft text not available' // Would need current draft content
+      }
+
+      // Replace all template variables
+      for (const [key, value] of Object.entries(templateVars)) {
+        promptInstruction = promptInstruction.replace(new RegExp(key, 'g'), value)
+      }
+    }
+
+    if (ctx?.sectionPrompt?.constraints?.length) {
+      promptConstraints = `Constraints: ${ctx.sectionPrompt.constraints.join('; ')}`
+    }
+
     const targetLine = (guidance as any)?.target || ''
     const targetDisplay = targetLine ? `Target length: ${targetLine}.` : ''
 
@@ -1241,6 +1726,19 @@ Instructions(title): ${instr}.
 ${targetDisplay || 'Target length: <=15 words.'}
 Output JSON: { "title": "..." }
 Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, comments, or line breaks outside JSON.`
+      case 'preamble':
+        return `
+${roleToneHeader}
+Task: Draft a short preamble/opening statement for the specification.
+Rules:
+- Keep it concise (<= 40 words).
+- Neutral tone; no claims or marketing.
+Context:
+title=${idea?.title || ''}.
+Instructions(preamble): ${instr}.
+${targetDisplay || 'Target length: <=40 words.'}
+Output JSON: { "preamble": "..." }
+Return ONLY a valid JSON object exactly matching the schema above.`
       case 'abstract':
         return `
 ${roleToneHeader}
@@ -1318,6 +1816,35 @@ ${targetDisplay || 'Target length: 250-400 words.'}
 Output JSON: { "background": "..." }
 Return ONLY a valid JSON object exactly matching the schema above.`
       }
+      case 'objectsOfInvention':
+      case 'objects':
+        return `
+${roleToneHeader}
+Task: Draft the "Object(s) of the Invention" section for a ${countryName} patent specification.
+
+This section is crucial in Commonwealth jurisdictions (India, Pakistan, South Africa, UAE, Mexico) and is placed after Background and before Summary.
+
+Rules:
+- 80-150 words; focus on technical objectives to be achieved.
+- Use statements beginning with "The principal object of the present invention is to..." or "Another object of this invention is to..."
+- NEVER use "The object..." (singular definite article) as it implies only one objective.
+- Focus on the RESULTS achieved (e.g., "to improve efficiency"), NOT the means of achieving them.
+- Each objective should correlate directly with features mentioned in the claims.
+- Acknowledge the closest prior art limitations and clearly distinguish how the invention overcomes them.
+- Do NOT admit non-patentability or state that the invention is obvious.
+- Avoid vague or non-technical goals; stick to demonstrable technical advantages.
+
+Context:
+problem=${idea?.problem || ''};
+objectives=${idea?.objectives || ''};
+advantages=${(idea?.advantages || idea?.benefits || []).join('; ') || 'none specified'};
+priorArtLimitations=${manualPriorArt?.manualPriorArtText?.substring(0, 300) || 'conventional approaches have limitations'}.
+
+Instructions(objectsOfInvention): ${instr}.
+${targetDisplay || 'Target length: 80-150 words.'}
+
+Output JSON: { "objectsOfInvention": "..." }
+Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, or line breaks outside JSON.`
       case 'crossReference': {
         const priorArtList = (selectedPriorArtPatents || []).map((p: any, idx: number) => {
           const pn = p.patentNumber || p.pn || `Ref-${idx + 1}`
@@ -1352,6 +1879,45 @@ Instructions(summary): ${instr}.
 ${targetDisplay || 'Target length: 120-200 words.'}
 Output JSON: { "summary": "..." }
 Return ONLY a valid JSON object exactly matching the schema above.`
+      case 'technicalProblem':
+        return `
+${roleToneHeader}
+Task: Describe the technical problem addressed by the invention.
+Rules:
+- 40-80 words; keep strictly technical.
+- No advantages or marketing language.
+Context:
+problem=${idea?.problem || ''}.
+Instructions(technicalProblem): ${instr}.
+${targetDisplay || 'Target length: 40-80 words.'}
+Output JSON: { "technicalProblem": "..." }
+Return ONLY a valid JSON object exactly matching the schema above.`
+      case 'technicalSolution':
+        return `
+${roleToneHeader}
+Task: Describe the technical solution provided by the invention.
+Rules:
+- 60-120 words; concise description of the core solution.
+- Ensure consistency with claims/summary; no puffery.
+Context:
+objectives=${idea?.objectives || ''}; logic=${idea?.logic || ''}.
+Instructions(technicalSolution): ${instr}.
+${targetDisplay || 'Target length: 60-120 words.'}
+Output JSON: { "technicalSolution": "..." }
+Return ONLY a valid JSON object exactly matching the schema above.`
+      case 'advantageousEffects':
+        return `
+${roleToneHeader}
+Task: State the advantageous effects (technical effects) of the invention.
+Rules:
+- 60-120 words; limit to technical effects tied to the solution.
+- Avoid business/marketing benefits.
+Context:
+objectives=${idea?.objectives || ''}; variants=${idea?.variants || ''}.
+Instructions(advantageousEffects): ${instr}.
+${targetDisplay || 'Target length: 60-120 words.'}
+Output JSON: { "advantageousEffects": "..." }
+Return ONLY a valid JSON object exactly matching the schema above.`
       case 'briefDescriptionOfDrawings':
         return `
 ${roleToneHeader}
@@ -1381,6 +1947,19 @@ Instructions(detailedDescription): ${instr}.
 ${deepProto}
 ${targetDisplay || 'Target length: 600-1200 words (apply judgment based on complexity).'}
 Output JSON: { "detailedDescription": "..." }
+Return ONLY a valid JSON object exactly matching the schema above.`
+      case 'modeOfCarryingOut':
+        return `
+${roleToneHeader}
+Task: Describe the mode(s) for carrying out the invention.
+Rules:
+- 300-500 words; enabling level of detail with preferred embodiments.
+- Reference figures/numerals where applicable; avoid claim-style language.
+Context:
+numerals=[${numerals}]; figures=[${figs}]; bestMethod=${idea?.bestMethod || ''}.
+Instructions(modeOfCarryingOut): ${instr}.
+${targetDisplay || 'Target length: 300-500 words.'}
+Output JSON: { "modeOfCarryingOut": "..." }
 Return ONLY a valid JSON object exactly matching the schema above.`
       case 'bestMethod':
         return `
@@ -1561,12 +2140,18 @@ Return ONLY a valid JSON object exactly matching the schema above.`
     const fallbackMax: Record<string, number> = {
       title: 15,
       abstract: 150,
+      preamble: 40,
       fieldOfInvention: 80,
       background: 400,
+      objectsOfInvention: 120,
       crossReference: 120,
       summary: 300,
+      technicalProblem: 120,
+      technicalSolution: 150,
+      advantageousEffects: 150,
       briefDescriptionOfDrawings: 80,
       detailedDescription: 1200,
+      modeOfCarryingOut: 500,
       bestMethod: 350,
       claims: 900,
       industrialApplicability: 100,
@@ -1613,7 +2198,11 @@ Return ONLY a valid JSON object exactly matching the schema above.`
     }
     // claims-specific normalization should not be performed here; handled in minimalFix
     if (section === 'briefDescriptionOfDrawings') {
-      if (!onlyExistingFigures(text)) return { ok: false, reason: 'BDOD references non-existing figure' }
+      // Only check figure references if figures have been declared
+      const declaredFigures = figures || []
+      if (declaredFigures.length > 0 && !onlyExistingFigures(text)) {
+        return { ok: false, reason: 'BDOD references non-existing figure' }
+      }
       const lines = text.split(/\n+/)
       if (lines.some(l=>l.split(/\s+/).filter(Boolean).length>40)) return { ok: false, reason: 'BDOD line exceeds 40 words' }
       if (/(advantage|benefit|claim)/i.test(text)) return { ok: false, reason: 'BDOD contains claims/advantages language' }
@@ -1649,18 +2238,31 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       }
     }
     if (section === 'listOfNumerals') {
-      const allowed = new Set((referenceMap?.components||[]).map((c:any)=>c.numeral))
-      const refs = Array.from(text.matchAll(/\((\d{2,3})\)/g)).map(m=>parseInt(m[1],10))
-      if (refs.some(n=>!allowed.has(n))) return { ok: false, reason: 'List includes undeclared numeral' }
+      // Only check numerals if components have been declared
+      const declaredComponents = referenceMap?.components || []
+      if (declaredComponents.length > 0) {
+        const allowed = new Set(declaredComponents.map((c:any)=>c.numeral))
+        const refs = Array.from(text.matchAll(/\((\d{2,3})\)/g)).map(m=>parseInt(m[1],10))
+        if (refs.some(n=>!allowed.has(n))) return { ok: false, reason: 'List includes undeclared numeral' }
+      }
     }
     if (section === 'detailedDescription') {
       // Enforce: no undeclared numerals and only existing figure references
-      const allowedNums = new Set((referenceMap?.components||[]).map((c:any)=>c.numeral))
-      const usedNums = Array.from(text.matchAll(/\((\d{2,3})\)/g)).map(m=>parseInt(m[1],10))
-      if (usedNums.some(n=>!allowedNums.has(n))) {
-        return { ok: false, reason: 'Detailed Description uses undeclared numeral' }
+      // BUT only if components/figures have been declared - otherwise skip these checks
+      const declaredComponents = referenceMap?.components || []
+      const declaredFigures = figures || []
+      
+      // Only check numerals if there are declared components
+      if (declaredComponents.length > 0) {
+        const allowedNums = new Set(declaredComponents.map((c:any)=>c.numeral))
+        const usedNums = Array.from(text.matchAll(/\((\d{2,3})\)/g)).map(m=>parseInt(m[1],10))
+        if (usedNums.some(n=>!allowedNums.has(n))) {
+          return { ok: false, reason: 'Detailed Description uses undeclared numeral' }
+        }
       }
-      if (!onlyExistingFigures(text)) {
+      
+      // Only check figure references if there are declared figures
+      if (declaredFigures.length > 0 && !onlyExistingFigures(text)) {
         return { ok: false, reason: 'Detailed Description references non-existing figure' }
       }
     }
@@ -1783,10 +2385,21 @@ Return ONLY a valid JSON object exactly matching the schema above.`
         return 'The invention relates to the field of technology.'
       case 'background':
         return 'Conventional approaches have limitations.'
+      case 'objectsOfInvention':
+      case 'objects':
+        return 'The principal object of the present invention is to provide an improved solution that overcomes limitations of conventional approaches. Another object is to enhance efficiency and reliability in the relevant technical field.'
+      case 'technicalProblem':
+        return 'The invention addresses a technical problem in the art.'
+      case 'technicalSolution':
+        return 'The invention provides a technical solution comprising the disclosed architecture.'
+      case 'advantageousEffects':
+        return 'The solution yields technical effects that improve performance or reliability.'
       case 'crossReference':
         return 'This application is related to prior filings and references identified by the applicant.'
       case 'detailedDescription':
         return 'The invention comprises several components working together.'
+      case 'modeOfCarryingOut':
+        return 'A mode for carrying out the invention is described with sufficient detail for a skilled person.'
       case 'bestMethod':
         return 'The best method involves the following steps.'
       case 'claims':
@@ -2104,41 +2717,149 @@ Return ONLY a valid JSON object exactly matching the schema above.`
   /**
    * Build section definitions from country profile (or fallback)
    */
+  /**
+   * Map superset code to section key
+   */
+  private static supersetCodeToSectionKey(supersetCode: string): string {
+    const mapping: Record<string, string> = {
+      '01. Title': 'title',
+      '02. Preamble': 'preamble',
+      '03. Cross-Ref/Fed': 'cross_reference',
+      '04. Tech Field': 'field',
+      '05. Background': 'background',
+      '06. Objects': 'objects',
+      '07. Summary (Gen)': 'summary',
+      '07a. Tech Problem': 'technical_problem',
+      '07b. Tech Solution': 'technical_solution',
+      '07c. Effects': 'advantageous_effects',
+      '08. Drawings': 'brief_drawings',
+      '09. Detailed Desc': 'detailed_description',
+      '10. Best Mode': 'best_mode',
+      '11. Ind. Applicability': 'industrial_applicability',
+      '12. Claims': 'claims',
+      '13. Abstract': 'abstract'
+    }
+    return mapping[supersetCode] || supersetCode.toLowerCase().replace(/[^a-z]/g, '_')
+  }
+
+  /**
+   * Get default label for section key
+   */
+  private static getDefaultLabel(sectionKey: string): string {
+    const labels: Record<string, string> = {
+      'title': 'Title',
+      'preamble': 'Preamble',
+      'cross_reference': 'Cross-Reference',
+      'field': 'Technical Field',
+      'background': 'Background',
+      'objects': 'Objects',
+      'summary': 'Summary of the Invention',
+      'technical_problem': 'Technical Problem',
+      'technical_solution': 'Technical Solution',
+      'advantageous_effects': 'Advantageous Effects',
+      'brief_drawings': 'Brief Description of Drawings',
+      'detailed_description': 'Detailed Description',
+      'best_mode': 'Best Mode',
+      'industrial_applicability': 'Industrial Applicability',
+      'claims': 'Claims',
+      'abstract': 'Abstract'
+    }
+    return labels[sectionKey] || sectionKey.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())
+  }
+
+  /**
+   * Determine if section is required for jurisdiction
+   */
+  private static isSectionRequired(sectionKey: string, jurisdiction: string): boolean {
+    // Core sections that are typically required
+    const alwaysRequired = ['title', 'claims', 'abstract']
+
+    if (alwaysRequired.includes(sectionKey)) return true
+
+    // Country-specific requirements
+    const countryRequirements: Record<string, string[]> = {
+      'US': ['detailed_description', 'background', 'summary'],
+      'IN': ['field', 'background', 'objects', 'summary', 'detailed_description'],
+      'EP': ['detailed_description', 'background', 'claims'],
+      'CN': ['detailed_description', 'claims'],
+      'JP': ['detailed_description', 'claims']
+    }
+
+    return countryRequirements[jurisdiction]?.includes(sectionKey) || false
+  }
+
   private static async buildSectionDefinitions(jurisdiction: string): Promise<Array<{ key: string; label: string; required: boolean; constraints?: string[]; altKeys: string[] }>> {
     const profile = await getCountryProfile(jurisdiction)
     const defs: Array<{ key: string; label: string; required: boolean; constraints?: string[]; altKeys: string[] }> = []
-    const promptSections = profile?.profileData?.prompts?.sections || {}
-    const variant = profile?.profileData?.structure?.variants?.find((v: any) => v.id === profile?.profileData?.structure?.defaultVariant) || profile?.profileData?.structure?.variants?.[0]
-    if (variant?.sections?.length) {
-      for (const sec of variant.sections) {
-        const keys = (sec.canonicalKeys || []).map((k: string) => k.toLowerCase())
-        let mapped: string | undefined
-        for (const k of keys) {
-          mapped = this.mapToInternalKey(k)
-          if (mapped) break
+
+    // Get all sections mapped for this country from database
+    const countryMappings = await prisma.countrySectionMapping.findMany({
+      where: { countryCode: jurisdiction }
+    })
+
+    // Use database mappings to determine available sections
+    for (const mapping of countryMappings) {
+      let sectionKey = (mapping as any).sectionKey
+      if (!sectionKey) {
+        // Map superset code to section key if not provided
+        sectionKey = this.supersetCodeToSectionKey(mapping.supersetCode)
+      }
+
+      if (!sectionKey) continue
+
+      // Get constraints from our hard-coded superset prompts
+      const supersetPrompt = SUPERSET_PROMPTS[sectionKey as keyof typeof SUPERSET_PROMPTS]
+
+      defs.push({
+        key: sectionKey,
+        label: mapping.heading && mapping.heading !== '(N/A)' ? mapping.heading : this.getDefaultLabel(sectionKey),
+        required: this.isSectionRequired(sectionKey, jurisdiction),
+        constraints: supersetPrompt?.constraints || [],
+        altKeys: [mapping.supersetCode.toLowerCase()]
+      })
+    }
+
+    // Fallback if no database mappings found
+    if (defs.length === 0) {
+      const promptSections = profile?.profileData?.prompts?.sections || {}
+      const variant = profile?.profileData?.structure?.variants?.find((v: any) => v.id === profile?.profileData?.structure?.defaultVariant) || profile?.profileData?.structure?.variants?.[0]
+      if (variant?.sections?.length) {
+        for (const sec of variant.sections) {
+          const keys = (sec.canonicalKeys || []).map((k: string) => k.toLowerCase())
+          let mapped: string | undefined
+          for (const k of keys) {
+            mapped = this.mapToInternalKey(k)
+            if (mapped) break
+          }
+          if (!mapped) mapped = this.mapToInternalKey(sec.id)
+          if (!mapped) continue
+          const altKeys = Array.from(new Set([sec.id, ...(sec.canonicalKeys || [])].map((k: string) => k.toLowerCase())))
+          defs.push({
+            key: mapped,
+            label: sec.label || sec.id,
+            required: !!sec.required,
+            constraints: promptSections?.[sec.id]?.constraints || [],
+            altKeys
+          })
         }
-        if (!mapped) mapped = this.mapToInternalKey(sec.id)
-        if (!mapped) continue
-        const altKeys = Array.from(new Set([sec.id, ...(sec.canonicalKeys || [])].map((k: string) => k.toLowerCase())))
-        defs.push({
-          key: mapped,
-          label: sec.label || sec.id,
-          required: !!sec.required,
-          constraints: promptSections?.[sec.id]?.constraints || [],
-          altKeys
-        })
       }
     }
     if (defs.length === 0) {
       return [
         { key: 'title', label: 'Title', required: true, altKeys: [] },
         { key: 'abstract', label: 'Abstract', required: true, altKeys: [] },
+        { key: 'preamble', label: 'Preamble', required: false, altKeys: [] },
         { key: 'fieldOfInvention', label: 'Technical Field', required: true, altKeys: ['technical_field'] },
         { key: 'background', label: 'Background', required: true, altKeys: [] },
+        { key: 'objectsOfInvention', label: 'Objects of the Invention', required: false, altKeys: ['objects'] },
         { key: 'crossReference', label: 'Cross-Reference', required: false, altKeys: ['cross_reference'] },
         { key: 'summary', label: 'Summary', required: true, altKeys: [] },
+        { key: 'technicalProblem', label: 'Technical Problem', required: false, altKeys: ['technical_problem'] },
+        { key: 'technicalSolution', label: 'Technical Solution', required: false, altKeys: ['technical_solution'] },
+        { key: 'advantageousEffects', label: 'Advantageous Effects', required: false, altKeys: ['advantageous_effects'] },
         { key: 'briefDescriptionOfDrawings', label: 'Brief Description of Drawings', required: false, altKeys: [] },
         { key: 'detailedDescription', label: 'Detailed Description', required: true, altKeys: [] },
+        { key: 'modeOfCarryingOut', label: 'Mode of Carrying Out the Invention', required: false, altKeys: ['modes_for_carrying_out'] },
         { key: 'bestMethod', label: 'Best Mode', required: false, altKeys: ['best_mode'] },
         { key: 'industrialApplicability', label: 'Industrial Applicability', required: false, altKeys: ['utility'] },
         { key: 'claims', label: 'Claims', required: true, altKeys: [] },
@@ -2197,16 +2918,15 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       figureNo: f.figureNo,
       title: this.sanitizeFigureTitle(f.title) || `Figure ${f.figureNo}`
     }));
-    const imageBacked: any[] = (session.diagramSources || [])
-      .filter((d: any) => d?.imageUploadedAt)
-      .map((d: any) => {
-        const found = planFigures.find((f: any) => f.figureNo === d.figureNo)
-        const sanitized = this.sanitizeFigureTitle(found?.title || d.title)
-        return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}` }
-      })
+    // Include ALL diagram sources, not just uploaded ones
+    const diagramFigures: any[] = (session.diagramSources || []).map((d: any) => {
+      const found = planFigures.find((f: any) => f.figureNo === d.figureNo)
+      const sanitized = this.sanitizeFigureTitle(found?.title || d.title)
+      return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}` }
+    })
     const mergedByNo = new Map<number, any>()
     for (const f of planFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
-    for (const f of imageBacked) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
+    for (const f of diagramFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
     const figures: any[] = Array.from(mergedByNo.values()).sort((a,b)=>a.figureNo-b.figureNo)
 
     let profile = await getCountryProfile(jurisdiction)

@@ -34,13 +34,18 @@ const displayName: Record<string, string> = {
   fieldOfInvention: 'Field of Invention',
   crossReference: 'Cross-Reference to Related Applications',
   background: 'Background',
+  objectsOfInvention: 'Objects of the Invention',
   summary: 'Summary',
   briefDescriptionOfDrawings: 'Brief Description of Drawings',
   detailedDescription: 'Detailed Description',
   bestMethod: 'Best Method',
   industrialApplicability: 'Industrial Applicability',
   claims: 'Claims',
-  listOfNumerals: 'List of Reference Numerals'
+  listOfNumerals: 'List of Reference Numerals',
+  // PCT/JP specific
+  technicalProblem: 'Technical Problem',
+  technicalSolution: 'Technical Solution',
+  advantageousEffects: 'Advantageous Effects'
 }
 
 const fallbackSections: SectionConfig[] = [
@@ -91,6 +96,10 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   
   // Activity Panel Visibility
   const [showActivity, setShowActivity] = useState(true)
+  
+  // Debug Panel for B+T+U (Base + TopUp + User prompts)
+  const [showDebugPanel, setShowDebugPanel] = useState(true)
+  const [promptInjectionInfo, setPromptInjectionInfo] = useState<Record<string, { B: boolean; T: boolean; U: boolean; source: string | null; key: string; strategy: string }>>({})
 
   // Text Formatting
   const [showFormatting, setShowFormatting] = useState(false)
@@ -115,7 +124,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   const availableJurisdictions: string[] = useMemo(() => {
     const list = Array.isArray(session?.draftingJurisdictions) && session.draftingJurisdictions.length > 0
       ? session.draftingJurisdictions
-      : ['IN']
+      : []
     return list.map((c: string) => (c || '').toUpperCase())
   }, [session?.draftingJurisdictions])
 
@@ -204,6 +213,19 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
         jurisdiction: normalized,
         removeFromList
       })
+      // Optimistically update local active/source to reflect removal/clear
+      const remaining = removeFromList
+        ? availableJurisdictions.filter(c => c !== normalized)
+        : availableJurisdictions
+      if (removeFromList && remaining.length > 0) {
+        const next = remaining[0]
+        setActiveJurisdiction(next)
+        setSourceOfTruth(prev => (remaining.includes(prev) ? prev : next))
+      }
+      // Clear the generated state for the deleted jurisdiction to prevent stale data
+      if (activeJurisdiction === normalized) {
+        setGenerated({})
+      }
       await onRefresh()
     } finally {
       setDeletingJurisdiction(null)
@@ -345,6 +367,9 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           cross_reference: 'crossReference',
           background: 'background',
           background_art: 'background',
+          objects: 'objectsOfInvention',
+          objects_of_invention: 'objectsOfInvention',
+          objectsofinvention: 'objectsOfInvention',
           summary_of_invention: 'summary',
           summary: 'summary',
           brief_drawings: 'briefDescriptionOfDrawings',
@@ -359,7 +384,11 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           abstract: 'abstract',
           reference_numerals: 'listOfNumerals',
           reference_signs: 'listOfNumerals',
-          list_of_numerals: 'listOfNumerals'
+          list_of_numerals: 'listOfNumerals',
+          // PCT/JP specific
+          technical_problem: 'technicalProblem',
+          technical_solution: 'technicalSolution',
+          advantageous_effects: 'advantageousEffects'
         }
         const promptSections = profile?.prompts?.sections || {}
         if (variant?.sections?.length) {
@@ -431,6 +460,19 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       })
       setGenerated(prev => ({ ...prev, ...filtered }))
       setDebugSteps(res?.debugSteps || [])
+      
+      // Extract B+T+U prompt injection info from debug steps
+      const steps = res?.debugSteps || []
+      const injectionInfo: Record<string, any> = {}
+      steps.forEach((step: any) => {
+        if (step.step?.startsWith('build_prompt_') && step.meta?.promptInjection) {
+          const sectionKey = step.step.replace('build_prompt_', '')
+          injectionInfo[sectionKey] = step.meta.promptInjection
+        }
+      })
+      if (Object.keys(injectionInfo).length > 0) {
+        setPromptInjectionInfo(prev => ({ ...prev, ...injectionInfo }))
+      }
     } catch (error) {
       console.error('Generation failed:', error)
       alert(`Generation failed: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again or contact support if the issue persists.`)
@@ -479,6 +521,19 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       setDebugSteps(res?.debugSteps || [])
       setRegenOpen(prev => ({ ...prev, [key]: false }))
       setRegenRemarks(prev => ({ ...prev, [key]: '' }))
+      
+      // Extract B+T+U prompt injection info from debug steps
+      const steps = res?.debugSteps || []
+      const injectionInfo: Record<string, any> = {}
+      steps.forEach((step: any) => {
+        if (step.step?.startsWith('build_prompt_') && step.meta?.promptInjection) {
+          const sectionKey = step.step.replace('build_prompt_', '')
+          injectionInfo[sectionKey] = step.meta.promptInjection
+        }
+      })
+      if (Object.keys(injectionInfo).length > 0) {
+        setPromptInjectionInfo(prev => ({ ...prev, ...injectionInfo }))
+      }
     } catch (error) {
       console.error('Regeneration failed:', error)
       alert(`Regeneration failed: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again or contact support if the issue persists.`)
@@ -488,15 +543,36 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     }
   }
 
+  // If no jurisdictions are available, show a message instead of defaulting to IN
+  if (availableJurisdictions.length === 0) {
+    return (
+      <div className="p-12 text-center">
+        <div className="text-gray-500 mb-4">
+          <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+          </svg>
+        </div>
+        <h3 className="text-lg font-medium text-gray-900 mb-2">No Jurisdictions Available</h3>
+        <p className="text-gray-500 mb-4">All patent jurisdictions have been removed from this drafting session.</p>
+        <button
+          onClick={() => window.history.back()}
+          className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700"
+        >
+          Go Back
+        </button>
+      </div>
+    )
+  }
+
   return (
     <div className="pb-24 pt-8 bg-[#F5F6F7] min-h-screen">
       {/* Top Controls Bar */}
-      <div className="max-w-[850px] mx-auto mb-6 px-8 flex justify-between items-center">
+      <div className="max-w-[850px] mx-auto mb-6 px-8 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="text-xl font-semibold text-gray-900">Annexure Draft</h2>
           <p className="text-sm text-gray-500">Review and edit your patent application.</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
            <div className="flex items-center space-x-2 bg-white px-3 py-1.5 rounded-full shadow-sm border border-gray-200">
             <Switch
               id="persona-style"
@@ -507,6 +583,28 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             <Label htmlFor="persona-style" className="text-xs font-medium text-gray-700 cursor-pointer">
               AI Persona
             </Label>
+          </div>
+
+          {/* Clear/Delete controls */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleDeleteDraft(activeJurisdiction, false)}
+              disabled={loading || deletingJurisdiction === activeJurisdiction}
+              className="inline-flex items-center rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:opacity-50"
+              title="Clear the generated draft for the active jurisdiction but keep it selected."
+            >
+              {deletingJurisdiction === activeJurisdiction ? 'Clearing…' : `Clear draft (${activeJurisdiction})`}
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDeleteDraft(activeJurisdiction, true)}
+              disabled={loading || deletingJurisdiction === activeJurisdiction}
+              className="inline-flex items-center rounded-md border border-red-500 bg-white px-3 py-1.5 text-xs font-medium text-red-700 shadow-sm hover:bg-red-50 disabled:opacity-50"
+              title="Delete the draft and remove this jurisdiction from the drafting list."
+            >
+              {deletingJurisdiction === activeJurisdiction ? 'Deleting…' : `Delete & remove (${activeJurisdiction})`}
+            </button>
           </div>
 
           {/* Formatting Button */}
@@ -611,6 +709,98 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
               {/* Add jurisdiction logic hidden in simple UI for now or expandable */}
             </div>
           </div>
+        </div>
+      )}
+
+      {/* B+T+U Debug Panel - Testing Only */}
+      {showDebugPanel && (
+        <div className="max-w-[850px] mx-auto mb-4 px-8">
+          <div className="bg-gradient-to-r from-slate-800 to-slate-900 border border-slate-700 rounded-lg p-4 shadow-lg">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded">DEBUG</span>
+                <h3 className="text-sm font-semibold text-white">Prompt Injection Status (B+T+U)</h3>
+              </div>
+              <button
+                onClick={() => setShowDebugPanel(false)}
+                className="text-slate-400 hover:text-white text-xs"
+              >
+                Hide ✕
+              </button>
+            </div>
+            
+            {/* Legend */}
+            <div className="flex items-center gap-4 mb-3 text-xs">
+              <div className="flex items-center gap-1.5">
+                <span className="inline-block w-6 h-6 rounded bg-blue-600 text-white font-bold flex items-center justify-center text-[10px]">B</span>
+                <span className="text-slate-300">Base (Superset)</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="inline-block w-6 h-6 rounded bg-amber-500 text-white font-bold flex items-center justify-center text-[10px]">T</span>
+                <span className="text-slate-300">TopUp (Country)</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="inline-block w-6 h-6 rounded bg-emerald-500 text-white font-bold flex items-center justify-center text-[10px]">U</span>
+                <span className="text-slate-300">User Instructions</span>
+              </div>
+              <div className="flex items-center gap-1.5 ml-4">
+                <span className="inline-block w-2 h-2 rounded-full bg-cyan-400"></span>
+                <span className="text-slate-400 text-[10px]">DB</span>
+                <span className="inline-block w-2 h-2 rounded-full bg-violet-400 ml-2"></span>
+                <span className="text-slate-400 text-[10px]">JSON</span>
+              </div>
+            </div>
+            
+            {/* Section Status Grid */}
+            <div className="flex flex-wrap gap-2">
+              {Object.keys(promptInjectionInfo).length === 0 ? (
+                <div className="text-slate-500 text-xs italic">Generate sections to see prompt injection status...</div>
+              ) : (
+                Object.entries(promptInjectionInfo).map(([key, info]) => (
+                  <div key={key} className="bg-slate-700/50 rounded px-2 py-1.5 flex items-center gap-1.5" title={`Key: ${info.key}, Strategy: ${info.strategy}`}>
+                    <span className="text-slate-300 text-[10px] font-mono mr-1">{key.substring(0, 12)}{key.length > 12 ? '…' : ''}</span>
+                    <span className={`inline-block w-5 h-5 rounded text-[9px] font-bold flex items-center justify-center ${info.B ? 'bg-blue-600 text-white' : 'bg-slate-600 text-slate-400'}`}>B</span>
+                    <span className={`inline-block w-5 h-5 rounded text-[9px] font-bold flex items-center justify-center ${info.T ? 'bg-amber-500 text-white' : 'bg-slate-600 text-slate-400'}`}>T</span>
+                    <span className={`inline-block w-5 h-5 rounded text-[9px] font-bold flex items-center justify-center ${info.U ? 'bg-emerald-500 text-white' : 'bg-slate-600 text-slate-400'}`}>U</span>
+                    {info.T && info.source && (
+                      <span className={`inline-block w-2 h-2 rounded-full ${info.source === 'db' ? 'bg-cyan-400' : 'bg-violet-400'}`} title={`Source: ${info.source}`}></span>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+            
+            {/* Active Profile Info */}
+            <div className="mt-3 pt-3 border-t border-slate-700">
+              <div className="flex items-center gap-4 text-xs">
+                <div className="text-slate-400">
+                  <span className="text-slate-500">Active:</span>{' '}
+                  <span className="text-emerald-400 font-semibold">{activeJurisdiction}</span>
+                </div>
+                <div className="text-slate-400">
+                  <span className="text-slate-500">Sections:</span>{' '}
+                  <span className="text-white">{sectionConfigs?.length || 0}</span>
+                  {usingFallback && <span className="text-amber-400 ml-1">(fallback)</span>}
+                </div>
+                <div className="text-slate-400">
+                  <span className="text-slate-500">Prompts Tracked:</span>{' '}
+                  <span className="text-white">{Object.keys(promptInjectionInfo).length}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Toggle Debug Panel (if hidden) */}
+      {!showDebugPanel && (
+        <div className="max-w-[850px] mx-auto mb-2 px-8">
+          <button
+            onClick={() => setShowDebugPanel(true)}
+            className="text-xs text-slate-400 hover:text-slate-600 font-mono"
+          >
+            [Show B+T+U Debug Panel]
+          </button>
         </div>
       )}
 

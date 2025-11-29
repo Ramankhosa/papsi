@@ -27,6 +27,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Label } from '@/components/ui/label'
+import { Checkbox } from '@/components/ui/checkbox'
 
 interface FigurePlannerStageProps {
   session: any
@@ -39,6 +40,19 @@ type LLMFigure = {
   title: string
   purpose: string
   plantuml: string
+}
+
+// Helper function to normalize page sizes from country profiles
+// IMPORTANT: This must be defined before the component to avoid TDZ (Temporal Dead Zone) errors
+function normalizePageSizes(input: any): string[] {
+  if (!input) return []
+  if (Array.isArray(input)) return input.flatMap((val) => normalizePageSizes(val))
+  if (typeof input === 'string') {
+    const trimmed = input.trim()
+    return trimmed ? [trimmed] : []
+  }
+  if (typeof input === 'object') return Object.values(input).flatMap((val) => normalizePageSizes(val))
+  return []
 }
 
 export default function FigurePlannerStage({ session, patent, onComplete, onRefresh }: FigurePlannerStageProps) {
@@ -85,7 +99,8 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
 
   // UI Mode state
   const [mode, setMode] = useState<'ai' | 'manual'>('ai')
-  
+  const [includeExistingFigures, setIncludeExistingFigures] = useState(true)
+
   // Map legacy state to new mode
   const [aiDecides, setAiDecides] = useState(true)
   const [userDecides, setUserDecides] = useState(false)
@@ -109,6 +124,7 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   const [countryProfile, setCountryProfile] = useState<any | null>(null)
   const uploadSectionRef = useRef<HTMLDivElement>(null)
   const [highlightUpload, setHighlightUpload] = useState(false)
+  const renderQueueRef = useRef<Promise<void>>(Promise.resolve())
 
   const activeJurisdiction = (session?.activeJurisdiction || session?.draftingJurisdictions?.[0] || 'IN').toUpperCase()
 
@@ -121,9 +137,16 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
         if (res.ok) {
           const data = await res.json()
           setCountryProfile(data?.profile || null)
+        } else if (res.status === 404) {
+          // Country profile not found, use defaults
+          console.warn(`Country profile for ${activeJurisdiction} not found, using defaults`)
+          setCountryProfile(null)
+        } else {
+          console.warn('Failed to load country profile for figures', res.status, res.statusText)
         }
       } catch (e) {
         console.warn('Failed to load country profile for figures', e)
+        setCountryProfile(null)
       }
     }
     loadProfile()
@@ -253,56 +276,101 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
         ]
         const allowedPageSizes = allowedPageSizeList.join(', ')
 
+        // Determine next figure number based on existing figures
+        const existingFigureCount = session?.figurePlans?.length || 0
+        const startingFigNo = existingFigureCount + 1
+
         // Create a custom prompt that incorporates the user-provided instructions
-        const customPrompt = `You are generating PlantUML diagrams for a patent specification in jurisdiction ${activeJurisdiction}.
-Return a JSON array of ${overrideList.length} custom diagrams based on the user's specific instructions.
+        let customPrompt = `You are an expert patent illustrator generating PlantUML diagrams for a patent specification in jurisdiction ${activeJurisdiction}.
+Return a JSON array of exactly ${overrideList.length} custom diagrams based on the user's specific instructions.
 Each item must be: {"title":"Fig.X - descriptive title","purpose":"brief explanation of what this shows","plantuml":"@startuml...@enduml"}.
 
-User-provided instructions for each figure:
-${overrideList.map((instruction, index) => `Fig.${index + 1}: ${instruction}`).join('\n')}
+These new figures will be numbered starting from Fig.${startingFigNo}.
 
-Strict content & labeling:
-- Use only components and numerals: ${numeralsPreview}.
-- Use labels with numerals exactly as assigned (e.g., C100). Avoid undefined references.
-- Do NOT include !theme, !include, !import, skinparam, captions, figure numbers, or titles inside the PlantUML code.
-- Figure label format: ${figureLabelFormat}. Use this for titles and any in-figure references.
-- Color policy: ${colorAllowed ? 'color permitted if essential' : 'monochrome only (no color)'}; line style: ${lineStyle}.
-- Reference numerals in drawings: ${refNumeralsMandatory ? 'MANDATORY' : 'Optional'}. Text size at least ${minTextSize} pt.
-- Page size guidance (if applicable): ${allowedPageSizes || 'A4/Letter safe defaults'}.
+User-provided instructions for each NEW figure:
+${overrideList.map((instruction, index) => `Fig.${startingFigNo + index}: ${instruction}`).join('\n')}`
 
-Vertical layout policy (avoid horizontal sprawl):
-- Think and draw in vertical LAYERS: Inputs (top) → Core Processing (middle) → Outputs (bottom).
-- Group related nodes in frames/packages and LIST them in top-to-bottom order inside the group.
-- Limit horizontal fan-out per layer to ≤ 3 siblings; overflow goes to a LOWER layer.
-- Prefer downward arrows and avoid long horizontal cross-edges. If needed, re-insert relay nodes in the lower layer.
+        // Include existing figures context if checkbox is checked
+        if (includeExistingFigures && session?.figurePlans?.length > 0) {
+          const existingFigures = session.figurePlans
+            .sort((a: any, b: any) => a.figureNo - b.figureNo)
+            .map((f: any) => {
+              const clean = sanitizeFigureLabel(f.title) || `Figure ${f.figureNo}`
+              const description = f.description ? ` - ${f.description.slice(0, 100)}${f.description.length > 100 ? '...' : ''}` : ''
+              return `Fig.${f.figureNo}: ${clean}${description}`
+            })
+            .join('\n')
 
-PNG/A4 export safety (exception rules):
-- To keep PNG crisp on A4, you MAY use only these two rendering directives:
-  1) scale max 1890x2917  (fits an A4 page at ~25 mm margins, 300 DPI)
-  2) newpage               (start a second page if needed)
-- Do NOT use any other style directives.
+          customPrompt += `
 
-Code quality:
-- Keep code minimal and syntactically valid PlantUML.
-- No undefined aliases. No dangling arrows. Avoid duplicate edges.
+EXISTING FIGURES (already created - do NOT duplicate these, but ensure new figures logically follow them):
+${existingFigures}
 
-Output: JSON only, no markdown fences.`
+IMPORTANT: New figures should continue the "zoom-in" progression. If existing figures show the system overview, new figures should show deeper details.`
+        }
+
+        customPrompt += `
+
+═══════════════════════════════════════════════════════════════════════════════
+COMPONENTS & LABELING
+═══════════════════════════════════════════════════════════════════════════════
+- Use ONLY these components and numerals: ${numeralsPreview}.
+- Use labels with numerals exactly as assigned (e.g., "Processor 100", not just "Processor").
+- Every component referenced must exist in the list above. NO UNDEFINED REFERENCES.
+- Figure label format: ${figureLabelFormat}.
+- Color policy: ${colorAllowed ? 'color permitted if essential' : 'MONOCHROME ONLY (no color)'}.
+- Line style: ${lineStyle}.
+- Reference numerals: ${refNumeralsMandatory ? 'MANDATORY in all drawings' : 'Optional'}.
+- Minimum text size: ${minTextSize} pt.
+
+═══════════════════════════════════════════════════════════════════════════════
+PLANTUML SYNTAX RULES (ERRORS TO AVOID)
+═══════════════════════════════════════════════════════════════════════════════
+FORBIDDEN (will cause render failure):
+✗ !theme, !include, !import, !pragma directives
+✗ skinparam blocks or statements
+✗ title, caption, header, footer inside the diagram
+✗ Mixing [hidden] with directions (wrong: "-[hidden]down-", correct: "-[hidden]-" OR "-down-")
+✗ Incomplete connections (wrong: "500 --", correct: "500 --> 600")
+✗ Unclosed blocks (every "if" needs "endif", every "note" needs "end note")
+✗ Multiple or nested @startuml/@enduml pairs (exactly ONE pair per diagram)
+✗ Undefined aliases or dangling arrows
+
+ALLOWED (only these style directives):
+✓ scale max 1890x2917 (for A4 fit)
+✓ newpage (for multi-page diagrams)
+
+═══════════════════════════════════════════════════════════════════════════════
+LAYOUT PRINCIPLES
+═══════════════════════════════════════════════════════════════════════════════
+- Use VERTICAL flow: Inputs (top) → Processing (middle) → Outputs (bottom).
+- Group related nodes in frames/packages, listed top-to-bottom.
+- Max 3 horizontal siblings per layer; overflow goes to lower layer.
+- Page size: ${allowedPageSizes || 'A4/Letter safe defaults'}.
+
+═══════════════════════════════════════════════════════════════════════════════
+SELF-VALIDATION (DO THIS BEFORE RESPONDING)
+═══════════════════════════════════════════════════════════════════════════════
+Before outputting, mentally verify:
+1. ✓ All referenced components exist in the provided list?
+2. ✓ No forbidden directives (!theme, skinparam, title, etc.)?
+3. ✓ All connections have both endpoints?
+4. ✓ All blocks are properly closed?
+5. ✓ Exactly one @startuml/@enduml pair per diagram?
+
+Output: JSON array only, no markdown fences, no explanations.`
 
         const resp = await onComplete({
           action: 'generate_diagrams_llm',
           sessionId: session?.id,
-          prompt: customPrompt
+          prompt: customPrompt,
+          // In manual AI mode, append to existing figures instead of replacing them
+          replaceExisting: false
         })
         if (!resp) throw new Error('LLM did not return valid figure list')
 
-        // Show the generated figures as proposed, similar to AI mode
-        if (resp.figures && Array.isArray(resp.figures)) {
-          setFigures(resp.figures.map((fig: LLMFigure, index: number) => ({
-            ...fig,
-            title: sanitizeFigureLabel(fig.title) || `Figure ${index + 1}`,
-            purpose: overrideList[index] || fig.purpose || 'Custom figure based on your specifications'
-          })))
-        }
+        // Backend already saves figures with correct figure numbers (appended after existing)
+        // No need to call handleSavePlantUML - it would overwrite with wrong figure numbers
 
         setOverrideCount(0)
         setOverrideInputs([])
@@ -326,60 +394,102 @@ Output: JSON only, no markdown fences.`
       ]
       const allowedPageSizes = allowedPageSizeList.join(', ')
 
-      const prompt = `You are generating PlantUML diagrams for a patent specification in jurisdiction ${activeJurisdiction}.
-Return a JSON array of ${diagramCount} simple, standard patent-style diagrams (no fancy rendering).
+      const prompt = `You are an expert patent illustrator generating PlantUML diagrams for a patent specification in jurisdiction ${activeJurisdiction}.
+Return a JSON array of exactly ${diagramCount} simple, standard patent-style diagrams (no fancy rendering).
 Each item must be: {"title":"Fig.X - title","purpose":"brief explanation of what this shows","plantuml":"@startuml...@enduml"}.
 
-Strict content & labeling:
-- Use only components and numerals: ${numeralsPreview}.
-- Use labels with numerals exactly as assigned (e.g., C100). Avoid undefined references.
-- Do NOT include !theme, !include, !import, skinparam, captions, figure numbers, or titles inside the PlantUML code.
-- Figure label format: ${figureLabelFormat}. Use this for titles and any in-figure references.
-- Color policy: ${colorAllowed ? 'color permitted if essential' : 'monochrome only (no color)'}; line style: ${lineStyle}.
-- Reference numerals in drawings: ${refNumeralsMandatory ? 'MANDATORY' : 'Optional'}. Text size at least ${minTextSize} pt.
-- Page size guidance (if applicable): ${allowedPageSizes || 'A4/Letter safe defaults'}.
+═══════════════════════════════════════════════════════════════════════════════
+CRITICAL: SEQUENTIAL ZOOM-IN HIERARCHY (MANDATORY)
+═══════════════════════════════════════════════════════════════════════════════
+Figures MUST follow a "broad-to-specific" progression, like zooming into a photograph:
 
-Diagram selection (prefer in this order):
-- Fig.1: high-level block diagram (root modules).
-- Fig.2: data/control flow across modules.
-- Fig.3: internal view of a selected module. (Timing only if very short.)
+Fig.1 → SYSTEM OVERVIEW: Bird's-eye view showing ALL major components and their relationships.
+         Shows: The complete invention as a single unified system.
+         Detail level: Lowest (most abstract).
 
-Vertical layout policy (avoid horizontal sprawl):
-- Think and draw in vertical LAYERS: Inputs (top) → Core Processing (middle) → Outputs (bottom).
-- Group related nodes in frames/packages and LIST them in top-to-bottom order inside the group.
-- Limit horizontal fan-out per layer to ≤ 3 siblings; overflow goes to a LOWER layer.
-- Prefer downward arrows and avoid long horizontal cross-edges. If needed, re-insert relay nodes in the lower layer.
+Fig.2 → PRIMARY SUBSYSTEM: Zoom into the most important functional block from Fig.1.
+         Shows: Internal structure of the core processing unit.
+         Detail level: Medium.
 
-PNG/A4 export safety (exception rules):
-- To keep PNG crisp on A4, you MAY use only these two rendering directives:
-  1) scale max 1890x2917  (fits an A4 page at ~25 mm margins, 300 DPI)
-  2) newpage               (start a second page if needed)
-- Do NOT use any other style directives.
+Fig.3 → DATA/CONTROL FLOW: How data or signals flow through the system.
+         Shows: Sequence of operations, inputs → processing → outputs.
+         Detail level: Medium.
 
-Complexity / pagination:
-- If components > 12 OR horizontal width would exceed ~3 vertical stacks, split into multiple diagrams OR use "newpage" inside a single figure.
-- Keep each diagram self-contained and legible without shrinking fonts.
+Fig.4+ → COMPONENT DEEP-DIVES: Progressively zoom into specific components.
+         Each subsequent figure should focus on a smaller, more specific aspect.
+         Detail level: Increasing with each figure.
 
-Code quality:
-- Keep code minimal and syntactically valid PlantUML.
-- No undefined aliases. No dangling arrows. Avoid duplicate edges.
+RULE: A reader viewing figures in order (1, 2, 3...) should experience a logical "drill-down" from whole system to specific details. Never show a detailed component before showing where it fits in the broader system.
 
-Output: JSON only, no markdown fences.`
+═══════════════════════════════════════════════════════════════════════════════
+COMPONENTS & LABELING
+═══════════════════════════════════════════════════════════════════════════════
+- Use ONLY these components and numerals: ${numeralsPreview}.
+- Use labels with numerals exactly as assigned (e.g., "Processor 100", not just "Processor").
+- Every component referenced must exist in the list above. NO UNDEFINED REFERENCES.
+- Figure label format: ${figureLabelFormat}.
+- Color policy: ${colorAllowed ? 'color permitted if essential' : 'MONOCHROME ONLY (no color)'}.
+- Line style: ${lineStyle}.
+- Reference numerals: ${refNumeralsMandatory ? 'MANDATORY in all drawings' : 'Optional'}.
+- Minimum text size: ${minTextSize} pt.
+
+═══════════════════════════════════════════════════════════════════════════════
+PLANTUML SYNTAX RULES (ERRORS TO AVOID)
+═══════════════════════════════════════════════════════════════════════════════
+FORBIDDEN (will cause render failure):
+✗ !theme, !include, !import, !pragma directives
+✗ skinparam blocks or statements
+✗ title, caption, header, footer inside the diagram
+✗ Mixing [hidden] with directions (wrong: "-[hidden]down-", correct: "-[hidden]-" OR "-down-")
+✗ Incomplete connections (wrong: "500 --", correct: "500 --> 600")
+✗ Unclosed blocks (every "if" needs "endif", every "note" needs "end note")
+✗ Multiple or nested @startuml/@enduml pairs (exactly ONE pair per diagram)
+✗ Undefined aliases or dangling arrows
+
+ALLOWED (only these style directives):
+✓ scale max 1890x2917 (for A4 fit)
+✓ newpage (for multi-page diagrams)
+
+═══════════════════════════════════════════════════════════════════════════════
+LAYOUT PRINCIPLES
+═══════════════════════════════════════════════════════════════════════════════
+- Use VERTICAL flow: Inputs (top) → Processing (middle) → Outputs (bottom).
+- Group related nodes in frames/packages, listed top-to-bottom.
+- Max 3 horizontal siblings per layer; overflow goes to lower layer.
+- Prefer downward arrows; avoid long horizontal cross-edges.
+- Page size: ${allowedPageSizes || 'A4/Letter safe defaults'}.
+- If >12 components, split into multiple diagrams or use "newpage".
+
+═══════════════════════════════════════════════════════════════════════════════
+SELF-VALIDATION (DO THIS BEFORE RESPONDING)
+═══════════════════════════════════════════════════════════════════════════════
+Before outputting, mentally verify:
+1. ✓ Figures are ordered broad→specific (zoom-in sequence)?
+2. ✓ All referenced components exist in the provided list?
+3. ✓ No forbidden directives (!theme, skinparam, title, etc.)?
+4. ✓ All connections have both endpoints?
+5. ✓ All blocks are properly closed?
+6. ✓ Exactly one @startuml/@enduml pair per diagram?
+
+Output: JSON array only, no markdown fences, no explanations.`
 
       const res = await onComplete({
         action: 'generate_diagrams_llm',
         sessionId: session?.id,
-        prompt
+        prompt,
+        // In autopilot mode, we intentionally replace the existing figure set
+        replaceExisting: true
       })
 
       if (!res || !Array.isArray(res.figures)) {
         throw new Error('LLM did not return valid figure list')
       }
 
-      setFigures(res.figures.map((fig: LLMFigure) => ({
-        ...fig,
-        title: sanitizeFigureLabel(fig.title) || fig.title
-      })))
+      // Backend already saves figures with correct figure numbers (1, 2, 3... for replace mode)
+      // No need to call handleSavePlantUML - it would be redundant
+
+      setFigures([]) // Clear proposed figures since they're now automatically approved
+
       // Refresh to pull saved plans and sources immediately
       await onRefresh()
     } catch (e) {
@@ -389,27 +499,7 @@ Output: JSON only, no markdown fences.`
     }
   }
 
-  const handleSavePlantUML = async (figure: LLMFigure, index: number) => {
-    try {
-      const resp = await onComplete({
-        action: 'save_plantuml',
-        sessionId: session?.id,
-        figureNo: index + 1,
-        title: sanitizeFigureLabel(figure.title) || figure.title,
-        plantumlCode: figure.plantuml,
-        description: figure.purpose // Save the description/caption
-      })
-
-      if (resp?.diagramSource) {
-        // ok
-      }
-    } catch (e) {
-      setError('Failed to save PlantUML')
-    }
-  }
-
-  // Intelligent automatic diagram processing
-  const autoProcessDiagram = async (figureNo: number, plantumlCode: string) => {
+  const runSingleRender = async (figureNo: number, plantumlCode: string) => {
     setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[0] }))
     setProcessingStep(prev => ({ ...prev, [figureNo]: 0 }))
 
@@ -430,7 +520,13 @@ Output: JSON only, no markdown fences.`
       const resp = await fetch('/api/test/plantuml-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ code: plantumlCode, format: 'png' })
+        body: JSON.stringify({
+          code: plantumlCode,
+          format: 'png',
+          figureNo,
+          patentId: patent?.id,
+          sessionId: session?.id
+        })
       })
 
       if (!resp.ok) {
@@ -462,8 +558,9 @@ Output: JSON only, no markdown fences.`
       setProcessingStep(prev => ({ ...prev, [figureNo]: 6 }))
 
       setIsUploading(true)
-      const file = new File([blob], `figure-${figureNo}.png`, { type: 'image/png' })
-      await handleUploadImage(figureNo, file)
+      const filename = `figure_${figureNo}_${Date.now()}.png`
+      const file = new File([blob], filename, { type: 'image/png' })
+      await handleUploadImage(figureNo, file, filename)
 
       // Clear processing status
       setProcessingStatus(prev => ({ ...prev, [figureNo]: '' }))
@@ -481,7 +578,17 @@ Output: JSON only, no markdown fences.`
     }
   }
 
-  const handleUploadImage = async (figureNo: number, file: File) => {
+  // Intelligent automatic diagram processing with serialized queue and 2s gap between requests
+  const autoProcessDiagram = (figureNo: number, plantumlCode: string) => {
+    renderQueueRef.current = renderQueueRef.current.then(async () => {
+      // 2 second gap between upstream render requests
+      await new Promise(resolve => setTimeout(resolve, 2000))
+      await runSingleRender(figureNo, plantumlCode)
+    })
+    return renderQueueRef.current
+  }
+
+  const handleUploadImage = async (figureNo: number, file: File, customFilename?: string) => {
     try {
       setIsUploading(true)
       setError(null)
@@ -501,7 +608,9 @@ Output: JSON only, no markdown fences.`
         throw new Error(message)
       }
       const uploadedMeta = await uploadResp.json()
-      await onComplete({ action: 'upload_diagram', sessionId: session?.id, figureNo, filename: uploadedMeta.filename, checksum: uploadedMeta.checksum, imagePath: uploadedMeta.path })
+      // Use custom filename if provided, otherwise use the filename from response
+      const filename = customFilename || uploadedMeta.filename
+      await onComplete({ action: 'upload_diagram', sessionId: session?.id, figureNo, filename, checksum: uploadedMeta.checksum, imagePath: uploadedMeta.path })
       setUploaded((prev) => ({ ...prev, [figureNo]: true }))
       await onRefresh()
     } catch (e) {
@@ -686,9 +795,9 @@ Output: JSON only, no markdown fences.`
           >
             <div className="flex items-center gap-4 mb-4">
               <Label className="whitespace-nowrap">Number of Figures:</Label>
-              <Input 
-                type="number" 
-                min={1} 
+              <Input
+                type="number"
+                min={1}
                 max={20}
                 className="w-24 bg-white"
                 value={overrideCount}
@@ -698,6 +807,17 @@ Output: JSON only, no markdown fences.`
                   setOverrideInputs(Array.from({ length: n }, (_, i) => overrideInputs[i] || ''))
                 }}
               />
+            </div>
+
+            <div className="flex items-center space-x-2 mb-4">
+              <Checkbox
+                id="include-existing"
+                checked={includeExistingFigures}
+                onCheckedChange={setIncludeExistingFigures}
+              />
+              <Label htmlFor="include-existing" className="text-sm text-gray-700">
+                Tell AI about existing figures to avoid duplicates
+              </Label>
             </div>
             
             <div className="space-y-4">
@@ -736,88 +856,6 @@ Output: JSON only, no markdown fences.`
         )}
       </AnimatePresence>
 
-      {/* Generated Figures List */}
-      {figures.length > 0 && (
-        <div className="space-y-6">
-          <div className="flex items-center justify-between">
-             <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
-               <Zap className="w-5 h-5 text-yellow-500" />
-               Proposed Figures
-             </h3>
-             <Button variant="outline" size="sm" onClick={() => setFigures([])}>Clear Proposals</Button>
-          </div>
-          <div className="grid grid-cols-1 gap-6">
-          {figures.map((f, i) => (
-              <Card key={i} className="overflow-hidden border-indigo-100 shadow-sm hover:shadow-md transition-all">
-                <CardHeader className="bg-indigo-50/30 border-b border-indigo-50">
-                  <div className="flex items-start justify-between">
-          <div>
-                      <CardTitle className="text-base font-semibold text-indigo-900">{f.title || `Fig.${i + 1}`}</CardTitle>
-                      <CardDescription className="mt-1">{f.purpose}</CardDescription>
-                </div>
-                    <Badge variant="outline" className="bg-white text-indigo-600 border-indigo-200">Proposed</Badge>
-                </div>
-                </CardHeader>
-                <CardContent className="p-6">
-                  <div className="flex items-center gap-3 text-sm text-gray-600 bg-gray-50 p-3 rounded-md border border-gray-100">
-                    <Check className="w-5 h-5 text-green-500 flex-shrink-0" />
-                    <span>PlantUML code generated and ready for rendering.</span>
-              </div>
-                  
-              {modifyIdx === i && (
-                    <motion.div 
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: 'auto' }}
-                      className="mt-4 pt-4 border-t"
-                    >
-                      <Label className="mb-2 block">Refinement Instructions</Label>
-                      <Textarea 
-                        value={modifyText}
-                        onChange={(e) => setModifyText(e.target.value)}
-                        placeholder="E.g., Make the arrow from A to B dashed..."
-                        className="mb-2"
-                      />
-                      <div className="flex gap-2">
-                        <Button 
-                          size="sm" 
-                      onClick={async () => {
-                        try {
-                          const resp = await onComplete({ action: 'regenerate_diagram_llm', sessionId: session?.id, figureNo: i + 1, instructions: modifyText })
-                          if (resp?.diagramSource?.plantumlCode) {
-                            const updated = [...figures]
-                            updated[i] = { ...updated[i], plantuml: resp.diagramSource.plantumlCode }
-                            setFigures(updated)
-                            setModifyIdx(null)
-                            setModifyText('')
-                            await onRefresh()
-                          }
-                        } catch (e) {
-                          setError('Failed to modify diagram')
-                        }
-                      }}
-                    >
-                      Apply Changes
-                        </Button>
-                        <Button variant="ghost" size="sm" onClick={() => { setModifyIdx(null); setModifyText('') }}>Cancel</Button>
-          </div>
-                    </motion.div>
-                  )}
-                </CardContent>
-                <div className="bg-gray-50/50 flex items-center justify-end gap-2 p-4">
-                  <Button variant="outline" size="sm" onClick={() => { setModifyIdx(i); setModifyText('') }}>
-                    <Edit2 className="w-4 h-4 mr-2" />
-                    Modify
-                  </Button>
-                  <Button onClick={() => handleSavePlantUML(f, i)} size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white">
-                    <Check className="w-4 h-4 mr-2" />
-                    Approve & Save
-                  </Button>
-            </div>
-              </Card>
-          ))}
-          </div>
-      </div>
-      )}
 
       {/* Saved Diagrams Grid */}
       <div className="mt-12">
@@ -879,27 +917,43 @@ Output: JSON only, no markdown fences.`
                   </div>
                     </>
                   ) : (
-                    <div className="flex flex-col items-center p-6 text-center">
-                      {processingStatus[d.figureNo] ? (
-                        <div className="space-y-3">
-                           <div className="relative w-16 h-16 mx-auto">
-                             <div className="absolute inset-0 border-4 border-indigo-100 rounded-full"></div>
-                             <div className="absolute inset-0 border-4 border-indigo-500 rounded-full border-t-transparent animate-spin"></div>
-                             <Sparkles className="absolute inset-0 m-auto w-6 h-6 text-indigo-500 animate-pulse" />
-                </div>
-                           <p className="text-sm font-medium text-indigo-600 animate-pulse">{processingStatus[d.figureNo]}</p>
-                </div>
-                      ) : d.plantumlCode ? (
-                        <div className="text-center">
-                           <Code className="w-12 h-12 text-gray-300 mx-auto mb-2" />
-                           <p className="text-sm text-gray-500 mb-4">Code ready for processing</p>
-                           <Button size="sm" onClick={() => autoProcessDiagram(d.figureNo, d.plantumlCode)}>
-                             <RefreshCw className="w-4 h-4 mr-2" /> Render Image
-                           </Button>
-                </div>
-                      ) : (
-                        <p className="text-sm text-gray-400">No image data</p>
-                      )}
+                  <div className="flex flex-col items-center p-6 text-center">
+                    {processingStatus[d.figureNo] ? (
+                      <div className="space-y-3">
+                        <div className="relative w-16 h-16 mx-auto">
+                          <div className="absolute inset-0 border-4 border-indigo-100 rounded-full"></div>
+                          <div className="absolute inset-0 border-4 border-indigo-500 rounded-full border-t-transparent animate-spin"></div>
+                          <Sparkles className="absolute inset-0 m-auto w-6 h-6 text-indigo-500 animate-pulse" />
+                        </div>
+                        <p className="text-sm font-medium text-indigo-600 animate-pulse">
+                          {processingStatus[d.figureNo]}
+                        </p>
+                        {processingStep[d.figureNo] === -1 && d.plantumlCode && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="mt-2"
+                            onClick={() => {
+                              setProcessingStatus(prev => ({ ...prev, [d.figureNo]: '' }))
+                              setProcessingStep(prev => ({ ...prev, [d.figureNo]: 0 }))
+                              autoProcessDiagram(d.figureNo, d.plantumlCode)
+                            }}
+                          >
+                            <RefreshCw className="w-4 h-4 mr-2" /> Retry Render
+                          </Button>
+                        )}
+                      </div>
+                    ) : d.plantumlCode ? (
+                      <div className="text-center">
+                        <Code className="w-12 h-12 text-gray-300 mx-auto mb-2" />
+                        <p className="text-sm text-gray-500 mb-4">Code ready for processing</p>
+                        <Button size="sm" onClick={() => autoProcessDiagram(d.figureNo, d.plantumlCode)}>
+                          <RefreshCw className="w-4 h-4 mr-2" /> Render Image
+                        </Button>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-gray-400">No image data</p>
+                    )}
                   </div>
                 )}
                 </CardContent>
@@ -1168,23 +1222,7 @@ Output: JSON only, no markdown fences.`
               </div>
               <div className="p-4 border-t flex justify-end gap-3">
                 <Button variant="outline" onClick={() => setExpandedFigNo(null)}>Close</Button>
-                {!diagramSource?.imageUploadedAt && (
-                  <Button onClick={async () => {
-                  try {
-                    setIsUploading(true)
-                      const imageSrc = renderPreview[expandedFigNo!] || `/api/projects/${patent.project.id}/patents/${patent.id}/upload?filename=${encodeURIComponent(diagramSource?.imageFilename || '')}`
-                      const res = await fetch(imageSrc)
-                    const blob = await res.blob()
-                    const file = new File([blob], `figure-${expandedFigNo}.png`, { type: 'image/png' })
-                    await handleUploadImage(expandedFigNo!, file)
-                    setExpandedFigNo(null)
-                  } catch (e) {
-                    setError('Approve failed')
-                  } finally {
-                    setIsUploading(false)
-                  }
-                  }}>Approve & Save to Project</Button>
-                )}
+                {/* Approval is now automatic - this button removed */}
               </div>
             </motion.div>
           </motion.div>
@@ -1198,14 +1236,3 @@ Output: JSON only, no markdown fences.`
     </motion.div>
   )
 }
-
-  const normalizePageSizes = (input: any): string[] => {
-    if (!input) return []
-  if (Array.isArray(input)) return input.flatMap((val) => normalizePageSizes(val))
-    if (typeof input === 'string') {
-      const trimmed = input.trim()
-      return trimmed ? [trimmed] : []
-    }
-  if (typeof input === 'object') return Object.values(input).flatMap((val) => normalizePageSizes(val))
-    return []
-  }

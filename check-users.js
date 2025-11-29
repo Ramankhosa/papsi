@@ -1,87 +1,52 @@
 const { PrismaClient } = require('@prisma/client');
-
 const prisma = new PrismaClient();
 
-async function checkUsers() {
-  console.log('🔍 Checking users and hierarchy in database...\n');
-
+async function checkUsersAndTenants() {
   try {
-    // Get all users with their tenant info
+    console.log('=== USERS ===');
     const users = await prisma.user.findMany({
       select: {
+        id: true,
         email: true,
         name: true,
-        roles: true,
-        emailVerified: true,
-        tenant: {
-          select: {
-            name: true,
-            type: true
-          }
-        }
-      },
-      orderBy: { email: 'asc' }
+        firstName: true,
+        lastName: true,
+        tenantId: true
+      }
     });
 
-    console.log('👥 USERS:');
-    console.table(users.map(u => ({
-      Email: u.email,
-      Name: u.name,
-      Roles: u.roles.join(', '),
-      'Email Verified': u.emailVerified,
-      'Tenant Name': u.tenant?.name || 'N/A',
-      'Tenant Type': u.tenant?.type || 'N/A'
-    })));
+    console.log('Current users in database:');
+    users.forEach(user => {
+      const displayName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'no name';
+      console.log(`- ${user.id}: ${user.email} (${displayName}) - Tenant: ${user.tenantId || 'null'}`);
+    });
 
-    // Get all tenants
+    console.log('\n=== TENANTS ===');
     const tenants = await prisma.tenant.findMany({
       select: {
+        id: true,
         name: true,
-        type: true,
-        atiId: true,
-        status: true
-      },
-      orderBy: { name: 'asc' }
-    });
-
-    console.log('\n🏢 TENANTS:');
-    console.table(tenants);
-
-    // Check plans
-    const plans = await prisma.plan.findMany({
-      select: {
-        name: true,
-        displayName: true
+        atiId: true
       }
     });
 
-    console.log('\n📋 PLANS:');
-    console.table(plans);
-
-    // Check tenant plans
-    const tenantPlans = await prisma.tenantPlan.findMany({
-      include: {
-        tenant: { select: { name: true } },
-        plan: { select: { displayName: true } }
-      }
+    console.log('Current tenants in database:');
+    tenants.forEach(tenant => {
+      console.log(`- ${tenant.id}: ${tenant.name} (${tenant.atiId})`);
     });
 
-    console.log('\n🔗 TENANT-PLANS:');
-    console.table(tenantPlans.map(tp => ({
-      'Tenant Name': tp.tenant.name,
-      'Plan Name': tp.plan.displayName
-    })));
+    if (users.length === 0) {
+      console.log('No users found in database');
+    }
+    if (tenants.length === 0) {
+      console.log('No tenants found in database');
+    }
 
   } catch (error) {
-    console.error('❌ Error checking database:', error);
+    console.error('Error checking users and tenants:', error);
   } finally {
     await prisma.$disconnect();
   }
 }
 
-checkUsers();
-
-
-
-
-
+checkUsersAndTenants();

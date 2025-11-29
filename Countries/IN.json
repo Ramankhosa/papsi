@@ -15,16 +15,18 @@
       "en",
       "hi"
     ],
-    "version": 3,
+    "version": 5,
     "status": "active",
     "inheritsFrom": null,
+    "promptMergeStrategy": "append",
     "tags": [
       "indian",
       "complete_specification",
-      "national_phase"
+      "national_phase",
+      "form_2"
     ],
     "createdAt": "2025-11-28T00:00:00Z",
-    "updatedAt": "2025-11-28T00:00:00Z"
+    "updatedAt": "2025-11-29T12:00:00Z"
   },
   "structure": {
     "defaultVariant": "standard",
@@ -77,9 +79,25 @@
             }
           },
           {
+            "id": "objects",
+            "label": "Object(s) of the Invention",
+            "order": 4,
+            "canonicalKeys": [
+              "objectsOfInvention",
+              "objects",
+              "objects_of_invention"
+            ],
+            "required": true,
+            "group": "body",
+            "ui": {
+              "placeholder": "State the principal and additional objects of the invention.",
+              "helpText": "Clearly articulate the technical problems associated with existing technology (prior art) and the specific solutions provided by the invention. Use statements like 'The principal object of this invention is to...' or 'Another object of this invention is to...' to outline specific goals achieved. This section should directly correlate with the features mentioned in the claims."
+            }
+          },
+          {
             "id": "summary",
             "label": "Summary / Statement of Invention",
-            "order": 4,
+            "order": 5,
             "canonicalKeys": [
               "summary_of_invention"
             ],
@@ -93,21 +111,21 @@
           {
             "id": "brief_drawings",
             "label": "Brief Description of the Drawings",
-            "order": 5,
+            "order": 6,
             "canonicalKeys": [
               "brief_description_of_drawings"
             ],
             "required": false,
             "group": "body",
             "ui": {
-              "placeholder": "List each figure briefly (e.g., “FIG. 1 is a schematic view of …”).",
-              "helpText": "List each drawing figure with a one-line description (e.g., “FIG. 1 is a schematic view of a system configuration”). Ensure figure numbering and captions match the drawing sheets filed under Rule 15."
+              "placeholder": "List each figure briefly (e.g., 'FIG. 1 is a schematic view of ...').",
+              "helpText": "List each drawing figure with a one-line description (e.g., 'FIG. 1 is a schematic view of a system configuration'). Ensure figure numbering and captions match the drawing sheets filed under Rule 15."
             }
           },
           {
             "id": "detailed_description",
             "label": "Detailed Description of the Invention",
-            "order": 6,
+            "order": 7,
             "canonicalKeys": [
               "detailed_description"
             ],
@@ -121,7 +139,7 @@
           {
             "id": "claims",
             "label": "Claims",
-            "order": 7,
+            "order": 8,
             "canonicalKeys": [
               "claims"
             ],
@@ -135,7 +153,7 @@
           {
             "id": "abstract",
             "label": "Abstract",
-            "order": 8,
+            "order": 9,
             "canonicalKeys": [
               "abstract"
             ],
@@ -305,60 +323,111 @@
     },
     "sections": {
       "title": {
-        "instruction": "Draft a concise technical title for the Indian complete specification (Form 2).",
+        "topUp": {
+          "instruction": "For Indian jurisdiction under Rule 13(7)(a), ensure the title is specific, indicates the features of the invention, and is normally expressed in not more than 15 words.",
         "constraints": [
-          "Do not exceed 15 words.",
-          "Avoid trademarks, personal names and the word 'patent'."
+            "Avoid trademarks and personal names per Indian Patent Manual guidelines",
+            "Focus on brevity and clarity per Patents Rules, 2003"
         ]
+        }
       },
-      "field": {
-        "instruction": "Draft the Field of Invention section.",
+      "fieldOfInvention": {
+        "topUp": {
+          "instruction": "Per Indian Patent Office Manual of Practice and Procedure, this section opens the description and indicates the technical field to which the invention relates.",
         "constraints": [
-          "Limit to 1–3 sentences.",
-          "State the general and specific technical field without describing advantages or embodiments."
+            "Limit to 1–3 sentences as per Manual guidelines",
+            "State the general and specific technical field without advantages or embodiments"
         ]
+        }
       },
       "background": {
-        "instruction": "Draft the Background and Prior Art section.",
+        "topUp": {
+          "instruction": "Per Indian Patent Manual, briefly describe the prior art and the technical problem addressed. Exercise care in characterizing prior art to avoid prejudicing patentability.",
+          "constraints": [
+            "Avoid unnecessary admissions that particular documents are prior art",
+            "Do not state that the invention is obvious, trivial or a mere workshop modification",
+            "Focus on technical limitations of conventional approaches"
+          ]
+        }
+      },
+      "objectsOfInvention": {
+        "topUp": {
+          "instruction": "Per Indian Patent Office practice, draft the 'Object(s) of the Invention' section to clearly articulate the technical problems with existing prior art and the specific solutions provided by the invention. This section is placed after Background and before Summary in Indian Complete Specifications (Form 2).",
         "constraints": [
-          "Describe relevant prior art and technical problems addressed by the invention.",
-          "Avoid unnecessary admissions that particular documents are prior art unless intentional.",
-          "Do not state that the invention is obvious, trivial or a mere workshop modification."
+            "Use statements beginning with 'The principal object of this invention is to...' or 'Another object of this invention is to...'",
+            "NEVER use 'The object...' (singular definite) as this implies only one objective",
+            "Focus on technical results achieved (e.g., 'to improve efficiency'), not the means",
+            "Each objective should correlate directly with features mentioned in the claims",
+            "Describe what the invention achieves, not how it achieves it"
+          ],
+          "additions": [
+            "Acknowledge closest prior art and clearly distinguish how the invention improves upon it",
+            "Ensure objectives can be substantiated by the detailed description and claims",
+            "Do not admit non-patentability or state invention is obvious",
+            "Avoid vague or non-technical goals focusing only on commercial success",
+            "Do not overstate benefits - stick to demonstrable technical advantages"
         ]
+        }
       },
       "summary": {
-        "instruction": "Draft the Summary / Statement of Invention section.",
+        "topUp": {
+          "instruction": "Per Manual of Patent Office Practice and Procedure, provide a concise summary highlighting essential features and distinguishing aspects over known art, consistent with independent claims.",
         "constraints": [
-          "Provide a high-level overview of the inventive concept and key distinguishing features.",
-          "Ensure consistency with the independent claims."
+            "This summary should precede the detailed description for clarity",
+            "Ensure consistency with the scope of independent claims"
         ]
+        }
       },
-      "detailed_description": {
-        "instruction": "Draft the Detailed Description of the Invention section.",
+      "detailedDescription": {
+        "topUp": {
+          "instruction": "Per Section 10(4) of the Patents Act, 1970, describe the invention in full detail including the best method of performing it, so that a person skilled in the art can work the invention.",
         "constraints": [
-          "Describe embodiments in sufficient detail for a person skilled in the art to work the invention.",
-          "Include the best method of performing the invention known to the applicant at the time of filing, as required by Section 10(4)(b).",
-          "Refer to drawings and reference numerals consistently where applicable.",
-          "Ensure each independent claim has at least one supporting embodiment."
+            "Include best method of performing the invention as required by Section 10(4)(b)",
+            "Provide sufficient embodiments to support all claims",
+            "Refer consistently to reference numerals in drawings"
+          ],
+          "additions": [
+            "Each independent claim must have at least one supporting embodiment"
         ]
+        }
       },
       "claims": {
-        "instruction": "Draft a full set of claims compliant with Indian patent practice.",
+        "topUp": {
+          "instruction": "Draft claims compliant with Section 10(4) and (5) of the Indian Patents Act, 1970. Claims must define the matter for which protection is sought, be clear and succinct, and be fairly based on the matter disclosed in the specification.",
         "constraints": [
-          "Use 'comprising' as the preferred open connector; 'including' may also be used. Closed language such as 'consisting of' may be used when a narrow scope is intended.",
-          "Prefer a two-part format (preamble + 'characterised in that' / 'wherein') when defining improvements over known art.",
-          "Multiple dependent claims are permitted, including those dependent on other multiple dependent claims, but dependencies must be clear.",
-          "All claims must be fully supported by the detailed description and comply with unity of invention under Section 10(5)."
+            "Use 'comprising' as preferred open connector; 'including' acceptable; 'consisting of' for narrow scope",
+            "Prefer two-part format (preamble + 'characterised in that') when defining improvements",
+            "Multiple dependent claims permitted including on other multiple dependent claims",
+            "Maintain unity of invention under Section 10(5)"
+          ],
+          "additions": [
+            "All claims must be fully supported by the detailed description",
+            "Each claim must define matter for which protection is sought per Section 10(4)"
         ]
+        }
       },
       "abstract": {
-        "instruction": "Draft the Abstract section.",
-        "constraints": [
-          "No more than 150 words.",
-          "Commence with the title of the invention.",
-          "Indicate the technical field, technical advancement and principal use of the invention.",
-          "Avoid claim-style language and marketing or speculative statements."
-        ]
+        "topUp": {
+          "instruction": "Per Section 10(4)(d) and Rule 13(7)(b), provide a concise summary in not more than 150 words, commencing with the title and indicating technical field, technical advancement, and principal use.",
+          "constraints": [
+            "Hard limit of 150 words under Indian Rules",
+            "Must commence with the title of the invention",
+            "Indicate technical field, advancement, and principal use"
+          ],
+          "additions": [
+            "Avoid claim-style wording per Manual guidelines"
+          ]
+        }
+      },
+      "briefDescriptionOfDrawings": {
+        "importFiguresDirectly": true,
+        "topUp": {
+          "instruction": "List each drawing figure with a one-line description ensuring figure numbering and captions match the drawing sheets filed under Rule 15.",
+          "constraints": [
+            "Use format: 'FIG. X is a [type] view of [subject]'",
+            "Ensure consistent numbering with actual drawing sheets"
+          ]
+        }
       }
     }
   },
@@ -371,6 +440,7 @@
           "title",
           "field",
           "background",
+          "objects",
           "summary",
           "brief_drawings",
           "detailed_description",
@@ -392,6 +462,7 @@
     "sectionHeadings": {
       "field": "FIELD OF INVENTION",
       "background": "BACKGROUND AND PRIOR ART",
+      "objects": "OBJECT(S) OF THE INVENTION",
       "summary": "SUMMARY / STATEMENT OF INVENTION",
       "brief_drawings": "BRIEF DESCRIPTION OF THE DRAWINGS",
       "detailed_description": "DETAILED DESCRIPTION OF THE INVENTION",
