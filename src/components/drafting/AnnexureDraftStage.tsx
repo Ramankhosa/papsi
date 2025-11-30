@@ -5,6 +5,9 @@ import BackendActivityPanel from './BackendActivityPanel'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import plantumlEncoder from 'plantuml-encoder'
+import SectionInstructionPopover from './SectionInstructionPopover'
+import AllInstructionsModal from './AllInstructionsModal'
+import WritingSamplesModal from './WritingSamplesModal'
 
 type SectionConfig = {
   keys: string[]
@@ -62,8 +65,9 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   const [generated, setGenerated] = useState<Record<string, string>>({})
   const [debugSteps, setDebugSteps] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
-  const [usePersonaStyle, setUsePersonaStyle] = useState<boolean>(true)
+  const [usePersonaStyle, setUsePersonaStyle] = useState<boolean>(false) // OFF by default
   const [styleAvailable, setStyleAvailable] = useState<boolean | null>(null)
+  const [showWritingSamplesModal, setShowWritingSamplesModal] = useState(false)
   const [currentKeys, setCurrentKeys] = useState<string[] | null>(null)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [editingKey, setEditingKey] = useState<string | null>(null)
@@ -105,6 +109,11 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   const [showFormatting, setShowFormatting] = useState(false)
   const [fontFamily, setFontFamily] = useState('serif')
   const [fontSize, setFontSize] = useState('15px')
+  
+  // User Instructions
+  const [userInstructions, setUserInstructions] = useState<Record<string, Record<string, any>>>({}) // { jurisdiction: { sectionKey: instruction } }
+  const [instructionPopoverKey, setInstructionPopoverKey] = useState<string | null>(null)
+  const [showAllInstructionsModal, setShowAllInstructionsModal] = useState(false)
   const [lineHeight, setLineHeight] = useState('1.7')
 
   // Data for figures
@@ -238,10 +247,13 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     const latest = latestDrafts[code]
 
     if (latest) {
+      // Get extraSections from dedicated column OR legacy validationReport location
+      const extraSections = (latest as any).extraSections || (latest.validationReport as any)?.extraSections || {}
+      
       const initial: Record<string, string> = {
+        // Legacy columns (dedicated DB fields)
         title: latest.title || '',
         fieldOfInvention: latest.fieldOfInvention || '',
-        crossReference: (latest.validationReport as any)?.extraSections?.crossReference || '',
         background: latest.background || '',
         summary: latest.summary || '',
         briefDescriptionOfDrawings: latest.briefDescriptionOfDrawings || '',
@@ -250,7 +262,15 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
         industrialApplicability: latest.industrialApplicability || '',
         claims: latest.claims || '',
         abstract: latest.abstract || '',
-        listOfNumerals: latest.listOfNumerals || ''
+        listOfNumerals: latest.listOfNumerals || '',
+        // Extra sections (JSON column for scalable storage)
+        crossReference: extraSections.crossReference || '',
+        preamble: extraSections.preamble || '',
+        objectsOfInvention: extraSections.objectsOfInvention || '',
+        technicalProblem: extraSections.technicalProblem || '',
+        technicalSolution: extraSections.technicalSolution || '',
+        advantageousEffects: extraSections.advantageousEffects || '',
+        modeOfCarryingOut: extraSections.modeOfCarryingOut || ''
       }
       setGenerated(initial)
     } else {
@@ -321,6 +341,25 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       return next
     })
   }, [session?.jurisdictionDraftStatus, availableCountries, availableJurisdictions])
+
+  // Load user instructions for the session
+  useEffect(() => {
+    const loadUserInstructions = async () => {
+      if (!session?.id || !patent?.id) return
+      try {
+        const res = await fetch(`/api/patents/${patent.id}/drafting/user-instructions?sessionId=${session.id}`, {
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}` }
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setUserInstructions(data.grouped || {})
+        }
+      } catch (err) {
+        console.error('Failed to load user instructions:', err)
+      }
+    }
+    loadUserInstructions()
+  }, [session?.id, patent?.id])
 
   // Keep add-jurisdiction dropdown updated
   useEffect(() => {
@@ -573,16 +612,33 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           <p className="text-sm text-gray-500">Review and edit your patent application.</p>
         </div>
         <div className="flex items-center gap-3 flex-wrap">
-           <div className="flex items-center space-x-2 bg-white px-3 py-1.5 rounded-full shadow-sm border border-gray-200">
-            <Switch
-              id="persona-style"
-              checked={usePersonaStyle}
-              onCheckedChange={setUsePersonaStyle}
-              disabled={styleAvailable === false}
-            />
-            <Label htmlFor="persona-style" className="text-xs font-medium text-gray-700 cursor-pointer">
-              AI Persona
-            </Label>
+           {/* AI Persona Toggle with Writing Samples */}
+           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-colors ${
+             usePersonaStyle 
+               ? 'bg-emerald-50 border-emerald-300' 
+               : 'bg-red-50 border-red-200'
+           }`}>
+            <button
+              onClick={() => setUsePersonaStyle(!usePersonaStyle)}
+              className={`relative w-10 h-5 rounded-full transition-colors ${
+                usePersonaStyle ? 'bg-emerald-500' : 'bg-red-400'
+              }`}
+              title={usePersonaStyle ? 'Style mimicry is ON' : 'Style mimicry is OFF'}
+            >
+              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                usePersonaStyle ? 'left-5' : 'left-0.5'
+              }`} />
+            </button>
+            <span className={`text-xs font-medium ${usePersonaStyle ? 'text-emerald-700' : 'text-red-600'}`}>
+              {usePersonaStyle ? '✓ Style ON' : '○ Style OFF'}
+            </span>
+            <button
+              onClick={() => setShowWritingSamplesModal(true)}
+              className="px-2 py-0.5 text-xs rounded bg-white border border-gray-300 text-gray-600 hover:bg-gray-50"
+              title="Manage writing samples"
+            >
+              ✍️ Samples
+            </button>
           </div>
 
           {/* Clear/Delete controls */}
@@ -606,6 +662,26 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
               {deletingJurisdiction === activeJurisdiction ? 'Deleting…' : `Delete & remove (${activeJurisdiction})`}
             </button>
           </div>
+
+          {/* Custom Instructions Button */}
+          <button
+            onClick={() => setShowAllInstructionsModal(true)}
+            className={`p-2 rounded-full shadow-sm border transition-colors relative ${
+              Object.keys(userInstructions).length > 0
+                ? 'bg-violet-50 border-violet-200 text-violet-700'
+                : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+            }`}
+            title="Custom Instructions"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+            </svg>
+            {Object.keys(userInstructions).length > 0 && (
+              <span className="absolute -top-1 -right-1 w-3 h-3 bg-violet-500 rounded-full text-[8px] text-white flex items-center justify-center">
+                {Object.values(userInstructions).reduce((sum, j) => sum + Object.keys(j).length, 0)}
+              </span>
+            )}
+          </button>
 
           {/* Formatting Button */}
           <div className="relative">
@@ -864,9 +940,129 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
 
                 {/* Section Header */}
                 <div className="flex items-baseline justify-between mb-4">
+                  <div className="flex items-center gap-2">
                   <h3 className="text-lg font-bold text-gray-900 uppercase tracking-wide">
                     {section.label || section.keys.map(k => displayName[k] || k).join(' / ')}
                   </h3>
+                    {/* Per-section instruction controls */}
+                    {(() => {
+                      const key = section.keys[0]
+                      const jurisdictionInstr = userInstructions[activeJurisdiction]?.[key]
+                      const globalInstr = userInstructions['*']?.[key]
+                      const hasInstruction = jurisdictionInstr || globalInstr
+                      const activeInstr = jurisdictionInstr || globalInstr
+                      const isActive = activeInstr?.isActive !== false
+                      
+                      return (
+                        <div className="relative flex items-center gap-1">
+                          {/* Quick toggle button - only show if instruction exists */}
+                          {hasInstruction && (
+                            <button
+                              onClick={async () => {
+                                const instr = jurisdictionInstr || globalInstr
+                                if (!instr) return
+                                const newStatus = !isActive
+                                try {
+                                  await fetch(`/api/patents/${patent?.id}/drafting/user-instructions`, {
+                                    method: 'POST',
+                                    headers: {
+                                      'Content-Type': 'application/json',
+                                      'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+                                    },
+                                    body: JSON.stringify({
+                                      sessionId: session?.id,
+                                      sectionKey: key,
+                                      jurisdiction: instr.jurisdiction || (jurisdictionInstr ? activeJurisdiction : '*'),
+                                      instruction: instr.instruction,
+                                      emphasis: instr.emphasis,
+                                      avoid: instr.avoid,
+                                      style: instr.style,
+                                      wordCount: instr.wordCount,
+                                      isActive: newStatus
+                                    })
+                                  })
+                                  // Update local state
+                                  const jur = jurisdictionInstr ? activeJurisdiction : '*'
+                                  setUserInstructions(prev => ({
+                                    ...prev,
+                                    [jur]: {
+                                      ...(prev[jur] || {}),
+                                      [key]: { ...instr, isActive: newStatus }
+                                    }
+                                  }))
+                                } catch (err) {
+                                  console.error('Failed to toggle instruction:', err)
+                                }
+                              }}
+                              className={`p-1 rounded transition-colors ${
+                                isActive 
+                                  ? 'text-emerald-600 hover:bg-emerald-50' 
+                                  : 'text-gray-400 hover:bg-gray-100'
+                              }`}
+                              title={isActive ? 'Click to disable instruction' : 'Click to enable instruction'}
+                            >
+                              {isActive ? (
+                                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20">
+                                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                                </svg>
+                              ) : (
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 20 20" stroke="currentColor">
+                                  <circle cx="10" cy="10" r="7" strokeWidth="1.5" />
+                                </svg>
+                              )}
+                            </button>
+                          )}
+                          
+                          {/* Edit/Add instruction button */}
+                          <button
+                            onClick={() => setInstructionPopoverKey(instructionPopoverKey === key ? null : key)}
+                            className={`p-1.5 rounded-lg transition-colors ${
+                              hasInstruction
+                                ? isActive
+                                  ? 'text-violet-600 bg-violet-50 hover:bg-violet-100'
+                                  : 'text-gray-400 bg-gray-100 hover:bg-gray-200 line-through'
+                                : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+                            }`}
+                            title={
+                              hasInstruction 
+                                ? isActive 
+                                  ? `Custom instruction for ${jurisdictionInstr ? activeJurisdiction : 'all jurisdictions'} (active)`
+                                  : `Custom instruction (disabled)`
+                                : 'Add custom instruction'
+                            }
+                          >
+                            <svg className="w-4 h-4" fill={hasInstruction ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                            </svg>
+                          </button>
+                          
+                          {/* Instruction Popover */}
+                          {instructionPopoverKey === key && (
+                            <SectionInstructionPopover
+                              sectionKey={key}
+                              sectionLabel={section.label || displayName[key] || key}
+                              sessionId={session?.id || ''}
+                              patentId={patent?.id || ''}
+                              activeJurisdiction={activeJurisdiction}
+                              existingInstruction={jurisdictionInstr || null}
+                              globalInstruction={globalInstr || null}
+                              onSave={(instr) => {
+                                const jur = instr.jurisdiction || '*'
+                                setUserInstructions(prev => ({
+                                  ...prev,
+                                  [jur]: {
+                                    ...(prev[jur] || {}),
+                                    [key]: instr.instruction ? instr : undefined
+                                  }
+                                }))
+                              }}
+                              onClose={() => setInstructionPopoverKey(null)}
+                            />
+                          )}
+                        </div>
+                      )
+                    })()}
+                  </div>
                   {/* Activity Panel Injection */}
                   {isWorking && showActivity && (
                       <div className="ml-4 transform scale-90 origin-right">
@@ -1062,6 +1258,37 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             </div>
         </div>
     </div>
+
+      {/* All Instructions Modal */}
+      {showAllInstructionsModal && (
+        <AllInstructionsModal
+          sessionId={session?.id || ''}
+          patentId={patent?.id || ''}
+          activeJurisdiction={activeJurisdiction}
+          availableJurisdictions={availableJurisdictions}
+          sectionLabels={displayName}
+          onClose={() => setShowAllInstructionsModal(false)}
+          onUpdate={() => {
+            // Refresh instructions
+            fetch(`/api/patents/${patent?.id}/drafting/user-instructions?sessionId=${session?.id}`, {
+              headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}` }
+            })
+              .then(res => res.json())
+              .then(data => setUserInstructions(data.grouped || {}))
+              .catch(console.error)
+          }}
+        />
+      )}
+
+      {/* Writing Samples Modal */}
+      {showWritingSamplesModal && (
+        <WritingSamplesModal
+          onClose={() => setShowWritingSamplesModal(false)}
+          onUpdate={() => {
+            // Could refresh any UI state related to samples
+          }}
+        />
+      )}
     </div>
   )
 }

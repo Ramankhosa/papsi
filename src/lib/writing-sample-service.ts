@@ -1,0 +1,292 @@
+/**
+ * Writing Sample Service
+ * 
+ * Fetches user's writing samples for example-based style mimicry.
+ * Samples are prioritized: jurisdiction-specific > universal (*)
+ */
+
+import { prisma } from './prisma'
+
+// Cache for writing samples (5 minute TTL)
+const sampleCache = new Map<string, { samples: Map<string, string>, timestamp: number }>()
+const CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+
+export interface WritingSampleContext {
+  sampleText: string
+  jurisdiction: string
+  isUniversal: boolean
+}
+
+/**
+ * Get writing sample for a specific section
+ * 
+ * Priority:
+ * 1. Jurisdiction-specific sample (e.g., "IN")
+ * 2. Universal sample ("*")
+ * 
+ * @param userId - User ID
+ * @param sectionKey - Canonical section key (e.g., "claims", "detailedDescription")
+ * @param jurisdiction - Target jurisdiction (e.g., "IN", "US")
+ * @returns WritingSampleContext or null if no sample found
+ */
+export async function getWritingSample(
+  userId: string,
+  sectionKey: string,
+  jurisdiction: string
+): Promise<WritingSampleContext | null> {
+  const normalizedJurisdiction = jurisdiction.toUpperCase()
+  const cacheKey = `${userId}:${normalizedJurisdiction}`
+  
+  // Check cache
+  const cached = sampleCache.get(cacheKey)
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    // Try jurisdiction-specific first
+    const jurisdictionSample = cached.samples.get(`${sectionKey}:${normalizedJurisdiction}`)
+    if (jurisdictionSample) {
+      return {
+        sampleText: jurisdictionSample,
+        jurisdiction: normalizedJurisdiction,
+        isUniversal: false
+      }
+    }
+    // Fall back to universal
+    const universalSample = cached.samples.get(`${sectionKey}:*`)
+    if (universalSample) {
+      return {
+        sampleText: universalSample,
+        jurisdiction: '*',
+        isUniversal: true
+      }
+    }
+    return null
+  }
+
+  // Load from database
+  try {
+    // Try jurisdiction-specific first
+    let sample = await prisma.writingSample.findFirst({
+      where: {
+        userId,
+        sectionKey,
+        jurisdiction: normalizedJurisdiction,
+        isActive: true
+      }
+    })
+
+    if (sample) {
+      return {
+        sampleText: sample.sampleText,
+        jurisdiction: normalizedJurisdiction,
+        isUniversal: false
+      }
+    }
+
+    // Fall back to universal
+    sample = await prisma.writingSample.findFirst({
+      where: {
+        userId,
+        sectionKey,
+        jurisdiction: '*',
+        isActive: true
+      }
+    })
+
+    if (sample) {
+      return {
+        sampleText: sample.sampleText,
+        jurisdiction: '*',
+        isUniversal: true
+      }
+    }
+  } catch (error) {
+    console.warn(`[WritingSampleService] Failed to get sample for ${userId}/${sectionKey}/${jurisdiction}:`, error)
+  }
+
+  return null
+}
+
+/**
+ * Get all active writing samples for a user
+ * Used for caching and bulk operations
+ */
+export async function getAllWritingSamples(
+  userId: string,
+  jurisdiction?: string
+): Promise<Map<string, WritingSampleContext>> {
+  const result = new Map<string, WritingSampleContext>()
+
+  try {
+    const where: any = {
+      userId,
+      isActive: true
+    }
+
+    if (jurisdiction) {
+      // Get both jurisdiction-specific and universal
+      where.jurisdiction = { in: [jurisdiction.toUpperCase(), '*'] }
+    }
+
+    const samples = await prisma.writingSample.findMany({
+      where,
+      orderBy: { jurisdiction: 'desc' } // Universal (*) comes after specific jurisdictions
+    })
+
+    // Build map with jurisdiction-specific taking priority over universal
+    for (const sample of samples) {
+      const key = sample.sectionKey
+      // Only add if not already present (jurisdiction-specific added first due to ordering)
+      if (!result.has(key) || sample.jurisdiction !== '*') {
+        result.set(key, {
+          sampleText: sample.sampleText,
+          jurisdiction: sample.jurisdiction,
+          isUniversal: sample.jurisdiction === '*'
+        })
+      }
+    }
+
+    // Update cache
+    const normalizedJurisdiction = jurisdiction?.toUpperCase() || 'ALL'
+    const cacheKey = `${userId}:${normalizedJurisdiction}`
+    const sampleMap = new Map<string, string>()
+    for (const sample of samples) {
+      sampleMap.set(`${sample.sectionKey}:${sample.jurisdiction}`, sample.sampleText)
+    }
+    sampleCache.set(cacheKey, { samples: sampleMap, timestamp: Date.now() })
+  } catch (error) {
+    console.error('[WritingSampleService] Failed to get all samples:', error)
+  }
+
+  return result
+}
+
+/**
+ * Invalidate cache for a user
+ */
+export function invalidateWritingSampleCache(userId: string): void {
+  // Remove all cache entries for this user
+  for (const key of sampleCache.keys()) {
+    if (key.startsWith(`${userId}:`)) {
+      sampleCache.delete(key)
+    }
+  }
+}
+
+/**
+ * Build the prompt block for writing sample injection
+ * 
+ * This creates a strong few-shot prompt that instructs the LLM to mimic the user's style
+ */
+export function buildWritingSampleBlock(
+  sample: WritingSampleContext,
+  sectionKey: string
+): string {
+  if (!sample || !sample.sampleText) return ''
+
+  const jurisdictionNote = sample.isUniversal 
+    ? '(universal style, applies to all jurisdictions)'
+    : `(${sample.jurisdiction}-specific style)`
+
+  return `
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║  YOUR WRITING STYLE - MIMIC THIS EXACTLY                                  ║
+║  ${jurisdictionNote.padEnd(69)}║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+The user has provided an example of their preferred writing style for this section.
+You MUST closely mimic their style, including:
+
+• **Word choices and phrasing patterns** - Use similar vocabulary and expressions
+• **Sentence length and structure** - Match their complexity level
+• **Active/passive voice preference** - Mirror their voice usage
+• **Technical terminology style** - Follow their terminology patterns
+• **Punctuation and connectors** - Use similar punctuation and transition words
+• **Opening patterns** - Start sections/paragraphs similarly
+
+USER'S STYLE EXAMPLE:
+┌─────────────────────────────────────────────────────────────────────────────┐
+${sample.sampleText.split('\n').map(line => `│ ${line.padEnd(75)}│`).join('\n')}
+└─────────────────────────────────────────────────────────────────────────────┘
+
+⚠️ CRITICAL: Generate content that reads as if written by the SAME AUTHOR as the example above.
+   Do NOT use generic patent language. Instead, mirror the specific style shown.
+`
+}
+
+/**
+ * Get section-specific style guidance based on sample analysis
+ * This provides additional hints to the LLM about what to focus on
+ */
+export function getSectionStyleHints(sectionKey: string): string {
+  const hints: Record<string, string> = {
+    claims: 'Pay special attention to: preamble style, transition words, element numbering, and claim structure.',
+    detailedDescription: 'Pay special attention to: figure references, embodiment introductions, technical detail level, and cross-linking style.',
+    abstract: 'Pay special attention to: opening phrase, sentence structure, and how technical terms are introduced.',
+    background: 'Pay special attention to: prior art discussion tone, problem statement style, and transition to invention.',
+    summary: 'Pay special attention to: how advantages are described and how the invention is characterized.',
+    briefDescriptionOfDrawings: 'Pay special attention to: figure caption format and consistency.',
+    fieldOfInvention: 'Pay special attention to: technical field phrasing and scope indication.',
+    objectsOfInvention: 'Pay special attention to: objective listing style and language patterns.'
+  }
+
+  return hints[sectionKey] || ''
+}
+
+/**
+ * Check if user has any active writing samples
+ */
+export async function hasActiveWritingSamples(userId: string): Promise<boolean> {
+  try {
+    const count = await prisma.writingSample.count({
+      where: {
+        userId,
+        isActive: true
+      }
+    })
+    return count > 0
+  } catch (error) {
+    console.warn('[WritingSampleService] Failed to check samples:', error)
+    return false
+  }
+}
+
+/**
+ * Get sample coverage report for a user
+ * Shows which sections have samples for which jurisdictions
+ */
+export async function getSampleCoverage(userId: string): Promise<{
+  sections: string[]
+  jurisdictions: string[]
+  coverage: Record<string, string[]> // section -> jurisdictions that have samples
+}> {
+  try {
+    const samples = await prisma.writingSample.findMany({
+      where: { userId, isActive: true },
+      select: { sectionKey: true, jurisdiction: true }
+    })
+
+    const coverage: Record<string, string[]> = {}
+    const sections = new Set<string>()
+    const jurisdictions = new Set<string>()
+
+    for (const sample of samples) {
+      sections.add(sample.sectionKey)
+      jurisdictions.add(sample.jurisdiction)
+      
+      if (!coverage[sample.sectionKey]) {
+        coverage[sample.sectionKey] = []
+      }
+      coverage[sample.sectionKey].push(sample.jurisdiction)
+    }
+
+    return {
+      sections: [...sections],
+      jurisdictions: [...jurisdictions],
+      coverage
+    }
+  } catch (error) {
+    console.error('[WritingSampleService] Failed to get coverage:', error)
+    return { sections: [], jurisdictions: [], coverage: {} }
+  }
+}
+

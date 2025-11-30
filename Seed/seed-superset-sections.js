@@ -31,6 +31,7 @@ const options = {
 const SUPERSET_SECTIONS = [
   {
     sectionKey: 'title',
+    aliases: [],
     displayOrder: 1,
     label: 'Title of the Invention',
     description: 'The title should be brief, descriptive, and indicative of the technical field.',
@@ -62,6 +63,7 @@ const SUPERSET_SECTIONS = [
   },
   {
     sectionKey: 'preamble',
+    aliases: [],
     displayOrder: 2,
     label: 'Preamble',
     description: 'Legal preamble for patent applications (used in some jurisdictions).',
@@ -92,6 +94,7 @@ Claiming priority from {{PRIOR_APPLICATION_NUMBER}} filed on {{PRIOR_FILING_DATE
   },
   {
     sectionKey: 'fieldOfInvention',
+    aliases: ['field_of_invention', 'technicalField', 'technical_field', 'field'],
     displayOrder: 3,
     label: 'Field of the Invention',
     description: 'A brief statement of the technical field to which the invention pertains.',
@@ -116,6 +119,7 @@ Claiming priority from {{PRIOR_APPLICATION_NUMBER}} filed on {{PRIOR_FILING_DATE
   },
   {
     sectionKey: 'background',
+    aliases: ['backgroundOfInvention', 'background_of_invention', 'priorArt', 'prior_art', 'background_art'],
     displayOrder: 4,
     label: 'Background of the Invention',
     description: 'Description of the prior art and problems with existing solutions.',
@@ -143,6 +147,7 @@ Claiming priority from {{PRIOR_APPLICATION_NUMBER}} filed on {{PRIOR_FILING_DATE
   },
   {
     sectionKey: 'objectsOfInvention',
+    aliases: ['objects', 'objects_of_invention', 'objectOfInvention'],
     displayOrder: 5,
     label: 'Objects of the Invention',
     description: 'Specific objectives and goals the invention aims to achieve.',
@@ -175,6 +180,7 @@ or "The principal object of this invention is to..."
   },
   {
     sectionKey: 'summary',
+    aliases: ['summaryOfInvention', 'summary_of_invention', 'disclosure_of_invention', 'disclosureOfInvention'],
     displayOrder: 6,
     label: 'Summary of the Invention',
     description: 'A concise summary of the invention and its key features.',
@@ -202,6 +208,7 @@ or "The principal object of this invention is to..."
   },
   {
     sectionKey: 'technicalProblem',
+    aliases: ['technical_problem'],
     displayOrder: 7,
     label: 'Technical Problem',
     description: 'Clear statement of the technical problem solved (used in some jurisdictions like EP/JP).',
@@ -226,6 +233,7 @@ or "The principal object of this invention is to..."
   },
   {
     sectionKey: 'technicalSolution',
+    aliases: ['technical_solution'],
     displayOrder: 8,
     label: 'Technical Solution',
     description: 'Description of how the invention solves the technical problem.',
@@ -249,6 +257,7 @@ or "The principal object of this invention is to..."
   },
   {
     sectionKey: 'advantageousEffects',
+    aliases: ['advantageous_effects'],
     displayOrder: 9,
     label: 'Advantageous Effects',
     description: 'Technical advantages and beneficial effects of the invention.',
@@ -274,6 +283,7 @@ List each advantage as a separate paragraph or bullet point.`,
   },
   {
     sectionKey: 'briefDescriptionOfDrawings',
+    aliases: ['brief_description_of_drawings', 'drawings', 'figures', 'brief_drawings'],
     displayOrder: 10,
     label: 'Brief Description of the Drawings',
     description: 'Descriptions of each figure in the patent drawings.',
@@ -303,6 +313,7 @@ List each advantage as a separate paragraph or bullet point.`,
   },
   {
     sectionKey: 'detailedDescription',
+    aliases: ['detailed_description', 'detailedDescriptionOfInvention', 'detailed_description_of_invention'],
     displayOrder: 11,
     label: 'Detailed Description',
     description: 'Comprehensive description of the invention with reference to drawings.',
@@ -333,6 +344,7 @@ List each advantage as a separate paragraph or bullet point.`,
   },
   {
     sectionKey: 'bestMode',
+    aliases: ['best_mode', 'bestMethod', 'best_method'],
     displayOrder: 12,
     label: 'Best Mode',
     description: 'Description of the best mode contemplated by the inventor (required in some jurisdictions).',
@@ -355,6 +367,7 @@ List each advantage as a separate paragraph or bullet point.`,
   },
   {
     sectionKey: 'industrialApplicability',
+    aliases: ['industrial_applicability'],
     displayOrder: 13,
     label: 'Industrial Applicability',
     description: 'Statement of industrial applicability (required in some jurisdictions).',
@@ -378,6 +391,7 @@ List each advantage as a separate paragraph or bullet point.`,
   },
   {
     sectionKey: 'claims',
+    aliases: [],
     displayOrder: 14,
     label: 'Claims',
     description: 'The legal claims defining the scope of patent protection.',
@@ -410,6 +424,7 @@ List each advantage as a separate paragraph or bullet point.`,
   },
   {
     sectionKey: 'abstract',
+    aliases: [],
     displayOrder: 15,
     label: 'Abstract',
     description: 'A brief abstract summarizing the invention for searching purposes.',
@@ -441,6 +456,7 @@ List each advantage as a separate paragraph or bullet point.`,
   },
   {
     sectionKey: 'listOfNumerals',
+    aliases: ['list_of_numerals', 'numeralList', 'numeral_list', 'referenceNumerals', 'reference_numerals'],
     displayOrder: 16,
     label: 'List of Reference Numerals',
     description: 'A table or list mapping reference numerals to component names used in the specification.',
@@ -467,6 +483,39 @@ List each reference numeral with its corresponding component name:
       'Use exact component names from specification',
       'Include all numerals from drawings and description',
       'Format: (XXX) - Component Name'
+    ]
+  },
+  {
+    sectionKey: 'crossReference',
+    aliases: ['cross_reference', 'crossReferences', 'cross_references', 'relatedApplications', 'related_applications'],
+    displayOrder: 17,
+    label: 'Cross-Reference to Related Applications',
+    description: 'References to related patent applications, priority claims, and continuations.',
+    isRequired: false,
+    instruction: `**Role:** Legal Formalities Engine.
+
+**Task:** Generate a Cross-Reference to Related Applications section.
+
+**Content Requirements:**
+1. Priority claims from earlier applications
+2. Continuation/divisional relationships
+3. Related co-pending applications
+4. Any benefit claims under applicable law
+
+**Format:**
+- This application claims the benefit of [Application Type] Application No. [Number], filed [Date], which is incorporated herein by reference in its entirety.
+- This application is a continuation of [Application Type] Application No. [Number], filed [Date].
+
+**Guidelines:**
+1. List all related applications chronologically
+2. Include application numbers and filing dates
+3. Specify the type of relationship (priority, continuation, divisional, CIP)
+4. Include incorporation by reference statements where appropriate`,
+    constraints: [
+      'List applications chronologically',
+      'Include application numbers and filing dates',
+      'Specify relationship type clearly',
+      'Use proper legal terminology'
     ]
   }
 ]
@@ -529,10 +578,11 @@ async function seedSupersetSections() {
             instruction: section.instruction,
             constraints: section.constraints,
             isRequired: section.isRequired,
+            aliases: section.aliases || [],
             updatedBy: systemUserId
           }
         })
-        console.log(`  [UPDATE] ${section.sectionKey}: ${section.label}`)
+        console.log(`  [UPDATE] ${section.sectionKey}: ${section.label} (aliases: ${(section.aliases || []).join(', ') || 'none'})`)
         updated++
       } else {
         await prisma.supersetSection.create({
@@ -544,11 +594,12 @@ async function seedSupersetSections() {
             instruction: section.instruction,
             constraints: section.constraints,
             isRequired: section.isRequired,
+            aliases: section.aliases || [],
             isActive: true,
             createdBy: systemUserId
           }
         })
-        console.log(`  [CREATE] ${section.sectionKey}: ${section.label}`)
+        console.log(`  [CREATE] ${section.sectionKey}: ${section.label} (aliases: ${(section.aliases || []).join(', ') || 'none'})`)
         created++
       }
     } catch (err) {

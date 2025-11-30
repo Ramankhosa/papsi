@@ -1086,6 +1086,7 @@ function MappingDetailsModal({
   const [heading, setHeading] = useState(existingMapping?.heading || section?.label || '')
   const [isRequired, setIsRequired] = useState(existingMapping?.isRequired ?? true)
   const [isEnabled, setIsEnabled] = useState(existingMapping?.isEnabled ?? true)
+  const [countryDisplayOrder, setCountryDisplayOrder] = useState<number | null>(existingMapping?.displayOrder ?? null)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState('')
@@ -1128,7 +1129,7 @@ function MappingDetailsModal({
           heading,
           isRequired,
           isEnabled,
-          displayOrder: section?.displayOrder
+          displayOrder: countryDisplayOrder ?? section?.displayOrder
         })
       })
 
@@ -1346,6 +1347,34 @@ function MappingDetailsModal({
               />
               <p className="text-xs text-slate-500 mt-1">
                 The heading used in patent documents for this country
+              </p>
+            </div>
+
+            {/* Country-Specific Display Order */}
+            <div>
+              <label className="block text-sm font-medium text-slate-300 mb-1">
+                Section Order (Country-Specific)
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  value={countryDisplayOrder ?? ''}
+                  onChange={(e) => setCountryDisplayOrder(e.target.value ? parseInt(e.target.value) : null)}
+                  placeholder={String(section?.displayOrder || '')}
+                  min={1}
+                  className="w-24 px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-500 focus:border-amber-500"
+                />
+                <span className="text-sm text-slate-500">
+                  Default: {section?.displayOrder || 'N/A'}
+                </span>
+                {countryDisplayOrder && countryDisplayOrder !== section?.displayOrder && (
+                  <span className="text-xs bg-amber-500/20 text-amber-400 px-2 py-1 rounded">
+                    ⚠️ Custom order
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mt-1">
+                Position of this section in {country?.name || countryCode} drafts. Lower = appears earlier.
               </p>
             </div>
 

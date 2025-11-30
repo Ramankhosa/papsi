@@ -8,6 +8,12 @@ import {
   getGlobalRules,
   getSectionRules
 } from '@/lib/country-profile-service';
+import {
+  getWritingSample,
+  buildWritingSampleBlock,
+  getSectionStyleHints,
+  type WritingSampleContext
+} from '@/lib/writing-sample-service';
 import crypto from 'crypto';
 
 // Hard-coded Superset Section Prompts (Country-Neutral Base Prompts)
@@ -463,6 +469,10 @@ interface SectionPromptContext {
   sectionChecks?: any[] | null;
   crossChecksFrom?: any[] | null;
   claimsRules?: any | null;
+  // Writing sample for example-based style mimicry
+  writingSample?: WritingSampleContext | null;
+  userId?: string | null;
+  usePersonaStyle?: boolean;
 }
 
 export interface SectionGenerationResult {
@@ -933,10 +943,12 @@ Respond in this exact JSON shape:
       const claimsRules = countryProfile?.profileData?.rules?.claims || null
 
       const sectionResources: Record<string, { prompt: any; rules: any; meta: any; altKeys: string[]; checks?: any[]; cross?: any[]; claimsRules?: any; importFiguresDirectly?: boolean }> = {}
+      const sessionId = session?.id || session?._id || null // Get session ID for user instructions
       for (const s of sections) {
         const sectionMeta = this.resolveSectionMeta(countryProfile, s)
         const sectionKey = sectionMeta?.id || this.getFallbackSectionKey(s)
-        const promptCfg = sectionKey ? await getDraftingPrompts(jurisdictionCode, sectionKey) : null
+        // Pass sessionId to get merged prompt with user instructions (highest priority)
+        const promptCfg = sectionKey ? await getDraftingPrompts(jurisdictionCode, sectionKey, sessionId) : null
         const sectionRules = sectionKey ? await getSectionRules(jurisdictionCode, sectionKey) : null
         const checks = countryProfile?.profileData?.validation?.sectionChecks?.[sectionKey] || countryProfile?.profileData?.validation?.sectionChecks?.[s]
         const cross = Array.isArray(crossSectionChecks) ? crossSectionChecks.filter((c: any) => (c?.from === sectionKey) || (c?.from === s)) : []
@@ -1024,10 +1036,10 @@ Respond in this exact JSON shape:
       }))
       // Include ALL diagram sources, not just uploaded ones - a figure with PlantUML code is still valid
       const diagramFigures = (session.diagramSources || []).map((d: any) => {
-        const found = planFigures.find((f: any) => f.figureNo === d.figureNo)
-        const sanitized = this.sanitizeFigureTitle(found?.title || d.title)
-        return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}` }
-      })
+          const found = planFigures.find((f: any) => f.figureNo === d.figureNo)
+          const sanitized = this.sanitizeFigureTitle(found?.title || d.title)
+          return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}` }
+        })
       const mergedByNo = new Map<number, any>()
       // Add all plan figures first
       for (const f of planFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
@@ -1106,6 +1118,28 @@ Respond in this exact JSON shape:
           continue // Skip LLM call for this section
         }
 
+        // Fetch writing sample for example-based style mimicry (if persona style is enabled)
+        const usePersonaStyle = (session as any).usePersonaStyle !== false // Default to true unless explicitly disabled
+        let writingSample: WritingSampleContext | null = null
+        if (usePersonaStyle && session?.userId) {
+          try {
+            writingSample = await getWritingSample(session.userId, s, jurisdictionCode)
+            if (writingSample) {
+              debugSteps.push({ 
+                step: `writing_sample_${s}`, 
+                status: 'ok', 
+                meta: { 
+                  jurisdiction: writingSample.jurisdiction,
+                  isUniversal: writingSample.isUniversal,
+                  wordCount: writingSample.sampleText.split(/\s+/).length
+                } 
+              })
+            }
+          } catch (err) {
+            console.warn(`[DraftingService] Failed to get writing sample for ${s}:`, err)
+          }
+        }
+
         const prompt = this.buildSectionPrompt(s, payload, {
           jurisdiction: jurisdictionCode,
           countryProfile,
@@ -1116,7 +1150,10 @@ Respond in this exact JSON shape:
           globalRules,
           sectionChecks: sectionResources[s]?.checks,
           crossChecksFrom: sectionResources[s]?.cross,
-          claimsRules: sectionResources[s]?.claimsRules
+          claimsRules: sectionResources[s]?.claimsRules,
+          writingSample,
+          userId: session?.userId,
+          usePersonaStyle
         })
         // Add debug info about prompt injection (B+T+U)
         const promptDebug = sectionResources[s]?.prompt?.debug
@@ -1697,6 +1734,16 @@ Respond in this exact JSON shape:
     }
     const ruleBlock = ruleLines.length ? `Additional Rules:\n${ruleLines.join('\n')}` : ''
 
+    // Build writing sample block for example-based style mimicry
+    let writingSampleBlock = ''
+    if (ctx?.usePersonaStyle && ctx?.writingSample) {
+      writingSampleBlock = buildWritingSampleBlock(ctx.writingSample, section)
+      const styleHints = getSectionStyleHints(section)
+      if (styleHints) {
+        writingSampleBlock += `\n${styleHints}`
+      }
+    }
+
     const roleToneHeader = `
 You are a senior patent attorney drafting the "${sectionLabel}" section for a ${countryName} patent specification handled by the ${officeName}.
 - Jurisdiction: ${jurisdiction}
@@ -1709,7 +1756,8 @@ ${targetDisplay}
 ${promptInstruction}
 ${promptConstraints}
 ${ruleBlock ? `${ruleBlock}\n` : ''}
-Ensure the writing is objective, precise, and ready for filing.`
+Ensure the writing is objective, precise, and ready for filing.
+${writingSampleBlock}`
 
     switch (section) {
       case 'title':
@@ -2242,8 +2290,8 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       const declaredComponents = referenceMap?.components || []
       if (declaredComponents.length > 0) {
         const allowed = new Set(declaredComponents.map((c:any)=>c.numeral))
-        const refs = Array.from(text.matchAll(/\((\d{2,3})\)/g)).map(m=>parseInt(m[1],10))
-        if (refs.some(n=>!allowed.has(n))) return { ok: false, reason: 'List includes undeclared numeral' }
+      const refs = Array.from(text.matchAll(/\((\d{2,3})\)/g)).map(m=>parseInt(m[1],10))
+      if (refs.some(n=>!allowed.has(n))) return { ok: false, reason: 'List includes undeclared numeral' }
       }
     }
     if (section === 'detailedDescription') {
@@ -2255,10 +2303,10 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       // Only check numerals if there are declared components
       if (declaredComponents.length > 0) {
         const allowedNums = new Set(declaredComponents.map((c:any)=>c.numeral))
-        const usedNums = Array.from(text.matchAll(/\((\d{2,3})\)/g)).map(m=>parseInt(m[1],10))
-        if (usedNums.some(n=>!allowedNums.has(n))) {
-          return { ok: false, reason: 'Detailed Description uses undeclared numeral' }
-        }
+      const usedNums = Array.from(text.matchAll(/\((\d{2,3})\)/g)).map(m=>parseInt(m[1],10))
+      if (usedNums.some(n=>!allowedNums.has(n))) {
+        return { ok: false, reason: 'Detailed Description uses undeclared numeral' }
+      }
       }
       
       // Only check figure references if there are declared figures
@@ -2920,10 +2968,10 @@ Return ONLY a valid JSON object exactly matching the schema above.`
     }));
     // Include ALL diagram sources, not just uploaded ones
     const diagramFigures: any[] = (session.diagramSources || []).map((d: any) => {
-      const found = planFigures.find((f: any) => f.figureNo === d.figureNo)
-      const sanitized = this.sanitizeFigureTitle(found?.title || d.title)
-      return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}` }
-    })
+        const found = planFigures.find((f: any) => f.figureNo === d.figureNo)
+        const sanitized = this.sanitizeFigureTitle(found?.title || d.title)
+        return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}` }
+      })
     const mergedByNo = new Map<number, any>()
     for (const f of planFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
     for (const f of diagramFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })

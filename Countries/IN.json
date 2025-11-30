@@ -423,10 +423,10 @@
         "importFiguresDirectly": true,
         "topUp": {
           "instruction": "List each drawing figure with a one-line description ensuring figure numbering and captions match the drawing sheets filed under Rule 15.",
-          "constraints": [
+        "constraints": [
             "Use format: 'FIG. X is a [type] view of [subject]'",
             "Ensure consistent numbering with actual drawing sheets"
-          ]
+        ]
         }
       }
     }

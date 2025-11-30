@@ -25,6 +25,7 @@ import { prisma } from './prisma'
 export interface UserSectionInstruction {
   id: string
   sessionId: string
+  jurisdiction: string // "*" = all jurisdictions, or specific like "IN", "US"
   sectionKey: string
   instruction: string
   emphasis?: string
@@ -38,6 +39,7 @@ export interface UserSectionInstruction {
 
 export interface CreateUserInstructionInput {
   sessionId: string
+  jurisdiction?: string // Default "*" (all jurisdictions)
   sectionKey: string
   instruction: string
   emphasis?: string
@@ -96,15 +98,29 @@ export function invalidateSessionInstructionCache(sessionId: string): void {
 
 /**
  * Get user instruction for a specific section in a session
+ * Looks for jurisdiction-specific first, then falls back to wildcard "*"
+ * 
+ * @param sessionId - The drafting session ID
+ * @param sectionKey - The section key (canonical)
+ * @param jurisdiction - Optional jurisdiction code (e.g., "IN", "US"). If provided, looks for jurisdiction-specific instruction first.
  */
 export async function getUserInstruction(
   sessionId: string,
-  sectionKey: string
+  sectionKey: string,
+  jurisdiction?: string
 ): Promise<UserInstructionContext | null> {
+  const jurisdictionCode = jurisdiction?.toUpperCase() || '*'
+  const cacheKey = `${sectionKey}:${jurisdictionCode}`
+  
   // Check cache first
   const cached = getCachedInstructions(sessionId)
   if (cached) {
-    const instruction = cached.get(sectionKey)
+    // Try jurisdiction-specific first
+    let instruction = cached.get(cacheKey)
+    // Fall back to wildcard if no jurisdiction-specific found
+    if (!instruction && jurisdictionCode !== '*') {
+      instruction = cached.get(`${sectionKey}:*`)
+    }
     if (instruction && instruction.isActive) {
       return {
         instruction: instruction.instruction,
@@ -117,15 +133,28 @@ export async function getUserInstruction(
     return null
   }
 
-  // Load from database
+  // Load from database - try jurisdiction-specific first, then wildcard
   try {
-    const instruction = await prisma.userSectionInstruction.findFirst({
+    let instruction = await prisma.userSectionInstruction.findFirst({
       where: {
         sessionId,
         sectionKey,
+        jurisdiction: jurisdictionCode,
         isActive: true
       }
     })
+
+    // Fall back to wildcard if no jurisdiction-specific found
+    if (!instruction && jurisdictionCode !== '*') {
+      instruction = await prisma.userSectionInstruction.findFirst({
+        where: {
+          sessionId,
+          sectionKey,
+          jurisdiction: '*',
+          isActive: true
+        }
+      })
+    }
 
     if (instruction) {
       return {
@@ -137,7 +166,7 @@ export async function getUserInstruction(
       }
     }
   } catch (error) {
-    console.warn(`[UserInstructionService] Failed to get instruction for ${sessionId}/${sectionKey}:`, error)
+    console.warn(`[UserInstructionService] Failed to get instruction for ${sessionId}/${jurisdictionCode}/${sectionKey}:`, error)
   }
 
   return null
@@ -145,26 +174,37 @@ export async function getUserInstruction(
 
 /**
  * Get all user instructions for a session
+ * 
+ * @param sessionId - The drafting session ID
+ * @param jurisdiction - Optional jurisdiction filter. If provided, returns only that jurisdiction + wildcard "*"
+ * @param includeInactive - Include deactivated instructions
  */
 export async function getAllUserInstructions(
   sessionId: string,
+  jurisdiction?: string,
   includeInactive: boolean = false
 ): Promise<UserSectionInstruction[]> {
   try {
+    const jurisdictionFilter = jurisdiction 
+      ? { jurisdiction: { in: [jurisdiction.toUpperCase(), '*'] } }
+      : {}
+    
     const instructions = await prisma.userSectionInstruction.findMany({
       where: {
         sessionId,
+        ...jurisdictionFilter,
         ...(includeInactive ? {} : { isActive: true })
       },
-      orderBy: { sectionKey: 'asc' }
+      orderBy: [{ jurisdiction: 'asc' }, { sectionKey: 'asc' }]
     })
 
-    // Update cache
+    // Update cache with jurisdiction-aware keys
     const instructionMap = new Map<string, UserSectionInstruction>()
     const result = instructions.map(i => {
       const mapped: UserSectionInstruction = {
         id: i.id,
         sessionId: i.sessionId,
+        jurisdiction: i.jurisdiction,
         sectionKey: i.sectionKey,
         instruction: i.instruction,
         emphasis: i.emphasis || undefined,
@@ -175,7 +215,8 @@ export async function getAllUserInstructions(
         createdAt: i.createdAt,
         updatedAt: i.updatedAt
       }
-      instructionMap.set(i.sectionKey, mapped)
+      // Cache key includes jurisdiction
+      instructionMap.set(`${i.sectionKey}:${i.jurisdiction}`, mapped)
       return mapped
     })
 
@@ -189,14 +230,18 @@ export async function getAllUserInstructions(
 
 /**
  * Create or update user instruction for a section
+ * Supports jurisdiction-specific instructions
  */
 export async function upsertUserInstruction(
   input: CreateUserInstructionInput
 ): Promise<UserSectionInstruction> {
+  const jurisdiction = input.jurisdiction?.toUpperCase() || '*'
+  
   try {
     const existing = await prisma.userSectionInstruction.findFirst({
       where: {
         sessionId: input.sessionId,
+        jurisdiction,
         sectionKey: input.sectionKey
       }
     })
@@ -218,6 +263,7 @@ export async function upsertUserInstruction(
       result = await prisma.userSectionInstruction.create({
         data: {
           sessionId: input.sessionId,
+          jurisdiction,
           sectionKey: input.sectionKey,
           instruction: input.instruction,
           emphasis: input.emphasis,
@@ -235,6 +281,7 @@ export async function upsertUserInstruction(
     return {
       id: result.id,
       sessionId: result.sessionId,
+      jurisdiction: result.jurisdiction,
       sectionKey: result.sectionKey,
       instruction: result.instruction,
       emphasis: result.emphasis || undefined,
@@ -277,6 +324,7 @@ export async function updateUserInstruction(
     return {
       id: result.id,
       sessionId: result.sessionId,
+      jurisdiction: result.jurisdiction,
       sectionKey: result.sectionKey,
       instruction: result.instruction,
       emphasis: result.emphasis || undefined,
@@ -377,6 +425,9 @@ export async function bulkSaveUserInstructions(
 
 /**
  * Build user instruction block for inclusion in LLM prompt
+ * 
+ * CRITICAL: User instructions have ABSOLUTE HIGHEST PRIORITY.
+ * They MUST override any conflicting base prompts or top-up prompts.
  */
 export function buildUserInstructionBlock(
   userInstruction: UserInstructionContext | null
@@ -385,25 +436,34 @@ export function buildUserInstructionBlock(
 
   const lines: string[] = []
   
-  lines.push('\n**User-Provided Instructions (HIGHEST PRIORITY):**')
-  lines.push(userInstruction.instruction)
+  // Strong emphasis on priority
+  lines.push('\n\n╔════════════════════════════════════════════════════════════╗')
+  lines.push('║  USER CUSTOM INSTRUCTIONS - HIGHEST PRIORITY                ║')
+  lines.push('║  These instructions OVERRIDE all other guidance.            ║')
+  lines.push('║  If any conflict exists with base or jurisdiction prompts,  ║')
+  lines.push('║  ALWAYS follow the user instructions below.                 ║')
+  lines.push('╚════════════════════════════════════════════════════════════╝')
+  lines.push('')
+  lines.push(`**Primary Instruction:** ${userInstruction.instruction}`)
 
   if (userInstruction.emphasis) {
-    lines.push(`\n**Focus/Emphasize:** ${userInstruction.emphasis}`)
+    lines.push(`\n**MUST Focus On:** ${userInstruction.emphasis}`)
   }
 
   if (userInstruction.avoid) {
-    lines.push(`\n**Avoid/Exclude:** ${userInstruction.avoid}`)
+    lines.push(`\n**MUST Avoid:** ${userInstruction.avoid}`)
   }
 
   if (userInstruction.style) {
-    lines.push(`\n**Preferred Style:** ${userInstruction.style}`)
+    lines.push(`\n**Required Style:** ${userInstruction.style}`)
   }
 
   if (userInstruction.wordCount) {
     lines.push(`\n**Target Word Count:** ~${userInstruction.wordCount} words`)
   }
 
+  lines.push('\n⚠️ REMINDER: The above user instructions take precedence over ALL other prompts.')
+  
   return lines.join('\n')
 }
 

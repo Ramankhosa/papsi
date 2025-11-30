@@ -343,11 +343,12 @@ export async function getMergedPrompt(
   const baseStyle = await getBaseStyle(jurisdiction)
   
   // Step 9: Get user instructions (HIGHEST PRIORITY) if sessionId provided
+  // Looks for jurisdiction-specific instruction first, then falls back to wildcard
   let userInstr: UserInstructionContext | null = null
   let userInstructionBlock = ''
   if (sessionId) {
     try {
-      userInstr = await getUserInstruction(sessionId, canonicalKey)
+      userInstr = await getUserInstruction(sessionId, canonicalKey, jurisdiction)
       if (userInstr) {
         userInstructionBlock = buildUserInstructionBlock(userInstr)
       }

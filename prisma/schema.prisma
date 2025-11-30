@@ -130,6 +130,9 @@ model User {
   createdCountryProfiles  CountryProfile[]       @relation("CountryProfileCreator")
   updatedCountryProfiles  CountryProfile[]       @relation("CountryProfileUpdater")
 
+  // Writing Samples for example-based style mimicry
+  writingSamples          WritingSample[]
+
   @@map("users")
 }
 
@@ -1697,6 +1700,35 @@ model Document {
   @@map("documents")
 }
 
+// === WRITING SAMPLES FOR EXAMPLE-BASED STYLE MIMICRY ===
+
+model WritingSample {
+  id            String   @id @default(cuid())
+  userId        String
+  tenantId      String
+  
+  jurisdiction  String   // "IN", "US", "EP", "*" (universal/all jurisdictions)
+  sectionKey    String   // "claims", "detailedDescription", "abstract", "background", etc.
+  
+  sampleText    String   @db.Text  // User's writing sample (3-4 lines, ~100-150 words)
+  notes         String?  // Optional notes: "My preferred claims opening style"
+  
+  isActive      Boolean  @default(true)
+  wordCount     Int      @default(0)  // Computed word count for validation
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  // Relations
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Constraints
+  @@unique([userId, jurisdiction, sectionKey])  // One sample per user per jurisdiction per section
+  @@index([tenantId, userId])
+  @@index([userId, jurisdiction])
+  @@map("writing_samples")
+}
+
 // === COUNTRY PROFILES FOR JURISDICTION-AWARE DRAFTING ===
 
 enum CountryProfileStatus {
@@ -1732,6 +1764,7 @@ model CountryProfile {
 model SupersetSection {
   id            String   @id @default(cuid())
   sectionKey    String   @unique @map("section_key") // e.g., "title", "background", "claims"
+  aliases       String[] @default([]) @map("aliases") // Alternative keys that map to this section
   displayOrder  Int      @map("display_order") // Order in the drafting flow
   label         String   // Display label: "Title of the Invention"
   description   String?  @db.Text // Description of what this section contains
@@ -1844,24 +1877,29 @@ model CountrySectionPromptHistory {
 
 // User-specific section instructions per drafting session
 // This allows users to customize prompts for individual drafts
+// Supports jurisdiction-specific instructions (different for IN vs US)
 model UserSectionInstruction {
-  id          String   @id @default(cuid())
-  sessionId   String   @map("session_id")
-  sectionKey  String   @map("section_key")
-  instruction String   @db.Text // User's custom instruction for this section
-  emphasis    String?  @db.Text // What to emphasize/focus on
-  avoid       String?  @db.Text // What to avoid/exclude
-  style       String?  // "formal", "technical", "concise", etc.
-  wordCount   Int?     @map("word_count") // Target word count override
-  isActive    Boolean  @default(true) @map("is_active")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id           String   @id @default(cuid())
+  sessionId    String   @map("session_id")
+  jurisdiction String   @default("*") // "*" = all jurisdictions, or specific like "IN", "US"
+  sectionKey   String   @map("section_key")
+  instruction  String   @db.Text // User's custom instruction for this section
+  emphasis     String?  @db.Text // What to emphasize/focus on
+  avoid        String?  @db.Text // What to avoid/exclude
+  style        String?  // "formal", "technical", "concise", etc.
+  wordCount    Int?     @map("word_count") // Target word count override
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
 
   // Relation to drafting session
   session     DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
-  @@unique([sessionId, sectionKey])
+  // Unique per session + jurisdiction + section
+  // User can have different instructions for same section in different jurisdictions
+  @@unique([sessionId, jurisdiction, sectionKey])
   @@index([sessionId])
+  @@index([sessionId, jurisdiction])
   @@index([sectionKey])
   @@map("user_section_instructions")
 }

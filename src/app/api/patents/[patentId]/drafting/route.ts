@@ -8,6 +8,7 @@ import { IdeaBankService } from '@/lib/idea-bank-service';
 import { llmGateway } from '@/lib/metering/gateway';
 import { getGatedStyleInstructions } from '@/lib/style-instruction-builder'
 import { getDocumentTypeConfig, getSupportedCountryCodes, getCountryProfile } from '@/lib/country-profile-service';
+import { resolveCanonicalKey, normalizeSectionKeys } from '@/lib/section-alias-service';
 import crypto from 'crypto';
 import plantumlEncoder from 'plantuml-encoder';
 import path from 'path';
@@ -118,11 +119,22 @@ const defaultExportSections: ExportSectionDef[] = [
 
 async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<ExportSectionDef[]> {
   try {
-    const profile = await getCountryProfile(jurisdiction)
+    // Fetch country profile and section mappings in parallel
+    const [profile, sectionMappings] = await Promise.all([
+      getCountryProfile(jurisdiction),
+      prisma.countrySectionMapping.findMany({
+        where: { countryCode: jurisdiction.toUpperCase(), isEnabled: true },
+        orderBy: { displayOrder: 'asc' }
+      })
+    ])
+    
+    // Create a map of sectionKey -> mapping for quick lookup
+    const mappingByKey = new Map(sectionMappings.map(m => [m.sectionKey, m]))
+    
     const variant = profile?.profileData?.structure?.variants?.find((v: any) => v.id === profile?.profileData?.structure?.defaultVariant) || profile?.profileData?.structure?.variants?.[0]
     const promptSections = profile?.profileData?.prompts?.sections || {}
     if (variant?.sections?.length) {
-      const sections: ExportSectionDef[] = []
+      const sections: (ExportSectionDef & { order: number })[] = []
       for (const sec of variant.sections) {
         const keys = (sec.canonicalKeys || []).map((k: string) => k.toLowerCase())
         let mapped: string | undefined
@@ -131,17 +143,29 @@ async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<E
         }
         if (!mapped && canonicalSectionMap[sec.id]) mapped = canonicalSectionMap[sec.id]
         if (!mapped) continue
+        
+        // Get country-specific displayOrder from mapping, fallback to section order
+        const mapping = mappingByKey.get(mapped)
+        const order = mapping?.displayOrder ?? sec.order ?? 999
+        
         sections.push({
           key: mapped,
-          label: sec.label || sec.id,
-          required: sec.required ?? promptSections?.[sec.id]?.required ?? true
+          label: mapping?.heading || sec.label || sec.id,
+          required: mapping?.isRequired ?? sec.required ?? promptSections?.[sec.id]?.required ?? true,
+          order
         })
       }
+      
+      // Sort by country-specific displayOrder
+      sections.sort((a, b) => a.order - b.order)
+      
       // Ensure title/abstract appear even if profile omits them
       const keys = new Set(sections.map(s => s.key))
-      if (!keys.has('title')) sections.unshift({ key: 'title', label: 'Title', required: true })
-      if (!keys.has('abstract')) sections.push({ key: 'abstract', label: 'Abstract', required: true })
-      return sections
+      if (!keys.has('title')) sections.unshift({ key: 'title', label: 'Title', required: true, order: 0 })
+      if (!keys.has('abstract')) sections.push({ key: 'abstract', label: 'Abstract', required: true, order: 999 })
+      
+      // Remove the order property from final result (not needed outside this function)
+      return sections.map(({ order, ...rest }) => rest)
     }
   } catch (err) {
     console.warn('Failed to load export sections for jurisdiction', jurisdiction, err)
@@ -3613,8 +3637,11 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
   const session = baseSession
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  // Merge user-provided instructions with PersonaSync style instructions if enabled and available
-  const usePersonaStyle = (data && typeof data.usePersonaStyle === 'boolean') ? Boolean(data.usePersonaStyle) : true
+  // Example-based style mimicry: OFF by default, user must explicitly enable
+  // When enabled, the DraftingService will fetch writing samples and inject them into prompts
+  const usePersonaStyle = (data && typeof data.usePersonaStyle === 'boolean') ? Boolean(data.usePersonaStyle) : false
+  
+  // Legacy document-based style learning (only if persona style is enabled)
   let mergedInstructions: Record<string, string> = { ...(instructions || {}) }
   if (usePersonaStyle) {
     try {
@@ -3646,7 +3673,14 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
     where: { sessionId, jurisdiction: effectiveJurisdiction },
     orderBy: { version: 'desc' }
   })
-  const sessionWithDrafts: any = { ...session, annexureDrafts: lastDraftForJurisdiction ? [lastDraftForJurisdiction] : [] }
+  
+  // Extend session with user context for writing sample-based style mimicry
+  const sessionWithDrafts: any = { 
+    ...session, 
+    annexureDrafts: lastDraftForJurisdiction ? [lastDraftForJurisdiction] : [],
+    usePersonaStyle, // Pass to DraftingService for writing sample injection
+    userId: user.id  // Required for fetching user's writing samples
+  }
 
   const preferredLanguage = getPreferredLanguageForJurisdiction(session, effectiveJurisdiction)
 
@@ -3669,39 +3703,21 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
     // Legacy columns (backward compatible) - these are dedicated DB columns
     const legacyFields = ['title', 'fieldOfInvention', 'background', 'summary', 'briefDescriptionOfDrawings', 'detailedDescription', 'bestMethod', 'claims', 'abstract', 'industrialApplicability', 'listOfNumerals']
     
-    // Extra sections (scalable) - stored in JSON column for new jurisdictions
-    // These are sections required by specific jurisdictions but not in legacy schema
-    // Map aliases to canonical keys for storage consistency
-    const extraSectionKeyMap: Record<string, string> = {
-      'preamble': 'preamble',
-      'objectsOfInvention': 'objectsOfInvention',
-      'objects': 'objectsOfInvention', // Alias used in IN.json
-      'objects_of_invention': 'objectsOfInvention',
-      'technicalProblem': 'technicalProblem',
-      'technical_problem': 'technicalProblem',
-      'technicalSolution': 'technicalSolution',
-      'technical_solution': 'technicalSolution',
-      'advantageousEffects': 'advantageousEffects',
-      'advantageous_effects': 'advantageousEffects',
-      'crossReference': 'crossReference',
-      'cross_reference': 'crossReference',
-      'modeOfCarryingOut': 'modeOfCarryingOut',
-      'mode_of_carrying_out': 'modeOfCarryingOut'
-    }
+    // Normalize all generated keys using database-driven alias resolution
+    const normalizedGenerated = result.generated ? await normalizeSectionKeys(result.generated as Record<string, any>) : {}
     
-    if (last && result.generated) {
+    if (last && Object.keys(normalizedGenerated).length > 0) {
       const updateData: any = {}
       // extraSections is a JSON column for scalable section storage
       const extraSections: Record<string, string> = { ...(((last as any).extraSections) || {}) }
 
-      for (const [k, v] of Object.entries(result.generated)) {
+      for (const [canonicalKey, v] of Object.entries(normalizedGenerated)) {
         if (typeof v === 'string' && v.trim()) {
-          if (legacyFields.includes(k)) {
+          if (legacyFields.includes(canonicalKey)) {
             // Store in legacy column
-            updateData[k] = v.trim()
-          } else if (extraSectionKeyMap[k]) {
-            // Store in extraSections JSON with canonical key
-            const canonicalKey = extraSectionKeyMap[k]
+            updateData[canonicalKey] = v.trim()
+          } else {
+            // Store in extraSections JSON - key is already canonical
             extraSections[canonicalKey] = v.trim()
           }
         }
@@ -3718,26 +3734,25 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
       if (Object.keys(updateData).length > 0) {
         await prisma.annexureDraft.update({ where: { id: last.id }, data: updateData })
       }
-    } else if (result.generated) {
+    } else if (Object.keys(normalizedGenerated).length > 0) {
       // Create initial draft if none present
       const createData: any = { sessionId, version: 1, jurisdiction: effectiveJurisdiction, fullDraftText: '' }
       const extraSections: Record<string, string> = {}
 
       // Set title
-      createData.title = result.generated.title || session.ideaRecord?.title || 'Untitled'
+      createData.title = normalizedGenerated.title || session.ideaRecord?.title || 'Untitled'
 
-      for (const [k, v] of Object.entries(result.generated)) {
-        if (k === 'title') continue // Already handled
+      for (const [canonicalKey, v] of Object.entries(normalizedGenerated)) {
+        if (canonicalKey === 'title') continue // Already handled
         if (typeof v === 'string' && v.trim()) {
-          if (legacyFields.includes(k)) {
+          if (legacyFields.includes(canonicalKey)) {
             // Store in legacy column
-            createData[k] = v.trim()
-          } else if (extraSectionKeyMap[k]) {
-            // Store in extraSections JSON with canonical key
-            const canonicalKey = extraSectionKeyMap[k]
+            createData[canonicalKey] = v.trim()
+          } else {
+            // Store in extraSections JSON - key is already canonical
             extraSections[canonicalKey] = v.trim()
-          }
         }
+      }
       }
       
       // Save extra sections if any exist
@@ -3778,28 +3793,13 @@ async function handleSaveSections(user: any, patentId: string, data: any) {
   // Legacy columns (backward compatible)
   const legacyFields = ['title', 'fieldOfInvention', 'background', 'summary', 'briefDescriptionOfDrawings', 'detailedDescription', 'bestMethod', 'claims', 'abstract', 'industrialApplicability', 'listOfNumerals']
   
-  // Extra sections key mapping (alias -> canonical key)
-  const extraSectionKeyMap: Record<string, string> = {
-    'preamble': 'preamble',
-    'objectsOfInvention': 'objectsOfInvention',
-    'objects': 'objectsOfInvention', // Alias used in IN.json
-    'objects_of_invention': 'objectsOfInvention',
-    'technicalProblem': 'technicalProblem',
-    'technical_problem': 'technicalProblem',
-    'technicalSolution': 'technicalSolution',
-    'technical_solution': 'technicalSolution',
-    'advantageousEffects': 'advantageousEffects',
-    'advantageous_effects': 'advantageousEffects',
-    'crossReference': 'crossReference',
-    'cross_reference': 'crossReference',
-    'modeOfCarryingOut': 'modeOfCarryingOut',
-    'mode_of_carrying_out': 'modeOfCarryingOut'
-  }
+  // Normalize patch keys using database-driven alias resolution
+  const normalizedPatch = await normalizeSectionKeys(patch as Record<string, any>)
 
   // Get previous extra sections (extraSections is a JSON column for scalable section storage)
   const prevExtraSections = ((last as any)?.extraSections as Record<string, string>) || {}
 
-  // Merge patch into latest (or start new)
+  // Merge normalized patch into latest (or start new)
   const merged: any = {
     title: last?.title || '',
     fieldOfInvention: last?.fieldOfInvention || null,
@@ -3812,14 +3812,14 @@ async function handleSaveSections(user: any, patentId: string, data: any) {
     abstract: last?.abstract || null,
     industrialApplicability: last?.industrialApplicability || null,
     listOfNumerals: last?.listOfNumerals || null,
-    ...patch
+    ...normalizedPatch
   }
 
-  // Build extra sections from previous + patch (normalize keys to canonical form)
+  // Build extra sections from previous + normalized patch
   const extraSections: Record<string, string> = { ...prevExtraSections }
-  for (const [patchKey, patchValue] of Object.entries(patch)) {
-    if (extraSectionKeyMap[patchKey] && typeof patchValue === 'string' && patchValue.trim()) {
-      const canonicalKey = extraSectionKeyMap[patchKey]
+  for (const [canonicalKey, patchValue] of Object.entries(normalizedPatch)) {
+    // If key is not a legacy field, it goes to extraSections
+    if (!legacyFields.includes(canonicalKey) && typeof patchValue === 'string' && patchValue.trim()) {
       extraSections[canonicalKey] = patchValue.trim()
     }
   }
@@ -3853,25 +3853,25 @@ async function handleSaveSections(user: any, patentId: string, data: any) {
 
   // Note: extraSections is a JSON column added for scalability - TypeScript types may need IDE restart to update
   const draftData: any = {
-    sessionId,
-    version: nextVersion,
-    jurisdiction: effectiveJurisdiction,
-    title: merged.title || last?.title || 'Untitled',
-    fieldOfInvention: merged.fieldOfInvention || undefined,
-    background: merged.background || undefined,
-    summary: merged.summary || undefined,
-    briefDescriptionOfDrawings: merged.briefDescriptionOfDrawings || undefined,
-    detailedDescription: merged.detailedDescription || undefined,
-    bestMethod: merged.bestMethod || undefined,
-    claims: merged.claims || undefined,
-    abstract: merged.abstract || undefined,
-    industrialApplicability: merged.industrialApplicability || undefined,
-    listOfNumerals: merged.listOfNumerals || undefined,
+      sessionId,
+      version: nextVersion,
+      jurisdiction: effectiveJurisdiction,
+      title: merged.title || last?.title || 'Untitled',
+      fieldOfInvention: merged.fieldOfInvention || undefined,
+      background: merged.background || undefined,
+      summary: merged.summary || undefined,
+      briefDescriptionOfDrawings: merged.briefDescriptionOfDrawings || undefined,
+      detailedDescription: merged.detailedDescription || undefined,
+      bestMethod: merged.bestMethod || undefined,
+      claims: merged.claims || undefined,
+      abstract: merged.abstract || undefined,
+      industrialApplicability: merged.industrialApplicability || undefined,
+      listOfNumerals: merged.listOfNumerals || undefined,
     extraSections: Object.keys(extraSections).length > 0 ? extraSections : undefined,
-    fullDraftText,
-    isValid: !!validation.valid,
-    validationReport
-  }
+      fullDraftText,
+      isValid: !!validation.valid,
+      validationReport
+    }
   const draft = await prisma.annexureDraft.create({ data: draftData })
 
   await prisma.draftingSession.update({
