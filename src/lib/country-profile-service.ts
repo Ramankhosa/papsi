@@ -327,7 +327,48 @@ export async function getDocumentTypeConfig(countryCode: string, documentTypeId:
     right: number
   }
   pageSize: string
+  fontFamily?: string
+  fontSizePt?: number
+  lineSpacing?: number
+  addPageNumbers?: boolean
+  pageNumberFormat?: string
+  addParagraphNumbers?: boolean
 } | null> {
+  const code = countryCode.toUpperCase()
+  
+  // First, try to get from database (CountryExportConfig)
+  try {
+    const dbConfig = await prisma.countryExportConfig.findFirst({
+      where: { 
+        countryCode: code,
+        documentTypeId,
+        status: 'ACTIVE'
+      }
+    })
+    
+    if (dbConfig) {
+      return {
+        documentType: dbConfig,
+        margins: {
+          top: dbConfig.marginTopCm,
+          bottom: dbConfig.marginBottomCm,
+          left: dbConfig.marginLeftCm,
+          right: dbConfig.marginRightCm
+        },
+        pageSize: dbConfig.pageSize,
+        fontFamily: dbConfig.fontFamily,
+        fontSizePt: dbConfig.fontSizePt,
+        lineSpacing: dbConfig.lineSpacing,
+        addPageNumbers: dbConfig.addPageNumbers,
+        pageNumberFormat: dbConfig.pageNumberFormat || 'Page {page} of {pages}',
+        addParagraphNumbers: dbConfig.addParagraphNumbers
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to get export config from DB, falling back to JSON:', error)
+  }
+  
+  // Fallback to JSON profile
   const profile = await getCountryProfile(countryCode)
   if (!profile) return null
 
@@ -354,6 +395,11 @@ export async function getDocumentTypeConfig(countryCode: string, documentTypeId:
   return {
     documentType,
     margins,
-    pageSize
+    pageSize,
+    fontFamily: documentType.fontFamily,
+    fontSizePt: documentType.fontSizePt,
+    lineSpacing: documentType.lineSpacing,
+    addPageNumbers: documentType.addPageNumbers,
+    addParagraphNumbers: documentType.addParagraphNumbers
   }
 }

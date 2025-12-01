@@ -193,24 +193,57 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
     "🎯 Finalizing patent-grade visualization..."
   ]
 
+  // Track which figures have been queued for rendering to prevent duplicate calls
+  const queuedForRenderRef = useRef<Set<number>>(new Set())
+
   // Automatically process diagrams when PlantUML code is available
+  // This effect runs after state initialization and when diagramSources change
   useEffect(() => {
     if (!stateInitialized) return
 
-    diagramSources.forEach((d: any) => {
-      if (d.plantumlCode && !uploaded[d.figureNo] && !d.imageUploadedAt && !rendering[d.figureNo] && !processingStatus[d.figureNo]) {
-        autoProcessDiagram(d.figureNo, d.plantumlCode)
-      }
-    })
+    // Use a small delay to ensure state updates from initialization have been applied
+    const timeoutId = setTimeout(() => {
+      diagramSources.forEach((d: any) => {
+        const figNo = d.figureNo
+        // Check all conditions for auto-rendering:
+        // 1. Has PlantUML code
+        // 2. Not already uploaded/rendered
+        // 3. No existing image
+        // 4. Not currently rendering
+        // 5. No processing status (not in progress or failed)
+        // 6. Not already queued for rendering (prevents duplicate calls)
+        const shouldRender = 
+          d.plantumlCode && 
+          !uploaded[figNo] && 
+          !d.imageUploadedAt && 
+          !rendering[figNo] && 
+          !processingStatus[figNo] &&
+          !queuedForRenderRef.current.has(figNo)
+
+        if (shouldRender) {
+          queuedForRenderRef.current.add(figNo)
+          autoProcessDiagram(figNo, d.plantumlCode)
+        }
+      })
+    }, 100) // Small delay to let React batch state updates
+
+    return () => clearTimeout(timeoutId)
   }, [diagramSources, uploaded, rendering, processingStatus, stateInitialized])
 
   // Initialize state for new figures when diagramSources changes
+  // Also reset uploaded state when image data is cleared (e.g., after regeneration)
   useEffect(() => {
     const newFigureNos = diagramSources.map((d: any) => d.figureNo)
     setUploaded((prev) => {
       const updated = { ...prev }
       newFigureNos.forEach((no: number) => {
-        if (updated[no] === undefined) updated[no] = false
+        const source = diagramSources.find((d: any) => d.figureNo === no)
+        // Reset to false if no image exists OR if imageUploadedAt is null (cleared after regeneration)
+        if (updated[no] === undefined || (!source?.imageUploadedAt && updated[no] === true)) {
+          updated[no] = false
+          // Also clear from queued set to allow re-rendering
+          queuedForRenderRef.current.delete(no)
+        }
       })
       return updated
     })
@@ -572,6 +605,8 @@ Output: JSON array only, no markdown fences, no explanations.`
       setError(`Figure ${figureNo} processing failed: ${errorMessage}`)
       setProcessingStatus(prev => ({ ...prev, [figureNo]: `❌ Failed: ${errorMessage}` }))
       setProcessingStep(prev => ({ ...prev, [figureNo]: -1 })) // Mark as failed
+      // Clear from queued set so user can retry
+      queuedForRenderRef.current.delete(figureNo)
     } finally {
       setRendering((prev) => ({ ...prev, [figureNo]: false }))
       setIsUploading(false)
@@ -892,13 +927,22 @@ Output: JSON array only, no markdown fences, no explanations.`
               <Card key={d.figureNo} className="overflow-hidden hover:shadow-lg transition-all duration-300">
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
-                    <CardTitle className="text-base font-medium">
-                      {figurePlans.find((f: any) => f.figureNo === d.figureNo)?.title || `Figure ${d.figureNo}`}
-                    </CardTitle>
-                    <Badge variant={uploaded[d.figureNo] || d.imageUploadedAt ? 'default' : 'secondary'}>
-                      Fig {d.figureNo}
+                    <Badge variant={uploaded[d.figureNo] || d.imageUploadedAt ? 'default' : 'secondary'} className="shrink-0">
+                      Fig. {d.figureNo}
                     </Badge>
-                      </div>
+                    <Badge variant="outline" className="text-xs text-gray-500">
+                      {d.imageUploadedAt ? 'Rendered' : d.plantumlCode ? 'Code Ready' : 'Pending'}
+                    </Badge>
+                  </div>
+                  {/* Caption (Title) - shown prominently */}
+                  <CardTitle className="text-base font-semibold text-gray-900 mt-2 line-clamp-2">
+                    {(() => {
+                      const plan = figurePlans.find((f: any) => f.figureNo === d.figureNo)
+                      const caption = plan?.title || `Figure ${d.figureNo}`
+                      // Remove redundant "Fig. X" prefix from caption if present
+                      return caption.replace(/^(Fig\.?\s*\d+\s*[-:–]\s*)/i, '').trim() || caption
+                    })()}
+                  </CardTitle>
                 </CardHeader>
                 
                 <CardContent className="p-0 relative bg-gray-100 min-h-[200px] flex items-center justify-center group">
@@ -934,8 +978,10 @@ Output: JSON array only, no markdown fences, no explanations.`
                             variant="outline"
                             className="mt-2"
                             onClick={() => {
+                              // Clear states and re-queue for rendering
                               setProcessingStatus(prev => ({ ...prev, [d.figureNo]: '' }))
                               setProcessingStep(prev => ({ ...prev, [d.figureNo]: 0 }))
+                              queuedForRenderRef.current.delete(d.figureNo) // Allow re-queueing
                               autoProcessDiagram(d.figureNo, d.plantumlCode)
                             }}
                           >
@@ -947,7 +993,10 @@ Output: JSON array only, no markdown fences, no explanations.`
                       <div className="text-center">
                         <Code className="w-12 h-12 text-gray-300 mx-auto mb-2" />
                         <p className="text-sm text-gray-500 mb-4">Code ready for processing</p>
-                        <Button size="sm" onClick={() => autoProcessDiagram(d.figureNo, d.plantumlCode)}>
+                        <Button size="sm" onClick={() => {
+                          queuedForRenderRef.current.delete(d.figureNo) // Ensure it can be queued
+                          autoProcessDiagram(d.figureNo, d.plantumlCode)
+                        }}>
                           <RefreshCw className="w-4 h-4 mr-2" /> Render Image
                         </Button>
                       </div>
@@ -958,16 +1007,33 @@ Output: JSON array only, no markdown fences, no explanations.`
                 )}
                 </CardContent>
 
-                {/* Figure Caption - Academic Style */}
+                {/* Figure Caption & Description - Academic Style */}
                 {(() => {
-                  const description = figurePlans.find((f: any) => f.figureNo === d.figureNo)?.description
-                  return description ? (
-                    <div className="px-4 py-3 bg-gray-50 border-t border-gray-200">
-                      <p className="text-sm text-gray-700 leading-relaxed text-justify">
-                        <strong className="font-medium">Figure {d.figureNo}:</strong> {description}
-                      </p>
+                  const plan = figurePlans.find((f: any) => f.figureNo === d.figureNo)
+                  const caption = plan?.title || ''
+                  const description = plan?.description || ''
+                  // Clean caption: remove "Fig. X -" prefix if present
+                  const cleanCaption = caption.replace(/^(Fig\.?\s*\d+\s*[-:–]\s*)/i, '').trim()
+                  
+                  // Only show this section if there's either a caption or description
+                  if (!cleanCaption && !description) return null
+                  
+                  return (
+                    <div className="px-4 py-3 bg-gray-50 border-t border-gray-200 space-y-2">
+                      {/* Caption Line - for draft export (one line max) */}
+                      {cleanCaption && (
+                        <p className="text-sm font-medium text-gray-800 truncate" title={cleanCaption}>
+                          <span className="text-indigo-600">Fig. {d.figureNo}:</span> {cleanCaption}
+                        </p>
+                      )}
+                      {/* Description - detailed explanation */}
+                      {description && (
+                        <p className="text-xs text-gray-600 leading-relaxed text-justify">
+                          <span className="font-medium text-gray-700">Description:</span> {description}
+                        </p>
+                      )}
                     </div>
-                  ) : null
+                  )
                 })()}
 
                 <div className="p-3 bg-white border-t grid grid-cols-2 gap-2">

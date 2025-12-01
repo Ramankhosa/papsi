@@ -1493,7 +1493,7 @@ Respond in this exact JSON shape:
       technicalProblem: { label: 'Technical Problem', target: '40-80 words' },
       technicalSolution: { label: 'Technical Solution', target: '60-120 words' },
       advantageousEffects: { label: 'Advantageous Effects', target: '60-120 words' },
-      briefDescriptionOfDrawings: { label: 'Brief Description of Drawings', target: '80-150 words' },
+      briefDescriptionOfDrawings: { label: 'Brief Description of Drawings', target: '~25 words per figure' },
       detailedDescription: { label: 'Detailed Description', target: '600-1200 words' },
       modeOfCarryingOut: { label: 'Mode of Carrying Out the Invention', target: '300-500 words' },
       bestMethod: { label: 'Best Mode', target: '150-300 words' },
@@ -2093,7 +2093,10 @@ Return ONLY a valid JSON object exactly matching the schema above.`
         fieldOfInvention: 80,
         background: 400,
         summary: 300,
-        briefDescriptionOfDrawings: 80,
+        // IMPORTANT: briefDescriptionOfDrawings needs ~25 words per figure
+        // Set to 500 to support up to 20 figures (20 * 25 = 500)
+        // This should NOT truncate figure descriptions - each figure needs its own line
+        briefDescriptionOfDrawings: 500,
         detailedDescription: 1200,
         bestMethod: 350,
         claims: 900,
@@ -2197,7 +2200,8 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       technicalProblem: 120,
       technicalSolution: 150,
       advantageousEffects: 150,
-      briefDescriptionOfDrawings: 80,
+      // IMPORTANT: briefDescriptionOfDrawings needs ~25 words per figure (support up to 20 figures)
+      briefDescriptionOfDrawings: 500,
       detailedDescription: 1200,
       modeOfCarryingOut: 500,
       bestMethod: 350,
@@ -2481,30 +2485,76 @@ Return ONLY a valid JSON object exactly matching the schema above.`
     const roots: any[] = [];
 
     for (const comp of components as Comp[]) {
-      if (!comp.name || typeof comp.name !== 'string') {
-        errors.push('Component name is required and must be a string');
+      if (!comp.id || typeof comp.id !== 'string') {
+        errors.push('Component ID is required and must be a string');
         continue;
       }
-      const id = comp.id || crypto.randomUUID();
+      if (nodes[comp.id]) {
+        errors.push(`Duplicate component ID detected: ${comp.id}`);
+        continue;
+      }
+      if (!comp.name || typeof comp.name !== 'string') {
+        errors.push(`Component ${comp.id} name is required and must be a string`);
+        continue;
+      }
+      if (!comp.name.trim()) {
+        errors.push(`Component ${comp.id} name cannot be empty`);
+        continue;
+      }
+      const id = comp.id;
+      const componentType = (comp as any).type;
+      const validTypes = ['MODULE', 'SUBMODULE', 'FUNCTION', 'CLASS', 'INTERFACE', 'OTHER'];
+
+      if (componentType && !validTypes.includes(componentType)) {
+        errors.push(`Component ${id} has invalid type '${componentType}' - must be one of: ${validTypes.join(', ')}`);
+        continue;
+      }
+
       nodes[id] = {
         id,
         name: comp.name.trim(),
         description: comp.description || '',
         parentId: (comp as any).parentId || null,
         numeral: typeof (comp as any).numeral === 'number' ? (comp as any).numeral : undefined,
-        type: (comp as any).type || 'OTHER',
+        type: componentType || 'OTHER',
         children: []
       };
     }
 
     // Link children
     Object.values(nodes).forEach((n: any) => {
-      if (n.parentId && nodes[n.parentId]) {
-        nodes[n.parentId].children.push(n);
+      if (n.parentId) {
+        if (n.parentId === n.id) {
+          errors.push(`Component ${n.id} cannot be its own parent`);
+        } else if (nodes[n.parentId]) {
+          nodes[n.parentId].children.push(n);
+        } else {
+          errors.push(`Component ${n.id} has invalid parentId ${n.parentId} - parent does not exist`);
+        }
       } else {
         roots.push(n);
       }
     });
+
+    // Check for circular references
+    const detectCycle = (nodeId: string, visited: Set<string> = new Set()): boolean => {
+      if (visited.has(nodeId)) return true; // Cycle detected
+      visited.add(nodeId);
+      const node = nodes[nodeId];
+      if (node && node.children) {
+        for (const child of node.children) {
+          if (detectCycle(child.id, new Set(visited))) return true;
+        }
+      }
+      return false;
+    };
+
+    for (const root of roots) {
+      if (detectCycle(root.id)) {
+        errors.push(`Circular reference detected in component hierarchy`);
+        break;
+      }
+    }
 
     // Assign numerals in 100-blocks per root to avoid overlap; respect user-supplied numerals when unique/valid
     const usedNumerals = new Set<number>();
@@ -2519,9 +2569,11 @@ Return ONLY a valid JSON object exactly matching the schema above.`
           return;
         }
         // Respect user-supplied numeral if valid and unique
-        if (typeof n.numeral === 'number' && n.numeral >= 1 && n.numeral <= 999) {
-          if (usedNumerals.has(n.numeral)) {
-            errors.push(`Duplicate numeral ${n.numeral} detected`);
+        if (typeof n.numeral === 'number') {
+          if (n.numeral < 1 || n.numeral > 999) {
+            errors.push(`Component ${n.id} has invalid numeral ${n.numeral} - must be between 1 and 999`);
+          } else if (usedNumerals.has(n.numeral)) {
+            errors.push(`Duplicate numeral ${n.numeral} detected for component ${n.id}`);
           } else {
             usedNumerals.add(n.numeral);
             cursor = Math.max(cursor, n.numeral + 1);
@@ -2529,6 +2581,10 @@ Return ONLY a valid JSON object exactly matching the schema above.`
         } else {
           // Assign numeral automatically
           while (usedNumerals.has(cursor) && cursor <= base + 99) cursor++;
+          if (cursor > base + 99) {
+            errors.push(`Cannot assign numeral to component ${n.id} - block ${base} is full`);
+            return;
+          }
           n.numeral = cursor;
           usedNumerals.add(cursor);
           cursor++;

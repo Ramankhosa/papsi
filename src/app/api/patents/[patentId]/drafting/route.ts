@@ -11,6 +11,8 @@ import { llmGateway } from '@/lib/metering/gateway';
 import { getDocumentTypeConfig, getSupportedCountryCodes, getCountryProfile } from '@/lib/country-profile-service';
 import { resolveCanonicalKey, normalizeSectionKeys } from '@/lib/section-alias-service';
 import { enforceServiceAccess } from '@/lib/service-access-middleware';
+import { getDiagramConfig, generateDiagramPromptInstructions } from '@/lib/jurisdiction-style-service';
+import { trackSectionDrafted } from '@/lib/patent-drafting-tracker';
 import crypto from 'crypto';
 import plantumlEncoder from 'plantuml-encoder';
 import path from 'path';
@@ -432,6 +434,14 @@ export async function POST(
       case 'generate_draft':
         return await handleGenerateDraft(authResult.user, patentId, data, requestHeaders);
 
+      // Multi-jurisdiction: Generate reference draft (superset sections)
+      case 'generate_reference_draft':
+        return await handleGenerateReferenceDraft(authResult.user, patentId, data, requestHeaders);
+
+      // Multi-jurisdiction: Translate reference draft to target jurisdiction
+      case 'translate_to_jurisdiction':
+        return await handleTranslateToJurisdiction(authResult.user, patentId, data, requestHeaders);
+
       // New: Section-level generation and save for Annexure 2
       case 'generate_sections':
         return await handleGenerateSections(authResult.user, patentId, data, requestHeaders);
@@ -479,6 +489,21 @@ export async function POST(
       // Review & Export
       case 'run_review_checks':
         return await handleRunReview(authResult.user, patentId, data);
+
+      case 'validate_draft':
+        return await handleValidateDraft(authResult.user, patentId, data);
+
+      case 'run_ai_review':
+        return await handleRunAIReview(authResult.user, patentId, data, requestHeaders);
+
+      case 'apply_ai_fix':
+        return await handleApplyAIFix(authResult.user, patentId, data, requestHeaders);
+
+      case 'get_ai_reviews':
+        return await handleGetAIReviews(authResult.user, patentId, data);
+
+      case 'ignore_ai_issue':
+        return await handleIgnoreAIIssue(authResult.user, patentId, data);
 
       case 'export_docx':
         return await handleExportDOCX(authResult.user, patentId, data, request);
@@ -1083,12 +1108,22 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
     injectParagraphNumbering(blocks)
   }
 
+  // Helper to truncate caption to fit one line on A4 (approx 85 chars at 12pt)
+  const truncateCaption = (caption: string, maxLen: number = 85): string => {
+    // Remove any "Fig. X -" prefix from the caption if present
+    let clean = caption.replace(/^(Fig\.?\s*\d+\s*[-:–]\s*)/i, '').trim()
+    if (clean.length <= maxLen) return clean
+    // Truncate with ellipsis
+    return clean.substring(0, maxLen - 3).trim() + '...'
+  }
+
   const exportInput: any = {
     figures: figuresSorted.map(f => {
       const ds = (session.diagramSources||[]).find((d:any)=>d.figureNo===f.figureNo)
+      const rawCaption = f.title || `Figure ${f.figureNo}`
       return {
         figureNo: f.figureNo,
-        caption: f.title || `Figure ${f.figureNo}`,
+        caption: truncateCaption(rawCaption),
         imagePath: (ds?.imagePath as string) || '',
         imageFilename: (ds?.imageFilename as string) || ''
       }
@@ -1178,14 +1213,21 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
       ]
     })
 
+    // Get typography settings from config
+    const fontFamily = documentTypeConfig?.fontFamily || 'Times New Roman'
+    const fontSizePt = documentTypeConfig?.fontSizePt || 12
+    const fontSizeHalfPt = fontSizePt * 2 // docx uses half-points
+    const lineSpacing = documentTypeConfig?.lineSpacing || 1.5
+    const lineSpacingTwips = Math.round(240 * lineSpacing) // 240 twips = single spacing
+
     const doc = new Document({
       sections: [],
       styles: {
         default: {
           document: {
             run: {
-              size: 24, // 12pt = 24 half-points
-              font: 'Times New Roman'
+              size: fontSizeHalfPt,
+              font: fontFamily
             }
           }
         },
@@ -1196,13 +1238,14 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
             basedOn: 'Normal',
             next: 'Normal',
             run: {
-              size: 24, // 12pt
-              color: '000000' // black
+              size: fontSizeHalfPt,
+              color: '000000', // black
+              font: fontFamily
             },
             paragraph: {
               alignment: AlignmentType.JUSTIFIED,
               spacing: {
-                line: 480, // 2.0 line spacing (240 = single, 480 = 2.0)
+                line: lineSpacingTwips,
                 before: 0,
                 after: 120 // 6pt after
               }
@@ -1214,9 +1257,10 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
             basedOn: 'Normal',
             next: 'Normal',
             run: {
-              size: 24, // 12pt
+              size: fontSizeHalfPt,
               color: '000000', // black
-              bold: true
+              bold: true,
+              font: fontFamily
             },
             paragraph: {
               alignment: AlignmentType.LEFT,
@@ -1232,8 +1276,9 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
             basedOn: 'Normal',
             next: 'Normal',
             run: {
-              size: 24, // 12pt
-              color: '000000' // black
+              size: fontSizeHalfPt,
+              color: '000000', // black
+              font: fontFamily
             },
             paragraph: {
               alignment: AlignmentType.LEFT,
@@ -1601,10 +1646,17 @@ async function handlePreviewExport(user: any, patentId: string, data: any) {
     return NextResponse.json({ error: `No draft to export for jurisdiction ${effectiveJurisdiction}` }, { status: 400 })
   }
 
+  // Helper to truncate caption to fit one line on A4 (approx 85 chars at 12pt)
+  const truncateCaptionPreview = (caption: string, maxLen: number = 85): string => {
+    let clean = caption.replace(/^(Fig\.?\s*\d+\s*[-:–]\s*)/i, '').trim()
+    if (clean.length <= maxLen) return clean
+    return clean.substring(0, maxLen - 3).trim() + '...'
+  }
+
   const exportInput: any = {
     figures: [...(session.figurePlans||[])].sort((a,b)=>a.figureNo-b.figureNo).map(f=>({
       figureNo: f.figureNo,
-      caption: f.title || `Figure ${f.figureNo}`,
+      caption: truncateCaptionPreview(f.title || `Figure ${f.figureNo}`),
       imagePathOrBuffer: (session.diagramSources||[]).find((d:any)=>d.figureNo===f.figureNo)?.imagePath || ''
     })),
     sections
@@ -1638,13 +1690,20 @@ async function handleGetExportPreview(user: any, patentId: string, data: any) {
     return NextResponse.json({ error: `No draft to export for jurisdiction ${effectiveJurisdiction}` }, { status: 400 })
   }
 
+  // Helper to truncate caption for export preview (one line max on A4)
+  const truncateCaptionForPreview = (caption: string, maxLen: number = 85): string => {
+    let clean = caption.replace(/^(Fig\.?\s*\d+\s*[-:–]\s*)/i, '').trim()
+    if (clean.length <= maxLen) return clean
+    return clean.substring(0, maxLen - 3).trim() + '...'
+  }
+
   const figures = [...(session.figurePlans||[])].sort((a,b)=>a.figureNo-b.figureNo).map(f=>{
     const ds = (session.diagramSources||[]).find((d:any)=>d.figureNo===f.figureNo)
     const hasImage = !!(ds && (ds.imagePath || ds.imageFilename))
     const url = hasImage ? `/api/patents/${patentId}/drafting?image=figure&sessionId=${session.id}&figureNo=${f.figureNo}` : null
     return {
       figureNo: f.figureNo,
-      caption: f.title || `Figure ${f.figureNo}`,
+      caption: truncateCaptionForPreview(f.title || `Figure ${f.figureNo}`),
       imageUrl: url
     }
   })
@@ -1806,7 +1865,8 @@ async function handleSetStage(user: any, patentId: string, data: any) {
     draftingJurisdictions,
     activeJurisdiction,
     languageByJurisdiction,
-    sourceOfTruth
+    sourceOfTruth,
+    isMultiJurisdiction
   } = data
 
   console.log('handleSetStage called with:', { sessionId, stage, patentId, userId: user.id, manualPriorArt: !!manualPriorArt, selectedPatentsCount: selectedPatents?.length || 0 })
@@ -1852,6 +1912,16 @@ async function handleSetStage(user: any, patentId: string, data: any) {
 
   // Prepare update data
   const updateData: any = { status: stage }
+
+  // Handle multi-jurisdiction flag
+  if (typeof isMultiJurisdiction === 'boolean') {
+    updateData.isMultiJurisdiction = isMultiJurisdiction
+    // Reset reference draft status when switching modes
+    if (!isMultiJurisdiction) {
+      updateData.referenceDraftComplete = false
+      updateData.referenceDraftId = null
+    }
+  }
 
   // Default jurisdiction fallback (IN for India)
   const defaultJurisdiction = 'IN';
@@ -2156,8 +2226,13 @@ async function handleUpdateComponentMap(user: any, patentId: string, data: any) 
   const validation = DraftingService.validateComponentMap(components);
 
   if (!validation.valid) {
+    console.error('Component map validation failed:', validation.errors);
     return NextResponse.json(
-      { error: 'Invalid component map', details: validation.errors },
+      {
+        error: 'Component validation failed. Please check that all components have valid names and the hierarchy is correct.',
+        details: validation.errors,
+        code: 'INVALID_COMPONENT_MAP'
+      },
       { status: 400 }
     );
   }
@@ -2691,6 +2766,91 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
   return NextResponse.json({ diagramSource });
 }
 
+/**
+ * Build jurisdiction-specific diagram instructions from database config
+ * This creates LLM-friendly instructions that honor patent office requirements
+ */
+async function buildJurisdictionDiagramInstructions(
+  jurisdiction: string,
+  config: any,
+  diagramType: string = 'block'
+): Promise<string> {
+  const lines: string[] = []
+
+  // Jurisdiction identification
+  lines.push(`Target Jurisdiction: ${jurisdiction}`)
+  
+  // Figure labeling format
+  if (config.figureLabelFormat) {
+    lines.push(`Figure Label Format: Use "${config.figureLabelFormat}" format (e.g., ${config.figureLabelFormat.replace('{number}', '1')})`)
+  }
+
+  // Color requirements
+  if (config.colorAllowed) {
+    lines.push(`Color: Color diagrams ARE permitted for ${jurisdiction}`)
+    if (config.colorUsageNote) {
+      lines.push(`Color Note: ${config.colorUsageNote}`)
+    }
+  } else {
+    lines.push(`Color: BLACK AND WHITE ONLY - No color, grayscale, or shading. Use solid black lines on white background.`)
+  }
+
+  // Line style
+  if (config.lineStyle) {
+    const styleMap: Record<string, string> = {
+      'black_and_white_solid': 'Use solid black lines only (no dashed, dotted, or colored lines)',
+      'solid': 'Use solid lines only',
+      'dashed_allowed': 'Dashed lines are permitted where appropriate'
+    }
+    lines.push(`Line Style: ${styleMap[config.lineStyle] || config.lineStyle}`)
+  }
+
+  // Reference numerals
+  if (config.referenceNumeralsMandatory) {
+    lines.push(`Reference Numerals: MANDATORY - Every component must have a reference numeral (e.g., "Processor 100", "Memory 200")`)
+  }
+
+  // Text size requirements
+  if (config.minReferenceTextSizePt) {
+    lines.push(`Minimum Text Size: ${config.minReferenceTextSizePt}pt (ensure all labels are clearly readable)`)
+  }
+
+  // Paper size for context
+  if (config.paperSize) {
+    lines.push(`Target Paper Size: ${config.paperSize} (design diagrams to fit within standard margins)`)
+  }
+
+  // Add diagram-type specific hints from database
+  if (config.hints && config.hints[diagramType]) {
+    lines.push('')
+    lines.push(`DIAGRAM TYPE INSTRUCTIONS (${diagramType}):`)
+    lines.push(config.hints[diagramType])
+  }
+
+  // Add hints for other supported diagram types as fallback context
+  if (config.hints && Object.keys(config.hints).length > 0) {
+    const otherTypes = Object.entries(config.hints)
+      .filter(([type]) => type !== diagramType)
+      .slice(0, 2) // Limit to 2 other types
+    
+    if (otherTypes.length > 0) {
+      lines.push('')
+      lines.push('OTHER DIAGRAM STYLES (for reference):')
+      for (const [type, hint] of otherTypes) {
+        lines.push(`• ${type}: ${hint}`)
+      }
+    }
+  }
+
+  // Add supported diagram types
+  if (config.supportedDiagramTypes && config.supportedDiagramTypes.length > 0) {
+    lines.push('')
+    lines.push(`Supported Diagram Types for ${jurisdiction}: ${config.supportedDiagramTypes.join(', ')}`)
+  }
+
+  return lines.join('\n')
+}
+
 async function handleGenerateDiagramsLLM(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
   const { sessionId, prompt, replaceExisting } = data
 
@@ -2705,7 +2865,50 @@ async function handleGenerateDiagramsLLM(user: any, patentId: string, data: any,
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  // Determine Diagram Archetype
+  // Get active jurisdiction for this session
+  const activeJurisdiction = (session as any).activeJurisdiction || 
+    ((session as any).draftingJurisdictions?.[0]) || 'US'
+
+  // Check if multi-jurisdiction mode - if so, get compatibility rules
+  const isMultiJurisdiction = (session as any).isMultiJurisdiction === true
+  const allJurisdictions = Array.isArray((session as any).draftingJurisdictions) && (session as any).draftingJurisdictions.length > 0
+    ? (session as any).draftingJurisdictions
+    : [activeJurisdiction]
+
+  // Fetch jurisdiction-specific diagram configuration from database
+  const diagramConfig = await getDiagramConfig(activeJurisdiction, user.id, sessionId)
+  
+  // Get multi-jurisdiction compatibility if applicable
+  let multiJurisdictionInstructions = ''
+  if (isMultiJurisdiction && allJurisdictions.length > 1) {
+    const { getDiagramCompatibility, buildMultiJurisdictionDiagramPrompt } = await import('@/lib/multi-jurisdiction-service')
+    const compatibility = await getDiagramCompatibility(allJurisdictions)
+    
+    if (compatibility.compatibilityNotes.length > 0) {
+      multiJurisdictionInstructions = `
+═══════════════════════════════════════════════════════════════════════════════
+MULTI-JURISDICTION COMPATIBILITY (${allJurisdictions.join(', ')})
+═══════════════════════════════════════════════════════════════════════════════
+These diagrams must be compatible with ALL target jurisdictions.
+Most restrictive rules apply:
+- Color allowed: ${compatibility.mostRestrictiveRules.colorAllowed ? 'Yes' : 'NO - BLACK AND WHITE ONLY'}
+- Paper size: ${compatibility.mostRestrictiveRules.paperSize}
+- Minimum text size: ${compatibility.mostRestrictiveRules.minReferenceTextSizePt}pt
+- Line style: ${compatibility.mostRestrictiveRules.lineStyle}
+
+${compatibility.compatibilityNotes.map(n => `⚠️ ${n}`).join('\n')}
+`
+    }
+  }
+
+  // Build jurisdiction-specific instructions
+  const jurisdictionInstructions = await buildJurisdictionDiagramInstructions(
+    activeJurisdiction, 
+    diagramConfig,
+    'block' // Default to block diagram for multi-diagram generation
+  )
+
+  // Determine Diagram Archetype from invention type
   const idea = session.ideaRecord?.normalizedData as any
   const types = Array.isArray(idea?.inventionType) ? idea.inventionType : (idea?.inventionType ? [idea.inventionType] : [])
   const archetype = types.length > 0 ? types.join('+') : 'GENERAL'
@@ -2731,17 +2934,28 @@ async function handleGenerateDiagramsLLM(user: any, patentId: string, data: any,
   }
 
   const finalPrompt = `${prompt}
+${multiJurisdictionInstructions}
+═══════════════════════════════════════════════════════════════════════════════
+JURISDICTION-SPECIFIC REQUIREMENTS (${activeJurisdiction})
+═══════════════════════════════════════════════════════════════════════════════
+${jurisdictionInstructions}
 
+═══════════════════════════════════════════════════════════════════════════════
+INVENTION TYPE GUIDE
+═══════════════════════════════════════════════════════════════════════════════
 DIAGRAM STYLE GUIDE: This is a ${archetype} invention. ${styleGuide}
 NOMENCLATURE GUIDE: ${nomenclature}
 
+═══════════════════════════════════════════════════════════════════════════════
+PLANTUML TECHNICAL REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════════
 COMMON PLANTUML PITFALLS (AVOID THESE):
 - Do not mix "[hidden]" with directions in one arrow. Use either "-[hidden]-" or "-down-"/"-up-"/"-left-"/"-right-" etc., but not "-[hidden]down-".
 - Do not leave incomplete connection lines like "500 --". Always specify both endpoints (for example "500 --> 600").
 - Always close control and note blocks: every "if" has a matching "endif"; every "note" has a matching "end note"; every "start" has a matching "end".
 - Do not nest or repeat "@startuml"/"@enduml"; there must be exactly one pair per diagram.
 
-INSTRUCTION: Use these as style examples. You are encouraged to use more precise domain-specific terms if applicable.`
+INSTRUCTION: Follow jurisdiction-specific requirements first, then apply invention-type conventions. Use precise domain-specific terms where applicable.`
 
   const request = { headers: requestHeaders || {} }
   const result = await llmGateway.executeLLMOperation(request, {
@@ -2942,6 +3156,14 @@ async function handleRegenerateDiagramLLM(user: any, patentId: string, data: any
   const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id }, include: { referenceMap: true, figurePlans: true, diagramSources: true, ideaRecord: true } })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
+  // Get active jurisdiction
+  const activeJurisdiction = (session as any).activeJurisdiction || 
+    ((session as any).draftingJurisdictions?.[0]) || 'US'
+
+  // Fetch jurisdiction-specific diagram configuration
+  const diagramConfig = await getDiagramConfig(activeJurisdiction, user.id, sessionId)
+  const jurisdictionInstructions = await buildJurisdictionDiagramInstructions(activeJurisdiction, diagramConfig, 'block')
+
   const componentsRaw = (session.referenceMap as any)?.components
   const components = Array.isArray(componentsRaw) ? componentsRaw : []
   const numeralsPreview = components.map((c: any) => `${c.name} (${c.numeral || '?'})`).join(', ')
@@ -2956,20 +3178,29 @@ async function handleRegenerateDiagramLLM(user: any, patentId: string, data: any
 Keep the diagram simple and valid. Use only these components/numerals: ${numeralsPreview}.
 Invention Type: ${archetype}
 
-NOMENCLATURE GUIDE (Apply based on Invention Type):
+═══════════════════════════════════════════════════════════════════════════════
+JURISDICTION-SPECIFIC REQUIREMENTS (${activeJurisdiction})
+═══════════════════════════════════════════════════════════════════════════════
+${jurisdictionInstructions}
+
+═══════════════════════════════════════════════════════════════════════════════
+NOMENCLATURE GUIDE (Apply based on Invention Type)
+═══════════════════════════════════════════════════════════════════════════════
 - MECHANICAL: Housing, Shaft, Assembly, Coupler, Actuator (and similar physical components).
 - SOFTWARE: Module, Engine, Database, API, Interface (and similar logical units).
 - ELECTRICAL: Circuit, Terminal, Bus, Transceiver, Sensor (and similar electronic parts).
 - BIO: Reagent, Cell, Sequence, Assay, Vector (and similar biological entities).
 - CHEMICAL: Compound, Catalyst, Phase, Solution, Reactor (and similar chemical substances).
 
-COMMON PLANTUML PITFALLS (AVOID THESE):
+═══════════════════════════════════════════════════════════════════════════════
+PLANTUML TECHNICAL REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════════
 - Do not mix "[hidden]" with directions in one arrow. Use either "-[hidden]-" or "-down-"/"-up-"/"-left-"/"-right-" etc., but not "-[hidden]down-".
 - Do not leave incomplete connection lines like "500 --". Always specify both endpoints (for example "500 --> 600").
 - Always close control and note blocks: every "if" has a matching "endif"; every "note" has a matching "end note"; every "start" has a matching "end".
 - Do not nest or repeat "@startuml"/"@enduml"; there must be exactly one pair per diagram.
 
-INSTRUCTION: Use these as style examples. You are encouraged to use more precise domain-specific terms if applicable (e.g., 'Piston' instead of 'Actuator').
+INSTRUCTION: Follow jurisdiction-specific requirements first. Use precise domain-specific terms where applicable.
 
 Existing title: ${title}
 User instructions: ${instructions || 'none'}
@@ -2995,11 +3226,24 @@ Output ONLY the PlantUML code (@startuml..@enduml).`
   if (!match) return NextResponse.json({ error: 'No PlantUML code found in LLM response' }, { status: 400 })
 
   const code = sanitizePlantUML(match[0])
+  // Validate sanitized code is still valid PlantUML
+  if (!code.includes('@startuml') || !code.includes('@enduml')) {
+    return NextResponse.json({ error: 'PlantUML code became invalid after sanitization. Please try again with different instructions.' }, { status: 400 })
+  }
   const checksum = crypto.createHash('sha256').update(code).digest('hex')
 
+  // IMPORTANT: When code changes, clear image data so frontend triggers re-render
   const diagramSource = await prisma.diagramSource.upsert({
     where: { sessionId_figureNo: { sessionId, figureNo } },
-    update: { plantumlCode: code, checksum },
+    update: { 
+      plantumlCode: code, 
+      checksum,
+      // Clear cached image data to force re-rendering
+      imageFilename: null,
+      imagePath: null,
+      imageChecksum: null,
+      imageUploadedAt: null
+    },
     create: { sessionId, figureNo, plantumlCode: code, checksum }
   })
 
@@ -3012,6 +3256,14 @@ async function handleAddFigureLLM(user: any, patentId: string, data: any, reques
 
   const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id }, include: { referenceMap: true, figurePlans: true, ideaRecord: true } })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  // Get active jurisdiction
+  const activeJurisdiction = (session as any).activeJurisdiction || 
+    ((session as any).draftingJurisdictions?.[0]) || 'US'
+
+  // Fetch jurisdiction-specific diagram configuration
+  const diagramConfig = await getDiagramConfig(activeJurisdiction, user.id, sessionId)
+  const jurisdictionInstructions = await buildJurisdictionDiagramInstructions(activeJurisdiction, diagramConfig, 'block')
 
   const componentsRaw2 = (session.referenceMap as any)?.components
   const components2 = Array.isArray(componentsRaw2) ? componentsRaw2 : []
@@ -3026,20 +3278,29 @@ async function handleAddFigureLLM(user: any, patentId: string, data: any, reques
 Use only numerals: ${numeralsPreview}.
 Invention Type: ${archetype}
 
-NOMENCLATURE GUIDE (Apply based on Invention Type):
+═══════════════════════════════════════════════════════════════════════════════
+JURISDICTION-SPECIFIC REQUIREMENTS (${activeJurisdiction})
+═══════════════════════════════════════════════════════════════════════════════
+${jurisdictionInstructions}
+
+═══════════════════════════════════════════════════════════════════════════════
+NOMENCLATURE GUIDE (Apply based on Invention Type)
+═══════════════════════════════════════════════════════════════════════════════
 - MECHANICAL: Housing, Shaft, Assembly, Coupler, Actuator (and similar physical components).
 - SOFTWARE: Module, Engine, Database, API, Interface (and similar logical units).
 - ELECTRICAL: Circuit, Terminal, Bus, Transceiver, Sensor (and similar electronic parts).
 - BIO: Reagent, Cell, Sequence, Assay, Vector (and similar biological entities).
 - CHEMICAL: Compound, Catalyst, Phase, Solution, Reactor (and similar chemical substances).
 
-COMMON PLANTUML PITFALLS (AVOID THESE):
+═══════════════════════════════════════════════════════════════════════════════
+PLANTUML TECHNICAL REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════════
 - Do not mix "[hidden]" with directions in one arrow. Use either "-[hidden]-" or "-down-"/"-up-"/"-left-"/"-right-" etc., but not "-[hidden]down-".
 - Do not leave incomplete connection lines like "500 --". Always specify both endpoints (for example "500 --> 600").
 - Always close control and note blocks: every "if" has a matching "endif"; every "note" has a matching "end note"; every "start" has a matching "end".
 - Do not nest or repeat "@startuml"/"@enduml"; there must be exactly one pair per diagram.
 
-INSTRUCTION: Use these as style examples. You are encouraged to use more precise domain-specific terms if applicable (e.g., 'Piston' instead of 'Actuator').
+INSTRUCTION: Follow jurisdiction-specific requirements first. Use precise domain-specific terms where applicable.
 
 User instructions: ${instructions || 'none'}
 Return ONLY PlantUML code.`
@@ -3062,6 +3323,12 @@ Return ONLY PlantUML code.`
   const match = text.match(/@startuml[\s\S]*?@enduml/)
   if (!match) return NextResponse.json({ error: 'No PlantUML code found in LLM response' }, { status: 400 })
 
+  // Sanitize and validate the PlantUML code
+  const code = sanitizePlantUML(match[0])
+  if (!code.includes('@startuml') || !code.includes('@enduml')) {
+    return NextResponse.json({ error: 'PlantUML code became invalid after sanitization. Please try again with different instructions.' }, { status: 400 })
+  }
+
   // Assign next figure number
   const existingPlans = await prisma.figurePlan.findMany({ where: { sessionId } })
   const used = new Set(existingPlans.map(fp => fp.figureNo))
@@ -3069,7 +3336,6 @@ Return ONLY PlantUML code.`
   while (used.has(figureNo)) figureNo++
 
   const title = `Figure ${figureNo}`
-  const code = sanitizePlantUML(match[0])
   const checksum = crypto.createHash('sha256').update(code).digest('hex')
 
   await prisma.figurePlan.upsert({ where: { sessionId_figureNo: { sessionId, figureNo } }, update: { title }, create: { sessionId, figureNo, title, nodes: [], edges: [] } })
@@ -3087,6 +3353,14 @@ async function handleAddFiguresLLM(user: any, patentId: string, data: any, reque
     include: { referenceMap: true, figurePlans: true, diagramSources: true, ideaRecord: true }
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  // Get active jurisdiction
+  const activeJurisdiction = (session as any).activeJurisdiction || 
+    ((session as any).draftingJurisdictions?.[0]) || 'US'
+
+  // Fetch jurisdiction-specific diagram configuration
+  const diagramConfig = await getDiagramConfig(activeJurisdiction, user.id, sessionId)
+  const jurisdictionInstructions = await buildJurisdictionDiagramInstructions(activeJurisdiction, diagramConfig, 'block')
 
   const componentsRaw3 = (session.referenceMap as any)?.components
   const components3 = Array.isArray(componentsRaw3) ? componentsRaw3 : []
@@ -3106,20 +3380,29 @@ Use only components/numerals: ${numeralsPreview}
 Existing figures: ${existingNames || 'none'}
 Invention Type: ${archetype}
 
-NOMENCLATURE GUIDE (Apply based on Invention Type):
+═══════════════════════════════════════════════════════════════════════════════
+JURISDICTION-SPECIFIC REQUIREMENTS (${activeJurisdiction})
+═══════════════════════════════════════════════════════════════════════════════
+${jurisdictionInstructions}
+
+═══════════════════════════════════════════════════════════════════════════════
+NOMENCLATURE GUIDE (Apply based on Invention Type)
+═══════════════════════════════════════════════════════════════════════════════
 - MECHANICAL: Housing, Shaft, Assembly, Coupler, Actuator (and similar physical components).
 - SOFTWARE: Module, Engine, Database, API, Interface (and similar logical units).
 - ELECTRICAL: Circuit, Terminal, Bus, Transceiver, Sensor (and similar electronic parts).
 - BIO: Reagent, Cell, Sequence, Assay, Vector (and similar biological entities).
 - CHEMICAL: Compound, Catalyst, Phase, Solution, Reactor (and similar chemical substances).
 
-COMMON PLANTUML PITFALLS (AVOID THESE):
+═══════════════════════════════════════════════════════════════════════════════
+PLANTUML TECHNICAL REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════════
 - Do not mix "[hidden]" with directions in one arrow. Use either "-[hidden]-" or "-down-"/"-up-"/"-left-"/"-right-" etc., but not "-[hidden]down-".
 - Do not leave incomplete connection lines like "500 --". Always specify both endpoints (for example "500 --> 600").
 - Always close control and note blocks: every "if" has a matching "endif"; every "note" has a matching "end note"; every "start" has a matching "end".
 - Do not nest or repeat "@startuml"/"@enduml"; there must be exactly one pair per diagram.
 
-INSTRUCTION: Use these as style examples. You are encouraged to use more precise domain-specific terms if applicable (e.g., 'Piston' instead of 'Actuator').
+INSTRUCTION: Follow jurisdiction-specific requirements first. Use precise domain-specific terms where applicable.
 
 For each item below, return ONLY PlantUML (@startuml..@enduml), one block per item, in the same order.
 Items:\n- ${instructionsList.join('\n- ')}`
@@ -3165,7 +3448,11 @@ Items:\n- ${instructionsList.join('\n- ')}`
 
   const created: any[] = []
   for (let i = 0; i < blocks.length; i++) {
-    const code = blocks[i]
+    const rawCode = blocks[i]
+    // IMPORTANT: Sanitize PlantUML code to remove forbidden directives that would cause render failure
+    const code = sanitizePlantUML(rawCode)
+    if (!code.includes('@startuml')) continue // Skip invalid blocks after sanitization
+    
     const no = nextNo()
     const title = `Figure ${no}`
     const safeTitle = sanitizeFigureTitleInput(title) || title
@@ -3494,6 +3781,23 @@ async function handleAutosaveSections(user: any, patentId: string, data: any) {
     const existingVR = (draft.validationReport as any) || {}
     const nextVR = { ...existingVR, extraSections: { ...(existingVR.extraSections || {}), crossReference: crossReferenceText } }
     draft = await prisma.annexureDraft.update({ where: { id: draft.id }, data: { validationReport: nextVR } })
+  }
+
+  // Track essential sections for patent-based quota counting
+  // A patent counts toward quota when both detailedDescription AND claims are drafted
+  if (session.tenantId) {
+    const savedSectionKeys = Object.keys(patch).filter(k => patch[k] && typeof patch[k] === 'string' && patch[k].trim())
+    for (const sectionKey of savedSectionKeys) {
+      if (sectionKey === 'detailedDescription' || sectionKey === 'description' || sectionKey === 'claims') {
+        await trackSectionDrafted(
+          session.tenantId,
+          sessionId,
+          patentId,
+          user.id,
+          sectionKey
+        )
+      }
+    }
   }
 
   return NextResponse.json({ draft })
@@ -3886,6 +4190,23 @@ async function handleSaveSections(user: any, patentId: string, data: any) {
     await prisma.draftingSession.update({ where: { id: sessionId }, data: { status: 'ANNEXURE_DRAFT' } })
   }
 
+  // Track essential sections for patent-based quota counting
+  // A patent counts toward quota when both detailedDescription AND claims are drafted
+  if (session.tenantId) {
+    const savedSectionKeys = Object.keys(normalizedPatch).filter(k => normalizedPatch[k] && typeof normalizedPatch[k] === 'string' && (normalizedPatch[k] as string).trim())
+    for (const sectionKey of savedSectionKeys) {
+      if (sectionKey === 'detailedDescription' || sectionKey === 'description' || sectionKey === 'claims') {
+        await trackSectionDrafted(
+          session.tenantId,
+          sessionId,
+          patentId,
+          user.id,
+          sectionKey
+        )
+      }
+    }
+  }
+
   return NextResponse.json({ draft, validationReport })
 }
 
@@ -4014,5 +4335,694 @@ async function handleGetDraftByVersion(user: any, patentId: string, data: any) {
       createdAt: draft.createdAt,
       updatedAt: draft.updatedAt
     }
+  })
+}
+
+// ============================================================================
+// Multi-Jurisdiction Filing Handlers
+// ============================================================================
+
+import { 
+  generateReferenceDraft, 
+  translateReferenceDraft, 
+  getSectionMapping,
+  validateDraft,
+  SUPERSET_SECTIONS
+} from '@/lib/multi-jurisdiction-service'
+
+/**
+ * Generate Reference Draft (superset sections, country-neutral)
+ * Required as first step in multi-jurisdiction filing
+ */
+async function handleGenerateReferenceDraft(
+  user: any, 
+  patentId: string, 
+  data: any, 
+  requestHeaders: Record<string, string>
+) {
+  const { sessionId } = data
+
+  if (!sessionId) {
+    return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
+  }
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: {
+      ideaRecord: true,
+      referenceMap: true,
+      figurePlans: true
+    }
+  })
+
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  if (!session.isMultiJurisdiction) {
+    return NextResponse.json({ error: 'Reference draft only applicable for multi-jurisdiction mode' }, { status: 400 })
+  }
+
+  // Generate reference draft
+  const result = await generateReferenceDraft(session, user.tenantId, requestHeaders)
+
+  if (!result.success || !result.draft) {
+    return NextResponse.json({ error: result.error || 'Failed to generate reference draft' }, { status: 500 })
+  }
+
+  // Build full text for storage
+  const fullDraftText = Object.entries(result.draft)
+    .map(([key, value]) => `## ${key}\n\n${value}`)
+    .join('\n\n---\n\n')
+
+  // Store as AnnexureDraft with jurisdiction='REFERENCE'
+  const lastReferenceDraft = await prisma.annexureDraft.findFirst({
+    where: { sessionId, jurisdiction: 'REFERENCE' },
+    orderBy: { version: 'desc' }
+  })
+  const version = (lastReferenceDraft?.version || 0) + 1
+
+  const referenceDraft = await prisma.annexureDraft.create({
+    data: {
+      sessionId,
+      version,
+      jurisdiction: 'REFERENCE',
+      title: result.draft.title || '',
+      fieldOfInvention: result.draft.field || '',
+      background: result.draft.background || '',
+      summary: result.draft.summary || '',
+      briefDescriptionOfDrawings: result.draft.briefDescriptionOfDrawings || '',
+      detailedDescription: result.draft.detailedDescription || '',
+      bestMethod: result.draft.bestMethod || '',
+      claims: result.draft.claims || '',
+      abstract: result.draft.abstract || '',
+      industrialApplicability: result.draft.industrialApplicability || '',
+      listOfNumerals: '',
+      fullDraftText,
+      extraSections: {
+        technicalProblem: result.draft.technicalProblem || '',
+        objectsOfInvention: result.draft.objectsOfInvention || '',
+        // Store all superset keys
+        _supersetKeys: SUPERSET_SECTIONS,
+        _rawDraft: result.draft
+      },
+      isValid: true
+    }
+  })
+
+  // Update session to mark reference draft as complete
+  await prisma.draftingSession.update({
+    where: { id: sessionId },
+    data: {
+      referenceDraftComplete: true,
+      referenceDraftId: referenceDraft.id,
+      jurisdictionDraftStatus: {
+        ...(session.jurisdictionDraftStatus as any || {}),
+        REFERENCE: {
+          status: 'done',
+          latestVersion: version,
+          updatedAt: new Date().toISOString()
+        }
+      }
+    }
+  })
+
+  return NextResponse.json({
+    success: true,
+    draft: result.draft,
+    draftId: referenceDraft.id,
+    version,
+    tokensUsed: result.tokensUsed
+  })
+}
+
+/**
+ * Translate Reference Draft to a target jurisdiction
+ * Uses section mapping and temp=0 for consistency
+ */
+async function handleTranslateToJurisdiction(
+  user: any,
+  patentId: string,
+  data: any,
+  requestHeaders: Record<string, string>
+) {
+  const { sessionId, targetJurisdiction } = data
+
+  if (!sessionId || !targetJurisdiction) {
+    return NextResponse.json({ error: 'Session ID and target jurisdiction required' }, { status: 400 })
+  }
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { annexureDrafts: { orderBy: { version: 'desc' } } }
+  })
+
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  // Verify reference draft exists
+  if (!session.referenceDraftComplete || !session.referenceDraftId) {
+    return NextResponse.json({ error: 'Reference draft must be generated first' }, { status: 400 })
+  }
+
+  // Get reference draft
+  const referenceDraft = await prisma.annexureDraft.findUnique({
+    where: { id: session.referenceDraftId }
+  })
+
+  if (!referenceDraft) {
+    return NextResponse.json({ error: 'Reference draft not found' }, { status: 404 })
+  }
+
+  // Extract raw draft from extra sections
+  const rawDraft = (referenceDraft.extraSections as any)?._rawDraft || {
+    title: referenceDraft.title,
+    field: referenceDraft.fieldOfInvention,
+    background: referenceDraft.background,
+    summary: referenceDraft.summary,
+    briefDescriptionOfDrawings: referenceDraft.briefDescriptionOfDrawings,
+    detailedDescription: referenceDraft.detailedDescription,
+    bestMethod: referenceDraft.bestMethod,
+    claims: referenceDraft.claims,
+    abstract: referenceDraft.abstract,
+    industrialApplicability: referenceDraft.industrialApplicability,
+    technicalProblem: (referenceDraft.extraSections as any)?.technicalProblem || '',
+    objectsOfInvention: (referenceDraft.extraSections as any)?.objectsOfInvention || ''
+  }
+
+  // Translate to target jurisdiction
+  const targetCode = targetJurisdiction.toUpperCase()
+  const result = await translateReferenceDraft(rawDraft, targetCode, user.tenantId, requestHeaders)
+
+  if (!result.success || !result.draft) {
+    return NextResponse.json({ 
+      error: 'Translation failed',
+      details: result.errors 
+    }, { status: 500 })
+  }
+
+  // Validate the translated draft
+  const validationIssues = await validateDraft(result.draft, targetCode)
+  const hasErrors = validationIssues.some(i => i.type === 'error')
+
+  // Build full text
+  const fullDraftText = Object.entries(result.draft)
+    .map(([key, value]) => `## ${key}\n\n${value}`)
+    .join('\n\n---\n\n')
+
+  // Get section mapping for proper field assignment
+  const mappings = await getSectionMapping(targetCode)
+  const mappedDraft: Record<string, string> = {}
+  for (const m of mappings) {
+    mappedDraft[m.countryKey] = result.draft[m.countryKey] || ''
+  }
+
+  // Store translated draft
+  const lastDraft = await prisma.annexureDraft.findFirst({
+    where: { sessionId, jurisdiction: targetCode },
+    orderBy: { version: 'desc' }
+  })
+  const version = (lastDraft?.version || 0) + 1
+
+  const translatedDraft = await prisma.annexureDraft.create({
+    data: {
+      sessionId,
+      version,
+      jurisdiction: targetCode,
+      title: mappedDraft.title || result.draft.title || '',
+      fieldOfInvention: mappedDraft.fieldOfInvention || mappedDraft.field || result.draft.field || '',
+      background: mappedDraft.background || result.draft.background || '',
+      summary: mappedDraft.summary || result.draft.summary || '',
+      briefDescriptionOfDrawings: mappedDraft.briefDescriptionOfDrawings || result.draft.briefDescriptionOfDrawings || '',
+      detailedDescription: mappedDraft.detailedDescription || result.draft.detailedDescription || '',
+      bestMethod: mappedDraft.bestMethod || result.draft.bestMethod || '',
+      claims: mappedDraft.claims || result.draft.claims || '',
+      abstract: mappedDraft.abstract || result.draft.abstract || '',
+      industrialApplicability: mappedDraft.industrialApplicability || result.draft.industrialApplicability || '',
+      listOfNumerals: mappedDraft.listOfNumerals || '',
+      fullDraftText,
+      extraSections: {
+        ...result.draft,
+        _translatedFrom: 'REFERENCE',
+        _translationErrors: result.errors
+      },
+      isValid: !hasErrors,
+      validationReport: {
+        issues: validationIssues,
+        hasErrors,
+        checkedAt: new Date().toISOString()
+      }
+    }
+  })
+
+  // Update session status
+  await prisma.draftingSession.update({
+    where: { id: sessionId },
+    data: {
+      jurisdictionDraftStatus: {
+        ...(session.jurisdictionDraftStatus as any || {}),
+        [targetCode]: {
+          status: hasErrors ? 'needs_review' : 'done',
+          latestVersion: version,
+          translatedFrom: 'REFERENCE',
+          updatedAt: new Date().toISOString()
+        }
+      }
+    }
+  })
+
+  return NextResponse.json({
+    success: true,
+    draft: result.draft,
+    draftId: translatedDraft.id,
+    version,
+    jurisdiction: targetCode,
+    validation: {
+      issues: validationIssues,
+      hasErrors
+    },
+    errors: result.errors
+  })
+}
+
+/**
+ * Validate a draft against jurisdiction-specific rules
+ */
+async function handleValidateDraft(user: any, patentId: string, data: any) {
+  const { sessionId, jurisdiction, draft } = data
+
+  if (!sessionId || !jurisdiction) {
+    return NextResponse.json({ error: 'Session ID and jurisdiction required' }, { status: 400 })
+  }
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id }
+  })
+
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  // Get draft to validate
+  let draftToValidate: Record<string, string> = draft || {}
+  
+  // If no draft provided, get latest from database
+  if (!draft || Object.keys(draft).length === 0) {
+    const latestDraft = await prisma.annexureDraft.findFirst({
+      where: { sessionId, jurisdiction: jurisdiction.toUpperCase() },
+      orderBy: { version: 'desc' }
+    })
+    
+    if (latestDraft) {
+      draftToValidate = {
+        title: latestDraft.title || '',
+        fieldOfInvention: latestDraft.fieldOfInvention || '',
+        background: latestDraft.background || '',
+        summary: latestDraft.summary || '',
+        briefDescriptionOfDrawings: latestDraft.briefDescriptionOfDrawings || '',
+        detailedDescription: latestDraft.detailedDescription || '',
+        bestMethod: latestDraft.bestMethod || '',
+        claims: latestDraft.claims || '',
+        abstract: latestDraft.abstract || '',
+        industrialApplicability: latestDraft.industrialApplicability || '',
+        ...(latestDraft.extraSections as Record<string, string> || {})
+      }
+    }
+  }
+
+  // Run validation
+  const issues = await validateDraft(draftToValidate, jurisdiction.toUpperCase())
+  
+  return NextResponse.json({
+    success: true,
+    jurisdiction: jurisdiction.toUpperCase(),
+    issues,
+    hasErrors: issues.some(i => i.type === 'error'),
+    hasWarnings: issues.some(i => i.type === 'warning'),
+    checkedAt: new Date().toISOString()
+  })
+}
+
+// ============================================================================
+// AI Review Handlers
+// ============================================================================
+
+import { runAIReview, buildFixPrompt, type AIReviewIssue } from '@/lib/ai-review-service'
+
+/**
+ * Run comprehensive AI review on draft
+ * Analyzes cross-section consistency, diagram alignment, claims support
+ */
+async function handleRunAIReview(
+  user: any,
+  patentId: string,
+  data: any,
+  requestHeaders: Record<string, string>
+) {
+  const { sessionId, jurisdiction, draft: providedDraft } = data
+
+  if (!sessionId || !jurisdiction) {
+    return NextResponse.json({ error: 'Session ID and jurisdiction required' }, { status: 400 })
+  }
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: {
+      ideaRecord: true,
+      referenceMap: true,
+      figurePlans: true,
+      diagramSources: true,
+      annexureDrafts: { orderBy: { version: 'desc' } }
+    }
+  })
+
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  const code = jurisdiction.toUpperCase()
+
+  // Get draft content - prefer provided, then latest from DB
+  let draftContent: Record<string, string> = providedDraft || {}
+  
+  if (!providedDraft || Object.keys(providedDraft).length === 0) {
+    const latestDraft = session.annexureDrafts.find(
+      (d: any) => (d.jurisdiction || '').toUpperCase() === code
+    )
+    
+    if (latestDraft) {
+      draftContent = {
+        title: latestDraft.title || '',
+        fieldOfInvention: latestDraft.fieldOfInvention || '',
+        background: latestDraft.background || '',
+        summary: latestDraft.summary || '',
+        briefDescriptionOfDrawings: latestDraft.briefDescriptionOfDrawings || '',
+        detailedDescription: latestDraft.detailedDescription || '',
+        bestMethod: latestDraft.bestMethod || '',
+        claims: latestDraft.claims || '',
+        abstract: latestDraft.abstract || '',
+        industrialApplicability: latestDraft.industrialApplicability || '',
+        ...(latestDraft.extraSections as Record<string, string> || {})
+      }
+    }
+  }
+
+  if (Object.keys(draftContent).length === 0) {
+    return NextResponse.json({ error: 'No draft content available for review' }, { status: 400 })
+  }
+
+  // Get figures with PlantUML code
+  const figures = (session.figurePlans || []).map((plan: any) => {
+    const source = (session.diagramSources || []).find((d: any) => d.figureNo === plan.figureNo)
+    return {
+      figureNo: plan.figureNo,
+      title: plan.title || `Figure ${plan.figureNo}`,
+      plantuml: source?.plantuml || ''
+    }
+  }).filter((f: any) => f.plantuml) // Only include figures with PlantUML
+
+  // Get components from reference map
+  const components = Array.isArray((session.referenceMap as any)?.components)
+    ? (session.referenceMap as any).components.map((c: any) => ({
+        name: c.name || '',
+        numeral: c.numeral || ''
+      }))
+    : []
+
+  // Get invention title
+  const inventionTitle = (session.ideaRecord as any)?.title || draftContent.title || ''
+
+  // Run AI review
+  const reviewResult = await runAIReview(
+    {
+      draft: draftContent,
+      figures,
+      jurisdiction: code,
+      inventionTitle,
+      components
+    },
+    user.tenantId,
+    requestHeaders
+  )
+
+  // Get the latest draft ID for linking
+  const latestDraft = session.annexureDrafts.find(
+    (d: any) => (d.jurisdiction || '').toUpperCase() === code
+  )
+
+  // Persist the full review result to database
+  const savedReview = await prisma.aIReviewResult.create({
+    data: {
+      sessionId,
+      draftId: latestDraft?.id || null,
+      jurisdiction: code,
+      issues: reviewResult.issues || [],
+      summary: reviewResult.summary || {},
+      tokensUsed: reviewResult.tokensUsed,
+      reviewedAt: new Date(reviewResult.reviewedAt)
+    }
+  })
+
+  // Also update session status for quick reference
+  await prisma.draftingSession.update({
+    where: { id: sessionId },
+    data: {
+      jurisdictionDraftStatus: {
+        ...(session.jurisdictionDraftStatus as any || {}),
+        [code]: {
+          ...(session.jurisdictionDraftStatus as any)?.[code],
+          lastAIReview: {
+            reviewId: savedReview.id,
+            reviewedAt: reviewResult.reviewedAt,
+            issueCount: reviewResult.summary.totalIssues,
+            overallScore: reviewResult.summary.overallScore
+          }
+        }
+      }
+    }
+  })
+
+  return NextResponse.json({
+    success: reviewResult.success,
+    reviewId: savedReview.id,
+    ...reviewResult
+  })
+}
+
+/**
+ * Apply an AI-suggested fix to a section
+ * Regenerates the section with the fix prompt
+ */
+async function handleApplyAIFix(
+  user: any,
+  patentId: string,
+  data: any,
+  requestHeaders: Record<string, string>
+) {
+  const { sessionId, jurisdiction, sectionKey, issue, currentContent, relatedContent } = data
+
+  if (!sessionId || !jurisdiction || !sectionKey || !issue) {
+    return NextResponse.json({ 
+      error: 'Session ID, jurisdiction, section key, and issue are required' 
+    }, { status: 400 })
+  }
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { annexureDrafts: { orderBy: { version: 'desc' } } }
+  })
+
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  const code = jurisdiction.toUpperCase()
+
+  // Get current section content if not provided
+  let content = currentContent
+  if (!content) {
+    const latestDraft = session.annexureDrafts.find(
+      (d: any) => (d.jurisdiction || '').toUpperCase() === code
+    )
+    if (latestDraft) {
+      content = (latestDraft as any)[sectionKey] || 
+        (latestDraft.extraSections as any)?.[sectionKey] || ''
+    }
+  }
+
+  if (!content) {
+    return NextResponse.json({ error: 'No content found for section' }, { status: 400 })
+  }
+
+  // Build the fix prompt
+  const fixPrompt = buildFixPrompt(content, issue as AIReviewIssue, relatedContent)
+
+  // Use LLM to regenerate the section with the fix
+  const result = await llmGateway.executeLLMOperation(
+    { headers: requestHeaders || {} },
+    {
+      taskCode: 'LLM2_DRAFT',
+      prompt: fixPrompt,
+      parameters: {
+        tenantId: user.tenantId,
+        jurisdiction: code,
+        temperature: 0.2, // Low temperature for focused fixes
+        purpose: 'apply_ai_fix'
+      },
+      idempotencyKey: crypto.randomUUID(),
+      metadata: {
+        patentId,
+        sessionId,
+        sectionKey,
+        issueId: issue.id,
+        purpose: 'apply_ai_fix'
+      }
+    }
+  )
+
+  if (!result.success || !result.response) {
+    return NextResponse.json({ 
+      error: result.error?.message || 'Failed to apply fix' 
+    }, { status: 500 })
+  }
+
+  // Clean up response
+  let fixedContent = (result.response.output || '').trim()
+  fixedContent = fixedContent.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, '')
+
+  // Track the applied fix in the latest review
+  const latestReview = await prisma.aIReviewResult.findFirst({
+    where: { sessionId, jurisdiction: code },
+    orderBy: { reviewedAt: 'desc' }
+  })
+
+  if (latestReview) {
+    const existingFixes = Array.isArray(latestReview.appliedFixes) ? latestReview.appliedFixes : []
+    await prisma.aIReviewResult.update({
+      where: { id: latestReview.id },
+      data: {
+        appliedFixes: [
+          ...existingFixes,
+          {
+            issueId: issue.id,
+            sectionKey,
+            fixedAt: new Date().toISOString(),
+            wasSuccessful: true
+          }
+        ]
+      }
+    })
+  }
+
+  return NextResponse.json({
+    success: true,
+    sectionKey,
+    originalContent: content,
+    fixedContent,
+    issue: issue,
+    tokensUsed: result.response.outputTokens
+  })
+}
+
+/**
+ * Get existing AI reviews for a session/jurisdiction
+ */
+async function handleGetAIReviews(user: any, patentId: string, data: any) {
+  const { sessionId, jurisdiction } = data
+
+  if (!sessionId) {
+    return NextResponse.json({ error: 'Session ID required' }, { status: 400 })
+  }
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id }
+  })
+
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  // Build query
+  const whereClause: any = { sessionId }
+  if (jurisdiction) {
+    whereClause.jurisdiction = jurisdiction.toUpperCase()
+  }
+
+  // Get reviews with most recent first
+  const reviews = await prisma.aIReviewResult.findMany({
+    where: whereClause,
+    orderBy: { reviewedAt: 'desc' },
+    take: 10 // Limit to last 10 reviews per jurisdiction
+  })
+
+  // Get the latest review for each jurisdiction
+  const latestByJurisdiction: Record<string, any> = {}
+  for (const review of reviews) {
+    if (!latestByJurisdiction[review.jurisdiction]) {
+      latestByJurisdiction[review.jurisdiction] = review
+    }
+  }
+
+  return NextResponse.json({
+    success: true,
+    reviews,
+    latest: latestByJurisdiction,
+    count: reviews.length
+  })
+}
+
+/**
+ * Mark an AI issue as ignored
+ */
+async function handleIgnoreAIIssue(user: any, patentId: string, data: any) {
+  const { sessionId, jurisdiction, issueId, reviewId } = data
+
+  if (!sessionId || !jurisdiction || !issueId) {
+    return NextResponse.json({ 
+      error: 'Session ID, jurisdiction, and issue ID required' 
+    }, { status: 400 })
+  }
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id }
+  })
+
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  const code = jurisdiction.toUpperCase()
+
+  // Find the review to update
+  let review
+  if (reviewId) {
+    review = await prisma.aIReviewResult.findUnique({ where: { id: reviewId } })
+  } else {
+    review = await prisma.aIReviewResult.findFirst({
+      where: { sessionId, jurisdiction: code },
+      orderBy: { reviewedAt: 'desc' }
+    })
+  }
+
+  if (!review) {
+    return NextResponse.json({ error: 'Review not found' }, { status: 404 })
+  }
+
+  // Add to ignored issues
+  const existingIgnored = Array.isArray(review.ignoredIssues) ? review.ignoredIssues : []
+  if (!existingIgnored.includes(issueId)) {
+    await prisma.aIReviewResult.update({
+      where: { id: review.id },
+      data: {
+        ignoredIssues: [...existingIgnored, issueId]
+      }
+    })
+  }
+
+  return NextResponse.json({
+    success: true,
+    reviewId: review.id,
+    ignoredIssues: [...existingIgnored, issueId]
   })
 }

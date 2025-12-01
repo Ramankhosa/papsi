@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import React, { useState, useEffect } from 'react'
 
 interface ComponentPlannerStageProps {
   session: any
@@ -112,6 +112,13 @@ export default function ComponentPlannerStage({ session, patent, onComplete, onR
   const handleAutoAssignNumerals = async () => {
     if (components.length === 0) {
       setError('Add at least one component first')
+      return
+    }
+
+    // Check for empty component names
+    const emptyNames = components.filter(comp => !comp.name.trim())
+    if (emptyNames.length > 0) {
+      setError(`Please provide names for all components before auto-assigning numerals. ${emptyNames.length} component(s) have empty names.`)
       return
     }
 
@@ -427,20 +434,20 @@ export default function ComponentPlannerStage({ session, patent, onComplete, onR
             </thead>
             <tbody className="bg-white divide-y divide-gray-100">
               {tree.map((node) => (
-                <>
+                <React.Fragment key={`node-${node.id}`}>
                   {renderRow(node, 0)}
                   {node.children?.map((c1: any) => (
-                    <>
+                    <React.Fragment key={`c1-${node.id}-${c1.id}`}>
                       {renderRow(c1, 1)}
                       {c1.children?.map((c2: any) => (
-                        <>
+                        <React.Fragment key={`c2-${node.id}-${c1.id}-${c2.id}`}>
                           {renderRow(c2, 2)}
                           {c2.children?.map((c3: any) => renderRow(c3, 3))}
-                        </>
+                        </React.Fragment>
                       ))}
-                    </>
+                    </React.Fragment>
                   ))}
-                </>
+                </React.Fragment>
               ))}
               {components.length === 0 && (
                 <tr>

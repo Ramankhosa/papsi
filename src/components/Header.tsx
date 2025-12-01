@@ -222,6 +222,14 @@ export default function Header() {
                           <span>📝</span>
                           <span>Section Prompts</span>
                         </Link>
+                        <Link
+                          href="/super-admin/jurisdiction-styles"
+                          className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                          onClick={() => setShowUserMenu(false)}
+                        >
+                          <span>🎨</span>
+                          <span>Jurisdiction Styles</span>
+                        </Link>
                       </>
                     )}
 

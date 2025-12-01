@@ -72,11 +72,12 @@ model Tenant {
   auditLogs AuditLog[]
 
   // Metering relations
-  tenantPlans       TenantPlan[]
-  usageReservations UsageReservation[]
-  usageMeters       UsageMeter[]
-  usageLogs         UsageLog[]
-  quotaAlerts       QuotaAlert[]
+  tenantPlans           TenantPlan[]
+  usageReservations     UsageReservation[]
+  usageMeters           UsageMeter[]
+  usageLogs             UsageLog[]
+  quotaAlerts           QuotaAlert[]
+  patentDraftingUsage   PatentDraftingUsage[]
 
   // Drafting relations
   draftingSessions DraftingSession[]
@@ -93,6 +94,10 @@ model Tenant {
   teams             Team[]
   writingSamples    WritingSample[]
   writingPersonas   WritingPersona[]
+
+  // Style configuration overrides
+  userDiagramStyles UserDiagramStyle[]
+  userExportStyles  UserExportStyle[]
 
   @@map("tenants")
 }
@@ -158,6 +163,14 @@ model User {
   // Team membership and service quotas
   teamMemberships         TeamMember[]
   serviceQuotas           UserServiceQuota[]
+  
+  // Style configuration overrides
+  userDiagramStyles       UserDiagramStyle[]
+  userExportStyles        UserExportStyle[]
+  userValidationOverrides UserValidationOverride[]
+  
+  // Config import tracking
+  configImports           CountryConfigImport[] @relation("ConfigImporter")
 
   @@map("users")
 }
@@ -677,6 +690,38 @@ model UsageMeter {
 
   @@unique([tenantId, featureId, taskCode, periodType, periodKey])
   @@map("usage_meters")
+}
+
+// === PATENT-BASED DRAFTING QUOTA TRACKING ===
+// Tracks patent drafts counted toward quota (not LLM tokens)
+// A patent is counted when essential sections (description + claims) are drafted
+model PatentDraftingUsage {
+  id          String   @id @default(cuid())
+  tenantId    String
+  sessionId   String   @unique // Each session can only be counted once
+  patentId    String
+  userId      String
+  
+  // Track which essential sections have been drafted
+  // Once both detailedDescription AND claims are drafted, patent is counted
+  hasDescription Boolean @default(false)
+  hasClaims      Boolean @default(false)
+  isCounted      Boolean @default(false) // True when patent is counted toward quota
+  
+  // Period tracking for quota enforcement
+  countedDate    String?  // YYYY-MM-DD when counted (for daily quota)
+  countedMonth   String?  // YYYY-MM when counted (for monthly quota)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  countedAt   DateTime? // When the patent was counted toward quota
+
+  tenant  Tenant @relation(fields: [tenantId], references: [id])
+  
+  @@index([tenantId, countedDate])
+  @@index([tenantId, countedMonth])
+  @@index([sessionId])
+  @@map("patent_drafting_usage")
 }
 
 model UsageLog {
@@ -1337,6 +1382,11 @@ model DraftingSession {
   draftingJurisdictions String[]   @default([])
   activeJurisdiction    String?
 
+  // Multi-jurisdiction filing mode
+  isMultiJurisdiction     Boolean  @default(false) @map("is_multi_jurisdiction")
+  referenceDraftComplete  Boolean  @default(false) @map("reference_draft_complete")
+  referenceDraftId        String?  @map("reference_draft_id") // ID of the AnnexureDraft with jurisdiction='REFERENCE'
+
   // Metadata
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -1365,6 +1415,14 @@ model DraftingSession {
   relatedArtSelections RelatedArtSelection[]
   // User section instructions
   userSectionInstructions UserSectionInstruction[]
+  
+  // User style overrides for this session
+  userDiagramStyles       UserDiagramStyle[]
+  userExportStyles        UserExportStyle[]
+  userValidationOverrides UserValidationOverride[]
+  
+  // AI Review results
+  aiReviews               AIReviewResult[]
 
   @@map("drafting_sessions")
 }
@@ -1506,8 +1564,44 @@ model AnnexureDraft {
 
   // Relations
   session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  aiReviews AIReviewResult[]
 
   @@map("annexure_drafts")
+}
+
+// === AI REVIEW RESULTS ===
+
+model AIReviewResult {
+  id            String   @id @default(cuid())
+  sessionId     String   @map("session_id")
+  draftId       String?  @map("draft_id") // Links to specific AnnexureDraft
+  jurisdiction  String
+  
+  // Review Results
+  issues        Json     @default("[]") // Array of AIReviewIssue
+  summary       Json     @default("{}") // { totalIssues, errors, warnings, suggestions, overallScore, recommendation }
+  
+  // Metadata
+  reviewedAt    DateTime @default(now()) @map("reviewed_at")
+  tokensUsed    Int?     @map("tokens_used")
+  
+  // Tracking for prompt improvements
+  appliedFixes  Json     @default("[]") // Array of { issueId, sectionKey, fixedAt, wasSuccessful }
+  ignoredIssues Json     @default("[]") // Array of issueIds that were ignored
+  
+  // Future: feedback for prompt tuning
+  userFeedback  Json?    @default("{}") // { wasHelpful: boolean, comments: string, rating: number }
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  session       DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  draft         AnnexureDraft?  @relation(fields: [draftId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, jurisdiction])
+  @@index([draftId])
+  @@map("ai_review_results")
 }
 
 // === RELATED ART (Stage 3.5) MODELS ===
@@ -2061,4 +2155,395 @@ model UserSectionInstruction {
   @@index([sessionId, jurisdiction])
   @@index([sectionKey])
   @@map("user_section_instructions")
+}
+
+// ============================================================================
+// JURISDICTION STYLE CONFIGURATION (Diagrams, Export, Validation)
+// ============================================================================
+
+// === SECTION VALIDATION RULES (Per jurisdiction, per section) ===
+// Stores word/char limits and validation rules for AI reviewer
+model CountrySectionValidation {
+  id           String   @id @default(cuid())
+  countryCode  String   @map("country_code")
+  sectionKey   String   @map("section_key") // "title", "abstract", "claims", etc.
+  
+  // Word limits
+  maxWords         Int?     @map("max_words")        // e.g., 150 for abstract
+  minWords         Int?     @map("min_words")        // e.g., 50 for detailed_description
+  recommendedWords Int?     @map("recommended_words") // Soft recommendation
+  
+  // Character limits
+  maxChars         Int?     @map("max_chars")        // e.g., 500 for title
+  minChars         Int?     @map("min_chars")
+  recommendedChars Int?     @map("recommended_chars")
+  
+  // Count limits (for claims)
+  maxCount         Int?     @map("max_count")        // e.g., 20 total claims
+  maxIndependent   Int?     @map("max_independent")  // e.g., 3 independent claims
+  countBeforeExtraFee Int?  @map("count_before_extra_fee") // Fee threshold
+  
+  // Severity and messaging
+  wordLimitSeverity  String?  @map("word_limit_severity")  // "error", "warning", "info"
+  charLimitSeverity  String?  @map("char_limit_severity")
+  countLimitSeverity String?  @map("count_limit_severity")
+  wordLimitMessage   String?  @map("word_limit_message") @db.Text
+  charLimitMessage   String?  @map("char_limit_message") @db.Text
+  countLimitMessage  String?  @map("count_limit_message") @db.Text
+  
+  // Legal citation for message (helps AI reviewer)
+  legalReference   String?  @map("legal_reference") // e.g., "Rule 13(7)(b)", "37 CFR 1.72(a)"
+  
+  // Additional validation rules as JSON (future extensibility)
+  // Examples: { "mustStartWith": "The principal object", "forbiddenPhrases": ["patent", "novel"] }
+  additionalRules  Json?    @map("additional_rules") @default("{}")
+  
+  version     Int      @default(1)
+  status      CountrySectionPromptStatus @default(ACTIVE)
+  createdBy   String?  @map("created_by")
+  updatedBy   String?  @map("updated_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  
+  @@unique([countryCode, sectionKey])
+  @@index([countryCode])
+  @@index([sectionKey])
+  @@map("country_section_validations")
+}
+
+// === CROSS-SECTION VALIDATION CHECKS (For AI Reviewer) ===
+// Stores validation rules that span multiple sections
+model CountryCrossValidation {
+  id           String   @id @default(cuid())
+  countryCode  String   @map("country_code")
+  checkId      String   @map("check_id") // Unique check identifier like "claims_supported_by_description"
+  
+  // Check configuration
+  checkType    String   @map("check_type") // "support", "consistency", "reference", "coverage"
+  fromSection  String   @map("from_section") // Source section: "claims"
+  toSections   String[] @map("to_sections") // Target sections: ["detailed_description"]
+  
+  // Severity and messaging
+  severity     String   @default("warning") // "error", "warning", "info"
+  message      String   @db.Text // Human-readable message for UI
+  
+  // AI Reviewer prompt context
+  reviewPrompt String?  @map("review_prompt") @db.Text // Specific instruction for AI reviewer
+  legalBasis   String?  @map("legal_basis") @db.Text // Legal citation: "Section 10(4) of Patents Act"
+  
+  // Additional check parameters as JSON
+  // Examples: { "checkReferenceNumerals": true, "checkAntecedentBasis": true }
+  checkParams  Json?    @map("check_params") @default("{}")
+  
+  isEnabled    Boolean  @default(true) @map("is_enabled")
+  version      Int      @default(1)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  
+  @@unique([countryCode, checkId])
+  @@index([countryCode])
+  @@index([checkType])
+  @@map("country_cross_validations")
+}
+
+// === DIAGRAM CONFIGURATION (Per jurisdiction) ===
+model CountryDiagramConfig {
+  id                       String   @id @default(cuid())
+  countryCode              String   @unique @map("country_code")
+  
+  // Core diagram settings
+  requiredWhenApplicable   Boolean  @default(true) @map("required_when_applicable")
+  supportedDiagramTypes    String[] @default([]) @map("supported_types") // ["block", "flowchart", "schematic"]
+  figureLabelFormat        String   @default("Fig. {number}") @map("figure_label_format")
+  autoGenerateReferenceTable Boolean @default(true) @map("auto_reference_table")
+  
+  // Drawing rules (from rules.drawings)
+  paperSize                String   @default("A4") @map("paper_size")
+  colorAllowed             Boolean  @default(false) @map("color_allowed")
+  colorUsageNote           String?  @map("color_usage_note") @db.Text
+  lineStyle                String   @default("black_and_white_solid") @map("line_style")
+  referenceNumeralsMandatory Boolean @default(true) @map("ref_numerals_mandatory")
+  minReferenceTextSizePt   Int      @default(8) @map("min_ref_text_size_pt")
+  
+  // Drawing margins (cm)
+  drawingMarginTopCm       Float    @default(2.5) @map("drawing_margin_top_cm")
+  drawingMarginBottomCm    Float    @default(1.0) @map("drawing_margin_bottom_cm")
+  drawingMarginLeftCm      Float    @default(2.5) @map("drawing_margin_left_cm")
+  drawingMarginRightCm     Float    @default(1.5) @map("drawing_margin_right_cm")
+  
+  // LLM generation defaults
+  defaultDiagramCount      Int      @default(4) @map("default_diagram_count")
+  maxDiagramsRecommended   Int      @default(10) @map("max_diagrams_recommended")
+  
+  version                  Int      @default(1)
+  status                   CountrySectionPromptStatus @default(ACTIVE)
+  createdBy                String?  @map("created_by")
+  updatedBy                String?  @map("updated_by")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  diagramHints             CountryDiagramHint[]
+  
+  @@index([countryCode])
+  @@map("country_diagram_configs")
+}
+
+// === PER-DIAGRAM-TYPE GENERATION HINTS ===
+model CountryDiagramHint {
+  id           String   @id @default(cuid())
+  configId     String   @map("config_id")
+  diagramType  String   @map("diagram_type") // "block", "flowchart", "schematic", "perspective_view"
+  
+  // LLM instruction for this diagram type
+  hint         String   @db.Text // "Use rectangles for components and arrows for data flow..."
+  
+  // Optional: specific PlantUML/Mermaid preferences
+  preferredSyntax   String?  @map("preferred_syntax") // "plantuml", "mermaid"
+  exampleCode       String?  @map("example_code") @db.Text // Example PlantUML/Mermaid snippet
+  
+  // Constraints for this diagram type
+  maxElements       Int?     @map("max_elements") // Max components in diagram
+  requireLabels     Boolean  @default(true) @map("require_labels")
+  
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  
+  // Relation
+  config       CountryDiagramConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+  
+  @@unique([configId, diagramType])
+  @@index([configId])
+  @@map("country_diagram_hints")
+}
+
+// === EXPORT CONFIGURATION (Per jurisdiction, per document type) ===
+model CountryExportConfig {
+  id                   String   @id @default(cuid())
+  countryCode          String   @map("country_code")
+  documentTypeId       String   @map("document_type_id") // "spec_pdf", "claims_only", "abstract_only"
+  
+  // Display info
+  label                String   // "Indian Complete Specification PDF (Form 2)"
+  description          String?  @db.Text
+  
+  // Page layout
+  pageSize             String   @default("A4") @map("page_size") // "A4", "LETTER"
+  marginTopCm          Float    @default(2.5) @map("margin_top_cm")
+  marginBottomCm       Float    @default(2.0) @map("margin_bottom_cm")
+  marginLeftCm         Float    @default(2.5) @map("margin_left_cm")
+  marginRightCm        Float    @default(2.0) @map("margin_right_cm")
+  
+  // Typography
+  fontFamily           String   @default("Times New Roman") @map("font_family")
+  fontSizePt           Int      @default(12) @map("font_size_pt")
+  lineSpacing          Float    @default(1.5) @map("line_spacing")
+  headingFontFamily    String?  @map("heading_font_family")
+  headingFontSizePt    Int?     @map("heading_font_size_pt")
+  
+  // Document options
+  addPageNumbers       Boolean  @default(true) @map("add_page_numbers")
+  addParagraphNumbers  Boolean  @default(false) @map("add_paragraph_numbers")
+  pageNumberFormat     String   @default("Page {page} of {total}") @map("page_number_format")
+  pageNumberPosition   String   @default("header-right") @map("page_number_position") // "header-right", "footer-center"
+  
+  // Section configuration
+  includesSections     String[] @map("includes_sections") @default([]) // ["title", "field", "background", ...]
+  sectionOrder         String[] @map("section_order") @default([]) // Override default order if needed
+  
+  // Additional export options as JSON
+  // Examples: { "includeTableOfContents": true, "watermark": "DRAFT" }
+  exportOptions        Json?    @map("export_options") @default("{}")
+  
+  version              Int      @default(1)
+  status               CountrySectionPromptStatus @default(ACTIVE)
+  createdBy            String?  @map("created_by")
+  updatedBy            String?  @map("updated_by")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  sectionHeadings      CountryExportHeading[]
+  
+  @@unique([countryCode, documentTypeId])
+  @@index([countryCode])
+  @@map("country_export_configs")
+}
+
+// === SECTION HEADINGS FOR EXPORT (Per jurisdiction, per document type) ===
+model CountryExportHeading {
+  id            String   @id @default(cuid())
+  exportConfigId String  @map("export_config_id")
+  sectionKey    String   @map("section_key") // "field", "background", "claims"
+  
+  heading       String   // "FIELD OF INVENTION", "BACKGROUND AND PRIOR ART"
+  style         String   @default("uppercase") // "uppercase", "titlecase", "sentence"
+  
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+  
+  // Relation
+  exportConfig  CountryExportConfig @relation(fields: [exportConfigId], references: [id], onDelete: Cascade)
+  
+  @@unique([exportConfigId, sectionKey])
+  @@index([exportConfigId])
+  @@map("country_export_headings")
+}
+
+// ============================================================================
+// USER STYLE OVERRIDES (Per session or global user preference)
+// ============================================================================
+
+// === USER DIAGRAM STYLE OVERRIDES ===
+model UserDiagramStyle {
+  id                String   @id @default(cuid())
+  
+  // Scoping - either global to user or specific to session
+  userId            String   @map("user_id")
+  tenantId          String   @map("tenant_id")
+  sessionId         String?  @map("session_id") // null = global user preference
+  jurisdiction      String   @default("*") // "*" = all, or specific like "IN", "US"
+  
+  // Override diagram type (if null, applies to all types)
+  diagramType       String?  @map("diagram_type") // "block", "flowchart", etc. or null for all
+  
+  // Custom hint to inject into LLM prompt
+  customHint        String?  @map("custom_hint") @db.Text
+  
+  // Override drawing style
+  customColorAllowed      Boolean? @map("custom_color_allowed")
+  customLineStyle         String?  @map("custom_line_style")
+  customMinRefTextSizePt  Int?     @map("custom_min_ref_text_size_pt")
+  customFigureLabelFormat String?  @map("custom_figure_label_format")
+  
+  // Preferred diagram count
+  preferredDiagramCount   Int?     @map("preferred_diagram_count")
+  
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  session           DraftingSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, sessionId, jurisdiction, diagramType])
+  @@index([userId])
+  @@index([sessionId])
+  @@index([tenantId])
+  @@map("user_diagram_styles")
+}
+
+// === USER EXPORT STYLE OVERRIDES ===
+model UserExportStyle {
+  id                String   @id @default(cuid())
+  
+  // Scoping
+  userId            String   @map("user_id")
+  tenantId          String   @map("tenant_id")
+  sessionId         String?  @map("session_id") // null = global preference
+  jurisdiction      String   @default("*") // "*" = all, or specific jurisdiction
+  
+  // Export overrides (null = use country default)
+  fontFamily        String?  @map("font_family")
+  fontSizePt        Int?     @map("font_size_pt")
+  lineSpacing       Float?   @map("line_spacing")
+  marginTopCm       Float?   @map("margin_top_cm")
+  marginBottomCm    Float?   @map("margin_bottom_cm")
+  marginLeftCm      Float?   @map("margin_left_cm")
+  marginRightCm     Float?   @map("margin_right_cm")
+  addPageNumbers    Boolean? @map("add_page_numbers")
+  addParagraphNumbers Boolean? @map("add_paragraph_numbers")
+  
+  // Additional preferences as JSON
+  customOptions     Json?    @map("custom_options") @default("{}")
+  
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  session           DraftingSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, sessionId, jurisdiction])
+  @@index([userId])
+  @@index([sessionId])
+  @@index([tenantId])
+  @@map("user_export_styles")
+}
+
+// === USER VALIDATION OVERRIDES (Per session - e.g., override word limit for specific draft) ===
+model UserValidationOverride {
+  id                String   @id @default(cuid())
+  
+  userId            String   @map("user_id")
+  sessionId         String   @map("session_id") // Always session-specific (validation overrides shouldn't be global)
+  jurisdiction      String   @default("*")
+  sectionKey        String   @map("section_key")
+  
+  // Override limits (null = use country default)
+  customMaxWords    Int?     @map("custom_max_words")
+  customMaxChars    Int?     @map("custom_max_chars")
+  customMaxCount    Int?     @map("custom_max_count")
+  
+  // Override severity (allow user to downgrade warnings to info, etc.)
+  customSeverity    String?  @map("custom_severity") // "error", "warning", "info", "ignore"
+  
+  // Reason for override (audit trail)
+  overrideReason    String?  @map("override_reason") @db.Text
+  
+  isActive          Boolean  @default(true) @map("is_active")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  
+  // Relations
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session           DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  
+  @@unique([sessionId, jurisdiction, sectionKey])
+  @@index([sessionId])
+  @@index([userId])
+  @@map("user_validation_overrides")
+}
+
+// ============================================================================
+// IMPORT/SYNC TRACKING (For JSON imports by super admin)
+// ============================================================================
+
+// Track JSON imports for audit and rollback
+model CountryConfigImport {
+  id            String   @id @default(cuid())
+  countryCode   String   @map("country_code")
+  importType    String   @map("import_type") // "full", "validation_only", "diagram_only", "export_only"
+  
+  // Source JSON (stored for rollback)
+  sourceJson    Json     @map("source_json")
+  sourceHash    String   @map("source_hash") // SHA256 of JSON for deduplication
+  
+  // Import results
+  status        String   @default("pending") // "pending", "processing", "completed", "failed", "rolled_back"
+  recordsCreated Int     @default(0) @map("records_created")
+  recordsUpdated Int     @default(0) @map("records_updated")
+  recordsSkipped Int     @default(0) @map("records_skipped")
+  errorLog      Json?    @map("error_log") // Array of error objects
+  
+  // Rollback support
+  previousState Json?    @map("previous_state") // Snapshot before import for rollback
+  rolledBackAt  DateTime? @map("rolled_back_at")
+  rolledBackBy  String?   @map("rolled_back_by")
+  
+  importedBy    String   @map("imported_by")
+  importedAt    DateTime @default(now()) @map("imported_at")
+  completedAt   DateTime? @map("completed_at")
+  
+  // Relation
+  importer      User     @relation("ConfigImporter", fields: [importedBy], references: [id])
+  
+  @@index([countryCode])
+  @@index([status])
+  @@index([importedBy])
+  @@map("country_config_imports")
 }

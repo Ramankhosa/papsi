@@ -21,6 +21,7 @@ export interface SectionPromptTopUp {
   instruction: string
   constraints: string[]
   additions?: string[]
+  importFiguresDirectly?: boolean // When true, bypass LLM and import figure titles directly
 }
 
 export interface SectionPrompt {
@@ -135,10 +136,12 @@ export async function getSectionPrompt(
         updatedAt: dbPrompt.updatedAt
       })
 
+      // CRITICAL: Include importFiguresDirectly flag for Brief Description of Drawings
       return {
         instruction: dbPrompt.instruction,
         constraints: Array.isArray(dbPrompt.constraints) ? dbPrompt.constraints as string[] : [],
-        additions: Array.isArray(dbPrompt.additions) ? dbPrompt.additions as string[] : []
+        additions: Array.isArray(dbPrompt.additions) ? dbPrompt.additions as string[] : [],
+        importFiguresDirectly: dbPrompt.importFiguresDirectly || false
       }
     }
   } catch (error) {
@@ -154,7 +157,9 @@ export async function getSectionPrompt(
         return {
           instruction: sectionConfig.topUp.instruction || '',
           constraints: sectionConfig.topUp.constraints || [],
-          additions: sectionConfig.topUp.additions || []
+          additions: sectionConfig.topUp.additions || [],
+          // CRITICAL: Include importFiguresDirectly from JSON config
+          importFiguresDirectly: sectionConfig.importFiguresDirectly === true
         }
       }
       // Legacy format (direct instruction/constraints without topUp wrapper)
@@ -162,7 +167,18 @@ export async function getSectionPrompt(
         return {
           instruction: sectionConfig.instruction,
           constraints: sectionConfig.constraints || [],
-          additions: []
+          additions: [],
+          // CRITICAL: Include importFiguresDirectly from JSON config
+          importFiguresDirectly: sectionConfig.importFiguresDirectly === true
+        }
+      }
+      // CRITICAL: Handle case where only importFiguresDirectly is set (no topUp or instruction)
+      if (sectionConfig?.importFiguresDirectly === true) {
+        return {
+          instruction: '',
+          constraints: [],
+          additions: [],
+          importFiguresDirectly: true
         }
       }
     }

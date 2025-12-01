@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useCallback } from 'react'
 import BackendActivityPanel from './BackendActivityPanel'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
@@ -9,6 +9,846 @@ import SectionInstructionPopover from './SectionInstructionPopover'
 import AllInstructionsModal from './AllInstructionsModal'
 import WritingSamplesModal from './WritingSamplesModal'
 import PersonaManager, { type PersonaSelection } from './PersonaManager'
+
+// ============================================================================
+// AI Review Issue Type
+// ============================================================================
+
+interface AIReviewIssue {
+  id: string
+  sectionKey: string
+  sectionLabel: string
+  type: 'error' | 'warning' | 'suggestion'
+  category: 'consistency' | 'diagram' | 'completeness' | 'legal' | 'clarity'
+  title: string
+  description: string
+  suggestion: string
+  fixPrompt: string
+  relatedSections?: string[]
+  severity: number
+}
+
+interface ValidationIssue {
+  sectionKey: string
+  type: 'error' | 'warning' | 'info'
+  rule: string
+  message: string
+  actual?: number
+  limit?: number
+}
+
+// ============================================================================
+// Comprehensive Validation Panel Component
+// ============================================================================
+
+interface ValidationPanelProps {
+  sessionId: string
+  jurisdiction: string
+  patentId: string
+  draft: Record<string, string>
+  onFix: (sectionKey: string, fixedContent: string) => void
+  onProceedToExport: () => void
+}
+
+function ValidationPanel({ 
+  sessionId, 
+  jurisdiction, 
+  patentId, 
+  draft, 
+  onFix,
+  onProceedToExport 
+}: ValidationPanelProps) {
+  // Numerical validation state
+  const [numericIssues, setNumericIssues] = useState<ValidationIssue[]>([])
+  const [numericLoading, setNumericLoading] = useState(false)
+  
+  // AI Review state
+  const [aiIssues, setAiIssues] = useState<AIReviewIssue[]>([])
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiSummary, setAiSummary] = useState<{
+    totalIssues: number
+    errors: number
+    warnings: number
+    suggestions: number
+    overallScore: number
+    recommendation: string
+  } | null>(null)
+  const [currentReviewId, setCurrentReviewId] = useState<string | null>(null)
+  const [loadingExisting, setLoadingExisting] = useState(false)
+  
+  // Fix state
+  const [fixingIssue, setFixingIssue] = useState<string | null>(null)
+  const [ignoredIssues, setIgnoredIssues] = useState<Set<string>>(new Set())
+  const [appliedFixes, setAppliedFixes] = useState<Set<string>>(new Set())
+  
+  // Last review timestamps
+  const [lastNumericCheck, setLastNumericCheck] = useState<string | null>(null)
+  const [lastAICheck, setLastAICheck] = useState<string | null>(null)
+
+  // Load existing reviews on mount/jurisdiction change
+  useEffect(() => {
+    const loadExistingReviews = async () => {
+      if (!sessionId || !jurisdiction || !patentId) return
+      setLoadingExisting(true)
+      try {
+        const res = await fetch(`/api/patents/${patentId}/drafting`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+          },
+          body: JSON.stringify({
+            action: 'get_ai_reviews',
+            sessionId,
+            jurisdiction
+          })
+        })
+        const data = await res.json()
+        if (data.success && data.latest?.[jurisdiction.toUpperCase()]) {
+          const latestReview = data.latest[jurisdiction.toUpperCase()]
+          // Restore review state
+          setAiIssues(latestReview.issues || [])
+          setAiSummary(latestReview.summary || null)
+          setCurrentReviewId(latestReview.id)
+          setLastAICheck(new Date(latestReview.reviewedAt).toLocaleTimeString())
+          // Restore ignored and applied fixes
+          const ignored = new Set<string>(
+            Array.isArray(latestReview.ignoredIssues) ? latestReview.ignoredIssues : []
+          )
+          setIgnoredIssues(ignored)
+          const applied = new Set<string>(
+            Array.isArray(latestReview.appliedFixes) 
+              ? latestReview.appliedFixes.map((f: any) => f.issueId)
+              : []
+          )
+          setAppliedFixes(applied)
+        }
+      } catch (err) {
+        console.error('Failed to load existing reviews:', err)
+      } finally {
+        setLoadingExisting(false)
+      }
+    }
+
+    loadExistingReviews()
+  }, [sessionId, jurisdiction, patentId])
+
+  // Run numerical validation
+  const runNumericValidation = useCallback(async () => {
+    if (!sessionId || !jurisdiction || !patentId) return
+    setNumericLoading(true)
+    try {
+      const res = await fetch(`/api/patents/${patentId}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'validate_draft',
+          sessionId,
+          jurisdiction,
+          draft
+        })
+      })
+      const data = await res.json()
+      if (data.issues) {
+        setNumericIssues(data.issues)
+        setLastNumericCheck(new Date().toLocaleTimeString())
+      }
+    } catch (err) {
+      console.error('Numeric validation error:', err)
+    } finally {
+      setNumericLoading(false)
+    }
+  }, [sessionId, jurisdiction, patentId, draft])
+
+  // Run AI review
+  const runAIReview = useCallback(async () => {
+    if (!sessionId || !jurisdiction || !patentId) return
+    setAiLoading(true)
+    try {
+      const res = await fetch(`/api/patents/${patentId}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'run_ai_review',
+          sessionId,
+          jurisdiction,
+          draft
+        })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setAiIssues(data.issues || [])
+        setAiSummary(data.summary || null)
+        setCurrentReviewId(data.reviewId || null)
+        setLastAICheck(new Date().toLocaleTimeString())
+        // Reset ignored/applied for new review
+        setIgnoredIssues(new Set())
+        setAppliedFixes(new Set())
+      } else {
+        alert(`AI Review failed: ${data.error || 'Unknown error'}`)
+      }
+    } catch (err) {
+      console.error('AI review error:', err)
+      alert('Failed to run AI review. Please try again.')
+    } finally {
+      setAiLoading(false)
+    }
+  }, [sessionId, jurisdiction, patentId, draft])
+
+  // Apply fix for an AI issue
+  const applyFix = useCallback(async (issue: AIReviewIssue) => {
+    if (!sessionId || !jurisdiction || !patentId) return
+    setFixingIssue(issue.id)
+    try {
+      // Get related content if needed
+      const relatedContent: Record<string, string> = {}
+      if (issue.relatedSections) {
+        for (const key of issue.relatedSections) {
+          if (draft[key]) relatedContent[key] = draft[key]
+        }
+      }
+
+      const res = await fetch(`/api/patents/${patentId}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'apply_ai_fix',
+          sessionId,
+          jurisdiction,
+          sectionKey: issue.sectionKey,
+          issue,
+          currentContent: draft[issue.sectionKey],
+          relatedContent
+        })
+      })
+      const data = await res.json()
+      if (data.success && data.fixedContent) {
+        onFix(issue.sectionKey, data.fixedContent)
+        // Track the applied fix locally
+        setAppliedFixes(prev => new Set([...prev, issue.id]))
+        // Remove the fixed issue from the list
+        setAiIssues(prev => prev.filter(i => i.id !== issue.id))
+      } else {
+        alert(`Failed to apply fix: ${data.error || 'Unknown error'}`)
+      }
+    } catch (err) {
+      console.error('Apply fix error:', err)
+      alert('Failed to apply fix. Please try again.')
+    } finally {
+      setFixingIssue(null)
+    }
+  }, [sessionId, jurisdiction, patentId, draft, onFix])
+
+  // Ignore an issue (persists to backend)
+  const ignoreIssue = useCallback(async (issueId: string) => {
+    // Update local state immediately
+    setIgnoredIssues(prev => new Set([...prev, issueId]))
+    
+    // Persist to backend
+    try {
+      await fetch(`/api/patents/${patentId}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'ignore_ai_issue',
+          sessionId,
+          jurisdiction,
+          issueId,
+          reviewId: currentReviewId
+        })
+      })
+    } catch (err) {
+      console.error('Failed to persist ignored issue:', err)
+      // Local state already updated, so user experience is smooth
+    }
+  }, [sessionId, jurisdiction, patentId, currentReviewId])
+
+  // Auto-run numeric validation when draft changes
+  useEffect(() => {
+    if (Object.keys(draft).length > 0) {
+      runNumericValidation()
+    }
+  }, [jurisdiction])
+
+  // Calculate counts
+  const numericErrorCount = numericIssues.filter(i => i.type === 'error').length
+  const numericWarningCount = numericIssues.filter(i => i.type === 'warning').length
+  const activeAiIssues = aiIssues.filter(i => !ignoredIssues.has(i.id) && !appliedFixes.has(i.id))
+  const aiErrorCount = activeAiIssues.filter(i => i.type === 'error').length
+  const aiWarningCount = activeAiIssues.filter(i => i.type === 'warning').length
+  const fixedCount = appliedFixes.size
+  const totalErrors = numericErrorCount + aiErrorCount
+  const totalWarnings = numericWarningCount + aiWarningCount
+
+  // Category icons and colors
+  const getCategoryStyle = (category: string) => {
+    switch (category) {
+      case 'consistency': return { icon: '🔗', bg: 'bg-purple-50', border: 'border-purple-200', text: 'text-purple-700' }
+      case 'diagram': return { icon: '📊', bg: 'bg-blue-50', border: 'border-blue-200', text: 'text-blue-700' }
+      case 'completeness': return { icon: '📋', bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700' }
+      case 'legal': return { icon: '⚖️', bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700' }
+      case 'clarity': return { icon: '💡', bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700' }
+      default: return { icon: '📝', bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700' }
+    }
+  }
+
+  return (
+    <div className="space-y-8">
+      {/* Header with Overall Status */}
+      <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 rounded-2xl p-6 shadow-xl border border-slate-700">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-xl font-bold text-white flex items-center gap-2">
+              <span className="text-2xl">🔬</span>
+              Draft Review & Validation
+            </h3>
+            <p className="text-slate-400 text-sm mt-1">
+              Comprehensive analysis for {jurisdiction} jurisdiction
+            </p>
+          </div>
+          
+          {/* Overall Score */}
+          {aiSummary && (
+            <div className="text-center">
+              <div className={`text-4xl font-bold ${
+                aiSummary.overallScore >= 80 ? 'text-emerald-400' :
+                aiSummary.overallScore >= 60 ? 'text-amber-400' : 'text-red-400'
+              }`}>
+                {aiSummary.overallScore}
+              </div>
+              <div className="text-xs text-slate-400">Quality Score</div>
+            </div>
+          )}
+        </div>
+
+        {/* Status Summary */}
+        <div className="grid grid-cols-5 gap-4">
+          <div className="bg-slate-800/50 rounded-xl p-4 text-center border border-slate-700">
+            <div className="text-2xl font-bold text-red-400">{totalErrors}</div>
+            <div className="text-xs text-slate-400">Errors</div>
+          </div>
+          <div className="bg-slate-800/50 rounded-xl p-4 text-center border border-slate-700">
+            <div className="text-2xl font-bold text-amber-400">{totalWarnings}</div>
+            <div className="text-xs text-slate-400">Warnings</div>
+          </div>
+          <div className="bg-slate-800/50 rounded-xl p-4 text-center border border-slate-700">
+            <div className="text-2xl font-bold text-blue-400">{aiSummary?.suggestions || 0}</div>
+            <div className="text-xs text-slate-400">Suggestions</div>
+          </div>
+          <div className="bg-slate-800/50 rounded-xl p-4 text-center border border-slate-700">
+            <div className="text-2xl font-bold text-emerald-400">{fixedCount}</div>
+            <div className="text-xs text-slate-400">Fixed</div>
+          </div>
+          <div className="bg-slate-800/50 rounded-xl p-4 text-center border border-slate-700">
+            <div className="text-2xl font-bold text-slate-400">{ignoredIssues.size}</div>
+            <div className="text-xs text-slate-400">Ignored</div>
+          </div>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex flex-wrap gap-3 mt-6">
+          <button
+            onClick={runNumericValidation}
+            disabled={numericLoading}
+            className="px-4 py-2.5 bg-slate-700 text-white rounded-lg font-medium hover:bg-slate-600 disabled:opacity-50 flex items-center gap-2 text-sm border border-slate-600"
+          >
+            {numericLoading ? (
+              <><span className="animate-spin">⏳</span> Checking...</>
+            ) : (
+              <><span>📏</span> Run Numeric Checks</>
+            )}
+          </button>
+          
+          <button
+            onClick={runAIReview}
+            disabled={aiLoading}
+            className="px-4 py-2.5 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-lg font-medium hover:from-violet-500 hover:to-purple-500 disabled:opacity-50 flex items-center gap-2 text-sm shadow-lg"
+          >
+            {aiLoading ? (
+              <><span className="animate-spin">⏳</span> AI Analyzing...</>
+            ) : (
+              <><span>🤖</span> Run AI Review (Gemini)</>
+            )}
+          </button>
+
+          <div className="flex-1" />
+
+          <button
+            onClick={onProceedToExport}
+            className="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-lg font-medium hover:from-emerald-500 hover:to-teal-500 flex items-center gap-2 text-sm shadow-lg"
+          >
+            <span>📄</span>
+            {totalErrors > 0 ? 'Export Anyway' : 'Proceed to Export'}
+            <span>→</span>
+          </button>
+        </div>
+
+        {/* Last Check Times */}
+        <div className="flex gap-4 mt-4 text-xs text-slate-500">
+          {loadingExisting && <span className="text-cyan-400">⏳ Loading previous review...</span>}
+          {lastNumericCheck && <span>📏 Numeric: {lastNumericCheck}</span>}
+          {lastAICheck && <span>🤖 AI Review: {lastAICheck}</span>}
+          {currentReviewId && <span className="text-slate-600">ID: {currentReviewId.slice(0, 8)}...</span>}
+        </div>
+      </div>
+
+      {/* Numeric Validation Results */}
+      {numericIssues.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 bg-gray-50 border-b border-gray-200">
+            <h4 className="font-semibold text-gray-900 flex items-center gap-2">
+              <span>📏</span> Numeric Validation
+              <span className="text-xs font-normal text-gray-500 ml-2">
+                Word limits, character counts, claim numbers
+              </span>
+            </h4>
+          </div>
+          <div className="divide-y divide-gray-100">
+            {numericIssues.map((issue, idx) => (
+              <div 
+                key={idx} 
+                className={`px-6 py-4 flex items-start gap-4 ${
+                  issue.type === 'error' ? 'bg-red-50/50' : 
+                  issue.type === 'warning' ? 'bg-amber-50/50' : 'bg-blue-50/50'
+                }`}
+              >
+                <div className="mt-0.5">
+                  {issue.type === 'error' ? '❌' : issue.type === 'warning' ? '⚠️' : 'ℹ️'}
+                </div>
+                <div className="flex-1">
+                  <div className="font-medium text-gray-900 capitalize">{issue.sectionKey}</div>
+                  <div className="text-sm text-gray-600">{issue.message}</div>
+                  {issue.actual !== undefined && issue.limit !== undefined && (
+                    <div className="text-xs text-gray-500 mt-1">
+                      Current: <strong>{issue.actual}</strong> | Limit: <strong>{issue.limit}</strong>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* AI Review Results */}
+      {activeAiIssues.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 bg-gradient-to-r from-violet-50 to-purple-50 border-b border-violet-200">
+            <h4 className="font-semibold text-gray-900 flex items-center gap-2">
+              <span>🤖</span> AI Review Results
+              <span className="text-xs font-normal text-gray-500 ml-2">
+                Powered by Gemini • Cross-section analysis
+              </span>
+            </h4>
+            {aiSummary && (
+              <p className="text-sm text-gray-600 mt-1">{aiSummary.recommendation}</p>
+            )}
+          </div>
+          <div className="divide-y divide-gray-100">
+            {activeAiIssues.map((issue) => {
+              const style = getCategoryStyle(issue.category)
+              const isFixing = fixingIssue === issue.id
+              
+              return (
+                <div key={issue.id} className={`px-6 py-5 ${style.bg}`}>
+                  <div className="flex items-start gap-4">
+                    {/* Severity indicator */}
+                    <div className="flex flex-col items-center gap-1">
+                      <span className="text-2xl">{style.icon}</span>
+                      <div className="flex gap-0.5">
+                        {[1,2,3,4,5].map(n => (
+                          <div 
+                            key={n}
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              n <= issue.severity 
+                                ? issue.type === 'error' ? 'bg-red-500' 
+                                  : issue.type === 'warning' ? 'bg-amber-500' 
+                                  : 'bg-blue-500'
+                                : 'bg-gray-300'
+                            }`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Issue content */}
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded ${style.bg} ${style.text} border ${style.border}`}>
+                          {issue.category}
+                        </span>
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded ${
+                          issue.type === 'error' ? 'bg-red-100 text-red-700 border border-red-200' :
+                          issue.type === 'warning' ? 'bg-amber-100 text-amber-700 border border-amber-200' :
+                          'bg-blue-100 text-blue-700 border border-blue-200'
+                        }`}>
+                          {issue.type}
+                        </span>
+                        <span className="text-xs text-gray-500">
+                          Section: <strong>{issue.sectionLabel}</strong>
+                        </span>
+                      </div>
+                      
+                      <h5 className="font-semibold text-gray-900 mb-1">{issue.title}</h5>
+                      <p className="text-sm text-gray-700 mb-2">{issue.description}</p>
+                      
+                      <div className="bg-white/80 rounded-lg p-3 border border-gray-200">
+                        <div className="text-xs font-medium text-gray-500 mb-1">💡 Suggestion</div>
+                        <p className="text-sm text-gray-700">{issue.suggestion}</p>
+                      </div>
+
+                      {issue.relatedSections && issue.relatedSections.length > 0 && (
+                        <div className="text-xs text-gray-500 mt-2">
+                          Related sections: {issue.relatedSections.join(', ')}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Actions */}
+                    <div className="flex flex-col gap-2">
+                      <button
+                        onClick={() => applyFix(issue)}
+                        disabled={isFixing}
+                        className="px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2 whitespace-nowrap"
+                      >
+                        {isFixing ? (
+                          <><span className="animate-spin">⏳</span> Fixing...</>
+                        ) : (
+                          <><span>🔧</span> Fix</>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => ignoreIssue(issue.id)}
+                        className="px-4 py-2 bg-gray-100 text-gray-600 text-sm font-medium rounded-lg hover:bg-gray-200 flex items-center gap-2 whitespace-nowrap"
+                      >
+                        <span>🚫</span> Ignore
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* All Clear State */}
+      {numericIssues.length === 0 && activeAiIssues.length === 0 && (lastNumericCheck || lastAICheck) && (
+        <div className="bg-gradient-to-r from-emerald-50 to-teal-50 rounded-xl border border-emerald-200 p-8 text-center">
+          <div className="text-5xl mb-4">✨</div>
+          <h4 className="text-xl font-semibold text-emerald-800 mb-2">All Clear!</h4>
+          <p className="text-emerald-700">
+            No issues found. Your draft is ready for export.
+          </p>
+          <button
+            onClick={onProceedToExport}
+            className="mt-6 px-8 py-3 bg-emerald-600 text-white rounded-xl font-medium hover:bg-emerald-700 shadow-lg inline-flex items-center gap-2"
+          >
+            <span>📄</span> Export Draft <span>→</span>
+          </button>
+        </div>
+      )}
+
+      {/* Initial State */}
+      {numericIssues.length === 0 && activeAiIssues.length === 0 && !lastNumericCheck && !lastAICheck && (
+        <div className="bg-gray-50 rounded-xl border border-gray-200 p-8 text-center">
+          <div className="text-4xl mb-4">🔍</div>
+          <h4 className="text-lg font-semibold text-gray-700 mb-2">Ready to Review</h4>
+          <p className="text-gray-600 text-sm mb-4">
+            Run validation checks to ensure your draft meets all requirements.
+          </p>
+          <div className="flex justify-center gap-3">
+            <button
+              onClick={runNumericValidation}
+              disabled={numericLoading}
+              className="px-4 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 flex items-center gap-2 text-sm"
+            >
+              📏 Numeric Checks
+            </button>
+            <button
+              onClick={runAIReview}
+              disabled={aiLoading}
+              className="px-4 py-2 bg-violet-600 text-white rounded-lg hover:bg-violet-700 flex items-center gap-2 text-sm"
+            >
+              🤖 AI Review
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// Simple Validation Report (Legacy - kept for backwards compatibility)
+// ============================================================================
+
+interface ValidationReportProps {
+  sessionId: string
+  jurisdiction: string
+  patentId: string
+  draft: Record<string, string>
+}
+
+function ValidationReport({ sessionId, jurisdiction, patentId, draft }: ValidationReportProps) {
+  const [issues, setIssues] = useState<ValidationIssue[]>([])
+  const [loading, setLoading] = useState(false)
+  const [lastChecked, setLastChecked] = useState<string | null>(null)
+
+  const runValidation = useCallback(async () => {
+    if (!sessionId || !jurisdiction || !patentId) return
+    setLoading(true)
+    try {
+      const res = await fetch(`/api/patents/${patentId}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'validate_draft',
+          sessionId,
+          jurisdiction,
+          draft
+        })
+      })
+      const data = await res.json()
+      if (data.issues) {
+        setIssues(data.issues)
+        setLastChecked(new Date().toLocaleTimeString())
+      }
+    } catch (err) {
+      console.error('Validation error:', err)
+    } finally {
+      setLoading(false)
+    }
+  }, [sessionId, jurisdiction, patentId, draft])
+
+  useEffect(() => {
+    if (Object.keys(draft).length > 0) {
+      runValidation()
+    }
+  }, [jurisdiction])
+
+  const errorCount = issues.filter(i => i.type === 'error').length
+  const warningCount = issues.filter(i => i.type === 'warning').length
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h4 className="font-semibold text-gray-900">Validation Report</h4>
+        <button
+          onClick={runValidation}
+          disabled={loading}
+          className="text-sm text-indigo-600 hover:text-indigo-800 flex items-center gap-1"
+        >
+          {loading ? (
+            <>
+              <span className="animate-spin">⏳</span> Checking...
+            </>
+          ) : (
+            <>
+              🔍 Run Validation
+            </>
+          )}
+        </button>
+      </div>
+
+      {lastChecked && (
+        <div className="text-xs text-gray-500 mb-4">Last checked: {lastChecked}</div>
+      )}
+
+      {/* Summary */}
+      <div className="flex gap-4 mb-4">
+        <div className={`px-3 py-2 rounded-lg text-sm ${errorCount > 0 ? 'bg-red-50 text-red-700' : 'bg-gray-50 text-gray-600'}`}>
+          {errorCount} Error{errorCount !== 1 ? 's' : ''}
+        </div>
+        <div className={`px-3 py-2 rounded-lg text-sm ${warningCount > 0 ? 'bg-amber-50 text-amber-700' : 'bg-gray-50 text-gray-600'}`}>
+          {warningCount} Warning{warningCount !== 1 ? 's' : ''}
+        </div>
+        {errorCount === 0 && warningCount === 0 && issues.length === 0 && (
+          <div className="px-3 py-2 rounded-lg text-sm bg-emerald-50 text-emerald-700">
+            ✅ No issues found
+          </div>
+        )}
+      </div>
+
+      {/* Issues List */}
+      {issues.length > 0 && (
+        <div className="space-y-2 max-h-64 overflow-y-auto">
+          {issues.map((issue, idx) => (
+            <div
+              key={idx}
+              className={`p-3 rounded-lg text-sm ${
+                issue.type === 'error'
+                  ? 'bg-red-50 border border-red-100'
+                  : issue.type === 'warning'
+                    ? 'bg-amber-50 border border-amber-100'
+                    : 'bg-blue-50 border border-blue-100'
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                <span className="mt-0.5">
+                  {issue.type === 'error' ? '❌' : issue.type === 'warning' ? '⚠️' : 'ℹ️'}
+                </span>
+                <div>
+                  <div className="font-medium capitalize">{issue.sectionKey}</div>
+                  <div className="text-gray-700">{issue.message}</div>
+                  {issue.actual !== undefined && issue.limit !== undefined && (
+                    <div className="text-xs text-gray-500 mt-1">
+                      Current: {issue.actual} | Limit: {issue.limit}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ============================================================================
+// Export Button Component
+// ============================================================================
+
+interface ExportButtonProps {
+  sessionId: string
+  jurisdiction: string
+  patentId: string
+  disabled?: boolean
+}
+
+function ExportButton({ sessionId, jurisdiction, patentId, disabled }: ExportButtonProps) {
+  const [exporting, setExporting] = useState(false)
+  const [exportFormat, setExportFormat] = useState<'docx' | 'pdf'>('docx')
+  const [showSuccess, setShowSuccess] = useState(false)
+
+  const handleExport = async () => {
+    if (!sessionId || !jurisdiction || !patentId) {
+      alert('Missing required information for export. Please ensure you have a valid session and jurisdiction.')
+      return
+    }
+    
+    // Check for unsupported format
+    if (exportFormat === 'pdf') {
+      alert('📋 PDF export is coming soon!\n\nPlease use MS Word (.docx) format for now.')
+      return
+    }
+    
+    setExporting(true)
+    setShowSuccess(false)
+    try {
+      const res = await fetch(`/api/patents/${patentId}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'export_docx',
+          sessionId,
+          jurisdiction,
+          format: exportFormat
+        })
+      })
+
+      if (!res.ok) {
+        let errorMsg = 'Unknown error'
+        try {
+          const error = await res.json()
+          errorMsg = error.error || error.message || errorMsg
+        } catch {
+          errorMsg = `Server error (${res.status})`
+        }
+        alert(`❌ Export failed: ${errorMsg}`)
+        return
+      }
+
+      // Check content type to ensure we got a file
+      const contentType = res.headers.get('content-type')
+      if (!contentType?.includes('application/vnd.openxmlformats')) {
+        // Might be an error response
+        const errorText = await res.text()
+        alert(`❌ Export failed: Invalid response format. ${errorText.substring(0, 100)}`)
+        return
+      }
+
+      // Download the file
+      const blob = await res.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `patent_draft_${jurisdiction}_${new Date().toISOString().split('T')[0]}.docx`
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+      
+      // Show success feedback
+      setShowSuccess(true)
+      setTimeout(() => setShowSuccess(false), 3000)
+    } catch (err) {
+      console.error('Export error:', err)
+      alert(`❌ Export failed: ${err instanceof Error ? err.message : 'Network error'}. Please check your connection and try again.`)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-4">
+      <select
+        value={exportFormat}
+        onChange={(e) => setExportFormat(e.target.value as 'docx' | 'pdf')}
+        className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-white"
+      >
+        <option value="docx">MS Word (.docx)</option>
+        <option value="pdf">PDF (coming soon)</option>
+      </select>
+      
+      <button
+        onClick={handleExport}
+        disabled={disabled || exporting}
+        className={`px-6 py-3 rounded-lg font-medium flex items-center gap-2 shadow-lg transition-all ${
+          showSuccess 
+            ? 'bg-emerald-500 text-white' 
+            : 'bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60'
+        }`}
+      >
+        {exporting ? (
+          <>
+            <span className="animate-spin">⏳</span>
+            Exporting...
+          </>
+        ) : showSuccess ? (
+          <>
+            <span>✅</span>
+            Downloaded!
+          </>
+        ) : (
+          <>
+            <span>📄</span>
+            Export {jurisdiction} Draft
+          </>
+        )}
+      </button>
+    </div>
+  )
+}
 
 type SectionConfig = {
   keys: string[]
@@ -481,6 +1321,125 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     }
   }
 
+  // Multi-jurisdiction: Generate Reference Draft (superset sections)
+  const [generatingReference, setGeneratingReference] = useState(false)
+  const [translating, setTranslating] = useState<string | null>(null)
+
+  const handleGenerateReferenceDraft = async (forceRegenerate = false) => {
+    if (!session?.id || generatingReference) return
+    
+    // Check if regenerating existing reference draft
+    if (session?.referenceDraftComplete && !forceRegenerate) {
+      const confirmed = confirm(
+        '⚠️ Regenerating Reference Draft\n\n' +
+        'This will replace your existing reference draft. ' +
+        'Existing translations for other jurisdictions will become outdated and may need to be regenerated.\n\n' +
+        'Do you want to continue?'
+      )
+      if (!confirmed) return
+    }
+    
+    setGeneratingReference(true)
+    setShowActivity(true)
+    try {
+      const res = await fetch(`/api/patents/${patent?.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'generate_reference_draft',
+          sessionId: session.id
+        })
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        console.error('Reference draft generation failed:', data.error)
+        alert(`❌ Failed to generate reference draft: ${data.error || 'Unknown error'}`)
+        return
+      }
+      // Refresh to get updated session with reference draft
+      await onRefresh()
+      if (data.draft) {
+        setGenerated(data.draft)
+        alert('✅ Reference draft generated successfully!\n\nYou can now translate to other jurisdictions.')
+      }
+    } catch (err) {
+      console.error('Reference draft generation error:', err)
+      alert(`❌ Failed to generate reference draft: ${err instanceof Error ? err.message : 'Network error'}`)
+    } finally {
+      setGeneratingReference(false)
+    }
+  }
+
+  // Multi-jurisdiction: Translate Reference Draft to a jurisdiction
+  const handleTranslateToJurisdiction = async (targetJurisdiction: string) => {
+    if (!session?.id || translating) return
+    const code = targetJurisdiction.toUpperCase()
+    
+    // Validate jurisdiction exists in available list
+    if (!availableJurisdictions.includes(code) && code !== 'REFERENCE') {
+      alert(`Invalid jurisdiction: ${code}. Please select a valid jurisdiction.`)
+      return
+    }
+    
+    setTranslating(code)
+    setShowActivity(true)
+    try {
+      const res = await fetch(`/api/patents/${patent?.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'translate_to_jurisdiction',
+          sessionId: session.id,
+          targetJurisdiction: code
+        })
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        console.error('Translation failed:', data.error)
+        alert(`❌ Translation failed for ${code}: ${data.error || 'Unknown error'}`)
+        return
+      }
+      
+      // Check for partial failures (some sections couldn't be translated)
+      if (data.errors && data.errors.length > 0) {
+        const failedSections = data.errors.length
+        alert(`⚠️ Translation completed with ${failedSections} section(s) using fallback content:\n${data.errors.slice(0, 3).join('\n')}${data.errors.length > 3 ? '\n...' : ''}`)
+      }
+      
+      // Refresh to get updated session with translated draft
+      await onRefresh()
+      
+      // Show validation issues if any
+      if (data.validation?.issues?.length > 0) {
+        const errorCount = data.validation.issues.filter((i: any) => i.type === 'error').length
+        const warnCount = data.validation.issues.filter((i: any) => i.type === 'warning').length
+        if (errorCount > 0 || warnCount > 0) {
+          alert(`✅ Translation to ${code} complete!\n\n📋 Validation Report:\n• ${errorCount} error(s)\n• ${warnCount} warning(s)\n\nPlease review the Validation section.`)
+        }
+      } else {
+        // Success with no issues
+        alert(`✅ Translation to ${code} completed successfully!`)
+      }
+      
+      // Switch to translated jurisdiction
+      if (data.draft) {
+        setGenerated(data.draft)
+        setActiveJurisdiction(code)
+      }
+    } catch (err) {
+      console.error('Translation error:', err)
+      alert(`❌ Translation failed: ${err instanceof Error ? err.message : 'Network error'}. Please try again.`)
+    } finally {
+      setTranslating(null)
+    }
+  }
+
   const handleGenerate = async (keys: string[]) => {
     if (loading) return
     setLoading(true)
@@ -783,23 +1742,148 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       {isMultiJurisdiction && (
         <div className="max-w-[850px] mx-auto mb-8 px-8">
           <div className="border border-gray-200 rounded-lg bg-white shadow-sm p-4">
-            <div className="text-xs font-semibold text-gray-500 uppercase mb-2">Jurisdictions</div>
+            <div className="text-xs font-semibold text-gray-500 uppercase mb-2">
+              Multi-Jurisdiction Filing
+              {!session?.referenceDraftComplete && (
+                <span className="ml-2 text-amber-600 font-normal normal-case">
+                  ⚠️ Generate Reference Draft first
+                </span>
+              )}
+            </div>
             <div className="flex flex-wrap gap-2">
-              {availableJurisdictions.map((code) => (
+              {/* Reference Draft Tab - Always first in multi-jurisdiction mode */}
+              <button
+                onClick={() => handleJurisdictionChange('REFERENCE')}
+                className={`px-3 py-1.5 rounded text-sm font-medium border transition-colors ${
+                  activeJurisdiction === 'REFERENCE'
+                    ? 'bg-purple-50 border-purple-200 text-purple-700'
+                    : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                📝 Reference Draft
+                {session?.referenceDraftComplete && (
+                  <span className="ml-1.5 text-[10px] bg-emerald-100 text-emerald-700 px-1 rounded">✓</span>
+                )}
+              </button>
+              
+              {/* Country jurisdiction tabs */}
+              {availableJurisdictions.map((code) => {
+                const isLocked = !session?.referenceDraftComplete
+                const hasTranslation = latestDrafts[code]?.version > 0
+                
+                return (
                 <button
                   key={code}
-                  onClick={() => handleJurisdictionChange(code)}
+                    onClick={() => !isLocked && handleJurisdictionChange(code)}
+                    disabled={isLocked}
                   className={`px-3 py-1.5 rounded text-sm font-medium border transition-colors ${
-                    code === activeJurisdiction
+                      isLocked
+                        ? 'bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed'
+                        : code === activeJurisdiction
                       ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
                       : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
                   }`}
-                >
-                  {code}
-                  {code === sourceOfTruth && <span className="ml-1.5 text-[10px] bg-emerald-100 text-emerald-700 px-1 rounded">Source</span>}
+                    title={isLocked ? 'Complete Reference Draft first' : `Draft for ${code}`}
+                  >
+                    {isLocked && '🔒 '}{code}
+                    {hasTranslation && !isLocked && (
+                      <span className="ml-1.5 text-[10px] bg-blue-100 text-blue-700 px-1 rounded">v{latestDrafts[code]?.version}</span>
+                    )}
                 </button>
-              ))}
-              {/* Add jurisdiction logic hidden in simple UI for now or expandable */}
+                )
+              })}
+            </div>
+            
+            {/* Translation hint */}
+            {session?.referenceDraftComplete && activeJurisdiction !== 'REFERENCE' && (
+              <div className="mt-3 text-xs text-gray-500 bg-blue-50 border border-blue-100 rounded p-2">
+                💡 <strong>Translation Mode:</strong> Content will be translated from Reference Draft with temp=0 for consistency.
+              </div>
+            )}
+            
+            {/* Action buttons for multi-jurisdiction */}
+            <div className="mt-4 flex flex-wrap gap-2">
+              {activeJurisdiction === 'REFERENCE' && !session?.referenceDraftComplete && (
+                <button
+                  onClick={handleGenerateReferenceDraft}
+                  disabled={generatingReference}
+                  className="px-4 py-2 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700 disabled:opacity-60 flex items-center gap-2"
+                >
+                  {generatingReference ? (
+                    <>
+                      <span className="animate-spin">⏳</span>
+                      Generating Reference Draft...
+                    </>
+                  ) : (
+                    <>
+                      <span>📝</span>
+                      Generate Reference Draft
+                    </>
+                  )}
+                </button>
+              )}
+              
+              {activeJurisdiction === 'REFERENCE' && session?.referenceDraftComplete && (
+                <div className="flex flex-wrap gap-2">
+                  <span className="px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-sm flex items-center gap-2">
+                    ✅ Reference Draft Complete
+                  </span>
+                  <button
+                    onClick={handleGenerateReferenceDraft}
+                    disabled={generatingReference}
+                    className="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200 flex items-center gap-1"
+                  >
+                    🔄 Regenerate
+                  </button>
+                </div>
+              )}
+              
+              {activeJurisdiction !== 'REFERENCE' && session?.referenceDraftComplete && (
+                <button
+                  onClick={() => handleTranslateToJurisdiction(activeJurisdiction)}
+                  disabled={!!translating}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-60 flex items-center gap-2"
+                >
+                  {translating === activeJurisdiction ? (
+                    <>
+                      <span className="animate-spin">⏳</span>
+                      Translating to {activeJurisdiction}...
+                    </>
+                  ) : (
+                    <>
+                      <span>🔄</span>
+                      Translate to {activeJurisdiction}
+                    </>
+                  )}
+                </button>
+              )}
+              
+              {/* Translate All button */}
+              {activeJurisdiction === 'REFERENCE' && session?.referenceDraftComplete && availableJurisdictions.length > 0 && (
+                <button
+                  onClick={async () => {
+                    for (const code of availableJurisdictions) {
+                      if (!latestDrafts[code]?.version) {
+                        await handleTranslateToJurisdiction(code)
+                      }
+                    }
+                  }}
+                  disabled={!!translating}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-60 flex items-center gap-2"
+                >
+                  {translating ? (
+                    <>
+                      <span className="animate-spin">⏳</span>
+                      Translating {translating}...
+                    </>
+                  ) : (
+                    <>
+                      <span>🌐</span>
+                      Translate All ({availableJurisdictions.filter(c => !latestDrafts[c]?.version).length} remaining)
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1273,6 +2357,75 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                  )}
                </div>
             </div>
+           
+            {/* Validation & Export Section (Multi-jurisdiction) */}
+            {isMultiJurisdiction && activeJurisdiction !== 'REFERENCE' && latestDrafts[activeJurisdiction]?.version > 0 && (
+              <div className="mt-16 border-t pt-8">
+                <ValidationPanel
+                  sessionId={session?.id || ''}
+                  jurisdiction={activeJurisdiction}
+                  patentId={patent?.id || ''}
+                  draft={generated}
+                  onFix={(sectionKey, fixedContent) => {
+                    // Apply the fix to the generated content
+                    setGenerated(prev => ({ ...prev, [sectionKey]: fixedContent }))
+                    // Mark as needing save
+                    setEditDrafts(prev => ({ ...prev, [sectionKey]: fixedContent }))
+                  }}
+                  onProceedToExport={() => {
+                    // Scroll to export section or show export modal
+                    const exportSection = document.getElementById('export-section')
+                    if (exportSection) {
+                      exportSection.scrollIntoView({ behavior: 'smooth' })
+                    }
+                  }}
+                />
+                
+                {/* Export Section */}
+                <div id="export-section" className="mt-8 bg-white rounded-xl border border-gray-200 p-6">
+                  <h4 className="font-semibold text-gray-900 mb-4">Export Options</h4>
+                  <ExportButton
+                    sessionId={session?.id || ''}
+                    jurisdiction={activeJurisdiction}
+                    patentId={patent?.id || ''}
+                    disabled={false}
+                  />
+                </div>
+              </div>
+            )}
+            
+            {/* Validation & Export Section (Single jurisdiction) */}
+            {!isMultiJurisdiction && Object.keys(generated).length > 0 && (
+              <div className="mt-16 border-t pt-8">
+                <ValidationPanel
+                  sessionId={session?.id || ''}
+                  jurisdiction={activeJurisdiction}
+                  patentId={patent?.id || ''}
+                  draft={generated}
+                  onFix={(sectionKey, fixedContent) => {
+                    setGenerated(prev => ({ ...prev, [sectionKey]: fixedContent }))
+                    setEditDrafts(prev => ({ ...prev, [sectionKey]: fixedContent }))
+                  }}
+                  onProceedToExport={() => {
+                    const exportSection = document.getElementById('export-section-single')
+                    if (exportSection) {
+                      exportSection.scrollIntoView({ behavior: 'smooth' })
+                    }
+                  }}
+                />
+                
+                {/* Export Section */}
+                <div id="export-section-single" className="mt-8 bg-white rounded-xl border border-gray-200 p-6">
+                  <h4 className="font-semibold text-gray-900 mb-4">Export Options</h4>
+                  <ExportButton
+                    sessionId={session?.id || ''}
+                    jurisdiction={activeJurisdiction}
+                    patentId={patent?.id || ''}
+                    disabled={false}
+                  />
+                </div>
+              </div>
+            )}
         </div>
     </div>
 

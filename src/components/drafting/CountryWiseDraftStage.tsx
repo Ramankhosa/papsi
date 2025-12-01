@@ -156,6 +156,10 @@ export default function CountryWiseDraftStage({ session, patent, onComplete, onR
         : (langs[0] || '')
       if (chosen) languageByJurisdiction[code] = chosen
     }
+    
+    // Determine if multi-jurisdiction mode
+    const isMultiJurisdiction = mode === 'multi' && finalSelection.length > 1
+    
     try {
       setSaving(true)
       await onComplete({
@@ -164,7 +168,8 @@ export default function CountryWiseDraftStage({ session, patent, onComplete, onR
         stage: 'IDEA_ENTRY',
         draftingJurisdictions: finalSelection,
         activeJurisdiction: finalSelection[0],
-        languageByJurisdiction
+        languageByJurisdiction,
+        isMultiJurisdiction // Pass multi-jurisdiction flag
       })
       await onRefresh()
     } finally {

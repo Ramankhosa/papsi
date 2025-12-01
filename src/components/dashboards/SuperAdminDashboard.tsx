@@ -275,6 +275,12 @@ export default function SuperAdminDashboard() {
                 📝 Section Prompts
               </button>
               <button
+                onClick={() => router.push('/super-admin/jurisdiction-styles')}
+                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-cyan-600 hover:bg-cyan-700"
+              >
+                🎨 Jurisdiction Styles
+              </button>
+              <button
                 onClick={() => setShowCreateTenant(true)}
                 className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700"
               >
