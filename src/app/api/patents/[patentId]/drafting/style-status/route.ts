@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { authenticateUser } from '@/lib/auth-middleware'
 import { prisma } from '@/lib/prisma'
-import { getGatedStyleInstructions } from '@/lib/style-instruction-builder'
+import { hasActiveWritingSamples, getAvailablePersonas } from '@/lib/writing-sample-service'
 
+/**
+ * GET /api/patents/[patentId]/drafting/style-status
+ * 
+ * Returns the status of the user's writing style settings.
+ * Uses the new Writing Personas system (not the old document-based StyleProfile).
+ */
 export async function GET(
   request: NextRequest,
   { params }: { params: { patentId: string } }
@@ -15,7 +21,7 @@ export async function GET(
 
     const { patentId } = params
 
-    // Verify patent access (same as drafting route)
+    // Verify patent access
     const patent = await prisma.patent.findFirst({
       where: {
         id: patentId,
@@ -38,29 +44,42 @@ export async function GET(
       return NextResponse.json({ error: 'Patent not found or access denied' }, { status: 404 })
     }
 
-    // Determine if style instructions are actively applied (plan + learned profile)
-    const instr = await getGatedStyleInstructions(auth.user.tenantId, auth.user.id)
+    // Check if user has writing samples (new persona system)
+    const hasSamples = await hasActiveWritingSamples(auth.user.id)
+    
+    // Get available personas
+    let personas: any[] = []
+    if (auth.user.tenantId) {
+      personas = await getAvailablePersonas(auth.user.id, auth.user.tenantId)
+    }
 
-    // Also surface latest profile status for transparency
-    const latestProfile = await prisma.styleProfile.findFirst({
-      where: { tenantId: auth.user.tenantId, userId: auth.user.id },
-      orderBy: { version: 'desc' }
+    // Count samples per section
+    const sampleCounts = await prisma.writingSample.groupBy({
+      by: ['sectionKey'],
+      where: {
+        userId: auth.user.id,
+        isActive: true
+      },
+      _count: { sectionKey: true }
     })
 
     return NextResponse.json({
-      enabled: !!instr,
-      sections: instr ? Object.keys(instr) : [],
-      profile: latestProfile
-        ? {
-            version: latestProfile.version,
-            status: latestProfile.status,
-            updatedAt: latestProfile.updatedAt.toISOString()
-          }
-        : null
+      enabled: hasSamples,
+      system: 'writing_personas', // Indicate new system is in use
+      personas: personas.map(p => ({
+        id: p.id,
+        name: p.name,
+        isOwn: p.isOwn,
+        sampleCount: p.sampleCount
+      })),
+      sections: sampleCounts.map(s => s.sectionKey),
+      sampleCounts: sampleCounts.reduce((acc, s) => {
+        acc[s.sectionKey] = s._count.sectionKey
+        return acc
+      }, {} as Record<string, number>)
     })
   } catch (e) {
     console.error('style-status error:', e)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
-

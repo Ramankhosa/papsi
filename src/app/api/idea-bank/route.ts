@@ -3,6 +3,7 @@ import { IdeaBankService } from '@/lib/idea-bank-service'
 import { verifyJWT } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { z } from 'zod'
+import { enforceServiceAccess } from '@/lib/service-access-middleware'
 
 const ideaBankService = new IdeaBankService()
 
@@ -59,6 +60,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
+    // Check organizational service access (Tenant Admin controlled)
+    if (user.tenantId) {
+      const serviceCheck = await enforceServiceAccess(user.id, user.tenantId, 'IDEA_BANK')
+      if (!serviceCheck.allowed) {
+        return serviceCheck.response
+      }
+    }
+
     const url = new URL(request.url)
     const searchParams = Object.fromEntries(url.searchParams)
 
@@ -103,6 +112,14 @@ export async function POST(request: NextRequest) {
     const user = await getUserFromRequest(request)
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    // Check organizational service access (Tenant Admin controlled)
+    if (user.tenantId) {
+      const serviceCheck = await enforceServiceAccess(user.id, user.tenantId, 'IDEA_BANK')
+      if (!serviceCheck.allowed) {
+        return serviceCheck.response
+      }
     }
 
     const body = await request.json()

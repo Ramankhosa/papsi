@@ -32,6 +32,22 @@ enum TenantType {
   ENTERPRISE   // Enterprise tenants (strict role separation)
 }
 
+// Service types for access control
+enum ServiceType {
+  PATENT_DRAFTING
+  NOVELTY_SEARCH
+  PRIOR_ART_SEARCH
+  IDEA_BANK
+  PERSONA_SYNC
+  DIAGRAM_GENERATION
+}
+
+// Team roles within a team
+enum TeamRole {
+  LEAD      // Team lead - can manage team settings
+  MEMBER    // Regular member
+}
+
 enum ATITokenStatus {
   ACTIVE
   INACTIVE
@@ -72,6 +88,11 @@ model Tenant {
   styleProfiles     StyleProfile[]
   styleTrainingJobs StyleTrainingJob[]
   documents         Document[]
+
+  // Organizational structure
+  teams             Team[]
+  writingSamples    WritingSample[]
+  writingPersonas   WritingPersona[]
 
   @@map("tenants")
 }
@@ -132,6 +153,11 @@ model User {
 
   // Writing Samples for example-based style mimicry
   writingSamples          WritingSample[]
+  createdPersonas         WritingPersona[]       @relation("PersonaCreator")
+
+  // Team membership and service quotas
+  teamMemberships         TeamMember[]
+  serviceQuotas           UserServiceQuota[]
 
   @@map("users")
 }
@@ -179,9 +205,14 @@ model ATIToken {
   notes          String?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
+  
+  // Explicit role and team assignment for new users
+  assignedRole   UserRole?      // Explicit role for users who sign up with this token
+  assignedTeamId String?        // Team to auto-add user to on signup
 
-  tenant      Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  signupUsers User[]  @relation("SignupATIToken")
+  tenant         Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  signupUsers    User[]  @relation("SignupATIToken")
+  assignedTeam   Team?   @relation("ATITokenTeam", fields: [assignedTeamId], references: [id], onDelete: SetNull)
 
   @@map("ati_tokens")
 }
@@ -200,6 +231,93 @@ model AuditLog {
   tenant Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
   @@map("audit_logs")
+}
+
+// ============================================================================
+// ORGANIZATIONAL STRUCTURE: Teams and Access Control
+// ============================================================================
+
+// Team within a tenant organization
+model Team {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  description String?
+  isDefault   Boolean  @default(false)  // Default team for new users (if set)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdBy   String?  // User ID who created the team
+
+  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  members         TeamMember[]
+  serviceAccess   TeamServiceAccess[]
+  invitedByTokens ATIToken[]         @relation("ATITokenTeam")
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("teams")
+}
+
+// Team membership
+model TeamMember {
+  id       String   @id @default(cuid())
+  teamId   String
+  userId   String
+  role     TeamRole @default(MEMBER)
+  joinedAt DateTime @default(now())
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@index([userId])
+  @@map("team_members")
+}
+
+// Team-level service access control
+model TeamServiceAccess {
+  id           String      @id @default(cuid())
+  teamId       String
+  serviceType  ServiceType
+  isEnabled    Boolean     @default(true)
+  
+  // Optional quotas at team level (overrides tenant plan if set)
+  monthlyQuota Int?        // NULL = use tenant plan quota
+  dailyQuota   Int?        // NULL = use tenant plan quota
+  
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, serviceType])
+  @@map("team_service_access")
+}
+
+// User-level service quota overrides (most granular level)
+model UserServiceQuota {
+  id           String      @id @default(cuid())
+  userId       String
+  serviceType  ServiceType
+  isEnabled    Boolean     @default(true)
+  
+  // Optional quotas at user level (overrides team quota if set)
+  monthlyQuota Int?        // NULL = use team/tenant quota
+  dailyQuota   Int?        // NULL = use team/tenant quota
+  
+  // Usage tracking
+  currentMonthUsage Int    @default(0)
+  currentDayUsage   Int    @default(0)
+  lastResetDate     DateTime @default(now())
+  
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, serviceType])
+  @@map("user_service_quotas")
 }
 
 model Project {
@@ -1702,10 +1820,47 @@ model Document {
 
 // === WRITING SAMPLES FOR EXAMPLE-BASED STYLE MIMICRY ===
 
+// Persona visibility levels
+enum PersonaVisibility {
+  PRIVATE       // Only creator can see/use
+  ORGANIZATION  // Everyone in tenant can see/use
+}
+
+// Writing Persona - Reusable style profiles that can be shared
+model WritingPersona {
+  id            String            @id @default(cuid())
+  tenantId      String
+  createdBy     String            // User who created this persona
+  
+  name          String            // "CSE Patents", "Pharma Style", "Firm Standard"
+  description   String?           // "Formal claims, detailed embodiments"
+  
+  visibility    PersonaVisibility @default(PRIVATE)
+  isTemplate    Boolean           @default(false)  // Firm-wide templates marked by admin
+  allowCopy     Boolean           @default(true)   // Others can copy to their own
+  
+  isActive      Boolean           @default(true)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  
+  // Relations
+  tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  creator       User              @relation("PersonaCreator", fields: [createdBy], references: [id])
+  samples       WritingSample[]
+  
+  // A user can have multiple personas, but names must be unique per user
+  @@unique([createdBy, name])
+  @@index([tenantId, visibility])  // For finding org-wide personas
+  @@index([createdBy])
+  @@map("writing_personas")
+}
+
 model WritingSample {
   id            String   @id @default(cuid())
   userId        String
   tenantId      String
+  personaId     String?  // Reference to WritingPersona (optional for backward compat)
+  personaName   String   @default("Default")  // Kept for backward compatibility
   
   jurisdiction  String   // "IN", "US", "EP", "*" (universal/all jurisdictions)
   sectionKey    String   // "claims", "detailedDescription", "abstract", "background", etc.
@@ -1713,6 +1868,7 @@ model WritingSample {
   sampleText    String   @db.Text  // User's writing sample (3-4 lines, ~100-150 words)
   notes         String?  // Optional notes: "My preferred claims opening style"
   
+  isShared      Boolean  @default(false)  // Deprecated: use persona.visibility instead
   isActive      Boolean  @default(true)
   wordCount     Int      @default(0)  // Computed word count for validation
   
@@ -1720,12 +1876,15 @@ model WritingSample {
   updatedAt     DateTime @updatedAt
   
   // Relations
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  persona WritingPersona? @relation(fields: [personaId], references: [id], onDelete: SetNull)
   
-  // Constraints
-  @@unique([userId, jurisdiction, sectionKey])  // One sample per user per jurisdiction per section
+  // Constraints - samples unique per user per jurisdiction per persona per section
+  @@unique([userId, jurisdiction, personaId, sectionKey])
   @@index([tenantId, userId])
   @@index([userId, jurisdiction])
+  @@index([personaId])
   @@map("writing_samples")
 }
 

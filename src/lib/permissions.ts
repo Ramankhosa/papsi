@@ -8,6 +8,11 @@ export type Permission =
   | 'access_novelty_search'
   | 'manage_ati_tokens'
   | 'view_reports'
+  // Persona/Writing Style permissions
+  | 'use_persona'              // Can use personas for drafting
+  | 'create_own_persona'       // Can create private personas
+  | 'create_org_persona'       // Can create organization-wide personas
+  | 'manage_org_personas'      // Can edit/delete any org persona
 
 /**
  * Context-aware permission checking that considers tenant type
@@ -51,6 +56,23 @@ export function hasPermission(user: User | null, permission: Permission, tenantT
     case 'view_reports':
       return user.roles?.some(role => ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST', 'VIEWER'].includes(role)) || false
 
+    // Persona/Writing Style permissions - Analysts MUST have access as they do the actual drafting
+    case 'use_persona':
+      // Anyone who can draft can use personas
+      return user.roles?.some(role => ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST'].includes(role)) || false
+
+    case 'create_own_persona':
+      // Anyone who can draft can create their own private personas
+      return user.roles?.some(role => ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST'].includes(role)) || false
+
+    case 'create_org_persona':
+      // Only admins can create organization-wide personas
+      return user.roles?.some(role => ['OWNER', 'ADMIN'].includes(role)) || false
+
+    case 'manage_org_personas':
+      // Only admins can edit/delete organization personas
+      return user.roles?.some(role => ['OWNER', 'ADMIN'].includes(role)) || false
+
     default:
       return false
   }
@@ -81,4 +103,21 @@ export function canAccessNoveltySearch(user: User | null): boolean {
 
 export function canManageATITokens(user: User | null): boolean {
   return hasPermission(user, 'manage_ati_tokens')
+}
+
+// Persona/Writing Style permission helpers
+export function canUsePersona(user: User | null): boolean {
+  return hasPermission(user, 'use_persona')
+}
+
+export function canCreateOwnPersona(user: User | null): boolean {
+  return hasPermission(user, 'create_own_persona')
+}
+
+export function canCreateOrgPersona(user: User | null): boolean {
+  return hasPermission(user, 'create_org_persona')
+}
+
+export function canManageOrgPersonas(user: User | null): boolean {
+  return hasPermission(user, 'manage_org_personas')
 }

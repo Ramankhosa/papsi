@@ -60,11 +60,35 @@ export async function GET(request: NextRequest) {
     const url = new URL(request.url)
     const jurisdiction = url.searchParams.get('jurisdiction')
     const sectionKey = url.searchParams.get('sectionKey')
+    const personaId = url.searchParams.get('personaId')
     const includeInactive = url.searchParams.get('includeInactive') === 'true'
 
-    const where: any = {
-      userId: authResult.user.id,
+    // If personaId is provided, fetch samples for that persona (could be org-shared)
+    // Otherwise, fetch only the user's own samples
+    let where: any = {
       ...(includeInactive ? {} : { isActive: true })
+    }
+
+    if (personaId) {
+      // Verify the user has access to this persona (own or org-shared)
+      const persona = await prisma.writingPersona.findFirst({
+        where: {
+          id: personaId,
+          OR: [
+            { createdBy: authResult.user.id },
+            { tenantId: authResult.user.tenantId, visibility: 'ORGANIZATION' }
+          ]
+        }
+      })
+      
+      if (!persona) {
+        return NextResponse.json({ error: 'Persona not found or access denied' }, { status: 404 })
+      }
+      
+      where.personaId = personaId
+    } else {
+      // No persona specified - only return user's own samples
+      where.userId = authResult.user.id
     }
 
     if (jurisdiction) {
@@ -170,16 +194,36 @@ export async function POST(request: NextRequest) {
       }, { status: 400 })
     }
 
-    // Upsert the sample
-    const existing = await prisma.writingSample.findUnique({
-      where: {
-        userId_jurisdiction_sectionKey: {
+    // Get personaId from request (optional) - required for the unique constraint
+    const { personaId, personaName: providedPersonaName } = body
+    const effectivePersonaName = providedPersonaName || 'Default'
+
+    // Upsert the sample - note: unique key includes personaId
+    // For samples without a persona (personaId = null), use findFirst
+    let existing
+    if (personaId) {
+      // With persona - use compound unique key
+      existing = await prisma.writingSample.findUnique({
+        where: {
+          userId_jurisdiction_personaId_sectionKey: {
+            userId: authResult.user.id,
+            jurisdiction: normalizedJurisdiction,
+            personaId,
+            sectionKey
+          }
+        }
+      })
+    } else {
+      // Without persona - find any sample without a persona for this user/jurisdiction/section
+      existing = await prisma.writingSample.findFirst({
+        where: {
           userId: authResult.user.id,
           jurisdiction: normalizedJurisdiction,
+          personaId: null,
           sectionKey
         }
-      }
-    })
+      })
+    }
 
     let result
     if (existing) {
@@ -189,6 +233,7 @@ export async function POST(request: NextRequest) {
           sampleText: trimmedText,
           notes: notes?.trim() || null,
           wordCount,
+          personaName: effectivePersonaName,
           isActive: isActive !== undefined ? isActive : true
         }
       })
@@ -197,6 +242,8 @@ export async function POST(request: NextRequest) {
         data: {
           userId: authResult.user.id,
           tenantId: authResult.user.tenantId || 'default',
+          personaId: personaId || null,
+          personaName: effectivePersonaName,
           jurisdiction: normalizedJurisdiction,
           sectionKey,
           sampleText: trimmedText,

@@ -5,6 +5,7 @@ import { hashPassword, validateATIToken, incrementATITokenUsage, createAuditLog 
 import { generateToken, hashToken } from '@/lib/token-utils'
 import { sendEmail } from '@/lib/mailer'
 import { verificationTemplate } from '@/lib/email-templates'
+import { autoAssignToDefaultTeam } from '@/lib/org-access-service'
 
 const signupSchema = z.object({
   email: z.string().email(),
@@ -141,14 +142,29 @@ export async function POST(request: NextRequest) {
     }
 
     // Determine role based on context
+    // Priority: 1. First user = OWNER, 2. Explicit assignedRole on token, 3. Token creator logic, 4. Default ANALYST
     let userRole = 'ANALYST' // Default role
     let tokenCreator = null
+    let roleReason = 'default'
 
     if (existingUsersCount === 0) {
-      // First user for this tenant - make them OWNER
+      // First user for this tenant - make them OWNER (cannot be overridden)
       userRole = 'OWNER'
+      roleReason = 'first_tenant_user'
+    } else if (fullToken?.assignedRole) {
+      // Explicit role set on the ATI token (highest priority for non-first users)
+      // Validate the role is not SUPER_ADMIN or SUPER_ADMIN_VIEWER
+      const explicitRole = fullToken.assignedRole
+      if (['SUPER_ADMIN', 'SUPER_ADMIN_VIEWER'].includes(explicitRole)) {
+        console.warn('ATI token has invalid assignedRole:', explicitRole)
+        // Fall through to default logic
+      } else {
+        userRole = explicitRole
+        roleReason = 'ati_token_explicit_role'
+        console.log('Using explicit assignedRole from ATI token:', userRole)
+      }
     } else {
-      // Subsequent users - check if this token was created by super admin (platform scope)
+      // Legacy logic: check if this token was created by super admin (platform scope)
       // or by tenant admin
       tokenCreator = await prisma.auditLog.findFirst({
         where: {
@@ -182,11 +198,14 @@ export async function POST(request: NextRequest) {
         // If creator is super admin or belongs to platform tenant, assign ADMIN
         if (creatorUser?.roles?.includes('SUPER_ADMIN') || creatorUser?.tenant?.atiId === 'PLATFORM') {
           userRole = 'ADMIN'
+          roleReason = 'super_admin_token_creator'
           console.log('Assigned ADMIN role due to super admin token creator')
         } else {
+          roleReason = 'tenant_admin_token_creator'
           console.log('Keeping ANALYST role for tenant-admin-created token')
         }
       } else {
+        roleReason = 'no_token_creator_found'
         console.log('No token creator found, keeping ANALYST role')
       }
     }
@@ -253,10 +272,12 @@ export async function POST(request: NextRequest) {
           meta: {
             email: user.email,
             roles: user.roles,
-            assigned_role_reason: existingUsersCount === 0 ? 'first_tenant_user' : 'ati_token_creator_check',
+            assigned_role_reason: roleReason,
             signup_method: 'ati_token',
             ati_token_fingerprint: tokenValidation.atiToken!.fingerprint,
             ati_token_creator: tokenCreator?.actorUserId || null,
+            ati_explicit_role: fullToken?.assignedRole || null,
+            ati_assigned_team: fullToken?.assignedTeamId || null,
             is_first_tenant_user: existingUsersCount === 0
           }
         }
@@ -266,6 +287,20 @@ export async function POST(request: NextRequest) {
     })
 
     const user = result
+    
+    // Auto-assign to team (outside transaction for flexibility)
+    // Priority: 1. Explicit team from ATI token, 2. Default team
+    try {
+      await autoAssignToDefaultTeam(
+        user.id,
+        tenant.id,
+        fullToken?.assignedTeamId || undefined
+      )
+      console.log('User auto-assigned to team:', fullToken?.assignedTeamId || 'default')
+    } catch (teamError) {
+      // Non-fatal - log but don't fail signup
+      console.warn('Failed to auto-assign user to team:', teamError)
+    }
 
     // Email verification disabled by default; enable with ENFORCE_EMAIL_VERIFICATION=true
     if (process.env.ENFORCE_EMAIL_VERIFICATION === 'true') {

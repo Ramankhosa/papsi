@@ -157,9 +157,47 @@ export default function Header() {
                       <span>Projects</span>
                     </Link>
 
+                    {/* Tenant Admin Links - for OWNER and ADMIN */}
+                    {(user.roles?.includes('OWNER') || user.roles?.includes('ADMIN')) && (
+                      <>
+                        <div className="border-t border-gpt-gray-200 my-1"></div>
+                        <div className="px-3 py-1 text-xs font-semibold text-gpt-gray-500 uppercase">
+                          Organization Admin
+                        </div>
+                        <Link
+                          href="/tenant-admin/users"
+                          className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                          onClick={() => setShowUserMenu(false)}
+                        >
+                          <span>👥</span>
+                          <span>User Management</span>
+                        </Link>
+                        <Link
+                          href="/tenant-admin/teams"
+                          className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                          onClick={() => setShowUserMenu(false)}
+                        >
+                          <span>🏢</span>
+                          <span>Team Management</span>
+                        </Link>
+                        <Link
+                          href="/tenant-admin/analytics"
+                          className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                          onClick={() => setShowUserMenu(false)}
+                        >
+                          <span>📊</span>
+                          <span>Usage Analytics</span>
+                        </Link>
+                      </>
+                    )}
+
                     {/* Super Admin Links */}
                     {user.roles?.includes('SUPER_ADMIN') && (
                       <>
+                        <div className="border-t border-gpt-gray-200 my-1"></div>
+                        <div className="px-3 py-1 text-xs font-semibold text-gpt-gray-500 uppercase">
+                          Platform Admin
+                        </div>
                         <Link
                           href="/super-admin/jurisdiction-config"
                           className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
@@ -191,12 +229,12 @@ export default function Header() {
                     <div className="border-t border-gpt-gray-200 my-1"></div>
 
                     <Link
-                      href="/persona-sync"
+                      href="/personas"
                       className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
                       onClick={() => setShowUserMenu(false)}
                     >
-                      <span>ðŸŽ¨</span>
-                      <span>PersonaSync Training</span>
+                      <span>✍️</span>
+                      <span>Writing Personas</span>
                     </Link>
                     <button
                       onClick={handlePasswordReset}

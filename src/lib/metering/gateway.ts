@@ -1,5 +1,14 @@
 // Central LLM Service Gateway
 // Single point of control for all LLM operations with provider routing
+//
+// LLM MODEL ACCESS CONTROL:
+// - Which plans can use which LLM models is controlled ONLY by Super Admin
+// - Via PlanLLMAccess table (plan -> model class mapping)
+// - Tenants have NO control over LLM model routing
+//
+// ORGANIZATIONAL SERVICE ACCESS (teams/users):
+// - Handled separately at API route level, NOT in LLM gateway
+// - Team service toggles are for feature availability, not model access
 
 import type {
   TenantContext,
@@ -51,7 +60,7 @@ export class LLMGateway {
         }
       }
 
-      // 4. Enforce metering policies (existing Module 5)
+      // 4. Enforce metering policies (Super Admin controlled via Plan Features)
       const decision = await this.system.policy.evaluateAccess(featureRequest)
 
       if (!decision.allowed) {
@@ -61,10 +70,10 @@ export class LLMGateway {
         }
       }
 
-      // 5. Route to LLM provider with enforcement limits
+      // 5. Route to LLM provider with enforcement limits (model access per plan)
       const response = await llmProviderRouter.routeAndExecute(llmRequest, decision)
 
-      // 6. Record usage (existing Module 7)
+      // 6. Record usage (metering for billing/quotas)
       if (decision.reservationId) {
         const usageStats: UsageStats = {
           inputTokens: llmRequest.inputTokens || 0,

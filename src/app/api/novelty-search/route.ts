@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { NoveltySearchService, NoveltySearchRequest } from '../../../lib/novelty-search-service';
+import { verifyJWT } from '@/lib/auth';
+import { prisma } from '@/lib/prisma';
+import { enforceServiceAccess } from '@/lib/service-access-middleware';
 
 const noveltySearchService = new NoveltySearchService();
 
@@ -36,6 +39,21 @@ export async function POST(request: NextRequest) {
     }
 
     const jwtToken = authHeader.substring(7);
+
+    // Check organizational service access (Tenant Admin controlled)
+    const payload = verifyJWT(jwtToken);
+    if (payload?.sub) {
+      const user = await prisma.user.findUnique({
+        where: { id: payload.sub },
+        select: { id: true, tenantId: true }
+      });
+      if (user?.tenantId) {
+        const serviceCheck = await enforceServiceAccess(user.id, user.tenantId, 'NOVELTY_SEARCH');
+        if (!serviceCheck.allowed) {
+          return serviceCheck.response;
+        }
+      }
+    }
 
     const searchRequest: NoveltySearchRequest = {
       patentId,

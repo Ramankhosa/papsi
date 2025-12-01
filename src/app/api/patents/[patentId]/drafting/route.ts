@@ -6,9 +6,11 @@ import { prisma } from '@/lib/prisma';
 import { DraftingService } from '@/lib/drafting-service';
 import { IdeaBankService } from '@/lib/idea-bank-service';
 import { llmGateway } from '@/lib/metering/gateway';
-import { getGatedStyleInstructions } from '@/lib/style-instruction-builder'
+// NOTE: Old document-based style learning (getGatedStyleInstructions) has been removed
+// The new Writing Personas system uses writing samples directly in DraftingService
 import { getDocumentTypeConfig, getSupportedCountryCodes, getCountryProfile } from '@/lib/country-profile-service';
 import { resolveCanonicalKey, normalizeSectionKeys } from '@/lib/section-alias-service';
+import { enforceServiceAccess } from '@/lib/service-access-middleware';
 import crypto from 'crypto';
 import plantumlEncoder from 'plantuml-encoder';
 import path from 'path';
@@ -335,6 +337,18 @@ export async function POST(
         { error: authResult.error?.message },
         { status: authResult.error?.status || 401 }
       );
+    }
+
+    // Check organizational service access (Tenant Admin controlled)
+    if (authResult.user.tenantId) {
+      const serviceCheck = await enforceServiceAccess(
+        authResult.user.id,
+        authResult.user.tenantId,
+        'PATENT_DRAFTING'
+      );
+      if (!serviceCheck.allowed) {
+        return serviceCheck.response;
+      }
     }
 
     body = await request.json();
@@ -3637,34 +3651,13 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
   const session = baseSession
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  // Example-based style mimicry: OFF by default, user must explicitly enable
-  // When enabled, the DraftingService will fetch writing samples and inject them into prompts
+  // Example-based style mimicry via Writing Personas (new system)
+  // OFF by default, user must explicitly enable in UI
+  // When enabled, DraftingService fetches user's writing samples and injects them into prompts
   const usePersonaStyle = (data && typeof data.usePersonaStyle === 'boolean') ? Boolean(data.usePersonaStyle) : false
   
-  // Legacy document-based style learning (only if persona style is enabled)
-  let mergedInstructions: Record<string, string> = { ...(instructions || {}) }
-  if (usePersonaStyle) {
-    try {
-      const styleInstr = await getGatedStyleInstructions(user.tenantId, user.id)
-      if (styleInstr) {
-        for (const [k, v] of Object.entries(styleInstr)) {
-          if (!v) continue
-          mergedInstructions[k] = mergedInstructions[k] ? `${mergedInstructions[k]} ; ${v}` : v
-        }
-        if (process.env.PERSONA_SYNC_DEBUG === '1') {
-          console.log('[Drafting][StyleInstr.merge]', Object.keys(styleInstr))
-        }
-      }
-    } catch (e) {
-      if (process.env.PERSONA_SYNC_DEBUG === '1') {
-        console.warn('[Drafting][StyleInstr.skip]', e instanceof Error ? e.message : String(e))
-      }
-    }
-  } else {
-    if (process.env.PERSONA_SYNC_DEBUG === '1') {
-      console.log('[Drafting][StyleInstr.disabled_by_user]')
-    }
-  }
+  // Use provided instructions directly (no legacy style injection)
+  const mergedInstructions: Record<string, string> = { ...(instructions || {}) }
 
   const effectiveJurisdiction = (jurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'US').toUpperCase()
 

@@ -8,6 +8,7 @@ import plantumlEncoder from 'plantuml-encoder'
 import SectionInstructionPopover from './SectionInstructionPopover'
 import AllInstructionsModal from './AllInstructionsModal'
 import WritingSamplesModal from './WritingSamplesModal'
+import PersonaManager, { type PersonaSelection } from './PersonaManager'
 
 type SectionConfig = {
   keys: string[]
@@ -68,6 +69,8 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   const [usePersonaStyle, setUsePersonaStyle] = useState<boolean>(false) // OFF by default
   const [styleAvailable, setStyleAvailable] = useState<boolean | null>(null)
   const [showWritingSamplesModal, setShowWritingSamplesModal] = useState(false)
+  const [showPersonaManager, setShowPersonaManager] = useState(false)
+  const [personaSelection, setPersonaSelection] = useState<PersonaSelection | undefined>(undefined)
   const [currentKeys, setCurrentKeys] = useState<string[] | null>(null)
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
   const [editingKey, setEditingKey] = useState<string | null>(null)
@@ -632,6 +635,20 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             <span className={`text-xs font-medium ${usePersonaStyle ? 'text-emerald-700' : 'text-red-600'}`}>
               {usePersonaStyle ? '✓ Style ON' : '○ Style OFF'}
             </span>
+            {/* Selected Persona Display */}
+            {personaSelection?.primaryPersonaName && (
+              <span className="text-xs text-gray-500 px-2 py-0.5 bg-gray-100 rounded">
+                {personaSelection.primaryPersonaName}
+                {personaSelection.secondaryPersonaNames?.length ? ` +${personaSelection.secondaryPersonaNames.length}` : ''}
+              </span>
+            )}
+            <button
+              onClick={() => setShowPersonaManager(true)}
+              className="px-2 py-0.5 text-xs rounded bg-blue-50 border border-blue-300 text-blue-600 hover:bg-blue-100"
+              title="Select writing persona (CSE, Bio, etc.)"
+            >
+              👤 Persona
+            </button>
             <button
               onClick={() => setShowWritingSamplesModal(true)}
               className="px-2 py-0.5 text-xs rounded bg-white border border-gray-300 text-gray-600 hover:bg-gray-50"
@@ -1276,6 +1293,22 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
               .then(res => res.json())
               .then(data => setUserInstructions(data.grouped || {}))
               .catch(console.error)
+          }}
+        />
+      )}
+
+      {/* Persona Manager Modal */}
+      {showPersonaManager && (
+        <PersonaManager
+          isOpen={showPersonaManager}
+          onClose={() => setShowPersonaManager(false)}
+          showSelector={true}
+          currentSelection={personaSelection}
+          onSelectPersona={(selection) => {
+            setPersonaSelection(selection)
+            if (selection.primaryPersonaId) {
+              setUsePersonaStyle(true) // Auto-enable style when persona selected
+            }
           }}
         />
       )}

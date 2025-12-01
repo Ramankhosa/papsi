@@ -7,7 +7,10 @@ import { generateATIToken, hashATIToken, createATIFingerprint, createAuditLog, e
 const issueSchema = z.object({
   expires_at: z.string().optional(), // ISO date string
   max_uses: z.number().optional(),
-  notes: z.string().optional()
+  notes: z.string().optional(),
+  // New: Explicit role and team assignment for granular control
+  assigned_role: z.enum(['ADMIN', 'MANAGER', 'ANALYST', 'VIEWER']).optional(),
+  assigned_team_id: z.string().optional()
 })
 
 export async function POST(request: NextRequest) {
@@ -21,7 +24,7 @@ export async function POST(request: NextRequest) {
     if (roleCheck) return roleCheck
 
     const body = await request.json()
-    const { expires_at, max_uses, notes } = issueSchema.parse(body)
+    const { expires_at, max_uses, notes, assigned_role, assigned_team_id } = issueSchema.parse(body)
 
     // Get the tenant admin's signup ATI token to inherit the plan tier
     const tenantAdmin = await prisma.user.findUnique({
@@ -74,6 +77,21 @@ export async function POST(request: NextRequest) {
     const encryptedRawToken = encryptToken(rawToken)
     const rawTokenExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000) // 30 days
 
+    // Validate assigned_team_id if provided
+    if (assigned_team_id) {
+      const team = await prisma.team.findUnique({
+        where: { id: assigned_team_id },
+        select: { tenantId: true, isActive: true }
+      })
+      
+      if (!team || team.tenantId !== user.tenant_id || !team.isActive) {
+        return NextResponse.json(
+          { code: 'INVALID_TEAM', message: 'Invalid or inactive team specified' },
+          { status: 400 }
+        )
+      }
+    }
+
     // Create ATI token record
     const atiToken = await prisma.aTIToken.create({
       data: {
@@ -85,7 +103,10 @@ export async function POST(request: NextRequest) {
         expiresAt: expires_at ? new Date(expires_at) : null,
         maxUses: max_uses,
         planTier: planTier, // Use tenant's active plan tier
-        notes
+        notes,
+        // New: Explicit role and team assignment
+        assignedRole: assigned_role as any || null,
+        assignedTeamId: assigned_team_id || null
       }
     })
 
@@ -104,7 +125,9 @@ export async function POST(request: NextRequest) {
         fingerprint: atiToken.fingerprint,
         expiresAt: atiToken.expiresAt,
         maxUses: atiToken.maxUses,
-        planTier: atiToken.planTier
+        planTier: atiToken.planTier,
+        assignedRole: atiToken.assignedRole,
+        assignedTeamId: atiToken.assignedTeamId
       }
     })
 
@@ -113,6 +136,8 @@ export async function POST(request: NextRequest) {
       token_display_once: rawToken,
       fingerprint: atiToken.fingerprint,
       token_id: atiToken.id,
+      assigned_role: atiToken.assignedRole,
+      assigned_team_id: atiToken.assignedTeamId,
       warning: "This token will not be shown again. Copy it now and store securely."
     }, { status: 201 })
 
