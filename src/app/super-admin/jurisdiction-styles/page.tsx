@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 
 // ============================================================================
@@ -143,19 +143,7 @@ export default function JurisdictionStylesPage() {
 
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
 
-  useEffect(() => {
-    if (!user) {
-      window.location.href = '/login'
-      return
-    }
-    if (!user.roles?.some(role => role === 'SUPER_ADMIN')) {
-      window.location.href = '/dashboard'
-      return
-    }
-    fetchData()
-  }, [user])
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true)
       console.log('[JurisdictionStyles UI] Fetching data...')
@@ -228,7 +216,19 @@ export default function JurisdictionStylesPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [selectedCountry])
+
+  useEffect(() => {
+    if (!user) {
+      window.location.href = '/login'
+      return
+    }
+    if (!user.roles?.some(role => role === 'SUPER_ADMIN')) {
+      window.location.href = '/dashboard'
+      return
+    }
+    fetchData()
+  }, [user, fetchData])
 
   const showToast = (type: 'success' | 'error', message: string) => {
     setToast({ type, message })

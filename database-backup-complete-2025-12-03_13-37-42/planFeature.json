@@ -1,0 +1,79 @@
+[
+  {
+    "id": "cmiis24ux001clkp370u09lik",
+    "planId": "cmiis24ug0018lkp3l60xbutm",
+    "featureId": "cmiis24rv000elkp3hrd97vbr",
+    "monthlyQuota": 50,
+    "dailyQuota": 10
+  },
+  {
+    "id": "cmiis24v3001elkp3cdezvywy",
+    "planId": "cmiis24ug0018lkp3l60xbutm",
+    "featureId": "cmiis24s3000flkp3umrrdqf9",
+    "monthlyQuota": 1000,
+    "dailyQuota": 100
+  },
+  {
+    "id": "cmiis24v9001glkp3i8crm3tw",
+    "planId": "cmiis24um0019lkp34x7ufolb",
+    "featureId": "cmiis24rv000elkp3hrd97vbr",
+    "monthlyQuota": 1000,
+    "dailyQuota": 100
+  },
+  {
+    "id": "cmiis24vf001ilkp39kk5cuuj",
+    "planId": "cmiis24um0019lkp34x7ufolb",
+    "featureId": "cmiis24s3000flkp3umrrdqf9",
+    "monthlyQuota": 10000,
+    "dailyQuota": 1000
+  },
+  {
+    "id": "cmiis24vi001klkp3bika85kc",
+    "planId": "cmiis24um0019lkp34x7ufolb",
+    "featureId": "cmiis24s6000glkp3wdouvci8",
+    "monthlyQuota": 200,
+    "dailyQuota": 40
+  },
+  {
+    "id": "cmiis24vl001mlkp3514swi12",
+    "planId": "cmiis24um0019lkp34x7ufolb",
+    "featureId": "cmiis24sa000hlkp3vqlodlpw",
+    "monthlyQuota": 50,
+    "dailyQuota": 10
+  },
+  {
+    "id": "cmiis24vp001olkp31uucjbur",
+    "planId": "cmiis24ur001alkp34jedx95q",
+    "featureId": "cmiis24rv000elkp3hrd97vbr",
+    "monthlyQuota": 5000,
+    "dailyQuota": 500
+  },
+  {
+    "id": "cmiis24vs001qlkp3il8jv6cd",
+    "planId": "cmiis24ur001alkp34jedx95q",
+    "featureId": "cmiis24s3000flkp3umrrdqf9",
+    "monthlyQuota": 50000,
+    "dailyQuota": 5000
+  },
+  {
+    "id": "cmiis24vy001slkp3d3u92lno",
+    "planId": "cmiis24ur001alkp34jedx95q",
+    "featureId": "cmiis24s6000glkp3wdouvci8",
+    "monthlyQuota": 500,
+    "dailyQuota": 100
+  },
+  {
+    "id": "cmiis24w3001ulkp3yknh1pz9",
+    "planId": "cmiis24ur001alkp34jedx95q",
+    "featureId": "cmiis24sa000hlkp3vqlodlpw",
+    "monthlyQuota": 200,
+    "dailyQuota": 50
+  },
+  {
+    "id": "cmiis24w7001wlkp3wt10pzp3",
+    "planId": "cmiis24ur001alkp34jedx95q",
+    "featureId": "cmiis24sd000ilkp38pzhu71i",
+    "monthlyQuota": 50,
+    "dailyQuota": 10
+  }
+]

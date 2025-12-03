@@ -1,6 +1,7 @@
 'use client'
 
 import AnimatedLogo from '@/components/ui/animated-logo'
+import Image from 'next/image'
 
 export default function TestGifPage() {
   return (
@@ -37,10 +38,12 @@ export default function TestGifPage() {
 
           <div>
             <h2 className="text-lg font-semibold text-gray-700 mb-4">Direct GIF Test</h2>
-            <img
+            <Image
               src="/animations/logo-video.gif"
               alt="Direct GIF test"
-              className="w-16 h-16 rounded-full object-cover shadow-lg mx-auto"
+              width={64}
+              height={64}
+              className="rounded-full object-cover shadow-lg mx-auto"
             />
           </div>
 

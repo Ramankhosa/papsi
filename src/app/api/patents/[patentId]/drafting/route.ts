@@ -300,6 +300,15 @@ export async function GET(
       orderBy: { createdAt: 'desc' }
     });
 
+    // Log priorArtConfig for debugging
+    if (sessions.length > 0) {
+      console.log('📋 GET sessions - priorArtConfig:', {
+        sessionId: sessions[0].id,
+        priorArtConfig: (sessions[0] as any).priorArtConfig,
+        claimRefinementConfig: (sessions[0] as any).priorArtConfig?.claimRefinementConfig
+      })
+    }
+
     return NextResponse.json({ sessions });
 
   } catch (error) {
@@ -412,6 +421,9 @@ export async function POST(
       case 'save_ai_analysis':
         return await handleSaveAIAnalysis(authResult.user, patentId, data);
 
+      case 'save_prior_art_config':
+        return await handleSavePriorArtConfig(authResult.user, patentId, data);
+
       case 'generate_plantuml':
         return await handleGeneratePlantUML(authResult.user, patentId, data);
 
@@ -479,6 +491,12 @@ export async function POST(
 
       case 'unfreeze_claims':
         return await handleUnfreezeClaims(authResult.user, patentId, data);
+
+      case 'claim_refinement_preview':
+        return await handleClaimRefinementPreview(authResult.user, patentId, data, requestHeaders);
+
+      case 'claim_refinement_apply':
+        return await handleClaimRefinementApply(authResult.user, patentId, data);
 
       case 'set_stage':
         return await handleSetStage(authResult.user, patentId, data);
@@ -594,6 +612,55 @@ async function handleSaveAIAnalysis(user: any, patentId: string, data: any) {
   return NextResponse.json({ session: updated })
 }
 
+async function handleSavePriorArtConfig(user: any, patentId: string, data: any) {
+  const { sessionId, priorArtConfig, claimRefConfig, skipClaimRefinement } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+
+  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id } })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  // Merge with existing priorArtConfig
+  const existingConfig = (session.priorArtConfig as any) || {}
+  
+  const updatedConfig = {
+    ...existingConfig,
+    // Prior Art for Drafting workflow
+    priorArtForDrafting: priorArtConfig ? {
+      mode: priorArtConfig.mode || 'ai',
+      selectedPatents: priorArtConfig.selectedPatents || [],
+      manualText: priorArtConfig.manualText || ''
+    } : existingConfig.priorArtForDrafting,
+    // Claim Refinement workflow
+    claimRefinementConfig: claimRefConfig ? {
+      mode: claimRefConfig.mode || 'ai',
+      selectedPatents: claimRefConfig.selectedPatents || [],
+      manualText: claimRefConfig.manualText || ''
+    } : existingConfig.claimRefinementConfig,
+    // Skip flag
+    skippedClaimRefinement: skipClaimRefinement ?? existingConfig.skippedClaimRefinement
+  }
+
+  const updated = await prisma.draftingSession.update({
+    where: { id: sessionId },
+    data: { priorArtConfig: updatedConfig } as any
+  })
+
+  console.log('💾 Saved prior art config:', {
+    priorArtForDrafting: {
+      mode: updatedConfig.priorArtForDrafting?.mode,
+      patentsCount: updatedConfig.priorArtForDrafting?.selectedPatents?.length || 0
+    },
+    claimRefinementConfig: {
+      mode: updatedConfig.claimRefinementConfig?.mode,
+      patentsCount: updatedConfig.claimRefinementConfig?.selectedPatents?.length || 0,
+      patents: updatedConfig.claimRefinementConfig?.selectedPatents?.map((p: any) => p.patentNumber)
+    },
+    skippedClaimRefinement: updatedConfig.skippedClaimRefinement
+  })
+
+  return NextResponse.json({ session: updated, priorArtConfig: updatedConfig })
+}
+
 async function handleRelatedArtLLMReview(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
   const { sessionId, runId, batchSize, claimsContext } = data
   if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
@@ -624,10 +691,14 @@ async function handleRelatedArtLLMReview(user: any, patentId: string, data: any,
   const query = (session.ideaRecord as any)?.searchQuery || ''
   
   // Get frozen claims from session for claim-aware analysis
-  const normalizedData = (session.ideaRecord?.normalizedData as any) || {}
-  const frozenClaims = claimsContext?.claims || normalizedData.claimsStructured || []
-  const claimsText = normalizedData.claims || ''
-  const hasClaimsContext = claimsContext?.frozenAt || normalizedData.claimsApprovedAt
+  const normalizedData = normalizeClaimsForSession((session.ideaRecord?.normalizedData as any) || {})
+  const frozenClaims = claimsContext?.claims || normalizedData.claimsStructuredFinal || normalizedData.claimsStructured || normalizedData.claimsStructuredProvisional || []
+  const claimsText = normalizedData.claimsFinal || normalizedData.claims || normalizedData.claimsProvisional || ''
+  const hasClaimsContext = claimsContext?.frozenAt || normalizedData.claimsApprovedAt || claimsText
+  const manualPriorArtText = (session.manualPriorArt as any)?.manualPriorArtText || (session.manualPriorArt as any)?.text || ''
+  const manualPriorArtSection = manualPriorArtText
+    ? `\n\nUSER-SUPPLIED PRIOR ART & ANALYSIS (treat as highly relevant):\n${manualPriorArtText}`
+    : ''
   
   // Build claims summary for the prompt
   let claimsSection = ''
@@ -636,17 +707,20 @@ async function handleRelatedArtLLMReview(user: any, patentId: string, data: any,
       const claimsSummary = frozenClaims.slice(0, 8).map((c: any) => 
         `Claim ${c.number} (${c.type}): ${(c.text || '').substring(0, 200)}...`
       ).join('\n')
-      claimsSection = `\n\nOUR FROZEN PATENT CLAIMS (analyze prior art against these specific claims):\n${claimsSummary}`
+      const heading = normalizedData.claimsApprovedAt ? 'OUR FROZEN PATENT CLAIMS' : 'OUR CURRENT CLAIMS'
+      claimsSection = `\n\n${heading} (analyze prior art against these specific claims):\n${claimsSummary}`
       if (frozenClaims.length > 8) {
         claimsSection += `\n(+ ${frozenClaims.length - 8} additional claims)`
       }
     } else if (typeof frozenClaims === 'string' && frozenClaims.trim()) {
       // Handle string claims (HTML)
       const plainClaims = frozenClaims.replace(/<[^>]*>/g, '').substring(0, 1000)
-      claimsSection = `\n\nOUR FROZEN PATENT CLAIMS (analyze prior art against these specific claims):\n${plainClaims}...`
+      const heading = normalizedData.claimsApprovedAt ? 'OUR FROZEN PATENT CLAIMS' : 'OUR CURRENT CLAIMS'
+      claimsSection = `\n\n${heading} (analyze prior art against these specific claims):\n${plainClaims}...`
     } else if (claimsText) {
       const plainClaims = claimsText.replace(/<[^>]*>/g, '').substring(0, 1000)
-      claimsSection = `\n\nOUR FROZEN PATENT CLAIMS (analyze prior art against these specific claims):\n${plainClaims}...`
+      const heading = normalizedData.claimsApprovedAt ? 'OUR FROZEN PATENT CLAIMS' : 'OUR CURRENT CLAIMS'
+      claimsSection = `\n\n${heading} (analyze prior art against these specific claims):\n${plainClaims}...`
     }
   }
 
@@ -690,7 +764,7 @@ async function handleRelatedArtLLMReview(user: any, patentId: string, data: any,
 
     const batchRelevancePrompt = `You are an expert patent attorney. Analyze these patent candidates for relevance to our invention and assess novelty threat to our specific claims.
 
-INVENTION: ${title} | SEARCH: ${query}${claimsSection}
+INVENTION: ${title} | SEARCH: ${query}${claimsSection}${manualPriorArtSection}
 
 For each patent, provide:
 - relevance: 0.0-1.0 score
@@ -768,6 +842,14 @@ ${batchText}`
   }
 
   console.log('Total relevance analysis completed:', relevanceData.length, 'patents analyzed')
+
+  // If no relevance data was collected, something went wrong with the LLM calls
+  if (relevanceData.length === 0) {
+    console.error('❌ No relevance data collected from LLM calls')
+    return NextResponse.json({
+      error: 'AI analysis failed: The AI service did not return any results. This may be due to API limits, network issues, or invalid API keys. Please try again in a few moments.'
+    }, { status: 500 })
+  }
 
   // Process relevance results
   for (const r of relevanceData) {
@@ -886,7 +968,17 @@ ${candidatesText}`
       }
     } catch (e) {
       console.log('Idea generation JSON parse failed:', e)
+      // Continue with empty ideaBank rather than failing completely
     }
+  } else {
+    console.log('Idea generation failed:', ideaResult?.error || 'Unknown error')
+    // Log the full error for debugging
+    console.error('Idea generation LLM call failed:', {
+      success: ideaResult?.success,
+      error: ideaResult?.error,
+      response: ideaResult?.response
+    })
+    // Continue with empty ideaBank rather than failing completely
   }
 
 
@@ -2327,8 +2419,44 @@ async function handleUpdateIdeaRecord(user: any, patentId: string, data: any) {
 // CLAIMS GENERATION AND MANAGEMENT HANDLERS (Stage 1)
 // ============================================================================
 
+const structuredClaimsToHtml = (claims: any[] | undefined | null): string => {
+  if (!Array.isArray(claims)) return ''
+  return claims.map((c: any) => {
+    const num = typeof c.number === 'number' || typeof c.number === 'string' ? c.number : ''
+    const typeLabel = c.type === 'dependent' && c.dependsOn ? `(Claim ${c.dependsOn})` : `(${c.category || 'independent'})`
+    return `<p><strong>${num}.</strong> ${c.text || ''}${typeLabel ? ` ${typeLabel}` : ''}</p>`
+  }).join('\n')
+}
+
+const htmlToPlainText = (html?: string | null): string => {
+  if (!html) return ''
+  try {
+    return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+  } catch {
+    return String(html)
+  }
+}
+
+const normalizeClaimsForSession = (normalized: Record<string, any> = {}) => {
+  const merged = { ...(normalized || {}) }
+  // Backfill provisional/final for legacy sessions
+  if (!merged.claimsProvisional && merged.claims) merged.claimsProvisional = merged.claims
+  if (!merged.claimsStructuredProvisional && merged.claimsStructured) merged.claimsStructuredProvisional = merged.claimsStructured
+  if (!merged.claimsFinal && merged.claimsApprovedAt) merged.claimsFinal = merged.claims || merged.claimsProvisional
+  if (!merged.claimsStructuredFinal && merged.claimsApprovedAt && merged.claimsStructured) {
+    merged.claimsStructuredFinal = merged.claimsStructured
+  }
+  return merged
+}
+
+const getWorkingClaims = (normalized: Record<string, any> = {}) => {
+  const structured = normalized.claimsStructured || normalized.claimsStructuredFinal || normalized.claimsStructuredProvisional || []
+  const html = normalized.claims || normalized.claimsFinal || normalized.claimsProvisional || structuredClaimsToHtml(structured)
+  return { structured, html }
+}
+
 async function handleGenerateClaims(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
-  const { sessionId, jurisdiction, ideaContext } = data
+  const { sessionId, jurisdiction, ideaContext, userInstructions } = data
 
   if (!sessionId) {
     return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
@@ -2423,6 +2551,11 @@ ${jurisdictionInstructions.length > 0 ? jurisdictionInstructions.join('\n') : '-
 
 ${claimPrompt.instruction ? `ADDITIONAL INSTRUCTIONS:\n${claimPrompt.instruction}` : ''}
 
+${userInstructions ? `⚠️ CRITICAL USER INSTRUCTIONS - MUST FOLLOW OR RISK FAILURE ⚠️:
+${userInstructions}
+
+IMPORTANT: These user instructions take precedence over all other guidelines. Not following these specific requirements will result in claim rejection and failure. Ensure every generated claim complies with these directives.` : ''}
+
 REQUIREMENTS:
 1. Generate a comprehensive claim set with:
    - At least 1 independent method claim
@@ -2503,6 +2636,8 @@ Return ONLY the JSON object, no markdown fencing or explanation.`
       ...existingNormalized,
       claims: claimsHtml,
       claimsStructured: generatedClaims,
+      claimsProvisional: claimsHtml,
+      claimsStructuredProvisional: generatedClaims,
       claimsJurisdiction: activeJurisdiction,
       claimsGeneratedAt: new Date().toISOString()
     }
@@ -2549,11 +2684,19 @@ async function handleSaveClaims(user: any, patentId: string, data: any) {
   }
 
   // Update claims in normalizedData
-  const updatedNormalized = {
+  const nextClaims = claims || existingNormalized.claims
+  const nextStructured = claimsStructured || existingNormalized.claimsStructured
+  const updatedNormalized: Record<string, any> = {
     ...existingNormalized,
-    claims: claims || existingNormalized.claims,
-    claimsStructured: claimsStructured || existingNormalized.claimsStructured,
+    claims: nextClaims,
+    claimsStructured: nextStructured,
     claimsLastSavedAt: new Date().toISOString()
+  }
+
+  // Keep provisional copy in sync until claims are frozen
+  if (!existingNormalized.claimsApprovedAt) {
+    updatedNormalized.claimsProvisional = nextClaims
+    updatedNormalized.claimsStructuredProvisional = nextStructured
   }
 
   await prisma.ideaRecord.update({
@@ -2565,7 +2708,7 @@ async function handleSaveClaims(user: any, patentId: string, data: any) {
 }
 
 async function handleFreezeClaims(user: any, patentId: string, data: any) {
-  const { sessionId, claims, claimsStructured, jurisdiction } = data
+  const { sessionId, claims, claimsStructured, jurisdiction, skipPriorArt, useInitialClaimsForDrafting } = data
 
   if (!sessionId) {
     return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
@@ -2584,19 +2727,44 @@ async function handleFreezeClaims(user: any, patentId: string, data: any) {
   const existingNormalized = (session.ideaRecord?.normalizedData as any) || {}
   
   // Validate claims content
-  const claimsContent = claims || existingNormalized.claims
+  const claimsContent = claims || existingNormalized.claims || existingNormalized.claimsFinal || existingNormalized.claimsProvisional
   if (!claimsContent || (typeof claimsContent === 'string' && claimsContent.trim() === '')) {
     return NextResponse.json({ error: 'Cannot freeze empty claims' }, { status: 400 })
   }
 
   // Freeze claims
-  const updatedNormalized = {
+  const now = new Date().toISOString()
+  const effectiveStructured = claimsStructured || existingNormalized.claimsStructured || existingNormalized.claimsStructuredFinal || existingNormalized.claimsStructuredProvisional
+  const updatedNormalized: Record<string, any> = {
     ...existingNormalized,
     claims: claimsContent,
-    claimsStructured: claimsStructured || existingNormalized.claimsStructured,
-    claimsApprovedAt: new Date().toISOString(),
+    claimsStructured: effectiveStructured,
+    claimsApprovedAt: now,
     claimsApprovedBy: user.id,
     claimsJurisdiction: jurisdiction || existingNormalized.claimsJurisdiction || session.activeJurisdiction || 'US'
+  }
+
+  // Preserve provisional copies
+  if (!existingNormalized.claimsProvisional) {
+    updatedNormalized.claimsProvisional = claimsContent
+  }
+  if (!existingNormalized.claimsStructuredProvisional && effectiveStructured) {
+    updatedNormalized.claimsStructuredProvisional = effectiveStructured
+  }
+
+  // Always store finals from current working version
+  updatedNormalized.claimsFinal = claimsContent
+  updatedNormalized.claimsStructuredFinal = effectiveStructured
+
+  // Track refinement source when skipping prior art to signal downstream that no references exist
+  if (skipPriorArt || useInitialClaimsForDrafting) {
+    updatedNormalized.claimsRefinementSource = {
+      mode: 'SKIPPED',
+      usedManualPriorArt: false,
+      autoRunId: null,
+      skipPriorArt: true,
+      finalizedAt: now
+    }
   }
 
   await prisma.ideaRecord.update({
@@ -2641,6 +2809,323 @@ async function handleUnfreezeClaims(user: any, patentId: string, data: any) {
   return NextResponse.json({ success: true, unfrozenAt: new Date().toISOString() })
 }
 
+async function handleClaimRefinementPreview(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
+  const { sessionId, useAuto = true, useManual = false, selectedPatents = [], runId, additionalInstructions } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: {
+      ideaRecord: true,
+      relatedArtRuns: { orderBy: { ranAt: 'desc' }, take: 1 },
+      relatedArtSelections: true,
+      referenceMap: true
+    }
+  })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const normalized = normalizeClaimsForSession((session.ideaRecord?.normalizedData as any) || {})
+  const working = getWorkingClaims(normalized)
+  const provisionalHtml = normalized.claimsProvisional || working.html
+  const provisionalStructured = normalized.claimsStructuredProvisional || working.structured
+
+  if (!provisionalHtml || provisionalHtml.trim() === '') {
+    return NextResponse.json({ error: 'No claims available for refinement. Provide or generate claims first.' }, { status: 400 })
+  }
+
+  const claimRefinementConfig = (session.priorArtConfig as any)?.claimRefinementConfig || {}
+  const claimRefSelected = Array.isArray(claimRefinementConfig?.selectedPatents) ? claimRefinementConfig.selectedPatents : []
+
+  // Auto prior art references (obvious/anticipates)
+  const selections: any[] = Array.isArray(session.relatedArtSelections) ? session.relatedArtSelections : []
+  const selectionMap = new Map<string, any>()
+  selections.forEach((s: any) => {
+    const pn = typeof s?.patentNumber === 'string' ? s.patentNumber.trim() : ''
+    if (pn) selectionMap.set(pn, s)
+  })
+  const mergedClaimRefSelections = claimRefSelected
+    .map((p: any) => {
+      const pn = String(p?.patentNumber || p?.pn || p?.publication_number || p?.publicationNumber || p?.id || '').trim()
+      if (!pn) return null
+      const mapped = selectionMap.get(pn) || {}
+      return { ...mapped, ...p, patentNumber: pn, title: p?.title || mapped?.title || 'Untitled' }
+    })
+    .filter(Boolean) as any[]
+
+  const preferredAuto = new Set(
+    (Array.isArray(selectedPatents) ? selectedPatents : [])
+      .map((p: any) => typeof p === 'string' ? p : p?.patentNumber)
+      .filter(Boolean)
+  )
+  const ideaBasics = {
+    title: session.ideaRecord?.title || 'Untitled',
+    problem: session.ideaRecord?.problem || '',
+    objectives: session.ideaRecord?.objectives || '',
+    abstract: session.ideaRecord?.abstract || ''
+  }
+
+  const componentsFromReference = Array.isArray((session.referenceMap as any)?.components) ? (session.referenceMap as any).components : []
+  const componentsFromIdea = Array.isArray(session.ideaRecord?.components) ? session.ideaRecord.components : []
+  const componentList = (componentsFromReference.length > 0 ? componentsFromReference : componentsFromIdea)
+    .map((c: any, idx: number) => {
+      const name = c?.name || c?.title || c?.component || `Component ${idx + 1}`
+      const numeral = c?.numeral ? ` (#${c.numeral})` : ''
+      const desc = c?.description ? `: ${c.description}` : ''
+      return `- ${name}${numeral}${desc}`
+    })
+    .join('\n')
+
+  const threatFor = (r: any) => {
+    if (r?.noveltyThreat) return String(r.noveltyThreat)
+    const tags: string[] = Array.isArray(r?.tags) ? r.tags : []
+    if (tags.includes('AI_ANTICIPATES')) return 'anticipates'
+    if (tags.includes('AI_OBVIOUS')) return 'obvious'
+    if (tags.includes('AI_ADJACENT')) return 'adjacent'
+    if (tags.includes('AI_REMOTE')) return 'remote'
+    return ''
+  }
+
+  // ONLY use patents from claim refinement config - do NOT fall back to relatedArtSelections
+  // as those are meant for prior art drafting (background sections), not claim refinement
+  const baseAutoRefs = mergedClaimRefSelections
+  const autoRefs = useAuto
+    ? baseAutoRefs.filter((s: any) => {
+        const pn = s.patentNumber || s.publication_number || ''
+        if (!pn) return false
+        // If user specifically selected patents, only use those
+        if (preferredAuto.size > 0) return preferredAuto.has(pn)
+        // Otherwise use all claim refinement patents (they were already selected for this purpose)
+        return true
+      })
+    : []
+
+  const autoRunId = runId || session.relatedArtRuns?.[0]?.id || null
+  const claimRefManualText = typeof claimRefinementConfig?.manualText === 'string' ? claimRefinementConfig.manualText : ''
+  const manualText = useManual
+    ? (claimRefManualText ||
+      (session.manualPriorArt as any)?.manualPriorArtText ||
+      (session.manualPriorArt as any)?.text ||
+      '')
+    : ''
+  const userDirectives = typeof additionalInstructions === 'string' ? additionalInstructions.trim() : ''
+
+  const autoRefBlocks = autoRefs.map((r, idx) => {
+    const notes = (() => {
+      try {
+        const parsed = typeof r.userNotes === 'string' ? JSON.parse(r.userNotes) : r.userNotes
+        return parsed?.summary || r.userNotes || ''
+      } catch {
+        return r.userNotes || ''
+      }
+    })()
+    return `AUTO#${idx + 1} :: ${r.patentNumber || 'UNKNOWN'} :: ${r.title || ''}\nTHREAT: ${threatFor(r) || 'unknown'}\nSUMMARY: ${notes || r.snippet || ''}`
+  }).join('\n\n')
+
+  const manualBlock = manualText
+    ? `MANUAL#1 :: USER-SUPPLIED CLAIM-REFINEMENT NOTES (treat as highly relevant and mandatory)\n${manualText}`
+    : ''
+
+  const criticalInstructionsBlock = userDirectives
+    ? `\n\n====================================================================================
+CRITICAL USER INSTRUCTIONS (MANDATORY - OUTPUT WILL FAIL WITHOUT FOLLOWING THESE):
+====================================================================================
+${userDirectives}
+
+*** YOU MUST FOLLOW THE ABOVE INSTRUCTIONS. If you cannot satisfy them, explain why in your response and mark the refinement as FAILED. ***
+====================================================================================`
+    : ''
+
+  const claimLines = Array.isArray(provisionalStructured) && provisionalStructured.length > 0
+    ? provisionalStructured.map((c: any) => `${c.number || ''}. ${c.text || ''} [${c.type || c.category || 'claim'}]`).join('\n')
+    : htmlToPlainText(provisionalHtml)
+
+  const mode: 'AUTO' | 'MANUAL' | 'HYBRID' = useAuto && useManual ? 'HYBRID' : useAuto ? 'AUTO' : 'MANUAL'
+
+  const prompt = `You are an expert patent attorney refining claims to preserve the broadest defensible scope while addressing cited prior art.
+
+INVENTION BASICS:
+- Title: ${ideaBasics.title}
+- Problem: ${ideaBasics.problem || 'Not specified'}
+- Objectives: ${ideaBasics.objectives || 'Not specified'}
+- Abstract: ${ideaBasics.abstract || 'Not specified'}
+- Key components: ${componentList || 'Not specified'}
+
+CURRENT CLAIMS (treat as provisional unless already frozen):
+${claimLines}
+
+${autoRefBlocks ? `PATENTS SELECTED FOR CLAIM REFINEMENT (user-selected, claims must be novel over ALL of these):\n${autoRefBlocks}\n\n*** CRITICAL: Novelty must be explicitly established over EACH reference above. These are NOT general prior art - they are specifically selected references that the user wants their claims to be distinguished from. ***` : 'PATENTS FOR CLAIM REFINEMENT: none selected (user may be relying only on manual notes or skipping refinement)'}
+
+${manualBlock || 'MANUAL PRIOR ART: none provided'}
+${criticalInstructionsBlock}
+
+Guidelines:
+- For each claim, either KEEP_AS_IS or provide a refined_text that avoids anticipation/obviousness over the selected patents.
+- Only narrow when justified by specific references from the selected patents list. Cite them via IDs (AUTO#1, MANUAL#1, etc.).
+- Preserve jurisdictional style loosely; maintain numbering.
+- Prefer concise edits over full rewrites when possible.
+- Each refined claim must clearly distinguish from ALL selected patents above.
+- If user provided additional instructions above (CRITICAL USER INSTRUCTIONS), those MUST be followed or the output is considered FAILED.
+- If refinement cannot be achieved while maintaining patentable scope, explain why in the change_reason.
+
+Return ONLY valid JSON:
+{
+  "refined_claims": [
+    {
+      "number": 1,
+      "original_text": "text of original claim",
+      "refined_text": "revised text or null if unchanged",
+      "keep_as_is": true,
+      "change_reason": "why refined or why kept",
+      "prior_art_refs": ["AUTO#1","MANUAL#1"]
+    }
+  ]
+}`
+
+  const request = { headers: requestHeaders || {} }
+  const llmResult = await llmGateway.executeLLMOperation(request, {
+    taskCode: 'LLM1_CLAIM_REFINEMENT',
+    prompt,
+    modelClass: 'gemini-2.5-flash-lite',
+    idempotencyKey: crypto.randomUUID(),
+    inputTokens: Math.ceil(prompt.length / 4),
+    metadata: {
+      patentId,
+      sessionId,
+      runId: autoRunId,
+      purpose: 'claim_refinement_preview',
+      mode
+    }
+  })
+
+  let refinedClaims: any[] = []
+  try {
+    const raw = (llmResult.response?.output || '').trim()
+    const start = raw.indexOf('{')
+    const end = raw.lastIndexOf('}')
+    const json = start !== -1 && end !== -1 ? raw.substring(start, end + 1) : raw
+    const parsed = JSON.parse(json)
+    refinedClaims = Array.isArray(parsed?.refined_claims) ? parsed.refined_claims : Array.isArray(parsed) ? parsed : []
+  } catch (e) {
+    console.error('Failed to parse claim refinement preview JSON', e)
+  }
+
+  const previewPayload = {
+    refinedClaims,
+    generatedAt: new Date().toISOString(),
+    mode,
+    usedManualPriorArt: !!useManual,
+    autoRunId,
+    selectedPatents: Array.from(preferredAuto),
+    manualIncluded: !!manualText,
+    additionalInstructions: userDirectives || undefined,
+    claimRefSources: mergedClaimRefSelections.length
+  }
+
+  const mergedNormalized = {
+    ...normalized,
+    claimsRefinementPreview: previewPayload
+  }
+
+  await prisma.ideaRecord.update({
+    where: { sessionId },
+    data: { normalizedData: mergedNormalized }
+  })
+
+  console.log(`[claim_refinement_preview] mode=${mode}, autoRefs=${autoRefs.length}, manualIncluded=${!!manualText}`)
+  return NextResponse.json({ success: true, preview: previewPayload })
+}
+
+async function handleClaimRefinementApply(user: any, patentId: string, data: any) {
+  const { sessionId, acceptedClaimNumbers } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { ideaRecord: true }
+  })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const normalized = normalizeClaimsForSession((session.ideaRecord?.normalizedData as any) || {})
+  const preview = normalized.claimsRefinementPreview
+  if (!preview || !Array.isArray(preview.refinedClaims)) {
+    return NextResponse.json({ error: 'No refinement preview found. Generate a preview first.' }, { status: 400 })
+  }
+
+  const baseStructured: any[] =
+    normalized.claimsStructured ||
+    normalized.claimsStructuredProvisional ||
+    normalized.claimsStructuredFinal ||
+    []
+
+  const fallbackFromPreview = preview.refinedClaims.map((c: any, idx: number) => ({
+    number: c.number || idx + 1,
+    text: c.original_text || c.refined_text || '',
+    type: 'independent',
+    category: 'independent'
+  }))
+
+  const workingStructured = Array.isArray(baseStructured) && baseStructured.length > 0 ? baseStructured : fallbackFromPreview
+  const acceptedSet = new Set(
+    Array.isArray(acceptedClaimNumbers)
+      ? acceptedClaimNumbers.map((n: any) => Number(n))
+      : []
+  )
+  const acceptAll = acceptedSet.size === 0
+
+  const merged = workingStructured.map((c: any) => {
+    const match = preview.refinedClaims.find((r: any) => Number(r.number) === Number(c.number))
+    const accepted = acceptAll || acceptedSet.has(Number(c.number))
+    if (match && accepted && match.refined_text) {
+      return { ...c, text: match.refined_text }
+    }
+    return { ...c }
+  })
+
+  const changedClaims = preview.refinedClaims.filter((r: any) => r.refined_text && (acceptAll || acceptedSet.has(Number(r.number))))
+  const changeNotes = changedClaims.map((r: any) => {
+    const refs = Array.isArray(r.prior_art_refs) ? r.prior_art_refs.join(', ') : ''
+    const reason = r.change_reason || r.changeReason || 'refined'
+    return `Claim ${r.number}: ${reason}${refs ? ` [refs: ${refs}]` : ''}`
+  }).join('\n')
+
+  const mergedHtml = structuredClaimsToHtml(merged)
+  const now = new Date().toISOString()
+  const mode: 'AUTO' | 'MANUAL' | 'HYBRID' = preview.mode || (preview.usedManualPriorArt ? (preview.autoRunId ? 'HYBRID' : 'MANUAL') : 'AUTO')
+
+  const updatedNormalized: Record<string, any> = {
+    ...normalized,
+    claimsStructured: merged,
+    claims: mergedHtml,
+    claimsLastSavedAt: now,
+    claimsRefinementNotes: changeNotes,
+    claimsRefinementSource: {
+      autoRunId: preview.autoRunId || null,
+      usedManualPriorArt: !!preview.usedManualPriorArt,
+      mode,
+      selectedPatents: preview.selectedPatents || [],
+      appliedAt: now
+    }
+  }
+
+  if (!updatedNormalized.claimsProvisional) {
+    updatedNormalized.claimsProvisional = normalized.claimsProvisional || mergedHtml
+    updatedNormalized.claimsStructuredProvisional = normalized.claimsStructuredProvisional || workingStructured
+  }
+
+  await prisma.ideaRecord.update({
+    where: { sessionId },
+    data: { normalizedData: updatedNormalized }
+  })
+
+  console.log(`[claim_refinement_apply] applied=${changedClaims.length}, acceptedAll=${acceptAll}`)
+  return NextResponse.json({
+    success: true,
+    claims: merged,
+    claimsHtml: mergedHtml,
+    notes: changeNotes
+  })
+}
+
 async function handleSetStage(user: any, patentId: string, data: any) {
   const {
     sessionId,
@@ -2651,7 +3136,10 @@ async function handleSetStage(user: any, patentId: string, data: any) {
     activeJurisdiction,
     languageByJurisdiction,
     sourceOfTruth,
-    isMultiJurisdiction
+    isMultiJurisdiction,
+    skipPriorArt,
+    useInitialClaimsForDrafting,
+    priorArtConfig
   } = data
 
   console.log('handleSetStage called with:', { sessionId, stage, patentId, userId: user.id, manualPriorArt: !!manualPriorArt, selectedPatentsCount: selectedPatents?.length || 0 })
@@ -2659,9 +3147,10 @@ async function handleSetStage(user: any, patentId: string, data: any) {
   // COUNTRY_WISE_DRAFTING kept for backward compatibility with existing sessions
   const allowedStages = [
     'IDEA_ENTRY',
+    'RELATED_ART',
+    'CLAIM_REFINEMENT',
     'COMPONENT_PLANNER',
     'FIGURE_PLANNER',
-    'RELATED_ART',
     'COUNTRY_WISE_DRAFTING', // Legacy - jurisdiction now selected in Stage 0
     'ANNEXURE_DRAFT',
     'REVIEW_FIX',
@@ -2678,7 +3167,8 @@ async function handleSetStage(user: any, patentId: string, data: any) {
   }
 
   const session = await prisma.draftingSession.findFirst({
-    where: { id: sessionId, patentId, userId: user.id }
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { ideaRecord: true }
   })
 
   console.log('Session lookup result:', session ? 'found' : 'not found')
@@ -2698,6 +3188,72 @@ async function handleSetStage(user: any, patentId: string, data: any) {
 
   // Prepare update data
   const updateData: any = { status: stage }
+
+  const stageFlow = ['IDEA_ENTRY', 'RELATED_ART', 'CLAIM_REFINEMENT', 'COMPONENT_PLANNER', 'FIGURE_PLANNER', 'ANNEXURE_DRAFT', 'REVIEW_FIX', 'EXPORT_READY', 'COMPLETED']
+  const currentStage = session.status
+  let allowed = true
+  const sessionPriorArtConfig = (session.priorArtConfig as any) || {}
+  const priorArtSkipped = !!sessionPriorArtConfig.skipped
+  const claimRefinementSkipped = !!sessionPriorArtConfig.skippedClaimRefinement
+  
+  // Check if claim refinement is being skipped in THIS request
+  const isSkippingClaimRefinement = data.claimRefinementSkipped || data.priorArtConfig?.skippedClaimRefinement
+
+  if (stage === currentStage) {
+    allowed = true
+  } else if (currentStage === 'IDEA_ENTRY') {
+    if (stage === 'RELATED_ART') {
+      allowed = true
+    } else if (stage === 'COMPONENT_PLANNER' && (skipPriorArt || useInitialClaimsForDrafting)) {
+      allowed = true
+    } else {
+      allowed = false
+    }
+  } else if (currentStage === 'RELATED_ART') {
+    // Allow going to CLAIM_REFINEMENT or directly to COMPONENT_PLANNER (if skipping claim refinement)
+    if (stage === 'CLAIM_REFINEMENT') {
+      allowed = true
+    } else if (stage === 'COMPONENT_PLANNER' && isSkippingClaimRefinement) {
+      allowed = true
+    } else if (stage === 'IDEA_ENTRY') {
+      // Allow going back to idea entry from related art
+      allowed = true
+    } else {
+      allowed = false
+    }
+  } else if (currentStage === 'CLAIM_REFINEMENT') {
+    if (stage === 'COMPONENT_PLANNER') {
+      allowed = true
+    } else if (stage === 'RELATED_ART') {
+      // Allow going back to related art from claim refinement
+      allowed = true
+    } else {
+      allowed = false
+    }
+  } else if (currentStage === 'COMPONENT_PLANNER') {
+    // Allow controlled backward navigation depending on which stages were skipped
+    if (stage === 'CLAIM_REFINEMENT' && !claimRefinementSkipped && !priorArtSkipped) {
+      allowed = true
+    } else if (stage === 'RELATED_ART' && !priorArtSkipped) {
+      // Allow going back to Related Art if claim refinement was skipped OR if going back through the flow
+      allowed = true
+    } else if (stage === 'IDEA_ENTRY' && priorArtSkipped) {
+      allowed = true
+    } else {
+      const currentIdx = stageFlow.indexOf(currentStage)
+      const targetIdx = stageFlow.indexOf(stage)
+      allowed = currentIdx !== -1 && targetIdx !== -1 && targetIdx >= currentIdx
+    }
+  } else {
+    const currentIdx = stageFlow.indexOf(currentStage)
+    const targetIdx = stageFlow.indexOf(stage)
+    // Allow backward navigation for any stage
+    allowed = currentIdx !== -1 && targetIdx !== -1
+  }
+
+  if (!allowed) {
+    return NextResponse.json({ error: 'Stage transition not allowed for this flow' }, { status: 400 })
+  }
 
   // Default jurisdiction fallback (IN for India)
   const defaultJurisdiction = 'IN';
@@ -2808,6 +3364,59 @@ async function handleSetStage(user: any, patentId: string, data: any) {
 
   if (manualPriorArt !== undefined) {
     updateData.manualPriorArt = manualPriorArt
+  }
+
+  if (priorArtConfig) {
+    updateData.priorArtConfig = priorArtConfig
+  }
+
+  // Store claimRefinementSkipped flag in priorArtConfig JSON field
+  if (data.claimRefinementSkipped) {
+    updateData.priorArtConfig = {
+      ...(updateData.priorArtConfig || sessionPriorArtConfig || {}),
+      skippedClaimRefinement: true
+    }
+  }
+
+  // If user opted to skip prior art/refinement, freeze provisional claims as final and mark config
+  if (stage === 'COMPONENT_PLANNER' && (skipPriorArt || useInitialClaimsForDrafting)) {
+    const normalized = normalizeClaimsForSession((session.ideaRecord?.normalizedData as any) || {})
+    const claimsSnapshot = getWorkingClaims(normalized)
+    if (!claimsSnapshot.html) {
+      return NextResponse.json({ error: 'Cannot skip without initial claims. Please add claims first.' }, { status: 400 })
+    }
+    const now = new Date().toISOString()
+    const normalizedUpdate: Record<string, any> = {
+      ...normalized,
+      claims: claimsSnapshot.html,
+      claimsStructured: claimsSnapshot.structured,
+      claimsProvisional: normalized.claimsProvisional || claimsSnapshot.html,
+      claimsStructuredProvisional: normalized.claimsStructuredProvisional || claimsSnapshot.structured,
+      claimsFinal: claimsSnapshot.html,
+      claimsStructuredFinal: claimsSnapshot.structured,
+      claimsApprovedAt: now,
+      claimsApprovedBy: user.id,
+      claimsJurisdiction: normalized.claimsJurisdiction || session.activeJurisdiction || 'US',
+      claimsRefinementSource: {
+        mode: 'SKIPPED',
+        usedManualPriorArt: false,
+        autoRunId: null,
+        skipPriorArt: true,
+        appliedAt: now
+      }
+    }
+
+    await prisma.ideaRecord.update({
+      where: { sessionId },
+      data: { normalizedData: normalizedUpdate }
+    })
+
+    updateData.priorArtConfig = {
+      skipped: true,
+      useInitialClaimsForDrafting: !!useInitialClaimsForDrafting,
+      useAuto: false,
+      useManual: false
+    }
   }
 
   const updated = await prisma.draftingSession.update({
@@ -3028,12 +3637,25 @@ async function handleUpdateComponentMap(user: any, patentId: string, data: any) 
     );
   }
 
+  // Pre-process components to normalize before validation
+  const normalizedComponents = (components || []).map((comp: any) => {
+    const validTypes = ['MAIN_CONTROLLER', 'SUBSYSTEM', 'MODULE', 'INTERFACE', 'SENSOR', 'ACTUATOR', 'PROCESSOR', 'MEMORY', 'DISPLAY', 'COMMUNICATION', 'POWER_SUPPLY', 'OTHER'];
+    return {
+      ...comp,
+      type: validTypes.includes(comp?.type) ? comp.type : 'OTHER',
+      description: typeof comp?.description === 'string' ? comp.description : '',
+      name: typeof comp?.name === 'string' ? comp.name : '',
+      id: typeof comp?.id === 'string' ? comp.id : `comp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+    };
+  });
+
   // Validate components and assign numerals
-  const validation = DraftingService.validateComponentMap(components);
+  const validation = DraftingService.validateComponentMap(normalizedComponents);
 
   if (!validation.valid) {
     console.error('Component map validation failed:', validation.errors);
-    console.error('Components received:', JSON.stringify(components, null, 2));
+    console.error('Components received (original):', JSON.stringify(components, null, 2));
+    console.error('Components received (normalized):', JSON.stringify(normalizedComponents, null, 2));
     return NextResponse.json(
       {
         error: 'Component validation failed. Please check that all components have valid names and the hierarchy is correct.',
@@ -3762,6 +4384,22 @@ COMMON PLANTUML PITFALLS (AVOID THESE):
 - Always close control and note blocks: every "if" has a matching "endif"; every "note" has a matching "end note"; every "start" has a matching "end".
 - Do not nest or repeat "@startuml"/"@enduml"; there must be exactly one pair per diagram.
 
+═══════════════════════════════════════════════════════════════════════════════
+⚠️ CRITICAL WARNING - READ BEFORE GENERATING CODE ⚠️
+═══════════════════════════════════════════════════════════════════════════════
+*** ANY HALLUCINATION OR ERROR IN THE PLANTUML CODE WILL CAUSE COMPLETE FAILURE ***
+
+1. DO NOT HALLUCINATE: Only use components, numerals, and relationships that are explicitly provided above.
+2. DO NOT INVENT: Do not create fake component names, fake numerals, or imaginary connections.
+3. SYNTAX MUST BE PERFECT: Any syntax error will cause the diagram to fail to render.
+4. TEST YOUR OUTPUT MENTALLY: Before outputting, verify every line is syntactically correct PlantUML.
+5. IF UNSURE, SIMPLIFY: It is better to output a simple correct diagram than a complex broken one.
+6. EVERY CONNECTION MUST BE COMPLETE: "A --> B" is valid; "A --" alone will FAIL.
+7. EVERY BLOCK MUST BE CLOSED: Unclosed blocks will cause FAILURE.
+
+Your output will be directly fed to a PlantUML renderer. ANY error means the user sees nothing.
+There is NO error recovery. Be EXTRA CAUTIOUS. When in doubt, keep it simple and correct.
+
 INSTRUCTION: Follow jurisdiction-specific requirements first, then apply invention-type conventions. Use precise domain-specific terms where applicable.`
 
   const request = { headers: requestHeaders || {} }
@@ -4007,6 +4645,19 @@ PLANTUML TECHNICAL REQUIREMENTS
 - Always close control and note blocks: every "if" has a matching "endif"; every "note" has a matching "end note"; every "start" has a matching "end".
 - Do not nest or repeat "@startuml"/"@enduml"; there must be exactly one pair per diagram.
 
+═══════════════════════════════════════════════════════════════════════════════
+⚠️ CRITICAL WARNING - READ BEFORE GENERATING CODE ⚠️
+═══════════════════════════════════════════════════════════════════════════════
+*** ANY HALLUCINATION OR ERROR IN THE PLANTUML CODE WILL CAUSE COMPLETE FAILURE ***
+
+1. DO NOT HALLUCINATE: Only use components and numerals that are explicitly provided above.
+2. SYNTAX MUST BE PERFECT: Any syntax error will cause the diagram to fail to render.
+3. EVERY CONNECTION MUST BE COMPLETE: "A --> B" is valid; "A --" alone will FAIL.
+4. EVERY BLOCK MUST BE CLOSED: Unclosed blocks will cause FAILURE.
+5. IF UNSURE, SIMPLIFY: A simple correct diagram is better than a complex broken one.
+
+Your output goes directly to PlantUML renderer. ANY error = user sees nothing. Be EXTRA CAUTIOUS.
+
 INSTRUCTION: Follow jurisdiction-specific requirements first. Use precise domain-specific terms where applicable.
 
 Existing title: ${title}
@@ -4106,6 +4757,19 @@ PLANTUML TECHNICAL REQUIREMENTS
 - Do not leave incomplete connection lines like "500 --". Always specify both endpoints (for example "500 --> 600").
 - Always close control and note blocks: every "if" has a matching "endif"; every "note" has a matching "end note"; every "start" has a matching "end".
 - Do not nest or repeat "@startuml"/"@enduml"; there must be exactly one pair per diagram.
+
+═══════════════════════════════════════════════════════════════════════════════
+⚠️ CRITICAL WARNING - READ BEFORE GENERATING CODE ⚠️
+═══════════════════════════════════════════════════════════════════════════════
+*** ANY HALLUCINATION OR ERROR IN THE PLANTUML CODE WILL CAUSE COMPLETE FAILURE ***
+
+1. DO NOT HALLUCINATE: Only use components and numerals that are explicitly provided above.
+2. SYNTAX MUST BE PERFECT: Any syntax error will cause the diagram to fail to render.
+3. EVERY CONNECTION MUST BE COMPLETE: "A --> B" is valid; "A --" alone will FAIL.
+4. EVERY BLOCK MUST BE CLOSED: Unclosed blocks will cause FAILURE.
+5. IF UNSURE, SIMPLIFY: A simple correct diagram is better than a complex broken one.
+
+Your output goes directly to PlantUML renderer. ANY error = user sees nothing. Be EXTRA CAUTIOUS.
 
 INSTRUCTION: Follow jurisdiction-specific requirements first. Use precise domain-specific terms where applicable.
 
@@ -4208,6 +4872,20 @@ PLANTUML TECHNICAL REQUIREMENTS
 - Do not leave incomplete connection lines like "500 --". Always specify both endpoints (for example "500 --> 600").
 - Always close control and note blocks: every "if" has a matching "endif"; every "note" has a matching "end note"; every "start" has a matching "end".
 - Do not nest or repeat "@startuml"/"@enduml"; there must be exactly one pair per diagram.
+
+═══════════════════════════════════════════════════════════════════════════════
+⚠️ CRITICAL WARNING - READ BEFORE GENERATING CODE ⚠️
+═══════════════════════════════════════════════════════════════════════════════
+*** ANY HALLUCINATION OR ERROR IN THE PLANTUML CODE WILL CAUSE COMPLETE FAILURE ***
+
+1. DO NOT HALLUCINATE: Only use components and numerals that are explicitly provided above.
+2. SYNTAX MUST BE PERFECT: Any syntax error will cause the diagram to fail to render.
+3. EVERY CONNECTION MUST BE COMPLETE: "A --> B" is valid; "A --" alone will FAIL.
+4. EVERY BLOCK MUST BE CLOSED: Unclosed blocks will cause FAILURE.
+5. IF UNSURE, SIMPLIFY: A simple correct diagram is better than a complex broken one.
+6. GENERATE ${instructionsList.length} SEPARATE DIAGRAMS: Each must be complete and valid.
+
+Your output goes directly to PlantUML renderer. ANY error = user sees nothing. Be EXTRA CAUTIOUS.
 
 INSTRUCTION: Follow jurisdiction-specific requirements first. Use precise domain-specific terms where applicable.
 
@@ -4529,7 +5207,7 @@ async function handleAutosaveSections(user: any, patentId: string, data: any) {
 
   const session = await prisma.draftingSession.findFirst({
     where: { id: sessionId, patentId, userId: user.id },
-    include: { annexureDrafts: { orderBy: { version: 'desc' } } }
+    include: { annexureDrafts: { orderBy: { version: 'desc' } }, ideaRecord: true }
   })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
@@ -4693,10 +5371,10 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
   const effectiveJurisdiction = (jurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'US').toUpperCase()
 
   // Check for frozen claims - use them instead of regenerating
-  const normalizedData = (session.ideaRecord?.normalizedData as any) || {}
-  const frozenClaimsText = normalizedData.claims || ''
-  const frozenClaimsStructured = normalizedData.claimsStructured || []
-  const claimsFrozen = !!normalizedData.claimsApprovedAt
+  const normalizedData = normalizeClaimsForSession((session.ideaRecord?.normalizedData as any) || {})
+  const frozenClaimsText = normalizedData.claimsFinal || normalizedData.claimsProvisional || normalizedData.claims || ''
+  const frozenClaimsStructured = normalizedData.claimsStructuredFinal || normalizedData.claimsStructuredProvisional || normalizedData.claimsStructured || []
+  const claimsFrozen = !!(normalizedData.claimsApprovedAt || normalizedData.claimsFinal)
   const claimsJurisdiction = normalizedData.claimsJurisdiction || effectiveJurisdiction
   
   // If claims are frozen and user is trying to generate claims, use frozen claims instead
@@ -5308,7 +5986,10 @@ async function handleTranslateToJurisdiction(
 
   const session = await prisma.draftingSession.findFirst({
     where: { id: sessionId, patentId, userId: user.id },
-    include: { annexureDrafts: { orderBy: { version: 'desc' } } }
+    include: {
+      annexureDrafts: { orderBy: { version: 'desc' } },
+      ideaRecord: true
+    }
   })
 
   if (!session) {
@@ -5328,6 +6009,8 @@ async function handleTranslateToJurisdiction(
   if (!referenceDraft) {
     return NextResponse.json({ error: 'Reference draft not found' }, { status: 404 })
   }
+  const normalizedData = normalizeClaimsForSession((session.ideaRecord?.normalizedData as any) || {})
+  const finalClaimsText = normalizedData.claimsFinal || normalizedData.claimsProvisional || normalizedData.claims || referenceDraft.claims || ''
 
   // Resolve target language - from request, session status, or profile default
   const targetCode = targetJurisdiction.toUpperCase()
@@ -5350,7 +6033,7 @@ async function handleTranslateToJurisdiction(
     briefDescriptionOfDrawings: referenceDraft.briefDescriptionOfDrawings,
     detailedDescription: referenceDraft.detailedDescription,
     bestMode: referenceDraft.bestMethod, // Map to canonical superset key
-    claims: referenceDraft.claims,
+    claims: finalClaimsText,
     abstract: referenceDraft.abstract,
     industrialApplicability: referenceDraft.industrialApplicability,
     // Extended superset sections from extraSections

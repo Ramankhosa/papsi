@@ -52,9 +52,39 @@ function NewPatentDraftPageContent() {
     }
 
     if (!authLoading && user) {
+      const fetchProjects = async () => {
+        try {
+          const response = await fetch('/api/projects', {
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+            }
+          })
+
+          if (response.ok) {
+            const data = await response.json()
+            const list: Project[] = data.projects || []
+            setProjects(list)
+
+            // If coming from dashboard, find and select the "Default Project"
+            if (!initialProjectId && list.length > 0) {
+              const defaultProject = list.find(p => p.name === 'Default Project');
+              if (defaultProject) {
+                setSelectedProject(defaultProject.id);
+              } else {
+                // Fallback to the first project if "Default Project" is not found
+                setSelectedProject(list[0].id);
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Failed to fetch projects:', error)
+        } finally {
+          setIsLoading(false)
+        }
+      }
       fetchProjects()
     }
-  }, [authLoading, user, router])
+  }, [authLoading, user, router, initialProjectId])
 
   // Preselect project if provided via query param
   useEffect(() => {
@@ -101,36 +131,6 @@ function NewPatentDraftPageContent() {
     fetchCountries()
   }, [])
 
-  const fetchProjects = async () => {
-    try {
-      const response = await fetch('/api/projects', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-        }
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        const list: Project[] = data.projects || []
-        setProjects(list)
-
-        // If coming from dashboard, find and select the "Default Project"
-        if (!initialProjectId && list.length > 0) {
-          const defaultProject = list.find(p => p.name === 'Default Project');
-          if (defaultProject) {
-            setSelectedProject(defaultProject.id);
-          } else {
-            // Fallback to the first project if "Default Project" is not found
-            setSelectedProject(list[0].id);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('Failed to fetch projects:', error)
-    } finally {
-      setIsLoading(false)
-    }
-  }
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -294,7 +294,8 @@ function NewPatentDraftPageContent() {
         body: JSON.stringify({
           action: 'set_stage',
           sessionId,
-          stage: 'COUNTRY_WISE_DRAFTING',
+          // Keep the session in the initial stage while persisting jurisdiction choice
+          stage: 'IDEA_ENTRY',
           draftingJurisdictions: finalSelection,
           activeJurisdiction: finalSelection[0]
         })

@@ -46,6 +46,7 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
   const [showOriginal, setShowOriginal] = useState(false)
   const [showInventionDetails, setShowInventionDetails] = useState(true)
   const [showClaimsDetails, setShowClaimsDetails] = useState(true)
+  const [isNavigating, setIsNavigating] = useState(false)
 
   // Claims state
   const [claims, setClaims] = useState<Claim[]>([])
@@ -66,6 +67,10 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
   const [abstractText, setAbstractText] = useState('')
   const [cpcCodes, setCpcCodes] = useState<string[]>([])
   const [ipcCodes, setIpcCodes] = useState<string[]>([])
+  const [useInitialClaimsForDraft, setUseInitialClaimsForDraft] = useState(false)
+  const [skipPriorArtClicked, setSkipPriorArtClicked] = useState(false)
+  const [regenerateInstructions, setRegenerateInstructions] = useState('')
+  const [draftSaved, setDraftSaved] = useState(false)
 
   // Use data from existing idea record
   const rawIdea = session?.ideaRecord?.rawInput || ''
@@ -133,7 +138,16 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
     }
   }, [session])
 
-  const canProceed = normalizedData && normalizedData.extractedFields && claimsFrozen
+  // Reset draft saved state when claims content changes
+  useEffect(() => {
+    if (draftSaved) {
+      setDraftSaved(false)
+    }
+  }, [claimsText])
+
+  const strippedClaims = typeof claimsText === 'string' ? claimsText.replace(/<[^>]*>/g, '').trim() : ''
+  const hasClaims = strippedClaims.length > 0 || claims.length > 0
+  const canProceed = !!normalizedData && hasClaims
 
   // Generate claims using jurisdiction-aware rules
   const handleGenerateClaims = async () => {
@@ -147,6 +161,7 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
         action: 'generate_claims',
         sessionId: session.id,
         jurisdiction: activeJurisdiction,
+        userInstructions: regenerateInstructions.trim() || undefined,
         ideaContext: {
           title,
           problem,
@@ -175,6 +190,8 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
       }
 
       await onRefresh()
+      // Clear instructions after successful regeneration
+      setRegenerateInstructions('')
     } catch (e) {
       console.error('Failed to generate claims:', e)
       setError('Failed to generate claims. Please try again.')
@@ -199,6 +216,7 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
       })
 
       await onRefresh()
+      setDraftSaved(true)
     } catch (e) {
       console.error('Failed to save claims:', e)
       setError('Failed to save claims.')
@@ -252,6 +270,70 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
     } catch (e) {
       console.error('Failed to unfreeze claims:', e)
       setError('Failed to unfreeze claims.')
+    }
+  }
+
+  const persistClaimsDraft = async () => {
+    if (!session?.id) return
+    const claimsContent = claimsEditorRef.current?.getHTML() || claimsText
+    if (!claimsContent || claimsContent.trim() === '' || claimsContent === '<p></p>') {
+      throw new Error('Please add claims before continuing.')
+    }
+    await onComplete({
+      action: 'save_claims',
+      sessionId: session.id,
+      claims: claimsContent,
+      claimsStructured: claims.length > 0 ? claims : null
+    })
+  }
+
+  const proceedToPriorArt = async () => {
+    if (!session?.id) return
+    try {
+      setIsNavigating(true)
+      setError(null)
+      if (!claimsFrozen) {
+        await persistClaimsDraft()
+      }
+      await onComplete({
+        action: 'set_stage',
+        sessionId: session.id,
+        stage: 'RELATED_ART'
+      })
+      await onRefresh()
+    } catch (e) {
+      console.error('Failed to proceed to prior art:', e)
+      setError(e instanceof Error ? e.message : 'Failed to proceed to prior art')
+    } finally {
+      setIsNavigating(false)
+    }
+  }
+
+  const handleSkipClick = () => {
+    setSkipPriorArtClicked(true)
+  }
+
+  const skipPriorArtAndFreeze = async () => {
+    if (!session?.id) return
+    try {
+      setIsNavigating(true)
+      setError(null)
+      if (!claimsFrozen) {
+        await persistClaimsDraft()
+      }
+      await onComplete({
+        action: 'set_stage',
+        sessionId: session.id,
+        stage: 'COMPONENT_PLANNER',
+        skipPriorArt: true,
+        useInitialClaimsForDrafting: useInitialClaimsForDraft
+      })
+      await onRefresh()
+    } catch (e) {
+      console.error('Failed to skip prior art:', e)
+      setError(e instanceof Error ? e.message : 'Failed to skip prior art')
+    } finally {
+      setIsNavigating(false)
     }
   }
 
@@ -629,7 +711,7 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
                   <Scale className="w-3.5 h-3.5 text-indigo-600" />
                 </div>
                 <h3 className="text-sm font-semibold text-gray-900">
-                  Patent Claims
+                  Initial Patent Claims
                 </h3>
                 <Badge variant="secondary" className="text-xs">
                   {activeJurisdiction} Rules
@@ -725,16 +807,26 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
                             />
 
                             {/* Action Buttons */}
-                            <div className="flex items-center justify-between pt-4 border-t border-gray-100">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={handleGenerateClaims}
-                                disabled={claimsFrozen || isGeneratingClaims}
-                              >
-                                <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
-                                Regenerate
-                              </Button>
+                            <div className="flex flex-col gap-3 pt-4 border-t border-gray-100">
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  value={regenerateInstructions}
+                                  onChange={(e) => setRegenerateInstructions(e.target.value)}
+                                  placeholder="Enter instructions for claim regeneration (optional)"
+                                  className="flex-1 px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                  disabled={claimsFrozen || isGeneratingClaims}
+                                />
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={handleGenerateClaims}
+                                  disabled={claimsFrozen || isGeneratingClaims}
+                                >
+                                  <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+                                  Regenerate
+                                </Button>
+                              </div>
 
                               <div className="flex items-center gap-2">
                                 {!claimsFrozen && (
@@ -743,8 +835,16 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
                                       variant="outline"
                                       size="sm"
                                       onClick={handleSaveClaims}
+                                      className={draftSaved ? "bg-green-50 border-green-200 text-green-700" : ""}
                                     >
-                                      Save Draft
+                                      {draftSaved ? (
+                                        <>
+                                          <Check className="w-3.5 h-3.5 mr-1.5 text-green-600" />
+                                          Saved!
+                                        </>
+                                      ) : (
+                                        "Save Draft"
+                                      )}
                                     </Button>
                                     <Button
                                       size="sm"
@@ -752,7 +852,7 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
                                       className="bg-green-600 hover:bg-green-700 text-white"
                                     >
                                       <Lock className="w-3.5 h-3.5 mr-1.5" />
-                                      Freeze & Approve
+                                      Freeze Initial Claims
                                     </Button>
                                   </>
                                 )}
@@ -783,34 +883,57 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
       </div>
 
       {/* Navigation */}
-      <div className="mt-10 flex items-center justify-between">
-        <div>
-          {!claimsFrozen && (
-            <p className="text-sm text-amber-700 flex items-center gap-2">
-              <AlertCircle className="w-4 h-4" />
-              Freeze your claims to continue
-            </p>
-          )}
+      <div className="mt-10 space-y-3">
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-2 text-sm text-amber-700">
+            <AlertCircle className="w-4 h-4" />
+            <span>
+              {claimsFrozen ? 'Claims are frozen; you can still proceed or unfreeze to edit.' : 'Claims are provisional; you can continue to prior art or skip and freeze them as final.'}
+            </span>
+          </div>
+          <div className="flex items-center gap-3 flex-wrap justify-end">
+            {skipPriorArtClicked ? (
+              <>
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={useInitialClaimsForDraft}
+                    onChange={(e) => setUseInitialClaimsForDraft(e.target.checked)}
+                    className="rounded border-gray-300"
+                  />
+                  Use Initial Claims for drafting
+                </label>
+                <Button
+                  onClick={skipPriorArtAndFreeze}
+                  disabled={!canProceed || isNavigating}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                >
+                  Next
+                  <ChevronRight className="w-4 h-4 ml-2" />
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  onClick={handleSkipClick}
+                  disabled={!canProceed || isNavigating}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                >
+                  Skip Prior Art Stage
+                  <ChevronRight className="w-4 h-4 ml-2" />
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={proceedToPriorArt}
+                  disabled={!canProceed || isNavigating}
+                >
+                  Next: Prior Art
+                  <ChevronRight className="w-4 h-4 ml-2" />
+                </Button>
+              </>
+            )}
+          </div>
         </div>
-        
-        <Button
-          onClick={async () => {
-            try {
-              await onComplete({
-                action: 'proceed_to_components',
-                sessionId: session?.id
-              })
-              onRefresh()
-            } catch (error) {
-              console.error('Failed to proceed:', error)
-            }
-          }}
-          disabled={!canProceed}
-          className="px-6"
-        >
-          Continue to Component Planning
-          <ChevronRight className="w-4 h-4 ml-2" />
-        </Button>
       </div>
     </div>
   )

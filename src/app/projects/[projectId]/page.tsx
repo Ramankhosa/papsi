@@ -61,74 +61,74 @@ export default function ProjectDashboardPage() {
     }
 
     if (!authLoading && user) {
+      const fetchProject = async () => {
+        try {
+          const response = await fetch(`/api/projects/${projectId}`, {
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+            }
+          })
+
+          if (response.ok) {
+            const data = await response.json()
+            setProject(data.project)
+          } else if (response.status === 404) {
+            router.push('/dashboard')
+          } else {
+            console.error('Failed to fetch project')
+            router.push('/dashboard')
+          }
+        } catch (error) {
+          console.error('Failed to fetch project:', error)
+          router.push('/dashboard')
+        }
+      }
+
+      const fetchPatents = async () => {
+        try {
+          const response = await fetch(`/api/projects/${projectId}/patents`, {
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+            }
+          })
+
+          if (response.ok) {
+            const data = await response.json()
+            const list: Patent[] = data.patents || []
+            setPatents(list)
+
+            // Check for draft sessions per patent
+            const sessionsMap: Record<string, boolean> = {}
+            await Promise.all(
+              list.map(async (p) => {
+                try {
+                  const res = await fetch(`/api/patents/${p.id}/drafting`, {
+                    headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
+                  })
+                  if (res.ok) {
+                    const draftData = await res.json()
+                    sessionsMap[p.id] = Array.isArray(draftData.sessions) && draftData.sessions.length > 0
+                  } else {
+                    sessionsMap[p.id] = false
+                  }
+                } catch {
+                  sessionsMap[p.id] = false
+                }
+              })
+            )
+            setHasDraftSessions(sessionsMap)
+          }
+        } catch (error) {
+          console.error('Failed to fetch patents:', error)
+        } finally {
+          setIsLoading(false)
+        }
+      }
+
       fetchProject()
       fetchPatents()
     }
   }, [authLoading, user, router, projectId])
-
-  const fetchProject = async () => {
-    try {
-      const response = await fetch(`/api/projects/${projectId}`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-        }
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        setProject(data.project)
-      } else if (response.status === 404) {
-        router.push('/dashboard')
-      } else {
-        console.error('Failed to fetch project')
-        router.push('/dashboard')
-      }
-    } catch (error) {
-      console.error('Failed to fetch project:', error)
-      router.push('/dashboard')
-    }
-  }
-
-  const fetchPatents = async () => {
-    try {
-      const response = await fetch(`/api/projects/${projectId}/patents`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-        }
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        const list: Patent[] = data.patents || []
-        setPatents(list)
-
-        // Check for draft sessions per patent
-        const sessionsMap: Record<string, boolean> = {}
-        await Promise.all(
-          list.map(async (p) => {
-            try {
-              const res = await fetch(`/api/patents/${p.id}/drafting`, {
-                headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
-              })
-              if (res.ok) {
-                const draftData = await res.json()
-                sessionsMap[p.id] = Array.isArray(draftData.sessions) && draftData.sessions.length > 0
-              } else {
-                sessionsMap[p.id] = false
-              }
-            } catch {
-              sessionsMap[p.id] = false
-            }
-          })
-        )
-        setHasDraftSessions(sessionsMap)
-      }
-    } catch (error) {
-      console.error('Failed to fetch patents:', error)
-    } finally {
-      setIsLoading(false)
-    }
-  }
 
   const handleDeletePatent = async () => {
     if (!deleteDialog) return

@@ -462,6 +462,7 @@ enum TaskCode {
   LLM4_NOVELTY_SCREEN
   LLM5_NOVELTY_ASSESS
   LLM6_REPORT_GENERATION
+  LLM1_CLAIM_REFINEMENT
   IDEA_BANK_ACCESS
   IDEA_BANK_RESERVE
   IDEA_BANK_EDIT
@@ -1458,9 +1459,10 @@ model FeatureMappingCache {
 
 enum DraftingSessionStatus {
   IDEA_ENTRY
+  RELATED_ART
+  CLAIM_REFINEMENT
   COMPONENT_PLANNER
   FIGURE_PLANNER
-  RELATED_ART
   COUNTRY_WISE_DRAFTING
   DIAGRAM_GENERATOR
   ANNEXURE_DRAFT
@@ -1517,6 +1519,7 @@ model DraftingSession {
 
   // Manual prior art data (Stage 3.5)
   manualPriorArt Json?
+  priorArtConfig Json? @map("prior_art_config")
 
   // AI analysis data for related art (Stage 3.5)
   aiAnalysisData Json?

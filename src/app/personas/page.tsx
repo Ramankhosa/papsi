@@ -731,7 +731,7 @@ export default function PersonasPage() {
                 <div className="p-3 bg-red-50 dark:bg-red-900/20 rounded-lg">
                   <p className="text-sm text-red-700 dark:text-red-300">
                     <strong>Warning:</strong> This will permanently delete the persona 
-                    <strong className="mx-1">"{personaToDelete.name}"</strong> 
+                    <strong className="mx-1">&quot;{personaToDelete.name}&quot;</strong> 
                     and <strong>ALL writing samples</strong> across <strong>ALL jurisdictions</strong>.
                   </p>
                   <p className="text-sm text-red-600 dark:text-red-400 mt-2">
@@ -791,7 +791,7 @@ export default function PersonasPage() {
                   <strong className="mx-1">
                     {JURISDICTIONS.find(j => j.code === jurisdictionToDelete)?.label || jurisdictionToDelete}
                   </strong>
-                  from persona <strong>"{editingPersona?.name}"</strong>.
+                  from persona <strong>&quot;{editingPersona?.name}&quot;</strong>.
                 </p>
                 
                 <div className="p-3 bg-orange-50 dark:bg-orange-900/20 rounded-lg">

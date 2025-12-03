@@ -62,30 +62,29 @@ export default function ApplicantProfilePage() {
 
   useEffect(() => {
     if (!authLoading && user && projectId) {
+      const fetchProject = async () => {
+        try {
+          const response = await fetch(`/api/projects/${projectId}`, {
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+            }
+          })
+          if (response.ok) {
+            const data = await response.json()
+            setProject(data.project)
+          } else if (response.status === 404) {
+            router.push('/dashboard')
+          }
+        } catch (error) {
+          console.error('Failed to fetch project:', error)
+          router.push('/dashboard')
+        } finally {
+          setIsLoading(false)
+        }
+      }
       fetchProject()
     }
-  }, [authLoading, user, projectId])
-
-  const fetchProject = async () => {
-    try {
-      const response = await fetch(`/api/projects/${projectId}`, {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-        }
-      })
-      if (response.ok) {
-        const data = await response.json()
-        setProject(data.project)
-      } else if (response.status === 404) {
-        router.push('/dashboard')
-      }
-    } catch (error) {
-      console.error('Failed to fetch project:', error)
-      router.push('/dashboard')
-    } finally {
-      setIsLoading(false)
-    }
-  }
+  }, [authLoading, user, projectId, router])
 
   if (authLoading || isLoading) {
     return (

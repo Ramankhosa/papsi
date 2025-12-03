@@ -1,0 +1,32 @@
+[
+  {
+    "id": "cmiis24rv000elkp3hrd97vbr",
+    "code": "PRIOR_ART_SEARCH",
+    "name": "Patent and Literature Search",
+    "unit": "queries"
+  },
+  {
+    "id": "cmiis24s3000flkp3umrrdqf9",
+    "code": "PATENT_DRAFTING",
+    "name": "AI-Assisted Patent Drafting",
+    "unit": "tokens"
+  },
+  {
+    "id": "cmiis24s6000glkp3wdouvci8",
+    "code": "DIAGRAM_GENERATION",
+    "name": "Technical Diagram Generation",
+    "unit": "diagrams"
+  },
+  {
+    "id": "cmiis24sa000hlkp3vqlodlpw",
+    "code": "IDEA_BANK",
+    "name": "Idea Bank Access",
+    "unit": "reservations"
+  },
+  {
+    "id": "cmiis24sd000ilkp38pzhu71i",
+    "code": "PERSONA_SYNC",
+    "name": "PersonaSync Style Learning",
+    "unit": "trainings"
+  }
+]

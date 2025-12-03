@@ -695,7 +695,7 @@ export async function generateValidationRulesForSection(
   return rules.length > 0 ? rules.join('\n') : null
 }
 
-export default {
+const jurisdictionStyleService = {
   getDiagramConfig,
   getDiagramHint,
   getExportConfig,
@@ -706,4 +706,6 @@ export default {
   generateDiagramPromptInstructions,
   generateValidationRulesForSection
 }
+
+export default jurisdictionStyleService
 

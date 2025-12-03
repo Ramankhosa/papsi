@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Image from 'next/image'
 
 export default function TestPlantUML() {
   const [code, setCode] = useState('@startuml\nAlice -> Bob: Hello\n@enduml')
@@ -56,7 +57,15 @@ export default function TestPlantUML() {
       {error && <div className="mt-3 text-sm text-red-700">{error}</div>}
       {imgUrl && (
         <div className="mt-4">
-          <img src={imgUrl} alt="preview" className="max-w-full border rounded" />
+          <div className="relative w-full max-w-4xl mx-auto">
+            <Image
+              src={imgUrl}
+              alt="preview"
+              fill
+              className="object-contain border rounded"
+              sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
+            />
+          </div>
         </div>
       )}
     </div>

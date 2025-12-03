@@ -1,7 +1,7 @@
 'use client'
 
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import Link from 'next/link'
@@ -12,6 +12,7 @@ import { PageLoadingBird } from '@/components/ui/loading-bird'
 import IdeaEntryStage from '@/components/drafting/IdeaEntryStage'
 import ComponentPlannerStage from '@/components/drafting/ComponentPlannerStage'
 import FigurePlannerStage from '@/components/drafting/FigurePlannerStage'
+import ClaimRefinementStage from '@/components/drafting/ClaimRefinementStage'
 import AnnexureDraftStage from '@/components/drafting/AnnexureDraftStage'
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore - file added dynamically during session; type generation will catch up
@@ -31,6 +32,10 @@ interface DraftingSession {
   figurePlans?: any[]
   diagramSources?: any[]
   annexureDrafts?: any[]
+  priorArtConfig?: any
+  manualPriorArt?: any
+  relatedArtRuns?: any[]
+  relatedArtSelections?: any[]
 }
 
 interface Patent {
@@ -52,9 +57,10 @@ interface PatentUsageMetrics {
 
 const STAGE_COMPONENTS = {
   IDEA_ENTRY: IdeaEntryStage,
+  RELATED_ART: RelatedArtStage,
+  CLAIM_REFINEMENT: ClaimRefinementStage,
   COMPONENT_PLANNER: ComponentPlannerStage,
   FIGURE_PLANNER: FigurePlannerStage,
-  RELATED_ART: RelatedArtStage,
   COUNTRY_WISE_DRAFTING: CountryWiseDraftStage, // Kept for backward compatibility
   ANNEXURE_DRAFT: AnnexureDraftStage,
   REVIEW_FIX: ReviewFixStage,
@@ -64,9 +70,10 @@ const STAGE_COMPONENTS = {
 
 const STAGE_LABELS = {
   IDEA_ENTRY: 'Idea & Claims',  // Updated: Now includes claims generation
+  RELATED_ART: 'Prior Art Analysis',
+  CLAIM_REFINEMENT: 'Claim Refinement',
   COMPONENT_PLANNER: 'Component Planner',
   FIGURE_PLANNER: 'Figure Planner',
-  RELATED_ART: 'Prior Art Analysis',  // Updated: More descriptive
   COUNTRY_WISE_DRAFTING: 'Jurisdiction Setup', // Legacy - jurisdiction now selected in Stage 0
   ANNEXURE_DRAFT: 'Draft Sections',  // Updated: More descriptive
   REVIEW_FIX: 'Review & Fix',
@@ -76,22 +83,24 @@ const STAGE_LABELS = {
 
 const STAGE_PROGRESS = {
   IDEA_ENTRY: 15,  // Updated percentages for new flow
-  COMPONENT_PLANNER: 30,
-  FIGURE_PLANNER: 45,
-  RELATED_ART: 55,
+  RELATED_ART: 30,
+  CLAIM_REFINEMENT: 45,
+  COMPONENT_PLANNER: 60,
+  FIGURE_PLANNER: 70,
   COUNTRY_WISE_DRAFTING: 55, // Same as RELATED_ART since it's skipped in normal flow
-  ANNEXURE_DRAFT: 70,
-  REVIEW_FIX: 85,
-  EXPORT_READY: 95,
+  ANNEXURE_DRAFT: 80,
+  REVIEW_FIX: 90,
+  EXPORT_READY: 97,
   COMPLETED: 100
 }
 
 // Stage order - COUNTRY_WISE_DRAFTING removed since jurisdiction is selected in Stage 0
 const STAGE_ORDER: Array<keyof typeof STAGE_COMPONENTS> = [
   'IDEA_ENTRY',
+  'RELATED_ART',
+  'CLAIM_REFINEMENT',
   'COMPONENT_PLANNER',
   'FIGURE_PLANNER',
-  'RELATED_ART',
   // 'COUNTRY_WISE_DRAFTING' - Removed: Jurisdiction is now selected before drafting starts
   'ANNEXURE_DRAFT',
   'REVIEW_FIX',
@@ -116,19 +125,34 @@ export default function PatentDraftingPage() {
     code: string;
     quotaInfo?: { remainingDaily: number | null; remainingMonthly: number | null; source: string }
   } | null>(null)
+  const [navNotice, setNavNotice] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (!authLoading && !user) {
-      router.push('/login')
-      return
+  const resumeSession = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/patents/${patentId}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+        },
+        body: JSON.stringify({ action: 'resume' })
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to resume drafting')
+      }
+
+      const data = await response.json()
+      setSession(data.session)
+      return data.session
+    } catch (err) {
+      console.error('Resume session error:', err)
+      setError(err instanceof Error ? err.message : 'Failed to resume drafting')
+      return null
     }
+  }, [patentId])
 
-    if (!authLoading && user) {
-      loadData()
-    }
-  }, [authLoading, user, router, patentId])
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     try {
       setIsLoading(true)
 
@@ -206,7 +230,18 @@ export default function PatentDraftingPage() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [patentId, resumeSession])
+
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.push('/login')
+      return
+    }
+
+    if (!authLoading && user) {
+      loadData()
+    }
+  }, [authLoading, user, router, patentId, loadData])
 
   const refreshSessionData = async () => {
     try {
@@ -237,31 +272,6 @@ export default function PatentDraftingPage() {
       }
     } catch (err) {
       console.error('Failed to refresh session data:', err)
-    }
-  }
-
-  const resumeSession = async () => {
-    try {
-      const response = await fetch(`/api/patents/${patentId}/drafting`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-        },
-        body: JSON.stringify({ action: 'resume' })
-      })
-
-      if (!response.ok) {
-        throw new Error('Failed to resume drafting')
-      }
-
-      const data = await response.json()
-      setSession(data.session)
-      return data.session
-    } catch (err) {
-      console.error('Resume session error:', err)
-      setError(err instanceof Error ? err.message : 'Failed to resume drafting')
-      return null
     }
   }
 
@@ -303,17 +313,11 @@ export default function PatentDraftingPage() {
           if (err?.error) message = err.error
           if (err?.code) errorCode = err.code
           if (err?.quotaInfo) quotaInfo = err.quotaInfo
+          result = err // Store error result for potential use
         } catch (parseError) {
           console.log('Failed to parse error response:', parseError)
         }
         console.log('Stage update failed:', { status: response.status, message, errorCode, stageData })
-
-        // Try to parse response body for additional error details
-        try {
-          result = await response.json()
-        } catch {
-          // Response body might not be JSON
-        }
 
         // Ensure message is always a string
         if (typeof message !== 'string' || !message.trim()) {
@@ -347,7 +351,17 @@ export default function PatentDraftingPage() {
         throw new Error(message)
       }
 
+      // CRITICAL: Parse successful response data BEFORE refreshing session
+      // This ensures the caller gets the API response even if the component re-renders
+      try {
+        result = await response.json()
+        console.log('API success response received:', { action: stageData?.action, hasResult: !!result })
+      } catch (parseError) {
+        console.warn('Failed to parse success response as JSON:', parseError)
+      }
+
       // For read-only actions, avoid refreshing to preserve local UI state
+      // IMPORTANT: Session refresh can cause component remounts which lose async context
       const action = stageData?.action
       const skipRefreshActions = [
         'generate_diagrams_llm', 
@@ -357,11 +371,14 @@ export default function PatentDraftingPage() {
         'preview_export',
         'clear_related_art_selections',
         'related_art_select',
-        'save_manual_prior_art'
+        'save_manual_prior_art',
+        'save_ai_analysis', // Preserve AI review results in local state
+        'related_art_llm_review', // Component handles state locally, refresh would lose in-progress data
+        'related_art_search' // Results are handled in component state, refresh causes them to disappear
       ]
       const skipRefresh = skipRefreshActions.includes(action)
 
-      if (action === 'related_art_llm_review' || action === 'related_art_search' || !skipRefresh) {
+      if (!skipRefresh) {
         await refreshSessionData()
       }
 
@@ -377,18 +394,71 @@ export default function PatentDraftingPage() {
     return session.status
   }
 
-  const getStageComponent = () => {
+  const StageComponent = useMemo(() => {
     const stage = getCurrentStage()
     const Component = STAGE_COMPONENTS[stage as keyof typeof STAGE_COMPONENTS]
     return Component || IdeaEntryStage
-  }
+  }, [session?.status])
 
   const getPrevNextStages = () => {
     const stage = getCurrentStage() as keyof typeof STAGE_COMPONENTS
-    const idx = STAGE_ORDER.indexOf(stage)
-    const prev = idx > 0 ? STAGE_ORDER[idx - 1] : null
-    const next = idx >= 0 && idx < STAGE_ORDER.length - 1 ? STAGE_ORDER[idx + 1] : null
-    return { prev, next }
+    const priorArtSkipped = !!(session as any)?.priorArtConfig?.skipped
+    const claimRefinementSkipped = !!(session as any)?.priorArtConfig?.skippedClaimRefinement
+
+    // Build dynamic order excluding skipped stages
+    const order = STAGE_ORDER.filter(s => {
+      if (priorArtSkipped && s === 'RELATED_ART') return false
+      if (claimRefinementSkipped && s === 'CLAIM_REFINEMENT') return false
+      return true
+    })
+    const idx = order.indexOf(stage)
+
+    let prev = idx > 0 ? order[idx - 1] : null
+    const next = idx >= 0 && idx < order.length - 1 ? order[idx + 1] : null
+
+    // Special-case: when at COMPONENT_PLANNER, determine the correct previous stage
+    if (stage === 'COMPONENT_PLANNER') {
+      if (priorArtSkipped) {
+        prev = 'IDEA_ENTRY'
+      } else if (claimRefinementSkipped) {
+        prev = 'RELATED_ART'
+      } else {
+        prev = 'CLAIM_REFINEMENT'
+      }
+    }
+
+    return { prev, next, priorArtSkipped, claimRefinementSkipped }
+  }
+
+  useEffect(() => {
+    // Clear navigation notice whenever stage changes
+    setNavNotice(null)
+  }, [session?.status])
+
+  const goToPrevStage = async () => {
+    const { prev, priorArtSkipped, claimRefinementSkipped } = getPrevNextStages()
+    if (!prev || !session) return
+
+    if (getCurrentStage() === 'COMPONENT_PLANNER') {
+      if (priorArtSkipped) {
+        setNavNotice('Prior art was skipped earlier, so returning to Idea & Claims.')
+      } else if (claimRefinementSkipped) {
+        setNavNotice('Claim refinement was skipped, so returning to Related Art stage.')
+      } else {
+        setNavNotice('Returning to Claim Refinement, which is the stage before components.')
+      }
+    } else {
+      setNavNotice(null)
+    }
+
+    await handleStageComplete({ action: 'set_stage', sessionId: session.id, stage: prev })
+  }
+
+  const goToNextStage = async () => {
+    const { next } = getPrevNextStages()
+    if (!next || !session) return
+    setNavNotice(null)
+    await handleStageComplete({ action: 'set_stage', sessionId: session.id, stage: next })
   }
 
   if (authLoading || isLoading) {
@@ -413,7 +483,7 @@ export default function PatentDraftingPage() {
   }
 
   const currentStage = getCurrentStage()
-  const StageComponent = getStageComponent()
+  // StageComponent is now memoized above
 
   return (
     <div className="min-h-screen bg-[#F5F6F7]">
@@ -506,7 +576,7 @@ export default function PatentDraftingPage() {
                       const { prev } = getPrevNextStages()
                       if (!prev || !session) return
                       console.log('Navigating to previous stage:', { prev, sessionId: session.id, currentPatentId: patentId })
-                      await handleStageComplete({ action: 'set_stage', sessionId: session.id, stage: prev })
+                      await goToPrevStage()
                     }}
                     className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 hover:bg-white shadow-sm transition-all disabled:opacity-30 disabled:hover:bg-transparent disabled:shadow-none"
                     disabled={!getPrevNextStages().prev}
@@ -524,7 +594,7 @@ export default function PatentDraftingPage() {
                       const { next } = getPrevNextStages()
                       if (!next || !session) return
                       console.log('Navigating to next stage:', { next, sessionId: session.id, currentPatentId: patentId })
-                      await handleStageComplete({ action: 'set_stage', sessionId: session.id, stage: next })
+                      await goToNextStage()
                     }}
                     className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 hover:bg-white shadow-sm transition-all disabled:opacity-30 disabled:hover:bg-transparent disabled:shadow-none"
                     disabled={!getPrevNextStages().next}
@@ -562,6 +632,24 @@ export default function PatentDraftingPage() {
 
       {/* Main Content - Maximized Writing Space */}
       <main className="w-full max-w-[1800px] mx-auto py-6 px-4 sm:px-6 lg:px-8">
+        {navNotice && (
+          <div className="max-w-[98%] mx-auto mb-3">
+            <div className="flex items-start gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+              <svg className="w-4 h-4 mt-0.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm0-9a1 1 0 01.894.553l2.5 5A1 1 0 0112.5 16h-5a1 1 0 01-.894-1.447l2.5-5A1 1 0 0110 9zm0-4a1 1 0 100 2 1 1 0 000-2z" clipRule="evenodd" />
+              </svg>
+              <div className="flex-1 leading-relaxed">{navNotice}</div>
+              <button
+                onClick={() => setNavNotice(null)}
+                className="text-blue-600 hover:text-blue-800 transition-colors"
+                aria-label="Dismiss notice"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="bg-white rounded-xl border border-gray-200/60 shadow-[0_2px_15px_-3px_rgba(0,0,0,0.07),0_10px_20px_-2px_rgba(0,0,0,0.04)] min-h-[calc(100vh-140px)] overflow-hidden">
           {session ? (
             <div className="h-full">
@@ -587,16 +675,8 @@ export default function PatentDraftingPage() {
         {/* Floating Stage Navigation */}
         {session && (
           <FloatingStageNavigation
-            onNavigatePrev={async () => {
-              const { prev } = getPrevNextStages()
-              if (!prev || !session) return
-              await handleStageComplete({ action: 'set_stage', sessionId: session.id, stage: prev })
-            }}
-            onNavigateNext={async () => {
-              const { next } = getPrevNextStages()
-              if (!next || !session) return
-              await handleStageComplete({ action: 'set_stage', sessionId: session.id, stage: next })
-            }}
+            onNavigatePrev={goToPrevStage}
+            onNavigateNext={goToNextStage}
             canGoPrev={!!getPrevNextStages().prev}
             canGoNext={!!getPrevNextStages().next}
           />
@@ -605,11 +685,7 @@ export default function PatentDraftingPage() {
         {/* Bottom Navigation (Contextual) */}
         <div className="mt-8 mb-12 flex items-center justify-between px-2 opacity-60 hover:opacity-100 transition-opacity duration-300">
           <button
-            onClick={async () => {
-              const { prev } = getPrevNextStages()
-              if (!prev || !session) return
-              await handleStageComplete({ action: 'set_stage', sessionId: session.id, stage: prev })
-            }}
+            onClick={goToPrevStage}
             className="text-gray-400 hover:text-gray-700 flex items-center text-sm font-medium disabled:opacity-0 transition-all"
             disabled={!getPrevNextStages().prev}
           >
@@ -620,11 +696,7 @@ export default function PatentDraftingPage() {
           </button>
 
           <button
-            onClick={async () => {
-              const { next } = getPrevNextStages()
-              if (!next || !session) return
-              await handleStageComplete({ action: 'set_stage', sessionId: session.id, stage: next })
-            }}
+            onClick={goToNextStage}
             className="text-gray-400 hover:text-indigo-600 flex items-center text-sm font-medium disabled:opacity-0 transition-all"
             disabled={!getPrevNextStages().next}
           >

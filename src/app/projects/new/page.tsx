@@ -138,7 +138,7 @@ export default function NewProjectPage() {
             </div>
 
             <div className="bg-[#F8FAFC] border border-[#E5E7EB] rounded-lg p-4">
-              <h3 className="text-sm font-medium text-[#374151] mb-2">What you'll get:</h3>
+              <h3 className="text-sm font-medium text-[#374151] mb-2">What you&apos;ll get:</h3>
               <ul className="space-y-2 text-sm text-[#64748B]">
                 <li className="flex items-center space-x-2">
                   <CheckCircle className="w-4 h-4 text-green-600" />

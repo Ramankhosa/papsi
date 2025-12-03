@@ -36,20 +36,30 @@ const COMPONENT_TYPES = [
 export default function ComponentPlannerStage({ session, patent, onComplete, onRefresh }: ComponentPlannerStageProps) {
   // Initialize components from referenceMap if available, otherwise from idea record
   const getInitialComponents = () => {
+    const validTypes = ['MAIN_CONTROLLER', 'SUBSYSTEM', 'MODULE', 'INTERFACE', 'SENSOR', 'ACTUATOR', 'PROCESSOR', 'MEMORY', 'DISPLAY', 'COMMUNICATION', 'POWER_SUPPLY', 'OTHER'];
+    
     if (session?.referenceMap?.components) {
-      return session.referenceMap.components
+      // Normalize existing components from referenceMap
+      return session.referenceMap.components.map((comp: any) => ({
+        ...comp,
+        type: validTypes.includes(comp.type) ? comp.type : 'OTHER',
+        description: comp.description || ''
+      }))
     }
 
     // Convert idea record components to component planner format
     if (session?.ideaRecord?.components) {
-      return session.ideaRecord.components.map((comp: any, index: number) => ({
-        id: comp.name?.toLowerCase().replace(/\s+/g, '_') || `component_${index}`,
-        name: comp.name || `Component ${index + 1}`,
-        type: comp.type || 'OTHER',
-        description: comp.description || '',
-        numeral: undefined,
-        range: undefined
-      }))
+      return session.ideaRecord.components.map((comp: any, index: number) => {
+        const normalizedType = validTypes.includes(comp.type) ? comp.type : 'OTHER';
+        return {
+          id: comp.name?.toLowerCase().replace(/\s+/g, '_') || `component_${index}`,
+          name: comp.name || `Component ${index + 1}`,
+          type: normalizedType,
+          description: comp.description || '',
+          numeral: undefined,
+          range: undefined
+        };
+      })
     }
 
     return []
@@ -129,15 +139,21 @@ export default function ComponentPlannerStage({ session, patent, onComplete, onR
       // Filter out components with empty names and validate data
       const validComponents = components
         .filter(comp => comp.name && comp.name.trim())
-        .map(comp => ({
-          id: comp.id,
-          name: comp.name.trim(),
-          type: comp.type,
-          description: comp.description.trim(),
-          numeral: comp.numeral,
-          // @ts-ignore include optional parentId for submodules
-          parentId: (comp as any).parentId
-        }));
+        .map(comp => {
+          // Normalize type to a valid value
+          const validTypes = ['MAIN_CONTROLLER', 'SUBSYSTEM', 'MODULE', 'INTERFACE', 'SENSOR', 'ACTUATOR', 'PROCESSOR', 'MEMORY', 'DISPLAY', 'COMMUNICATION', 'POWER_SUPPLY', 'OTHER'];
+          const normalizedType = validTypes.includes(comp.type) ? comp.type : 'OTHER';
+          
+          return {
+            id: comp.id,
+            name: comp.name.trim(),
+            type: normalizedType,
+            description: (comp.description || '').trim(),
+            numeral: typeof comp.numeral === 'number' ? comp.numeral : undefined,
+            // @ts-ignore include optional parentId for submodules
+            parentId: (comp as any).parentId || undefined
+          };
+        });
 
       if (validComponents.length === 0) {
         setError('No valid components found. Please ensure all components have names.');
