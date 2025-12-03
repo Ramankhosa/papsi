@@ -13,6 +13,7 @@ import { resolveCanonicalKey, normalizeSectionKeys } from '@/lib/section-alias-s
 import { enforceServiceAccess } from '@/lib/service-access-middleware';
 import { getDiagramConfig, generateDiagramPromptInstructions } from '@/lib/jurisdiction-style-service';
 import { trackSectionDrafted } from '@/lib/patent-drafting-tracker';
+import { resolveSourceOfTruth, computeJurisdictionStateOnDelete } from '@/lib/jurisdiction-state-service';
 import crypto from 'crypto';
 import plantumlEncoder from 'plantuml-encoder';
 import path from 'path';
@@ -65,20 +66,6 @@ function applyPreferredLanguage(profile: any, preferred?: string) {
   }
 }
 
-function resolveSourceOfTruth(session: any, fallback?: string): string {
-  try {
-    const status = (session as any)?.jurisdictionDraftStatus || {}
-    const preferred = typeof status.__sourceOfTruth === 'string' ? String(status.__sourceOfTruth).toUpperCase() : undefined
-    const list: string[] = Array.isArray(session?.draftingJurisdictions)
-      ? session.draftingJurisdictions.map((c: string) => (c || '').toUpperCase())
-      : []
-    if (preferred && list.includes(preferred)) return preferred
-    const normalizedFallback = fallback ? fallback.toUpperCase() : undefined
-    if (normalizedFallback && list.includes(normalizedFallback)) return normalizedFallback
-    if (list.length > 0) return list[0]
-  } catch {}
-  return (fallback || 'US').toUpperCase()
-}
 
 type ExportSectionDef = { key: string; label: string; required?: boolean }
 
@@ -480,6 +467,19 @@ export async function POST(
       case 'update_idea_record':
         return await handleUpdateIdeaRecord(authResult.user, patentId, data);
 
+      // Claims generation and management (Stage 1)
+      case 'generate_claims':
+        return await handleGenerateClaims(authResult.user, patentId, data, requestHeaders);
+
+      case 'save_claims':
+        return await handleSaveClaims(authResult.user, patentId, data);
+
+      case 'freeze_claims':
+        return await handleFreezeClaims(authResult.user, patentId, data);
+
+      case 'unfreeze_claims':
+        return await handleUnfreezeClaims(authResult.user, patentId, data);
+
       case 'set_stage':
         return await handleSetStage(authResult.user, patentId, data);
 
@@ -505,8 +505,14 @@ export async function POST(
       case 'ignore_ai_issue':
         return await handleIgnoreAIIssue(authResult.user, patentId, data);
 
+      case 'revert_ai_fix':
+        return await handleRevertAIFix(authResult.user, patentId, data);
+
       case 'export_docx':
         return await handleExportDOCX(authResult.user, patentId, data, request);
+
+      case 'export_pdf':
+        return await handleExportPDF(authResult.user, patentId, data, request);
 
       case 'preview_export':
         return await handlePreviewExport(authResult.user, patentId, data);
@@ -589,7 +595,7 @@ async function handleSaveAIAnalysis(user: any, patentId: string, data: any) {
 }
 
 async function handleRelatedArtLLMReview(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
-  const { sessionId, runId, batchSize } = data
+  const { sessionId, runId, batchSize, claimsContext } = data
   if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
 
   const session = await prisma.draftingSession.findFirst({
@@ -616,6 +622,33 @@ async function handleRelatedArtLLMReview(user: any, patentId: string, data: any,
 
   const title = session.ideaRecord?.title || ''
   const query = (session.ideaRecord as any)?.searchQuery || ''
+  
+  // Get frozen claims from session for claim-aware analysis
+  const normalizedData = (session.ideaRecord?.normalizedData as any) || {}
+  const frozenClaims = claimsContext?.claims || normalizedData.claimsStructured || []
+  const claimsText = normalizedData.claims || ''
+  const hasClaimsContext = claimsContext?.frozenAt || normalizedData.claimsApprovedAt
+  
+  // Build claims summary for the prompt
+  let claimsSection = ''
+  if (hasClaimsContext) {
+    if (Array.isArray(frozenClaims) && frozenClaims.length > 0) {
+      const claimsSummary = frozenClaims.slice(0, 8).map((c: any) => 
+        `Claim ${c.number} (${c.type}): ${(c.text || '').substring(0, 200)}...`
+      ).join('\n')
+      claimsSection = `\n\nOUR FROZEN PATENT CLAIMS (analyze prior art against these specific claims):\n${claimsSummary}`
+      if (frozenClaims.length > 8) {
+        claimsSection += `\n(+ ${frozenClaims.length - 8} additional claims)`
+      }
+    } else if (typeof frozenClaims === 'string' && frozenClaims.trim()) {
+      // Handle string claims (HTML)
+      const plainClaims = frozenClaims.replace(/<[^>]*>/g, '').substring(0, 1000)
+      claimsSection = `\n\nOUR FROZEN PATENT CLAIMS (analyze prior art against these specific claims):\n${plainClaims}...`
+    } else if (claimsText) {
+      const plainClaims = claimsText.replace(/<[^>]*>/g, '').substring(0, 1000)
+      claimsSection = `\n\nOUR FROZEN PATENT CLAIMS (analyze prior art against these specific claims):\n${plainClaims}...`
+    }
+  }
 
   const candidates = results.map((r: any) => ({
     pn: r.pn || r.patent_number || r.publication_number || r.publication_id || r.publicationId || r.patentId || r.patent_id || r.id || '',
@@ -655,17 +688,22 @@ async function handleRelatedArtLLMReview(user: any, patentId: string, data: any,
     const batch = candidates.slice(i, i + effectiveBatchSize)
     const batchText = batch.map((b, idx) => `#${idx+1}. PN:${b.pn||'N/A'}\nTitle: ${b.title}\nAbstract: ${b.abstract}`).join('\n\n')
 
-    const batchRelevancePrompt = `You are an expert patent attorney. Analyze these patent candidates for relevance to our invention and assess novelty.
+    const batchRelevancePrompt = `You are an expert patent attorney. Analyze these patent candidates for relevance to our invention and assess novelty threat to our specific claims.
 
-INVENTION: ${title} | SEARCH: ${query}
+INVENTION: ${title} | SEARCH: ${query}${claimsSection}
 
 For each patent, provide:
 - relevance: 0.0-1.0 score
 - novelty_threat: "anticipates" | "obvious" | "adjacent" | "remote"
-- summary: 1-2 sentence explanation
-- relevant_parts: List specific elements/claims/aspects of the patent that are relevant to our invention
-- irrelevant_parts: List specific elements/claims/aspects of the patent that are NOT relevant to our invention
-- novelty_comparison: Explain what makes our invention novel compared to this patent (key differences, improvements, or unique aspects)
+  * "anticipates" = This prior art discloses ALL elements of at least one of our claims
+  * "obvious" = Combining this with common knowledge would render our claims obvious
+  * "adjacent" = Related technology but doesn't threaten our specific claim scope
+  * "remote" = Different field, minimal relevance to our claims
+- summary: 1-2 sentence explanation of how this relates to our claims
+- relevant_parts: List specific elements/claims/aspects of the patent that overlap with OUR claims
+- irrelevant_parts: List specific elements/claims/aspects of the patent that DON'T overlap with our claims
+- novelty_comparison: Explain what makes our claims novel compared to this patent (specific claim elements not disclosed)
+${hasClaimsContext ? '\nIMPORTANT: Focus analysis on whether prior art anticipates or renders obvious our SPECIFIC CLAIMS listed above.' : ''}
 
 Return ONLY JSON:
 {
@@ -1033,24 +1071,69 @@ function sanitizeContent(text: string): string {
   return cleaned.trim()
 }
 
-// Paragraph numbering injector: adds [0001] style numbering to Description sections
-function injectParagraphNumbering(blocks: Array<{ type: string; section: string; subtype?: string; content: string; blockId: string }>): void {
-  // Description sections that get numbered: fieldOfInvention, background, summary, briefDescriptionOfDrawings, detailedDescription, bestMethod
-  const descriptionSections = ['fieldOfInvention', 'background', 'summary', 'briefDescriptionOfDrawings', 'detailedDescription', 'bestMethod']
+// Country-specific paragraph numbering formats
+const PARAGRAPH_NUMBER_FORMATS: Record<string, { prefix: string; suffix: string; digits: number }> = {
+  JP: { prefix: '【', suffix: '】', digits: 4 },    // Japan: 【0001】
+  DEFAULT: { prefix: '[', suffix: ']', digits: 4 } // Others: [0001]
+}
+
+// Get paragraph number format for jurisdiction
+function getParagraphNumberFormat(jurisdiction: string): { prefix: string; suffix: string; digits: number } {
+  const code = (jurisdiction || 'US').toUpperCase()
+  return PARAGRAPH_NUMBER_FORMATS[code] || PARAGRAPH_NUMBER_FORMATS.DEFAULT
+}
+
+// Format paragraph number according to jurisdiction
+function formatParagraphNumber(num: number, jurisdiction: string): string {
+  const format = getParagraphNumberFormat(jurisdiction)
+  const paddedNum = num.toString().padStart(format.digits, '0')
+
+  // Apply bold formatting for Japanese brackets
+  if (jurisdiction.toUpperCase() === 'JP') {
+    return `<strong>${format.prefix}${paddedNum}${format.suffix}</strong> `
+  }
+
+  return `${format.prefix}${paddedNum}${format.suffix} `
+}
+
+// Paragraph numbering injector: adds jurisdiction-specific numbering to Description sections
+// Japan: 【0001】, Others: [0001]
+function injectParagraphNumbering(
+  blocks: Array<{ type: string; section: string; subtype?: string; content: string; blockId: string }>,
+  jurisdiction: string = 'US'
+): void {
+  // Description sections that get numbered (excludes claims, abstract, title)
+  const descriptionSections = [
+    'fieldOfInvention', 'technical_field', 'field',
+    'background', 'background_art',
+    'summary', 'summary_of_invention',
+    'briefDescriptionOfDrawings', 'brief_description_of_drawings',
+    'detailedDescription', 'detailed_description', 'description',
+    'bestMethod', 'best_mode',
+    'industrialApplicability', 'industrial_applicability',
+    'objectsOfInvention', 'objects_of_invention',
+    'technicalProblem', 'technical_problem',
+    'technicalSolution', 'technical_solution',
+    'advantageousEffects', 'advantageous_effects',
+    'modeOfCarryingOut', 'mode_of_carrying_out'
+  ]
 
   let paragraphNumber = 1
+  const format = getParagraphNumberFormat(jurisdiction)
+  
+  // Regex to strip existing numbering patterns (all formats)
+  const existingNumberRegex = /^(?:\[|\【)\d{3,4}(?:\]|\】)\s*/
 
   for (const block of blocks) {
     // Only number paragraphs in description sections, exclude headings, captions, tables, equations
     if (block.type === 'paragraph' && descriptionSections.includes(block.section) && !block.subtype) {
-      // Check if paragraph already starts with numbering pattern and strip it
-      const existingNumberMatch = block.content.match(/^\[\d{4}\]\s+/)
-      if (existingNumberMatch) {
-        block.content = block.content.substring(existingNumberMatch[0].length)
+      // Strip any existing numbering pattern
+      if (existingNumberRegex.test(block.content)) {
+        block.content = block.content.replace(existingNumberRegex, '')
       }
 
-      // Inject new numbering with non-breaking space
-      const formattedNumber = `[${paragraphNumber.toString().padStart(4, '0')}] `
+      // Inject new numbering with appropriate format
+      const formattedNumber = formatParagraphNumber(paragraphNumber, jurisdiction)
       block.content = formattedNumber + block.content
       paragraphNumber++
     }
@@ -1103,9 +1186,9 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
   // Run pre-export normalizer
   const { blocks } = preExportNormalizer(rawContent, sections)
 
-  // Apply paragraph numbering if enabled
+  // Apply paragraph numbering if enabled (jurisdiction-specific format)
   if (autoNumberParagraphs) {
-    injectParagraphNumbering(blocks)
+    injectParagraphNumbering(blocks, effectiveJurisdiction)
   }
 
   // Helper to truncate caption to fit one line on A4 (approx 85 chars at 12pt)
@@ -1156,18 +1239,22 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
       PageBreak, Footer, Header, PageNumber, NumberOfPages, SectionType
     } = docx as any
 
-    // Get document type configuration from country profile
+    // Get document type configuration from country profile with user overrides
     const documentTypeConfig = await getDocumentTypeConfig(effectiveJurisdiction, 'spec_pdf')
+    
+    // Also get full export config with user overrides for complete settings
+    const { getExportConfig } = await import('@/lib/jurisdiction-style-service')
+    const exportConfig = await getExportConfig(effectiveJurisdiction, 'spec_pdf', user.id, sessionId)
 
     // Convert cm to twips (1 inch = 1440 twips = 2.54 cm)
     const cmToTwips = (cm: number) => Math.round(cm * 1440 / 2.54)
 
-    // Use document type margins if available, otherwise use fallback values
-    const margins = documentTypeConfig?.margins || {
-      top: 2.5,
-      bottom: 1.0,
-      left: 2.5,
-      right: 1.5
+    // Use export config margins (includes user overrides)
+    const margins = {
+      top: exportConfig.marginTopCm,
+      bottom: exportConfig.marginBottomCm,
+      left: exportConfig.marginLeftCm,
+      right: exportConfig.marginRightCm
     }
 
     const pageMargin = {
@@ -1179,46 +1266,64 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
 
     // Determine page size (convert to twips: A4 = 595.28 x 841.89 pt, LETTER = 612 x 792 pt)
     let pageSize = { width: 595.28, height: 841.89 } // Default A4 in points
-    const pageSizeStr = documentTypeConfig?.pageSize?.toUpperCase()
+    const pageSizeStr = exportConfig.pageSize?.toUpperCase()
     if (pageSizeStr === 'LETTER') {
       pageSize = { width: 612, height: 792 }
     } else if (pageSizeStr === 'A4') {
       pageSize = { width: 595.28, height: 841.89 }
     }
 
-    // Page header with "Page X of Y" format
-    const header = new Header({
-      children: [
-        new Paragraph({
-          alignment: AlignmentType.RIGHT,
-          children: [
-            new TextRun({
-              text: 'Page ',
-              size: 24,
-              color: '000000'
-            }),
-            new TextRun({
-              children: [PageNumber.CURRENT]
-            }),
-            new TextRun({
-              text: ' of ',
-              size: 24,
-              color: '000000'
-            }),
-            new TextRun({
-              children: [PageNumber.TOTAL_PAGES]
-            })
-          ]
-        })
-      ]
-    })
-
-    // Get typography settings from config
-    const fontFamily = documentTypeConfig?.fontFamily || 'Times New Roman'
-    const fontSizePt = documentTypeConfig?.fontSizePt || 12
+    // Get typography settings from export config (with user overrides)
+    const fontFamily = exportConfig.fontFamily || 'Times New Roman'
+    const fontSizePt = exportConfig.fontSizePt || 12
     const fontSizeHalfPt = fontSizePt * 2 // docx uses half-points
-    const lineSpacing = documentTypeConfig?.lineSpacing || 1.5
+    const lineSpacing = exportConfig.lineSpacing || 1.5
     const lineSpacingTwips = Math.round(240 * lineSpacing) // 240 twips = single spacing
+    
+    // Heading font settings (fall back to body font if not specified)
+    const headingFontFamily = exportConfig.headingFontFamily || fontFamily
+    const headingFontSizePt = exportConfig.headingFontSizePt || (fontSizePt + 2)
+    const headingFontSizeHalfPt = headingFontSizePt * 2
+
+    // Build page header/footer based on config
+    let headerElement: any = undefined
+    let footerElement: any = undefined
+    
+    // Only add page numbers if configured
+    if (exportConfig.addPageNumbers) {
+      // Parse page number format - replace {page} and {total} placeholders
+      const pageNumberFormat = exportConfig.pageNumberFormat || 'Page {page} of {total}'
+      const formatParts = pageNumberFormat.split(/(\{page\}|\{total\})/g)
+      
+      const pageNumberChildren: any[] = []
+      for (const part of formatParts) {
+        if (part === '{page}') {
+          pageNumberChildren.push(new TextRun({ children: [PageNumber.CURRENT], size: fontSizeHalfPt }))
+        } else if (part === '{total}') {
+          pageNumberChildren.push(new TextRun({ children: [PageNumber.TOTAL_PAGES], size: fontSizeHalfPt }))
+        } else if (part) {
+          pageNumberChildren.push(new TextRun({ text: part, size: fontSizeHalfPt, color: '000000' }))
+        }
+      }
+      
+      // Determine alignment based on position
+      const position = exportConfig.pageNumberPosition || 'header-right'
+      const alignment = position.includes('right') ? AlignmentType.RIGHT 
+        : position.includes('center') ? AlignmentType.CENTER 
+        : AlignmentType.LEFT
+      
+      const pageNumberParagraph = new Paragraph({
+        alignment,
+        children: pageNumberChildren
+      })
+      
+      // Place in header or footer based on position
+      if (position.startsWith('footer')) {
+        footerElement = new Footer({ children: [pageNumberParagraph] })
+      } else {
+        headerElement = new Header({ children: [pageNumberParagraph] })
+      }
+    }
 
     const doc = new Document({
       sections: [],
@@ -1257,10 +1362,10 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
             basedOn: 'Normal',
             next: 'Normal',
             run: {
-              size: fontSizeHalfPt,
+              size: headingFontSizeHalfPt, // Use heading font size from config
               color: '000000', // black
               bold: true,
-              font: fontFamily
+              font: headingFontFamily // Use heading font from config
             },
             paragraph: {
               alignment: AlignmentType.LEFT,
@@ -1296,9 +1401,9 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
     const documentSections: any[] = []
     const { blocks, figures, exportOptions } = exportInput
 
-    // Section 1: Title
-    const titleSection = {
-      properties: {
+    // Build section properties with dynamic header/footer
+    const buildSectionProperties = () => {
+      const props: any = {
         type: SectionType.NEXT_PAGE,
         page: {
           margin: pageMargin,
@@ -1307,11 +1412,17 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
             height: Math.round(pageSize.height * 20),
             orientation: pageSize.width > pageSize.height ? docx.PageOrientation.LANDSCAPE : docx.PageOrientation.PORTRAIT
           }
-        },
-        headers: {
-          default: header
         }
-      },
+      }
+      // Only add headers/footers if page numbers are enabled
+      if (headerElement) props.headers = { default: headerElement }
+      if (footerElement) props.footers = { default: footerElement }
+      return props
+    }
+
+    // Section 1: Title
+    const titleSection = {
+      properties: buildSectionProperties(),
       children: []
     }
 
@@ -1332,7 +1443,8 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
       .map(s => s.key)
       .filter(k => k !== 'title' && k !== 'abstract')
     for (const sectionName of bodySections) {
-      const sectionHeading = getSectionHeadingDynamic(sectionName, sections)
+      // Use section heading from export config if available, otherwise fall back to profile
+      const sectionHeading = exportConfig.sectionHeadings?.[sectionName] || getSectionHeadingDynamic(sectionName, sections)
       const sectionBlocks = blocks.filter((b: { type: string; section: string; subtype?: string; content: string; blockId: string }) => b.section === sectionName)
 
       if (sectionBlocks.length > 0) {
@@ -1355,8 +1467,9 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
               new Paragraph({
                 children: [new TextRun({
                   text: content,
-                  size: 24,
-                  color: '000000'
+                  size: fontSizeHalfPt, // Use configured font size
+                  color: '000000',
+                  font: fontFamily // Use configured font family
                 })],
                 style: 'bodyStyle'
               })
@@ -1375,20 +1488,7 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
 
     for (const figure of figures) {
       const figureSection = {
-        properties: {
-          type: SectionType.NEXT_PAGE,
-          page: {
-            margin: pageMargin,
-            size: {
-              width: Math.round(pageSize.width * 20),
-              height: Math.round(pageSize.height * 20),
-              orientation: pageSize.width > pageSize.height ? docx.PageOrientation.LANDSCAPE : docx.PageOrientation.PORTRAIT
-            }
-          },
-          headers: {
-            default: header
-          }
-        },
+        properties: buildSectionProperties(),
         children: []
       }
 
@@ -1464,8 +1564,9 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
         new Paragraph({
           children: [new TextRun({
             text: `Figure ${figure.figureNo}: ${figure.caption}`,
-            size: 24,
-            color: '000000'
+            size: fontSizeHalfPt, // Use configured font size
+            color: '000000',
+            font: fontFamily // Use configured font family
           })],
           style: 'captionStyle'
         })
@@ -1478,20 +1579,7 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
     const hasAbstractSection = sections.some(s => s.key === 'abstract')
     if (hasAbstractSection) {
       const abstractSection = {
-        properties: {
-          type: SectionType.NEXT_PAGE,
-          page: {
-            margin: pageMargin,
-            size: {
-              width: Math.round(pageSize.width * 20),
-              height: Math.round(pageSize.height * 20),
-              orientation: pageSize.width > pageSize.height ? docx.PageOrientation.LANDSCAPE : docx.PageOrientation.PORTRAIT
-            }
-          },
-          headers: {
-            default: header
-          }
-        },
+        properties: buildSectionProperties(),
         children: []
       }
 
@@ -1502,23 +1590,26 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
           new Paragraph({
             children: [new TextRun({
               text: titleBlockForAbstract.content,
-              size: 24,
+              size: headingFontSizeHalfPt, // Use configured heading font size
               color: '000000',
-              bold: true
+              bold: true,
+              font: headingFontFamily // Use configured heading font
             })],
             spacing: { after: 120 }
           })
         )
       }
 
-      // Add ABSTRACT heading
+      // Add ABSTRACT heading - use section headings from export config if available
+      const abstractHeading = exportConfig.sectionHeadings?.['abstract'] || getSectionHeadingDynamic('abstract', sections)
       ;(abstractSection.children as any[]).push(
         new Paragraph({
           children: [new TextRun({
-            text: getSectionHeadingDynamic('abstract', sections),
-            size: 24,
+            text: abstractHeading,
+            size: headingFontSizeHalfPt,
             color: '000000',
-            bold: true
+            bold: true,
+            font: headingFontFamily
           })],
           spacing: { before: 120, after: 120 }
         })
@@ -1533,8 +1624,9 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
             new Paragraph({
               children: [new TextRun({
                 text: block.content,
-                size: 24,
-                color: '000000'
+                size: fontSizeHalfPt, // Use configured font size
+                color: '000000',
+                font: fontFamily // Use configured font family
               })],
               style: 'bodyStyle'
             })
@@ -1572,6 +1664,292 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
       }
     })
   }
+}
+
+// PDF Export Handler
+async function handleExportPDF(user: any, patentId: string, data: any, request?: NextRequest) {
+  const { sessionId, autoNumberParagraphs = false, jurisdiction: requestedJurisdiction } = data
+  if (!sessionId) return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { annexureDrafts: { orderBy: { version: 'desc' } }, figurePlans: true, diagramSources: true }
+  })
+  if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  const fallbackJurisdiction = (session as any).activeJurisdiction || (session as any).draftingJurisdictions?.[0] || 'US'
+  const effectiveJurisdiction = String(requestedJurisdiction || fallbackJurisdiction || 'US').toUpperCase()
+  const sections = await getExportSectionsForJurisdiction(effectiveJurisdiction)
+
+  const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
+  const last = drafts.find((d: any) => (d.jurisdiction || 'US').toUpperCase() === effectiveJurisdiction)
+  if (!last) {
+    return NextResponse.json({ error: `No draft to export for jurisdiction ${effectiveJurisdiction}` }, { status: 400 })
+  }
+
+  // Prepare content
+  const rawContent: Record<string, string> = {}
+  for (const s of sections) {
+    switch (s.key) {
+      case 'title': rawContent[s.key] = last.title || 'Untitled'; break
+      case 'fieldOfInvention': rawContent[s.key] = last.fieldOfInvention || ''; break
+      case 'background': rawContent[s.key] = last.background || ''; break
+      case 'summary': rawContent[s.key] = last.summary || ''; break
+      case 'briefDescriptionOfDrawings': rawContent[s.key] = last.briefDescriptionOfDrawings || ''; break
+      case 'detailedDescription': rawContent[s.key] = last.detailedDescription || ''; break
+      case 'bestMethod': rawContent[s.key] = last.bestMethod || ''; break
+      case 'claims': rawContent[s.key] = last.claims || ''; break
+      case 'industrialApplicability': rawContent[s.key] = (last as any).industrialApplicability || ''; break
+      case 'listOfNumerals': rawContent[s.key] = last.listOfNumerals || ''; break
+      case 'abstract': rawContent[s.key] = last.abstract || ''; break
+      default:
+        rawContent[s.key] = (last as any)?.[s.key] || ''
+    }
+  }
+
+  // Run pre-export normalizer
+  const { blocks } = preExportNormalizer(rawContent, sections)
+
+  // Apply paragraph numbering if enabled (jurisdiction-specific format)
+  if (autoNumberParagraphs) {
+    injectParagraphNumbering(blocks, effectiveJurisdiction)
+  }
+
+  // Get full export config with user overrides
+  const { getExportConfig } = await import('@/lib/jurisdiction-style-service')
+  const exportConfig = await getExportConfig(effectiveJurisdiction, 'spec_pdf', user.id, sessionId)
+
+  // Build HTML for PDF
+  const pdfHtml = buildPDFHtml(rawContent, blocks, sections, effectiveJurisdiction, exportConfig, session)
+
+  // Try to generate PDF using puppeteer or fall back to HTML
+  try {
+    let puppeteer: any
+    try {
+      const req = eval('require') as (m: string) => any
+      puppeteer = req('puppeteer')
+    } catch {
+      // Puppeteer not available - return HTML that can be printed to PDF
+      return new NextResponse(pdfHtml, {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/html; charset=utf-8',
+          'Content-Disposition': `attachment; filename="annexure_${sessionId}.html"`
+        }
+      })
+    }
+
+    // Launch browser and generate PDF
+    const browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    })
+    const page = await browser.newPage()
+    await page.setContent(pdfHtml, { waitUntil: 'networkidle0' })
+
+    // Get page size and margins from export config (with user overrides)
+    const pageSize = exportConfig.pageSize?.toUpperCase() === 'LETTER' ? 'Letter' : 'A4'
+    const margins = {
+      top: exportConfig.marginTopCm,
+      bottom: exportConfig.marginBottomCm,
+      left: exportConfig.marginLeftCm,
+      right: exportConfig.marginRightCm
+    }
+
+    // Build header/footer templates based on config
+    const headerTemplate = '<div></div>'
+    let footerTemplate = '<div></div>'
+    
+    // Only add page numbers if configured
+    if (exportConfig.addPageNumbers) {
+      const position = exportConfig.pageNumberPosition || 'footer-center'
+      const format = (exportConfig.pageNumberFormat || 'Page {page} of {total}')
+        .replace('{page}', '<span class="pageNumber"></span>')
+        .replace('{total}', '<span class="totalPages"></span>')
+      
+      const alignment = position.includes('right') ? 'right' 
+        : position.includes('left') ? 'left' 
+        : 'center'
+      
+      footerTemplate = `
+        <div style="font-size: 10px; text-align: ${alignment}; width: 100%; color: #666; padding: 0 20px;">
+          ${format}
+        </div>
+      `
+    }
+
+    const pdfBuffer = await page.pdf({
+      format: pageSize,
+      margin: {
+        top: `${margins.top}cm`,
+        bottom: `${margins.bottom}cm`,
+        left: `${margins.left}cm`,
+        right: `${margins.right}cm`
+      },
+      printBackground: true,
+      displayHeaderFooter: exportConfig.addPageNumbers,
+      headerTemplate,
+      footerTemplate
+    })
+
+    await browser.close()
+
+    return new NextResponse(pdfBuffer, {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="annexure_${sessionId}.pdf"`
+      }
+    })
+  } catch (e) {
+    console.error('PDF export error:', e)
+    // Fallback to HTML that can be printed to PDF
+    return new NextResponse(pdfHtml, {
+      status: 200,
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Disposition': `attachment; filename="annexure_${sessionId}.html"`
+      }
+    })
+  }
+}
+
+// Build HTML for PDF export with country-specific formatting
+function buildPDFHtml(
+  content: Record<string, string>,
+  blocks: Array<{ type: string; section: string; subtype?: string; content: string; blockId: string }>,
+  sections: ExportSectionDef[],
+  jurisdiction: string,
+  exportConfig: any,
+  session: any
+): string {
+  // Use export config settings (with user overrides)
+  const margins = {
+    top: exportConfig.marginTopCm || 2.5,
+    bottom: exportConfig.marginBottomCm || 1.0,
+    left: exportConfig.marginLeftCm || 2.5,
+    right: exportConfig.marginRightCm || 1.5
+  }
+  const fontSize = exportConfig.fontSizePt || 12
+  const fontFamily = exportConfig.fontFamily || 'Times New Roman, serif'
+  const lineHeight = exportConfig.lineSpacing || 1.5
+  
+  // Heading font settings
+  const headingFontFamily = exportConfig.headingFontFamily || fontFamily
+  const headingFontSize = exportConfig.headingFontSizePt || (fontSize + 2)
+
+  // Section heading styling based on export config
+  const getSectionHeading = (sectionKey: string, label: string) => {
+    // Use section heading from export config if available
+    const headingText = exportConfig.sectionHeadings?.[sectionKey] || label
+    return `<h2 style="font-family: ${headingFontFamily}; font-size: ${headingFontSize}pt; font-weight: bold; margin-top: 24pt; margin-bottom: 12pt; text-transform: uppercase;">${headingText}</h2>`
+  }
+
+  // Build body sections
+  let bodyHtml = ''
+  const orderedSections = sections.filter(s => s.key !== 'title' && s.key !== 'abstract')
+
+  for (const sec of orderedSections) {
+    const sectionBlocks = blocks.filter(b => b.section === sec.key)
+    if (sectionBlocks.length === 0 && !content[sec.key]?.trim()) continue
+
+    bodyHtml += getSectionHeading(sec.key, sec.label || sec.key)
+
+    for (const block of sectionBlocks) {
+      if (block.type === 'paragraph') {
+        bodyHtml += `<p style="margin-bottom: 12pt; text-align: justify;">${escapeHtml(block.content)}</p>`
+      }
+    }
+  }
+
+  // Add figures section
+  const figures = [...(session.figurePlans || [])].sort((a, b) => a.figureNo - b.figureNo)
+  if (figures.length > 0) {
+    bodyHtml += getSectionHeading('briefDescriptionOfDrawings', 'Drawings / Figures')
+    for (const fig of figures) {
+      bodyHtml += `<p style="margin-bottom: 6pt;"><strong>Fig. ${fig.figureNo}</strong> — ${escapeHtml(fig.title || '')}</p>`
+    }
+  }
+
+  // Add abstract at end
+  const abstractBlocks = blocks.filter(b => b.section === 'abstract')
+  if (abstractBlocks.length > 0 || content.abstract?.trim()) {
+    bodyHtml += `<div style="page-break-before: always;"></div>`
+    bodyHtml += getSectionHeading('abstract', 'Abstract')
+    for (const block of abstractBlocks) {
+      if (block.type === 'paragraph') {
+        bodyHtml += `<p style="margin-bottom: 12pt; text-align: justify;">${escapeHtml(block.content)}</p>`
+      }
+    }
+  }
+
+  // Full HTML document
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(content.title || 'Patent Annexure')}</title>
+  <style>
+    @page {
+      size: ${exportConfig.pageSize || 'A4'};
+      margin: ${margins.top}cm ${margins.right}cm ${margins.bottom}cm ${margins.left}cm;
+    }
+    body {
+      font-family: ${fontFamily};
+      font-size: ${fontSize}pt;
+      line-height: ${lineHeight};
+      color: #000;
+      max-width: 100%;
+    }
+    h1 {
+      font-family: ${headingFontFamily};
+      font-size: ${headingFontSize + 2}pt;
+      font-weight: bold;
+      text-align: center;
+      margin-bottom: 24pt;
+      text-transform: uppercase;
+    }
+    h2 {
+      font-family: ${headingFontFamily};
+      font-size: ${headingFontSize}pt;
+      font-weight: bold;
+      margin-top: 24pt;
+      margin-bottom: 12pt;
+      text-transform: uppercase;
+    }
+    p {
+      margin-bottom: 12pt;
+      text-align: justify;
+    }
+    .title-block {
+      text-align: center;
+      margin-bottom: 36pt;
+    }
+    @media print {
+      body { -webkit-print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  <div class="title-block">
+    <h1>${escapeHtml(content.title || 'UNTITLED')}</h1>
+    <p style="text-align: center; font-style: italic;">Jurisdiction: ${jurisdiction}</p>
+  </div>
+  ${bodyHtml}
+</body>
+</html>`
+}
+
+// HTML escape helper
+function escapeHtml(text: string): string {
+  return (text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+    .replace(/\n/g, '<br>')
 }
 
 // Preview export builder and guards
@@ -1666,8 +2044,97 @@ async function handlePreviewExport(user: any, patentId: string, data: any) {
   }
 
   const guards = preExportGuards(exportInput, sections)
+  
+  // Add word/character limit validation from country profile
+  const wordLimitIssues = await validateSectionWordLimits(exportInput, effectiveJurisdiction, sections)
+  const allIssues = [...guards.issues, ...wordLimitIssues]
+  
   const plain = buildAnnexurePlainText(exportInput, sections)
-  return NextResponse.json({ ok: guards.ok, issues: guards.issues, preview: plain, input: exportInput, sections })
+  return NextResponse.json({ 
+    ok: guards.ok && wordLimitIssues.length === 0, 
+    issues: allIssues, 
+    preview: plain, 
+    input: exportInput, 
+    sections,
+    wordLimitIssues
+  })
+}
+
+// Validate section word/character limits from country profile
+async function validateSectionWordLimits(
+  content: Record<string, string>,
+  jurisdiction: string,
+  sections: ExportSectionDef[]
+): Promise<string[]> {
+  const issues: string[] = []
+  
+  try {
+    const profile = await getCountryProfile(jurisdiction)
+    if (!profile?.profileData?.structure?.variants) return issues
+    
+    const variant = profile.profileData.structure.variants.find(
+      (v: any) => v.id === profile.profileData.structure.defaultVariant
+    ) || profile.profileData.structure.variants[0]
+    
+    if (!variant?.sections) return issues
+    
+    // Create a map of section limits
+    const sectionLimits: Record<string, { maxWords?: number; maxChars?: number; label: string }> = {}
+    for (const sec of variant.sections) {
+      const keys = [sec.id, ...(sec.canonicalKeys || [])]
+      const limits = {
+        maxWords: sec.maxWords || sec.maxLengthWords,
+        maxChars: sec.maxLengthChars || sec.maxChars,
+        label: sec.label || sec.id
+      }
+      for (const key of keys) {
+        sectionLimits[key.toLowerCase()] = limits
+        // Also map to internal keys
+        const internalKey = canonicalSectionMap[key.toLowerCase()]
+        if (internalKey) {
+          sectionLimits[internalKey] = limits
+        }
+      }
+    }
+    
+    // Check each section
+    for (const sec of sections) {
+      const text = content[sec.key] || ''
+      if (!text.trim()) continue
+      
+      const limits = sectionLimits[sec.key] || sectionLimits[sec.key.toLowerCase()]
+      if (!limits) continue
+      
+      const wordCount = text.split(/\s+/).filter(w => w.length > 0).length
+      const charCount = text.length
+      
+      if (limits.maxWords && wordCount > limits.maxWords) {
+        issues.push(`${limits.label || sec.label}: ${wordCount} words exceeds ${limits.maxWords} word limit`)
+      }
+      
+      if (limits.maxChars && charCount > limits.maxChars) {
+        issues.push(`${limits.label || sec.label}: ${charCount} characters exceeds ${limits.maxChars} character limit`)
+      }
+    }
+    
+    // Special check for Abstract (common requirement: 150 words max)
+    const abstractText = content.abstract || ''
+    if (abstractText.trim()) {
+      const abstractWords = abstractText.split(/\s+/).filter(w => w.length > 0).length
+      const abstractLimit = sectionLimits.abstract?.maxWords || 150 // Default 150 for most jurisdictions
+      if (abstractWords > abstractLimit) {
+        // Only add if not already covered
+        if (!issues.some(i => i.includes('Abstract'))) {
+          issues.push(`Abstract: ${abstractWords} words exceeds ${abstractLimit} word limit`)
+        }
+      }
+    }
+    
+  } catch (err) {
+    console.warn('[ExportPreview] Word limit validation error:', err)
+  }
+  
+  return issues
 }
 
 // Rich preview payload with figure data (for inline HTML preview)
@@ -1856,6 +2323,324 @@ async function handleUpdateIdeaRecord(user: any, patentId: string, data: any) {
   return NextResponse.json({ ideaRecord })
 }
 
+// ============================================================================
+// CLAIMS GENERATION AND MANAGEMENT HANDLERS (Stage 1)
+// ============================================================================
+
+async function handleGenerateClaims(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
+  const { sessionId, jurisdiction, ideaContext } = data
+
+  if (!sessionId) {
+    return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
+  }
+
+  // Verify ownership
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { ideaRecord: true }
+  })
+
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  // Check if claims are already frozen
+  const existingNormalized = (session.ideaRecord?.normalizedData as any) || {}
+  if (existingNormalized.claimsApprovedAt) {
+    return NextResponse.json({ error: 'Claims are frozen. Unfreeze to regenerate.' }, { status: 400 })
+  }
+
+  try {
+    // Get country profile for jurisdiction-specific claim rules
+    const activeJurisdiction = (jurisdiction || session.activeJurisdiction || 'US').toUpperCase()
+    const countryProfile = await getCountryProfile(activeJurisdiction)
+    
+    // Extract claim rules from country profile
+    const claimRules = countryProfile?.profileData?.rules?.claims || {}
+    const claimPrompt = countryProfile?.profileData?.prompts?.sections?.claims || {}
+    
+    // Build context from idea record or provided context
+    const idea = session.ideaRecord || {} as any
+    const context = ideaContext || {
+      title: idea.title,
+      problem: idea.problem,
+      objectives: idea.objectives,
+      logic: idea.logic,
+      components: idea.components,
+      bestMethod: idea.bestMethod,
+      abstract: idea.abstract
+    }
+
+    // Format components for the prompt
+    const componentsList = Array.isArray(context.components)
+      ? context.components.map((c: any) => `- ${c.name}${c.type ? ` (${c.type})` : ''}`).join('\n')
+      : ''
+
+    // Build jurisdiction-specific instructions
+    const jurisdictionInstructions: string[] = []
+    
+    if (claimRules.twoPartFormPreferred === true) {
+      jurisdictionInstructions.push('- Use two-part claim format: preamble + "characterized in that" + characterizing portion')
+    } else if (claimRules.twoPartFormPreferred === false) {
+      jurisdictionInstructions.push('- Use single-part claims (avoid two-part "characterized in that" format)')
+    }
+    
+    if (claimRules.allowMultipleDependent === false) {
+      jurisdictionInstructions.push('- Each dependent claim must reference only ONE prior claim (no multiple dependency)')
+    } else if (claimRules.allowMultipleDependent === true) {
+      jurisdictionInstructions.push('- Multiple dependent claims are allowed (can reference multiple prior claims)')
+    }
+
+    if (claimRules.maxClaimsWithoutFee) {
+      jurisdictionInstructions.push(`- ${activeJurisdiction} allows ${claimRules.maxClaimsWithoutFee} claims without additional fees`)
+    }
+
+    if (claimRules.independentClaimsLimit) {
+      jurisdictionInstructions.push(`- Limit to ${claimRules.independentClaimsLimit} independent claims`)
+    }
+
+    // Build the claims generation prompt
+    const prompt = `You are an expert patent attorney drafting patent claims for jurisdiction: ${activeJurisdiction}.
+
+INVENTION CONTEXT:
+Title: ${context.title || 'Untitled Invention'}
+
+Problem: ${context.problem || 'Not specified'}
+
+Objectives: ${context.objectives || 'Not specified'}
+
+Technical Logic: ${context.logic || 'Not specified'}
+
+Key Components:
+${componentsList || 'Not specified'}
+
+Best Method: ${context.bestMethod || 'Not specified'}
+
+Abstract: ${context.abstract || 'Not specified'}
+
+JURISDICTION-SPECIFIC RULES (${activeJurisdiction}):
+${jurisdictionInstructions.length > 0 ? jurisdictionInstructions.join('\n') : '- Follow standard patent claim drafting practices'}
+
+${claimPrompt.instruction ? `ADDITIONAL INSTRUCTIONS:\n${claimPrompt.instruction}` : ''}
+
+REQUIREMENTS:
+1. Generate a comprehensive claim set with:
+   - At least 1 independent method claim
+   - At least 1 independent system/apparatus claim
+   - 3-5 dependent claims for each independent claim
+2. Each claim must be complete and self-contained
+3. Use proper claim language and terminology
+4. Reference components by name consistently
+5. Claims should protect the core innovation and variations
+
+OUTPUT FORMAT:
+Return a JSON object with this structure:
+{
+  "claims": [
+    {
+      "number": 1,
+      "type": "independent",
+      "category": "method",
+      "text": "A method for... comprising: a) first step...; b) second step..."
+    },
+    {
+      "number": 2,
+      "type": "dependent",
+      "dependsOn": 1,
+      "category": "method",
+      "text": "The method of claim 1, wherein..."
+    }
+  ]
+}
+
+Return ONLY the JSON object, no markdown fencing or explanation.`
+
+    // Call LLM to generate claims using the proper gateway API
+    const request = { headers: requestHeaders || {} }
+    const llmResult = await llmGateway.executeLLMOperation(request, {
+      taskCode: 'LLM2_DRAFT',
+      prompt,
+      idempotencyKey: crypto.randomUUID(),
+      inputTokens: Math.ceil(prompt.length / 4),
+      metadata: {
+        purpose: 'claims_generation',
+        jurisdiction: activeJurisdiction,
+        sessionId
+      }
+    })
+
+    if (!llmResult.success || !llmResult.response) {
+      console.error('Claims generation LLM error:', llmResult.error)
+      return NextResponse.json({ 
+        error: 'Failed to generate claims', 
+        details: llmResult.error?.message || 'LLM operation failed' 
+      }, { status: 500 })
+    }
+
+    // Parse the LLM response
+    let generatedClaims: any[] = []
+    try {
+      const cleanedResponse = llmResult.response.output
+        .replace(/```json\n?/g, '')
+        .replace(/```\n?/g, '')
+        .trim()
+      const parsed = JSON.parse(cleanedResponse)
+      generatedClaims = Array.isArray(parsed.claims) ? parsed.claims : (Array.isArray(parsed) ? parsed : [])
+    } catch (parseErr) {
+      console.error('Failed to parse claims JSON:', parseErr)
+      // Try to extract claims from text if JSON parsing fails
+      generatedClaims = []
+    }
+
+    // Format claims as HTML for the editor
+    const claimsHtml = generatedClaims.map((c: any) => {
+      const typeLabel = c.type === 'dependent' && c.dependsOn ? `(Claim ${c.dependsOn})` : `(${c.category || 'independent'})`
+      return `<p><strong>${c.number}.</strong> ${c.text}</p>`
+    }).join('\n')
+
+    // Save to ideaRecord normalizedData
+    const updatedNormalized = {
+      ...existingNormalized,
+      claims: claimsHtml,
+      claimsStructured: generatedClaims,
+      claimsJurisdiction: activeJurisdiction,
+      claimsGeneratedAt: new Date().toISOString()
+    }
+
+    await prisma.ideaRecord.update({
+      where: { sessionId },
+      data: { normalizedData: updatedNormalized }
+    })
+
+    return NextResponse.json({
+      claims: generatedClaims,
+      claimsHtml,
+      jurisdiction: activeJurisdiction,
+      tokensUsed: (llmResult.response?.outputTokens || 0) + Math.ceil(prompt.length / 4)
+    })
+
+  } catch (error) {
+    console.error('Claims generation error:', error)
+    return NextResponse.json({ error: 'Failed to generate claims' }, { status: 500 })
+  }
+}
+
+async function handleSaveClaims(user: any, patentId: string, data: any) {
+  const { sessionId, claims, claimsStructured } = data
+
+  if (!sessionId) {
+    return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
+  }
+
+  // Verify ownership
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { ideaRecord: true }
+  })
+
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  // Check if claims are frozen
+  const existingNormalized = (session.ideaRecord?.normalizedData as any) || {}
+  if (existingNormalized.claimsApprovedAt) {
+    return NextResponse.json({ error: 'Claims are frozen. Unfreeze to edit.' }, { status: 400 })
+  }
+
+  // Update claims in normalizedData
+  const updatedNormalized = {
+    ...existingNormalized,
+    claims: claims || existingNormalized.claims,
+    claimsStructured: claimsStructured || existingNormalized.claimsStructured,
+    claimsLastSavedAt: new Date().toISOString()
+  }
+
+  await prisma.ideaRecord.update({
+    where: { sessionId },
+    data: { normalizedData: updatedNormalized }
+  })
+
+  return NextResponse.json({ success: true, savedAt: updatedNormalized.claimsLastSavedAt })
+}
+
+async function handleFreezeClaims(user: any, patentId: string, data: any) {
+  const { sessionId, claims, claimsStructured, jurisdiction } = data
+
+  if (!sessionId) {
+    return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
+  }
+
+  // Verify ownership
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { ideaRecord: true }
+  })
+
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  const existingNormalized = (session.ideaRecord?.normalizedData as any) || {}
+  
+  // Validate claims content
+  const claimsContent = claims || existingNormalized.claims
+  if (!claimsContent || (typeof claimsContent === 'string' && claimsContent.trim() === '')) {
+    return NextResponse.json({ error: 'Cannot freeze empty claims' }, { status: 400 })
+  }
+
+  // Freeze claims
+  const updatedNormalized = {
+    ...existingNormalized,
+    claims: claimsContent,
+    claimsStructured: claimsStructured || existingNormalized.claimsStructured,
+    claimsApprovedAt: new Date().toISOString(),
+    claimsApprovedBy: user.id,
+    claimsJurisdiction: jurisdiction || existingNormalized.claimsJurisdiction || session.activeJurisdiction || 'US'
+  }
+
+  await prisma.ideaRecord.update({
+    where: { sessionId },
+    data: { normalizedData: updatedNormalized }
+  })
+
+  return NextResponse.json({
+    success: true,
+    frozenAt: updatedNormalized.claimsApprovedAt,
+    jurisdiction: updatedNormalized.claimsJurisdiction
+  })
+}
+
+async function handleUnfreezeClaims(user: any, patentId: string, data: any) {
+  const { sessionId } = data
+
+  if (!sessionId) {
+    return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
+  }
+
+  // Verify ownership
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { ideaRecord: true }
+  })
+
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  const existingNormalized = (session.ideaRecord?.normalizedData as any) || {}
+
+  // Remove freeze flags but keep the claims content
+  const { claimsApprovedAt, claimsApprovedBy, ...restNormalized } = existingNormalized
+
+  await prisma.ideaRecord.update({
+    where: { sessionId },
+    data: { normalizedData: restNormalized }
+  })
+
+  return NextResponse.json({ success: true, unfrozenAt: new Date().toISOString() })
+}
+
 async function handleSetStage(user: any, patentId: string, data: any) {
   const {
     sessionId,
@@ -1871,12 +2656,13 @@ async function handleSetStage(user: any, patentId: string, data: any) {
 
   console.log('handleSetStage called with:', { sessionId, stage, patentId, userId: user.id, manualPriorArt: !!manualPriorArt, selectedPatentsCount: selectedPatents?.length || 0 })
 
+  // COUNTRY_WISE_DRAFTING kept for backward compatibility with existing sessions
   const allowedStages = [
     'IDEA_ENTRY',
     'COMPONENT_PLANNER',
     'FIGURE_PLANNER',
     'RELATED_ART',
-    'COUNTRY_WISE_DRAFTING',
+    'COUNTRY_WISE_DRAFTING', // Legacy - jurisdiction now selected in Stage 0
     'ANNEXURE_DRAFT',
     'REVIEW_FIX',
     'EXPORT_READY',
@@ -1913,20 +2699,11 @@ async function handleSetStage(user: any, patentId: string, data: any) {
   // Prepare update data
   const updateData: any = { status: stage }
 
-  // Handle multi-jurisdiction flag
-  if (typeof isMultiJurisdiction === 'boolean') {
-    updateData.isMultiJurisdiction = isMultiJurisdiction
-    // Reset reference draft status when switching modes
-    if (!isMultiJurisdiction) {
-      updateData.referenceDraftComplete = false
-      updateData.referenceDraftId = null
-    }
-  }
-
   // Default jurisdiction fallback (IN for India)
   const defaultJurisdiction = 'IN';
 
   // Normalize and persist jurisdiction choices (Stage 3.7a)
+  // NOTE: 'REFERENCE' is a pseudo-jurisdiction for storing reference drafts, NOT a real country
   try {
     const statusMap: Record<string, any> = { ...(session.jurisdictionDraftStatus as any) || {} }
     const languagePrefs: Record<string, string> = {}
@@ -1936,6 +2713,7 @@ async function handleSetStage(user: any, patentId: string, data: any) {
         draftingJurisdictions
           .map((c: string) => (c || '').toUpperCase())
           .filter(Boolean)
+          .filter((c: string) => c !== 'REFERENCE') // Filter out REFERENCE - it's not a real country
       ))
     }
 
@@ -1945,17 +2723,45 @@ async function handleSetStage(user: any, patentId: string, data: any) {
       updateData.draftingJurisdictions = [defaultJurisdiction] // use default jurisdiction
     }
 
-    const chosenList = Array.from(new Set(((updateData.draftingJurisdictions as string[] | undefined) || session.draftingJurisdictions || []).map((c: string) => (c || '').toUpperCase())))
+    const chosenList = Array.from(new Set(
+      ((updateData.draftingJurisdictions as string[] | undefined) || session.draftingJurisdictions || [])
+        .map((c: string) => (c || '').toUpperCase())
+        .filter((c: string) => c !== 'REFERENCE') // Filter out REFERENCE
+    ))
     if (!updateData.draftingJurisdictions && chosenList.length > 0) {
       updateData.draftingJurisdictions = chosenList
     }
 
+    // AUTO-SET isMultiJurisdiction based on number of actual jurisdictions selected
+    // This is crucial for reference draft generation to work correctly
+    const actualJurisdictionCount = chosenList.length
+    if (actualJurisdictionCount > 1) {
+      updateData.isMultiJurisdiction = true
+      console.log(`[handleSetStage] Auto-enabled multi-jurisdiction mode for ${actualJurisdictionCount} jurisdictions: ${chosenList.join(', ')}`)
+    } else if (typeof isMultiJurisdiction === 'boolean') {
+      // Allow explicit override
+      updateData.isMultiJurisdiction = isMultiJurisdiction
+      // Reset reference draft status when switching to single mode
+      if (!isMultiJurisdiction) {
+        updateData.referenceDraftComplete = false
+        updateData.referenceDraftId = null
+      }
+    }
+
+    // Resolve active jurisdiction - NEVER allow 'REFERENCE' as active
     const requestedActive = (activeJurisdiction || '').toUpperCase()
-    const resolvedActive = chosenList.includes(requestedActive)
+    const validRequestedActive = requestedActive !== 'REFERENCE' && chosenList.includes(requestedActive)
       ? requestedActive
-      : (chosenList[0] || session.activeJurisdiction || defaultJurisdiction)
+      : null
+    const resolvedActive = validRequestedActive 
+      || chosenList[0] 
+      || (session.activeJurisdiction !== 'REFERENCE' ? session.activeJurisdiction : null)
+      || defaultJurisdiction
 
     updateData.activeJurisdiction = resolvedActive
+    
+    // Log for debugging
+    console.log(`[handleSetStage] Jurisdictions: ${chosenList.join(', ')}, Active: ${resolvedActive}, MultiJurisdiction: ${updateData.isMultiJurisdiction ?? session.isMultiJurisdiction}`)
 
     // Resolve preferred languages per jurisdiction (if provided)
     for (const code of chosenList) {
@@ -2227,6 +3033,7 @@ async function handleUpdateComponentMap(user: any, patentId: string, data: any) 
 
   if (!validation.valid) {
     console.error('Component map validation failed:', validation.errors);
+    console.error('Components received:', JSON.stringify(components, null, 2));
     return NextResponse.json(
       {
         error: 'Component validation failed. Please check that all components have valid names and the hierarchy is correct.',
@@ -3803,87 +4610,7 @@ async function handleAutosaveSections(user: any, patentId: string, data: any) {
   return NextResponse.json({ draft })
 }
 
-type DeleteJurisdictionComputationInput = {
-  session: any
-  statusMap: Record<string, any>
-  jurisdictions: string[]
-  normalized: string
-  shouldRemove: boolean
-}
 
-type DeleteJurisdictionComputationOutput = {
-  jurisdictions: string[]
-  statusMap: Record<string, any>
-  nextActive: string | null
-}
-
-// Exported for unit testing of jurisdiction state transitions
-export function computeJurisdictionStateOnDelete(
-  input: DeleteJurisdictionComputationInput
-): DeleteJurisdictionComputationOutput {
-  let { session, statusMap, jurisdictions, normalized, shouldRemove } = input
-
-  // Normalize list once up-front
-  jurisdictions = Array.from(
-    new Set(
-      (jurisdictions || []).map((c: string) => (c || '').toUpperCase()).filter(Boolean)
-    )
-  )
-
-  if (shouldRemove) {
-    // Remove the jurisdiction from the list
-    jurisdictions = jurisdictions.filter(c => c !== normalized)
-  } else {
-    // If not removing, ensure the jurisdiction is in the list
-    if (normalized && !jurisdictions.includes(normalized)) {
-      jurisdictions.push(normalized)
-    }
-    // For non-removal paths, we preserve the legacy guarantee of at least one jurisdiction
-    if (jurisdictions.length === 0) {
-      jurisdictions = ['US']
-    }
-  }
-
-  // If nothing is left, clear active and source-of-truth and return early
-  if (jurisdictions.length === 0) {
-    if (Object.prototype.hasOwnProperty.call(statusMap, '__sourceOfTruth')) {
-      delete (statusMap as any).__sourceOfTruth
-    }
-    return {
-      jurisdictions,
-      statusMap,
-      nextActive: null
-    }
-  }
-
-  // Re-resolve source-of-truth within the remaining set
-  const priorSource = typeof (statusMap as any).__sourceOfTruth === 'string'
-    ? String((statusMap as any).__sourceOfTruth).toUpperCase()
-    : resolveSourceOfTruth({ ...session, draftingJurisdictions: jurisdictions })
-
-  let nextSource = priorSource
-  if (nextSource === normalized || !jurisdictions.includes(nextSource)) {
-    nextSource = jurisdictions.find(c => c !== normalized) || jurisdictions[0]
-  }
-
-  if (nextSource) {
-    ;(statusMap as any).__sourceOfTruth = nextSource
-    jurisdictions = [nextSource, ...jurisdictions.filter(c => c !== nextSource)]
-  } else if (Object.prototype.hasOwnProperty.call(statusMap, '__sourceOfTruth')) {
-    delete (statusMap as any).__sourceOfTruth
-  }
-
-  const currentActive = (session?.activeJurisdiction || '').toString().toUpperCase()
-  const nextActive = jurisdictions.includes(currentActive)
-    ? currentActive
-    : ((statusMap as any).__sourceOfTruth || jurisdictions[0] || null)
-
-  return {
-    jurisdictions,
-    statusMap,
-    nextActive: nextActive || null
-  }
-}
 
 // Allow users to reset/delete a jurisdiction-specific draft (without removing the jurisdiction unless explicitly asked)
 async function handleDeleteAnnexureDraft(user: any, patentId: string, data: any) {
@@ -3965,6 +4692,24 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
 
   const effectiveJurisdiction = (jurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'US').toUpperCase()
 
+  // Check for frozen claims - use them instead of regenerating
+  const normalizedData = (session.ideaRecord?.normalizedData as any) || {}
+  const frozenClaimsText = normalizedData.claims || ''
+  const frozenClaimsStructured = normalizedData.claimsStructured || []
+  const claimsFrozen = !!normalizedData.claimsApprovedAt
+  const claimsJurisdiction = normalizedData.claimsJurisdiction || effectiveJurisdiction
+  
+  // If claims are frozen and user is trying to generate claims, use frozen claims instead
+  let sectionsToGenerate = [...sections]
+  let frozenClaimsUsed = false
+  
+  if (claimsFrozen && sections.includes('claims')) {
+    // Remove 'claims' from sections to generate - we'll use frozen claims
+    sectionsToGenerate = sections.filter((s: string) => s !== 'claims')
+    frozenClaimsUsed = true
+    console.log(`[generateSections] Using frozen claims from Stage 1 (frozen at: ${normalizedData.claimsApprovedAt})`)
+  }
+
   // Load latest draft for this jurisdiction (if any) and inject into session for context
   const lastDraftForJurisdiction = await prisma.annexureDraft.findFirst({
     where: { sessionId, jurisdiction: effectiveJurisdiction },
@@ -3981,17 +4726,58 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
 
   const preferredLanguage = getPreferredLanguageForJurisdiction(session, effectiveJurisdiction)
 
-  const result = await DraftingService.generateSections(
-    sessionWithDrafts,
-    sections,
-    mergedInstructions,
-    user.tenantId,
-    requestHeaders,
-    selectedPatents,
-    effectiveJurisdiction,
-    preferredLanguage
-  )
-  if (!result.success) return NextResponse.json({ error: result.error, debugSteps: result.debugSteps }, { status: 400 })
+  // Only generate sections that aren't using frozen claims
+  let result: any = { success: true, generated: {}, debugSteps: [] }
+  
+  if (sectionsToGenerate.length > 0) {
+    result = await DraftingService.generateSections(
+      sessionWithDrafts,
+      sectionsToGenerate,
+      mergedInstructions,
+      user.tenantId,
+      requestHeaders,
+      selectedPatents,
+      effectiveJurisdiction,
+      preferredLanguage
+    )
+    if (!result.success) return NextResponse.json({ error: result.error, debugSteps: result.debugSteps }, { status: 400 })
+  }
+  
+  // Add frozen claims to the result if they were used
+  if (frozenClaimsUsed) {
+    // Convert HTML claims to plain text format suitable for patent draft
+    let claimsForDraft = frozenClaimsText
+    
+    // If we have structured claims, format them properly
+    if (Array.isArray(frozenClaimsStructured) && frozenClaimsStructured.length > 0) {
+      claimsForDraft = frozenClaimsStructured.map((c: any) => {
+        return `${c.number}. ${c.text}`
+      }).join('\n\n')
+    } else if (frozenClaimsText) {
+      // Strip HTML tags for plain text format
+      claimsForDraft = frozenClaimsText
+        .replace(/<p>/gi, '')
+        .replace(/<\/p>/gi, '\n\n')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<strong>/gi, '')
+        .replace(/<\/strong>/gi, '')
+        .replace(/<[^>]*>/g, '')
+        .trim()
+    }
+    
+    result.generated = result.generated || {}
+    result.generated.claims = claimsForDraft
+    result.debugSteps = result.debugSteps || []
+    result.debugSteps.push({ 
+      step: 'frozen_claims_used', 
+      status: 'ok', 
+      meta: { 
+        frozenAt: normalizedData.claimsApprovedAt,
+        jurisdiction: claimsJurisdiction,
+        claimCount: Array.isArray(frozenClaimsStructured) ? frozenClaimsStructured.length : 'unknown'
+      } 
+    })
+  }
 
   // Autosave generated sections into latest draft without bumping version
   try {
@@ -4351,8 +5137,11 @@ import {
 } from '@/lib/multi-jurisdiction-service'
 
 /**
- * Generate Reference Draft (superset sections, country-neutral)
+ * Generate Reference Draft (dynamic superset sections based on selected jurisdictions)
  * Required as first step in multi-jurisdiction filing
+ * 
+ * Optimization: Only generates sections that are actually needed by the selected jurisdictions,
+ * reducing cost, complexity, and generation time.
  */
 async function handleGenerateReferenceDraft(
   user: any, 
@@ -4379,19 +5168,46 @@ async function handleGenerateReferenceDraft(
     return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
   }
 
-  if (!session.isMultiJurisdiction) {
-    return NextResponse.json({ error: 'Reference draft only applicable for multi-jurisdiction mode' }, { status: 400 })
+  // Get the selected jurisdictions (filter out 'REFERENCE' pseudo-jurisdiction)
+  const selectedJurisdictions = (Array.isArray(session.draftingJurisdictions) ? session.draftingJurisdictions : [])
+    .filter((j: string) => j && j.toUpperCase() !== 'REFERENCE')
+
+  // Check if multi-jurisdiction mode is enabled OR if multiple jurisdictions are actually selected
+  // This allows reference draft generation even if isMultiJurisdiction wasn't explicitly set
+  const hasMultipleJurisdictions = selectedJurisdictions.length > 1
+  const isMultiMode = session.isMultiJurisdiction === true || hasMultipleJurisdictions
+
+  if (!isMultiMode) {
+    return NextResponse.json({ 
+      error: 'Reference draft only applicable for multi-jurisdiction mode. Select 2+ jurisdictions first.',
+      hint: 'To enable multi-jurisdiction mode, select multiple countries in the jurisdiction selection step.'
+    }, { status: 400 })
   }
 
-  // Generate reference draft
-  const result = await generateReferenceDraft(session, user.tenantId, requestHeaders)
+  // If multi-mode but flag not set, auto-enable it
+  if (hasMultipleJurisdictions && !session.isMultiJurisdiction) {
+    console.log(`[handleGenerateReferenceDraft] Auto-enabling multi-jurisdiction mode for ${selectedJurisdictions.length} jurisdictions`)
+    await prisma.draftingSession.update({
+      where: { id: sessionId },
+      data: { isMultiJurisdiction: true }
+    })
+  }
+
+  // Ensure we have jurisdictions to work with
+  const jurisdictionsToUse = selectedJurisdictions.length > 0 ? selectedJurisdictions : ['US']
+
+  console.log(`[handleGenerateReferenceDraft] Generating reference draft for jurisdictions: ${jurisdictionsToUse.join(', ')}`)
+
+  // Generate reference draft with ONLY the sections needed by selected jurisdictions
+  const result = await generateReferenceDraft(session, jurisdictionsToUse, user.tenantId, requestHeaders)
 
   if (!result.success || !result.draft) {
     return NextResponse.json({ error: result.error || 'Failed to generate reference draft' }, { status: 500 })
   }
 
-  // Build full text for storage
+  // Build full text for storage (only include generated sections)
   const fullDraftText = Object.entries(result.draft)
+    .filter(([_, value]) => value && value.trim()) // Only include non-empty sections
     .map(([key, value]) => `## ${key}\n\n${value}`)
     .join('\n\n---\n\n')
 
@@ -4407,23 +5223,31 @@ async function handleGenerateReferenceDraft(
       sessionId,
       version,
       jurisdiction: 'REFERENCE',
+      // Map superset keys to AnnexureDraft schema fields (use empty string if not in dynamic superset)
       title: result.draft.title || '',
-      fieldOfInvention: result.draft.field || '',
+      fieldOfInvention: result.draft.fieldOfInvention || '',
       background: result.draft.background || '',
       summary: result.draft.summary || '',
       briefDescriptionOfDrawings: result.draft.briefDescriptionOfDrawings || '',
       detailedDescription: result.draft.detailedDescription || '',
-      bestMethod: result.draft.bestMethod || '',
+      bestMethod: result.draft.bestMode || '',
       claims: result.draft.claims || '',
       abstract: result.draft.abstract || '',
       industrialApplicability: result.draft.industrialApplicability || '',
-      listOfNumerals: '',
+      listOfNumerals: result.draft.listOfNumerals || '',
       fullDraftText,
       extraSections: {
-        technicalProblem: result.draft.technicalProblem || '',
+        // Store extended superset sections
+        preamble: result.draft.preamble || '',
         objectsOfInvention: result.draft.objectsOfInvention || '',
-        // Store all superset keys
-        _supersetKeys: SUPERSET_SECTIONS,
+        technicalProblem: result.draft.technicalProblem || '',
+        technicalSolution: result.draft.technicalSolution || '',
+        advantageousEffects: result.draft.advantageousEffects || '',
+        crossReference: result.draft.crossReference || '',
+        // Store metadata about the dynamic superset
+        _dynamicSections: result.dynamicSections, // The sections that were actually generated
+        _sectionDetails: result.sectionDetails, // Which jurisdictions needed which sections
+        _selectedJurisdictions: selectedJurisdictions,
         _rawDraft: result.draft
       },
       isValid: true
@@ -4441,6 +5265,7 @@ async function handleGenerateReferenceDraft(
         REFERENCE: {
           status: 'done',
           latestVersion: version,
+          sectionsGenerated: result.dynamicSections?.length || 0,
           updatedAt: new Date().toISOString()
         }
       }
@@ -4452,13 +5277,22 @@ async function handleGenerateReferenceDraft(
     draft: result.draft,
     draftId: referenceDraft.id,
     version,
-    tokensUsed: result.tokensUsed
+    tokensUsed: result.tokensUsed,
+    // Include metadata about optimization
+    optimization: {
+      sectionsGenerated: result.dynamicSections?.length || 0,
+      fullSupersetSize: SUPERSET_SECTIONS.length,
+      sectionsSaved: SUPERSET_SECTIONS.length - (result.dynamicSections?.length || SUPERSET_SECTIONS.length),
+      selectedJurisdictions: jurisdictionsToUse,
+      dynamicSections: result.dynamicSections
+    }
   })
 }
 
 /**
  * Translate Reference Draft to a target jurisdiction
  * Uses section mapping and temp=0 for consistency
+ * Supports language selection for jurisdictions with multiple languages
  */
 async function handleTranslateToJurisdiction(
   user: any,
@@ -4466,7 +5300,7 @@ async function handleTranslateToJurisdiction(
   data: any,
   requestHeaders: Record<string, string>
 ) {
-  const { sessionId, targetJurisdiction } = data
+  const { sessionId, targetJurisdiction, targetLanguage } = data
 
   if (!sessionId || !targetJurisdiction) {
     return NextResponse.json({ error: 'Session ID and target jurisdiction required' }, { status: 400 })
@@ -4495,25 +5329,40 @@ async function handleTranslateToJurisdiction(
     return NextResponse.json({ error: 'Reference draft not found' }, { status: 404 })
   }
 
-  // Extract raw draft from extra sections
-  const rawDraft = (referenceDraft.extraSections as any)?._rawDraft || {
+  // Resolve target language - from request, session status, or profile default
+  const targetCode = targetJurisdiction.toUpperCase()
+  let resolvedLanguage = targetLanguage
+  if (!resolvedLanguage) {
+    // Try to get from session's jurisdiction draft status
+    const jurisdictionStatus = (session.jurisdictionDraftStatus as any)?.[targetCode]
+    resolvedLanguage = jurisdictionStatus?.language
+  }
+  // Language will be further resolved by translateReferenceDraft if still undefined
+
+  // Extract raw draft from extra sections - include all superset sections
+  const extraSections = referenceDraft.extraSections as any || {}
+  const rawDraft = extraSections._rawDraft || {
+    // Core sections from AnnexureDraft fields
     title: referenceDraft.title,
-    field: referenceDraft.fieldOfInvention,
+    fieldOfInvention: referenceDraft.fieldOfInvention,
     background: referenceDraft.background,
     summary: referenceDraft.summary,
     briefDescriptionOfDrawings: referenceDraft.briefDescriptionOfDrawings,
     detailedDescription: referenceDraft.detailedDescription,
-    bestMethod: referenceDraft.bestMethod,
+    bestMode: referenceDraft.bestMethod, // Map to canonical superset key
     claims: referenceDraft.claims,
     abstract: referenceDraft.abstract,
     industrialApplicability: referenceDraft.industrialApplicability,
-    technicalProblem: (referenceDraft.extraSections as any)?.technicalProblem || '',
-    objectsOfInvention: (referenceDraft.extraSections as any)?.objectsOfInvention || ''
+    // Extended superset sections from extraSections
+    preamble: extraSections.preamble || '',
+    objectsOfInvention: extraSections.objectsOfInvention || '',
+    technicalProblem: extraSections.technicalProblem || '',
+    technicalSolution: extraSections.technicalSolution || '',
+    advantageousEffects: extraSections.advantageousEffects || ''
   }
 
-  // Translate to target jurisdiction
-  const targetCode = targetJurisdiction.toUpperCase()
-  const result = await translateReferenceDraft(rawDraft, targetCode, user.tenantId, requestHeaders)
+  // Translate to target jurisdiction with language support
+  const result = await translateReferenceDraft(rawDraft, targetCode, resolvedLanguage, user.tenantId, requestHeaders)
 
   if (!result.success || !result.draft) {
     return NextResponse.json({ 
@@ -4565,18 +5414,20 @@ async function handleTranslateToJurisdiction(
       extraSections: {
         ...result.draft,
         _translatedFrom: 'REFERENCE',
-        _translationErrors: result.errors
+        _translationErrors: result.errors,
+        _language: result.language || resolvedLanguage // Store the language used for this draft
       },
       isValid: !hasErrors,
       validationReport: {
-        issues: validationIssues,
+        issues: validationIssues as any,
         hasErrors,
         checkedAt: new Date().toISOString()
       }
     }
   })
 
-  // Update session status
+  // Update session status with language used
+  const usedLanguage = result.language || resolvedLanguage
   await prisma.draftingSession.update({
     where: { id: sessionId },
     data: {
@@ -4586,6 +5437,7 @@ async function handleTranslateToJurisdiction(
           status: hasErrors ? 'needs_review' : 'done',
           latestVersion: version,
           translatedFrom: 'REFERENCE',
+          language: usedLanguage, // Persist the language used
           updatedAt: new Date().toISOString()
         }
       }
@@ -4598,6 +5450,7 @@ async function handleTranslateToJurisdiction(
     draftId: translatedDraft.id,
     version,
     jurisdiction: targetCode,
+    language: usedLanguage, // Return the language used
     validation: {
       issues: validationIssues,
       hasErrors
@@ -4668,11 +5521,12 @@ async function handleValidateDraft(user: any, patentId: string, data: any) {
 // AI Review Handlers
 // ============================================================================
 
-import { runAIReview, buildFixPrompt, type AIReviewIssue } from '@/lib/ai-review-service'
+import { runAIReview, buildFixPrompt, type AIReviewIssue, type FixContext } from '@/lib/ai-review-service'
 
 /**
  * Run comprehensive AI review on draft
  * Analyzes cross-section consistency, diagram alignment, claims support
+ * NOTE: This is a premium feature - requires PATENT_REVIEW service access (Pro tier)
  */
 async function handleRunAIReview(
   user: any,
@@ -4684,6 +5538,23 @@ async function handleRunAIReview(
 
   if (!sessionId || !jurisdiction) {
     return NextResponse.json({ error: 'Session ID and jurisdiction required' }, { status: 400 })
+  }
+
+  // Check if user has access to PATENT_REVIEW service (Pro tier feature)
+  if (user.tenantId) {
+    const serviceCheck = await enforceServiceAccess(
+      user.id,
+      user.tenantId,
+      'PATENT_REVIEW'
+    )
+    if (!serviceCheck.allowed) {
+      return NextResponse.json({
+        error: 'AI Review is a Pro feature',
+        reason: serviceCheck.response?.statusText || 'Upgrade to Pro plan to access AI-powered patent review',
+        code: 'SERVICE_ACCESS_DENIED',
+        upgradeRequired: true
+      }, { status: 403 })
+    }
   }
 
   const session = await prisma.draftingSession.findFirst({
@@ -4732,13 +5603,13 @@ async function handleRunAIReview(
     return NextResponse.json({ error: 'No draft content available for review' }, { status: 400 })
   }
 
-  // Get figures with PlantUML code
+  // Get figures with PlantUML code from diagram sources
   const figures = (session.figurePlans || []).map((plan: any) => {
     const source = (session.diagramSources || []).find((d: any) => d.figureNo === plan.figureNo)
     return {
       figureNo: plan.figureNo,
       title: plan.title || `Figure ${plan.figureNo}`,
-      plantuml: source?.plantuml || ''
+      plantuml: source?.plantumlCode || '' // Use plantumlCode field from DB
     }
   }).filter((f: any) => f.plantuml) // Only include figures with PlantUML
 
@@ -4777,7 +5648,7 @@ async function handleRunAIReview(
       sessionId,
       draftId: latestDraft?.id || null,
       jurisdiction: code,
-      issues: reviewResult.issues || [],
+      issues: reviewResult.issues as any || [],
       summary: reviewResult.summary || {},
       tokensUsed: reviewResult.tokensUsed,
       reviewedAt: new Date(reviewResult.reviewedAt)
@@ -4804,7 +5675,6 @@ async function handleRunAIReview(
   })
 
   return NextResponse.json({
-    success: reviewResult.success,
     reviewId: savedReview.id,
     ...reviewResult
   })
@@ -4813,6 +5683,7 @@ async function handleRunAIReview(
 /**
  * Apply an AI-suggested fix to a section
  * Regenerates the section with the fix prompt
+ * NOTE: This is a premium feature - requires PATENT_REVIEW service access (Pro tier)
  */
 async function handleApplyAIFix(
   user: any,
@@ -4828,9 +5699,29 @@ async function handleApplyAIFix(
     }, { status: 400 })
   }
 
+  // Check if user has access to PATENT_REVIEW service (Pro tier feature)
+  if (user.tenantId) {
+    const serviceCheck = await enforceServiceAccess(
+      user.id,
+      user.tenantId,
+      'PATENT_REVIEW'
+    )
+    if (!serviceCheck.allowed) {
+      return NextResponse.json({
+        error: 'AI Review Fix is a Pro feature',
+        reason: 'Upgrade to Pro plan to apply AI-suggested fixes',
+        code: 'SERVICE_ACCESS_DENIED',
+        upgradeRequired: true
+      }, { status: 403 })
+    }
+  }
+
   const session = await prisma.draftingSession.findFirst({
     where: { id: sessionId, patentId, userId: user.id },
-    include: { annexureDrafts: { orderBy: { version: 'desc' } } }
+    include: { 
+      annexureDrafts: { orderBy: { version: 'desc' } },
+      diagramSources: true // Include PlantUML diagrams
+    }
   })
 
   if (!session) {
@@ -4855,8 +5746,28 @@ async function handleApplyAIFix(
     return NextResponse.json({ error: 'No content found for section' }, { status: 400 })
   }
 
-  // Build the fix prompt
-  const fixPrompt = buildFixPrompt(content, issue as AIReviewIssue, relatedContent)
+  // Extract figures (PlantUML) from diagram sources
+  const figures = (session.diagramSources || []).map((ds: any) => ({
+    figureNo: ds.figureNo,
+    title: `Figure ${ds.figureNo}`,
+    plantuml: ds.plantumlCode || ''
+  })).filter((f: any) => f.plantuml)
+
+  // Extract components from reference map
+  const referenceMap = (session as any).referenceMap || {}
+  const components = Array.isArray(referenceMap.components) 
+    ? referenceMap.components.map((c: any) => ({
+        name: c.name || c.label || '',
+        numeral: String(c.numeral || c.referenceNumeral || '')
+      })).filter((c: any) => c.name && c.numeral)
+    : []
+
+  // Build the fix prompt with full context including diagrams
+  const fixPrompt = buildFixPrompt(content, issue as AIReviewIssue, {
+    relatedContent,
+    figures: issue.category === 'diagram' ? figures : undefined, // Only include diagrams for diagram-related issues
+    components
+  })
 
   // Use LLM to regenerate the section with the fix
   const result = await llmGateway.executeLLMOperation(
@@ -4891,25 +5802,45 @@ async function handleApplyAIFix(
   let fixedContent = (result.response.output || '').trim()
   fixedContent = fixedContent.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, '')
 
-  // Track the applied fix in the latest review
+  // Compute diff data for micro-versioning
+  const diffData = computeTextDiff(content, fixedContent)
+
+  // Track the applied fix in the latest review with full history
   const latestReview = await prisma.aIReviewResult.findFirst({
     where: { sessionId, jurisdiction: code },
     orderBy: { reviewedAt: 'desc' }
   })
 
+  const fixHistoryEntry = {
+    id: `fix-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`,
+    issueId: issue.id,
+    sectionKey,
+    timestamp: new Date().toISOString(),
+    status: 'fixed' as const,
+    changeSummary: issue.title || 'Applied AI fix',
+    beforeText: content,
+    afterText: fixedContent,
+    diffData,
+    issueCode: issue.issueCode || issue.code,
+    issueSeverity: issue.severity
+  }
+
   if (latestReview) {
     const existingFixes = Array.isArray(latestReview.appliedFixes) ? latestReview.appliedFixes : []
+    
+    // Update issues array to mark this issue as fixed
+    const existingIssues = Array.isArray(latestReview.issues) ? latestReview.issues : []
+    const updatedIssues = existingIssues.map((i: any) => 
+      i.id === issue.id ? { ...i, status: 'fixed', resolvedAt: new Date().toISOString(), resolvedBy: 'fix' } : i
+    )
+    
     await prisma.aIReviewResult.update({
       where: { id: latestReview.id },
       data: {
+        issues: updatedIssues,
         appliedFixes: [
           ...existingFixes,
-          {
-            issueId: issue.id,
-            sectionKey,
-            fixedAt: new Date().toISOString(),
-            wasSuccessful: true
-          }
+          fixHistoryEntry
         ]
       }
     })
@@ -4920,9 +5851,136 @@ async function handleApplyAIFix(
     sectionKey,
     originalContent: content,
     fixedContent,
-    issue: issue,
+    diffData,
+    fixHistoryEntry,
+    issue: { ...issue, status: 'fixed' },
     tokensUsed: result.response.outputTokens
   })
+}
+
+/**
+ * Compute text diff for before/after comparison
+ * Handles empty strings and patent-specific patterns (numerals, figures)
+ */
+function computeTextDiff(before: string, after: string) {
+  // Handle edge cases
+  if (!before && !after) {
+    return {
+      beforeText: '',
+      afterText: '',
+      segments: [],
+      summary: 'No changes'
+    }
+  }
+  
+  if (before === after) {
+    return {
+      beforeText: before,
+      afterText: after,
+      segments: [{ type: 'unchanged' as const, text: after }],
+      summary: 'No changes'
+    }
+  }
+  
+  if (!before) {
+    return {
+      beforeText: '',
+      afterText: after,
+      segments: [{ type: 'addition' as const, text: after }],
+      summary: `Added ${after.split(/\s+/).filter(Boolean).length} words`
+    }
+  }
+  
+  if (!after) {
+    return {
+      beforeText: before,
+      afterText: '',
+      segments: [{ type: 'deletion' as const, text: before }],
+      summary: `Removed ${before.split(/\s+/).filter(Boolean).length} words`
+    }
+  }
+
+  // Tokenize preserving patent patterns like (100), Fig. 1, etc.
+  // Split on whitespace but keep the whitespace tokens for reconstruction
+  const tokenize = (text: string) => text.split(/(\s+)/).filter(t => t.length > 0)
+  
+  const beforeTokens = tokenize(before)
+  const afterTokens = tokenize(after)
+  
+  // Simple diff computation using LCS
+  const segments: Array<{ type: 'addition' | 'deletion' | 'unchanged'; text: string }> = []
+  let addedCount = 0
+  let removedCount = 0
+  
+  const m = beforeTokens.length
+  const n = afterTokens.length
+  
+  // Limit diff computation for very large texts (performance safeguard)
+  if (m * n > 1000000) {
+    // Fallback: show as full replacement for very large diffs
+    return {
+      beforeText: before,
+      afterText: after,
+      segments: [
+        { type: 'deletion' as const, text: before.substring(0, 500) + (before.length > 500 ? '...' : '') },
+        { type: 'addition' as const, text: after.substring(0, 500) + (after.length > 500 ? '...' : '') }
+      ],
+      summary: 'Large text replacement (diff truncated)'
+    }
+  }
+  
+  const dp: number[][] = Array(m + 1).fill(null).map(() => Array(n + 1).fill(0))
+  
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (beforeTokens[i - 1] === afterTokens[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1])
+      }
+    }
+  }
+  
+  // Backtrack to build segments
+  let i = m, j = n
+  const tempSegments: typeof segments = []
+  
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && beforeTokens[i - 1] === afterTokens[j - 1]) {
+      tempSegments.unshift({ type: 'unchanged', text: beforeTokens[i - 1] })
+      i--
+      j--
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      tempSegments.unshift({ type: 'addition', text: afterTokens[j - 1] })
+      // Only count non-whitespace as "words"
+      if (afterTokens[j - 1].trim()) addedCount++
+      j--
+    } else if (i > 0) {
+      tempSegments.unshift({ type: 'deletion', text: beforeTokens[i - 1] })
+      if (beforeTokens[i - 1].trim()) removedCount++
+      i--
+    }
+  }
+  
+  // Merge adjacent segments of the same type for cleaner output
+  const mergedSegments: typeof segments = []
+  for (const seg of tempSegments) {
+    const last = mergedSegments[mergedSegments.length - 1]
+    if (last && last.type === seg.type) {
+      last.text += seg.text
+    } else {
+      mergedSegments.push({ ...seg })
+    }
+  }
+  
+  return {
+    beforeText: before,
+    afterText: after,
+    segments: mergedSegments,
+    summary: addedCount === 0 && removedCount === 0 
+      ? 'Minor formatting changes' 
+      : `Added ${addedCount} words, removed ${removedCount} words`
+  }
 }
 
 /**
@@ -5009,20 +6067,154 @@ async function handleIgnoreAIIssue(user: any, patentId: string, data: any) {
     return NextResponse.json({ error: 'Review not found' }, { status: 404 })
   }
 
-  // Add to ignored issues
-  const existingIgnored = Array.isArray(review.ignoredIssues) ? review.ignoredIssues : []
-  if (!existingIgnored.includes(issueId)) {
-    await prisma.aIReviewResult.update({
-      where: { id: review.id },
-      data: {
-        ignoredIssues: [...existingIgnored, issueId]
-      }
+  // Validate the issue exists in this review
+  const issues = Array.isArray(review.issues) ? (review.issues as any[]) : []
+  const targetIssue = issues.find((i: any) => i.id === issueId) as { id: string; status?: string } | undefined
+  
+  if (!targetIssue) {
+    return NextResponse.json({ error: 'Issue not found in this review' }, { status: 404 })
+  }
+
+  // Check if already ignored or fixed
+  if (targetIssue.status === 'ignored') {
+    return NextResponse.json({ 
+      success: true, 
+      message: 'Issue is already ignored',
+      reviewId: review.id 
     })
   }
+  
+  if (targetIssue.status === 'fixed') {
+    return NextResponse.json({ 
+      error: 'Cannot ignore a fixed issue. Revert the fix first if needed.' 
+    }, { status: 400 })
+  }
+
+  // Add to ignored issues and update issue status
+  const existingIgnored = Array.isArray(review.ignoredIssues) ? (review.ignoredIssues as string[]) : []
+  
+  // Update the issue status to 'ignored'
+  const updatedIssues = issues.map((i: any) => 
+    i.id === issueId 
+      ? { ...i, status: 'ignored', resolvedAt: new Date().toISOString(), resolvedBy: 'ignore' } 
+      : i
+  )
+  
+  await prisma.aIReviewResult.update({
+    where: { id: review.id },
+    data: {
+      issues: updatedIssues,
+      ignoredIssues: existingIgnored.includes(issueId) 
+        ? existingIgnored 
+        : [...existingIgnored, issueId]
+    }
+  })
 
   return NextResponse.json({
     success: true,
     reviewId: review.id,
-    ignoredIssues: [...existingIgnored, issueId]
+    ignoredIssues: existingIgnored.includes(issueId) ? existingIgnored : [...existingIgnored, issueId],
+    updatedIssueStatus: 'ignored'
+  })
+}
+
+/**
+ * Revert an applied AI fix
+ * Restores the section to its state before the fix was applied
+ */
+async function handleRevertAIFix(user: any, patentId: string, data: any) {
+  const { sessionId, jurisdiction, sectionKey, fixHistoryId } = data
+
+  if (!sessionId || !jurisdiction || !sectionKey || !fixHistoryId) {
+    return NextResponse.json({ 
+      error: 'Session ID, jurisdiction, section key, and fix history ID required' 
+    }, { status: 400 })
+  }
+
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { annexureDrafts: { orderBy: { version: 'desc' } } }
+  })
+
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  const code = jurisdiction.toUpperCase()
+
+  // Find the review with the fix history
+  const review = await prisma.aIReviewResult.findFirst({
+    where: { sessionId, jurisdiction: code },
+    orderBy: { reviewedAt: 'desc' }
+  })
+
+  if (!review) {
+    return NextResponse.json({ error: 'Review not found' }, { status: 404 })
+  }
+
+  // Type for fix history entries
+  interface FixHistoryEntry {
+    id: string
+    sectionKey: string
+    status?: string
+    beforeText?: string
+    issueId: string
+  }
+
+  // Find the fix history entry - SECURITY: validate it belongs to this review
+  const appliedFixes = Array.isArray(review.appliedFixes) ? (review.appliedFixes as unknown as FixHistoryEntry[]) : []
+  const fixEntry = appliedFixes.find((f) => f.id === fixHistoryId)
+
+  if (!fixEntry) {
+    return NextResponse.json({ error: 'Fix history entry not found in this review' }, { status: 404 })
+  }
+
+  // SECURITY: Verify the fix belongs to the requested section
+  if (fixEntry.sectionKey !== sectionKey) {
+    return NextResponse.json({ error: 'Fix does not belong to specified section' }, { status: 400 })
+  }
+
+  // Check if already reverted
+  if (fixEntry.status === 'reverted') {
+    return NextResponse.json({ error: 'This fix has already been reverted' }, { status: 400 })
+  }
+
+  // Get the before text from the fix entry
+  const revertedContent = fixEntry.beforeText
+
+  if (!revertedContent && revertedContent !== '') {
+    return NextResponse.json({ error: 'No previous content available for revert' }, { status: 400 })
+  }
+
+  // Update the review to mark the issue as reverted (back to pending for re-fixing)
+  const issues = Array.isArray(review.issues) ? (review.issues as any[]) : []
+  const updatedIssues = issues.map((i: any) => 
+    i.id === fixEntry.issueId 
+      ? { ...i, status: 'pending', revertedAt: new Date().toISOString(), previousStatus: i.status } 
+      : i
+  )
+
+  // Update the fix entry status
+  const updatedFixes = appliedFixes.map((f) =>
+    f.id === fixHistoryId
+      ? { ...f, status: 'reverted', revertedAt: new Date().toISOString() }
+      : f
+  )
+
+  await prisma.aIReviewResult.update({
+    where: { id: review.id },
+    data: {
+      issues: updatedIssues,
+      appliedFixes: updatedFixes as any
+    }
+  })
+
+  return NextResponse.json({
+    success: true,
+    sectionKey,
+    revertedContent,
+    fixHistoryId,
+    issueId: fixEntry.issueId,
+    message: 'Fix reverted successfully. Issue is now pending again.'
   })
 }

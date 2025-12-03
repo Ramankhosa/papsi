@@ -478,7 +478,7 @@ interface SectionPromptContext {
 export interface SectionGenerationResult {
   success: boolean;
   generated?: Record<string, string>;
-  debugSteps?: Array<{ step: string; status: 'ok'|'fail'; meta?: any }>;
+  debugSteps?: Array<{ step: string; status: 'ok'|'fail'|'warning'; meta?: any }>;
   llmMeta?: { model?: string; promptHash?: string; params?: any };
   error?: string;
 }
@@ -910,7 +910,7 @@ Respond in this exact JSON shape:
     jurisdiction: string = 'IN',
     preferredLanguage?: string
   ): Promise<SectionGenerationResult> {
-    const debugSteps: Array<{ step: string; status: 'ok'|'fail'; meta?: any }> = []
+   const debugSteps: Array<{ step: string; status: 'ok'|'fail'|'warning'; meta?: any }> = []
     try {
       // Step: gather context
       const idea = session.ideaRecord || {}
@@ -1359,20 +1359,18 @@ Respond in this exact JSON shape:
           s,
           val,
           referenceMap,
-          figures,
           approvedTitle,
           { sectionChecks: sectionResources[s]?.checks, claimsRules: sectionResources[s]?.claimsRules }
         )
         if (!check.ok) {
           debugSteps.push({ step: `critic_${s}`, status: 'fail', meta: { reason: check.reason } })
-          const fixed = this.minimalFix(s, val, { reason: check.reason, approvedTitle, referenceMap, figures, sectionChecks: sectionResources[s]?.checks, claimsRules: sectionResources[s]?.claimsRules })
+          const fixed = this.minimalFix(s, val, { reason: check.reason, approvedTitle, referenceMap, sectionChecks: sectionResources[s]?.checks, claimsRules: sectionResources[s]?.claimsRules })
           if (fixed && fixed.trim() && fixed !== val) {
             val = fixed.trim()
             const recheck = this.guardrailCheck(
               s,
               val,
               referenceMap,
-              figures,
               approvedTitle,
               { sectionChecks: sectionResources[s]?.checks, claimsRules: sectionResources[s]?.claimsRules }
             )
@@ -1390,23 +1388,30 @@ Respond in this exact JSON shape:
               } catch {}
             } else {
               debugSteps.push({ step: `fixer_${s}`, status: 'fail', meta: { reason: recheck.reason, fixedTo: val.substring(0, 100) + '...' } })
-              if (s === 'abstract' && recheck.reason === 'Abstract must not include numerals/figure refs') {
-                debugSteps.push({ step: `guard_${s}`, status: 'ok', meta: { note: 'Allowing abstract with numerals for partial generation' } })
-                generated[s] = val
-                // Enforce section hard word limits post-guard
-                try {
-                  const enforced = this.enforceMaxWords(s, generated[s], sectionResources[s]?.checks, sectionResources[s]?.rules)
-                  if (enforced.clipped) {
-                    generated[s] = enforced.text
-                    debugSteps.push({ step: `limit_enforce_${s}`, status: 'ok', meta: { before: enforced.before, after: enforced.after, maxEnforced: true } })
-                  }
-                } catch {}
-              } else {
-                return { success: false, error: `Guardrail failed for ${s}: ${recheck.reason}`, debugSteps }
-              }
+              // Allow content to pass through - guardrail issues will be caught during AI review
+              debugSteps.push({ step: `guard_${s}`, status: 'warning', meta: { note: `Allowing content despite guardrail issue: ${recheck.reason}`, forReview: true } })
+              generated[s] = val
+              // Enforce section hard word limits post-guard
+              try {
+                const enforced = this.enforceMaxWords(s, generated[s], sectionResources[s]?.checks, sectionResources[s]?.rules)
+                if (enforced.clipped) {
+                  generated[s] = enforced.text
+                  debugSteps.push({ step: `limit_enforce_${s}`, status: 'ok', meta: { before: enforced.before, after: enforced.after, maxEnforced: true } })
+                }
+              } catch {}
             }
           } else {
-            return { success: false, error: `Guardrail failed for ${s}: ${check.reason}`, debugSteps }
+            // Allow content to pass through - guardrail issues will be caught during AI review
+            debugSteps.push({ step: `guard_${s}`, status: 'warning', meta: { note: `Allowing content despite guardrail issue: ${check.reason}`, forReview: true } })
+            generated[s] = val
+            // Enforce section hard word limits post-guard
+            try {
+              const enforced = this.enforceMaxWords(s, generated[s], sectionResources[s]?.checks, sectionResources[s]?.rules)
+              if (enforced.clipped) {
+                generated[s] = enforced.text
+                debugSteps.push({ step: `limit_enforce_${s}`, status: 'ok', meta: { before: enforced.before, after: enforced.after, maxEnforced: true } })
+              }
+            } catch {}
           }
         } else {
           generated[s] = val
@@ -1441,12 +1446,16 @@ Respond in this exact JSON shape:
         }
       }
 
-      // Step: numeral/figure integrity quick check (relaxed for partial sections)
+      // Step: numeral/figure integrity quick check (non-blocking - issues caught during review)
       const fullText = Object.values(generated).join('\n')
       const validation = this.validateDraftConsistency({ fullText }, session)
       const hasInvalidRefs = validation.report.invalidReferences.length > 0
-      debugSteps.push({ step: 'integrity_check', status: hasInvalidRefs ? 'fail' : 'ok', meta: validation.report })
-      if (hasInvalidRefs) return { success: false, error: 'Numeral/Figure integrity check failed: invalid figure references', debugSteps }
+      debugSteps.push({ 
+        step: 'integrity_check', 
+        status: hasInvalidRefs ? 'warning' : 'ok', 
+        meta: { ...validation.report, forReview: hasInvalidRefs, note: hasInvalidRefs ? 'Invalid references will be flagged during AI review' : undefined } 
+      })
+      // Do not block generation - issues will be caught during AI review stage
 
       return { success: true, generated, debugSteps, llmMeta }
     } catch (e) {
@@ -2184,7 +2193,6 @@ Return ONLY a valid JSON object exactly matching the schema above.`
     section: string,
     text: string,
     referenceMap: any,
-    figures: any[],
     approvedTitle?: string,
     ctx?: { sectionChecks?: any[]; claimsRules?: any }
   ): { ok: boolean; reason?: string } {
@@ -2221,11 +2229,6 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       return limits
     }
     const limits = extractLimits(ctx?.sectionChecks)
-    const onlyExistingFigures = (s: string) => {
-      const set = new Set((figures||[]).map((f:any)=>String(f.figureNo)))
-      const refs = Array.from(s.matchAll(/Fig\.?\s*(\d+)/gi)).map(m=>m[1])
-      return refs.every(r=>set.has(String(r)))
-    }
     if (section === 'title') {
       const maxWords = typeof limits.maxWords === 'number' ? limits.maxWords : fallbackMax.title
       const maxChars = typeof limits.maxChars === 'number' ? limits.maxChars : undefined
@@ -2250,11 +2253,7 @@ Return ONLY a valid JSON object exactly matching the schema above.`
     }
     // claims-specific normalization should not be performed here; handled in minimalFix
     if (section === 'briefDescriptionOfDrawings') {
-      // Only check figure references if figures have been declared
-      const declaredFigures = figures || []
-      if (declaredFigures.length > 0 && !onlyExistingFigures(text)) {
-        return { ok: false, reason: 'BDOD references non-existing figure' }
-      }
+      // Figure reference validation removed - now handled through separate LLM review
       const lines = text.split(/\n+/)
       if (lines.some(l=>l.split(/\s+/).filter(Boolean).length>40)) return { ok: false, reason: 'BDOD line exceeds 40 words' }
       if (/(advantage|benefit|claim)/i.test(text)) return { ok: false, reason: 'BDOD contains claims/advantages language' }
@@ -2299,11 +2298,10 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       }
     }
     if (section === 'detailedDescription') {
-      // Enforce: no undeclared numerals and only existing figure references
-      // BUT only if components/figures have been declared - otherwise skip these checks
+      // Enforce: no undeclared numerals
+      // Figure reference validation removed - now handled through separate LLM review
       const declaredComponents = referenceMap?.components || []
-      const declaredFigures = figures || []
-      
+
       // Only check numerals if there are declared components
       if (declaredComponents.length > 0) {
         const allowedNums = new Set(declaredComponents.map((c:any)=>c.numeral))
@@ -2311,11 +2309,6 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       if (usedNums.some(n=>!allowedNums.has(n))) {
         return { ok: false, reason: 'Detailed Description uses undeclared numeral' }
       }
-      }
-      
-      // Only check figure references if there are declared figures
-      if (declaredFigures.length > 0 && !onlyExistingFigures(text)) {
-        return { ok: false, reason: 'Detailed Description references non-existing figure' }
       }
     }
     if (section === 'industrialApplicability') {
@@ -2503,7 +2496,7 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       }
       const id = comp.id;
       const componentType = (comp as any).type;
-      const validTypes = ['MODULE', 'SUBMODULE', 'FUNCTION', 'CLASS', 'INTERFACE', 'OTHER'];
+      const validTypes = ['MAIN_CONTROLLER', 'SUBSYSTEM', 'MODULE', 'INTERFACE', 'SENSOR', 'ACTUATOR', 'PROCESSOR', 'MEMORY', 'DISPLAY', 'COMMUNICATION', 'POWER_SUPPLY', 'OTHER'];
 
       if (componentType && !validTypes.includes(componentType)) {
         errors.push(`Component ${id} has invalid type '${componentType}' - must be one of: ${validTypes.join(', ')}`);
@@ -3244,6 +3237,10 @@ OUTPUT FORMAT:
 
   /**
    * Extended rule-based validator (no LLM) covering IPO-focused checks
+   * 
+   * NOTE: This validator is ADVISORY ONLY - it never blocks drafting output.
+   * All issues are surfaced as feedback for post-generation review.
+   * The `valid` return value indicates whether all checks passed, but does not block operations.
    */
   static validateDraftExtended(draftObj: any, session: any, profile?: any | null, jurisdiction?: string): { valid: boolean; report: any } {
     const textNorm = (s: string) => (s || '').replace(/[\u2013\u2014]/g, '-').replace(/\u00A0/g, ' ').replace(/\s+/g, ' ').trim()
@@ -3271,6 +3268,9 @@ OUTPUT FORMAT:
       section3Flags: [],
       sectionPresence: {},
       complianceScore: 100,
+      // NOTE: hasIssues is informational only - does NOT block drafting
+      hasIssues: false,
+      // Keep hardFail for backward compatibility but it's purely informational
       hardFail: false
     }
 
@@ -3304,7 +3304,7 @@ OUTPUT FORMAT:
     const titleMaxChars = getLimit('title', 'maxChars')
     report.title = { length: report.wordCounts.title, maxWords: titleMaxWords, maxChars: titleMaxChars }
     if ((titleMaxWords && report.wordCounts.title > titleMaxWords) || (titleMaxChars && title.length > titleMaxChars)) {
-      report.hardFail = true; report.complianceScore -= 5
+      report.hasIssues = true; report.complianceScore -= 5
     }
 
     // P0: Abstract discipline
@@ -3324,10 +3324,10 @@ OUTPUT FORMAT:
       startsWithTitle: abstractStartsWithTitle
     }
     if ((absMaxWords && absLen > absMaxWords) || absForbiddenHits.length > 0) {
-      report.hardFail = true; report.complianceScore -= 10
+      report.hasIssues = true; report.complianceScore -= 10
     }
     if (absMaxChars && abstract.length > absMaxChars) {
-      report.hardFail = true; report.complianceScore -= 5
+      report.hasIssues = true; report.complianceScore -= 5
     }
     // Only treat "must start with title" as a strict rule for Indian practice
     if (activeJurisdiction === 'IN' && !abstractStartsWithTitle) {
@@ -3355,7 +3355,7 @@ OUTPUT FORMAT:
     })
     planFigures.forEach((n: number) => { if (!seen.has(n)) missing.push(n) })
     report.bdod = { missingFigures: missing, extraFigures: extra, overlengthLines: overlength, formatViolations }
-    if (missing.length>0 || extra.length>0 || overlength.length>0 || formatViolations.length>0) { report.hardFail = true; report.complianceScore -= 10 }
+    if (missing.length>0 || extra.length>0 || overlength.length>0 || formatViolations.length>0) { report.hasIssues = true; report.complianceScore -= 10 }
 
     // P0: Industrial Applicability
     const iaPresent = industrial.length>0
@@ -3371,13 +3371,13 @@ OUTPUT FORMAT:
       maxChars: iaMaxChars,
       startsWith: undefined as boolean | undefined
     }
-    if (!iaPresent) { report.hardFail = true; report.complianceScore -= 10 }
-    if (iaMaxWords && iaLen > iaMaxWords) { report.hardFail = true; report.complianceScore -= 5 }
-    if (iaMaxChars && industrial.length > iaMaxChars) { report.hardFail = true; report.complianceScore -= 5 }
+    if (!iaPresent) { report.hasIssues = true; report.complianceScore -= 10 }
+    if (iaMaxWords && iaLen > iaMaxWords) { report.hasIssues = true; report.complianceScore -= 5 }
+    if (iaMaxChars && industrial.length > iaMaxChars) { report.hasIssues = true; report.complianceScore -= 5 }
     if (activeJurisdiction === 'IN') {
       const iaStarts = industrial.startsWith('The invention is industrially applicable to')
       report.industrialApplicability.startsWith = iaStarts
-      if (!iaStarts || iaLen < 50) { report.hardFail = true; report.complianceScore -= 5 }
+      if (!iaStarts || iaLen < 50) { report.hasIssues = true; report.complianceScore -= 5 }
     }
 
     // P0: Numeral integrity expanded (treat only three-digit numerals 100G999 as reference numerals)
@@ -3396,7 +3396,7 @@ OUTPUT FORMAT:
     // Repeated mentions of the same numeral across the specification are expected; do not treat as an error here.
     const duplicates: number[] = []
     report.numerals = { declaredNotUsed, usedNotDeclared, duplicates, styleViolations: 0 }
-    if (usedNotDeclared.length>0) { report.hardFail = true; report.complianceScore -= 10 }
+    if (usedNotDeclared.length>0) { report.hasIssues = true; report.complianceScore -= 10 }
 
     // P0: Figure integrity (invalid refs anywhere; coverage outside BDOD)
     const figureRefRegex = /\b(Fig\.?|Figure)\s*0*(\d+)\b/gi
@@ -3409,7 +3409,7 @@ OUTPUT FORMAT:
     const coverage: any = { mentionedOutsideBDOD: [] }
     planFigures.forEach((n: number) => { coverage.mentionedOutsideBDOD.push(new RegExp(`\\b(Fig\\.?|Figure)\\s*0*${n}\\b`,'i').test(outsideText)) })
     report.figures = { invalidReferences, coverage }
-    if (invalidReferences.length>0) { report.hardFail = true; report.complianceScore -= 10 }
+    if (invalidReferences.length>0) { report.hasIssues = true; report.complianceScore -= 10 }
 
     // P0: Claims hygiene
     const forbiddenClaims = /(and\/or|etc\.|approximately|substantially)/i
@@ -3441,7 +3441,7 @@ OUTPUT FORMAT:
       antecedentFailures,
       maxCount: claimsMaxCount
     }
-    if ((claimsMaxCount && totalClaims > claimsMaxCount) || forbiddenHits.length>0) { report.hardFail = true; report.complianceScore -= 10 }
+    if ((claimsMaxCount && totalClaims > claimsMaxCount) || forbiddenHits.length>0) { report.hasIssues = true; report.complianceScore -= 10 }
 
     // P0: Best Method sufficiency
     const hasNumeric = /\d/.test(bestMethod)
@@ -3449,7 +3449,7 @@ OUTPUT FORMAT:
     const tokens = (bestMethod.match(/\b\w+\b/g) || []).length || 1
     const hedgingDensity = hedges / tokens
     report.bestMethod = { hasNumeric, hedgingDensity }
-    if (!hasNumeric || hedgingDensity > 0.03) { report.hardFail = true; report.complianceScore -= 10 }
+    if (!hasNumeric || hedgingDensity > 0.03) { report.hasIssues = true; report.complianceScore -= 10 }
 
     // P1: Field/Background tone (simple)
     const badTone = /(holistic|breakthrough|revolutionary)/i
@@ -3476,11 +3476,15 @@ OUTPUT FORMAT:
       if (/algorithm\s+per\s*se/i.test(claims)) addFlag('3(k)', 'algorithm per se', 'claims', 'fail')
       if (/computer\s+program\s+product/i.test(claims)) addFlag('3(k)', 'computer program product', 'claims', 'warn')
       if (/diagnos|therapy/i.test(claims)) addFlag('3(i)', 'diagnosis/therapy', 'claims', 'warn')
-      if (s3Flags.some(f => f.severity === 'fail')) { report.hardFail = true; report.complianceScore -= 10 }
+      if (s3Flags.some(f => f.severity === 'fail')) { report.hasIssues = true; report.complianceScore -= 10 }
     }
     report.section3Flags = s3Flags
 
-    // Final decision
-    return { valid: !report.hardFail, report }
+    // Set hardFail for backward compatibility (maps to hasIssues)
+    report.hardFail = report.hasIssues
+
+    // Final decision - NOTE: `valid` is informational only and does NOT block drafting
+    // All validation issues are surfaced for post-generation review
+    return { valid: !report.hasIssues, report }
   }
 }

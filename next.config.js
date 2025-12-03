@@ -3,6 +3,7 @@ const nextConfig = {
   // Minimal config for development
   experimental: {
     webpackBuildWorker: false,
+    optimizeCss: true, // Optimize CSS loading and preloading
   },
 
   // Webpack configuration to handle offline scenarios

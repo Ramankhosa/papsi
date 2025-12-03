@@ -9,6 +9,8 @@ import SectionInstructionPopover from './SectionInstructionPopover'
 import AllInstructionsModal from './AllInstructionsModal'
 import WritingSamplesModal from './WritingSamplesModal'
 import PersonaManager, { type PersonaSelection } from './PersonaManager'
+import InlineSectionValidator from './InlineSectionValidator'
+import type { ValidationIssue as UnifiedValidationIssue } from '@/types/validation'
 
 // ============================================================================
 // AI Review Issue Type
@@ -19,7 +21,7 @@ interface AIReviewIssue {
   sectionKey: string
   sectionLabel: string
   type: 'error' | 'warning' | 'suggestion'
-  category: 'consistency' | 'diagram' | 'completeness' | 'legal' | 'clarity'
+  category: 'consistency' | 'diagram' | 'completeness' | 'legal' | 'clarity' | 'translation'
   title: string
   description: string
   suggestion: string
@@ -163,10 +165,14 @@ function ValidationPanel({
     }
   }, [sessionId, jurisdiction, patentId, draft])
 
+  // Track if AI review is a Pro feature (for UI display)
+  const [aiReviewUpgradeRequired, setAiReviewUpgradeRequired] = useState(false)
+
   // Run AI review
   const runAIReview = useCallback(async () => {
     if (!sessionId || !jurisdiction || !patentId) return
     setAiLoading(true)
+    setAiReviewUpgradeRequired(false)
     try {
       const res = await fetch(`/api/patents/${patentId}/drafting`, {
         method: 'POST',
@@ -190,6 +196,17 @@ function ValidationPanel({
         // Reset ignored/applied for new review
         setIgnoredIssues(new Set())
         setAppliedFixes(new Set())
+      } else if (data.upgradeRequired) {
+        // Pro feature - show upgrade message
+        setAiReviewUpgradeRequired(true)
+        setAiSummary({
+          overallScore: 0,
+          totalIssues: 0,
+          errors: 0,
+          warnings: 0,
+          suggestions: 0,
+          recommendation: 'AI Review is a Pro feature. Upgrade your plan to access AI-powered patent review with comprehensive analysis of claims consistency, diagram alignment, and legal compliance.'
+        })
       } else {
         alert(`AI Review failed: ${data.error || 'Unknown error'}`)
       }
@@ -234,9 +251,12 @@ function ValidationPanel({
       if (data.success && data.fixedContent) {
         onFix(issue.sectionKey, data.fixedContent)
         // Track the applied fix locally
-        setAppliedFixes(prev => new Set([...prev, issue.id]))
+        setAppliedFixes(prev => new Set(Array.from(prev).concat(issue.id)))
         // Remove the fixed issue from the list
         setAiIssues(prev => prev.filter(i => i.id !== issue.id))
+      } else if (data.upgradeRequired) {
+        // Pro feature - show upgrade message
+        alert('AI Fix is a Pro feature. Please upgrade your plan to apply AI-suggested fixes automatically.')
       } else {
         alert(`Failed to apply fix: ${data.error || 'Unknown error'}`)
       }
@@ -251,7 +271,7 @@ function ValidationPanel({
   // Ignore an issue (persists to backend)
   const ignoreIssue = useCallback(async (issueId: string) => {
     // Update local state immediately
-    setIgnoredIssues(prev => new Set([...prev, issueId]))
+    setIgnoredIssues(prev => new Set(Array.from(prev).concat(issueId)))
     
     // Persist to backend
     try {
@@ -300,6 +320,7 @@ function ValidationPanel({
       case 'completeness': return { icon: '📋', bg: 'bg-amber-50', border: 'border-amber-200', text: 'text-amber-700' }
       case 'legal': return { icon: '⚖️', bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700' }
       case 'clarity': return { icon: '💡', bg: 'bg-emerald-50', border: 'border-emerald-200', text: 'text-emerald-700' }
+      case 'translation': return { icon: '🌐', bg: 'bg-cyan-50', border: 'border-cyan-200', text: 'text-cyan-700' }
       default: return { icon: '📝', bg: 'bg-gray-50', border: 'border-gray-200', text: 'text-gray-700' }
     }
   }
@@ -959,6 +980,57 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   const [showAllInstructionsModal, setShowAllInstructionsModal] = useState(false)
   const [lineHeight, setLineHeight] = useState('1.7')
 
+  // Inline Section Validation (Post-generation feedback)
+  const [inlineValidationIssues, setInlineValidationIssues] = useState<Record<string, UnifiedValidationIssue[]>>({})
+  const [validationLoading, setValidationLoading] = useState<Record<string, boolean>>({})
+
+  // Fetch validation for a section (debounced/on-demand)
+  const validateSection = useCallback(async (sectionKey: string, content: string) => {
+    if (!content || content.trim().length === 0 || !session?.id || !patent?.id) return
+    
+    setValidationLoading(prev => ({ ...prev, [sectionKey]: true }))
+    try {
+      const res = await fetch(`/api/patents/${patent.id}/validation`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'validate_section',
+          sessionId: session.id,
+          jurisdiction: activeJurisdiction,
+          sectionKey,
+          content
+        })
+      })
+      const data = await res.json()
+      if (data.success && data.issues) {
+        setInlineValidationIssues(prev => ({
+          ...prev,
+          [sectionKey]: data.issues
+        }))
+      }
+    } catch (err) {
+      console.error('Section validation error:', err)
+    } finally {
+      setValidationLoading(prev => ({ ...prev, [sectionKey]: false }))
+    }
+  }, [session?.id, patent?.id, activeJurisdiction])
+
+  // Validate section on content change (debounced)
+  useEffect(() => {
+    const debouncedValidate = setTimeout(() => {
+      Object.entries(generated).forEach(([key, content]) => {
+        if (content && content.trim().length > 0) {
+          validateSection(key, content)
+        }
+      })
+    }, 1500) // 1.5s debounce
+
+    return () => clearTimeout(debouncedValidate)
+  }, [generated, activeJurisdiction])
+
   // Data for figures
   const figurePlans = useMemo(() => Array.isArray(session?.figurePlans) ? session.figurePlans : [], [session?.figurePlans])
   const diagramSources = useMemo(() => Array.isArray(session?.diagramSources) ? session.diagramSources : [], [session?.diagramSources])
@@ -1225,13 +1297,26 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   }, [selectedAddCode, availableCountries])
 
   // Load country profile to drive section layout
+  // For REFERENCE pseudo-country, pass the selected jurisdictions to get dynamic optimized sections
   useEffect(() => {
     const loadProfile = async () => {
       if (!activeJurisdiction) return
       setProfileLoading(true)
       setProfileError(null)
       try {
-        const res = await fetch(`/api/country-profiles/${activeJurisdiction}`, {
+        // Build URL with jurisdictions param for REFERENCE profile optimization
+        let url = `/api/country-profiles/${activeJurisdiction}`
+        
+        // For REFERENCE profile, append selected jurisdictions to optimize the section list
+        if (activeJurisdiction.toUpperCase() === 'REFERENCE') {
+          const jurisdictions = (session?.draftingJurisdictions || [])
+            .filter((j: string) => j && j.toUpperCase() !== 'REFERENCE')
+          if (jurisdictions.length > 0) {
+            url += `?jurisdictions=${jurisdictions.join(',')}`
+          }
+        }
+        
+        const res = await fetch(url, {
           headers: {
             'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
           }
@@ -1308,7 +1393,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       }
     }
     loadProfile()
-  }, [activeJurisdiction])
+  }, [activeJurisdiction, session?.draftingJurisdictions])
 
   const handleJurisdictionChange = async (code: string) => {
     const normalized = (code || '').toUpperCase()
@@ -1805,7 +1890,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             <div className="mt-4 flex flex-wrap gap-2">
               {activeJurisdiction === 'REFERENCE' && !session?.referenceDraftComplete && (
                 <button
-                  onClick={handleGenerateReferenceDraft}
+                  onClick={() => handleGenerateReferenceDraft()}
                   disabled={generatingReference}
                   className="px-4 py-2 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700 disabled:opacity-60 flex items-center gap-2"
                 >
@@ -1829,7 +1914,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                     ✅ Reference Draft Complete
                   </span>
                   <button
-                    onClick={handleGenerateReferenceDraft}
+                    onClick={() => handleGenerateReferenceDraft()}
                     disabled={generatingReference}
                     className="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200 flex items-center gap-1"
                   >
@@ -2284,6 +2369,29 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                                     </button>
                                   </div>
                                 </div>
+                              )}
+
+                              {/* Inline Section Validation */}
+                              {generated[keyName] && (
+                                <InlineSectionValidator
+                                  sectionKey={keyName}
+                                  content={generated[keyName] || ''}
+                                  jurisdiction={activeJurisdiction}
+                                  patentId={patent?.id || ''}
+                                  sessionId={session?.id || ''}
+                                  issues={inlineValidationIssues[keyName] || []}
+                                  onFix={(fixedContent) => {
+                                    setGenerated(prev => ({ ...prev, [keyName]: fixedContent }))
+                                    setEditDrafts(prev => ({ ...prev, [keyName]: fixedContent }))
+                                  }}
+                                  onIssuesChange={(issues) => {
+                                    setInlineValidationIssues(prev => ({
+                                      ...prev,
+                                      [keyName]: issues
+                                    }))
+                                  }}
+                                  isLoading={validationLoading[keyName]}
+                                />
                               )}
                             </div>
                           )}

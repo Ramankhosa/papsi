@@ -61,7 +61,7 @@ export async function GET(
     }
     
     // Check if current user is a team lead
-    const userMembership = team.members.find(m => m.userId === user.user_id)
+    const userMembership = team.members.find(m => m.userId === user.sub)
     const isTeamLead = userMembership?.role === 'LEAD'
     const isAdmin = (user.roles || []).some((r: string) => ['OWNER', 'ADMIN'].includes(r))
     
@@ -126,7 +126,7 @@ export async function PATCH(
     const team = await prisma.team.findUnique({
       where: { id: teamId },
       include: {
-        members: { where: { userId: user.user_id } }
+        members: { where: { userId: user.sub } }
       }
     })
     
@@ -199,7 +199,7 @@ export async function PATCH(
         // Audit log
         await prisma.auditLog.create({
           data: {
-            actorUserId: user.user_id,
+            actorUserId: user.sub,
             tenantId: user.tenant_id!,
             action: 'TEAM_MEMBER_ADD',
             resource: `team:${teamId}`,
@@ -246,7 +246,7 @@ export async function PATCH(
         // Audit log
         await prisma.auditLog.create({
           data: {
-            actorUserId: user.user_id,
+            actorUserId: user.sub,
             tenantId: user.tenant_id!,
             action: 'TEAM_MEMBER_REMOVE',
             resource: `team:${teamId}`,
@@ -325,7 +325,7 @@ export async function PATCH(
         // Audit log
         await prisma.auditLog.create({
           data: {
-            actorUserId: user.user_id,
+            actorUserId: user.sub,
             tenantId: user.tenant_id!,
             action: 'TEAM_SERVICE_ACCESS_UPDATE',
             resource: `team:${teamId}`,
@@ -386,7 +386,7 @@ export async function DELETE(
     // Audit log
     await prisma.auditLog.create({
       data: {
-        actorUserId: user.user_id,
+        actorUserId: user.sub,
         tenantId: user.tenant_id!,
         action: 'TEAM_DEACTIVATE',
         resource: `team:${teamId}`,

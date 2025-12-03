@@ -24,45 +24,5 @@ export { createLLMProvider } from './providers/llm-provider'
 
 // Configuration and utilities
 export { defaultConfig, createMeteringConfig } from './config'
+export { createMeteringSystem, createDevMeteringSystem } from './system'
 export * from './utils'
-
-// === FACTORY FUNCTIONS ===
-
-import type { MeteringConfig } from './types'
-import { createIdentityService } from './identity'
-import { createCatalogService } from './catalog'
-import { createPolicyService } from './policy'
-import { createReservationService } from './reservation'
-import { createMeteringService } from './metering'
-import { defaultConfig } from './config'
-
-/**
- * Create a complete metering system with all services
- */
-export function createMeteringSystem(config: Partial<MeteringConfig> = {}) {
-  const finalConfig = { ...defaultConfig, ...config }
-
-  return {
-    config: finalConfig,
-    identity: createIdentityService(finalConfig),
-    catalog: createCatalogService(finalConfig),
-    policy: createPolicyService(finalConfig),
-    reservation: createReservationService(finalConfig),
-    metering: createMeteringService(finalConfig),
-  }
-}
-
-/**
- * Quick setup for development/testing
- */
-export function createDevMeteringSystem() {
-  return createMeteringSystem({
-    enabled: true,
-    allowBypassForAdmins: true,
-    reservationTimeoutMs: 30000, // 30 seconds
-    maxConcurrentReservations: 10,
-  })
-}
-
-// === LEGACY COMPATIBILITY ===
-// All services are now implemented - no placeholders needed

@@ -1,12 +1,40 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { 
+  Sparkles, 
+  Lock, 
+  Unlock, 
+  ChevronDown, 
+  ChevronRight,
+  Edit2, 
+  Check, 
+  RefreshCw, 
+  AlertCircle,
+  FileText,
+  Globe,
+  Lightbulb,
+  Scale
+} from 'lucide-react'
+import RichTextEditor, { ClaimsEditor, RichTextEditorRef } from '@/components/ui/rich-text-editor'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 
 interface IdeaEntryStageProps {
   session: any
   patent: any
   onComplete: (data: any) => Promise<any>
   onRefresh: () => Promise<void>
+}
+
+interface Claim {
+  number: number
+  type: 'independent' | 'dependent'
+  dependsOn?: number
+  text: string
+  category?: 'method' | 'system' | 'apparatus' | 'composition' | 'product'
 }
 
 export default function IdeaEntryStage({ session, patent, onComplete, onRefresh }: IdeaEntryStageProps) {
@@ -16,6 +44,17 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
   const [isEditing, setIsEditing] = useState(false)
   const [isRegenerating, setIsRegenerating] = useState(false)
   const [showOriginal, setShowOriginal] = useState(false)
+  const [showInventionDetails, setShowInventionDetails] = useState(true)
+  const [showClaimsDetails, setShowClaimsDetails] = useState(true)
+
+  // Claims state
+  const [claims, setClaims] = useState<Claim[]>([])
+  const [claimsText, setClaimsText] = useState('')
+  const [claimsFrozen, setClaimsFrozen] = useState(false)
+  const [claimsFrozenAt, setClaimsFrozenAt] = useState<string | null>(null)
+  const [isGeneratingClaims, setIsGeneratingClaims] = useState(false)
+  const [showClaimsSection, setShowClaimsSection] = useState(true)
+  const claimsEditorRef = useRef<RichTextEditorRef>(null)
 
   // Editable fields
   const [problem, setProblem] = useState('')
@@ -31,8 +70,13 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
   // Use data from existing idea record
   const rawIdea = session?.ideaRecord?.rawInput || ''
   const title = session?.ideaRecord?.title || ''
+  
+  // Jurisdiction info
+  const activeJurisdiction = (session?.activeJurisdiction || session?.draftingJurisdictions?.[0] || 'US').toUpperCase()
+  const allJurisdictions = session?.draftingJurisdictions || [activeJurisdiction]
+  const allowRefine = session?.ideaRecord?.allowRefine !== false // Default to true
 
-  // Load normalized data on component mount
+  // Load normalized data and claims on component mount
   useEffect(() => {
     if (session?.ideaRecord?.normalizedData) {
       setNormalizedData({
@@ -64,377 +108,709 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
       setCpcCodes(Array.isArray(session.ideaRecord.cpcCodes) ? session.ideaRecord.cpcCodes : [])
       setIpcCodes(Array.isArray(session.ideaRecord.ipcCodes) ? session.ideaRecord.ipcCodes : [])
     }
+
+    // Load claims data from normalizedData
+    const normalizedData = (session?.ideaRecord?.normalizedData as any) || {}
+    if (normalizedData.claims) {
+      const savedClaims = normalizedData.claims
+      if (Array.isArray(savedClaims)) {
+        setClaims(savedClaims)
+        // Convert structured claims to text for editor
+        const claimsTextContent = savedClaims.map((c: Claim) => {
+          const prefix = c.type === 'dependent' && c.dependsOn ? `(Claim ${c.dependsOn}) ` : ''
+          return `${c.number}. ${prefix}${c.text}`
+        }).join('\n\n')
+        setClaimsText(claimsTextContent)
+      } else if (typeof savedClaims === 'string') {
+        setClaimsText(savedClaims)
+      }
+    }
+    
+    // Check if claims are frozen
+    if (normalizedData.claimsApprovedAt) {
+      setClaimsFrozen(true)
+      setClaimsFrozenAt(normalizedData.claimsApprovedAt)
+    }
   }, [session])
 
-  const canProceed = normalizedData && normalizedData.extractedFields
+  const canProceed = normalizedData && normalizedData.extractedFields && claimsFrozen
+
+  // Generate claims using jurisdiction-aware rules
+  const handleGenerateClaims = async () => {
+    if (!session?.id) return
+    
+    try {
+      setIsGeneratingClaims(true)
+      setError(null)
+
+      const response = await onComplete({
+        action: 'generate_claims',
+        sessionId: session.id,
+        jurisdiction: activeJurisdiction,
+        ideaContext: {
+          title,
+          problem,
+          objectives,
+          logic,
+          components,
+          bestMethod,
+          abstract: abstractText
+        }
+      })
+
+      if (response?.claims) {
+        if (Array.isArray(response.claims)) {
+          setClaims(response.claims)
+          // Format for display
+          const formatted = response.claims.map((c: Claim) => {
+            const depText = c.type === 'dependent' && c.dependsOn 
+              ? `The ${c.category || 'invention'} of claim ${c.dependsOn}, wherein ` 
+              : ''
+            return `<p><strong>${c.number}.</strong> ${depText}${c.text}</p>`
+          }).join('')
+          setClaimsText(formatted)
+        } else if (typeof response.claims === 'string') {
+          setClaimsText(response.claims)
+        }
+      }
+
+      await onRefresh()
+    } catch (e) {
+      console.error('Failed to generate claims:', e)
+      setError('Failed to generate claims. Please try again.')
+    } finally {
+      setIsGeneratingClaims(false)
+    }
+  }
+
+  // Save claims (without freezing)
+  const handleSaveClaims = async () => {
+    if (!session?.id) return
+
+    try {
+      setError(null)
+      const claimsContent = claimsEditorRef.current?.getHTML() || claimsText
+
+      await onComplete({
+        action: 'save_claims',
+        sessionId: session.id,
+        claims: claimsContent,
+        claimsStructured: claims.length > 0 ? claims : null
+      })
+
+      await onRefresh()
+    } catch (e) {
+      console.error('Failed to save claims:', e)
+      setError('Failed to save claims.')
+    }
+  }
+
+  // Freeze/approve claims
+  const handleFreezeClaims = async () => {
+    if (!session?.id) return
+
+    try {
+      setError(null)
+      const claimsContent = claimsEditorRef.current?.getHTML() || claimsText
+
+      if (!claimsContent || claimsContent.trim() === '' || claimsContent === '<p></p>') {
+        setError('Please generate or enter claims before freezing.')
+        return
+      }
+
+      await onComplete({
+        action: 'freeze_claims',
+        sessionId: session.id,
+        claims: claimsContent,
+        claimsStructured: claims.length > 0 ? claims : null,
+        jurisdiction: activeJurisdiction
+      })
+
+      setClaimsFrozen(true)
+      setClaimsFrozenAt(new Date().toISOString())
+      await onRefresh()
+    } catch (e) {
+      console.error('Failed to freeze claims:', e)
+      setError('Failed to freeze claims.')
+    }
+  }
+
+  // Unfreeze claims for editing
+  const handleUnfreezeClaims = async () => {
+    if (!session?.id) return
+
+    try {
+      setError(null)
+      await onComplete({
+        action: 'unfreeze_claims',
+        sessionId: session.id
+      })
+
+      setClaimsFrozen(false)
+      setClaimsFrozenAt(null)
+      await onRefresh()
+    } catch (e) {
+      console.error('Failed to unfreeze claims:', e)
+      setError('Failed to unfreeze claims.')
+    }
+  }
 
   return (
-    <div className="px-6 py-8 max-w-[1200px] mx-auto">
-      <div className="mb-8 flex items-center justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-gray-900">Idea Review</h2>
-          <p className="text-sm text-gray-500 mt-1">
-            Review and refine the AI-structured breakdown of your invention.
-          </p>
-        </div>
-        <div className="flex items-center space-x-3">
-          {/* Actions moved to header area if needed, or kept here */}
+    <div className="px-6 py-8 max-w-[1400px] mx-auto">
+      {/* Header with Jurisdiction Badge */}
+      <div className="mb-8">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-3">
+              <div className="p-2 bg-indigo-100 rounded-lg">
+                <Lightbulb className="w-6 h-6 text-indigo-600" />
+              </div>
+              Idea & Claims Review
+            </h2>
+            <p className="text-gray-500 mt-2">
+              Review your invention structure and generate jurisdiction-aware patent claims.
+            </p>
+          </div>
+          
+          <div className="flex items-center gap-3">
+            {/* Mode indicator */}
+            <Badge variant={allowRefine ? 'default' : 'secondary'} className="flex items-center gap-1.5 px-3 py-1.5">
+              {allowRefine ? (
+                <>
+                  <Sparkles className="w-3.5 h-3.5" />
+                  Kisho Enhanced
+                </>
+              ) : (
+                <>
+                  <FileText className="w-3.5 h-3.5" />
+                  Original Content
+                </>
+              )}
+            </Badge>
+            
+            {/* Jurisdiction Badge */}
+            <Badge variant="outline" className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border-amber-200 text-amber-800">
+              <Globe className="w-3.5 h-3.5" />
+              {activeJurisdiction}
+              {allJurisdictions.length > 1 && (
+                <span className="text-xs opacity-70">+{allJurisdictions.length - 1}</span>
+              )}
+            </Badge>
+          </div>
         </div>
       </div>
 
       {error && (
-        <div className="mb-6 bg-red-50 border border-red-100 rounded-lg p-4 flex items-start">
-          <div className="flex-shrink-0 mt-0.5">
-            <svg className="h-4 w-4 text-red-400" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-            </svg>
-          </div>
-          <div className="ml-3">
-            <p className="text-sm text-red-700">{error}</p>
-          </div>
-        </div>
+        <Alert variant="destructive" className="mb-6">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
       )}
 
       {(!showNormalized || !normalizedData) && (
         <div className="mb-8 bg-indigo-50/50 border border-indigo-100 rounded-lg p-4 flex items-center justify-center text-sm text-indigo-700 animate-pulse">
-          <svg className="animate-spin -ml-1 mr-3 h-4 w-4 text-indigo-600" fill="none" viewBox="0 0 24 24">
-            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-          </svg>
+          <RefreshCw className="animate-spin mr-3 h-4 w-4 text-indigo-600" />
           Structuring your idea into a patent-ready outline...
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Main Content Column */}
-        <div className="lg:col-span-12 space-y-6">
-          
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+        {/* Left Column: Invention Details */}
+        <div className="space-y-4">
           {/* Collapsible Original Input */}
-          <div className="border border-gray-200 rounded-lg overflow-hidden bg-white shadow-sm hover:shadow transition-shadow duration-200">
+          <div className="border border-gray-200 rounded-lg overflow-hidden bg-white shadow-sm">
             <button 
               onClick={() => setShowOriginal(!showOriginal)} 
               className="w-full flex justify-between items-center px-5 py-3 bg-gray-50/50 hover:bg-gray-50 transition-colors text-left"
             >
               <div className="flex items-center gap-2">
-                <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
+                <FileText className="w-4 h-4 text-gray-400" />
                 <span className="text-sm font-medium text-gray-700">Original Input Reference</span>
               </div>
-              <svg className={`w-4 h-4 text-gray-400 transform transition-transform duration-200 ${showOriginal ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
+              {showOriginal ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
             </button>
-            {showOriginal && (
-              <div className="p-5 border-t border-gray-100 bg-gray-50/30">
-                <div className="mb-4">
-                  <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 block mb-1">Title</span>
-                  <p className="text-sm text-gray-900">{title}</p>
-                </div>
-                <div>
-                  <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 block mb-1">Description</span>
-                  <div className="bg-white p-4 rounded border border-gray-200 text-sm text-gray-600 whitespace-pre-wrap font-mono leading-relaxed max-h-60 overflow-y-auto">
-                    {rawIdea}
+            <AnimatePresence>
+              {showOriginal && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden"
+                >
+                  <div className="p-5 border-t border-gray-100 bg-gray-50/30">
+                    <div className="mb-4">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 block mb-1">Title</span>
+                      <p className="text-sm text-gray-900 font-medium">{title}</p>
+                    </div>
+                    <div>
+                      <span className="text-xs font-semibold uppercase tracking-wider text-gray-400 block mb-1">Description</span>
+                      <div className="bg-white p-4 rounded border border-gray-200 text-sm text-gray-600 whitespace-pre-wrap font-mono leading-relaxed max-h-60 overflow-y-auto">
+                        {rawIdea}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            )}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
-          {/* AI-Normalized Results */}
+          {/* AI-Normalized Results (Collapsible) */}
           {showNormalized && normalizedData && (
-            <div className="bg-white rounded-xl border border-indigo-100 shadow-sm overflow-hidden">
-              {/* Toolbar */}
-              <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-white to-indigo-50/30">
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+              <button
+                onClick={() => setShowInventionDetails(!showInventionDetails)}
+                className="w-full flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-white to-indigo-50/30 hover:bg-indigo-50/30 transition-colors"
+              >
                 <div className="flex items-center gap-2">
                   <div className="h-6 w-6 rounded-full bg-indigo-100 flex items-center justify-center">
-                     <svg className="w-3.5 h-3.5 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
-                     </svg>
+                    <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
                   </div>
-                  <h3 className="text-sm font-semibold text-gray-900">AI Structure Analysis</h3>
+                  <h3 className="text-sm font-semibold text-gray-900">
+                    Invention Structure
+                  </h3>
+                  <Badge variant="secondary" className="text-xs">
+                    {allowRefine ? 'AI Enhanced' : 'Parsed'}
+                  </Badge>
                 </div>
-                <div className="flex items-center space-x-2">
-                  <button
-                    onClick={() => setIsEditing((v) => !v)}
-                    className={`inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${isEditing ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-100 bg-white border border-gray-200'}`}
+                <div className="flex items-center gap-2">
+                  {!showInventionDetails && (
+                    <span className="text-xs text-gray-500">Click to expand</span>
+                  )}
+                  {showInventionDetails ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
+                </div>
+              </button>
+
+              <AnimatePresence>
+                {showInventionDetails && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    transition={{ duration: 0.2 }}
+                    className="overflow-hidden"
                   >
-                    {isEditing ? 'Done Editing' : 'Edit Fields'}
-                  </button>
-                  <button
-                    onClick={async () => {
-                      try {
-                        setError(null)
-                        if (!session?.id) return
-                        const currentRaw = session?.ideaRecord?.rawInput || rawIdea || ''
-                        const currentTitle = session?.ideaRecord?.title || title || ''
-                        if (!currentRaw || !currentTitle) {
-                          setError('Cannot regenerate: missing title or description.')
-                          return
-                        }
-                        setIsRegenerating(true)
-                        setShowNormalized(false)
-                        setNormalizedData(null)
-                        await onComplete({
-                          action: 'normalize_idea',
-                          sessionId: session.id,
-                          rawIdea: currentRaw,
-                          title: currentTitle
-                        })
-                        await onRefresh()
-                        setShowNormalized(true)
-                      } catch (e) {
-                        setError('Failed to regenerate AI output. Please try again.')
-                      } finally {
-                        setIsRegenerating(false)
-                      }
-                    }}
-                    className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-md text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-60"
-                    disabled={isRegenerating}
-                    title="Regenerate AI Structure"
-                  >
-                    {isRegenerating ? (
-                      <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path>
-                      </svg>
-                    ) : (
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                      </svg>
-                    )}
-                  </button>
-                </div>
-              </div>
-
-              <div className="p-6 space-y-8">
-                {/* Codes */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1.5">CPC Codes</label>
-                    {isEditing ? (
-                      <input
-                        className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
-                        placeholder="e.g., H04L 29/08"
-                        value={cpcCodes.join(', ')}
-                        onChange={(e) => setCpcCodes(e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
-                      />
-                    ) : (
-                      <div className="text-sm font-mono bg-gray-50 px-3 py-2 rounded border border-gray-100 text-gray-700">
-                        {(cpcCodes && cpcCodes.length) ? cpcCodes.join(', ') : <span className="text-gray-400">None</span>}
+                    {/* Toolbar */}
+                    <div className="flex items-center justify-end px-6 py-2 border-b border-gray-100 bg-gray-50/50">
+                      <div className="flex items-center space-x-2">
+                        <button
+                          onClick={() => setIsEditing((v) => !v)}
+                          className={`inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${isEditing ? 'bg-indigo-600 text-white' : 'text-gray-600 hover:bg-gray-100 bg-white border border-gray-200'}`}
+                        >
+                          {isEditing ? <><Check className="w-3 h-3 mr-1" /> Done</> : <><Edit2 className="w-3 h-3 mr-1" /> Edit</>}
+                        </button>
+                        <button
+                          onClick={async () => {
+                            try {
+                              setError(null)
+                              if (!session?.id) return
+                              const currentRaw = session?.ideaRecord?.rawInput || rawIdea || ''
+                              const currentTitle = session?.ideaRecord?.title || title || ''
+                              if (!currentRaw || !currentTitle) {
+                                setError('Cannot regenerate: missing title or description.')
+                                return
+                              }
+                              setIsRegenerating(true)
+                              setShowNormalized(false)
+                              setNormalizedData(null)
+                              await onComplete({
+                                action: 'normalize_idea',
+                                sessionId: session.id,
+                                rawIdea: currentRaw,
+                                title: currentTitle
+                              })
+                              await onRefresh()
+                              setShowNormalized(true)
+                            } catch (e) {
+                              setError('Failed to regenerate AI output. Please try again.')
+                            } finally {
+                              setIsRegenerating(false)
+                            }
+                          }}
+                          className="inline-flex items-center px-2 py-1.5 text-xs font-medium rounded-md text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-60"
+                          disabled={isRegenerating}
+                          title="Regenerate AI Structure"
+                        >
+                          <RefreshCw className={`w-3 h-3 ${isRegenerating ? 'animate-spin' : ''}`} />
+                        </button>
                       </div>
-                    )}
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-500 mb-1.5">IPC Codes</label>
-                    {isEditing ? (
-                      <input
-                        className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
-                        placeholder="e.g., G06F 17/30"
-                        value={ipcCodes.join(', ')}
-                        onChange={(e) => setIpcCodes(e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
-                      />
-                    ) : (
-                      <div className="text-sm font-mono bg-gray-50 px-3 py-2 rounded border border-gray-100 text-gray-700">
-                        {(ipcCodes && ipcCodes.length) ? ipcCodes.join(', ') : <span className="text-gray-400">None</span>}
-                      </div>
-                    )}
-                  </div>
-                </div>
+                    </div>
 
-                {/* Fields */}
-                <div className="space-y-6">
-                  <div className="group">
-                    <h4 className="text-sm font-medium text-gray-900 mb-2">Problem Statement</h4>
-                    {isEditing ? (
-                      <textarea
-                        className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
-                        rows={4}
-                        value={problem}
-                        onChange={(e) => setProblem(e.target.value)}
-                      />
-                    ) : (
-                      <div className="text-sm text-gray-700 leading-relaxed border-l-2 border-transparent group-hover:border-indigo-200 pl-3 transition-colors">
-                        {problem || <span className="text-gray-400 italic">Not specified</span>}
+                    <div className="p-6 space-y-6 max-h-[600px] overflow-y-auto">
+                      {/* Classification Codes */}
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-500 mb-1">CPC Codes</label>
+                          {isEditing ? (
+                            <input
+                              className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
+                              placeholder="e.g., H04L 29/08"
+                              value={cpcCodes.join(', ')}
+                              onChange={(e) => setCpcCodes(e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+                            />
+                          ) : (
+                            <div className="text-sm font-mono bg-gray-50 px-3 py-1.5 rounded border border-gray-100 text-gray-700">
+                              {cpcCodes?.length ? cpcCodes.join(', ') : <span className="text-gray-400">None</span>}
+                            </div>
+                          )}
+                        </div>
+                        <div>
+                          <label className="block text-xs font-medium text-gray-500 mb-1">IPC Codes</label>
+                          {isEditing ? (
+                            <input
+                              className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
+                              placeholder="e.g., G06F 17/30"
+                              value={ipcCodes.join(', ')}
+                              onChange={(e) => setIpcCodes(e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
+                            />
+                          ) : (
+                            <div className="text-sm font-mono bg-gray-50 px-3 py-1.5 rounded border border-gray-100 text-gray-700">
+                              {ipcCodes?.length ? ipcCodes.join(', ') : <span className="text-gray-400">None</span>}
+                            </div>
+                          )}
+                        </div>
                       </div>
-                    )}
-                  </div>
 
-                  <div className="group">
-                    <h4 className="text-sm font-medium text-gray-900 mb-2">Objectives</h4>
-                    {isEditing ? (
-                      <textarea
-                        className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
-                        rows={3}
-                        value={objectives}
-                        onChange={(e) => setObjectives(e.target.value)}
-                      />
-                    ) : (
-                      <div className="text-sm text-gray-700 leading-relaxed border-l-2 border-transparent group-hover:border-indigo-200 pl-3 transition-colors">
-                        {objectives || <span className="text-gray-400 italic">Not specified</span>}
+                      {/* Problem Statement */}
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-900 mb-1.5">Problem Statement</h4>
+                        {isEditing ? (
+                          <textarea
+                            className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
+                            rows={3}
+                            value={problem}
+                            onChange={(e) => setProblem(e.target.value)}
+                          />
+                        ) : (
+                          <div className="text-sm text-gray-700 leading-relaxed bg-gray-50 p-3 rounded border border-gray-100">
+                            {problem || <span className="text-gray-400 italic">Not specified</span>}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
 
-                  <div className="group">
-                    <h4 className="text-sm font-medium text-gray-900 mb-2">Technical Logic</h4>
-                    {isEditing ? (
-                      <textarea
-                        className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
-                        rows={4}
-                        value={logic}
-                        onChange={(e) => setLogic(e.target.value)}
-                      />
-                    ) : (
-                      <div className="text-sm text-gray-700 leading-relaxed border-l-2 border-transparent group-hover:border-indigo-200 pl-3 transition-colors">
-                        {logic || <span className="text-gray-400 italic">Not specified</span>}
+                      {/* Objectives */}
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-900 mb-1.5">Objectives</h4>
+                        {isEditing ? (
+                          <textarea
+                            className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
+                            rows={2}
+                            value={objectives}
+                            onChange={(e) => setObjectives(e.target.value)}
+                          />
+                        ) : (
+                          <div className="text-sm text-gray-700 leading-relaxed bg-gray-50 p-3 rounded border border-gray-100">
+                            {objectives || <span className="text-gray-400 italic">Not specified</span>}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
 
-                  <div>
-                    <h4 className="text-sm font-medium text-gray-900 mb-3">Key Components <span className="text-gray-400 font-normal text-xs ml-2">({components?.length || 0})</span></h4>
-                    {components?.length > 0 ? (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        {components.map((comp: any, idx: number) => (
-                          <div key={idx} className="p-3 bg-gray-50 rounded-lg border border-gray-100 flex flex-col space-y-1 hover:border-indigo-200 transition-colors">
-                            {isEditing ? (
-                              <>
-                                <input
-                                  className="text-sm font-medium bg-white border border-gray-200 rounded px-2 py-1 w-full mb-1"
-                                  value={comp.name || ''}
-                                  placeholder="Component Name"
-                                  onChange={(e) => {
-                                    const arr = [...components]
-                                    arr[idx] = { ...arr[idx], name: e.target.value }
-                                    setComponents(arr)
-                                  }}
-                                />
-                                <input
-                                  className="text-xs text-gray-500 bg-white border border-gray-200 rounded px-2 py-1 w-full"
-                                  value={comp.type || ''}
-                                  placeholder="Type"
-                                  onChange={(e) => {
-                                    const arr = [...components]
-                                    arr[idx] = { ...arr[idx], type: e.target.value }
-                                    setComponents(arr)
-                                  }}
-                                />
-                              </>
-                            ) : (
-                              <>
-                                <span className="font-medium text-sm text-gray-900">{comp.name}</span>
-                                <span className="text-xs text-gray-500 bg-white self-start px-1.5 py-0.5 rounded border border-gray-200">
-                                  {(comp.type || '').toString().replace('_', ' ').toLowerCase()}
-                                </span>
-                              </>
+                      {/* Technical Logic */}
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-900 mb-1.5">Technical Logic</h4>
+                        {isEditing ? (
+                          <textarea
+                            className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
+                            rows={3}
+                            value={logic}
+                            onChange={(e) => setLogic(e.target.value)}
+                          />
+                        ) : (
+                          <div className="text-sm text-gray-700 leading-relaxed bg-gray-50 p-3 rounded border border-gray-100">
+                            {logic || <span className="text-gray-400 italic">Not specified</span>}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Key Components */}
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-900 mb-1.5">
+                          Key Components <span className="text-gray-400 font-normal text-xs">({components?.length || 0})</span>
+                        </h4>
+                        {components?.length > 0 ? (
+                          <div className="grid grid-cols-2 gap-2">
+                            {components.slice(0, 6).map((comp: any, idx: number) => (
+                              <div key={idx} className="p-2 bg-gray-50 rounded border border-gray-100 text-xs">
+                                <span className="font-medium text-gray-900">{comp.name}</span>
+                                {comp.type && (
+                                  <span className="text-gray-500 ml-1">({comp.type})</span>
+                                )}
+                              </div>
+                            ))}
+                            {components.length > 6 && (
+                              <div className="p-2 text-xs text-gray-500">
+                                +{components.length - 6} more...
+                              </div>
                             )}
                           </div>
-                        ))}
+                        ) : (
+                          <p className="text-sm text-gray-500 italic">No components identified</p>
+                        )}
                       </div>
-                    ) : (
-                      <p className="text-sm text-gray-500 italic">No components identified</p>
-                    )}
-                  </div>
 
-                  <div className="group">
-                    <h4 className="text-sm font-medium text-gray-900 mb-2">Best Method</h4>
-                    {isEditing ? (
-                      <textarea
-                        className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
-                        rows={3}
-                        value={bestMethod}
-                        onChange={(e) => setBestMethod(e.target.value)}
-                      />
-                    ) : (
-                      <div className="text-sm text-gray-700 leading-relaxed border-l-2 border-transparent group-hover:border-indigo-200 pl-3 transition-colors">
-                        {bestMethod || <span className="text-gray-400 italic">Not specified</span>}
+                      {/* Best Method */}
+                      <div>
+                        <h4 className="text-sm font-medium text-gray-900 mb-1.5">Best Method</h4>
+                        {isEditing ? (
+                          <textarea
+                            className="w-full text-sm border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
+                            rows={2}
+                            value={bestMethod}
+                            onChange={(e) => setBestMethod(e.target.value)}
+                          />
+                        ) : (
+                          <div className="text-sm text-gray-700 leading-relaxed bg-gray-50 p-3 rounded border border-gray-100">
+                            {bestMethod || <span className="text-gray-400 italic">Not specified</span>}
+                          </div>
+                        )}
                       </div>
-                    )}
-                  </div>
-                  
-                  {/* Search Query */}
-                  <div className="pt-6 border-t border-gray-100">
-                    <div className="flex items-baseline justify-between mb-2">
-                      <h4 className="text-sm font-medium text-gray-900">Search Query Recommendation</h4>
-                      <span className="text-xs text-gray-400">Max 25 words</span>
+
+                      {/* Search Query */}
+                      <div className="pt-4 border-t border-gray-100">
+                        <h4 className="text-sm font-medium text-gray-900 mb-1.5">Search Query</h4>
+                        {isEditing ? (
+                          <input
+                            className="w-full text-sm font-mono bg-gray-50 border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                          />
+                        ) : (
+                          <div className="text-sm font-mono text-gray-600 bg-gray-50 p-3 rounded border border-gray-100">
+                            {searchQuery || <span className="text-gray-400 italic">Not specified</span>}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                    {isEditing ? (
-                      <input
-                        className="w-full text-sm font-mono bg-gray-50 border-gray-300 rounded-md focus:ring-indigo-500 focus:border-indigo-500 transition-shadow"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                      />
-                    ) : (
-                      <div className="text-sm font-mono text-gray-600 bg-gray-50/50 p-3 rounded border border-gray-200">
-                        {searchQuery || <span className="text-gray-400 italic">Not specified</span>}
+                    
+                    {/* Edit Actions Footer */}
+                    {isEditing && (
+                      <div className="px-6 py-3 bg-gray-50 border-t border-gray-200 flex justify-end">
+                        <Button
+                          onClick={async () => {
+                            try {
+                              await onComplete({
+                                action: 'update_idea_record',
+                                sessionId: session?.id,
+                                patch: {
+                                  problem, objectives, logic, bestMethod, components,
+                                  searchQuery, abstract: abstractText, cpcCodes, ipcCodes
+                                }
+                              })
+                              setIsEditing(false)
+                              onRefresh()
+                            } catch (err) {
+                              console.error('Failed to save edits:', err)
+                              setError('Failed to save edits')
+                            }
+                          }}
+                          size="sm"
+                        >
+                          Save Changes
+                        </Button>
                       </div>
                     )}
-                  </div>
-                </div>
-              </div>
-              
-              {/* Edit Actions Footer */}
-              {isEditing && (
-                <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end">
-                  <button
-                    onClick={async () => {
-                      try {
-                        await onComplete({
-                          action: 'update_idea_record',
-                          sessionId: session?.id,
-                          patch: {
-                            problem,
-                            objectives,
-                            logic,
-                            bestMethod,
-                            components,
-                            searchQuery,
-                            abstract: abstractText,
-                            cpcCodes,
-                            ipcCodes
-                          }
-                        })
-                        setShowNormalized(true)
-                        setIsEditing(false)
-                        onRefresh()
-                      } catch (err) {
-                        console.error('Failed to save edits:', err)
-                        setError('Failed to save edits')
-                      }
-                    }}
-                    className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm"
-                  >
-                    Save Changes
-                  </button>
-                </div>
-              )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           )}
+        </div>
+
+        {/* Right Column: Claims Section */}
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+            {/* Claims Header */}
+            <button
+              onClick={() => setShowClaimsDetails(!showClaimsDetails)}
+              className="w-full flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-white to-indigo-50/30 hover:bg-indigo-50/30 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <div className="h-6 w-6 rounded-full bg-indigo-100 flex items-center justify-center">
+                  <Scale className="w-3.5 h-3.5 text-indigo-600" />
+                </div>
+                <h3 className="text-sm font-semibold text-gray-900">
+                  Patent Claims
+                </h3>
+                <Badge variant="secondary" className="text-xs">
+                  {activeJurisdiction} Rules
+                </Badge>
+              </div>
+              <div className="flex items-center gap-2">
+                {!showClaimsDetails && (
+                  <span className="text-xs text-gray-500">Click to expand</span>
+                )}
+                {showClaimsDetails ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
+              </div>
+            </button>
+
+            <AnimatePresence>
+              {showClaimsDetails && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="overflow-hidden"
+                >
+                  {/* Claims Status Banner */}
+                  {!claimsFrozen && (
+                    <div className="px-6 py-3 bg-amber-50 border-b border-amber-100">
+                      <div className="flex items-center gap-2 text-sm text-amber-800">
+                        <AlertCircle className="w-4 h-4" />
+                        <span>Claims must be frozen before proceeding. They will be used throughout the drafting pipeline.</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {claimsFrozen && claimsFrozenAt && (
+                    <div className="px-6 py-3 bg-green-50 border-b border-green-100">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2 text-sm text-green-800">
+                          <Check className="w-4 h-4" />
+                          <span>Claims frozen on {new Date(claimsFrozenAt).toLocaleDateString()}</span>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleUnfreezeClaims}
+                          className="text-amber-700 hover:text-amber-800 hover:bg-amber-50"
+                        >
+                          <Unlock className="w-3 h-3 mr-1" />
+                          Unfreeze to Edit
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Claims Editor */}
+                  <div className="p-6">
+                    {!claimsText && !isGeneratingClaims ? (
+                      <div className="text-center py-8">
+                        <Scale className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                        <p className="text-gray-600 mb-4">No claims generated yet.</p>
+                        <Button
+                          onClick={handleGenerateClaims}
+                          className="bg-amber-600 hover:bg-amber-700 text-white"
+                          disabled={!normalizedData}
+                        >
+                          <Sparkles className="w-4 h-4 mr-2" />
+                          Generate Claims for {activeJurisdiction}
+                        </Button>
+                        <p className="text-xs text-gray-500 mt-3">
+                          Claims will be generated using {activeJurisdiction} patent office rules
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {isGeneratingClaims ? (
+                          <div className="flex items-center justify-center py-12">
+                            <div className="text-center">
+                              <RefreshCw className="w-8 h-8 text-amber-600 animate-spin mx-auto mb-3" />
+                              <p className="text-sm text-gray-600">Generating jurisdiction-aware claims...</p>
+                              <p className="text-xs text-gray-500 mt-1">Applying {activeJurisdiction} rules</p>
+                            </div>
+                          </div>
+                        ) : (
+                          <>
+                            <ClaimsEditor
+                              ref={claimsEditorRef}
+                              value={claimsText}
+                              onChange={setClaimsText}
+                              disabled={claimsFrozen}
+                              placeholder="1. A method for... comprising:
+   a) a first step of...
+   b) a second step of...
+
+2. The method of claim 1, wherein..."
+                            />
+
+                            {/* Action Buttons */}
+                            <div className="flex items-center justify-between pt-4 border-t border-gray-100">
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleGenerateClaims}
+                                disabled={claimsFrozen || isGeneratingClaims}
+                              >
+                                <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+                                Regenerate
+                              </Button>
+
+                              <div className="flex items-center gap-2">
+                                {!claimsFrozen && (
+                                  <>
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={handleSaveClaims}
+                                    >
+                                      Save Draft
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      onClick={handleFreezeClaims}
+                                      className="bg-green-600 hover:bg-green-700 text-white"
+                                    >
+                                      <Lock className="w-3.5 h-3.5 mr-1.5" />
+                                      Freeze & Approve
+                                    </Button>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Info Box */}
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+            <h4 className="text-sm font-semibold text-blue-900 mb-2">Why freeze claims?</h4>
+            <ul className="text-xs text-blue-800 space-y-1">
+              <li>• Claims define the legal scope of your patent protection</li>
+              <li>• Frozen claims will be used in Figure Planner for relevant diagrams</li>
+              <li>• Prior Art analysis will compare patents against your specific claims</li>
+              <li>• Final draft will use these exact claims (no regeneration)</li>
+              <li>• Multi-jurisdiction support: claims transform to country-specific style</li>
+            </ul>
+          </div>
         </div>
       </div>
 
       {/* Navigation */}
-      <div className="mt-10 flex items-center justify-end">
-        <button
+      <div className="mt-10 flex items-center justify-between">
+        <div>
+          {!claimsFrozen && (
+            <p className="text-sm text-amber-700 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4" />
+              Freeze your claims to continue
+            </p>
+          )}
+        </div>
+        
+        <Button
           onClick={async () => {
             try {
               await onComplete({
                 action: 'proceed_to_components',
                 sessionId: session?.id
-              });
-              onRefresh();
+              })
+              onRefresh()
             } catch (error) {
-              console.error('Failed to proceed:', error);
+              console.error('Failed to proceed:', error)
             }
           }}
-          className="inline-flex items-center px-6 py-2.5 border border-transparent text-sm font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm transition-all hover:shadow focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+          disabled={!canProceed}
+          className="px-6"
         >
-          Start Component Planning
-          <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
-        </button>
+          Continue to Component Planning
+          <ChevronRight className="w-4 h-4 ml-2" />
+        </Button>
       </div>
     </div>
   )

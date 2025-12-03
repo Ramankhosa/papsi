@@ -4,7 +4,7 @@
 import { NextResponse } from 'next/server'
 import type { FeatureRequest, EnforcementDecision, MeteringResult } from './types'
 import { MeteringError } from './errors'
-import { createMeteringSystem } from './index'
+import { createMeteringSystem } from './system'
 
 // High-level enforcement function
 export async function enforceMetering(

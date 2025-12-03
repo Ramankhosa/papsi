@@ -128,8 +128,8 @@ export async function GET(request: NextRequest) {
       meta: {
         totalCount: samples.length,
         activeCount: samples.filter(s => s.isActive).length,
-        jurisdictions: [...new Set(samples.map(s => s.jurisdiction))],
-        sections: [...new Set(samples.map(s => s.sectionKey))]
+        jurisdictions: Array.from(new Set(samples.map(s => s.jurisdiction))),
+        sections: Array.from(new Set(samples.map(s => s.sectionKey)))
       }
     })
   } catch (error) {

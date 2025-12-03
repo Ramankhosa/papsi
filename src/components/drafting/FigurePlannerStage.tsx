@@ -201,33 +201,29 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   useEffect(() => {
     if (!stateInitialized) return
 
-    // Use a small delay to ensure state updates from initialization have been applied
-    const timeoutId = setTimeout(() => {
-      diagramSources.forEach((d: any) => {
-        const figNo = d.figureNo
-        // Check all conditions for auto-rendering:
-        // 1. Has PlantUML code
-        // 2. Not already uploaded/rendered
-        // 3. No existing image
-        // 4. Not currently rendering
-        // 5. No processing status (not in progress or failed)
-        // 6. Not already queued for rendering (prevents duplicate calls)
-        const shouldRender = 
-          d.plantumlCode && 
-          !uploaded[figNo] && 
-          !d.imageUploadedAt && 
-          !rendering[figNo] && 
-          !processingStatus[figNo] &&
-          !queuedForRenderRef.current.has(figNo)
+    // Immediate processing without delay for better responsiveness
+    diagramSources.forEach((d: any) => {
+      const figNo = d.figureNo
+      // Check all conditions for auto-rendering:
+      // 1. Has PlantUML code
+      // 2. Not already uploaded/rendered
+      // 3. No existing image
+      // 4. Not currently rendering
+      // 5. No processing status (not in progress or failed)
+      // 6. Not already queued for rendering (prevents duplicate calls)
+      const shouldRender =
+        d.plantumlCode &&
+        !uploaded[figNo] &&
+        !d.imageUploadedAt &&
+        !rendering[figNo] &&
+        !processingStatus[figNo] &&
+        !queuedForRenderRef.current.has(figNo)
 
-        if (shouldRender) {
-          queuedForRenderRef.current.add(figNo)
-          autoProcessDiagram(figNo, d.plantumlCode)
-        }
-      })
-    }, 100) // Small delay to let React batch state updates
-
-    return () => clearTimeout(timeoutId)
+      if (shouldRender) {
+        queuedForRenderRef.current.add(figNo)
+        autoProcessDiagram(figNo, d.plantumlCode)
+      }
+    })
   }, [diagramSources, uploaded, rendering, processingStatus, stateInitialized])
 
   // Initialize state for new figures when diagramSources changes
@@ -415,6 +411,30 @@ Output: JSON array only, no markdown fences, no explanations.`
       const components = session?.referenceMap?.components || []
       const numeralsPreview = components.map((c: any) => `${c.name} (${c.numeral || '?'})`).join(', ')
 
+      // Get frozen claims for claim-aware diagram generation
+      const normalizedData = session?.ideaRecord?.normalizedData || {}
+      const frozenClaims = normalizedData.claimsStructured || []
+      const claimsText = normalizedData.claims || ''
+      const hasClaimsContext = frozenClaims.length > 0 || claimsText
+
+      // Build claims context for the prompt
+      let claimsContext = ''
+      if (hasClaimsContext) {
+        if (frozenClaims.length > 0) {
+          const claimsSummary = frozenClaims.slice(0, 5).map((c: any) => 
+            `Claim ${c.number} (${c.type}${c.category ? `, ${c.category}` : ''}): ${(c.text || '').substring(0, 150)}...`
+          ).join('\n')
+          claimsContext = `\n\nFROZEN PATENT CLAIMS (diagrams should illustrate these):\n${claimsSummary}`
+          if (frozenClaims.length > 5) {
+            claimsContext += `\n(+ ${frozenClaims.length - 5} more claims)`
+          }
+        } else if (claimsText) {
+          // Parse HTML claims text
+          const plainClaims = claimsText.replace(/<[^>]*>/g, '').substring(0, 800)
+          claimsContext = `\n\nFROZEN PATENT CLAIMS (diagrams should illustrate these):\n${plainClaims}...`
+        }
+      }
+
       const drawingRules = countryProfile?.rules?.drawings || {}
       const figureLabelFormat = countryProfile?.profileData?.diagrams?.figureLabelFormat || countryProfile?.profileData?.rules?.drawings?.figureLabelFormat || 'Fig. {number}'
       const colorAllowed = drawingRules.colorAllowed !== undefined ? drawingRules.colorAllowed : false
@@ -465,7 +485,16 @@ COMPONENTS & LABELING
 - Line style: ${lineStyle}.
 - Reference numerals: ${refNumeralsMandatory ? 'MANDATORY in all drawings' : 'Optional'}.
 - Minimum text size: ${minTextSize} pt.
-
+${claimsContext ? `
+═══════════════════════════════════════════════════════════════════════════════
+CLAIM-AWARE DIAGRAM GENERATION
+═══════════════════════════════════════════════════════════════════════════════
+The following claims define the legal scope of this patent. Design figures that:
+- Illustrate the method steps described in method claims
+- Show the system architecture described in system/apparatus claims
+- Highlight the key inventive features that distinguish this invention
+${claimsContext}
+` : ''}
 ═══════════════════════════════════════════════════════════════════════════════
 PLANTUML SYNTAX RULES (ERRORS TO AVOID)
 ═══════════════════════════════════════════════════════════════════════════════
@@ -502,7 +531,8 @@ Before outputting, mentally verify:
 3. ✓ No forbidden directives (!theme, skinparam, title, etc.)?
 4. ✓ All connections have both endpoints?
 5. ✓ All blocks are properly closed?
-6. ✓ Exactly one @startuml/@enduml pair per diagram?
+6. ✓ Exactly one @startuml/@enduml pair per diagram?${claimsContext ? `
+7. ✓ Diagrams illustrate the frozen claims where applicable?` : ''}
 
 Output: JSON array only, no markdown fences, no explanations.`
 
@@ -537,15 +567,10 @@ Output: JSON array only, no markdown fences, no explanations.`
     setProcessingStep(prev => ({ ...prev, [figureNo]: 0 }))
 
     try {
-      // Step 1: Analysis phase
-      await new Promise(resolve => setTimeout(resolve, 800))
+      // Minimal delay for UI feedback
+      await new Promise(resolve => setTimeout(resolve, 100))
       setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[1] }))
       setProcessingStep(prev => ({ ...prev, [figureNo]: 1 }))
-
-      // Step 2: Rendering phase
-      await new Promise(resolve => setTimeout(resolve, 600))
-      setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[2] }))
-      setProcessingStep(prev => ({ ...prev, [figureNo]: 2 }))
 
       setRendering((prev) => ({ ...prev, [figureNo]: true }))
       setError(null)
@@ -567,28 +592,15 @@ Output: JSON array only, no markdown fences, no explanations.`
         throw new Error(info.error || 'Render failed')
       }
 
-      // Step 3: Validation phase
-      setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[3] }))
-      setProcessingStep(prev => ({ ...prev, [figureNo]: 3 }))
+      setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[2] }))
+      setProcessingStep(prev => ({ ...prev, [figureNo]: 2 }))
 
       const blob = await resp.blob()
       const url = URL.createObjectURL(blob)
       setRenderPreview((prev) => ({ ...prev, [figureNo]: url }))
 
-      // Step 4: Quality assurance
-      await new Promise(resolve => setTimeout(resolve, 400))
-      setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[4] }))
-      setProcessingStep(prev => ({ ...prev, [figureNo]: 4 }))
-
-      // Step 5: Final processing
-      await new Promise(resolve => setTimeout(resolve, 500))
-      setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[5] }))
-      setProcessingStep(prev => ({ ...prev, [figureNo]: 5 }))
-
-      // Step 6: Save automatically
-      await new Promise(resolve => setTimeout(resolve, 300))
-      setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[6] }))
-      setProcessingStep(prev => ({ ...prev, [figureNo]: 6 }))
+      setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[3] }))
+      setProcessingStep(prev => ({ ...prev, [figureNo]: 3 }))
 
       setIsUploading(true)
       const filename = `figure_${figureNo}_${Date.now()}.png`
@@ -613,11 +625,11 @@ Output: JSON array only, no markdown fences, no explanations.`
     }
   }
 
-  // Intelligent automatic diagram processing with serialized queue and 2s gap between requests
+  // Intelligent automatic diagram processing with serialized queue and reduced gap between requests
   const autoProcessDiagram = (figureNo: number, plantumlCode: string) => {
     renderQueueRef.current = renderQueueRef.current.then(async () => {
-      // 2 second gap between upstream render requests
-      await new Promise(resolve => setTimeout(resolve, 2000))
+      // Reduced gap between render requests for better responsiveness
+      await new Promise(resolve => setTimeout(resolve, 500))
       await runSingleRender(figureNo, plantumlCode)
     })
     return renderQueueRef.current
@@ -725,10 +737,13 @@ Output: JSON array only, no markdown fences, no explanations.`
       {/* Mode Selection Cards - Only show if no figures yet */}
       {figures.length === 0 && diagramSources.length === 0 && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <Card 
-            className={`cursor-pointer transition-all hover:shadow-md ${mode === 'ai' ? 'ring-2 ring-indigo-600 border-indigo-100 bg-indigo-50/30' : ''}`}
+          <button
+            className="text-left"
             onClick={() => setMode('ai')}
           >
+            <Card
+              className={`cursor-pointer transition-all hover:shadow-md ${mode === 'ai' ? 'ring-2 ring-indigo-600 border-indigo-100 bg-indigo-50/30' : ''}`}
+            >
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Sparkles className="w-5 h-5 text-indigo-600" />
@@ -746,11 +761,15 @@ Output: JSON array only, no markdown fences, no explanations.`
               </ul>
             </CardContent>
           </Card>
+          </button>
 
-          <Card 
-            className={`cursor-pointer transition-all hover:shadow-md ${mode === 'manual' ? 'ring-2 ring-indigo-600 border-indigo-100 bg-indigo-50/30' : ''}`}
+          <button
+            className="text-left"
             onClick={() => setMode('manual')}
           >
+            <Card
+              className={`cursor-pointer transition-all hover:shadow-md ${mode === 'manual' ? 'ring-2 ring-indigo-600 border-indigo-100 bg-indigo-50/30' : ''}`}
+            >
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <User className="w-5 h-5 text-indigo-600" />
@@ -768,6 +787,7 @@ Output: JSON array only, no markdown fences, no explanations.`
               </ul>
             </CardContent>
           </Card>
+          </button>
           </div>
       )}
 
@@ -1243,7 +1263,7 @@ Output: JSON array only, no markdown fences, no explanations.`
       {/* Expanded Image Modal */}
       <AnimatePresence>
         {(() => {
-          const diagramSource = diagramSources.find(d => d.figureNo === expandedFigNo)
+          const diagramSource = diagramSources.find((d: any) => d.figureNo === expandedFigNo)
           const hasImage = expandedFigNo && (renderPreview[expandedFigNo] || (diagramSource?.imageFilename && !processingStatus[expandedFigNo]))
 
           return hasImage ? (

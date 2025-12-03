@@ -1,6 +1,18 @@
 'use client'
 
 import React, { useEffect, useState } from 'react'
+
+// Country-specific paragraph numbering format display
+const NUMBERING_FORMATS: Record<string, string> = {
+  JP: '【0001】',
+  DEFAULT: '[0001]'
+}
+
+const getNumberingFormatLabel = (jurisdiction: string): string => {
+  const code = (jurisdiction || 'US').toUpperCase()
+  return NUMBERING_FORMATS[code] || NUMBERING_FORMATS.DEFAULT
+}
+
 interface ExportCenterStageProps {
   session: any
   patent: any
@@ -10,10 +22,13 @@ interface ExportCenterStageProps {
 
 export default function ExportCenterStage({ session, patent, onComplete, onRefresh }: ExportCenterStageProps) {
   const [issues, setIssues] = useState<string[]>([])
+  const [wordLimitIssues, setWordLimitIssues] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [rich, setRich] = useState<any>(null)
   const [sections, setSections] = useState<any[] | null>(null)
   const [showExportModal, setShowExportModal] = useState(false)
+  const [exportFormat, setExportFormat] = useState<'docx' | 'pdf'>('docx')
+  const [exporting, setExporting] = useState(false)
   const availableJurisdictions = (Array.isArray(session?.draftingJurisdictions) && session.draftingJurisdictions.length > 0 ? session.draftingJurisdictions : ['IN']).map((c: string) => (c || '').toUpperCase())
   const [selectedJurisdiction, setSelectedJurisdiction] = useState<string>(() => (session?.activeJurisdiction || availableJurisdictions[0] || 'IN'))
   const [exportOptions, setExportOptions] = useState({
@@ -37,8 +52,10 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error || 'Preview failed')
       setIssues(data.issues || [])
+      setWordLimitIssues(data.wordLimitIssues || [])
     } catch (e:any) {
       setIssues([e?.message || 'Preview failed'])
+      setWordLimitIssues([])
     } finally {
       setLoading(false)
     }
@@ -61,11 +78,14 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
 
   useEffect(() => { loadPreview(); loadRich() }, [selectedJurisdiction])
 
-  const handleExport = async () => {
+  const handleExport = async (format?: 'docx' | 'pdf') => {
     if (!showExportModal) {
       setShowExportModal(true)
       return
     }
+
+    const targetFormat = format || exportFormat
+    setExporting(true)
 
     try {
       const res = await fetch(`/api/patents/${patent.id}/drafting`, {
@@ -75,7 +95,7 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
           'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
         },
         body: JSON.stringify({
-          action: 'export_docx',
+          action: targetFormat === 'pdf' ? 'export_pdf' : 'export_docx',
           sessionId: session?.id,
           autoNumberParagraphs: exportOptions.autoNumberParagraphs,
           jurisdiction: selectedJurisdiction
@@ -85,11 +105,15 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
         const data = await res.json().catch(()=>({ error: 'Export failed' }))
         alert(data?.error || 'Export failed')
         setShowExportModal(false)
+        setExporting(false)
         return
       }
       const disp = res.headers.get('Content-Disposition') || ''
-      const isDocx = (res.headers.get('Content-Type')||'').includes('officedocument')
-      const filename = /filename="?([^";]+)"?/i.test(disp) ? RegExp.$1 : `annexure_${session?.id}.${isDocx?'docx':'txt'}`
+      const contentType = res.headers.get('Content-Type') || ''
+      const isDocx = contentType.includes('officedocument')
+      const isPdf = contentType.includes('pdf')
+      const ext = isPdf ? 'pdf' : isDocx ? 'docx' : 'txt'
+      const filename = /filename="?([^";]+)"?/i.test(disp) ? RegExp.$1 : `annexure_${session?.id}.${ext}`
       const blob = await res.blob()
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -103,6 +127,8 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
     } catch (e) {
       alert('Export failed')
       setShowExportModal(false)
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -115,9 +141,10 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Export Options</h3>
 
             <div className="space-y-4">
+              {/* Jurisdiction Selector */}
               {availableJurisdictions.length > 1 && (
                 <div className="flex items-center">
-                  <label htmlFor="jurisdiction" className="mr-3 text-sm text-gray-900">Jurisdiction</label>
+                  <label htmlFor="jurisdiction" className="mr-3 text-sm text-gray-900 font-medium">Jurisdiction</label>
                   <select
                     id="jurisdiction"
                     className="border rounded px-3 py-2 text-sm text-gray-900 bg-white"
@@ -130,6 +157,37 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
                   </select>
                 </div>
               )}
+
+              {/* Export Format */}
+              <div>
+                <label className="block text-sm font-medium text-gray-900 mb-2">Export Format</label>
+                <div className="flex gap-3">
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="exportFormat"
+                      value="docx"
+                      checked={exportFormat === 'docx'}
+                      onChange={() => setExportFormat('docx')}
+                      className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300"
+                    />
+                    <span className="ml-2 text-sm text-gray-900">DOCX (Word)</span>
+                  </label>
+                  <label className="flex items-center">
+                    <input
+                      type="radio"
+                      name="exportFormat"
+                      value="pdf"
+                      checked={exportFormat === 'pdf'}
+                      onChange={() => setExportFormat('pdf')}
+                      className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300"
+                    />
+                    <span className="ml-2 text-sm text-gray-900">PDF</span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Paragraph Numbering */}
               <div className="flex items-center">
                 <input
                   type="checkbox"
@@ -139,24 +197,65 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
                   className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
                 />
                 <label htmlFor="autoNumber" className="ml-2 text-sm text-gray-900">
-                  Auto-number paragraphs ([0001] style)
+                  Auto-number paragraphs
+                  <span className="ml-1 text-gray-500 font-mono text-xs">
+                    ({getNumberingFormatLabel(selectedJurisdiction)} style)
+                  </span>
                 </label>
               </div>
+              {exportOptions.autoNumberParagraphs && (
+                <p className="text-xs text-gray-500 ml-6">
+                  {selectedJurisdiction === 'JP' 
+                    ? 'Japan format: 【0001】, 【0002】, ...' 
+                    : 'Standard format: [0001], [0002], ...'}
+                </p>
+              )}
 
+              {/* Word Limit Warnings */}
+              {wordLimitIssues.length > 0 && (
+                <div className="bg-amber-50 border border-amber-200 rounded-md p-3">
+                  <div className="flex items-start">
+                    <span className="text-amber-500 mr-2">⚠️</span>
+                    <div>
+                      <p className="text-sm font-medium text-amber-800">Word Limit Warnings</p>
+                      <ul className="mt-1 text-xs text-amber-700 list-disc ml-4">
+                        {wordLimitIssues.slice(0, 3).map((issue, idx) => (
+                          <li key={idx}>{issue}</li>
+                        ))}
+                        {wordLimitIssues.length > 3 && (
+                          <li>...and {wordLimitIssues.length - 3} more</li>
+                        )}
+                      </ul>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-3 mt-6">
               <button
                 onClick={() => setShowExportModal(false)}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md"
+                disabled={exporting}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
-                onClick={handleExport}
-                className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-md"
+                onClick={() => handleExport()}
+                disabled={exporting}
+                className="px-4 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-md disabled:opacity-50 flex items-center"
               >
-                Export DOCX
+                {exporting ? (
+                  <>
+                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Exporting...
+                  </>
+                ) : (
+                  `Export ${exportFormat.toUpperCase()}`
+                )}
               </button>
             </div>
           </div>
@@ -180,7 +279,7 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
               </select>
             )}
             <button onClick={loadPreview} className="px-4 py-2 rounded border border-gray-300 text-gray-700 bg-white hover:bg-gray-50">Refresh Preview</button>
-            <button onClick={handleExport} className="px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700">Export DOCX</button>
+            <button onClick={() => handleExport()} className="px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700">Export Options</button>
           </div>
         </div>
         <p className="text-gray-600">
@@ -190,10 +289,47 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
 
       <div className="border rounded-lg p-6 bg-white">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-semibold text-gray-900">Export Annexure (DOCX)</h3>
-          <button onClick={handleExport} className="px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700">Export DOCX</button>
+          <h3 className="text-lg font-semibold text-gray-900">Export Annexure</h3>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => { setExportFormat('docx'); handleExport() }} 
+              className="px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+            >
+              Export DOCX
+            </button>
+            <button 
+              onClick={() => { setExportFormat('pdf'); handleExport() }} 
+              className="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700"
+            >
+              Export PDF
+            </button>
+          </div>
         </div>
-        <p className="text-sm text-gray-600">The export includes all approved and autosaved sections, formatted in Form-2 order with configurable paragraph numbering and abstract placement options. Attorneys can edit the DOCX further.</p>
+        <p className="text-sm text-gray-600">
+          Export includes all sections formatted per {selectedJurisdiction} jurisdiction requirements.
+          {' '}Options include paragraph numbering ({getNumberingFormatLabel(selectedJurisdiction)} format for {selectedJurisdiction === 'JP' ? 'Japan' : 'standard'}).
+        </p>
+        
+        {/* Word Limit Status */}
+        {wordLimitIssues.length > 0 && (
+          <div className="mt-4 bg-amber-50 border border-amber-200 rounded-md p-3">
+            <div className="flex items-start">
+              <span className="text-amber-500 mr-2 text-lg">⚠️</span>
+              <div>
+                <p className="text-sm font-medium text-amber-800">Word/Character Limit Warnings for {selectedJurisdiction}</p>
+                <ul className="mt-1 text-xs text-amber-700 space-y-1">
+                  {wordLimitIssues.map((issue, idx) => (
+                    <li key={idx} className="flex items-start">
+                      <span className="mr-1">•</span>
+                      <span>{issue}</span>
+                    </li>
+                  ))}
+                </ul>
+                <p className="mt-2 text-xs text-amber-600 italic">Consider reviewing these sections before filing.</p>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Live preview */}
@@ -271,15 +407,28 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
           <div className="text-center">
             <h3 className="text-lg font-medium text-gray-900 mb-2">Drafting Complete!</h3>
             <p className="text-gray-600 mb-4">You can export your annexure now.</p>
-            <div className="flex items-center justify-center gap-3">
-              <button onClick={loadPreview} className="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50">Refresh Preview</button>
-              <button onClick={handleExport} className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">Export DOCX</button>
-            <button
-              onClick={() => window.location.href = '/dashboard'}
+            <div className="flex flex-wrap items-center justify-center gap-3">
+              <button onClick={loadPreview} className="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50">
+                Refresh Preview
+              </button>
+              <button 
+                onClick={() => { setExportFormat('docx'); handleExport() }} 
+                className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+              >
+                Export DOCX
+              </button>
+              <button 
+                onClick={() => { setExportFormat('pdf'); handleExport() }} 
+                className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500"
+              >
+                Export PDF
+              </button>
+              <button
+                onClick={() => window.location.href = '/dashboard'}
                 className="inline-flex items-center px-6 py-3 border border-gray-300 text-base font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50"
-            >
-              Return to Dashboard
-            </button>
+              >
+                Return to Dashboard
+              </button>
             </div>
           </div>
         </div>

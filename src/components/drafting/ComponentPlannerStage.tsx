@@ -126,10 +126,10 @@ export default function ComponentPlannerStage({ session, patent, onComplete, onR
     setError(null)
 
     try {
-      const result = await onComplete({
-        action: 'update_component_map',
-        sessionId: session?.id,
-        components: components.map(comp => ({
+      // Filter out components with empty names and validate data
+      const validComponents = components
+        .filter(comp => comp.name && comp.name.trim())
+        .map(comp => ({
           id: comp.id,
           name: comp.name.trim(),
           type: comp.type,
@@ -137,7 +137,20 @@ export default function ComponentPlannerStage({ session, patent, onComplete, onR
           numeral: comp.numeral,
           // @ts-ignore include optional parentId for submodules
           parentId: (comp as any).parentId
-        }))
+        }));
+
+      if (validComponents.length === 0) {
+        setError('No valid components found. Please ensure all components have names.');
+        setIsProcessing(false);
+        return;
+      }
+
+      console.log('Sending components for validation:', validComponents);
+
+      const result = await onComplete({
+        action: 'update_component_map',
+        sessionId: session?.id,
+        components: validComponents
       })
 
       if (result.referenceMap) {
@@ -174,10 +187,10 @@ export default function ComponentPlannerStage({ session, patent, onComplete, onR
     setIsProcessing(true)
     setError(null)
     try {
-      const result = await onComplete({
-        action: 'update_component_map',
-        sessionId: session?.id,
-        components: components.map(comp => ({
+      // Filter out components with empty names and validate data
+      const validComponents = components
+        .filter(comp => comp.name && comp.name.trim())
+        .map(comp => ({
           id: comp.id,
           name: comp.name.trim(),
           type: comp.type,
@@ -185,7 +198,18 @@ export default function ComponentPlannerStage({ session, patent, onComplete, onR
           numeral: comp.numeral,
           // @ts-ignore parent linkage
           parentId: (comp as any).parentId
-        }))
+        }));
+
+      if (validComponents.length === 0) {
+        setError('No valid components found. Please ensure all components have names.');
+        setIsProcessing(false);
+        return;
+      }
+
+      const result = await onComplete({
+        action: 'update_component_map',
+        sessionId: session?.id,
+        components: validComponents
       })
       if (result.referenceMap) {
         setComponents(result.referenceMap.components)

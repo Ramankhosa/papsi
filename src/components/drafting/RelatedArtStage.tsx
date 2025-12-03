@@ -598,7 +598,25 @@ export default function RelatedArtStage({ session, patent, onComplete, onRefresh
       setError(null)
       setReviewing(true)
       setReviewInfo('Analyzing patents with AI…')
-      const resp = await onComplete({ action: 'related_art_llm_review', sessionId: session?.id, runId })
+      
+      // Get frozen claims from session for claim-aware prior art analysis
+      const normalizedData = (session?.ideaRecord?.normalizedData || {}) as any
+      const frozenClaims = normalizedData.claimsStructured || []
+      const claimsText = normalizedData.claims || ''
+      const claimsApprovedAt = normalizedData.claimsApprovedAt
+      
+      // Pass claims context to the AI review for deeper analysis
+      const resp = await onComplete({ 
+        action: 'related_art_llm_review', 
+        sessionId: session?.id, 
+        runId,
+        // Include frozen claims for claim-aware analysis
+        claimsContext: claimsApprovedAt ? {
+          claims: frozenClaims.length > 0 ? frozenClaims : claimsText,
+          jurisdiction: normalizedData.claimsJurisdiction,
+          frozenAt: claimsApprovedAt
+        } : null
+      })
       console.log('=== AI REVIEW RESPONSE DEBUG ===')
       console.log('AI Review Response:', JSON.stringify(resp, null, 2)) // Debug: full response
       console.log('Response type:', typeof resp)

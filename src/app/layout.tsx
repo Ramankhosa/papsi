@@ -9,7 +9,7 @@ const inter = Inter({
   subsets: ['latin'],
   display: 'swap',
   fallback: ['system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
-  preload: false, // Disable preload to prevent fetch attempts
+  preload: true, // Enable preload for better performance
 })
 
 const cormorant = Cormorant_Garamond({
@@ -17,7 +17,7 @@ const cormorant = Cormorant_Garamond({
   weight: ['400', '500', '600', '700'],
   display: 'swap',
   variable: '--font-cormorant',
-  preload: false,
+  preload: true, // Enable preload for better performance
 })
 
 export const metadata: Metadata = {

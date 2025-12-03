@@ -27,8 +27,10 @@
  */
 
 import { prisma } from './prisma'
+import { TaskCode } from '@prisma/client'
 import type { UserRole, ServiceType, TeamRole } from '@prisma/client'
 import { getPatentDraftingQuota } from './patent-drafting-tracker'
+import { checkServiceQuota, getServiceUsage } from './service-usage-tracker'
 
 // ============================================================================
 // Types
@@ -95,7 +97,8 @@ const SERVICE_TO_FEATURE: Record<ServiceType, string> = {
   PRIOR_ART_SEARCH: 'PRIOR_ART_SEARCH',
   IDEA_BANK: 'IDEA_BANK',
   PERSONA_SYNC: 'PERSONA_SYNC',
-  DIAGRAM_GENERATION: 'DIAGRAM_GENERATION'
+  DIAGRAM_GENERATION: 'DIAGRAM_GENERATION',
+  PATENT_REVIEW: 'PATENT_REVIEW'      // Pro tier feature
 }
 
 // Roles that can use each service (default, can be overridden by team/user settings)
@@ -105,7 +108,8 @@ const SERVICE_DEFAULT_ROLES: Record<ServiceType, UserRole[]> = {
   PRIOR_ART_SEARCH: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST'],
   IDEA_BANK: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST'],
   PERSONA_SYNC: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST'],
-  DIAGRAM_GENERATION: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST']
+  DIAGRAM_GENERATION: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST'],
+  PATENT_REVIEW: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST']  // Pro tier feature - role access same, quota-controlled
 }
 
 // ============================================================================
@@ -272,7 +276,8 @@ export async function createTeam(
     'PRIOR_ART_SEARCH',
     'IDEA_BANK',
     'PERSONA_SYNC',
-    'DIAGRAM_GENERATION'
+    'DIAGRAM_GENERATION',
+    'PATENT_REVIEW'
   ]
   
   await prisma.teamServiceAccess.createMany({
@@ -606,11 +611,14 @@ export async function checkServiceAccess(
     return { allowed: true, reason: 'Feature not in plan - defaulting to allowed' }
   }
   
-  // Check tenant-level usage
-  // For PATENT_DRAFTING, use patent-based counting (not LLM tokens)
+  // Check tenant-level usage using unified service usage tracker
+  // This enforces BOTH completion-based AND token-based quotas
+  
+  // Special handling for PATENT_DRAFTING (uses legacy patent-based counting for completions)
   if (serviceType === 'PATENT_DRAFTING') {
     const patentQuota = await getPatentDraftingQuota(tenantId)
     
+    // Check completion quota
     if (patentQuota.monthlyLimit !== null && patentQuota.monthlyUsed >= patentQuota.monthlyLimit) {
       return {
         allowed: false,
@@ -629,6 +637,47 @@ export async function checkServiceAccess(
       }
     }
     
+    // Also check token-based quota (prevents regeneration abuse)
+    const tokenLimits = {
+      dailyTokenLimit: (planFeature as any).dailyTokenLimit as number | null,
+      monthlyTokenLimit: (planFeature as any).monthlyTokenLimit as number | null
+    }
+    
+    if (tokenLimits.dailyTokenLimit !== null || tokenLimits.monthlyTokenLimit !== null) {
+      const currentMonth = new Date().toISOString().substring(0, 7)
+      const currentDay = new Date().toISOString().substring(0, 10)
+      
+      const [monthlyMeter, dailyMeter] = await Promise.all([
+        prisma.usageMeter.findFirst({
+          where: { tenantId, taskCode: getTaskCodeForService(serviceType), periodType: 'MONTHLY', periodKey: currentMonth }
+        }),
+        prisma.usageMeter.findFirst({
+          where: { tenantId, taskCode: getTaskCodeForService(serviceType), periodType: 'DAILY', periodKey: currentDay }
+        })
+      ])
+      
+      const dailyTokens = dailyMeter?.currentUsage || 0
+      const monthlyTokens = monthlyMeter?.currentUsage || 0
+      
+      if (tokenLimits.monthlyTokenLimit !== null && monthlyTokens >= tokenLimits.monthlyTokenLimit) {
+        return {
+          allowed: false,
+          reason: `Tenant monthly token limit exceeded for ${serviceType}`,
+          remainingQuota: { daily: patentQuota.dailyRemaining, monthly: 0 },
+          quotaSource: 'tenant'
+        }
+      }
+      
+      if (tokenLimits.dailyTokenLimit !== null && dailyTokens >= tokenLimits.dailyTokenLimit) {
+        return {
+          allowed: false,
+          reason: `Tenant daily token limit exceeded for ${serviceType}`,
+          remainingQuota: { daily: 0, monthly: patentQuota.monthlyRemaining },
+          quotaSource: 'tenant'
+        }
+      }
+    }
+    
     return {
       allowed: true,
       remainingQuota: {
@@ -639,61 +688,91 @@ export async function checkServiceAccess(
     }
   }
   
-  // For other services, use token-based metering
-  const currentMonth = new Date().toISOString().substring(0, 7)
-  const currentDay = new Date().toISOString().substring(0, 10)
-  
-  const [monthlyMeter, dailyMeter] = await Promise.all([
-    prisma.usageMeter.findFirst({
-      where: { tenantId, taskCode: getTaskCodeForService(serviceType), periodType: 'MONTHLY', periodKey: currentMonth }
-    }),
-    prisma.usageMeter.findFirst({
-      where: { tenantId, taskCode: getTaskCodeForService(serviceType), periodType: 'DAILY', periodKey: currentDay }
-    })
-  ])
-  
-  const monthlyUsage = monthlyMeter?.currentUsage || 0
-  const dailyUsage = dailyMeter?.currentUsage || 0
-  
-  if (planFeature.monthlyQuota !== null && monthlyUsage >= planFeature.monthlyQuota) {
+  // For other services, use the unified service usage tracker
+  // This checks both completion-based AND token-based quotas
+  try {
+    const quotaCheck = await checkServiceQuota(tenantId, serviceType)
+    
+    if (!quotaCheck.allowed) {
+      return {
+        allowed: false,
+        reason: quotaCheck.reason || `Quota exceeded for ${serviceType}`,
+        remainingQuota: {
+          daily: quotaCheck.quotaStatus.dailyCompletionsRemaining,
+          monthly: quotaCheck.quotaStatus.monthlyCompletionsRemaining
+        },
+        quotaSource: 'tenant'
+      }
+    }
+    
     return {
-      allowed: false,
-      reason: `Tenant monthly quota exceeded for ${serviceType}`,
-      remainingQuota: { daily: null, monthly: 0 },
+      allowed: true,
+      remainingQuota: {
+        daily: quotaCheck.quotaStatus.dailyCompletionsRemaining,
+        monthly: quotaCheck.quotaStatus.monthlyCompletionsRemaining
+      },
       quotaSource: 'tenant'
     }
-  }
-  
-  if (planFeature.dailyQuota !== null && dailyUsage >= planFeature.dailyQuota) {
+  } catch (error) {
+    // Fallback to legacy token-based metering if new system fails
+    console.warn(`[ServiceAccess] Unified tracker failed for ${serviceType}, falling back to legacy metering:`, error)
+    
+    const currentMonth = new Date().toISOString().substring(0, 7)
+    const currentDay = new Date().toISOString().substring(0, 10)
+    
+    const [monthlyMeter, dailyMeter] = await Promise.all([
+      prisma.usageMeter.findFirst({
+        where: { tenantId, taskCode: getTaskCodeForService(serviceType), periodType: 'MONTHLY', periodKey: currentMonth }
+      }),
+      prisma.usageMeter.findFirst({
+        where: { tenantId, taskCode: getTaskCodeForService(serviceType), periodType: 'DAILY', periodKey: currentDay }
+      })
+    ])
+    
+    const monthlyUsage = monthlyMeter?.currentUsage || 0
+    const dailyUsage = dailyMeter?.currentUsage || 0
+    
+    if (planFeature.monthlyQuota !== null && monthlyUsage >= planFeature.monthlyQuota) {
+      return {
+        allowed: false,
+        reason: `Tenant monthly quota exceeded for ${serviceType}`,
+        remainingQuota: { daily: null, monthly: 0 },
+        quotaSource: 'tenant'
+      }
+    }
+    
+    if (planFeature.dailyQuota !== null && dailyUsage >= planFeature.dailyQuota) {
+      return {
+        allowed: false,
+        reason: `Tenant daily quota exceeded for ${serviceType}`,
+        remainingQuota: { daily: 0, monthly: null },
+        quotaSource: 'tenant'
+      }
+    }
+    
     return {
-      allowed: false,
-      reason: `Tenant daily quota exceeded for ${serviceType}`,
-      remainingQuota: { daily: 0, monthly: null },
+      allowed: true,
+      remainingQuota: {
+        daily: planFeature.dailyQuota !== null ? planFeature.dailyQuota - dailyUsage : null,
+        monthly: planFeature.monthlyQuota !== null ? planFeature.monthlyQuota - monthlyUsage : null
+      },
       quotaSource: 'tenant'
     }
-  }
-  
-  return {
-    allowed: true,
-    remainingQuota: {
-      daily: planFeature.dailyQuota !== null ? planFeature.dailyQuota - dailyUsage : null,
-      monthly: planFeature.monthlyQuota !== null ? planFeature.monthlyQuota - monthlyUsage : null
-    },
-    quotaSource: 'tenant'
   }
 }
 
 /**
  * Map ServiceType to TaskCode for metering
  */
-function getTaskCodeForService(serviceType: ServiceType): string | null {
-  const mapping: Record<ServiceType, string | null> = {
-    PATENT_DRAFTING: 'LLM2_DRAFT',
-    NOVELTY_SEARCH: 'LLM4_NOVELTY_SCREEN',
-    PRIOR_ART_SEARCH: 'LLM1_PRIOR_ART',
-    IDEA_BANK: 'IDEA_BANK_ACCESS',
-    PERSONA_SYNC: 'PERSONA_SYNC_LEARN',
-    DIAGRAM_GENERATION: 'LLM3_DIAGRAM'
+function getTaskCodeForService(serviceType: ServiceType): TaskCode | null {
+  const mapping: Record<ServiceType, TaskCode | null> = {
+    PATENT_DRAFTING: TaskCode.LLM2_DRAFT,
+    NOVELTY_SEARCH: TaskCode.LLM4_NOVELTY_SCREEN,
+    PRIOR_ART_SEARCH: TaskCode.LLM1_PRIOR_ART,
+    IDEA_BANK: TaskCode.IDEA_BANK_ACCESS,
+    PERSONA_SYNC: TaskCode.PERSONA_SYNC_LEARN,
+    DIAGRAM_GENERATION: TaskCode.LLM3_DIAGRAM,
+    PATENT_REVIEW: TaskCode.LLM2_DRAFT  // Uses drafting task code for review operations
   }
   return mapping[serviceType]
 }

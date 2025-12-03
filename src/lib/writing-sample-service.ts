@@ -197,7 +197,7 @@ async function getWritingSampleWithPersona(
         }
       }
 
-      for (const s of byPersona.values()) {
+      for (const s of Array.from(byPersona.values())) {
         secondarySamples.push(`[${s.persona?.name || 'Additional Style'}]: ${s.sampleText}`)
       }
     }
@@ -281,7 +281,7 @@ export async function getAllWritingSamples(
  */
 export function invalidateWritingSampleCache(userId: string): void {
   // Remove all cache entries for this user
-  for (const key of sampleCache.keys()) {
+  for (const key of Array.from(sampleCache.keys())) {
     if (key.startsWith(`${userId}:`)) {
       sampleCache.delete(key)
     }
@@ -523,8 +523,8 @@ export async function getSampleCoverage(userId: string): Promise<{
     }
 
     return {
-      sections: [...sections],
-      jurisdictions: [...jurisdictions],
+      sections: Array.from(sections),
+      jurisdictions: Array.from(jurisdictions),
       coverage
     }
   } catch (error) {

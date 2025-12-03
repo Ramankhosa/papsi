@@ -12,8 +12,8 @@ export const dynamic = 'force-dynamic'
  */
 export async function GET(request: NextRequest) {
   try {
-    const user = await authenticateUser(request)
-    if (!user || !user.roles?.includes('SUPER_ADMIN')) {
+    const authResult = await authenticateUser(request)
+    if (!authResult.user || !authResult.user.roles?.includes('SUPER_ADMIN')) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
@@ -49,8 +49,8 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    const user = await authenticateUser(request)
-    if (!user || !user.roles?.includes('SUPER_ADMIN')) {
+    const authResult = await authenticateUser(request)
+    if (!authResult.user || !authResult.user.roles?.includes('SUPER_ADMIN')) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
@@ -124,9 +124,9 @@ export async function POST(request: NextRequest) {
 
         await prisma.supersetSection.update({
           where: { sectionKey },
-          data: { 
+          data: {
             isActive: newIsActive,
-            updatedBy: user.id
+            updatedBy: authResult.user.id
           }
         })
 

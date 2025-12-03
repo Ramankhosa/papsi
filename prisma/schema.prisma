@@ -40,6 +40,7 @@ enum ServiceType {
   IDEA_BANK
   PERSONA_SYNC
   DIAGRAM_GENERATION
+  PATENT_REVIEW          // AI-powered patent draft review (Pro tier)
 }
 
 // Team roles within a team
@@ -72,12 +73,15 @@ model Tenant {
   auditLogs AuditLog[]
 
   // Metering relations
-  tenantPlans           TenantPlan[]
-  usageReservations     UsageReservation[]
-  usageMeters           UsageMeter[]
-  usageLogs             UsageLog[]
-  quotaAlerts           QuotaAlert[]
-  patentDraftingUsage   PatentDraftingUsage[]
+  tenantPlans              TenantPlan[]
+  usageReservations        UsageReservation[]
+  usageMeters              UsageMeter[]
+  usageLogs                UsageLog[]
+  quotaAlerts              QuotaAlert[]
+  patentDraftingUsage      PatentDraftingUsage[]
+  serviceCompletionUsage   ServiceCompletionUsage[]
+  diagramGenerationUsage   DiagramGenerationUsage[]
+  sketchGenerationUsage    SketchGenerationUsage[]
 
   // Drafting relations
   draftingSessions DraftingSession[]
@@ -171,6 +175,9 @@ model User {
   
   // Config import tracking
   configImports           CountryConfigImport[] @relation("ConfigImporter")
+  
+  // Service completion tracking
+  serviceCompletionUsage  ServiceCompletionUsage[]
 
   @@map("users")
 }
@@ -445,6 +452,7 @@ enum FeatureCode {
   DIAGRAM_GENERATION
   IDEA_BANK
   PERSONA_SYNC
+  PATENT_REVIEW          // AI-powered patent draft review (Pro tier)
 }
 
 enum TaskCode {
@@ -597,8 +605,14 @@ model PlanFeature {
   id           String @id @default(cuid())
   planId       String
   featureId    String
-  monthlyQuota Int?
-  dailyQuota   Int?
+  
+  // Completion-based limits (counts complete operations)
+  monthlyQuota Int?   // Monthly completion limit (NULL = unlimited)
+  dailyQuota   Int?   // Daily completion limit (NULL = unlimited)
+  
+  // Token-based limits (prevents regeneration abuse)
+  monthlyTokenLimit Int?  // Monthly token limit (NULL = unlimited)
+  dailyTokenLimit   Int?  // Daily token limit (NULL = unlimited)
 
   plan    Plan    @relation(fields: [planId], references: [id])
   feature Feature @relation(fields: [featureId], references: [id])
@@ -722,6 +736,115 @@ model PatentDraftingUsage {
   @@index([tenantId, countedMonth])
   @@index([sessionId])
   @@map("patent_drafting_usage")
+}
+
+// ============================================================================
+// UNIFIED SERVICE USAGE TRACKING
+// Tracks completions for all services (not just LLM tokens)
+// Each service has specific completion criteria
+// ============================================================================
+
+model ServiceCompletionUsage {
+  id          String   @id @default(cuid())
+  tenantId    String
+  userId      String
+  serviceType ServiceType
+  
+  // Unique operation identifier (e.g., searchId, sessionId, diagramId)
+  operationId    String
+  operationType  String   // e.g., "novelty_search", "prior_art_search", "diagram_generation"
+  
+  // Completion tracking
+  isCompleted    Boolean  @default(false) // True when operation is fully completed
+  completionDate String?  // YYYY-MM-DD when completed (for daily quota)
+  completionMonth String? // YYYY-MM when completed (for monthly quota)
+  completedAt    DateTime?
+  
+  // Token usage for this operation (for dual-quota enforcement)
+  inputTokensUsed  Int @default(0)
+  outputTokensUsed Int @default(0)
+  totalTokensUsed  Int @default(0)
+  
+  // Cost tracking (calculated from model prices)
+  estimatedCostUsd Float @default(0)
+  
+  // Metadata
+  metadata Json? // Additional service-specific data
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+  
+  @@unique([tenantId, serviceType, operationId])
+  @@index([tenantId, serviceType, completionDate])
+  @@index([tenantId, serviceType, completionMonth])
+  @@index([userId, serviceType])
+  @@map("service_completion_usage")
+}
+
+// Diagram Generation Usage (for granular diagram tracking)
+model DiagramGenerationUsage {
+  id          String   @id @default(cuid())
+  tenantId    String
+  userId      String
+  sessionId   String   // Drafting session
+  figureNo    Int      // Figure number
+  
+  // Generation tracking
+  generationCount Int @default(0) // Number of times regenerated
+  isCompleted     Boolean @default(false) // True when figure is finalized
+  
+  // Token usage
+  totalInputTokens  Int @default(0)
+  totalOutputTokens Int @default(0)
+  
+  // Period tracking
+  countedDate  String?  // YYYY-MM-DD when counted
+  countedMonth String?  // YYYY-MM when counted
+  countedAt    DateTime?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  
+  @@unique([tenantId, sessionId, figureNo])
+  @@index([tenantId, countedDate])
+  @@index([tenantId, countedMonth])
+  @@map("diagram_generation_usage")
+}
+
+// Future: Sketch Generation Usage (under Figure Planner)
+model SketchGenerationUsage {
+  id          String   @id @default(cuid())
+  tenantId    String
+  userId      String
+  sessionId   String
+  sketchId    String   // Unique sketch identifier
+  
+  // Generation tracking
+  generationCount Int @default(0)
+  isCompleted     Boolean @default(false)
+  
+  // Token usage
+  totalInputTokens  Int @default(0)
+  totalOutputTokens Int @default(0)
+  
+  // Period tracking
+  countedDate  String?
+  countedMonth String?
+  countedAt    DateTime?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  
+  @@unique([tenantId, sessionId, sketchId])
+  @@index([tenantId, countedDate])
+  @@map("sketch_generation_usage")
 }
 
 model UsageLog {

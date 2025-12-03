@@ -10,6 +10,7 @@
  * 3. SUPERSET_PROMPTS - Base prompts (always merged)
  */
 
+import { Prisma } from '@prisma/client'
 import { prisma } from './prisma'
 import { getCountryProfile } from './country-profile-service'
 
@@ -269,8 +270,8 @@ export async function createSectionPrompt(
       countryCode: jurisdiction,
       sectionKey: input.sectionKey,
       instruction: prompt.instruction,
-      constraints: prompt.constraints,
-      additions: prompt.additions,
+      constraints: prompt.constraints as Prisma.InputJsonValue,
+      additions: (prompt.additions ?? []) as Prisma.InputJsonValue,
       version: 1,
       changeType: 'CREATE',
       changedBy: input.createdBy
@@ -318,8 +319,8 @@ export async function updateSectionPrompt(
     where: { id },
     data: {
       instruction: input.instruction ?? existing.instruction,
-      constraints: input.constraints ?? existing.constraints,
-      additions: input.additions ?? existing.additions,
+      constraints: (input.constraints ?? existing.constraints ?? []) as Prisma.InputJsonValue,
+      additions: (input.additions ?? existing.additions ?? []) as Prisma.InputJsonValue,
       importFiguresDirectly: input.importFiguresDirectly ?? existing.importFiguresDirectly,
       version: newVersion,
       updatedBy: input.updatedBy
@@ -333,8 +334,8 @@ export async function updateSectionPrompt(
       countryCode: updated.countryCode,
       sectionKey: updated.sectionKey,
       instruction: updated.instruction,
-      constraints: updated.constraints,
-      additions: updated.additions,
+      constraints: updated.constraints as Prisma.InputJsonValue,
+      additions: (updated.additions ?? []) as Prisma.InputJsonValue,
       version: newVersion,
       changeType: 'UPDATE',
       changeReason: input.changeReason,
@@ -393,8 +394,8 @@ export async function archiveSectionPrompt(
       countryCode: existing.countryCode,
       sectionKey: existing.sectionKey,
       instruction: existing.instruction,
-      constraints: existing.constraints,
-      additions: existing.additions,
+      constraints: existing.constraints as Prisma.InputJsonValue,
+      additions: (existing.additions ?? []) as Prisma.InputJsonValue,
       version: existing.version,
       changeType: 'ARCHIVE',
       changeReason: reason,
@@ -454,8 +455,8 @@ export async function restoreSectionPrompt(
       countryCode: restored.countryCode,
       sectionKey: restored.sectionKey,
       instruction: restored.instruction,
-      constraints: restored.constraints,
-      additions: restored.additions,
+      constraints: restored.constraints as Prisma.InputJsonValue,
+      additions: (restored.additions ?? []) as Prisma.InputJsonValue,
       version: restored.version,
       changeType: 'RESTORE',
       changedBy: restoredBy

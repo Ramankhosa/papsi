@@ -28,13 +28,69 @@ export async function enforceServiceAccess(
     const result = await checkServiceAccess(userId, tenantId, serviceType)
     
     if (!result.allowed) {
+      // Provide user-friendly error messages based on the reason
+      let userMessage = 'Service access denied'
+      let errorCode = 'SERVICE_ACCESS_DENIED'
+
+      if (result.reason) {
+        if (result.reason.includes('daily quota exceeded')) {
+          const serviceName = serviceType === 'PATENT_DRAFTING' ? 'patent drafting' :
+                             serviceType === 'PRIOR_ART_SEARCH' ? 'prior art search' :
+                             serviceType === 'NOVELTY_SEARCH' ? 'novelty search' :
+                             serviceType === 'IDEA_BANK' ? 'idea bank' :
+                             serviceType === 'DIAGRAM_GENERATION' ? 'diagram generation' :
+                             serviceType === 'PERSONA_SYNC' ? 'persona sync' : String(serviceType).toLowerCase()
+
+          const quotaType = result.reason.includes('Tenant') ? 'tenant' : 'your'
+          const resetTime = result.reason.includes('daily') ? 'tomorrow' : 'next month'
+
+          userMessage = `Daily quota exceeded for ${serviceName}. Your ${quotaType} account has used all available operations for today. Please try again ${resetTime} when the quota resets.`
+
+          if (result.remainingQuota) {
+            const remainingMonthly = result.remainingQuota.monthly
+            if (remainingMonthly !== null && remainingMonthly > 0) {
+              userMessage += ` You have ${remainingMonthly} monthly operations remaining.`
+            }
+          }
+          errorCode = 'DAILY_QUOTA_EXCEEDED'
+        } else if (result.reason.includes('monthly quota exceeded')) {
+          const serviceName = serviceType === 'PATENT_DRAFTING' ? 'patent drafting' :
+                             serviceType === 'PRIOR_ART_SEARCH' ? 'prior art search' :
+                             serviceType === 'NOVELTY_SEARCH' ? 'novelty search' :
+                             serviceType === 'IDEA_BANK' ? 'idea bank' :
+                             serviceType === 'DIAGRAM_GENERATION' ? 'diagram generation' :
+                             serviceType === 'PERSONA_SYNC' ? 'persona sync' : String(serviceType).toLowerCase()
+
+          userMessage = `Monthly quota exceeded for ${serviceName}. Your account has used all available operations for this month. Please contact your administrator to increase your plan limits or wait for the next billing cycle.`
+          errorCode = 'MONTHLY_QUOTA_EXCEEDED'
+        } else if (result.reason.includes('disabled for this user')) {
+          const serviceName = serviceType === 'PATENT_DRAFTING' ? 'patent drafting' :
+                             serviceType === 'PRIOR_ART_SEARCH' ? 'prior art search' :
+                             serviceType === 'NOVELTY_SEARCH' ? 'novelty search' :
+                             serviceType === 'IDEA_BANK' ? 'idea bank' :
+                             serviceType === 'DIAGRAM_GENERATION' ? 'diagram generation' :
+                             serviceType === 'PERSONA_SYNC' ? 'persona sync' : String(serviceType).toLowerCase()
+
+          userMessage = `${serviceName.charAt(0).toUpperCase() + serviceName.slice(1)} is disabled for your account. Please contact your administrator to enable this feature.`
+          errorCode = 'SERVICE_DISABLED'
+        } else {
+          // Use the original reason for other cases
+          userMessage = result.reason
+        }
+      }
+
       return {
         allowed: false,
         response: NextResponse.json(
-          { 
-            error: 'Service access denied',
+          {
+            error: userMessage,
             reason: result.reason || `You do not have access to ${serviceType}`,
-            code: 'SERVICE_ACCESS_DENIED'
+            code: errorCode,
+            quotaInfo: result.remainingQuota ? {
+              remainingDaily: result.remainingQuota.daily,
+              remainingMonthly: result.remainingQuota.monthly,
+              source: result.quotaSource
+            } : undefined
           },
           { status: 403 }
         )

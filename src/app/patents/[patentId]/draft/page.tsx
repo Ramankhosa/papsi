@@ -55,7 +55,7 @@ const STAGE_COMPONENTS = {
   COMPONENT_PLANNER: ComponentPlannerStage,
   FIGURE_PLANNER: FigurePlannerStage,
   RELATED_ART: RelatedArtStage,
-  COUNTRY_WISE_DRAFTING: CountryWiseDraftStage,
+  COUNTRY_WISE_DRAFTING: CountryWiseDraftStage, // Kept for backward compatibility
   ANNEXURE_DRAFT: AnnexureDraftStage,
   REVIEW_FIX: ReviewFixStage,
   EXPORT_READY: ExportCenterStage,
@@ -63,35 +63,36 @@ const STAGE_COMPONENTS = {
 }
 
 const STAGE_LABELS = {
-  IDEA_ENTRY: 'Idea Entry',
+  IDEA_ENTRY: 'Idea & Claims',  // Updated: Now includes claims generation
   COMPONENT_PLANNER: 'Component Planner',
   FIGURE_PLANNER: 'Figure Planner',
-  RELATED_ART: 'Related Art',
-  COUNTRY_WISE_DRAFTING: 'Country-wise Drafting',
-  ANNEXURE_DRAFT: 'Annexure Draft',
+  RELATED_ART: 'Prior Art Analysis',  // Updated: More descriptive
+  COUNTRY_WISE_DRAFTING: 'Jurisdiction Setup', // Legacy - jurisdiction now selected in Stage 0
+  ANNEXURE_DRAFT: 'Draft Sections',  // Updated: More descriptive
   REVIEW_FIX: 'Review & Fix',
   EXPORT_READY: 'Export Center',
   COMPLETED: 'Completed'
 }
 
 const STAGE_PROGRESS = {
-  IDEA_ENTRY: 12.5,
-  COMPONENT_PLANNER: 25,
-  FIGURE_PLANNER: 37.5,
-  RELATED_ART: 45,
-  COUNTRY_WISE_DRAFTING: 50,
-  ANNEXURE_DRAFT: 60,
-  REVIEW_FIX: 80,
-  EXPORT_READY: 87.5,
+  IDEA_ENTRY: 15,  // Updated percentages for new flow
+  COMPONENT_PLANNER: 30,
+  FIGURE_PLANNER: 45,
+  RELATED_ART: 55,
+  COUNTRY_WISE_DRAFTING: 55, // Same as RELATED_ART since it's skipped in normal flow
+  ANNEXURE_DRAFT: 70,
+  REVIEW_FIX: 85,
+  EXPORT_READY: 95,
   COMPLETED: 100
 }
 
+// Stage order - COUNTRY_WISE_DRAFTING removed since jurisdiction is selected in Stage 0
 const STAGE_ORDER: Array<keyof typeof STAGE_COMPONENTS> = [
   'IDEA_ENTRY',
   'COMPONENT_PLANNER',
   'FIGURE_PLANNER',
   'RELATED_ART',
-  'COUNTRY_WISE_DRAFTING',
+  // 'COUNTRY_WISE_DRAFTING' - Removed: Jurisdiction is now selected before drafting starts
   'ANNEXURE_DRAFT',
   'REVIEW_FIX',
   'EXPORT_READY',
@@ -110,6 +111,11 @@ export default function PatentDraftingPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [usage, setUsage] = useState<PatentUsageMetrics | null>(null)
+  const [quotaError, setQuotaError] = useState<{
+    message: string;
+    code: string;
+    quotaInfo?: { remainingDaily: number | null; remainingMonthly: number | null; source: string }
+  } | null>(null)
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -276,6 +282,8 @@ export default function PatentDraftingPage() {
       let response = await doRequest()
       console.log('API response status:', response.status)
 
+      let result = null
+
       // Retry once on 401 by refreshing user/token
       if (response.status === 401) {
         console.log('Retrying after 401 error')
@@ -286,14 +294,26 @@ export default function PatentDraftingPage() {
 
       if (!response.ok) {
         let message = 'Failed to update stage'
+        let errorCode = 'UNKNOWN_ERROR'
+        let quotaInfo = undefined
+
         try {
           const err = await response.json()
           console.log('API error response:', err)
           if (err?.error) message = err.error
+          if (err?.code) errorCode = err.code
+          if (err?.quotaInfo) quotaInfo = err.quotaInfo
         } catch (parseError) {
           console.log('Failed to parse error response:', parseError)
         }
-        console.log('Stage update failed:', { status: response.status, message, stageData })
+        console.log('Stage update failed:', { status: response.status, message, errorCode, stageData })
+
+        // Try to parse response body for additional error details
+        try {
+          result = await response.json()
+        } catch {
+          // Response body might not be JSON
+        }
 
         // Ensure message is always a string
         if (typeof message !== 'string' || !message.trim()) {
@@ -306,10 +326,26 @@ export default function PatentDraftingPage() {
           // Avoid throwing after redirect to prevent runtime error on this page
           return null
         }
+
+        // Handle quota errors specially - show them in UI instead of throwing
+        if (errorCode === 'DAILY_QUOTA_EXCEEDED' || errorCode === 'MONTHLY_QUOTA_EXCEEDED' || errorCode === 'SERVICE_ACCESS_DENIED') {
+          setQuotaError({
+            message,
+            code: errorCode,
+            quotaInfo
+          })
+          return null // Don't proceed with the stage update
+        }
+
+        // Handle component validation errors
+        if (errorCode === 'INVALID_COMPONENT_MAP' && result?.details) {
+          const validationErrors = Array.isArray(result.details) ? result.details : [result.details];
+          setError(`Component validation failed: ${validationErrors.join(', ')}`);
+          return null;
+        }
+
         throw new Error(message)
       }
-
-      const result = await response.json()
 
       // For read-only actions, avoid refreshing to preserve local UI state
       const action = stageData?.action
@@ -381,6 +417,43 @@ export default function PatentDraftingPage() {
 
   return (
     <div className="min-h-screen bg-[#F5F6F7]">
+      {/* Quota Error Banner */}
+      {quotaError && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-3">
+          <div className="max-w-[98%] mx-auto flex items-center justify-between">
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                <svg className="h-5 w-5 text-amber-400" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                </svg>
+              </div>
+              <div className="ml-3">
+                <p className="text-sm font-medium text-amber-800">
+                  {quotaError.message}
+                </p>
+                {quotaError.quotaInfo && (
+                  <p className="text-xs text-amber-700 mt-1">
+                    {quotaError.quotaInfo.remainingMonthly !== null && quotaError.quotaInfo.remainingMonthly > 0 &&
+                      `Monthly operations remaining: ${quotaError.quotaInfo.remainingMonthly}`
+                    }
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="flex-shrink-0">
+              <button
+                onClick={() => setQuotaError(null)}
+                className="text-amber-600 hover:text-amber-800 p-1 rounded-full hover:bg-amber-100 transition-colors"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header - Compact & Clean */}
       <header className="bg-white/90 backdrop-blur-md border-b border-gray-200 sticky top-0 z-50">
         <div className="w-full max-w-[98%] mx-auto px-4 sm:px-6 lg:px-8">

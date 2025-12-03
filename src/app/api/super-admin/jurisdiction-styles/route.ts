@@ -415,8 +415,12 @@ export async function PUT(request: NextRequest) {
             marginBottomCm: data.marginBottomCm,
             marginLeftCm: data.marginLeftCm,
             marginRightCm: data.marginRightCm,
+            headingFontFamily: data.headingFontFamily || null,
+            headingFontSizePt: data.headingFontSizePt || null,
             addPageNumbers: data.addPageNumbers,
             addParagraphNumbers: data.addParagraphNumbers,
+            pageNumberFormat: data.pageNumberFormat || 'Page {page} of {total}',
+            pageNumberPosition: data.pageNumberPosition || 'header-right',
             version: existing.version + 1,
             updatedBy: admin.userId
           }

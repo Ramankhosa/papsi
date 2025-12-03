@@ -299,7 +299,7 @@ export async function PATCH(request: NextRequest) {
         await prisma.writingSample.createMany({
           data: source.samples.map(s => ({
             userId: user.id,
-            tenantId: user.tenantId,
+            tenantId: user.tenantId!,
             personaId: copied.id,
             personaName: newName.trim(),
             jurisdiction: s.jurisdiction,

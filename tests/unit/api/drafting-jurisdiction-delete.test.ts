@@ -1,4 +1,4 @@
-import { computeJurisdictionStateOnDelete } from '../../../src/app/api/patents/[patentId]/drafting/route'
+import { computeJurisdictionStateOnDelete } from '../../../src/lib/jurisdiction-state-service'
 
 describe('computeJurisdictionStateOnDelete', () => {
   const baseSession = {

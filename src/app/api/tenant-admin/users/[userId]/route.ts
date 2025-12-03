@@ -149,7 +149,7 @@ export async function PATCH(
     if (action === 'change_role' && newRole) {
       const result = await changeUserRole(
         {
-          userId: actor.user_id,
+          userId: actor.sub,
           tenantId: actor.tenant_id,
           roles: (actor.roles || []) as UserRole[],
           email: actor.email
@@ -197,7 +197,7 @@ export async function PATCH(
       // Audit log
       await prisma.auditLog.create({
         data: {
-          actorUserId: actor.user_id,
+          actorUserId: actor.sub,
           tenantId: actor.tenant_id,
           action: 'USER_STATUS_CHANGE',
           resource: `user:${userId}`,

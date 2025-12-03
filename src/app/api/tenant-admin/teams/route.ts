@@ -80,7 +80,7 @@ export async function POST(request: NextRequest) {
     
     const result = await createTeam(
       {
-        userId: user.user_id,
+        userId: user.sub,
         tenantId: user.tenant_id,
         roles: (user.roles || []) as UserRole[],
         email: user.email

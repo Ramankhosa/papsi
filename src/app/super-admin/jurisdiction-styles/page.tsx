@@ -51,8 +51,12 @@ interface ExportConfig {
   fontFamily: string
   fontSizePt: number
   lineSpacing: number
+  headingFontFamily: string | null
+  headingFontSizePt: number | null
   addPageNumbers: boolean
   addParagraphNumbers: boolean
+  pageNumberFormat: string
+  pageNumberPosition: string
   includesSections: string[]
   version: number
   sectionHeadings: Record<string, string>
@@ -1535,8 +1539,12 @@ function ExportConfigModal({
     marginBottomCm: config.marginBottomCm,
     marginLeftCm: config.marginLeftCm,
     marginRightCm: config.marginRightCm,
+    headingFontFamily: config.headingFontFamily || '',
+    headingFontSizePt: config.headingFontSizePt || 14,
     addPageNumbers: config.addPageNumbers,
-    addParagraphNumbers: config.addParagraphNumbers
+    addParagraphNumbers: config.addParagraphNumbers,
+    pageNumberFormat: config.pageNumberFormat || 'Page {page} of {total}',
+    pageNumberPosition: config.pageNumberPosition || 'header-right'
   })
 
   return (
@@ -1564,16 +1572,17 @@ function ExportConfigModal({
             </select>
           </div>
           <div>
-            <label className="block text-sm text-slate-400 mb-1">Font Family</label>
+            <label className="block text-sm text-slate-400 mb-1">Body Font Family</label>
             <input
               type="text"
               value={form.fontFamily}
               onChange={(e) => setForm({ ...form, fontFamily: e.target.value })}
               className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white"
+              placeholder="Times New Roman"
             />
           </div>
           <div>
-            <label className="block text-sm text-slate-400 mb-1">Font Size (pt)</label>
+            <label className="block text-sm text-slate-400 mb-1">Body Font Size (pt)</label>
             <input
               type="number"
               value={form.fontSizePt}
@@ -1583,15 +1592,36 @@ function ExportConfigModal({
           </div>
         </div>
 
-        <div>
-          <label className="block text-sm text-slate-400 mb-1">Line Spacing</label>
-          <input
-            type="number"
-            step="0.1"
-            value={form.lineSpacing}
-            onChange={(e) => setForm({ ...form, lineSpacing: parseFloat(e.target.value) || 1.5 })}
-            className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white"
-          />
+        <div className="grid grid-cols-3 gap-4">
+          <div>
+            <label className="block text-sm text-slate-400 mb-1">Heading Font Family</label>
+            <input
+              type="text"
+              value={form.headingFontFamily}
+              onChange={(e) => setForm({ ...form, headingFontFamily: e.target.value })}
+              className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white"
+              placeholder="(same as body)"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-400 mb-1">Heading Font Size (pt)</label>
+            <input
+              type="number"
+              value={form.headingFontSizePt}
+              onChange={(e) => setForm({ ...form, headingFontSizePt: parseInt(e.target.value) || 14 })}
+              className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-slate-400 mb-1">Line Spacing</label>
+            <input
+              type="number"
+              step="0.1"
+              value={form.lineSpacing}
+              onChange={(e) => setForm({ ...form, lineSpacing: parseFloat(e.target.value) || 1.5 })}
+              className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white"
+            />
+          </div>
         </div>
 
         <div className="grid grid-cols-4 gap-4">
@@ -1657,6 +1687,37 @@ function ExportConfigModal({
             <span className="text-slate-300">Add Paragraph Numbers</span>
           </label>
         </div>
+
+        {form.addPageNumbers && (
+          <div className="grid grid-cols-2 gap-4 p-4 bg-slate-700/30 rounded-lg">
+            <div>
+              <label className="block text-sm text-slate-400 mb-1">Page Number Format</label>
+              <input
+                type="text"
+                value={form.pageNumberFormat}
+                onChange={(e) => setForm({ ...form, pageNumberFormat: e.target.value })}
+                className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white"
+                placeholder="Page {page} of {total}"
+              />
+              <p className="text-xs text-slate-500 mt-1">Use {'{page}'} and {'{total}'} placeholders</p>
+            </div>
+            <div>
+              <label className="block text-sm text-slate-400 mb-1">Page Number Position</label>
+              <select
+                value={form.pageNumberPosition}
+                onChange={(e) => setForm({ ...form, pageNumberPosition: e.target.value })}
+                className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white"
+              >
+                <option value="header-right">Header - Right</option>
+                <option value="header-center">Header - Center</option>
+                <option value="header-left">Header - Left</option>
+                <option value="footer-right">Footer - Right</option>
+                <option value="footer-center">Footer - Center</option>
+                <option value="footer-left">Footer - Left</option>
+              </select>
+            </div>
+          </div>
+        )}
 
         <div className="flex justify-end gap-3 pt-4 border-t border-slate-700">
           <button onClick={onClose} className="px-4 py-2 text-slate-300 hover:text-white">Cancel</button>

@@ -21,7 +21,7 @@ import type {
   LLMResponse
 } from './types'
 import { MeteringError } from './errors'
-import { createMeteringSystem } from './index'
+import { createMeteringSystem } from './system'
 import { extractTenantContextFromRequest } from './auth-bridge'
 import { llmProviderRouter } from './providers/provider-router'
 

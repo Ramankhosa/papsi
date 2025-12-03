@@ -323,7 +323,7 @@ export default function PersonaManager({
                           setCopyingPersona(persona)
                           setCopyName(`${persona.name} (Copy)`)
                         } : undefined}
-                        canDelete={isAdmin}
+                        canDelete={!!isAdmin}
                         onDelete={isAdmin ? () => handleDelete(persona.id) : undefined}
                       />
                     ))}
