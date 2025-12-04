@@ -14,6 +14,18 @@ import { enforceServiceAccess } from '@/lib/service-access-middleware';
 import { getDiagramConfig, generateDiagramPromptInstructions } from '@/lib/jurisdiction-style-service';
 import { trackSectionDrafted } from '@/lib/patent-drafting-tracker';
 import { resolveSourceOfTruth, computeJurisdictionStateOnDelete } from '@/lib/jurisdiction-state-service';
+import { 
+  generateSketch, 
+  listSketches, 
+  getSketch, 
+  deleteSketch, 
+  toggleSketchFavorite, 
+  updateSketchMetadata,
+  retrySketchGeneration,
+  type SketchMode,
+  type SketchContextFlags,
+  type SketchViewConfig
+} from '@/lib/sketch-service';
 import crypto from 'crypto';
 import plantumlEncoder from 'plantuml-encoder';
 import path from 'path';
@@ -474,6 +486,40 @@ export async function POST(
 
       case 'create_manual_figure':
         return await handleCreateManualFigure(authResult.user, patentId, data);
+
+      // === SKETCH GENERATION (Figure Planner - Sketch Tab) ===
+      case 'generate_sketch':
+        return await handleGenerateSketch(authResult.user, patentId, data);
+
+      case 'generate_sketch_guided':
+        return await handleGenerateSketchGuided(authResult.user, patentId, data);
+
+      case 'refine_sketch':
+        return await handleRefineSketch(authResult.user, patentId, data);
+
+      case 'modify_sketch':
+        return await handleModifySketch(authResult.user, patentId, data);
+
+      case 'list_sketches':
+        return await handleListSketches(authResult.user, patentId, data);
+
+      case 'get_sketch':
+        return await handleGetSketch(authResult.user, patentId, data);
+
+      case 'delete_sketch':
+        return await handleDeleteSketch(authResult.user, patentId, data);
+
+      case 'toggle_sketch_favorite':
+        return await handleToggleSketchFavorite(authResult.user, patentId, data);
+
+      case 'update_sketch_metadata':
+        return await handleUpdateSketchMetadata(authResult.user, patentId, data);
+
+      case 'retry_sketch':
+        return await handleRetrySketch(authResult.user, patentId, data);
+
+      case 'generate_from_suggestion':
+        return await handleGenerateFromSuggestion(authResult.user, patentId, data);
 
       // New actions for Stage 1 editing, navigation, and resume
       case 'update_idea_record':
@@ -2291,6 +2337,131 @@ function sanitizePlantUML(input: string): string {
     })
     .join('\n')
   return cleaned
+}
+
+type PlantUmlValidationError = { type: string; message: string; line?: number }
+
+// Lightweight structural/syntax checks that run before hitting PlantUML
+function validatePlantUmlStructure(code: string): { ok: boolean; errors: PlantUmlValidationError[] } {
+  const errors: PlantUmlValidationError[] = []
+  const startCount = (code.match(/@startuml/gi) || []).length
+  const endCount = (code.match(/@enduml/gi) || []).length
+  if (startCount !== 1 || endCount !== 1) {
+    errors.push({ type: 'bounds', message: 'Diagram must contain exactly one @startuml and one @enduml' })
+  }
+
+  // Dangling connectors like "A --" or "B -->"
+  const lines = code.split(/\r?\n/)
+  lines.forEach((line, idx) => {
+    const trimmed = line.trim()
+    if (/--\s*$/.test(trimmed) || /<[-.]*\s*$/.test(trimmed) || /[-.]*>\s*$/.test(trimmed)) {
+      errors.push({ type: 'dangling_connector', message: 'Dangling connector without target', line: idx + 1 })
+    }
+    // Forbidden mix of hidden + direction
+    if (/-\s*\[hidden\][^-]*(?:down|up|left|right)/i.test(trimmed)) {
+      errors.push({ type: 'arrow_style', message: 'Do not mix "[hidden]" with directional arrows', line: idx + 1 })
+    }
+  })
+
+  // Basic block balance checks
+  const blockPairs = [
+    { start: /^\s*if\b/i, end: /^\s*endif\b/i, name: 'if' },
+    { start: /^\s*alt\b/i, end: /^\s*end\s+alt\b/i, name: 'alt' },
+    { start: /^\s*loop\b/i, end: /^\s*end\s+loop\b/i, name: 'loop' },
+    { start: /^\s*group\b/i, end: /^\s*end\s+group\b/i, name: 'group' },
+    { start: /^\s*fork\b/i, end: /^\s*end\s+fork\b/i, name: 'fork' },
+    { start: /^\s*note\b/i, end: /^\s*end\s+note\b/i, name: 'note' }
+  ]
+  const stack: Array<{ name: string; line: number }> = []
+  lines.forEach((line, idx) => {
+    const ln = idx + 1
+    for (const pair of blockPairs) {
+      if (pair.start.test(line)) stack.push({ name: pair.name, line: ln })
+      if (pair.end.test(line)) {
+        const last = stack.pop()
+        if (!last || last.name !== pair.name) {
+          errors.push({ type: 'block_balance', message: `Unexpected "${line.trim()}"`, line: ln })
+        }
+      }
+    }
+  })
+  if (stack.length > 0) {
+    for (const unclosed of stack) {
+      errors.push({ type: 'block_balance', message: `Unclosed block "${unclosed.name}"`, line: unclosed.line })
+    }
+  }
+
+  return { ok: errors.length === 0, errors }
+}
+
+const extractPlantUmlBlock = (text: string): string => {
+  const match = text.match(/@startuml[\s\S]*?@enduml/)
+  return match ? match[0] : ''
+}
+
+async function attemptRepairPlantUml(
+  code: string,
+  validationErrors: PlantUmlValidationError[],
+  opts: {
+    figureTitle?: string
+    description?: string
+    numerals?: string[]
+    plantumlErrorText?: string
+    requestHeaders?: Record<string, string>
+  } = {}
+): Promise<{ ok: boolean; code?: string; repaired: boolean; errors?: PlantUmlValidationError[] }> {
+  const errorsText = validationErrors
+    .map(e => `${e.type}${e.line ? `@${e.line}` : ''}: ${e.message}`)
+    .join('\n')
+  const prompt = `You are a PlantUML compiler and syntax fixer.
+Fix ONLY syntax/structure problems. Preserve all semantics, reference numerals, and component names.
+
+FIGURE: ${opts.figureTitle || 'Untitled'}
+DESCRIPTION: ${opts.description || 'n/a'}
+ALLOWED NUMERALS: ${Array.isArray(opts.numerals) && opts.numerals.length ? opts.numerals.join(', ') : 'keep existing numerals; do not invent new ones'}
+
+CURRENT CODE:
+${code}
+
+VALIDATION ERRORS:
+${errorsText || 'none'}
+
+${opts.plantumlErrorText ? `PLANTUML SERVER ERROR:\n${opts.plantumlErrorText}` : ''}
+
+Return ONLY corrected PlantUML between @startuml and @enduml. Do not add explanations.`
+
+  try {
+    const request = { headers: opts.requestHeaders || {} }
+    const result = await llmGateway.executeLLMOperation(request, {
+      taskCode: 'LLM3_DIAGRAM',
+      prompt,
+      idempotencyKey: crypto.randomUUID(),
+      inputTokens: Math.ceil(prompt.length / 4),
+      metadata: { purpose: 'plantuml_repair' }
+    })
+    if (!result.success || !result.response) return { ok: false, repaired: false, errors: validationErrors }
+    const repairedBlock = extractPlantUmlBlock(result.response.output || '')
+    if (!repairedBlock) return { ok: false, repaired: false, errors: validationErrors }
+    const validation = validatePlantUmlStructure(repairedBlock)
+    if (!validation.ok) return { ok: false, repaired: true, errors: validation.errors }
+    return { ok: true, code: repairedBlock, repaired: true }
+  } catch (e) {
+    console.warn('PlantUML repair attempt failed', e)
+    return { ok: false, repaired: false, errors: validationErrors }
+  }
+}
+
+async function fetchPlantUmlErrorText(baseUrl: string, encoded: string): Promise<string | null> {
+  try {
+    const resp = await fetch(`${baseUrl}/txt/${encoded}`, { method: 'GET', cache: 'no-store' })
+    if (!resp.ok) return null
+    const txt = await resp.text()
+    const lowered = txt.toLowerCase()
+    if (lowered.includes('error') || lowered.includes('syntax')) return txt.slice(0, 2000)
+  } catch (e) {
+    console.warn('Failed to fetch PlantUML /txt diagnostics', e)
+  }
+  return null
 }
 
 async function handleStartSession(user: any, patentId: string, data: any) {
@@ -4122,7 +4293,28 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
     );
   }
 
-  // Create or update diagram source
+  // Sanitize and validate PlantUML, auto-repair if possible
+  let workingCode = sanitizePlantUML(result.plantumlCode || '')
+  let validation = validatePlantUmlStructure(workingCode)
+  if (!validation.ok) {
+    const repair = await attemptRepairPlantUml(workingCode, validation.errors, {
+      figureTitle: session.figurePlans[0]?.title,
+      description: session.figurePlans[0]?.description ?? undefined
+    })
+    if (repair.ok && repair.code) {
+      workingCode = repair.code
+      validation = validatePlantUmlStructure(workingCode)
+    }
+  }
+
+  if (!validation.ok) {
+    return NextResponse.json(
+      { error: 'PlantUML validation failed', details: validation.errors },
+      { status: 400 }
+    )
+  }
+
+  // Create or update diagram source with validated code
   const diagramSource = await prisma.diagramSource.upsert({
     where: {
       sessionId_figureNo: {
@@ -4131,22 +4323,22 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
       }
     },
     update: {
-      plantumlCode: result.plantumlCode || '',
-      checksum: result.checksum || ''
+      plantumlCode: workingCode,
+      checksum: crypto.createHash('sha256').update(workingCode).digest('hex')
     },
     create: {
       sessionId,
       figureNo,
-      plantumlCode: result.plantumlCode || '',
-      checksum: result.checksum || ''
+      plantumlCode: workingCode,
+      checksum: crypto.createHash('sha256').update(workingCode).digest('hex')
     }
   });
 
   // Generate and save image from PlantUML code
-  if (result.plantumlCode) {
+  if (workingCode) {
     try {
       // Clean the PlantUML code (remove titles, themes, etc.)
-      let cleaned = result.plantumlCode
+      let cleaned = workingCode
         .replace(/^title.*$/gmi, '')
         .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
       // Remove multi-line skinparam blocks
@@ -4156,36 +4348,104 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
 
       const encoded = plantumlEncoder.encode(cleaned)
       const base = process.env.PLANTUML_BASE_URL || 'https://www.plantuml.com/plantuml'
-      const url = `${base}/png/${encoded}`
+      const txtError = await fetchPlantUmlErrorText(base, encoded)
+      if (txtError) {
+        const repair = await attemptRepairPlantUml(workingCode, validation.errors, {
+          figureTitle: session.figurePlans[0]?.title,
+          description: session.figurePlans[0]?.description ?? undefined,
+          plantumlErrorText: txtError
+        })
+        if (repair.ok && repair.code) {
+          workingCode = repair.code
+          validation = validatePlantUmlStructure(workingCode)
+          cleaned = workingCode
+            .replace(/^title.*$/gmi, '')
+            .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
+          cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
+          cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+          await prisma.diagramSource.update({
+            where: { sessionId_figureNo: { sessionId, figureNo } },
+            data: {
+              plantumlCode: workingCode,
+              checksum: crypto.createHash('sha256').update(workingCode).digest('hex')
+            }
+          })
+        }
+      }
 
-      const resp = await fetch(url, {
+      const finalEncoded = plantumlEncoder.encode(cleaned)
+      let resp = await fetch(`${base}/png/${finalEncoded}`, {
         cache: 'no-store',
         method: 'GET',
         headers: { 'Accept': 'image/png' }
       })
 
-      if (resp.ok) {
-        const buf = Buffer.from(await resp.arrayBuffer())
-        const imageChecksum = crypto.createHash('sha256').update(buf).digest('hex')
-
-        // Save image to disk
-        const baseDir = path.join(process.cwd(), 'uploads', 'patents', patentId, 'figures')
-        await fs.mkdir(baseDir, { recursive: true })
-        const filename = `figure_${figureNo}_${Date.now()}.png`
-        const imagePath = path.join(baseDir, filename)
-        await fs.writeFile(imagePath, buf)
-
-        // Update diagram source with image path
-        await prisma.diagramSource.update({
-          where: { sessionId_figureNo: { sessionId, figureNo } },
-          data: {
-            imageFilename: filename,
-            imagePath: imagePath,
-            imageChecksum: imageChecksum,
-            imageUploadedAt: new Date()
-          }
+      if (!resp.ok) {
+        // One-time render retry with LLM repair using PlantUML error text
+        const failureText = await resp.text().catch(() => '')
+        const retryRepair = await attemptRepairPlantUml(workingCode, validation.errors, {
+          figureTitle: session.figurePlans[0]?.title,
+          description: session.figurePlans[0]?.description ?? undefined,
+          plantumlErrorText: failureText || (await fetchPlantUmlErrorText(base, finalEncoded)) || undefined
         })
+        if (retryRepair.ok && retryRepair.code) {
+          workingCode = retryRepair.code
+          validation = validatePlantUmlStructure(workingCode)
+          cleaned = workingCode
+            .replace(/^title.*$/gmi, '')
+            .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
+          cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
+          cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+          await prisma.diagramSource.update({
+            where: { sessionId_figureNo: { sessionId, figureNo } },
+            data: {
+              plantumlCode: workingCode,
+              checksum: crypto.createHash('sha256').update(workingCode).digest('hex')
+            }
+          })
+          const retryEncoded = plantumlEncoder.encode(cleaned)
+          resp = await fetch(`${base}/png/${retryEncoded}`, {
+            cache: 'no-store',
+            method: 'GET',
+            headers: { 'Accept': 'image/png' }
+          })
+        }
+        if (!resp.ok) {
+          const retryFailure = await resp.text().catch(() => '')
+          return NextResponse.json(
+            {
+              error: 'PlantUML render failed after auto-repair attempt',
+              details: retryFailure || failureText || `HTTP ${resp.status}`,
+              autoRepairAttempted: true,
+              action: 'Please submit a manual regenerate request for this diagram.',
+              figureTitle: session.figurePlans[0]?.title || `Figure ${figureNo}`,
+              figureDescription: session.figurePlans[0]?.description || 'No description available'
+            },
+            { status: 502 }
+          )
+        }
       }
+
+      const buf = Buffer.from(await resp.arrayBuffer())
+      const imageChecksum = crypto.createHash('sha256').update(buf).digest('hex')
+
+      // Save image to disk
+      const baseDir = path.join(process.cwd(), 'uploads', 'patents', patentId, 'figures')
+      await fs.mkdir(baseDir, { recursive: true })
+      const filename = `figure_${figureNo}_${Date.now()}.png`
+      const imagePath = path.join(baseDir, filename)
+      await fs.writeFile(imagePath, buf)
+
+      // Update diagram source with image path
+      await prisma.diagramSource.update({
+        where: { sessionId_figureNo: { sessionId, figureNo } },
+        data: {
+          imageFilename: filename,
+          imagePath: imagePath,
+          imageChecksum: imageChecksum,
+          imageUploadedAt: new Date()
+        }
+      })
     } catch (imageError) {
       console.warn('Failed to generate/save PlantUML image:', imageError)
       // Don't fail the whole operation if image generation fails
@@ -4508,12 +4768,141 @@ INSTRUCTION: Follow jurisdiction-specific requirements first, then apply inventi
           title: sanitizeFigureTitleInput(fig?.title) || fig?.title
         }))
       : figures
-    return NextResponse.json({ figures: responseFigures, saved })
+
+    // === GENERATE SKETCH SUGGESTIONS ===
+    // After generating diagrams, also generate sketch suggestions for the Sketch tab
+    let sketchSuggestions: any[] = []
+    try {
+      const sketchSuggestPrompt = buildSketchSuggestionsPrompt(session)
+      
+      const sketchResult = await llmGateway.executeLLMOperation(request, {
+        taskCode: 'LLM3_DIAGRAM', // Reuse diagram task for now
+        prompt: sketchSuggestPrompt,
+        idempotencyKey: crypto.randomUUID(),
+        inputTokens: Math.ceil(sketchSuggestPrompt.length / 4),
+        metadata: {
+          patentId,
+          sessionId,
+          purpose: 'generate_sketch_suggestions'
+        }
+      })
+
+      if (sketchResult.success && sketchResult.response?.output) {
+        // Parse sketch suggestions from response
+        const suggestionText = sketchResult.response.output.trim()
+        try {
+          // Try to parse as JSON array
+          const start = suggestionText.indexOf('[')
+          const end = suggestionText.lastIndexOf(']')
+          if (start !== -1 && end !== -1) {
+            const jsonStr = suggestionText.substring(start, end + 1)
+            const parsed = JSON.parse(jsonStr)
+            if (Array.isArray(parsed)) {
+              sketchSuggestions = parsed.filter(s => s.title && s.description)
+            }
+          }
+        } catch {
+          // Fallback: try to extract from structured text using exec loop
+          const regex = /(?:TITLE|Title):\s*(.+?)(?:\n|$)[\s\S]*?(?:DESCRIPTION|Description):\s*([\s\S]+?)(?=(?:TITLE|Title):|$)/gi
+          let match: RegExpExecArray | null
+          while ((match = regex.exec(suggestionText)) !== null) {
+            if (match[1] && match[2]) {
+              sketchSuggestions.push({
+                title: match[1].trim(),
+                description: match[2].trim().split('\n')[0] // Take first paragraph
+              })
+            }
+          }
+        }
+
+        // Create SUGGESTED sketch records if we got suggestions
+        if (sketchSuggestions.length > 0) {
+          const { createSketchSuggestions, clearSketchSuggestions } = await import('@/lib/sketch-service')
+          
+          // Clear old suggestions before creating new ones
+          await clearSketchSuggestions(sessionId)
+          
+          // Create new suggestion records
+          await createSketchSuggestions(patentId, sessionId, sketchSuggestions)
+          
+          console.log(`[DiagramsLLM] Created ${sketchSuggestions.length} sketch suggestions`)
+        }
+      }
+    } catch (sketchErr) {
+      console.warn('[DiagramsLLM] Failed to generate sketch suggestions:', sketchErr)
+      // Don't fail the main response - sketch suggestions are optional
+    }
+
+    return NextResponse.json({ 
+      figures: responseFigures, 
+      saved,
+      sketchSuggestions: sketchSuggestions.length > 0 ? sketchSuggestions : undefined
+    })
   } catch (persistErr) {
     console.error('Persist diagrams error:', persistErr)
     // Even if persistence fails, return figures so UI shows codes
     return NextResponse.json({ figures, warning: 'Figures generated but could not be saved.' })
   }
+}
+
+/**
+ * Builds prompt for generating sketch suggestions based on invention context.
+ * These suggestions will be shown in the Sketch tab for user to generate.
+ */
+function buildSketchSuggestionsPrompt(session: any): string {
+  const idea = session.ideaRecord?.normalizedData as any
+  const components = session.referenceMap?.components || []
+  
+  const inventionSummary = [
+    idea?.title && `Title: ${idea.title}`,
+    idea?.problem && `Problem: ${idea.problem}`,
+    idea?.objectives && `Objectives: ${idea.objectives}`,
+    idea?.logic && `Core Logic: ${idea.logic}`
+  ].filter(Boolean).join('\n')
+
+  const componentList = components.map((c: any) => `${c.numeral || '?'}: ${c.name}`).join('\n')
+
+  return `You are a patent illustration expert. Based on the following invention, suggest 2-3 patent-style sketches that would be valuable for the patent application.
+
+═══════════════════════════════════════════════════════════════════════════════
+INVENTION CONTEXT
+═══════════════════════════════════════════════════════════════════════════════
+${inventionSummary}
+
+COMPONENTS:
+${componentList || 'No components defined yet'}
+
+═══════════════════════════════════════════════════════════════════════════════
+TASK
+═══════════════════════════════════════════════════════════════════════════════
+Suggest 2-3 patent-style sketches that would complement the UML diagrams. Each sketch should:
+1. Show a different view or aspect of the invention
+2. Be suitable for black-and-white line art rendering
+3. Include reference to key components with their numerals
+4. Be distinct from typical UML/flowchart diagrams
+
+═══════════════════════════════════════════════════════════════════════════════
+OUTPUT FORMAT
+═══════════════════════════════════════════════════════════════════════════════
+Return a JSON array with 2-3 sketch suggestions:
+[
+  {
+    "title": "System Block Diagram with Physical Layout",
+    "description": "A high-level view showing the physical arrangement of components 100, 200, and 300, illustrating how they connect and interact in the actual implementation."
+  },
+  {
+    "title": "Data Flow Illustration",
+    "description": "Shows the flow of data between the input module (100), processing unit (200), and output interface (300), with arrows indicating data direction."
+  }
+]
+
+IMPORTANT:
+- Each title should be concise and descriptive
+- Each description should be 2-3 sentences explaining what the sketch will show
+- Reference specific component numerals from the invention
+- Focus on views that would be difficult to represent in UML but valuable in a patent
+
+Return ONLY the JSON array, no other text.`
 }
 
 async function handleSavePlantUML(user: any, patentId: string, data: any) {
@@ -4523,14 +4912,38 @@ async function handleSavePlantUML(user: any, patentId: string, data: any) {
   }
 
   // Verify session
-  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id } })
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { referenceMap: true, figurePlans: true }
+  })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  // Sanitize and validate PlantUML, attempt auto-repair if needed
+  const allowedNumerals: string[] = Array.isArray((session as any)?.referenceMap?.components)
+    ? (session as any).referenceMap.components.map((c: any) => c.numeral).filter(Boolean)
+    : []
+  let workingCode = sanitizePlantUML(plantumlCode)
+  let validation = validatePlantUmlStructure(workingCode)
+  if (!validation.ok) {
+    const repair = await attemptRepairPlantUml(workingCode, validation.errors, {
+      figureTitle: title,
+      description,
+      numerals: allowedNumerals
+    })
+    if (repair.ok && repair.code) {
+      workingCode = repair.code
+      validation = validatePlantUmlStructure(workingCode)
+    }
+  }
+  if (!validation.ok) {
+    return NextResponse.json({ error: 'PlantUML validation failed', details: validation.errors }, { status: 400 })
+  }
 
   // Upsert diagram source and figure plan title
   const diagramSource = await prisma.diagramSource.upsert({
     where: { sessionId_figureNo: { sessionId, figureNo } },
-    update: { plantumlCode, checksum: crypto.createHash('sha256').update(plantumlCode).digest('hex') },
-    create: { sessionId, figureNo, plantumlCode, checksum: crypto.createHash('sha256').update(plantumlCode).digest('hex') }
+    update: { plantumlCode: workingCode, checksum: crypto.createHash('sha256').update(workingCode).digest('hex') },
+    create: { sessionId, figureNo, plantumlCode: workingCode, checksum: crypto.createHash('sha256').update(workingCode).digest('hex') }
   })
 
   const cleanedTitle = sanitizeFigureTitleInput(title) || `Figure ${figureNo}`
@@ -4545,7 +4958,7 @@ async function handleSavePlantUML(user: any, patentId: string, data: any) {
   // Generate and save image from PlantUML code
   try {
     // Clean the PlantUML code (remove titles, themes, etc.)
-    let cleaned = plantumlCode
+    let cleaned = workingCode
       .replace(/^title.*$/gmi, '')
       .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
     // Remove multi-line skinparam blocks
@@ -4553,38 +4966,104 @@ async function handleSavePlantUML(user: any, patentId: string, data: any) {
     // Remove single-line skinparam statements
     cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
 
-    const encoded = plantumlEncoder.encode(cleaned)
     const base = process.env.PLANTUML_BASE_URL || 'https://www.plantuml.com/plantuml'
-    const url = `${base}/png/${encoded}`
+    let encoded = plantumlEncoder.encode(cleaned)
+    const txtError = await fetchPlantUmlErrorText(base, encoded)
+    if (txtError) {
+      const repair = await attemptRepairPlantUml(workingCode, validation.errors, {
+        figureTitle: cleanedTitle,
+        description,
+        numerals: allowedNumerals,
+        plantumlErrorText: txtError
+      })
+      if (repair.ok && repair.code) {
+        workingCode = repair.code
+        validation = validatePlantUmlStructure(workingCode)
+        cleaned = workingCode
+          .replace(/^title.*$/gmi, '')
+          .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
+        cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
+        cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+        await prisma.diagramSource.update({
+          where: { sessionId_figureNo: { sessionId, figureNo } },
+          data: { plantumlCode: workingCode, checksum: crypto.createHash('sha256').update(workingCode).digest('hex') }
+        })
+        encoded = plantumlEncoder.encode(cleaned)
+      }
+    }
 
-    const resp = await fetch(url, {
+    const finalUrl = `${base}/png/${encoded}`
+
+    let resp = await fetch(finalUrl, {
       cache: 'no-store',
       method: 'GET',
       headers: { 'Accept': 'image/png' }
     })
 
-    if (resp.ok) {
-      const buf = Buffer.from(await resp.arrayBuffer())
-      const imageChecksum = crypto.createHash('sha256').update(buf).digest('hex')
-
-      // Save image to disk
-      const baseDir = path.join(process.cwd(), 'uploads', 'patents', patentId, 'figures')
-      await fs.mkdir(baseDir, { recursive: true })
-      const filename = `figure_${figureNo}_${Date.now()}.png`
-      const imagePath = path.join(baseDir, filename)
-      await fs.writeFile(imagePath, buf)
-
-      // Update diagram source with image path
-      await prisma.diagramSource.update({
-        where: { sessionId_figureNo: { sessionId, figureNo } },
-        data: {
-          imageFilename: filename,
-          imagePath: imagePath,
-          imageChecksum: imageChecksum,
-          imageUploadedAt: new Date()
-        }
+    if (!resp.ok) {
+      const failureText = await resp.text().catch(() => '')
+      // One-time retry with repair using renderer error text
+      const retryRepair = await attemptRepairPlantUml(workingCode, validation.errors, {
+        figureTitle: cleanedTitle,
+        description,
+        numerals: allowedNumerals,
+        plantumlErrorText: failureText || (await fetchPlantUmlErrorText(base, encoded)) || undefined
       })
+      if (retryRepair.ok && retryRepair.code) {
+        workingCode = retryRepair.code
+        validation = validatePlantUmlStructure(workingCode)
+        cleaned = workingCode
+          .replace(/^title.*$/gmi, '')
+          .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
+        cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
+        cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+        await prisma.diagramSource.update({
+          where: { sessionId_figureNo: { sessionId, figureNo } },
+          data: { plantumlCode: workingCode, checksum: crypto.createHash('sha256').update(workingCode).digest('hex') }
+        })
+        const retryEncoded = plantumlEncoder.encode(cleaned)
+        resp = await fetch(`${base}/png/${retryEncoded}`, {
+          cache: 'no-store',
+          method: 'GET',
+          headers: { 'Accept': 'image/png' }
+        })
+      }
+      if (!resp.ok) {
+        const retryFailure = await resp.text().catch(() => '')
+        return NextResponse.json(
+          {
+            error: 'PlantUML render failed after auto-repair attempt',
+            details: retryFailure || failureText || `HTTP ${resp.status}`,
+            autoRepairAttempted: true,
+            action: 'Please submit a manual regenerate request for this diagram.',
+            figureTitle: cleanedTitle,
+            figureDescription: description || 'No description available'
+          },
+          { status: 502 }
+        )
+      }
     }
+
+    const buf = Buffer.from(await resp.arrayBuffer())
+    const imageChecksum = crypto.createHash('sha256').update(buf).digest('hex')
+
+    // Save image to disk
+    const baseDir = path.join(process.cwd(), 'uploads', 'patents', patentId, 'figures')
+    await fs.mkdir(baseDir, { recursive: true })
+    const filename = `figure_${figureNo}_${Date.now()}.png`
+    const imagePath = path.join(baseDir, filename)
+    await fs.writeFile(imagePath, buf)
+
+    // Update diagram source with image path
+    await prisma.diagramSource.update({
+      where: { sessionId_figureNo: { sessionId, figureNo } },
+      data: {
+        imageFilename: filename,
+        imagePath: imagePath,
+        imageChecksum: imageChecksum,
+        imageUploadedAt: new Date()
+      }
+    })
   } catch (imageError) {
     console.warn('Failed to generate/save PlantUML image:', imageError)
     // Don't fail the whole operation if image generation fails
@@ -4998,6 +5477,504 @@ async function handleCreateManualFigure(user: any, patentId: string, data: any) 
 
   return NextResponse.json({ created: { figureNo: no } })
 }
+
+// === SKETCH GENERATION HANDLERS ===
+
+/**
+ * Generate sketch in AUTO mode - uses invention context only
+ */
+async function handleGenerateSketch(user: any, patentId: string, data: any) {
+  const { sessionId, title, viewsRequested, contextFlags } = data
+
+  if (!sessionId) {
+    return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
+  }
+
+  // Verify session ownership
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id }
+  })
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  try {
+    const result = await generateSketch({
+      patentId,
+      sessionId,
+      mode: 'AUTO',
+      title: title || 'Auto-generated Sketch',
+      contextFlags: contextFlags as SketchContextFlags,
+      viewsRequested: viewsRequested as SketchViewConfig
+    }, user.id, (session as any).tenantId)
+
+    if (result.success) {
+      return NextResponse.json({
+        success: true,
+        sketchId: result.sketchId,
+        imagePath: result.imagePath,
+        imageUrl: result.imageUrl
+      })
+    } else {
+      return NextResponse.json({
+        success: false,
+        error: result.error,
+        sketchId: result.sketchId
+      }, { status: 400 })
+    }
+  } catch (error) {
+    console.error('[Sketch] Generation error:', error)
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Sketch generation failed'
+    }, { status: 500 })
+  }
+}
+
+/**
+ * Generate sketch in GUIDED mode - uses context + user instructions
+ */
+async function handleGenerateSketchGuided(user: any, patentId: string, data: any) {
+  const { sessionId, title, userPrompt, viewsRequested, contextFlags } = data
+
+  if (!sessionId) {
+    return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
+  }
+
+  if (!userPrompt || (userPrompt as string).trim().length < 10) {
+    return NextResponse.json({ error: 'User prompt must be at least 10 characters' }, { status: 400 })
+  }
+
+  // Verify session ownership
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id }
+  })
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  try {
+    const result = await generateSketch({
+      patentId,
+      sessionId,
+      mode: 'GUIDED',
+      title: title || 'Guided Sketch',
+      userPrompt,
+      contextFlags: contextFlags as SketchContextFlags,
+      viewsRequested: viewsRequested as SketchViewConfig
+    }, user.id, (session as any).tenantId)
+
+    if (result.success) {
+      return NextResponse.json({
+        success: true,
+        sketchId: result.sketchId,
+        imagePath: result.imagePath,
+        imageUrl: result.imageUrl
+      })
+    } else {
+      return NextResponse.json({
+        success: false,
+        error: result.error,
+        sketchId: result.sketchId
+      }, { status: 400 })
+    }
+  } catch (error) {
+    console.error('[Sketch] Guided generation error:', error)
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Sketch generation failed'
+    }, { status: 500 })
+  }
+}
+
+/**
+ * Refine an uploaded sketch - REFINE mode
+ */
+async function handleRefineSketch(user: any, patentId: string, data: any) {
+  const { sessionId, title, userPrompt, uploadedImageBase64, uploadedImageMimeType, contextFlags } = data
+
+  if (!sessionId) {
+    return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
+  }
+
+  if (!uploadedImageBase64 || !uploadedImageMimeType) {
+    return NextResponse.json({ error: 'Uploaded image is required for REFINE mode' }, { status: 400 })
+  }
+
+  // Validate mime type
+  const allowedMimeTypes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp']
+  if (!allowedMimeTypes.includes(uploadedImageMimeType)) {
+    return NextResponse.json({ 
+      error: `Invalid image type. Allowed: ${allowedMimeTypes.join(', ')}` 
+    }, { status: 400 })
+  }
+
+  // Verify session ownership
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id }
+  })
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  try {
+    const result = await generateSketch({
+      patentId,
+      sessionId,
+      mode: 'REFINE',
+      title: title || 'Refined Sketch',
+      userPrompt,
+      uploadedImageBase64,
+      uploadedImageMimeType,
+      contextFlags: contextFlags as SketchContextFlags
+    }, user.id, (session as any).tenantId)
+
+    if (result.success) {
+      return NextResponse.json({
+        success: true,
+        sketchId: result.sketchId,
+        imagePath: result.imagePath,
+        imageUrl: result.imageUrl
+      })
+    } else {
+      return NextResponse.json({
+        success: false,
+        error: result.error,
+        sketchId: result.sketchId
+      }, { status: 400 })
+    }
+  } catch (error) {
+    console.error('[Sketch] Refine error:', error)
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Sketch refinement failed'
+    }, { status: 500 })
+  }
+}
+
+/**
+ * Modify an existing sketch
+ */
+async function handleModifySketch(user: any, patentId: string, data: any) {
+  const { sessionId, sourceSketchId, userPrompt, title } = data
+
+  if (!sessionId) {
+    return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
+  }
+
+  if (!sourceSketchId) {
+    return NextResponse.json({ error: 'Source sketch ID is required for modification' }, { status: 400 })
+  }
+
+  if (!userPrompt || (userPrompt as string).trim().length < 5) {
+    return NextResponse.json({ error: 'Modification instructions required' }, { status: 400 })
+  }
+
+  // Verify session ownership
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id }
+  })
+  if (!session) {
+    return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+  }
+
+  // Verify source sketch exists and belongs to this patent
+  const sourceSketch = await prisma.sketchRecord.findFirst({
+    where: { id: sourceSketchId, patentId }
+  })
+  if (!sourceSketch) {
+    return NextResponse.json({ error: 'Source sketch not found' }, { status: 404 })
+  }
+
+  try {
+    const result = await generateSketch({
+      patentId,
+      sessionId,
+      mode: 'GUIDED', // Modifications are essentially guided generations
+      title: title || `Modified: ${sourceSketch.title}`,
+      userPrompt,
+      sourceSketchId
+    }, user.id, (session as any).tenantId)
+
+    if (result.success) {
+      return NextResponse.json({
+        success: true,
+        sketchId: result.sketchId,
+        imagePath: result.imagePath,
+        imageUrl: result.imageUrl,
+        sourceSketchId
+      })
+    } else {
+      return NextResponse.json({
+        success: false,
+        error: result.error,
+        sketchId: result.sketchId
+      }, { status: 400 })
+    }
+  } catch (error) {
+    console.error('[Sketch] Modify error:', error)
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Sketch modification failed'
+    }, { status: 500 })
+  }
+}
+
+/**
+ * List all sketches for a patent/session
+ */
+async function handleListSketches(user: any, patentId: string, data: any) {
+  const { sessionId, includeDeleted, favoritesOnly, limit, offset } = data
+
+  try {
+    const sketches = await listSketches(patentId, sessionId, {
+      includeDeleted: includeDeleted === true,
+      favoritesOnly: favoritesOnly === true,
+      limit: typeof limit === 'number' ? limit : 50,
+      offset: typeof offset === 'number' ? offset : 0
+    })
+
+    return NextResponse.json({ sketches })
+  } catch (error) {
+    console.error('[Sketch] List error:', error)
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Failed to list sketches'
+    }, { status: 500 })
+  }
+}
+
+/**
+ * Get a single sketch by ID
+ */
+async function handleGetSketch(user: any, patentId: string, data: any) {
+  const { sketchId } = data
+
+  if (!sketchId) {
+    return NextResponse.json({ error: 'Sketch ID is required' }, { status: 400 })
+  }
+
+  try {
+    const sketch = await getSketch(sketchId)
+    
+    if (!sketch || sketch.patentId !== patentId) {
+      return NextResponse.json({ error: 'Sketch not found' }, { status: 404 })
+    }
+
+    return NextResponse.json({ sketch })
+  } catch (error) {
+    console.error('[Sketch] Get error:', error)
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Failed to get sketch'
+    }, { status: 500 })
+  }
+}
+
+/**
+ * Delete a sketch (soft delete)
+ */
+async function handleDeleteSketch(user: any, patentId: string, data: any) {
+  const { sketchId } = data
+
+  if (!sketchId) {
+    return NextResponse.json({ error: 'Sketch ID is required' }, { status: 400 })
+  }
+
+  try {
+    const result = await deleteSketch(sketchId, user.id)
+    
+    if (result.success) {
+      return NextResponse.json({ success: true, deleted: true })
+    } else {
+      return NextResponse.json({ error: result.error }, { status: 400 })
+    }
+  } catch (error) {
+    console.error('[Sketch] Delete error:', error)
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Failed to delete sketch'
+    }, { status: 500 })
+  }
+}
+
+/**
+ * Toggle sketch favorite status
+ */
+async function handleToggleSketchFavorite(user: any, patentId: string, data: any) {
+  const { sketchId } = data
+
+  if (!sketchId) {
+    return NextResponse.json({ error: 'Sketch ID is required' }, { status: 400 })
+  }
+
+  try {
+    // Verify sketch belongs to this patent
+    const sketch = await prisma.sketchRecord.findFirst({
+      where: { id: sketchId, patentId }
+    })
+    if (!sketch) {
+      return NextResponse.json({ error: 'Sketch not found' }, { status: 404 })
+    }
+
+    const result = await toggleSketchFavorite(sketchId)
+    
+    return NextResponse.json({
+      success: result.success,
+      isFavorite: result.isFavorite
+    })
+  } catch (error) {
+    console.error('[Sketch] Toggle favorite error:', error)
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Failed to toggle favorite'
+    }, { status: 500 })
+  }
+}
+
+/**
+ * Update sketch metadata (title, description)
+ */
+async function handleUpdateSketchMetadata(user: any, patentId: string, data: any) {
+  const { sketchId, title, description } = data
+
+  if (!sketchId) {
+    return NextResponse.json({ error: 'Sketch ID is required' }, { status: 400 })
+  }
+
+  try {
+    // Verify sketch belongs to this patent
+    const sketch = await prisma.sketchRecord.findFirst({
+      where: { id: sketchId, patentId }
+    })
+    if (!sketch) {
+      return NextResponse.json({ error: 'Sketch not found' }, { status: 404 })
+    }
+
+    const result = await updateSketchMetadata(sketchId, {
+      ...(title && { title }),
+      ...(description !== undefined && { description })
+    })
+    
+    return NextResponse.json({ success: result.success })
+  } catch (error) {
+    console.error('[Sketch] Update metadata error:', error)
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Failed to update sketch'
+    }, { status: 500 })
+  }
+}
+
+/**
+ * Retry a failed sketch generation
+ */
+async function handleRetrySketch(user: any, patentId: string, data: any) {
+  const { sketchId } = data
+
+  if (!sketchId) {
+    return NextResponse.json({ error: 'Sketch ID is required' }, { status: 400 })
+  }
+
+  try {
+    // Verify sketch belongs to this patent
+    const sketch = await prisma.sketchRecord.findFirst({
+      where: { id: sketchId, patentId }
+    })
+    if (!sketch) {
+      return NextResponse.json({ error: 'Sketch not found' }, { status: 404 })
+    }
+
+    const session = sketch.sessionId ? await prisma.draftingSession.findFirst({
+      where: { id: sketch.sessionId, userId: user.id }
+    }) : null
+
+    const result = await retrySketchGeneration(
+      sketchId, 
+      user.id, 
+      (session as any)?.tenantId
+    )
+
+    if (result.success) {
+      return NextResponse.json({
+        success: true,
+        sketchId: result.sketchId,
+        imagePath: result.imagePath,
+        imageUrl: result.imageUrl
+      })
+    } else {
+      return NextResponse.json({
+        success: false,
+        error: result.error
+      }, { status: 400 })
+    }
+  } catch (error) {
+    console.error('[Sketch] Retry error:', error)
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Failed to retry sketch'
+    }, { status: 500 })
+  }
+}
+
+/**
+ * Generate image from a SUGGESTED sketch record.
+ * This uses the pre-defined title and description for focused image generation.
+ */
+async function handleGenerateFromSuggestion(user: any, patentId: string, data: any) {
+  const { sketchId } = data
+
+  if (!sketchId) {
+    return NextResponse.json({ error: 'Sketch ID is required' }, { status: 400 })
+  }
+
+  try {
+    // Verify sketch belongs to this patent and is SUGGESTED or FAILED
+    const sketch = await prisma.sketchRecord.findFirst({
+      where: { id: sketchId, patentId }
+    })
+    
+    if (!sketch) {
+      return NextResponse.json({ error: 'Sketch not found' }, { status: 404 })
+    }
+
+    if (sketch.status !== 'SUGGESTED' && sketch.status !== 'FAILED') {
+      return NextResponse.json({ 
+        error: 'Can only generate from SUGGESTED or FAILED sketches' 
+      }, { status: 400 })
+    }
+
+    // Verify session ownership if session exists
+    if (sketch.sessionId) {
+      const session = await prisma.draftingSession.findFirst({
+        where: { id: sketch.sessionId, userId: user.id }
+      })
+      if (!session) {
+        return NextResponse.json({ error: 'Access denied' }, { status: 403 })
+      }
+    }
+
+    // Import and call the generation function
+    const { generateFromSuggestion } = await import('@/lib/sketch-service')
+    
+    const result = await generateFromSuggestion(
+      sketchId,
+      user.id,
+      user.tenantId
+    )
+
+    if (result.success) {
+      return NextResponse.json({
+        success: true,
+        sketchId: result.sketchId,
+        imagePath: result.imagePath,
+        imageUrl: result.imageUrl
+      })
+    } else {
+      return NextResponse.json({
+        success: false,
+        error: result.error,
+        sketchId: result.sketchId
+      }, { status: 400 })
+    }
+  } catch (error) {
+    console.error('[Sketch] Generate from suggestion error:', error)
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Failed to generate sketch'
+    }, { status: 500 })
+  }
+}
+
 async function handleUploadDiagram(user: any, patentId: string, data: any) {
   const { sessionId, figureNo, filename, checksum, imagePath } = data;
 

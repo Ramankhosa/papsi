@@ -490,6 +490,7 @@ model Patent {
   noveltyAssessments NoveltyAssessmentRun[]
   noveltySearchRuns  NoveltySearchRun[]
   draftingSessions   DraftingSession[]
+  sketchRecords      SketchRecord[]
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   creator User    @relation(fields: [createdBy], references: [id])
@@ -1549,6 +1550,9 @@ model DraftingSession {
   
   // AI Review results
   aiReviews               AIReviewResult[]
+  
+  // Sketch records
+  sketchRecords           SketchRecord[]
 
   @@map("drafting_sessions")
 }
@@ -1647,6 +1651,90 @@ model DiagramSource {
 
   @@unique([sessionId, figureNo])
   @@map("diagram_sources")
+}
+
+// === SKETCH GENERATION (Figure Planner - Sketch Tab) ===
+
+enum SketchMode {
+  AUTO     // Generated from invention context only
+  GUIDED   // Invention context + user instructions
+  REFINE   // User-uploaded sketch + context refinement
+}
+
+enum SketchStatus {
+  SUGGESTED // Suggested by LLM, not yet generated (placeholder)
+  PENDING   // Generation in progress
+  SUCCESS   // Successfully generated
+  FAILED    // Generation failed
+}
+
+model SketchRecord {
+  id          String       @id @default(cuid())
+  patentId    String
+  sessionId   String?
+  figureNo    Int?         // Optional linkage to a specific figure
+  
+  // Mode and status
+  mode        SketchMode   @default(AUTO)
+  status      SketchStatus @default(PENDING)
+  
+  // Metadata
+  title       String
+  description String?
+  
+  // User prompt for GUIDED/REFINE/MODIFY
+  userPrompt  String?
+  
+  // Context configuration flags
+  // e.g. { useIdeaSummary: true, useClaims: true, useDiagrams: true }
+  contextFlags Json?
+  
+  // For modification chains - points to the sketch this was derived from
+  sourceSketchId String?
+  
+  // Error handling
+  errorMessage   String?
+  attemptCount   Int      @default(0)
+  
+  // View configuration
+  // e.g. { combinedView: true, separateViews: ['top','front'] }
+  viewsRequested Json?
+  
+  // Generated image data
+  imagePath       String?
+  imageFilename   String?
+  imageWidth      Int?
+  imageHeight     Int?
+  imageChecksum   String?
+  
+  // For REFINE mode - original uploaded sketch
+  originalImagePath    String?
+  originalImageFilename String?
+  
+  // AI generation metadata
+  aiModel        String?   // e.g., "gemini-3-pro-image-preview"
+  aiPromptUsed   String?   // Full prompt sent to AI (for debugging)
+  aiResponseMeta Json?     // Any additional metadata from AI response
+  tokensUsed     Int?
+  
+  // User preferences
+  isFavorite  Boolean  @default(false)
+  isDeleted   Boolean  @default(false)  // Soft delete
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  // Relations
+  patent      Patent          @relation(fields: [patentId], references: [id], onDelete: Cascade)
+  session     DraftingSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sourceSketch SketchRecord?  @relation("SketchChain", fields: [sourceSketchId], references: [id], onDelete: SetNull)
+  derivedSketches SketchRecord[] @relation("SketchChain")
+  
+  @@index([patentId])
+  @@index([sessionId])
+  @@index([sourceSketchId])
+  @@index([status])
+  @@map("sketch_records")
 }
 
 model AnnexureDraft {

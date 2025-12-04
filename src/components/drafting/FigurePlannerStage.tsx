@@ -17,7 +17,13 @@ import {
   RefreshCw, 
   Image as ImageIcon, 
   Zap,
-  LayoutGrid
+  LayoutGrid,
+  Pencil,
+  Star,
+  StarOff,
+  Wand2,
+  Grid3X3,
+  AlertCircle
 } from 'lucide-react'
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -125,6 +131,24 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   const uploadSectionRef = useRef<HTMLDivElement>(null)
   const [highlightUpload, setHighlightUpload] = useState(false)
   const renderQueueRef = useRef<Promise<void>>(Promise.resolve())
+
+  // === FIGURE PLANNER TAB STATE ===
+  const [activeTab, setActiveTab] = useState<'diagrams' | 'sketches'>('diagrams')
+  
+  // === SKETCH TAB STATE ===
+  const [sketches, setSketches] = useState<any[]>([])
+  const [sketchesLoading, setSketchesLoading] = useState(false)
+  const [sketchError, setSketchError] = useState<string | null>(null)
+  const [sketchGenerating, setSketchGenerating] = useState(false)
+  const [sketchMode, setSketchMode] = useState<'auto' | 'guided' | 'refine'>('auto')
+  const [sketchPrompt, setSketchPrompt] = useState('')
+  const [sketchTitle, setSketchTitle] = useState('')
+  const [sketchUploadFile, setSketchUploadFile] = useState<File | null>(null)
+  const [sketchUploadPreview, setSketchUploadPreview] = useState<string | null>(null)
+  const [expandedSketchId, setExpandedSketchId] = useState<string | null>(null)
+  const [modifyingSketchId, setModifyingSketchId] = useState<string | null>(null)
+  const [modifySketchPrompt, setModifySketchPrompt] = useState('')
+  const sketchFileInputRef = useRef<HTMLInputElement>(null)
 
   const activeJurisdiction = (session?.activeJurisdiction || session?.draftingJurisdictions?.[0] || 'IN').toUpperCase()
 
@@ -280,6 +304,300 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
     })
     setStateInitialized(true)
   }, [diagramSources])
+
+  // === SKETCH TAB EFFECTS AND FUNCTIONS ===
+  
+  // Load sketches when tab changes to sketches
+  useEffect(() => {
+    if (activeTab === 'sketches' && session?.id) {
+      loadSketches()
+    }
+  }, [activeTab, session?.id])
+
+  const loadSketches = async () => {
+    if (!session?.id) return
+    
+    try {
+      setSketchesLoading(true)
+      setSketchError(null)
+      
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'list_sketches',
+          sessionId: session.id
+        })
+      })
+      
+      if (!res.ok) throw new Error('Failed to load sketches')
+      
+      const data = await res.json()
+      setSketches(data.sketches || [])
+    } catch (err) {
+      setSketchError(err instanceof Error ? err.message : 'Failed to load sketches')
+    } finally {
+      setSketchesLoading(false)
+    }
+  }
+
+  const handleGenerateSketch = async () => {
+    if (!session?.id) return
+    
+    // Validation
+    if (sketchMode === 'guided' && sketchPrompt.trim().length < 10) {
+      setSketchError('Please provide at least 10 characters of instructions')
+      return
+    }
+    if (sketchMode === 'refine' && !sketchUploadFile) {
+      setSketchError('Please upload a sketch to refine')
+      return
+    }
+    
+    try {
+      setSketchGenerating(true)
+      setSketchError(null)
+      
+      let action = 'generate_sketch'
+      let body: any = {
+        sessionId: session.id,
+        title: sketchTitle || undefined,
+        contextFlags: {
+          useIdeaSummary: true,
+          useClaims: true,
+          useDiagrams: true,
+          useComponents: true
+        }
+      }
+      
+      if (sketchMode === 'guided') {
+        action = 'generate_sketch_guided'
+        body.userPrompt = sketchPrompt
+      } else if (sketchMode === 'refine') {
+        action = 'refine_sketch'
+        body.userPrompt = sketchPrompt || undefined
+        
+        // Convert file to base64
+        if (sketchUploadFile) {
+          const reader = new FileReader()
+          const base64 = await new Promise<string>((resolve, reject) => {
+            reader.onload = () => {
+              const result = reader.result as string
+              resolve(result.split(',')[1]) // Remove data URL prefix
+            }
+            reader.onerror = reject
+            reader.readAsDataURL(sketchUploadFile)
+          })
+          body.uploadedImageBase64 = base64
+          body.uploadedImageMimeType = sketchUploadFile.type
+        }
+      }
+      
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({ action, ...body })
+      })
+      
+      const data = await res.json()
+      
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Sketch generation failed')
+      }
+      
+      // Refresh sketches list
+      await loadSketches()
+      
+      // Reset form
+      setSketchPrompt('')
+      setSketchTitle('')
+      setSketchUploadFile(null)
+      setSketchUploadPreview(null)
+      
+    } catch (err) {
+      setSketchError(err instanceof Error ? err.message : 'Sketch generation failed')
+    } finally {
+      setSketchGenerating(false)
+    }
+  }
+
+  const handleModifySketch = async (sketchId: string) => {
+    if (!session?.id || !modifySketchPrompt.trim()) return
+    
+    try {
+      setSketchGenerating(true)
+      setSketchError(null)
+      
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'modify_sketch',
+          sessionId: session.id,
+          sourceSketchId: sketchId,
+          userPrompt: modifySketchPrompt
+        })
+      })
+      
+      const data = await res.json()
+      
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Sketch modification failed')
+      }
+      
+      // Refresh and close modify dialog
+      await loadSketches()
+      setModifyingSketchId(null)
+      setModifySketchPrompt('')
+      
+    } catch (err) {
+      setSketchError(err instanceof Error ? err.message : 'Sketch modification failed')
+    } finally {
+      setSketchGenerating(false)
+    }
+  }
+
+  const handleDeleteSketch = async (sketchId: string) => {
+    if (!confirm('Delete this sketch?')) return
+    
+    try {
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'delete_sketch',
+          sketchId
+        })
+      })
+      
+      if (!res.ok) throw new Error('Failed to delete sketch')
+      
+      await loadSketches()
+    } catch (err) {
+      setSketchError(err instanceof Error ? err.message : 'Failed to delete sketch')
+    }
+  }
+
+  const handleToggleFavorite = async (sketchId: string) => {
+    try {
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'toggle_sketch_favorite',
+          sketchId
+        })
+      })
+      
+      if (!res.ok) throw new Error('Failed to toggle favorite')
+      
+      const data = await res.json()
+      setSketches(prev => prev.map(s => 
+        s.id === sketchId ? { ...s, isFavorite: data.isFavorite } : s
+      ))
+    } catch (err) {
+      console.error('Toggle favorite error:', err)
+    }
+  }
+
+  const handleRetrySketch = async (sketchId: string) => {
+    try {
+      setSketchGenerating(true)
+      
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'retry_sketch',
+          sketchId
+        })
+      })
+      
+      if (!res.ok) throw new Error('Failed to retry sketch')
+      
+      await loadSketches()
+    } catch (err) {
+      setSketchError(err instanceof Error ? err.message : 'Failed to retry sketch')
+    } finally {
+      setSketchGenerating(false)
+    }
+  }
+
+  // Handle generating image from a SUGGESTED sketch
+  const [generatingSuggestionId, setGeneratingSuggestionId] = useState<string | null>(null)
+  
+  const handleGenerateFromSuggestion = async (sketchId: string) => {
+    try {
+      setGeneratingSuggestionId(sketchId)
+      setSketchError(null)
+      
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'generate_from_suggestion',
+          sketchId
+        })
+      })
+      
+      const data = await res.json()
+      
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to generate sketch')
+      }
+      
+      await loadSketches()
+    } catch (err) {
+      setSketchError(err instanceof Error ? err.message : 'Failed to generate sketch from suggestion')
+    } finally {
+      setGeneratingSuggestionId(null)
+    }
+  }
+
+  const handleSketchFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    
+    // Validate file type
+    if (!['image/png', 'image/jpeg', 'image/jpg', 'image/webp'].includes(file.type)) {
+      setSketchError('Please upload a PNG, JPEG, or WebP image')
+      return
+    }
+    
+    // Validate file size (max 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      setSketchError('Image must be less than 10MB')
+      return
+    }
+    
+    setSketchUploadFile(file)
+    
+    // Create preview
+    const reader = new FileReader()
+    reader.onload = () => setSketchUploadPreview(reader.result as string)
+    reader.readAsDataURL(file)
+  }
 
   const handleGenerateFromLLM = async () => {
     try {
@@ -702,31 +1020,70 @@ Output: JSON array only, no markdown fences, no explanations.`
           <p className="text-gray-500 mt-2 text-lg">Design and generate intelligent patent diagrams.</p>
       </div>
 
-        <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-lg">
-        <button
-            onClick={() => setMode('ai')}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${
-              mode === 'ai' 
-                ? 'bg-white text-indigo-600 shadow-sm' 
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            <Bot className="w-4 h-4" />
-            AI Autopilot
-        </button>
-        <button
-            onClick={() => setMode('manual')}
-            className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${
-              mode === 'manual' 
-                ? 'bg-white text-indigo-600 shadow-sm' 
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            <User className="w-4 h-4" />
-            Manual Control
-        </button>
-        </div>
       </div>
+
+      {/* Main Tab Bar: Diagrams vs Sketches */}
+      <div className="border-b border-gray-200">
+        <nav className="flex space-x-8" aria-label="Figure Planner Tabs">
+          <button
+            onClick={() => setActiveTab('diagrams')}
+            className={`py-4 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors ${
+              activeTab === 'diagrams'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            <Code className="w-4 h-4" />
+            Diagrams (PlantUML)
+            {diagramSources.length > 0 && (
+              <Badge variant="secondary" className="ml-1">{diagramSources.length}</Badge>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab('sketches')}
+            className={`py-4 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors ${
+              activeTab === 'sketches'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            <Pencil className="w-4 h-4" />
+            Sketches (AI Generated)
+            {sketches.length > 0 && (
+              <Badge variant="secondary" className="ml-1">{sketches.length}</Badge>
+            )}
+          </button>
+        </nav>
+      </div>
+
+      {/* TAB CONTENT */}
+      {activeTab === 'diagrams' && (
+        <>
+          {/* Diagrams Mode Selector */}
+          <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-lg w-fit">
+            <button
+              onClick={() => setMode('ai')}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${
+                mode === 'ai' 
+                  ? 'bg-white text-indigo-600 shadow-sm' 
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <Bot className="w-4 h-4" />
+              AI Autopilot
+            </button>
+            <button
+              onClick={() => setMode('manual')}
+              className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${
+                mode === 'manual' 
+                  ? 'bg-white text-indigo-600 shadow-sm' 
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <User className="w-4 h-4" />
+              Manual Control
+            </button>
+          </div>
 
       {error && (
         <Alert variant="destructive">
@@ -1315,6 +1672,558 @@ Output: JSON array only, no markdown fences, no explanations.`
         ) : null
       })()}
       </AnimatePresence>
+        </>
+      )}
+
+      {/* SKETCHES TAB CONTENT */}
+      {activeTab === 'sketches' && (
+        <div className="space-y-6">
+          {/* Sketch Error Alert */}
+          {sketchError && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{sketchError}</AlertDescription>
+            </Alert>
+          )}
+
+          {/* Sketch Generation Controls */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Wand2 className="w-5 h-5 text-indigo-600" />
+                Generate Patent Sketch
+              </CardTitle>
+              <CardDescription>
+                Create patent-style black-and-white line art sketches from your invention context.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Mode Selector */}
+              <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-lg w-fit">
+                <button
+                  onClick={() => setSketchMode('auto')}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${
+                    sketchMode === 'auto'
+                      ? 'bg-white text-indigo-600 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <Sparkles className="w-4 h-4" />
+                  Auto Generate
+                </button>
+                <button
+                  onClick={() => setSketchMode('guided')}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${
+                    sketchMode === 'guided'
+                      ? 'bg-white text-indigo-600 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <Edit2 className="w-4 h-4" />
+                  With Instructions
+                </button>
+                <button
+                  onClick={() => setSketchMode('refine')}
+                  className={`px-4 py-2 rounded-md text-sm font-medium transition-all flex items-center gap-2 ${
+                    sketchMode === 'refine'
+                      ? 'bg-white text-indigo-600 shadow-sm'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                >
+                  <Upload className="w-4 h-4" />
+                  Refine Upload
+                </button>
+              </div>
+
+              {/* Mode-specific inputs */}
+              <div className="space-y-4">
+                <div>
+                  <Label htmlFor="sketch-title">Title (Optional)</Label>
+                  <Input
+                    id="sketch-title"
+                    placeholder="e.g., System Block Diagram"
+                    value={sketchTitle}
+                    onChange={(e) => setSketchTitle(e.target.value)}
+                    disabled={sketchGenerating}
+                  />
+                </div>
+
+                {sketchMode !== 'auto' && (
+                  <div>
+                    <Label htmlFor="sketch-prompt">
+                      {sketchMode === 'guided' ? 'Instructions' : 'Refinement Instructions (Optional)'}
+                    </Label>
+                    <Textarea
+                      id="sketch-prompt"
+                      placeholder={
+                        sketchMode === 'guided'
+                          ? "Describe what the sketch should show, layout preferences, focus areas..."
+                          : "Optional: Specify how to refine the uploaded sketch..."
+                      }
+                      value={sketchPrompt}
+                      onChange={(e) => setSketchPrompt(e.target.value)}
+                      disabled={sketchGenerating}
+                      rows={3}
+                    />
+                  </div>
+                )}
+
+                {sketchMode === 'refine' && (
+                  <div className="space-y-2">
+                    <Label>Upload Your Sketch</Label>
+                    <input
+                      ref={sketchFileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/jpg,image/webp"
+                      onChange={handleSketchFileChange}
+                      className="hidden"
+                    />
+                    <div
+                      onClick={() => sketchFileInputRef.current?.click()}
+                      className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${
+                        sketchUploadPreview
+                          ? 'border-green-300 bg-green-50'
+                          : 'border-gray-300 hover:border-indigo-400 hover:bg-indigo-50'
+                      }`}
+                    >
+                      {sketchUploadPreview ? (
+                        <div className="space-y-2">
+                          <img
+                            src={sketchUploadPreview}
+                            alt="Upload preview"
+                            className="max-h-32 mx-auto rounded"
+                          />
+                          <p className="text-sm text-green-600">{sketchUploadFile?.name}</p>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              setSketchUploadFile(null)
+                              setSketchUploadPreview(null)
+                            }}
+                          >
+                            Remove
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          <Upload className="w-8 h-8 mx-auto text-gray-400" />
+                          <p className="text-sm text-gray-500">Click to upload a sketch</p>
+                          <p className="text-xs text-gray-400">PNG, JPEG, WebP up to 10MB</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <Button
+                onClick={handleGenerateSketch}
+                disabled={sketchGenerating || (sketchMode === 'refine' && !sketchUploadFile)}
+                className="w-full md:w-auto bg-indigo-600 hover:bg-indigo-700 text-white gap-2"
+              >
+                {sketchGenerating ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Generating Sketch...
+                  </>
+                ) : (
+                  <>
+                    <Wand2 className="w-4 h-4" />
+                    {sketchMode === 'auto' && 'Generate from Context'}
+                    {sketchMode === 'guided' && 'Generate with Instructions'}
+                    {sketchMode === 'refine' && 'Refine Uploaded Sketch'}
+                  </>
+                )}
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Sketch Suggestions Section - shown first if there are suggestions from diagram generation */}
+          {(() => {
+            const suggestions = sketches.filter(s => s.status === 'SUGGESTED')
+            if (suggestions.length === 0) return null
+            
+            return (
+              <div className="mb-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                    <Sparkles className="w-5 h-5 text-amber-500" />
+                    AI-Suggested Sketches
+                    <Badge variant="secondary" className="ml-2">{suggestions.length}</Badge>
+                  </h3>
+                </div>
+                <p className="text-sm text-gray-600 mb-4">
+                  These sketch ideas were generated alongside your diagrams. Click &quot;Generate Image&quot; to create the actual sketch.
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {suggestions.map((suggestion) => (
+                    <motion.div
+                      key={suggestion.id}
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="group"
+                    >
+                      <Card className="overflow-hidden transition-shadow hover:shadow-lg border-amber-200 bg-amber-50/50">
+                        <div className="relative aspect-[4/3] bg-gradient-to-br from-amber-100 to-amber-50 flex items-center justify-center p-4">
+                          {generatingSuggestionId === suggestion.id ? (
+                            <div className="flex flex-col items-center">
+                              <Loader2 className="w-10 h-10 animate-spin text-amber-600 mb-2" />
+                              <p className="text-sm text-amber-700">Generating sketch...</p>
+                            </div>
+                          ) : (
+                            <div className="text-center">
+                              <Wand2 className="w-12 h-12 mx-auto text-amber-400 mb-3" />
+                              <p className="text-xs text-amber-600 uppercase tracking-wide font-medium">Suggested Sketch</p>
+                            </div>
+                          )}
+                        </div>
+                        <CardContent className="p-4">
+                          <h4 className="font-semibold text-gray-900 text-sm mb-2">{suggestion.title}</h4>
+                          {suggestion.description && (
+                            <p className="text-xs text-gray-600 mb-3 line-clamp-3">
+                              {suggestion.description}
+                            </p>
+                          )}
+                          <div className="flex items-center gap-2">
+                            <Button
+                              size="sm"
+                              className="flex-1 bg-amber-600 hover:bg-amber-700 text-white"
+                              onClick={() => handleGenerateFromSuggestion(suggestion.id)}
+                              disabled={generatingSuggestionId !== null}
+                            >
+                              {generatingSuggestionId === suggestion.id ? (
+                                <>
+                                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                                  Generating...
+                                </>
+                              ) : (
+                                <>
+                                  <Wand2 className="w-3 h-3 mr-1" />
+                                  Generate Image
+                                </>
+                              )}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-8 w-8 p-0"
+                              onClick={() => handleDeleteSketch(suggestion.id)}
+                              disabled={generatingSuggestionId !== null}
+                            >
+                              <Trash2 className="w-4 h-4 text-gray-400" />
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </motion.div>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
+
+          {/* Generated Sketches Grid */}
+          <div>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <Grid3X3 className="w-5 h-5" />
+                Generated Sketches
+              </h3>
+              <Button variant="outline" size="sm" onClick={loadSketches} disabled={sketchesLoading}>
+                <RefreshCw className={`w-4 h-4 mr-2 ${sketchesLoading ? 'animate-spin' : ''}`} />
+                Refresh
+              </Button>
+            </div>
+
+            {sketchesLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
+              </div>
+            ) : sketches.filter(s => s.status !== 'SUGGESTED').length === 0 ? (
+              <Card className="border-dashed">
+                <CardContent className="py-12 text-center">
+                  <Pencil className="w-12 h-12 mx-auto text-gray-300 mb-4" />
+                  <h4 className="text-lg font-medium text-gray-900 mb-2">No generated sketches yet</h4>
+                  <p className="text-gray-500 mb-4">
+                    {sketches.some(s => s.status === 'SUGGESTED') 
+                      ? 'Generate sketches from the suggestions above, or create a new one using the controls.'
+                      : 'Generate your first patent-style sketch using the controls above.'}
+                  </p>
+                </CardContent>
+              </Card>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {sketches.filter(s => s.status !== 'SUGGESTED').map((sketch) => (
+                  <motion.div
+                    key={sketch.id}
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    className="group"
+                  >
+                    <Card className={`overflow-hidden transition-shadow hover:shadow-lg ${
+                      sketch.status === 'FAILED' ? 'border-red-200' : ''
+                    }`}>
+                      {/* Image Preview */}
+                      <div
+                        className="relative aspect-square bg-gray-100 cursor-pointer"
+                        onClick={() => sketch.imagePath && setExpandedSketchId(sketch.id)}
+                      >
+                        {sketch.status === 'PENDING' ? (
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <Loader2 className="w-8 h-8 animate-spin text-indigo-600" />
+                          </div>
+                        ) : sketch.status === 'FAILED' ? (
+                          <div className="absolute inset-0 flex flex-col items-center justify-center p-4">
+                            <AlertCircle className="w-8 h-8 text-red-500 mb-2" />
+                            <p className="text-sm text-red-600 text-center">{sketch.errorMessage || 'Generation failed'}</p>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="mt-2"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                handleRetrySketch(sketch.id)
+                              }}
+                            >
+                              <RefreshCw className="w-3 h-3 mr-1" />
+                              Retry
+                            </Button>
+                          </div>
+                        ) : sketch.imagePath ? (
+                          <img
+                            src={sketch.imagePath}
+                            alt={sketch.title}
+                            className="w-full h-full object-contain"
+                          />
+                        ) : (
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <ImageIcon className="w-8 h-8 text-gray-300" />
+                          </div>
+                        )}
+
+                        {/* Hover overlay */}
+                        {sketch.imagePath && sketch.status === 'SUCCESS' && (
+                          <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                            <Button size="sm" variant="secondary">
+                              <Eye className="w-4 h-4" />
+                            </Button>
+                          </div>
+                        )}
+
+                        {/* Favorite badge */}
+                        {sketch.isFavorite && (
+                          <div className="absolute top-2 right-2">
+                            <Star className="w-5 h-5 text-yellow-500 fill-yellow-500" />
+                          </div>
+                        )}
+
+                        {/* Mode badge */}
+                        <div className="absolute top-2 left-2">
+                          <Badge variant="secondary" className="text-xs">
+                            {sketch.mode}
+                          </Badge>
+                        </div>
+                      </div>
+
+                      {/* Card Footer */}
+                      <CardContent className="p-3">
+                        <h4 className="font-medium text-gray-900 truncate text-sm">{sketch.title}</h4>
+                        {sketch.description && (
+                          <p className="text-xs text-gray-600 mt-1 line-clamp-2" title={sketch.description}>
+                            {sketch.description}
+                          </p>
+                        )}
+                        <p className="text-xs text-gray-400 mt-1">
+                          {new Date(sketch.createdAt).toLocaleDateString()}
+                        </p>
+
+                        {/* Actions */}
+                        <div className="flex items-center gap-1 mt-2">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 w-8 p-0"
+                            onClick={() => handleToggleFavorite(sketch.id)}
+                          >
+                            {sketch.isFavorite ? (
+                              <Star className="w-4 h-4 text-yellow-500 fill-yellow-500" />
+                            ) : (
+                              <StarOff className="w-4 h-4 text-gray-400" />
+                            )}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 w-8 p-0"
+                            onClick={() => {
+                              setModifyingSketchId(sketch.id)
+                              setModifySketchPrompt('')
+                            }}
+                            disabled={sketch.status !== 'SUCCESS'}
+                          >
+                            <Edit2 className="w-4 h-4 text-gray-400" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 w-8 p-0"
+                            onClick={() => handleDeleteSketch(sketch.id)}
+                          >
+                            <Trash2 className="w-4 h-4 text-gray-400" />
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Sketch Expanded Modal */}
+          <AnimatePresence>
+            {expandedSketchId && (() => {
+              const sketch = sketches.find(s => s.id === expandedSketchId)
+              if (!sketch?.imagePath) return null
+
+              return (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+                  onClick={() => setExpandedSketchId(null)}
+                >
+                  <motion.div
+                    initial={{ scale: 0.8, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.8, opacity: 0 }}
+                    className="bg-white rounded-xl shadow-2xl p-2 max-w-4xl w-full max-h-[90vh] flex flex-col"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex items-center justify-between p-4 border-b">
+                      <div>
+                        <h4 className="text-lg font-semibold text-gray-900">{sketch.title}</h4>
+                        {sketch.description && (
+                          <p className="text-sm text-gray-600 mt-1 max-w-xl">{sketch.description}</p>
+                        )}
+                      </div>
+                      <Button variant="ghost" size="icon" onClick={() => setExpandedSketchId(null)}>
+                        <span className="text-2xl">&times;</span>
+                      </Button>
+                    </div>
+                    <div className="flex-1 overflow-auto p-4 bg-gray-100 flex items-center justify-center">
+                      <img
+                        src={sketch.imagePath}
+                        alt={sketch.title}
+                        className="max-w-full h-auto shadow-lg"
+                      />
+                    </div>
+                    <div className="p-4 border-t flex justify-between items-center">
+                      <div className="text-sm text-gray-500">
+                        Mode: {sketch.mode} • Created: {new Date(sketch.createdAt).toLocaleString()}
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          onClick={() => {
+                            setExpandedSketchId(null)
+                            setModifyingSketchId(sketch.id)
+                          }}
+                        >
+                          <Edit2 className="w-4 h-4 mr-2" />
+                          Modify
+                        </Button>
+                        <Button variant="outline" onClick={() => setExpandedSketchId(null)}>
+                          Close
+                        </Button>
+                      </div>
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )
+            })()}
+          </AnimatePresence>
+
+          {/* Modify Sketch Modal */}
+          <AnimatePresence>
+            {modifyingSketchId && (() => {
+              const sketch = sketches.find(s => s.id === modifyingSketchId)
+              if (!sketch) return null
+
+              return (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+                  onClick={() => setModifyingSketchId(null)}
+                >
+                  <motion.div
+                    initial={{ scale: 0.9, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    exit={{ scale: 0.9, opacity: 0 }}
+                    className="bg-white rounded-xl shadow-2xl p-6 max-w-lg w-full"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <h4 className="text-lg font-semibold text-gray-900 mb-4">Modify Sketch</h4>
+                    <p className="text-sm text-gray-500 mb-4">
+                      Describe the changes you want to make to "{sketch.title}"
+                    </p>
+                    
+                    {sketch.imagePath && (
+                      <div className="mb-4 p-2 bg-gray-100 rounded">
+                        <img
+                          src={sketch.imagePath}
+                          alt={sketch.title}
+                          className="max-h-32 mx-auto"
+                        />
+                      </div>
+                    )}
+
+                    <Textarea
+                      placeholder="e.g., Add more detail to the control module, rotate the layout 90 degrees..."
+                      value={modifySketchPrompt}
+                      onChange={(e) => setModifySketchPrompt(e.target.value)}
+                      rows={3}
+                      disabled={sketchGenerating}
+                    />
+
+                    <div className="flex gap-2 mt-4">
+                      <Button
+                        variant="outline"
+                        onClick={() => setModifyingSketchId(null)}
+                        disabled={sketchGenerating}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        onClick={() => handleModifySketch(sketch.id)}
+                        disabled={sketchGenerating || !modifySketchPrompt.trim()}
+                        className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                      >
+                        {sketchGenerating ? (
+                          <>
+                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                            Modifying...
+                          </>
+                        ) : (
+                          <>
+                            <Wand2 className="w-4 h-4 mr-2" />
+                            Create Modified Sketch
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </motion.div>
+                </motion.div>
+              )
+            })()}
+          </AnimatePresence>
+        </div>
+      )}
       
       <div className="hidden">
         {/* Helper for preserving existing logic not explicitly in UI but needed for compilation if any */}
