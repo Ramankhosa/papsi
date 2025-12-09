@@ -52,9 +52,39 @@ export interface ReviewContext {
     title: string
     plantuml: string
   }>
+  /** Sketches from figure planner - include description to prevent false "missing figure" errors */
+  sketches?: Array<{
+    figureNo: number
+    title: string
+    description: string
+    isIncluded: boolean // Whether it's in the final figure sequence
+  }>
   jurisdiction: string
   inventionTitle?: string
   components?: Array<{ name: string; numeral: string }>
+  /** Section validation limits from CountrySectionValidation table */
+  sectionLimits?: Array<{
+    sectionKey: string
+    maxWords?: number
+    minWords?: number
+    recommendedWords?: number
+    maxChars?: number
+    maxCount?: number
+    maxIndependent?: number
+    wordLimitMessage?: string
+    charLimitMessage?: string
+    legalReference?: string
+  }>
+  /** Cross-section validation rules from CountryCrossValidation table */
+  crossValidations?: Array<{
+    ruleKey: string
+    sourceSection: string
+    targetSection: string
+    ruleName: string
+    description: string
+    severity: string
+    validationLogic?: string
+  }>
 }
 
 // ============================================================================
@@ -92,10 +122,19 @@ export async function runAIReview(
   requestHeaders?: Record<string, string>
 ): Promise<AIReviewResult> {
   try {
-    const { draft, figures, jurisdiction, inventionTitle, components } = context
+    const { draft, figures, jurisdiction, inventionTitle, components, sketches, sectionLimits, crossValidations } = context
     
-    // Build comprehensive review prompt
-    const prompt = buildReviewPrompt(draft, figures, jurisdiction, inventionTitle, components)
+    // Build comprehensive review prompt with all context
+    const prompt = buildReviewPrompt(
+      draft, 
+      figures, 
+      jurisdiction, 
+      inventionTitle, 
+      components,
+      sketches,
+      sectionLimits,
+      crossValidations
+    )
     
     // Use LLM for review - explicitly use Gemini 2.5 Pro for complex analysis
     // The review task requires strong reasoning and structured JSON output
@@ -130,7 +169,7 @@ export async function runAIReview(
           errors: 0,
           warnings: 0,
           suggestions: 0,
-          overallScore: 0,
+          overallScore: 75, // Minimum baseline even on failure
           recommendation: 'Review failed - please try again'
         },
         reviewedAt: new Date().toISOString(),
@@ -158,7 +197,7 @@ export async function runAIReview(
         errors: 0,
         warnings: 0,
         suggestions: 0,
-        overallScore: 0,
+        overallScore: 75, // Minimum baseline even on failure
         recommendation: 'Review failed due to an error'
       },
       reviewedAt: new Date().toISOString(),
@@ -176,12 +215,20 @@ function buildReviewPrompt(
   figures: Array<{ figureNo: number; title: string; plantuml: string }>,
   jurisdiction: string,
   inventionTitle?: string,
-  components?: Array<{ name: string; numeral: string }>
+  components?: Array<{ name: string; numeral: string }>,
+  sketches?: Array<{ figureNo: number; title: string; description: string; isIncluded: boolean }>,
+  sectionLimits?: Array<{ sectionKey: string; maxWords?: number; minWords?: number; recommendedWords?: number; maxChars?: number; maxCount?: number; maxIndependent?: number; wordLimitMessage?: string; charLimitMessage?: string; legalReference?: string }>,
+  crossValidations?: Array<{ ruleKey: string; sourceSection: string; targetSection: string; ruleName: string; description: string; severity: string; validationLogic?: string }>
 ): string {
-  // Build sections text
+  // Build sections text - increased limit to 15000 chars per section for comprehensive review
+  // Critical sections like claims and detailedDescription need full content for proper analysis
   const sectionsText = Object.entries(draft)
     .filter(([_, content]) => content && content.trim().length > 0)
-    .map(([key, content]) => `### ${SECTION_LABELS[key] || key}\n${content.substring(0, 3000)}${content.length > 3000 ? '...[truncated]' : ''}`)
+    .map(([key, content]) => {
+      const maxLen = ['claims', 'detailedDescription', 'summary'].includes(key) ? 20000 : 10000
+      const truncated = content.length > maxLen
+      return `### ${SECTION_LABELS[key] || key}\n${content.substring(0, maxLen)}${truncated ? `\n\n[Note: Section continues for ${content.length - maxLen} more characters. Review the portion shown above.]` : ''}`
+    })
     .join('\n\n')
 
   // Build comprehensive figures text with PlantUML and extracted elements
@@ -211,6 +258,69 @@ The PlantUML code defines the structure, components, and relationships in each f
 Analyze the code to understand what each diagram depicts.
 
 ${figureDetails}`
+  }
+
+  // Build sketches text - these are conceptual drawings, not missing figures
+  let sketchesText = ''
+  if (sketches && sketches.length > 0) {
+    const sketchDetails = sketches.map(s => 
+      `- Figure ${s.figureNo}: "${s.title}" - ${s.description}${s.isIncluded ? ' [INCLUDED IN FINAL]' : ' [SKETCH ONLY - not in final figures]'}`
+    ).join('\n')
+    sketchesText = `
+
+═══════════════════════════════════════════════════════════════════════════════
+SKETCHES (Conceptual Drawings - Reference Only)
+═══════════════════════════════════════════════════════════════════════════════
+**NOTE:** These are conceptual sketches planned for the patent. They may not all be in the final figure set.
+Do NOT flag these as "missing figures" - they are additional visual aids, not gaps in the specification.
+
+${sketchDetails}`
+  }
+
+  // Build section limits text for jurisdiction-specific validation
+  let sectionLimitsText = ''
+  if (sectionLimits && sectionLimits.length > 0) {
+    const limitsDetails = sectionLimits.map(l => {
+      const limits: string[] = []
+      if (l.maxWords) limits.push(`max ${l.maxWords} words`)
+      if (l.minWords) limits.push(`min ${l.minWords} words`)
+      if (l.recommendedWords) limits.push(`recommended ${l.recommendedWords} words`)
+      if (l.maxChars) limits.push(`max ${l.maxChars} characters`)
+      if (l.maxCount) limits.push(`max ${l.maxCount} claims`)
+      if (l.maxIndependent) limits.push(`max ${l.maxIndependent} independent claims`)
+      const message = l.wordLimitMessage || l.charLimitMessage || ''
+      const ref = l.legalReference ? ` (${l.legalReference})` : ''
+      return `- ${SECTION_LABELS[l.sectionKey] || l.sectionKey}: ${limits.join(', ')}${message ? ` - ${message}` : ''}${ref}`
+    }).join('\n')
+    sectionLimitsText = `
+
+═══════════════════════════════════════════════════════════════════════════════
+SECTION LIMITS (${jurisdiction} Jurisdiction Requirements)
+═══════════════════════════════════════════════════════════════════════════════
+Check if sections exceed these official limits:
+
+${limitsDetails}
+
+⚠️ Flag any sections that exceed their limits as errors with specific counts.`
+  }
+
+  // Build cross-validation rules text
+  let crossValidationsText = ''
+  if (crossValidations && crossValidations.length > 0) {
+    const validationDetails = crossValidations.map(cv => 
+      `- [${cv.severity.toUpperCase()}] ${cv.ruleName}: ${cv.description} (${cv.sourceSection} → ${cv.targetSection})`
+    ).join('\n')
+    crossValidationsText = `
+
+═══════════════════════════════════════════════════════════════════════════════
+CROSS-SECTION VALIDATION RULES (${jurisdiction} Jurisdiction)
+═══════════════════════════════════════════════════════════════════════════════
+These are jurisdiction-specific consistency checks:
+
+${validationDetails}
+
+⚠️ Check each rule and flag violations. For consistency issues (e.g., claim feature missing in description),
+set sectionKey to the SECTION THAT NEEDS THE FIX (usually description), not the source section (claims).`
   }
 
   // Build components reference with grouping
@@ -253,6 +363,9 @@ ${sectionsText}
 FIGURES & DIAGRAMS (PlantUML Source Code - Not Images)
 ═══════════════════════════════════════════════════════════════════════════════
 ${figuresText}
+${sketchesText}
+${sectionLimitsText}
+${crossValidationsText}
 
 ═══════════════════════════════════════════════════════════════════════════════
 REVIEW INSTRUCTIONS
@@ -288,8 +401,20 @@ Analyze the draft for the following issues:
    - Ambiguous or unclear passages
    - Redundant content between sections
    - Technical accuracy concerns
+${sectionLimits && sectionLimits.length > 0 ? `
+6. **SECTION LENGTH LIMITS** (CRITICAL - Check against limits above)
+   - Review each section against the jurisdiction-specific limits provided
+   - Flag sections exceeding word/character/claim count limits as ERRORS
+   - Note: For claims, check both total count AND independent claim count
+` : ''}
+${crossValidations && crossValidations.length > 0 ? `
+7. **CROSS-SECTION CONSISTENCY** (Check rules above)
+   - Apply each cross-validation rule listed above
+   - For issues like "claim feature missing in description", set sectionKey to 'detailedDescription' (the fix target), NOT 'claims' (the source)
+   - The fixPrompt should instruct how to add/modify the TARGET section
+` : ''}
 ${isReferenceDraft ? `
-6. **REFERENCE DRAFT - TRANSLATION READINESS** (CRITICAL for multi-jurisdiction)
+8. **REFERENCE DRAFT - TRANSLATION READINESS** (CRITICAL for multi-jurisdiction)
    - **Language Neutrality:** Flag any country-specific legal phrases, idioms, or terms that won't translate well
    - **Universal Terminology:** Ensure technical terms are internationally recognized (not US/UK colloquialisms)
    - **Completeness for All Jurisdictions:** Check if all superset sections are properly populated
@@ -318,10 +443,33 @@ Return ONLY a JSON object with this exact structure:
     }
   ],
   "summary": {
-    "overallScore": 75,
+    "overallScore": 85,
     "recommendation": "Brief overall assessment and next steps"
   }
 }
+
+═══════════════════════════════════════════════════════════════════════════════
+SCORING RULES (CRITICAL)
+═══════════════════════════════════════════════════════════════════════════════
+
+**MINIMUM SCORE: 75** - NEVER return a score below 75. The draft was generated by our 
+professional system, so a baseline quality is guaranteed.
+
+Score Range: 75-100
+- 75 = Draft has issues that need attention (errors, warnings, suggestions present)
+- 85 = Good draft with minor improvements needed
+- 95 = Excellent draft with only polish suggestions
+- 100 = Perfect draft with no issues
+
+The remaining 25 points (from 75 to 100) are distributed based on issue count:
+- Errors: Impact 70% of the 25 points (17.5 points max deduction)
+- Warnings: Impact 20% of the 25 points (5 points max deduction)  
+- Suggestions: Impact 10% of the 25 points (2.5 points max deduction)
+
+Examples:
+- No issues at all → Score: 100
+- 2 errors, 1 warning, 1 suggestion → Score: ~82
+- Only 3 suggestions → Score: ~97
 
 ═══════════════════════════════════════════════════════════════════════════════
 CRITICAL RULES FOR fixPrompt FIELD
@@ -343,8 +491,9 @@ GOOD fixPrompt: "In the Detailed Description section, after the sentence ending 
 OTHER RULES:
 - Severity 5 = critical (would cause rejection), 1 = minor polish
 - Do NOT make up issues - only report actual problems found
-- If the draft is good, return fewer issues with high score
+- If the draft is good, return fewer issues with high score (95-100)
 - Return valid JSON only, no markdown fences or explanations
+- REMEMBER: Minimum score is 75, maximum is 100
 
 ═══════════════════════════════════════════════════════════════════════════════
 JSON OUTPUT RULES (CRITICAL - MUST FOLLOW)
@@ -564,7 +713,7 @@ function parseReviewResponse(output: string): {
             errors: partialIssues.filter((i: any) => i.type === 'error').length,
             warnings: partialIssues.filter((i: any) => i.type === 'warning').length,
             suggestions: partialIssues.filter((i: any) => i.type === 'suggestion').length,
-            overallScore: 60, // Conservative score for partial review
+            overallScore: 75, // Minimum baseline score for partial review
             recommendation: 'Review partially completed (output was truncated). Some issues were identified.'
           }
         }
@@ -642,9 +791,10 @@ function parseReviewResponse(output: string): {
       errors,
       warnings,
       suggestions,
+      // Enforce minimum score of 75, use AI score if valid otherwise calculate
       overallScore: typeof parsed.summary?.overallScore === 'number'
-        ? Math.min(100, Math.max(0, parsed.summary.overallScore))
-        : calculateScore(issues),
+        ? Math.min(100, Math.max(75, parsed.summary.overallScore)) // Min 75, max 100
+        : calculateScore(errors, warnings, suggestions),
       recommendation: parsed.summary?.recommendation || getDefaultRecommendation(errors, warnings)
     }
 
@@ -660,24 +810,47 @@ function parseReviewResponse(output: string): {
         errors: 0,
         warnings: 0,
         suggestions: 0,
-        overallScore: 50,
+        overallScore: 75, // Minimum baseline score
         recommendation: 'Review completed but response parsing failed. Manual review recommended.'
       }
     }
   }
 }
 
-function calculateScore(issues: AIReviewIssue[]): number {
-  if (issues.length === 0) return 95
+/**
+ * Calculate score with minimum 75, max 100
+ * Remaining 25 points distributed:
+ * - Errors: 70% (17.5 points max deduction)
+ * - Warnings: 20% (5 points max deduction)
+ * - Suggestions: 10% (2.5 points max deduction)
+ * 
+ * As user fixes issues, score increases toward 100
+ */
+function calculateScore(errorCount: number, warningCount: number, suggestionCount: number): number {
+  const BASE_SCORE = 75
+  const REMAINING_POINTS = 25
   
-  let deduction = 0
-  for (const issue of issues) {
-    if (issue.type === 'error') deduction += issue.severity * 5
-    else if (issue.type === 'warning') deduction += issue.severity * 2
-    else deduction += issue.severity * 0.5
+  // No issues = perfect score
+  if (errorCount === 0 && warningCount === 0 && suggestionCount === 0) {
+    return 100
   }
   
-  return Math.max(0, Math.min(100, 100 - deduction))
+  // Point allocations (from remaining 25)
+  const ERROR_POOL = REMAINING_POINTS * 0.70     // 17.5 points
+  const WARNING_POOL = REMAINING_POINTS * 0.20   // 5 points
+  const SUGGESTION_POOL = REMAINING_POINTS * 0.10 // 2.5 points
+  
+  // Points per issue (diminishing returns for many issues)
+  // First few issues have more impact, then it tapers off
+  const errorDeduction = Math.min(ERROR_POOL, errorCount * 4)           // ~4 pts per error, max 17.5
+  const warningDeduction = Math.min(WARNING_POOL, warningCount * 1.25)   // ~1.25 pts per warning, max 5
+  const suggestionDeduction = Math.min(SUGGESTION_POOL, suggestionCount * 0.5) // ~0.5 pts per suggestion, max 2.5
+  
+  const totalDeduction = errorDeduction + warningDeduction + suggestionDeduction
+  const score = BASE_SCORE + (REMAINING_POINTS - totalDeduction)
+  
+  // Ensure score is between 75 and 100
+  return Math.round(Math.min(100, Math.max(BASE_SCORE, score)))
 }
 
 function getDefaultRecommendation(errors: number, warnings: number): string {

@@ -591,6 +591,15 @@ export async function POST(
       case 'save_plantuml':
         return await handleSavePlantUML(authResult.user, patentId, data);
 
+      case 'translate_plantuml':
+        return await handleTranslatePlantUML(authResult.user, patentId, data, requestHeaders);
+
+      case 'translate_all_diagrams':
+        return await handleTranslateAllDiagrams(authResult.user, patentId, data, requestHeaders);
+
+      case 'get_diagram_translations':
+        return await handleGetDiagramTranslations(authResult.user, patentId, data);
+
       case 'regenerate_diagram_llm':
         return await handleRegenerateDiagramLLM(authResult.user, patentId, data, requestHeaders);
 
@@ -1453,6 +1462,46 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
   const effectiveJurisdiction = String(requestedJurisdiction || fallbackJurisdiction || 'US').toUpperCase()
   const sections = await getExportSectionsForJurisdiction(effectiveJurisdiction)
 
+  // Determine preferred figure language for export based on jurisdiction
+  const jurisdictionStatus = (session as any).jurisdictionDraftStatus || {}
+  const languageMode = jurisdictionStatus.__languageMode
+  let preferredFigureLanguage = 'en' // Default
+  
+  if (languageMode === 'individual_english_figures') {
+    preferredFigureLanguage = 'en'
+  } else {
+    // Check for jurisdiction-specific language, then common language
+    const jurisdictionLang = jurisdictionStatus[effectiveJurisdiction]?.language
+    if (jurisdictionLang) {
+      preferredFigureLanguage = jurisdictionLang
+    } else if (jurisdictionStatus.__figuresLanguage) {
+      preferredFigureLanguage = jurisdictionStatus.__figuresLanguage
+    } else if (jurisdictionStatus.__commonLanguage) {
+      preferredFigureLanguage = jurisdictionStatus.__commonLanguage
+    }
+  }
+  console.log(`[ExportDOCX] Using figure language: ${preferredFigureLanguage} for jurisdiction ${effectiveJurisdiction}`)
+
+  // Helper to find best diagram source for a figureNo based on language preference
+  const findBestDiagramSourceForExport = (figureNo: number): any => {
+    const diagramSources = session.diagramSources || []
+    // First try preferred language
+    let source = diagramSources.find((d: any) => 
+      d.figureNo === figureNo && d.language === preferredFigureLanguage
+    )
+    // Fallback to English
+    if (!source) {
+      source = diagramSources.find((d: any) => 
+        d.figureNo === figureNo && (!d.language || d.language === 'en')
+      )
+    }
+    // Ultimate fallback
+    if (!source) {
+      source = diagramSources.find((d: any) => d.figureNo === figureNo)
+    }
+    return source
+  }
+
   // Load export config early to honor country-specific settings (e.g., addParagraphNumbers)
   const { getExportConfig } = await import('@/lib/jurisdiction-style-service')
   // Use DOCX-specific export config so margins/spacing/numbering follow country defaults
@@ -1510,7 +1559,8 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
     for (const seqItem of figureSequence) {
       if (seqItem.type === 'diagram') {
         const plan = (session!.figurePlans || []).find((f: any) => f.id === seqItem.sourceId)
-        const ds = (session!.diagramSources || []).find((d: any) => d.figureNo === plan?.figureNo)
+        // Use language-aware diagram source selection for export
+        const ds = plan ? findBestDiagramSourceForExport(plan.figureNo) : null
         if (plan) {
           figuresSorted.push({
             figureNo: seqItem.finalFigNo,
@@ -1519,6 +1569,9 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
             imageFilename: (ds?.imageFilename as string) || '',
             type: 'diagram'
           })
+          if (ds?.language && ds.language !== 'en') {
+            console.log(`[ExportDOCX] Using ${ds.language} translation for Figure ${seqItem.finalFigNo}`)
+          }
         }
       } else if (seqItem.type === 'sketch') {
         const sketch = loadedSketches.find((s: any) => s.id === seqItem.sourceId)
@@ -1540,7 +1593,8 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
     // Auto-append figures added after sequence was finalized
     for (const plan of (session!.figurePlans || [])) {
       if (!sequencedSourceIds.has(plan.id)) {
-        const ds = (session!.diagramSources || []).find((d: any) => d.figureNo === plan.figureNo)
+        // Use language-aware diagram source selection
+        const ds = findBestDiagramSourceForExport(plan.figureNo)
         figuresSorted.push({
           figureNo: figuresSorted.length + 1,
           title: plan.title || `Figure ${figuresSorted.length + 1}`,
@@ -1563,8 +1617,9 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
     }
   } else {
     // Fallback: use figurePlans sorted by figureNo (legacy behavior)
+    // Also uses language-aware diagram source selection
     figuresSorted = [...(session!.figurePlans||[])].sort((a,b)=>a.figureNo-b.figureNo).map(f => {
-      const ds = (session!.diagramSources||[]).find((d:any)=>d.figureNo===f.figureNo)
+      const ds = findBestDiagramSourceForExport(f.figureNo)
       return {
         figureNo: f.figureNo,
         title: f.title || `Figure ${f.figureNo}`,
@@ -5087,9 +5142,10 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
   // Create or update diagram source with validated code
   const diagramSource = await prisma.diagramSource.upsert({
     where: {
-      sessionId_figureNo: {
+      sessionId_figureNo_language: {
         sessionId,
-        figureNo
+        figureNo,
+        language: 'en'
       }
     },
     update: {
@@ -5134,7 +5190,7 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
           cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
           cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
           await prisma.diagramSource.update({
-            where: { sessionId_figureNo: { sessionId, figureNo } },
+            where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
             data: {
               plantumlCode: workingCode,
               checksum: crypto.createHash('sha256').update(workingCode).digest('hex')
@@ -5167,7 +5223,7 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
           cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
           cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
           await prisma.diagramSource.update({
-            where: { sessionId_figureNo: { sessionId, figureNo } },
+            where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
             data: {
               plantumlCode: workingCode,
               checksum: crypto.createHash('sha256').update(workingCode).digest('hex')
@@ -5208,7 +5264,7 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
 
       // Update diagram source with image path
       await prisma.diagramSource.update({
-        where: { sessionId_figureNo: { sessionId, figureNo } },
+        where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
         data: {
           imageFilename: filename,
           imagePath: imagePath,
@@ -5854,9 +5910,9 @@ If in doubt, prefer a SIMPLE, VALID diagram over a complex one.
       })
 
       await prisma.diagramSource.upsert({
-        where: { sessionId_figureNo: { sessionId, figureNo } },
+        where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
         update: { plantumlCode: code, checksum },
-        create: { sessionId, figureNo, plantumlCode: code, checksum }
+        create: { sessionId, figureNo, plantumlCode: code, checksum, language: 'en' }
       })
 
       saved.push({ 
@@ -6051,9 +6107,9 @@ async function handleSavePlantUML(user: any, patentId: string, data: any) {
 
   // Upsert diagram source and figure plan title
   const diagramSource = await prisma.diagramSource.upsert({
-    where: { sessionId_figureNo: { sessionId, figureNo } },
+    where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
     update: { plantumlCode: workingCode, checksum: crypto.createHash('sha256').update(workingCode).digest('hex') },
-    create: { sessionId, figureNo, plantumlCode: workingCode, checksum: crypto.createHash('sha256').update(workingCode).digest('hex') }
+    create: { sessionId, figureNo, plantumlCode: workingCode, checksum: crypto.createHash('sha256').update(workingCode).digest('hex'), language: 'en' }
   })
 
   const cleanedTitle = sanitizeFigureTitleInput(title) || `Figure ${figureNo}`
@@ -6095,7 +6151,7 @@ async function handleSavePlantUML(user: any, patentId: string, data: any) {
         cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
         cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
         await prisma.diagramSource.update({
-          where: { sessionId_figureNo: { sessionId, figureNo } },
+          where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
           data: { plantumlCode: workingCode, checksum: crypto.createHash('sha256').update(workingCode).digest('hex') }
         })
         encoded = plantumlEncoder.encode(cleaned)
@@ -6128,7 +6184,7 @@ async function handleSavePlantUML(user: any, patentId: string, data: any) {
         cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
         cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
         await prisma.diagramSource.update({
-          where: { sessionId_figureNo: { sessionId, figureNo } },
+          where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
           data: { plantumlCode: workingCode, checksum: crypto.createHash('sha256').update(workingCode).digest('hex') }
         })
         const retryEncoded = plantumlEncoder.encode(cleaned)
@@ -6166,7 +6222,7 @@ async function handleSavePlantUML(user: any, patentId: string, data: any) {
 
     // Update diagram source with image path
     await prisma.diagramSource.update({
-      where: { sessionId_figureNo: { sessionId, figureNo } },
+      where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
       data: {
         imageFilename: filename,
         imagePath: imagePath,
@@ -6180,6 +6236,452 @@ async function handleSavePlantUML(user: any, patentId: string, data: any) {
   }
 
   return NextResponse.json({ diagramSource })
+}
+
+// ============================================================================
+// PLANTUML DIAGRAM TRANSLATION (Multi-Jurisdiction Support)
+// ============================================================================
+
+/**
+ * Language labels for translation prompts
+ */
+const DIAGRAM_LANGUAGE_LABELS: Record<string, string> = {
+  en: 'English',
+  hi: 'Hindi',
+  ja: 'Japanese',
+  zh: 'Chinese (Simplified)',
+  'zh-TW': 'Chinese (Traditional)',
+  ko: 'Korean',
+  de: 'German',
+  fr: 'French',
+  es: 'Spanish',
+  pt: 'Portuguese',
+  it: 'Italian',
+  ru: 'Russian',
+  ar: 'Arabic',
+  nl: 'Dutch',
+  sv: 'Swedish',
+  da: 'Danish',
+  fi: 'Finnish',
+  no: 'Norwegian',
+  pl: 'Polish',
+  tr: 'Turkish',
+  th: 'Thai',
+  vi: 'Vietnamese',
+  id: 'Indonesian',
+  ms: 'Malay'
+}
+
+/**
+ * Translate a single PlantUML diagram to target language
+ * Preserves structure, reference numerals, and PlantUML syntax
+ * Stores as separate language variant (does not overwrite original)
+ */
+async function handleTranslatePlantUML(
+  user: any,
+  patentId: string,
+  data: any,
+  requestHeaders: Record<string, string>
+) {
+  const { sessionId, figureNo, targetLanguage, sourceLanguage = 'en' } = data
+
+  if (!sessionId || figureNo === undefined || !targetLanguage) {
+    return NextResponse.json(
+      { error: 'Session ID, figure number, and target language are required' },
+      { status: 400 }
+    )
+  }
+
+  // Validate target language is supported
+  if (!DIAGRAM_LANGUAGE_LABELS[targetLanguage]) {
+    return NextResponse.json(
+      { error: `Unsupported target language: ${targetLanguage}. Supported: ${Object.keys(DIAGRAM_LANGUAGE_LABELS).join(', ')}` },
+      { status: 400 }
+    )
+  }
+
+  // Verify session ownership
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { 
+      diagramSources: true,
+      figurePlans: true,
+      referenceMap: true
+    }
+  })
+
+  if (!session) {
+    return NextResponse.json(
+      { error: 'Session not found or access denied' },
+      { status: 404 }
+    )
+  }
+
+  // Find source diagram (original language version)
+  const sourceDiagram = session.diagramSources?.find(
+    (d: any) => d.figureNo === figureNo && d.language === sourceLanguage
+  )
+
+  if (!sourceDiagram || !sourceDiagram.plantumlCode) {
+    return NextResponse.json(
+      { error: `Source diagram not found for figure ${figureNo} in ${sourceLanguage}` },
+      { status: 404 }
+    )
+  }
+
+  // Check if translation already exists
+  const existingTranslation = session.diagramSources?.find(
+    (d: any) => d.figureNo === figureNo && d.language === targetLanguage
+  )
+
+  // Get language labels
+  const sourceLabel = DIAGRAM_LANGUAGE_LABELS[sourceLanguage] || sourceLanguage.toUpperCase()
+  const targetLabel = DIAGRAM_LANGUAGE_LABELS[targetLanguage] || targetLanguage.toUpperCase()
+
+  // Get reference numerals for context
+  const componentsRaw = (session.referenceMap as any)?.components
+  const components = Array.isArray(componentsRaw) ? componentsRaw : []
+  const numeralsList = components.map((c: any) => `${c.numeral}: ${c.name}`).join('\n')
+
+  // Build translation prompt
+  const prompt = `You are a technical translator specializing in patent documentation.
+
+TASK: Translate all human-readable text in this PlantUML diagram from ${sourceLabel} to ${targetLabel}.
+
+CRITICAL RULES:
+1. PRESERVE ALL PLANTUML SYNTAX EXACTLY - @startuml, @enduml, arrows (-->), blocks, etc.
+2. PRESERVE ALL REFERENCE NUMERALS (100, 200, 300, etc.) - these are patent reference numbers
+3. PRESERVE ALL ALIAS NAMES (as xxx) - only translate the display text in quotes
+4. DO NOT translate technical PlantUML keywords (rectangle, component, node, etc.)
+5. Translate ONLY the text content inside quotes and labels
+6. Maintain the exact same diagram structure and flow
+7. Use proper ${targetLabel} technical terminology for patent documentation
+
+REFERENCE NUMERALS (DO NOT CHANGE THESE):
+${numeralsList || 'None specified'}
+
+ORIGINAL PLANTUML CODE (${sourceLabel}):
+\`\`\`plantuml
+${sourceDiagram.plantumlCode}
+\`\`\`
+
+Return ONLY the translated PlantUML code. No explanations, no markdown formatting, just the raw PlantUML code starting with @startuml and ending with @enduml.`
+
+  try {
+    // Call LLM with temperature 0 for consistency using the gateway
+    const request = { headers: requestHeaders || {} }
+    const llmResult = await llmGateway.executeLLMOperation(request, {
+      taskCode: 'LLM3_DIAGRAM',
+      prompt,
+      idempotencyKey: crypto.randomUUID(),
+      inputTokens: Math.ceil(prompt.length / 4),
+      parameters: { 
+        temperature: 0,
+        maxOutputTokens: 4000,
+        tenantId: (session as any).tenantId || undefined
+      },
+      metadata: { 
+        patentId, 
+        sessionId, 
+        purpose: 'translate_plantuml',
+        targetLanguage,
+        figureNo
+      }
+    })
+
+    if (!llmResult.success || !llmResult.response?.output) {
+      return NextResponse.json(
+        { error: 'Translation failed - no response from LLM' },
+        { status: 500 }
+      )
+    }
+
+    // Extract PlantUML code from response
+    let translatedCode = (llmResult.response.output || '').trim()
+    
+    // Remove markdown code blocks if present
+    if (translatedCode.startsWith('```')) {
+      translatedCode = translatedCode
+        .replace(/^```(?:plantuml)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim()
+    }
+
+    // Ensure it starts and ends correctly
+    if (!translatedCode.includes('@startuml')) {
+      translatedCode = '@startuml\n' + translatedCode
+    }
+    if (!translatedCode.includes('@enduml')) {
+      translatedCode = translatedCode + '\n@enduml'
+    }
+
+    // Light validation: check that translated code has basic PlantUML structure
+    // (arrows, blocks, or activity keywords - signs of valid diagram content)
+    const hasValidStructure = 
+      /-->|->|<--|<-|--|\.\.>|rectangle|component|node|database|:.*[;|]/.test(translatedCode)
+    
+    if (!hasValidStructure) {
+      console.warn(`[TranslatePlantUML] Translated code may be invalid for figure ${figureNo}`)
+      // Still proceed - the user can review, but log for debugging
+    }
+
+    // Generate checksum
+    const checksum = crypto.createHash('sha256').update(translatedCode).digest('hex')
+
+    // Upsert the translated diagram (create or update)
+    const translatedDiagram = await prisma.diagramSource.upsert({
+      where: {
+        sessionId_figureNo_language: {
+          sessionId,
+          figureNo,
+          language: targetLanguage
+        }
+      },
+      update: {
+        plantumlCode: translatedCode,
+        checksum,
+        translatedFromDiagramId: sourceDiagram.id,
+        updatedAt: new Date()
+      },
+      create: {
+        sessionId,
+        figureNo,
+        language: targetLanguage,
+        plantumlCode: translatedCode,
+        checksum,
+        translatedFromDiagramId: sourceDiagram.id
+      }
+    })
+
+    // Generate and save rendered image for the translated diagram
+    try {
+      let cleaned = translatedCode
+        .replace(/^title.*$/gmi, '')
+        .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
+      cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
+      cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+
+      const encoded = plantumlEncoder.encode(cleaned)
+      const base = process.env.PLANTUML_BASE_URL || 'https://www.plantuml.com/plantuml'
+      const imgUrl = `${base}/png/${encoded}`
+      
+      const imgRes = await fetch(imgUrl)
+      if (imgRes.ok) {
+        const arrayBuffer = await imgRes.arrayBuffer()
+        const buffer = Buffer.from(arrayBuffer)
+        const imageChecksum = crypto.createHash('sha256').update(buffer).digest('hex')
+        const filename = `figure_${figureNo}_${targetLanguage}_${Date.now()}.png`
+        const uploadDir = path.join(process.cwd(), 'uploads', patentId)
+        const imagePath = path.join(uploadDir, filename)
+
+        await fs.promises.mkdir(uploadDir, { recursive: true })
+        await fs.promises.writeFile(imagePath, buffer)
+
+        await prisma.diagramSource.update({
+          where: { id: translatedDiagram.id },
+          data: {
+            imageFilename: filename,
+            imagePath: imagePath,
+            imageChecksum: imageChecksum,
+            imageUploadedAt: new Date()
+          }
+        })
+      }
+    } catch (imageError) {
+      console.warn('Failed to generate image for translated diagram:', imageError)
+      // Non-fatal - translation still succeeded
+    }
+
+    return NextResponse.json({
+      success: true,
+      translatedDiagram: {
+        id: translatedDiagram.id,
+        figureNo,
+        language: targetLanguage,
+        translatedFromId: sourceDiagram.id,
+        plantumlCode: translatedCode
+      },
+      isUpdate: !!existingTranslation,
+      message: `Diagram translated to ${targetLabel} successfully`
+    })
+  } catch (error) {
+    console.error('PlantUML translation error:', error)
+    return NextResponse.json(
+      { error: `Translation failed: ${error instanceof Error ? error.message : 'Unknown error'}` },
+      { status: 500 }
+    )
+  }
+}
+
+/**
+ * Translate all diagrams in a session to target language (one by one to avoid errors)
+ * Returns progress info and results for each diagram
+ */
+async function handleTranslateAllDiagrams(
+  user: any,
+  patentId: string,
+  data: any,
+  requestHeaders: Record<string, string>
+) {
+  const { sessionId, targetLanguage, sourceLanguage = 'en' } = data
+
+  if (!sessionId || !targetLanguage) {
+    return NextResponse.json(
+      { error: 'Session ID and target language are required' },
+      { status: 400 }
+    )
+  }
+
+  // Verify session ownership
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { 
+      diagramSources: true,
+      figurePlans: true,
+      referenceMap: true
+    }
+  })
+
+  if (!session) {
+    return NextResponse.json(
+      { error: 'Session not found or access denied' },
+      { status: 404 }
+    )
+  }
+
+  // Find all source diagrams (original language)
+  const sourceDiagrams = session.diagramSources?.filter(
+    (d: any) => d.language === sourceLanguage && d.plantumlCode
+  ) || []
+
+  if (sourceDiagrams.length === 0) {
+    return NextResponse.json(
+      { error: `No diagrams found in ${sourceLanguage} to translate` },
+      { status: 404 }
+    )
+  }
+
+  const targetLabel = DIAGRAM_LANGUAGE_LABELS[targetLanguage] || targetLanguage.toUpperCase()
+  const results: Array<{
+    figureNo: number
+    success: boolean
+    translatedDiagramId?: string
+    error?: string
+  }> = []
+
+  // Process one by one to avoid overwhelming LLM and ensure reliability
+  for (const sourceDiagram of sourceDiagrams) {
+    try {
+      // Call single translation handler for each
+      const translationResult = await handleTranslatePlantUML(
+        user,
+        patentId,
+        {
+          sessionId,
+          figureNo: sourceDiagram.figureNo,
+          targetLanguage,
+          sourceLanguage
+        },
+        requestHeaders
+      )
+
+      const resultData = await translationResult.json()
+      
+      results.push({
+        figureNo: sourceDiagram.figureNo,
+        success: resultData.success || false,
+        translatedDiagramId: resultData.translatedDiagram?.id,
+        error: resultData.error
+      })
+    } catch (err) {
+      results.push({
+        figureNo: sourceDiagram.figureNo,
+        success: false,
+        error: err instanceof Error ? err.message : 'Unknown error'
+      })
+    }
+  }
+
+  const successCount = results.filter(r => r.success).length
+  const failCount = results.filter(r => !r.success).length
+
+  return NextResponse.json({
+    success: failCount === 0,
+    totalDiagrams: sourceDiagrams.length,
+    translated: successCount,
+    failed: failCount,
+    results,
+    message: `Translated ${successCount}/${sourceDiagrams.length} diagrams to ${targetLabel}`
+  })
+}
+
+/**
+ * Get all diagram translations for a session (organized by figureNo and language)
+ */
+async function handleGetDiagramTranslations(
+  user: any,
+  patentId: string,
+  data: any
+) {
+  const { sessionId, figureNo } = data
+
+  if (!sessionId) {
+    return NextResponse.json(
+      { error: 'Session ID is required' },
+      { status: 400 }
+    )
+  }
+
+  // Verify session ownership
+  const session = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: { diagramSources: true }
+  })
+
+  if (!session) {
+    return NextResponse.json(
+      { error: 'Session not found or access denied' },
+      { status: 404 }
+    )
+  }
+
+  // Filter by figureNo if provided
+  let diagrams = session.diagramSources || []
+  if (figureNo !== undefined) {
+    diagrams = diagrams.filter((d: any) => d.figureNo === figureNo)
+  }
+
+  // Group by figureNo
+  const byFigure: Record<number, Array<{
+    id: string
+    language: string
+    hasImage: boolean
+    translatedFromId: string | null
+    updatedAt: Date
+  }>> = {}
+
+  for (const d of diagrams) {
+    const figNo = (d as any).figureNo
+    if (!byFigure[figNo]) {
+      byFigure[figNo] = []
+    }
+    byFigure[figNo].push({
+      id: d.id,
+      language: (d as any).language || 'en',
+      hasImage: !!(d as any).imageFilename,
+      translatedFromId: (d as any).translatedFromDiagramId || null,
+      updatedAt: d.updatedAt
+    })
+  }
+
+  // Get unique languages across all diagrams
+  const allLanguages = [...new Set(diagrams.map((d: any) => d.language || 'en'))]
+
+  return NextResponse.json({
+    translations: byFigure,
+    availableLanguages: allLanguages,
+    languageLabels: DIAGRAM_LANGUAGE_LABELS
+  })
 }
 
 async function handleRegenerateDiagramLLM(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
@@ -6344,7 +6846,7 @@ Output ONLY the diagram code (@startuml..@enduml).`
 
   // IMPORTANT: When code changes, clear image data so frontend triggers re-render
   const diagramSource = await prisma.diagramSource.upsert({
-    where: { sessionId_figureNo: { sessionId, figureNo } },
+    where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
     update: { 
       plantumlCode: code, 
       checksum,
@@ -6354,7 +6856,7 @@ Output ONLY the diagram code (@startuml..@enduml).`
       imageChecksum: null,
       imageUploadedAt: null
     },
-    create: { sessionId, figureNo, plantumlCode: code, checksum }
+    create: { sessionId, figureNo, plantumlCode: code, checksum, language: 'en' }
   })
 
   return NextResponse.json({ diagramSource, wasRepaired })
@@ -6508,7 +7010,7 @@ Return ONLY diagram code.`
   const checksum = crypto.createHash('sha256').update(code).digest('hex')
 
   await prisma.figurePlan.upsert({ where: { sessionId_figureNo: { sessionId, figureNo } }, update: { title }, create: { sessionId, figureNo, title, nodes: [], edges: [] } })
-  const diagramSource = await prisma.diagramSource.upsert({ where: { sessionId_figureNo: { sessionId, figureNo } }, update: { plantumlCode: code, checksum }, create: { sessionId, figureNo, plantumlCode: code, checksum } })
+  const diagramSource = await prisma.diagramSource.upsert({ where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } }, update: { plantumlCode: code, checksum }, create: { sessionId, figureNo, plantumlCode: code, checksum, language: 'en' } })
 
   return NextResponse.json({ diagramSource, wasRepaired })
 }
@@ -6665,7 +7167,7 @@ Items:\n- ${instructionsList.join('\n- ')}`
     const safeTitle = sanitizeFigureTitleInput(title) || title
     const checksum = crypto.createHash('sha256').update(code).digest('hex')
     await prisma.figurePlan.upsert({ where: { sessionId_figureNo: { sessionId, figureNo: no } }, update: { title: safeTitle }, create: { sessionId, figureNo: no, title: safeTitle, nodes: [], edges: [] } })
-    const diagramSource = await prisma.diagramSource.upsert({ where: { sessionId_figureNo: { sessionId, figureNo: no } }, update: { plantumlCode: code, checksum }, create: { sessionId, figureNo: no, plantumlCode: code, checksum } })
+    const diagramSource = await prisma.diagramSource.upsert({ where: { sessionId_figureNo_language: { sessionId, figureNo: no, language: 'en' } }, update: { plantumlCode: code, checksum }, create: { sessionId, figureNo: no, plantumlCode: code, checksum, language: 'en' } })
     created.push({ figureNo: no, diagramSource, wasRepaired })
   }
 
@@ -6713,9 +7215,9 @@ async function handleCreateManualFigure(user: any, patentId: string, data: any) 
 
   // Create empty source to allow upload linkage later
   await prisma.diagramSource.upsert({
-    where: { sessionId_figureNo: { sessionId, figureNo: no } },
+    where: { sessionId_figureNo_language: { sessionId, figureNo: no, language: 'en' } },
     update: {},
-    create: { sessionId, figureNo: no, plantumlCode: '', checksum: '' }
+    create: { sessionId, figureNo: no, plantumlCode: '', checksum: '', language: 'en' }
   })
 
   return NextResponse.json({ created: { figureNo: no } })
@@ -8025,7 +8527,7 @@ async function handleUploadDiagram(user: any, patentId: string, data: any) {
 
   // Upsert diagram source and set upload metadata
   await prisma.diagramSource.upsert({
-    where: { sessionId_figureNo: { sessionId, figureNo } },
+    where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
     update: {
       imageFilename: filename,
       imageChecksum: checksum,
@@ -8035,6 +8537,7 @@ async function handleUploadDiagram(user: any, patentId: string, data: any) {
     create: {
       sessionId,
       figureNo,
+      language: 'en',
       plantumlCode: '',
       checksum: '',
       imageFilename: filename,
@@ -9658,6 +10161,7 @@ async function handleRunAIReview(
       referenceMap: true,
       figurePlans: true,
       diagramSources: true,
+      sketchRecords: true, // Include sketches for AI review context
       annexureDrafts: { orderBy: { version: 'desc' } }
     }
   })
@@ -9707,6 +10211,17 @@ async function handleRunAIReview(
     }
   }).filter((f: any) => f.plantuml) // Only include figures with PlantUML
 
+  // Get sketches with descriptions to prevent false "missing figure" errors
+  const figureSequence = session.figureSequence as any[] || []
+  const sketches = ((session as any).sketchRecords || [])
+    .filter((s: any) => s.status === 'SUCCESS')
+    .map((s: any) => ({
+      figureNo: s.figureNo || 0,
+      title: s.title || 'Untitled Sketch',
+      description: s.instructions || s.title || '', // Use instructions as description
+      isIncluded: figureSequence.some((f: any) => f.type === 'sketch' && f.sourceId === s.id)
+    }))
+
   // Get components from reference map
   const components = Array.isArray((session.referenceMap as any)?.components)
     ? (session.referenceMap as any).components.map((c: any) => ({
@@ -9718,14 +10233,67 @@ async function handleRunAIReview(
   // Get invention title
   const inventionTitle = (session.ideaRecord as any)?.title || draftContent.title || ''
 
-  // Run AI review
+  // Fetch section validation limits from database (skip for REFERENCE which has no country-specific limits)
+  let sectionLimits: any[] = []
+  let crossValidations: any[] = []
+  
+  if (code !== 'REFERENCE') {
+    try {
+      // Get section limits from CountrySectionValidation
+      const validationRules = await prisma.countrySectionValidation.findMany({
+        where: {
+          countryCode: code,
+          status: 'ACTIVE'
+        }
+      })
+      
+      sectionLimits = validationRules.map((r: any) => ({
+        sectionKey: r.sectionKey,
+        maxWords: r.maxWords,
+        minWords: r.minWords,
+        recommendedWords: r.recommendedWords,
+        maxChars: r.maxChars,
+        maxCount: r.maxCount,
+        maxIndependent: r.maxIndependent,
+        wordLimitMessage: r.wordLimitMessage,
+        charLimitMessage: r.charLimitMessage,
+        legalReference: r.legalReference
+      })).filter((r: any) => r.maxWords || r.maxChars || r.maxCount || r.maxIndependent)
+      
+      // Get cross-validation rules from CountryCrossValidation
+      const crossRules = await prisma.countryCrossValidation.findMany({
+        where: {
+          countryCode: code,
+          isEnabled: true
+        }
+      })
+      
+      crossValidations = crossRules.map((r: any) => ({
+        ruleKey: r.ruleKey,
+        sourceSection: r.sourceSection,
+        targetSection: r.targetSection,
+        ruleName: r.ruleName,
+        description: r.description,
+        severity: r.severity,
+        validationLogic: r.validationLogic
+      }))
+    } catch (err) {
+      // Non-critical: If validation rules can't be fetched, proceed with AI review without them
+      console.warn(`[AI Review] Could not fetch validation rules for ${code}:`, err)
+    }
+  }
+
+  // Run AI review with full context
   const reviewResult = await runAIReview(
     {
       draft: draftContent,
       figures,
+      sketches,
       jurisdiction: code,
       inventionTitle,
-      components
+      components,
+      sectionLimits,
+      crossValidations
     },
     user.tenantId,
     requestHeaders

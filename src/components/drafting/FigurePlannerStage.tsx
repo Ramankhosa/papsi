@@ -35,7 +35,9 @@ import {
   Download,
   UploadCloud,
   HelpCircle,
-  Paintbrush
+  Paintbrush,
+  Languages,
+  Globe
 } from 'lucide-react'
 
 // DnD Kit imports
@@ -220,6 +222,36 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   } | null>(null)
   const [savingEditedImage, setSavingEditedImage] = useState(false)
 
+  // === TRANSLATION STATE ===
+  const [showTranslateModal, setShowTranslateModal] = useState(false)
+  const [translateTargetLang, setTranslateTargetLang] = useState('')
+  const [translateFigureNo, setTranslateFigureNo] = useState<number | null>(null) // null = translate all
+  const [translating, setTranslating] = useState(false)
+  const [translateProgress, setTranslateProgress] = useState<{ current: number; total: number } | null>(null)
+  const [diagramTranslations, setDiagramTranslations] = useState<Record<number, Array<{ language: string; id: string; hasImage: boolean }>>>({})
+  // Track selected language tab per figure (for multi-language view)
+  const [selectedLangByFigure, setSelectedLangByFigure] = useState<Record<number, string>>({})
+
+  // Language labels for translation UI
+  const LANGUAGE_LABELS: Record<string, string> = {
+    en: 'English',
+    hi: 'Hindi (हिन्दी)',
+    ja: 'Japanese (日本語)',
+    zh: 'Chinese (中文)',
+    ko: 'Korean (한국어)',
+    de: 'German (Deutsch)',
+    fr: 'French (Français)',
+    es: 'Spanish (Español)',
+    pt: 'Portuguese (Português)',
+    it: 'Italian (Italiano)',
+    ru: 'Russian (Русский)',
+    ar: 'Arabic (العربية)',
+    nl: 'Dutch (Nederlands)',
+    sv: 'Swedish (Svenska)',
+    th: 'Thai (ไทย)',
+    vi: 'Vietnamese (Tiếng Việt)'
+  }
+
   const activeJurisdiction = (session?.activeJurisdiction || session?.draftingJurisdictions?.[0] || 'IN').toUpperCase()
 
   useEffect(() => {
@@ -247,6 +279,169 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   }, [activeJurisdiction])
 
   const countWords = (text: string) => (text || '').trim().split(/\s+/).filter(Boolean).length
+
+  // Load diagram translations on mount
+  useEffect(() => {
+    const loadTranslations = async () => {
+      if (!session?.id || !patent?.id) return
+      try {
+        const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+          },
+          body: JSON.stringify({
+            action: 'get_diagram_translations',
+            sessionId: session.id
+          })
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setDiagramTranslations(data.translations || {})
+        }
+      } catch (err) {
+        console.warn('Failed to load diagram translations:', err)
+      }
+    }
+    loadTranslations()
+  }, [session?.id, patent?.id, diagramSources])
+
+  // Handle translating a single diagram or all diagrams
+  const handleTranslateDiagrams = async () => {
+    if (!translateTargetLang || translating) return
+
+    setTranslating(true)
+    setTranslateProgress(null)
+
+    try {
+      if (translateFigureNo !== null) {
+        // Single diagram translation
+        const res = await fetch(`/api/patents/${patent?.id}/drafting`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+          },
+          body: JSON.stringify({
+            action: 'translate_plantuml',
+            sessionId: session?.id,
+            figureNo: translateFigureNo,
+            targetLanguage: translateTargetLang,
+            sourceLanguage: 'en'
+          })
+        })
+
+        const data = await res.json()
+        if (!res.ok) {
+          throw new Error(data.error || 'Translation failed')
+        }
+
+        // Refresh to load new translation
+        await onRefresh()
+        
+        alert(`✓ Figure ${translateFigureNo} translated to ${LANGUAGE_LABELS[translateTargetLang] || translateTargetLang}`)
+      } else {
+        // Translate all diagrams - process one by one with progress
+        const englishDiagrams = diagramSources.filter((d: any) => !d.language || d.language === 'en')
+        const total = englishDiagrams.length
+        
+        if (total === 0) {
+          alert('No English diagrams found to translate')
+          return
+        }
+
+        let successCount = 0
+        let failCount = 0
+
+        for (let i = 0; i < englishDiagrams.length; i++) {
+          const d = englishDiagrams[i]
+          setTranslateProgress({ current: i + 1, total })
+
+          try {
+            const res = await fetch(`/api/patents/${patent?.id}/drafting`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+              },
+              body: JSON.stringify({
+                action: 'translate_plantuml',
+                sessionId: session?.id,
+                figureNo: d.figureNo,
+                targetLanguage: translateTargetLang,
+                sourceLanguage: 'en'
+              })
+            })
+
+            if (res.ok) {
+              successCount++
+            } else {
+              failCount++
+            }
+          } catch {
+            failCount++
+          }
+        }
+
+        // Refresh to load new translations
+        await onRefresh()
+
+        alert(`✓ Translation complete!\n• ${successCount} diagrams translated\n• ${failCount} failed`)
+      }
+
+      setShowTranslateModal(false)
+      setTranslateTargetLang('')
+      setTranslateFigureNo(null)
+      
+      // Refresh translations list
+      const res = await fetch(`/api/patents/${patent?.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'get_diagram_translations',
+          sessionId: session?.id
+        })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setDiagramTranslations(data.translations || {})
+      }
+    } catch (err) {
+      console.error('Translation error:', err)
+      alert(`❌ Translation failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
+    } finally {
+      setTranslating(false)
+      setTranslateProgress(null)
+    }
+  }
+
+  // Get available jurisdictions with their languages for translation target options
+  const getAvailableTargetLanguages = () => {
+    const jurisdictions = session?.draftingJurisdictions || []
+    const status = (session as any)?.jurisdictionDraftStatus || {}
+    const languages: Set<string> = new Set()
+    
+    // Always include English as base
+    languages.add('en')
+    
+    // Add languages from selected jurisdictions
+    jurisdictions.forEach((code: string) => {
+      const lang = status[code]?.language
+      if (lang && lang !== 'en') {
+        languages.add(lang)
+      }
+    })
+    
+    // Add common translation languages
+    const commonLangs = ['ja', 'zh', 'ko', 'de', 'fr', 'es', 'hi']
+    commonLangs.forEach(l => languages.add(l))
+    
+    return Array.from(languages).filter(l => l !== 'en') // Exclude English as target (source is English)
+  }
 
   // Animated dots component for waiting states
   const AnimatedDots = () => (
@@ -1768,19 +1963,36 @@ Output: JSON array only, no markdown fences, no explanations.`
             <ImageIcon className="w-5 h-5 text-gray-600" />
             Project Diagrams
           </h3>
-          <motion.div
-            animate={showManual ? { scale: [1, 1.05, 1] } : {}}
-            transition={{ duration: 0.5, repeat: showManual ? Infinity : 0, repeatDelay: 2 }}
-          >
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleUploadToggle}
-              className={showManual ? 'border-indigo-400 text-indigo-700' : ''}
+          <div className="flex items-center gap-2">
+            {/* Translate All Diagrams Button */}
+            {diagramSources.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setTranslateFigureNo(null) // null = translate all
+                  setShowTranslateModal(true)
+                }}
+                className="text-purple-600 border-purple-200 hover:bg-purple-50 hover:border-purple-300"
+              >
+                <Languages className="w-4 h-4 mr-2" />
+                Translate All
+              </Button>
+            )}
+            <motion.div
+              animate={showManual ? { scale: [1, 1.05, 1] } : {}}
+              transition={{ duration: 0.5, repeat: showManual ? Infinity : 0, repeatDelay: 2 }}
             >
-              {showManual ? 'Hide External Uploads' : 'Upload External Image'}
-            </Button>
-          </motion.div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleUploadToggle}
+                className={showManual ? 'border-indigo-400 text-indigo-700' : ''}
+              >
+                {showManual ? 'Hide External Uploads' : 'Upload External Image'}
+              </Button>
+            </motion.div>
+          </div>
         </div>
 
         {diagramSources.length === 0 ? (
@@ -1804,12 +2016,27 @@ Output: JSON array only, no markdown fences, no explanations.`
                   : serverImageUrl || previewUrl
 
                 return (
-              <Card key={d.figureNo} className="overflow-hidden hover:shadow-lg transition-all duration-300">
+              <Card key={`${d.figureNo}_${d.language || 'en'}`} className="overflow-hidden hover:shadow-lg transition-all duration-300">
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
-                    <Badge variant={uploaded[d.figureNo] || d.imageUploadedAt ? 'default' : 'secondary'} className="shrink-0">
-                      Fig. {d.figureNo}
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      <Badge variant={uploaded[d.figureNo] || d.imageUploadedAt ? 'default' : 'secondary'} className="shrink-0">
+                        Fig. {d.figureNo}
+                      </Badge>
+                      {/* Show language badge */}
+                      {d.language && d.language !== 'en' && (
+                        <Badge variant="outline" className="text-xs bg-purple-50 text-purple-600 border-purple-200">
+                          <Globe className="w-3 h-3 mr-1" />
+                          {LANGUAGE_LABELS[d.language]?.split(' ')[0] || d.language.toUpperCase()}
+                        </Badge>
+                      )}
+                      {/* Show translation count if available */}
+                      {diagramTranslations[d.figureNo]?.length > 1 && d.language === 'en' && (
+                        <Badge variant="outline" className="text-xs text-green-600 bg-green-50 border-green-200">
+                          {diagramTranslations[d.figureNo].length - 1} translation{diagramTranslations[d.figureNo].length > 2 ? 's' : ''}
+                        </Badge>
+                      )}
+                    </div>
                     <Badge variant="outline" className="text-xs text-gray-500">
                       {d.imageUploadedAt ? 'Rendered' : d.plantumlCode ? 'Code Ready' : 'Pending'}
                     </Badge>
@@ -1926,9 +2153,9 @@ Output: JSON array only, no markdown fences, no explanations.`
                   )
                 })()}
 
-                <div className="p-3 bg-white border-t grid grid-cols-3 gap-2">
+                <div className="p-3 bg-white border-t grid grid-cols-4 gap-2">
                   <Button variant="ghost" size="sm" className="w-full" onClick={() => { setModifyFigNo(d.figureNo); setModifyTextSaved('') }}>
-                    <Edit2 className="w-4 h-4 mr-2" /> Modify (AI)
+                    <Edit2 className="w-4 h-4 mr-2" /> Modify
                   </Button>
                   {/* Edit Image button - visible when image exists */}
                   {(renderPreview[d.figureNo] || d.imageFilename) ? (
@@ -1942,13 +2169,26 @@ Output: JSON array only, no markdown fences, no explanations.`
                       }}
                       title="Edit image in miniPaint - add/remove labels, erase, draw"
                     >
-                      <Paintbrush className="w-4 h-4 mr-2" /> Edit Image
+                      <Paintbrush className="w-4 h-4 mr-2" /> Edit
                     </Button>
                   ) : (
                     <Button variant="ghost" size="sm" className="w-full" disabled>
-                      <Paintbrush className="w-4 h-4 mr-2 opacity-50" /> Edit Image
+                      <Paintbrush className="w-4 h-4 mr-2 opacity-50" /> Edit
                     </Button>
                   )}
+                  {/* Translate single diagram button */}
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    className="w-full text-purple-600 hover:text-purple-700 hover:bg-purple-50"
+                    onClick={() => {
+                      setTranslateFigureNo(d.figureNo)
+                      setShowTranslateModal(true)
+                    }}
+                    title="Translate diagram labels to another language"
+                  >
+                    <Languages className="w-4 h-4 mr-2" /> Translate
+                  </Button>
                   <Button variant="ghost" size="sm" className="w-full text-red-600 hover:text-red-700 hover:bg-red-50" 
                     onClick={async () => {
                       if(!confirm('Delete this figure?')) return
@@ -2203,6 +2443,125 @@ Output: JSON array only, no markdown fences, no explanations.`
           </motion.div>
         ) : null
       })()}
+      </AnimatePresence>
+
+      {/* Translation Modal */}
+      <AnimatePresence>
+        {showTranslateModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => !translating && setShowTranslateModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-xl shadow-2xl p-6 max-w-md w-full"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2 bg-purple-100 rounded-lg">
+                  <Languages className="w-6 h-6 text-purple-600" />
+                </div>
+                <div>
+                  <h4 className="text-lg font-semibold text-gray-900">
+                    {translateFigureNo !== null ? `Translate Figure ${translateFigureNo}` : 'Translate All Diagrams'}
+                  </h4>
+                  <p className="text-sm text-gray-500">
+                    {translateFigureNo !== null 
+                      ? 'Convert diagram labels to another language' 
+                      : `Translate all ${diagramSources.filter((d: any) => !d.language || d.language === 'en').length} English diagrams`}
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div>
+                  <Label className="text-sm font-medium text-gray-700">Target Language</Label>
+                  <select
+                    value={translateTargetLang}
+                    onChange={(e) => setTranslateTargetLang(e.target.value)}
+                    className="mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
+                    disabled={translating}
+                  >
+                    <option value="">Select language...</option>
+                    {getAvailableTargetLanguages().map((lang) => (
+                      <option key={lang} value={lang}>
+                        {LANGUAGE_LABELS[lang] || lang.toUpperCase()}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {translateFigureNo === null && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                    <p className="text-sm text-amber-800">
+                      <strong>Note:</strong> Diagrams will be translated one by one to ensure accuracy. 
+                      This may take a few moments.
+                    </p>
+                  </div>
+                )}
+
+                {translateProgress && (
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-sm text-gray-600">
+                      <span>Translating...</span>
+                      <span>{translateProgress.current} / {translateProgress.total}</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div 
+                        className="bg-purple-600 h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${(translateProgress.current / translateProgress.total) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600 space-y-1">
+                  <p>• Original English diagrams are preserved</p>
+                  <p>• Translated diagrams are stored separately</p>
+                  <p>• Reference numerals (100, 200, etc.) remain unchanged</p>
+                  <p>• Drafting stage will auto-select by jurisdiction</p>
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-6">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowTranslateModal(false)
+                    setTranslateTargetLang('')
+                    setTranslateFigureNo(null)
+                  }}
+                  disabled={translating}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleTranslateDiagrams}
+                  disabled={!translateTargetLang || translating}
+                  className="flex-1 bg-purple-600 hover:bg-purple-700 text-white"
+                >
+                  {translating ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Translating...
+                    </>
+                  ) : (
+                    <>
+                      <Languages className="w-4 h-4 mr-2" />
+                      {translateFigureNo !== null ? 'Translate' : 'Translate All'}
+                    </>
+                  )}
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
       </AnimatePresence>
         </>
       )}

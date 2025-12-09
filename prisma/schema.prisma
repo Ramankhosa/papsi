@@ -1665,6 +1665,14 @@ model DiagramSource {
   plantumlCode String
   checksum     String // For integrity verification
 
+  // Language support for multi-jurisdiction translation
+  language               String  @default("en") // ISO 639-1 code (en, ja, zh, de, fr, etc.)
+  translatedFromDiagramId String? // Links to original (English) diagram for cross-referencing
+  
+  // Self-relation for translation linking
+  translatedFrom DiagramSource?  @relation("DiagramTranslations", fields: [translatedFromDiagramId], references: [id], onDelete: SetNull)
+  translations   DiagramSource[] @relation("DiagramTranslations")
+
   // Uploaded image metadata
   imageFilename   String?
   imagePath       String?
@@ -1681,7 +1689,9 @@ model DiagramSource {
   // Relations
   session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
-  @@unique([sessionId, figureNo])
+  // Unique per session + figure + language (allows multiple language versions)
+  @@unique([sessionId, figureNo, language])
+  @@index([sessionId, language]) // Fast lookup by session + language
   @@map("diagram_sources")
 }
 

@@ -203,6 +203,53 @@ function ValidationPanel({
   onProceedToExport,
   onAIIssuesChange 
 }: ValidationPanelProps) {
+  // ============================================================================
+  // Celebration Messages - Shown when user achieves 100 score
+  // Varies by day of week and time of day to avoid repetition
+  // ============================================================================
+  const CELEBRATION_MESSAGES = [
+    // Morning messages (6am - 12pm)
+    { time: 'morning', day: 0, emoji: '☕', title: "Perfect Score!", message: "Time for that coffee! You've earned every sip. ☕✨" },
+    { time: 'morning', day: 1, emoji: '🌅', title: "Flawless!", message: "Monday morning perfection! Now go flex to your colleagues. 💪" },
+    { time: 'morning', day: 2, emoji: '🥐', title: "100% Achieved!", message: "Croissant break? This patent is chef's kiss! 👨‍🍳" },
+    { time: 'morning', day: 3, emoji: '🚀', title: "Mission Complete!", message: "Midweek magic! Houston, we have a perfect patent. 🌟" },
+    
+    // Afternoon messages (12pm - 6pm)
+    { time: 'afternoon', day: 0, emoji: '🍕', title: "Nailed It!", message: "Pizza party time! This draft is 100% delicious. 🎉" },
+    { time: 'afternoon', day: 1, emoji: '🎯', title: "Bullseye!", message: "Target acquired and destroyed! Go grab an ice cream. 🍦" },
+    { time: 'afternoon', day: 4, emoji: '🏆', title: "Champion!", message: "Thursday thunder! You're officially a patent superhero. 🦸" },
+    { time: 'afternoon', day: 5, emoji: '🎸', title: "Rock Star!", message: "Friday vibes! Drop the mic and start the weekend early. 🎤" },
+    
+    // Evening messages (6pm - 10pm)
+    { time: 'evening', day: 2, emoji: '🌙', title: "Perfect!", message: "Evening excellence! Netflix & celebrate? You deserve it. 📺" },
+    { time: 'evening', day: 3, emoji: '🍷', title: "Masterpiece!", message: "Pour yourself something nice. This draft is *chef's kiss*. 🤌" },
+    { time: 'evening', day: 6, emoji: '🎮', title: "Victory!", message: "Weekend warrior! Time to game - you've conquered patents! 🕹️" },
+    
+    // Late night messages (10pm - 6am)
+    { time: 'night', day: 4, emoji: '🦉', title: "Night Owl Win!", message: "Burning the midnight oil paid off! Now get some sleep, genius. 😴" },
+    { time: 'night', day: 5, emoji: '⭐', title: "Stellar!", message: "Late night legends get perfect scores. Sweet dreams! 🌠" },
+  ]
+
+  // Get celebration message based on current day and time
+  const getCelebrationMessage = () => {
+    const now = new Date()
+    const hour = now.getHours()
+    const day = now.getDay() // 0 = Sunday, 6 = Saturday
+    
+    let timeOfDay: 'morning' | 'afternoon' | 'evening' | 'night'
+    if (hour >= 6 && hour < 12) timeOfDay = 'morning'
+    else if (hour >= 12 && hour < 18) timeOfDay = 'afternoon'
+    else if (hour >= 18 && hour < 22) timeOfDay = 'evening'
+    else timeOfDay = 'night'
+    
+    // Find message matching time and day, or fallback to time match
+    let msg = CELEBRATION_MESSAGES.find(m => m.time === timeOfDay && m.day === day)
+    if (!msg) msg = CELEBRATION_MESSAGES.find(m => m.time === timeOfDay)
+    if (!msg) msg = CELEBRATION_MESSAGES[0] // Ultimate fallback
+    
+    return msg
+  }
+
   // Numerical validation state
   const [numericIssues, setNumericIssues] = useState<ValidationIssue[]>([])
   const [numericLoading, setNumericLoading] = useState(false)
@@ -218,6 +265,11 @@ function ValidationPanel({
     overallScore: number
     recommendation: string
   } | null>(null)
+  
+  // Celebration state
+  const [showCelebration, setShowCelebration] = useState(false)
+  const [celebrationMessage, setCelebrationMessage] = useState(getCelebrationMessage())
+  const prevScoreRef = useRef<number | null>(null)
   const [currentReviewId, setCurrentReviewId] = useState<string | null>(null)
   const [loadingExisting, setLoadingExisting] = useState(false)
   
@@ -237,6 +289,10 @@ function ValidationPanel({
   // Last review timestamps
   const [lastNumericCheck, setLastNumericCheck] = useState<string | null>(null)
   const [lastAICheck, setLastAICheck] = useState<string | null>(null)
+  
+  // Category filter state - filter issues by type or category
+  const [filterType, setFilterType] = useState<'all' | 'error' | 'warning' | 'suggestion'>('all')
+  const [filterCategory, setFilterCategory] = useState<string>('all')
 
   // Load existing reviews on mount/jurisdiction change
   useEffect(() => {
@@ -357,7 +413,7 @@ function ValidationPanel({
         // Pro feature - show upgrade message
         setAiReviewUpgradeRequired(true)
         setAiSummary({
-          overallScore: 0,
+          overallScore: 75, // Minimum baseline score
           totalIssues: 0,
           errors: 0,
           warnings: 0,
@@ -441,18 +497,47 @@ function ValidationPanel({
     // Track the applied fix locally
     setAppliedFixes(prev => new Set([...Array.from(prev), issue.id]))
     
-    // Remove the fixed issue from the list and sync to inline validators
-    // Using functional update to ensure we have the latest state
+    // Remove the fixed issue from the list and recalculate score
+    // Note: onAIIssuesChange is called via useEffect below to avoid render-phase setState
     setAiIssues(prev => {
-      const updatedIssues = prev.filter(i => i.id !== issue.id)
-      // Sync to inline validators with the updated list (not stale state)
-      onAIIssuesChange?.(updatedIssues)
-      return updatedIssues
+      const remaining = prev.filter(i => i.id !== issue.id)
+      
+      // Recalculate score based on remaining issues
+      // Score formula: Base 75 + (25 points distributed by issue reduction)
+      const BASE_SCORE = 75
+      const REMAINING_POINTS = 25
+      const errors = remaining.filter(i => i.type === 'error').length
+      const warnings = remaining.filter(i => i.type === 'warning').length  
+      const suggestions = remaining.filter(i => i.type === 'suggestion').length
+      
+      let newScore = 100
+      if (errors > 0 || warnings > 0 || suggestions > 0) {
+        const errorDeduction = Math.min(REMAINING_POINTS * 0.70, errors * 4)
+        const warningDeduction = Math.min(REMAINING_POINTS * 0.20, warnings * 1.25)
+        const suggestionDeduction = Math.min(REMAINING_POINTS * 0.10, suggestions * 0.5)
+        newScore = Math.round(BASE_SCORE + (REMAINING_POINTS - errorDeduction - warningDeduction - suggestionDeduction))
+        newScore = Math.max(BASE_SCORE, Math.min(100, newScore))
+      }
+      
+      // Update summary with new counts and score
+      setAiSummary(prevSummary => prevSummary ? {
+        ...prevSummary,
+        totalIssues: remaining.length,
+        errors,
+        warnings,
+        suggestions,
+        overallScore: newScore,
+        recommendation: remaining.length === 0 
+          ? 'All issues resolved! Draft is ready for export.'
+          : `${remaining.length} issue${remaining.length !== 1 ? 's' : ''} remaining. Keep fixing to reach 100.`
+      } : null)
+      
+      return remaining
     })
     
     // Clear the pending fix
     setPendingFix(null)
-  }, [pendingFix, onFix, onAIIssuesChange])
+  }, [pendingFix, onFix])
 
   // Reject the pending fix
   const rejectFix = useCallback(() => {
@@ -493,15 +578,58 @@ function ValidationPanel({
     }
   }, [jurisdiction])
 
+  // Sync AI issues to parent when they change (avoids render-phase setState)
+  // This handles cases like approveFix where issues are filtered
+  const aiIssuesRef = useRef(aiIssues)
+  useEffect(() => {
+    // Only sync if issues actually changed (skip initial mount and redundant syncs)
+    if (aiIssuesRef.current !== aiIssues && aiIssues.length !== aiIssuesRef.current.length) {
+      onAIIssuesChange?.(aiIssues)
+    }
+    aiIssuesRef.current = aiIssues
+  }, [aiIssues, onAIIssuesChange])
+
+  // Trigger celebration when score reaches 100
+  useEffect(() => {
+    const currentScore = aiSummary?.overallScore ?? null
+    // Only celebrate if score just became 100 (wasn't 100 before)
+    if (currentScore === 100 && prevScoreRef.current !== null && prevScoreRef.current !== 100) {
+      setCelebrationMessage(getCelebrationMessage())
+      setShowCelebration(true)
+      // Auto-hide after 8 seconds
+      const timer = setTimeout(() => setShowCelebration(false), 8000)
+      return () => clearTimeout(timer)
+    }
+    prevScoreRef.current = currentScore
+  }, [aiSummary?.overallScore])
+
   // Calculate counts
   const numericErrorCount = numericIssues.filter(i => i.type === 'error').length
   const numericWarningCount = numericIssues.filter(i => i.type === 'warning').length
-  const activeAiIssues = aiIssues.filter(i => !ignoredIssues.has(i.id) && !appliedFixes.has(i.id))
-  const aiErrorCount = activeAiIssues.filter(i => i.type === 'error').length
-  const aiWarningCount = activeAiIssues.filter(i => i.type === 'warning').length
+  const allActiveAiIssues = aiIssues.filter(i => !ignoredIssues.has(i.id) && !appliedFixes.has(i.id))
+  const aiErrorCount = allActiveAiIssues.filter(i => i.type === 'error').length
+  const aiWarningCount = allActiveAiIssues.filter(i => i.type === 'warning').length
+  const aiSuggestionCount = allActiveAiIssues.filter(i => i.type === 'suggestion').length
   const fixedCount = appliedFixes.size
   const totalErrors = numericErrorCount + aiErrorCount
   const totalWarnings = numericWarningCount + aiWarningCount
+  
+  // Apply filters to AI issues
+  const activeAiIssues = allActiveAiIssues.filter(i => {
+    if (filterType !== 'all' && i.type !== filterType) return false
+    if (filterCategory !== 'all' && i.category !== filterCategory) return false
+    return true
+  })
+  
+  // Get unique categories for filter dropdown
+  const uniqueCategories = Array.from(new Set(allActiveAiIssues.map(i => i.category)))
+  
+  // Group issues by category for organized display
+  const issuesByCategory = activeAiIssues.reduce((acc, issue) => {
+    if (!acc[issue.category]) acc[issue.category] = []
+    acc[issue.category].push(issue)
+    return acc
+  }, {} as Record<string, typeof activeAiIssues>)
 
   // Category icons and colors
   const getCategoryStyle = (category: string) => {
@@ -517,102 +645,199 @@ function ValidationPanel({
   }
 
   return (
-    <div className="space-y-8">
-      {/* Header with Overall Status */}
-      <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 rounded-2xl p-6 shadow-xl border border-slate-700">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="text-xl font-bold text-white flex items-center gap-2">
-              <span className="text-2xl">🔬</span>
-              Draft Review & Validation
-            </h3>
-            <p className="text-slate-400 text-sm mt-1">
-              Comprehensive analysis for {jurisdiction} jurisdiction
-            </p>
+    <div className="space-y-6">
+      {/* Unified Intelligence Dashboard */}
+      <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 rounded-2xl shadow-2xl border border-slate-700/50 overflow-hidden">
+        {/* Top Bar - Title & Score */}
+        <div className="px-6 py-4 border-b border-slate-700/50 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center shadow-lg">
+              <span className="text-xl">🔬</span>
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-white">Draft Intelligence</h3>
+              <p className="text-slate-400 text-xs">{jurisdiction} • Patent Quality Analysis</p>
+            </div>
           </div>
           
-          {/* Overall Score */}
-          {aiSummary && (
-            <div className="text-center">
-              <div className={`text-4xl font-bold ${
-                aiSummary.overallScore >= 80 ? 'text-emerald-400' :
-                aiSummary.overallScore >= 60 ? 'text-amber-400' : 'text-red-400'
-              }`}>
-                {aiSummary.overallScore}
+          {/* Score Ring */}
+          <div className="flex items-center gap-4">
+            {aiSummary ? (
+              <div className="relative">
+                <svg className="w-16 h-16 -rotate-90" viewBox="0 0 36 36">
+                  <circle cx="18" cy="18" r="15" fill="none" stroke="currentColor" strokeWidth="2" className="text-slate-700" />
+                  <circle 
+                    cx="18" cy="18" r="15" fill="none" strokeWidth="2" strokeLinecap="round"
+                    stroke={aiSummary.overallScore >= 90 ? '#10b981' : aiSummary.overallScore >= 80 ? '#f59e0b' : '#ef4444'}
+                    strokeDasharray={`${aiSummary.overallScore * 0.94} 100`}
+                  />
+                </svg>
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <span className={`text-lg font-bold ${
+                    aiSummary.overallScore >= 90 ? 'text-emerald-400' :
+                    aiSummary.overallScore >= 80 ? 'text-amber-400' : 'text-red-400'
+                  }`}>{aiSummary.overallScore}</span>
+                </div>
               </div>
-              <div className="text-xs text-slate-400">Quality Score</div>
+            ) : (
+              <div className="text-center px-4 py-2 bg-slate-800/50 rounded-lg border border-slate-700">
+                <div className="text-slate-500 text-xs">Run AI Review</div>
+                <div className="text-slate-400 text-xs">for score</div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* AI Summary - if available */}
+        {aiSummary?.recommendation && (
+          <div className="px-6 py-3 bg-slate-800/30 border-b border-slate-700/50">
+            <div className="flex items-start gap-2">
+              <span className="text-violet-400 mt-0.5">💡</span>
+              <p className="text-sm text-slate-300 leading-relaxed">{aiSummary.recommendation}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Stats Grid - Clickable Filters */}
+        <div className="p-4">
+          <div className="grid grid-cols-5 gap-3">
+            <button
+              onClick={() => setFilterType(filterType === 'error' ? 'all' : 'error')}
+              className={`group relative rounded-xl p-3 text-center transition-all ${
+                filterType === 'error' 
+                  ? 'bg-red-500/20 ring-2 ring-red-500/50' 
+                  : 'bg-slate-800/50 hover:bg-slate-700/50'
+              }`}
+            >
+              <div className="text-2xl font-bold text-red-400">{totalErrors}</div>
+              <div className="text-[10px] text-slate-400 uppercase tracking-wider">Errors</div>
+              {filterType === 'error' && <div className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse" />}
+            </button>
+            
+            <button
+              onClick={() => setFilterType(filterType === 'warning' ? 'all' : 'warning')}
+              className={`group relative rounded-xl p-3 text-center transition-all ${
+                filterType === 'warning' 
+                  ? 'bg-amber-500/20 ring-2 ring-amber-500/50' 
+                  : 'bg-slate-800/50 hover:bg-slate-700/50'
+              }`}
+            >
+              <div className="text-2xl font-bold text-amber-400">{totalWarnings}</div>
+              <div className="text-[10px] text-slate-400 uppercase tracking-wider">Warnings</div>
+              {filterType === 'warning' && <div className="absolute -top-1 -right-1 w-2 h-2 bg-amber-500 rounded-full animate-pulse" />}
+            </button>
+            
+            <button
+              onClick={() => setFilterType(filterType === 'suggestion' ? 'all' : 'suggestion')}
+              className={`group relative rounded-xl p-3 text-center transition-all ${
+                filterType === 'suggestion' 
+                  ? 'bg-blue-500/20 ring-2 ring-blue-500/50' 
+                  : 'bg-slate-800/50 hover:bg-slate-700/50'
+              }`}
+            >
+              <div className="text-2xl font-bold text-blue-400">{aiSuggestionCount}</div>
+              <div className="text-[10px] text-slate-400 uppercase tracking-wider">Suggestions</div>
+              {filterType === 'suggestion' && <div className="absolute -top-1 -right-1 w-2 h-2 bg-blue-500 rounded-full animate-pulse" />}
+            </button>
+            
+            <div className="rounded-xl p-3 text-center bg-slate-800/50">
+              <div className="text-2xl font-bold text-emerald-400">{fixedCount}</div>
+              <div className="text-[10px] text-slate-400 uppercase tracking-wider">Fixed</div>
+            </div>
+            
+            <div className="rounded-xl p-3 text-center bg-slate-800/50">
+              <div className="text-2xl font-bold text-slate-500">{ignoredIssues.size}</div>
+              <div className="text-[10px] text-slate-400 uppercase tracking-wider">Ignored</div>
+            </div>
+          </div>
+          
+          {/* Filter Indicator */}
+          {filterType !== 'all' && (
+            <div className="mt-3 flex items-center justify-center gap-2 text-xs">
+              <span className="text-slate-500">Showing</span>
+              <span className={`font-medium px-2 py-0.5 rounded ${
+                filterType === 'error' ? 'bg-red-500/20 text-red-400' :
+                filterType === 'warning' ? 'bg-amber-500/20 text-amber-400' :
+                'bg-blue-500/20 text-blue-400'
+              }`}>{activeAiIssues.length} {filterType}s</span>
+              <button onClick={() => setFilterType('all')} className="text-slate-500 hover:text-white">✕</button>
             </div>
           )}
         </div>
 
-        {/* Status Summary */}
-        <div className="grid grid-cols-5 gap-4">
-          <div className="bg-slate-800/50 rounded-xl p-4 text-center border border-slate-700">
-            <div className="text-2xl font-bold text-red-400">{totalErrors}</div>
-            <div className="text-xs text-slate-400">Errors</div>
+        {/* Category Breakdown - Mini Pills */}
+        {uniqueCategories.length > 0 && (
+          <div className="px-4 pb-3 flex flex-wrap gap-1.5 justify-center">
+            {uniqueCategories.map(cat => {
+              const style = getCategoryStyle(cat)
+              const count = allActiveAiIssues.filter(i => i.category === cat).length
+              return (
+                <button
+                  key={cat}
+                  onClick={() => setFilterCategory(filterCategory === cat ? 'all' : cat)}
+                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-medium transition-all ${
+                    filterCategory === cat
+                      ? `${style.bg} ${style.text} ring-1 ${style.border}`
+                      : 'bg-slate-800/50 text-slate-400 hover:bg-slate-700/50'
+                  }`}
+                >
+                  <span>{style.icon}</span>
+                  <span className="capitalize">{cat}</span>
+                  <span className="opacity-60">({count})</span>
+                </button>
+              )
+            })}
           </div>
-          <div className="bg-slate-800/50 rounded-xl p-4 text-center border border-slate-700">
-            <div className="text-2xl font-bold text-amber-400">{totalWarnings}</div>
-            <div className="text-xs text-slate-400">Warnings</div>
-          </div>
-          <div className="bg-slate-800/50 rounded-xl p-4 text-center border border-slate-700">
-            <div className="text-2xl font-bold text-blue-400">{aiSummary?.suggestions || 0}</div>
-            <div className="text-xs text-slate-400">Suggestions</div>
-          </div>
-          <div className="bg-slate-800/50 rounded-xl p-4 text-center border border-slate-700">
-            <div className="text-2xl font-bold text-emerald-400">{fixedCount}</div>
-            <div className="text-xs text-slate-400">Fixed</div>
-          </div>
-          <div className="bg-slate-800/50 rounded-xl p-4 text-center border border-slate-700">
-            <div className="text-2xl font-bold text-slate-400">{ignoredIssues.size}</div>
-            <div className="text-xs text-slate-400">Ignored</div>
-          </div>
-        </div>
+        )}
 
-        {/* Action Buttons */}
-        <div className="flex flex-wrap gap-3 mt-6">
+        {/* Action Bar */}
+        <div className="px-4 pb-4 flex items-center gap-2">
           <button
             onClick={runNumericValidation}
             disabled={numericLoading}
-            className="px-4 py-2.5 bg-slate-700 text-white rounded-lg font-medium hover:bg-slate-600 disabled:opacity-50 flex items-center gap-2 text-sm border border-slate-600"
+            className="flex-1 px-3 py-2.5 bg-slate-700/50 text-white rounded-lg font-medium hover:bg-slate-600/50 disabled:opacity-50 flex items-center justify-center gap-2 text-sm border border-slate-600/50 transition-all"
           >
             {numericLoading ? (
               <><span className="animate-spin">⏳</span> Checking...</>
             ) : (
-              <><span>📏</span> Run Numeric Checks</>
+              <><span>📏</span> Numeric Check</>
             )}
           </button>
           
           <button
             onClick={runAIReview}
             disabled={aiLoading}
-            className="px-4 py-2.5 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-lg font-medium hover:from-violet-500 hover:to-purple-500 disabled:opacity-50 flex items-center gap-2 text-sm shadow-lg"
+            className="flex-1 px-3 py-2.5 bg-gradient-to-r from-violet-600 to-purple-600 text-white rounded-lg font-medium hover:from-violet-500 hover:to-purple-500 disabled:opacity-50 flex items-center justify-center gap-2 text-sm shadow-lg transition-all"
           >
             {aiLoading ? (
-              <><span className="animate-spin">⏳</span> AI Analyzing...</>
+              <><span className="animate-spin">⏳</span> Analyzing...</>
             ) : (
-              <><span>🤖</span> Run AI Review (Gemini)</>
+              <><span>🤖</span> AI Review</>
             )}
           </button>
 
-          <div className="flex-1" />
-
           <button
             onClick={onProceedToExport}
-            className="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-lg font-medium hover:from-emerald-500 hover:to-teal-500 flex items-center gap-2 text-sm shadow-lg"
+            className={`flex-1 px-3 py-2.5 rounded-lg font-medium flex items-center justify-center gap-2 text-sm transition-all ${
+              totalErrors > 0 
+                ? 'bg-amber-600/80 hover:bg-amber-500 text-white' 
+                : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-lg'
+            }`}
           >
             <span>📄</span>
-            {totalErrors > 0 ? 'Export Anyway' : 'Proceed to Export'}
+            {totalErrors > 0 ? 'Export Anyway' : 'Export'}
             <span>→</span>
           </button>
         </div>
 
-        {/* Last Check Times */}
-        <div className="flex gap-4 mt-4 text-xs text-slate-500">
-          {loadingExisting && <span className="text-cyan-400">⏳ Loading previous review...</span>}
-          {lastNumericCheck && <span>📏 Numeric: {lastNumericCheck}</span>}
-          {lastAICheck && <span>🤖 AI Review: {lastAICheck}</span>}
-          {currentReviewId && <span className="text-slate-600">ID: {currentReviewId.slice(0, 8)}...</span>}
+        {/* Status Footer */}
+        <div className="px-4 pb-3 flex items-center justify-between text-[10px] text-slate-500 border-t border-slate-700/30 pt-2">
+          <div className="flex items-center gap-3">
+            {loadingExisting && <span className="text-cyan-400 animate-pulse">● Loading review...</span>}
+            {lastNumericCheck && <span>📏 {lastNumericCheck}</span>}
+            {lastAICheck && <span>🤖 {lastAICheck}</span>}
+          </div>
+          {currentReviewId && <span className="font-mono text-slate-600">ID: {currentReviewId.slice(0, 8)}</span>}
         </div>
       </div>
 
@@ -687,52 +912,62 @@ function ValidationPanel({
             </div>
           </div>
           
-          <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
+          <div className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
             {/* Issue being fixed */}
-            <div className="bg-amber-50 rounded-lg p-4 border border-amber-200">
+            <div className="bg-amber-50 rounded-lg p-3 border border-amber-200">
               <div className="text-xs font-medium text-amber-700 mb-1">💡 Issue Being Fixed</div>
               <p className="text-sm text-amber-800">{pendingFix.issue.description}</p>
             </div>
             
-            {/* Side-by-side diff view */}
-            <div className="grid grid-cols-2 gap-4">
-              {/* Original Content */}
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-red-600 px-2 py-0.5 bg-red-100 rounded">ORIGINAL</span>
-                  <span className="text-xs text-gray-500">Before fix</span>
-                </div>
-                <div className="bg-red-50 border border-red-200 rounded-lg p-4 max-h-[300px] overflow-y-auto">
-                  <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono leading-relaxed">
-                    {pendingFix.originalContent || <span className="text-gray-400 italic">No content</span>}
-                  </pre>
-                </div>
+            {/* Inline diff - highlight changes - MAIN VIEW */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-violet-600 px-2 py-0.5 bg-violet-100 rounded">CHANGES HIGHLIGHTED</span>
+                <span className="text-xs text-gray-500">Added text in green, removed in red • ~300 words visible</span>
               </div>
-              
-              {/* Fixed Content */}
-              <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-semibold text-emerald-600 px-2 py-0.5 bg-emerald-100 rounded">REVISED</span>
-                  <span className="text-xs text-gray-500">After fix</span>
-                </div>
-                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 max-h-[300px] overflow-y-auto">
-                  <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono leading-relaxed">
-                    {pendingFix.fixedContent || <span className="text-gray-400 italic">No content</span>}
-                  </pre>
+              <div className="bg-white border border-gray-200 rounded-lg p-5 min-h-[400px] max-h-[500px] overflow-y-auto shadow-inner">
+                <div className="text-sm leading-relaxed">
+                  <InlineDiffView original={pendingFix.originalContent} revised={pendingFix.fixedContent} />
                 </div>
               </div>
             </div>
             
-            {/* Inline diff - highlight changes */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-semibold text-violet-600 px-2 py-0.5 bg-violet-100 rounded">CHANGES HIGHLIGHTED</span>
-                <span className="text-xs text-gray-500">Added text in green, removed in red</span>
+            {/* Side-by-side diff view - Collapsible */}
+            <details className="group">
+              <summary className="cursor-pointer text-xs text-gray-500 hover:text-gray-700 flex items-center gap-2 py-2">
+                <svg className="w-4 h-4 transition-transform group-open:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                View side-by-side comparison (Original vs Revised)
+              </summary>
+              <div className="grid grid-cols-2 gap-4 mt-3">
+                {/* Original Content */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-red-600 px-2 py-0.5 bg-red-100 rounded">ORIGINAL</span>
+                    <span className="text-xs text-gray-500">Before fix</span>
+                  </div>
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-4 min-h-[300px] max-h-[450px] overflow-y-auto">
+                    <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono leading-relaxed">
+                      {pendingFix.originalContent || <span className="text-gray-400 italic">No content</span>}
+                    </pre>
+                  </div>
+                </div>
+                
+                {/* Fixed Content */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-emerald-600 px-2 py-0.5 bg-emerald-100 rounded">REVISED</span>
+                    <span className="text-xs text-gray-500">After fix</span>
+                  </div>
+                  <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 min-h-[300px] max-h-[450px] overflow-y-auto">
+                    <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono leading-relaxed">
+                      {pendingFix.fixedContent || <span className="text-gray-400 italic">No content</span>}
+                    </pre>
+                  </div>
+                </div>
               </div>
-              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 max-h-[200px] overflow-y-auto">
-                <InlineDiffView original={pendingFix.originalContent} revised={pendingFix.fixedContent} />
-              </div>
-            </div>
+            </details>
           </div>
           
           {/* Action buttons */}
@@ -758,22 +993,39 @@ function ValidationPanel({
         </div>
       )}
 
-      {/* AI Review Results */}
-      {activeAiIssues.length > 0 && (
+      {/* AI Review Issues List */}
+      {allActiveAiIssues.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-6 py-4 bg-gradient-to-r from-violet-50 to-purple-50 border-b border-violet-200">
-            <h4 className="font-semibold text-gray-900 flex items-center gap-2">
-              <span>🤖</span> AI Review Results
-              <span className="text-xs font-normal text-gray-500 ml-2">
-                Powered by Gemini • Cross-section analysis
+          <div className="px-4 py-3 bg-gray-50 border-b border-gray-200 flex items-center justify-between">
+            <h4 className="font-medium text-gray-700 text-sm flex items-center gap-2">
+              📋 Issues List
+              <span className="text-xs font-normal text-gray-400">
+                {activeAiIssues.length} of {allActiveAiIssues.length} shown
               </span>
             </h4>
-            {aiSummary && (
-              <p className="text-sm text-gray-600 mt-1">{aiSummary.recommendation}</p>
+            {(filterType !== 'all' || filterCategory !== 'all') && (
+              <button 
+                onClick={() => { setFilterType('all'); setFilterCategory('all') }}
+                className="text-xs text-violet-600 hover:text-violet-700"
+              >
+                Clear all filters
+              </button>
             )}
           </div>
+          
           <div className="divide-y divide-gray-100">
-            {activeAiIssues.map((issue) => {
+            {activeAiIssues.length === 0 ? (
+              <div className="px-6 py-8 text-center">
+                <div className="text-4xl mb-2">🔍</div>
+                <div className="text-gray-600 font-medium">No {filterType !== 'all' ? filterType + 's' : 'issues'} to show</div>
+                <button
+                  onClick={() => { setFilterType('all'); setFilterCategory('all') }}
+                  className="text-sm text-violet-600 hover:text-violet-700 mt-2"
+                >
+                  Clear filters
+                </button>
+              </div>
+            ) : activeAiIssues.map((issue) => {
               const style = getCategoryStyle(issue.category)
               const isFixing = fixingIssue === issue.id
               
@@ -903,6 +1155,113 @@ function ValidationPanel({
           </div>
         </div>
       )}
+
+      {/* ================================================================== */}
+      {/* 🎉 CELEBRATION OVERLAY - Shows when user achieves 100 score */}
+      {/* ================================================================== */}
+      {showCelebration && (
+        <div 
+          className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
+          style={{ 
+            background: 'radial-gradient(ellipse at center, rgba(16, 185, 129, 0.1) 0%, transparent 70%)'
+          }}
+        >
+          {/* Confetti particles animation */}
+          <div className="absolute inset-0 overflow-hidden">
+            {[...Array(50)].map((_, i) => (
+              <div
+                key={i}
+                className="absolute animate-confetti"
+                style={{
+                  left: `${Math.random() * 100}%`,
+                  top: `-20px`,
+                  width: `${8 + Math.random() * 8}px`,
+                  height: `${8 + Math.random() * 8}px`,
+                  background: ['#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#3b82f6', '#14b8a6'][Math.floor(Math.random() * 6)],
+                  borderRadius: Math.random() > 0.5 ? '50%' : '2px',
+                  animationDelay: `${Math.random() * 3}s`,
+                  animationDuration: `${3 + Math.random() * 2}s`,
+                }}
+              />
+            ))}
+          </div>
+
+          {/* Celebration Card */}
+          <div 
+            className="relative bg-gradient-to-br from-emerald-600 via-emerald-500 to-teal-500 rounded-3xl shadow-2xl p-8 max-w-md mx-4 transform animate-celebrate-bounce pointer-events-auto"
+            onClick={() => setShowCelebration(false)}
+          >
+            {/* Glow effect */}
+            <div className="absolute inset-0 rounded-3xl bg-gradient-to-br from-white/20 to-transparent" />
+            
+            {/* Star burst background */}
+            <div className="absolute inset-0 flex items-center justify-center opacity-20">
+              <div className="text-[200px] animate-spin-slow">✦</div>
+            </div>
+            
+            {/* Content */}
+            <div className="relative text-center">
+              {/* Trophy/Emoji */}
+              <div className="text-7xl mb-4 animate-bounce">
+                {celebrationMessage.emoji}
+              </div>
+              
+              {/* Score badge */}
+              <div className="inline-flex items-center gap-2 bg-white/20 backdrop-blur rounded-full px-4 py-1 mb-4">
+                <span className="text-white/80 text-sm font-medium">Score</span>
+                <span className="text-2xl font-bold text-white">100</span>
+                <span className="text-yellow-300">⭐</span>
+              </div>
+              
+              {/* Title */}
+              <h2 className="text-3xl font-bold text-white mb-2 drop-shadow-lg">
+                {celebrationMessage.title}
+              </h2>
+              
+              {/* Message */}
+              <p className="text-lg text-white/90 mb-6 leading-relaxed">
+                {celebrationMessage.message}
+              </p>
+              
+              {/* Dismiss hint */}
+              <div className="text-white/60 text-xs">
+                Click anywhere to dismiss • Auto-hides in 8 seconds
+              </div>
+            </div>
+            
+            {/* Decorative corner elements */}
+            <div className="absolute top-4 left-4 text-2xl opacity-60">🎊</div>
+            <div className="absolute top-4 right-4 text-2xl opacity-60">🎉</div>
+            <div className="absolute bottom-4 left-4 text-2xl opacity-60">✨</div>
+            <div className="absolute bottom-4 right-4 text-2xl opacity-60">🌟</div>
+          </div>
+        </div>
+      )}
+
+      {/* Celebration CSS Animations */}
+      <style>{`
+        @keyframes confetti-fall {
+          0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+          100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
+        }
+        @keyframes celebrate-bounce {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.02); }
+        }
+        @keyframes spin-slow {
+          from { transform: rotate(0deg); }
+          to { transform: rotate(360deg); }
+        }
+        .animate-confetti {
+          animation: confetti-fall linear forwards;
+        }
+        .animate-celebrate-bounce {
+          animation: celebrate-bounce 2s ease-in-out infinite;
+        }
+        .animate-spin-slow {
+          animation: spin-slow 20s linear infinite;
+        }
+      `}</style>
     </div>
   )
 }
@@ -1265,8 +1624,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   // Activity Panel Visibility
   const [showActivity, setShowActivity] = useState(true)
   
-  // Debug Panel for B+T+U (Base + TopUp + User prompts)
-  const [showDebugPanel, setShowDebugPanel] = useState(true)
+  // Prompt injection info (used internally, debug panel removed)
   const [promptInjectionInfo, setPromptInjectionInfo] = useState<Record<string, { B: boolean; T: boolean; U: boolean; source: string | null; key: string; strategy: string }>>({})
 
   // Text Formatting
@@ -1279,6 +1637,17 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   const [instructionPopoverKey, setInstructionPopoverKey] = useState<string | null>(null)
   const [showAllInstructionsModal, setShowAllInstructionsModal] = useState(false)
   const [lineHeight, setLineHeight] = useState('1.7')
+
+  // Help panel state
+  const [showHelpPanel, setShowHelpPanel] = useState(false)
+
+  // Confirmation modal state for clear/delete actions
+  const [confirmationModal, setConfirmationModal] = useState<{
+    isOpen: boolean
+    type: 'clear' | 'delete'
+    jurisdiction: string
+    inputValue: string
+  }>({ isOpen: false, type: 'clear', jurisdiction: '', inputValue: '' })
 
   // Inline Section Validation (Post-generation feedback)
   const [inlineValidationIssues, setInlineValidationIssues] = useState<Record<string, UnifiedValidationIssue[]>>({})
@@ -1426,8 +1795,55 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   const figureSequence = useMemo(() => Array.isArray((session as any)?.figureSequence) ? (session as any).figureSequence : [], [session])
   const figureSequenceFinalized = (session as any)?.figureSequenceFinalized || false
 
+  // Get preferred language for figures based on current jurisdiction
+  const preferredFigureLanguage = useMemo(() => {
+    const code = (activeJurisdiction || '').toUpperCase()
+    const status = (session as any)?.jurisdictionDraftStatus || {}
+    
+    // Check language mode
+    const languageMode = status.__languageMode
+    if (languageMode === 'individual_english_figures') {
+      // In this mode, figures are always in English
+      return 'en'
+    }
+    
+    // Check for jurisdiction-specific language
+    const jurisdictionLang = languageByCode[code] || status[code]?.language
+    if (jurisdictionLang) return jurisdictionLang
+    
+    // Check for common language
+    if (status.__figuresLanguage) return status.__figuresLanguage
+    if (status.__commonLanguage) return status.__commonLanguage
+    
+    return 'en' // Default fallback
+  }, [activeJurisdiction, languageByCode, session])
+
+  // Helper to find the best diagram source for a figureNo based on language preference
+  // Priority: 1) Exact language match, 2) English fallback
+  const findBestDiagramSource = useCallback((figureNo: number): any => {
+    // First try to find diagram in preferred language
+    let source = diagramSources.find((d: any) => 
+      d.figureNo === figureNo && d.language === preferredFigureLanguage
+    )
+    
+    // Fallback to English if no translation exists
+    if (!source) {
+      source = diagramSources.find((d: any) => 
+        d.figureNo === figureNo && (!d.language || d.language === 'en')
+      )
+    }
+    
+    // Ultimate fallback - any diagram with this figureNo
+    if (!source) {
+      source = diagramSources.find((d: any) => d.figureNo === figureNo)
+    }
+    
+    return source
+  }, [diagramSources, preferredFigureLanguage])
+
   // Build unified figures list using frozen sequence (matches export logic)
   // Returns { figures, hasAppended, missingCount } for warning computation
+  // Now uses language-aware diagram selection based on active jurisdiction
   const figuresData = useMemo(() => {
     const figures: Array<{
       figureNo: number
@@ -1436,6 +1852,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       imageUrl: string | null
       sourceId: string
       isNew?: boolean
+      displayLanguage?: string // Track which language version is displayed
     }> = []
     let hasAppended = false
     let missingCount = 0
@@ -1447,7 +1864,8 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       for (const seqItem of figureSequence) {
         if (seqItem.type === 'diagram') {
           const plan = figurePlans.find((f: any) => f.id === seqItem.sourceId)
-          const source = diagramSources.find((d: any) => d.figureNo === plan?.figureNo)
+          // Use language-aware diagram source selection
+          const source = plan ? findBestDiagramSource(plan.figureNo) : null
           if (plan) {
             let imgUrl: string | null = null
             if (source?.imageFilename) {
@@ -1465,7 +1883,9 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
               title: plan.title || `Figure ${seqItem.finalFigNo}`,
               type: 'diagram',
               imageUrl: imgUrl,
-              sourceId: seqItem.sourceId
+              sourceId: seqItem.sourceId,
+              // Track which language version is being displayed
+              displayLanguage: source?.language || 'en'
             })
           } else {
             // Diagram was deleted after freezing
@@ -1505,7 +1925,8 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       // Auto-append new diagrams added after sequence was finalized
       figurePlans.forEach((plan: any) => {
         if (!sequencedSourceIds.has(plan.id)) {
-          const source = diagramSources.find((d: any) => d.figureNo === plan.figureNo)
+          // Use language-aware diagram source selection
+          const source = findBestDiagramSource(plan.figureNo)
           let imgUrl: string | null = null
           if (source?.imageFilename) {
             imgUrl = `/api/projects/${patent?.project?.id ?? ''}/patents/${patent?.id ?? ''}/upload?filename=${encodeURIComponent(source.imageFilename)}`
@@ -1523,7 +1944,8 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             type: 'diagram',
             imageUrl: imgUrl,
             sourceId: plan.id,
-            isNew: true
+            isNew: true,
+            displayLanguage: source?.language || 'en'
           })
           hasAppended = true
         }
@@ -1547,7 +1969,8 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       // Fallback: use figurePlans sorted by figureNo, then append sketches
       const sortedPlans = [...figurePlans].sort((a: any, b: any) => a.figureNo - b.figureNo)
       for (const plan of sortedPlans) {
-        const source = diagramSources.find((d: any) => d.figureNo === plan.figureNo)
+        // Use language-aware diagram source selection
+        const source = findBestDiagramSource(plan.figureNo)
         let imgUrl: string | null = null
         if (source?.imageFilename) {
           imgUrl = `/api/projects/${patent?.project?.id ?? ''}/patents/${patent?.id ?? ''}/upload?filename=${encodeURIComponent(source.imageFilename)}`
@@ -1564,7 +1987,8 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           title: plan.title || `Figure ${plan.figureNo}`,
           type: 'diagram',
           imageUrl: imgUrl,
-          sourceId: plan.id
+          sourceId: plan.id,
+          displayLanguage: source?.language || 'en'
         })
       }
       // Append sketches after diagrams
@@ -1581,7 +2005,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     }
 
     return { figures, hasAppended, missingCount }
-  }, [figurePlans, diagramSources, sketchRecords, figureSequence, figureSequenceFinalized, patent])
+  }, [figurePlans, diagramSources, sketchRecords, figureSequence, figureSequenceFinalized, patent, findBestDiagramSource])
 
   // Extract figures and warning state from memoized data
   const unifiedFigures = figuresData.figures
@@ -2535,230 +2959,451 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     )
   }
 
-  return (
-    <div className="pb-24 pt-8 bg-[#F5F6F7] min-h-screen">
-      {/* Top Controls Bar */}
-      <div className="max-w-[850px] mx-auto mb-6 px-8 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-gray-900">Annexure Draft</h2>
-          <p className="text-sm text-gray-500">Review and edit your patent application.</p>
+  // Tooltip wrapper component for hover explanations
+  const Tooltip = ({ children, content, position = 'bottom' }: { children: React.ReactNode; content: string; position?: 'top' | 'bottom' | 'left' | 'right' }) => (
+    <div className="relative group/tooltip inline-flex">
+      {children}
+      <div className={`absolute z-50 invisible group-hover/tooltip:visible opacity-0 group-hover/tooltip:opacity-100 transition-all duration-200 pointer-events-none
+        ${position === 'bottom' ? 'top-full mt-2 left-1/2 -translate-x-1/2' : ''}
+        ${position === 'top' ? 'bottom-full mb-2 left-1/2 -translate-x-1/2' : ''}
+        ${position === 'left' ? 'right-full mr-2 top-1/2 -translate-y-1/2' : ''}
+        ${position === 'right' ? 'left-full ml-2 top-1/2 -translate-y-1/2' : ''}
+      `}>
+        <div className="bg-slate-900 text-white text-xs px-3 py-2 rounded-lg shadow-xl max-w-xs whitespace-normal leading-relaxed">
+          {content}
+          <div className={`absolute w-2 h-2 bg-slate-900 transform rotate-45
+            ${position === 'bottom' ? '-top-1 left-1/2 -translate-x-1/2' : ''}
+            ${position === 'top' ? '-bottom-1 left-1/2 -translate-x-1/2' : ''}
+            ${position === 'left' ? '-right-1 top-1/2 -translate-y-1/2' : ''}
+            ${position === 'right' ? '-left-1 top-1/2 -translate-y-1/2' : ''}
+          `} />
         </div>
-        <div className="flex items-center gap-3 flex-wrap">
-           {/* AI Persona Toggle with Writing Samples */}
-           <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-colors ${
-             usePersonaStyle 
-               ? 'bg-emerald-50 border-emerald-300' 
-               : 'bg-red-50 border-red-200'
-           }`}>
-            <button
-              onClick={() => setUsePersonaStyle(!usePersonaStyle)}
-              className={`relative w-10 h-5 rounded-full transition-colors ${
-                usePersonaStyle ? 'bg-emerald-500' : 'bg-red-400'
-              }`}
-              title={usePersonaStyle ? 'Style mimicry is ON' : 'Style mimicry is OFF'}
-            >
-              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                usePersonaStyle ? 'left-5' : 'left-0.5'
-              }`} />
-            </button>
-            <span className={`text-xs font-medium ${usePersonaStyle ? 'text-emerald-700' : 'text-red-600'}`}>
-              {usePersonaStyle ? '✓ Style ON' : '○ Style OFF'}
-            </span>
-            {/* Selected Persona Display */}
-            {personaSelection?.primaryPersonaName && (
-              <span className="text-xs text-gray-500 px-2 py-0.5 bg-gray-100 rounded">
-                {personaSelection.primaryPersonaName}
-                {personaSelection.secondaryPersonaNames?.length ? ` +${personaSelection.secondaryPersonaNames.length}` : ''}
-              </span>
-            )}
-            <button
-              onClick={() => setShowPersonaManager(true)}
-              className="px-2 py-0.5 text-xs rounded bg-blue-50 border border-blue-300 text-blue-600 hover:bg-blue-100"
-              title="Select writing persona (CSE, Bio, etc.)"
-            >
-              👤 Persona
-            </button>
-            <button
-              onClick={() => setShowWritingSamplesModal(true)}
-              className="px-2 py-0.5 text-xs rounded bg-white border border-gray-300 text-gray-600 hover:bg-gray-50"
-              title="Manage writing samples"
-            >
-              ✍️ Samples
-            </button>
-          </div>
+      </div>
+    </div>
+  )
 
-          {/* Auto-Mode Controls */}
-          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-colors ${
-            autoModeRunning
-              ? 'bg-amber-50 border-amber-300'
-              : autoMode 
-                ? 'bg-emerald-50 border-emerald-300' 
-                : 'bg-gray-50 border-gray-200'
-          }`}>
-            <button
-              onClick={() => setAutoMode(!autoMode)}
-              disabled={autoModeRunning}
-              className={`relative w-10 h-5 rounded-full transition-colors ${
-                autoMode ? 'bg-emerald-500' : 'bg-gray-300'
-              } ${autoModeRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
-              title={autoMode ? 'Auto-mode is ON' : 'Auto-mode is OFF'}
-            >
-              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                autoMode ? 'left-5' : 'left-0.5'
-              }`} />
-            </button>
-            <span className={`text-xs font-medium ${autoMode ? 'text-emerald-700' : 'text-gray-500'}`}>
-              {autoModeRunning ? '⏳ Generating...' : autoMode ? '🚀 Auto ON' : '○ Auto OFF'}
-            </span>
-            {autoMode && !autoModeRunning && (
-              <button
-                onClick={handleAutoGenerateAll}
-                disabled={loading}
-                className="px-3 py-1 text-xs rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 font-medium transition-colors disabled:opacity-50"
-              >
-                Generate All
-              </button>
-            )}
-            {autoModeRunning && (
-              <button
-                onClick={handleStopAutoMode}
-                className="px-3 py-1 text-xs rounded-lg bg-red-500 text-white hover:bg-red-600 font-medium transition-colors"
-              >
-                ⏹ Stop
-              </button>
-            )}
-          </div>
-          
-          {/* Auto-Mode Progress Indicator */}
-          {autoModeProgress && (
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50 border border-blue-200">
-              <div className="flex items-center gap-1">
-                <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                <span className="text-xs font-medium text-blue-700">
-                  {autoModeProgress.current}/{autoModeProgress.total}
-                </span>
+  // Check if delete is allowed (only when more than one jurisdiction)
+  const canDeleteJurisdiction = availableJurisdictions.filter(j => j !== 'REFERENCE').length > 1
+
+  return (
+    <div className="pb-24 pt-8 bg-[#F5F6F7] min-h-screen relative">
+      {/* Confirmation Modal for Clear/Delete Actions */}
+      {confirmationModal.isOpen && (
+        <div 
+          className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setConfirmationModal({ isOpen: false, type: 'clear', jurisdiction: '', inputValue: '' })
+            }
+          }}
+        >
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center gap-3 mb-4">
+              <div className={`p-2 rounded-full ${confirmationModal.type === 'delete' ? 'bg-red-100' : 'bg-amber-100'}`}>
+                {confirmationModal.type === 'delete' ? (
+                  <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                ) : (
+                  <svg className="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                )}
               </div>
-              <span className="text-xs text-blue-600 max-w-[150px] truncate">
-                {autoModeProgress.currentSection}
-              </span>
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  {confirmationModal.type === 'delete' ? 'Delete Jurisdiction Draft' : 'Clear Draft Content'}
+                </h3>
+                <p className="text-sm text-gray-500">
+                  {confirmationModal.type === 'delete' 
+                    ? `This will permanently remove ${confirmationModal.jurisdiction} from your drafting session.`
+                    : `This will clear all generated content for ${confirmationModal.jurisdiction}.`
+                  }
+                </p>
+              </div>
             </div>
-          )}
-
-          {/* Clear/Delete controls */}
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => handleDeleteDraft(activeJurisdiction, false)}
-              disabled={loading || deletingJurisdiction === activeJurisdiction || autoModeRunning}
-              className="inline-flex items-center rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:opacity-50"
-              title="Clear the generated draft for the active jurisdiction but keep it selected."
-            >
-              {deletingJurisdiction === activeJurisdiction ? 'Clearing…' : `Clear draft (${activeJurisdiction})`}
-            </button>
-            <button
-              type="button"
-              onClick={() => handleDeleteDraft(activeJurisdiction, true)}
-              disabled={loading || deletingJurisdiction === activeJurisdiction || autoModeRunning}
-              className="inline-flex items-center rounded-md border border-red-500 bg-white px-3 py-1.5 text-xs font-medium text-red-700 shadow-sm hover:bg-red-50 disabled:opacity-50"
-              title="Delete the draft and remove this jurisdiction from the drafting list."
-            >
-              {deletingJurisdiction === activeJurisdiction ? 'Deleting…' : `Delete & remove (${activeJurisdiction})`}
-            </button>
+            
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Type <span className="font-bold text-gray-900">"{confirmationModal.type === 'delete' ? 'DELETE' : 'CLEAR'}"</span> to confirm:
+              </label>
+              <input
+                type="text"
+                value={confirmationModal.inputValue}
+                onChange={(e) => setConfirmationModal(prev => ({ ...prev, inputValue: e.target.value.toUpperCase() }))}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500 text-sm"
+                placeholder={confirmationModal.type === 'delete' ? 'Type DELETE' : 'Type CLEAR'}
+                autoFocus
+              />
+            </div>
+            
+            <div className="flex justify-end gap-3">
+              <button
+                onClick={() => setConfirmationModal({ isOpen: false, type: 'clear', jurisdiction: '', inputValue: '' })}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={async () => {
+                  const expectedValue = confirmationModal.type === 'delete' ? 'DELETE' : 'CLEAR'
+                  if (confirmationModal.inputValue === expectedValue) {
+                    try {
+                      await handleDeleteDraft(confirmationModal.jurisdiction, confirmationModal.type === 'delete')
+                      setConfirmationModal({ isOpen: false, type: 'clear', jurisdiction: '', inputValue: '' })
+                    } catch (error) {
+                      console.error('Action failed:', error)
+                      alert(`Failed to ${confirmationModal.type} draft. Please try again.`)
+                    }
+                  }
+                }}
+                disabled={confirmationModal.inputValue !== (confirmationModal.type === 'delete' ? 'DELETE' : 'CLEAR')}
+                className={`px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  confirmationModal.type === 'delete' 
+                    ? 'bg-red-600 hover:bg-red-700 disabled:bg-red-400' 
+                    : 'bg-amber-600 hover:bg-amber-700 disabled:bg-amber-400'
+                }`}
+              >
+                {confirmationModal.type === 'delete' ? 'Delete Jurisdiction' : 'Clear Draft'}
+              </button>
+            </div>
           </div>
+        </div>
+      )}
 
-          {/* Custom Instructions Button */}
-          <button
-            onClick={() => setShowAllInstructionsModal(true)}
-            className={`p-2 rounded-full shadow-sm border transition-colors relative ${
-              Object.keys(userInstructions).length > 0
-                ? 'bg-violet-50 border-violet-200 text-violet-700'
-                : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-            }`}
-            title="Custom Instructions"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-            </svg>
-            {Object.keys(userInstructions).length > 0 && (
-              <span className="absolute -top-1 -right-1 w-3 h-3 bg-violet-500 rounded-full text-[8px] text-white flex items-center justify-center">
-                {Object.values(userInstructions).reduce((sum, j) => sum + Object.keys(j).length, 0)}
-              </span>
-            )}
-          </button>
-
-          {/* Formatting Button */}
-          <div className="relative">
-            <button
-              onClick={() => setShowFormatting(!showFormatting)}
-              className={`p-2 rounded-full shadow-sm border transition-colors ${
-                showFormatting
-                  ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
-                  : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-              }`}
-              title="Text Formatting"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+      {/* Help Panel - Fixed position in corner */}
+      {showHelpPanel && (
+        <div className="fixed bottom-4 right-4 z-40 w-80 bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden animate-in slide-in-from-bottom-4 duration-300">
+          <div className="bg-gradient-to-r from-indigo-600 to-purple-600 px-4 py-3 flex items-center justify-between">
+            <h3 className="text-white font-semibold flex items-center gap-2">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              Drafting Help
+            </h3>
+            <button onClick={() => setShowHelpPanel(false)} className="text-white/80 hover:text-white">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
+          </div>
+          <div className="p-4 max-h-96 overflow-y-auto text-sm space-y-4">
+            <div>
+              <h4 className="font-semibold text-gray-900 mb-1">📝 Writing Style</h4>
+              <p className="text-gray-600 text-xs">Control how AI generates content. Enable "Style" to match your selected persona's writing patterns.</p>
+            </div>
+            <div>
+              <h4 className="font-semibold text-gray-900 mb-1">👤 Persona</h4>
+              <p className="text-gray-600 text-xs">Select a writing persona (CSE, Bio, Chemistry) to guide the technical language and style.</p>
+            </div>
+            <div>
+              <h4 className="font-semibold text-gray-900 mb-1">✍️ Samples</h4>
+              <p className="text-gray-600 text-xs">Upload your own writing samples to train the AI on your preferred style.</p>
+            </div>
+            <div>
+              <h4 className="font-semibold text-gray-900 mb-1">🚀 Auto Mode</h4>
+              <p className="text-gray-600 text-xs">Automatically generate all sections sequentially. Great for initial drafts.</p>
+            </div>
+            <div>
+              <h4 className="font-semibold text-gray-900 mb-1">🌍 Multi-Jurisdiction</h4>
+              <p className="text-gray-600 text-xs">Draft for multiple countries. The Reference Draft is your master template that gets translated to country-specific versions.</p>
+            </div>
+            <div>
+              <h4 className="font-semibold text-gray-900 mb-1">🔬 AI Review</h4>
+              <p className="text-gray-600 text-xs">After generating, run AI Review to check for consistency, completeness, and patent-specific issues.</p>
+            </div>
+            <div className="pt-2 border-t border-gray-100">
+              <p className="text-gray-400 text-xs">Hover over any control for more details.</p>
+            </div>
+          </div>
+        </div>
+      )}
 
-            {/* Formatting Panel */}
-            {showFormatting && (
-              <div className="absolute right-0 mt-2 w-64 bg-white border border-gray-200 rounded-lg shadow-lg z-50 p-4">
-                <div className="space-y-4">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-2">Font Family</label>
-                    <select
-                      value={fontFamily}
-                      onChange={(e) => setFontFamily(e.target.value)}
-                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
-                    >
-                      <option value="serif">Serif (Times New Roman)</option>
-                      <option value="sans-serif">Sans Serif (Arial)</option>
-                      <option value="monospace">Monospace (Courier)</option>
-                      <option value="Georgia, serif">Georgia</option>
-                      <option value="system-ui, sans-serif">System UI</option>
-                    </select>
-                  </div>
+      {/* Top Controls Bar - Redesigned */}
+      <div className="max-w-[850px] mx-auto mb-6 px-8">
+        {/* Header Row */}
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-xl font-semibold text-gray-900">Annexure Draft</h2>
+            <p className="text-sm text-gray-500">Review and edit your patent application.</p>
+          </div>
+          
+          {/* Help Button */}
+          <Tooltip content="Open the help guide to learn about all the drafting tools and features available." position="left">
+            <button
+              onClick={() => setShowHelpPanel(!showHelpPanel)}
+              className={`p-2.5 rounded-full transition-all duration-200 ${
+                showHelpPanel 
+                  ? 'bg-indigo-100 text-indigo-700 ring-2 ring-indigo-300' 
+                  : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-indigo-600 shadow-sm'
+              }`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </button>
+          </Tooltip>
+        </div>
 
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-2">Font Size</label>
-                    <select
-                      value={fontSize}
-                      onChange={(e) => setFontSize(e.target.value)}
-                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
-                    >
-                      <option value="12px">Small (12px)</option>
-                      <option value="14px">Medium (14px)</option>
-                      <option value="15px">Default (15px)</option>
-                      <option value="16px">Large (16px)</option>
-                      <option value="18px">Extra Large (18px)</option>
-                    </select>
-                  </div>
+        {/* Controls Row - Organized into logical groups */}
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3">
+          <div className="flex flex-wrap items-center gap-3">
+            
+            {/* Group 1: Writing Style Controls */}
+            <div className="flex items-center gap-2 pr-3 border-r border-gray-200">
+              <Tooltip content="When enabled, AI will mimic the writing style of your selected persona, adapting tone, terminology, and structure to match." position="bottom">
+                <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors ${
+                  usePersonaStyle ? 'bg-emerald-50' : 'bg-gray-50'
+                }`}>
+                  <button
+                    onClick={() => setUsePersonaStyle(!usePersonaStyle)}
+                    className={`relative w-9 h-5 rounded-full transition-colors ${
+                      usePersonaStyle ? 'bg-emerald-500' : 'bg-gray-300'
+                    }`}
+                  >
+                    <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                      usePersonaStyle ? 'left-4' : 'left-0.5'
+                    }`} />
+                  </button>
+                  <span className={`text-xs font-medium ${usePersonaStyle ? 'text-emerald-700' : 'text-gray-500'}`}>
+                    Style
+                  </span>
+                </div>
+              </Tooltip>
 
-                  <div>
-                    <label className="block text-xs font-medium text-gray-700 mb-2">Line Spacing</label>
-                    <select
-                      value={lineHeight}
-                      onChange={(e) => setLineHeight(e.target.value)}
-                      className="w-full px-3 py-2 text-sm border border-gray-200 rounded-md focus:ring-indigo-500 focus:border-indigo-500"
-                    >
-                      <option value="1.3">Compact (1.3)</option>
-                      <option value="1.5">Normal (1.5)</option>
-                      <option value="1.7">Relaxed (1.7)</option>
-                      <option value="1.9">Spacious (1.9)</option>
-                      <option value="2.1">Very Spacious (2.1)</option>
-                    </select>
-                  </div>
+              <Tooltip content="Choose a writing persona (e.g., CSE, Bio, Chemistry) that defines the technical vocabulary and drafting patterns for your patent." position="bottom">
+                <button
+                  onClick={() => setShowPersonaManager(true)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border transition-colors ${
+                    personaSelection?.primaryPersonaName
+                      ? 'bg-blue-50 border-blue-200 text-blue-700'
+                      : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  <span>👤</span>
+                  <span className="font-medium">
+                    {personaSelection?.primaryPersonaName || 'Persona'}
+                  </span>
+                  {personaSelection?.secondaryPersonaNames?.length ? (
+                    <span className="text-[10px] bg-blue-200 text-blue-700 px-1 rounded">+{personaSelection.secondaryPersonaNames.length}</span>
+                  ) : null}
+                </button>
+              </Tooltip>
 
-                  <div className="flex justify-end pt-2 border-t border-gray-100">
-                    <button
-                      onClick={() => setShowFormatting(false)}
-                      className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-800 transition-colors"
-                    >
-                      Done
-                    </button>
-                  </div>
+              <Tooltip content="Upload and manage your own writing samples to train the AI on your unique drafting style." position="bottom">
+                <button
+                  onClick={() => setShowWritingSamplesModal(true)}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
+                >
+                  <span>✍️</span>
+                  <span className="font-medium">Samples</span>
+                </button>
+              </Tooltip>
+            </div>
+
+            {/* Group 2: Generation Controls */}
+            <div className="flex items-center gap-2 pr-3 border-r border-gray-200">
+              <Tooltip content="Enable Auto Mode to generate all draft sections automatically in sequence. Perfect for creating a complete first draft quickly." position="bottom">
+                <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg transition-colors ${
+                  autoModeRunning ? 'bg-amber-50' : autoMode ? 'bg-emerald-50' : 'bg-gray-50'
+                }`}>
+                  <button
+                    onClick={() => setAutoMode(!autoMode)}
+                    disabled={autoModeRunning}
+                    className={`relative w-9 h-5 rounded-full transition-colors ${
+                      autoMode ? 'bg-emerald-500' : 'bg-gray-300'
+                    } ${autoModeRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  >
+                    <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                      autoMode ? 'left-4' : 'left-0.5'
+                    }`} />
+                  </button>
+                  <span className={`text-xs font-medium ${autoMode ? 'text-emerald-700' : 'text-gray-500'}`}>
+                    {autoModeRunning ? '⏳ Running...' : 'Auto'}
+                  </span>
+                </div>
+              </Tooltip>
+
+              {autoMode && !autoModeRunning && (
+                <Tooltip content="Start generating all remaining sections automatically." position="bottom">
+                  <button
+                    onClick={handleAutoGenerateAll}
+                    disabled={loading}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 font-medium transition-colors disabled:opacity-50"
+                  >
+                    Generate All
+                  </button>
+                </Tooltip>
+              )}
+
+              {autoModeRunning && (
+                <>
+                  {autoModeProgress && (
+                    <div className="flex items-center gap-2 px-2 py-1 rounded bg-blue-50 border border-blue-100">
+                      <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                      <span className="text-xs font-medium text-blue-700">
+                        {autoModeProgress.current}/{autoModeProgress.total}
+                      </span>
+                      <span className="text-xs text-blue-600 max-w-[100px] truncate">
+                        {autoModeProgress.currentSection}
+                      </span>
+                    </div>
+                  )}
+                  <button
+                    onClick={handleStopAutoMode}
+                    className="px-3 py-1.5 text-xs rounded-lg bg-red-500 text-white hover:bg-red-600 font-medium transition-colors"
+                  >
+                    Stop
+                  </button>
+                </>
+              )}
+            </div>
+
+            {/* Group 3: Draft Management */}
+            <div className="flex items-center gap-2 pr-3 border-r border-gray-200">
+              <Tooltip content="Clear all generated content for the current jurisdiction while keeping it in your drafting list." position="bottom">
+                <button
+                  type="button"
+                  onClick={() => setConfirmationModal({ isOpen: true, type: 'clear', jurisdiction: activeJurisdiction, inputValue: '' })}
+                  disabled={loading || deletingJurisdiction === activeJurisdiction || autoModeRunning}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  <span className="font-medium">Clear</span>
+                </button>
+              </Tooltip>
+
+              <Tooltip content={canDeleteJurisdiction 
+                ? "Permanently delete this jurisdiction and remove it from your drafting session." 
+                : "Cannot delete - you must have at least one jurisdiction in your drafting session."
+              } position="bottom">
+                <button
+                  type="button"
+                  onClick={() => canDeleteJurisdiction && setConfirmationModal({ isOpen: true, type: 'delete', jurisdiction: activeJurisdiction, inputValue: '' })}
+                  disabled={loading || deletingJurisdiction === activeJurisdiction || autoModeRunning || !canDeleteJurisdiction}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg border transition-colors disabled:opacity-50 ${
+                    canDeleteJurisdiction
+                      ? 'border-red-200 bg-white text-red-600 hover:bg-red-50'
+                      : 'border-gray-200 bg-gray-50 text-gray-400 cursor-not-allowed'
+                  }`}
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                  <span className="font-medium">Delete</span>
+                </button>
+              </Tooltip>
+            </div>
+
+            {/* Group 4: Tools */}
+            <div className="flex items-center gap-2">
+              <Tooltip content="Add custom instructions for specific sections to guide the AI's output for this draft." position="bottom">
+                <button
+                  onClick={() => setShowAllInstructionsModal(true)}
+                  className={`p-2 rounded-lg border transition-colors relative ${
+                    Object.keys(userInstructions).length > 0
+                      ? 'bg-violet-50 border-violet-200 text-violet-700'
+                      : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                  }`}
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                  </svg>
+                  {Object.keys(userInstructions).length > 0 && (
+                    <span className="absolute -top-1 -right-1 w-4 h-4 bg-violet-500 rounded-full text-[9px] text-white flex items-center justify-center font-medium">
+                      {Object.values(userInstructions).reduce((sum, j) => sum + Object.keys(j).length, 0)}
+                    </span>
+                  )}
+                </button>
+              </Tooltip>
+
+              <Tooltip content="Customize the font family, size, and line spacing of the draft preview." position="bottom">
+                <div className="relative">
+                  <button
+                    onClick={() => setShowFormatting(!showFormatting)}
+                    className={`p-2 rounded-lg border transition-colors ${
+                      showFormatting
+                        ? 'bg-indigo-50 border-indigo-200 text-indigo-700'
+                        : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                    }`}
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+                    </svg>
+                  </button>
+
+                  {/* Formatting Panel */}
+                  {showFormatting && (
+                    <div className="absolute right-0 mt-2 w-64 bg-white border border-gray-200 rounded-xl shadow-xl z-50 p-4">
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-2">Font Family</label>
+                          <select
+                            value={fontFamily}
+                            onChange={(e) => setFontFamily(e.target.value)}
+                            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                          >
+                            <option value="serif">Serif (Times New Roman)</option>
+                            <option value="sans-serif">Sans Serif (Arial)</option>
+                            <option value="monospace">Monospace (Courier)</option>
+                            <option value="Georgia, serif">Georgia</option>
+                            <option value="system-ui, sans-serif">System UI</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-2">Font Size</label>
+                          <select
+                            value={fontSize}
+                            onChange={(e) => setFontSize(e.target.value)}
+                            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                          >
+                            <option value="12px">Small (12px)</option>
+                            <option value="14px">Medium (14px)</option>
+                            <option value="15px">Default (15px)</option>
+                            <option value="16px">Large (16px)</option>
+                            <option value="18px">Extra Large (18px)</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-medium text-gray-700 mb-2">Line Spacing</label>
+                          <select
+                            value={lineHeight}
+                            onChange={(e) => setLineHeight(e.target.value)}
+                            className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:ring-indigo-500 focus:border-indigo-500"
+                          >
+                            <option value="1.3">Compact (1.3)</option>
+                            <option value="1.5">Normal (1.5)</option>
+                            <option value="1.7">Relaxed (1.7)</option>
+                            <option value="1.9">Spacious (1.9)</option>
+                            <option value="2.1">Very Spacious (2.1)</option>
+                          </select>
+                        </div>
+
+                        <div className="flex justify-end pt-2 border-t border-gray-100">
+                          <button
+                            onClick={() => setShowFormatting(false)}
+                            className="px-3 py-1.5 text-xs font-medium text-indigo-600 hover:text-indigo-800 transition-colors"
+                          >
+                            Done
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </Tooltip>
+            </div>
+
+            {/* Active Jurisdiction Badge */}
+            {activeJurisdiction && (
+              <div className="ml-auto">
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-100 border border-slate-200">
+                  <span className="text-xs text-slate-500">Drafting:</span>
+                  <span className="text-xs font-semibold text-slate-700">{activeJurisdiction}</span>
                 </div>
               </div>
             )}
@@ -2793,8 +3438,10 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                 )}
               </button>
               
-              {/* Country jurisdiction tabs */}
-              {availableJurisdictions.map((code) => {
+              {/* Country jurisdiction tabs - exclude REFERENCE as it has its own dedicated tab above */}
+              {availableJurisdictions
+                .filter(code => code !== 'REFERENCE')
+                .map((code) => {
                 const isLocked = !session?.referenceDraftComplete
                 const hasTranslation = latestDrafts[code]?.version > 0
                 
@@ -2886,98 +3533,6 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
               )}
             </div>
           </div>
-        </div>
-      )}
-
-      {/* B+T+U Debug Panel - Testing Only */}
-      {showDebugPanel && (
-        <div className="max-w-[850px] mx-auto mb-4 px-8">
-          <div className="bg-gradient-to-r from-slate-800 to-slate-900 border border-slate-700 rounded-lg p-4 shadow-lg">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-mono bg-amber-500/20 text-amber-400 px-2 py-0.5 rounded">DEBUG</span>
-                <h3 className="text-sm font-semibold text-white">Prompt Injection Status (B+T+U)</h3>
-              </div>
-              <button
-                onClick={() => setShowDebugPanel(false)}
-                className="text-slate-400 hover:text-white text-xs"
-              >
-                Hide ✕
-              </button>
-            </div>
-            
-            {/* Legend */}
-            <div className="flex items-center gap-4 mb-3 text-xs">
-              <div className="flex items-center gap-1.5">
-                <span className="inline-block w-6 h-6 rounded bg-blue-600 text-white font-bold flex items-center justify-center text-[10px]">B</span>
-                <span className="text-slate-300">Base (Superset)</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="inline-block w-6 h-6 rounded bg-amber-500 text-white font-bold flex items-center justify-center text-[10px]">T</span>
-                <span className="text-slate-300">TopUp (Country)</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="inline-block w-6 h-6 rounded bg-emerald-500 text-white font-bold flex items-center justify-center text-[10px]">U</span>
-                <span className="text-slate-300">User Instructions</span>
-              </div>
-              <div className="flex items-center gap-1.5 ml-4">
-                <span className="inline-block w-2 h-2 rounded-full bg-cyan-400"></span>
-                <span className="text-slate-400 text-[10px]">DB</span>
-                <span className="inline-block w-2 h-2 rounded-full bg-violet-400 ml-2"></span>
-                <span className="text-slate-400 text-[10px]">JSON</span>
-              </div>
-            </div>
-            
-            {/* Section Status Grid */}
-            <div className="flex flex-wrap gap-2">
-              {Object.keys(promptInjectionInfo).length === 0 ? (
-                <div className="text-slate-500 text-xs italic">Generate sections to see prompt injection status...</div>
-              ) : (
-                Object.entries(promptInjectionInfo).map(([key, info]) => (
-                  <div key={key} className="bg-slate-700/50 rounded px-2 py-1.5 flex items-center gap-1.5" title={`Key: ${info.key}, Strategy: ${info.strategy}`}>
-                    <span className="text-slate-300 text-[10px] font-mono mr-1">{key.substring(0, 12)}{key.length > 12 ? '…' : ''}</span>
-                    <span className={`inline-block w-5 h-5 rounded text-[9px] font-bold flex items-center justify-center ${info.B ? 'bg-blue-600 text-white' : 'bg-slate-600 text-slate-400'}`}>B</span>
-                    <span className={`inline-block w-5 h-5 rounded text-[9px] font-bold flex items-center justify-center ${info.T ? 'bg-amber-500 text-white' : 'bg-slate-600 text-slate-400'}`}>T</span>
-                    <span className={`inline-block w-5 h-5 rounded text-[9px] font-bold flex items-center justify-center ${info.U ? 'bg-emerald-500 text-white' : 'bg-slate-600 text-slate-400'}`}>U</span>
-                    {info.T && info.source && (
-                      <span className={`inline-block w-2 h-2 rounded-full ${info.source === 'db' ? 'bg-cyan-400' : 'bg-violet-400'}`} title={`Source: ${info.source}`}></span>
-                    )}
-                  </div>
-                ))
-              )}
-            </div>
-            
-            {/* Active Profile Info */}
-            <div className="mt-3 pt-3 border-t border-slate-700">
-              <div className="flex items-center gap-4 text-xs">
-                <div className="text-slate-400">
-                  <span className="text-slate-500">Active:</span>{' '}
-                  <span className="text-emerald-400 font-semibold">{activeJurisdiction}</span>
-                </div>
-                <div className="text-slate-400">
-                  <span className="text-slate-500">Sections:</span>{' '}
-                  <span className="text-white">{sectionConfigs?.length || 0}</span>
-                  {usingFallback && <span className="text-amber-400 ml-1">(fallback)</span>}
-                </div>
-                <div className="text-slate-400">
-                  <span className="text-slate-500">Prompts Tracked:</span>{' '}
-                  <span className="text-white">{Object.keys(promptInjectionInfo).length}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* Toggle Debug Panel (if hidden) */}
-      {!showDebugPanel && (
-        <div className="max-w-[850px] mx-auto mb-2 px-8">
-          <button
-            onClick={() => setShowDebugPanel(true)}
-            className="text-xs text-slate-400 hover:text-slate-600 font-mono"
-          >
-            [Show B+T+U Debug Panel]
-          </button>
         </div>
       )}
 
@@ -3388,12 +3943,23 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                           </div>
                        </div>
                        <div className="mt-4 text-center max-w-xl">
-                         <div className="font-bold text-gray-900 uppercase tracking-widest text-sm flex items-center justify-center gap-2">
+                         <div className="font-bold text-gray-900 uppercase tracking-widest text-sm flex items-center justify-center gap-2 flex-wrap">
                            FIG. {figure.figureNo}
                            {figure.type === 'sketch' && (
                              <span className="text-xs font-normal text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">Sketch</span>
                            )}
                            {figure.isNew && <span className="text-xs font-normal text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">New</span>}
+                           {/* Show fallback indicator if using English when a different language is preferred */}
+                           {figure.type === 'diagram' && 
+                            figure.displayLanguage === 'en' && 
+                            preferredFigureLanguage !== 'en' && (
+                             <span 
+                               className="text-xs font-normal text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded"
+                               title={`No translation available for ${preferredFigureLanguage}. Using English version.`}
+                             >
+                               EN (no {preferredFigureLanguage.toUpperCase()} translation)
+                             </span>
+                           )}
                          </div>
                          {figure.title && <div className="text-sm text-gray-600 mt-1">{figure.title}</div>}
                        </div>
@@ -3403,8 +3969,11 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                </div>
             </div>
            
-            {/* Validation & Export Section (Multi-jurisdiction) */}
-            {isMultiJurisdiction && activeJurisdiction !== 'REFERENCE' && latestDrafts[activeJurisdiction]?.version > 0 && (
+            {/* Validation & Export Section (Multi-jurisdiction - including Reference Draft) */}
+            {isMultiJurisdiction && (
+              (activeJurisdiction === 'REFERENCE' && session?.referenceDraftComplete) ||
+              (activeJurisdiction !== 'REFERENCE' && latestDrafts[activeJurisdiction]?.version > 0)
+            ) && (
               <div className="mt-16 border-t pt-8">
                 <ValidationPanel
                   sessionId={session?.id || ''}
