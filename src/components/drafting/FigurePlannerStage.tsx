@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
   Bot, 
@@ -23,8 +23,41 @@ import {
   StarOff,
   Wand2,
   Grid3X3,
-  AlertCircle
+  AlertCircle,
+  GripVertical,
+  Layers,
+  Lock,
+  Unlock,
+  RotateCcw,
+  Info,
+  ExternalLink,
+  History,
+  Download,
+  UploadCloud,
+  HelpCircle,
+  Paintbrush
 } from 'lucide-react'
+
+// DnD Kit imports
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+  DragStartEvent,
+  DragOverlay
+} from '@dnd-kit/core'
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -34,6 +67,20 @@ import { Textarea } from '@/components/ui/textarea'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
+import dynamic from 'next/dynamic'
+
+// Dynamic import for ImageEditor (opens miniPaint for image editing)
+const ImageEditor = dynamic(() => import('@/components/ui/ImageEditor'), {
+  ssr: false,
+  loading: () => (
+    <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center">
+      <div className="text-white text-center">
+        <Loader2 className="w-10 h-10 animate-spin mx-auto mb-3" />
+        <p>Loading Image Editor...</p>
+      </div>
+    </div>
+  )
+})
 
 interface FigurePlannerStageProps {
   session: any
@@ -133,7 +180,19 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   const renderQueueRef = useRef<Promise<void>>(Promise.resolve())
 
   // === FIGURE PLANNER TAB STATE ===
-  const [activeTab, setActiveTab] = useState<'diagrams' | 'sketches'>('diagrams')
+  const [activeTab, setActiveTab] = useState<'diagrams' | 'sketches' | 'arrange'>('diagrams')
+  
+  // === ARRANGE TAB STATE ===
+  const [arrangedFigures, setArrangedFigures] = useState<any[]>([])
+  const [arrangeLoading, setArrangeLoading] = useState(false)
+  const [arrangeError, setArrangeError] = useState<string | null>(null)
+  const [isSequenceFinalized, setIsSequenceFinalized] = useState(false)
+  const [selectedArrangeFigure, setSelectedArrangeFigure] = useState<any | null>(null)
+  const [aiInsight, setAiInsight] = useState<string | null>(null)
+  const [aiReasons, setAiReasons] = useState<Array<{ id: string; title: string; reason: string; finalFigNo?: number }> | null>(null)
+  const [aiArranging, setAiArranging] = useState(false)
+  const [savingSequence, setSavingSequence] = useState(false)
+  const [showUnlockPrompt, setShowUnlockPrompt] = useState(false)
   
   // === SKETCH TAB STATE ===
   const [sketches, setSketches] = useState<any[]>([])
@@ -149,6 +208,17 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   const [modifyingSketchId, setModifyingSketchId] = useState<string | null>(null)
   const [modifySketchPrompt, setModifySketchPrompt] = useState('')
   const sketchFileInputRef = useRef<HTMLInputElement>(null)
+
+  // === IMAGE EDITOR STATE ===
+  const [imageEditorOpen, setImageEditorOpen] = useState(false)
+  const [editingImage, setEditingImage] = useState<{
+    type: 'diagram' | 'sketch'
+    id: string | number  // figureNo for diagrams, id for sketches
+    imagePath: string
+    title: string
+    originalImagePath?: string | null
+  } | null>(null)
+  const [savingEditedImage, setSavingEditedImage] = useState(false)
 
   const activeJurisdiction = (session?.activeJurisdiction || session?.draftingJurisdictions?.[0] || 'IN').toUpperCase()
 
@@ -314,6 +384,245 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
     }
   }, [activeTab, session?.id])
 
+  // === ARRANGE TAB EFFECTS AND FUNCTIONS ===
+  
+  // DnD Kit sensors
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 5, // 5px movement before drag starts
+      }
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  )
+
+  const [activeDragId, setActiveDragId] = useState<string | null>(null)
+
+  // Load combined figures when arrange tab is active
+  useEffect(() => {
+    if (activeTab === 'arrange' && session?.id) {
+      loadCombinedFigures()
+    }
+  }, [activeTab, session?.id])
+
+  const loadCombinedFigures = async () => {
+    if (!session?.id) return
+    
+    try {
+      setArrangeLoading(true)
+      setArrangeError(null)
+      
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'get_combined_figures',
+          sessionId: session.id
+        })
+      })
+      
+      if (!res.ok) throw new Error('Failed to load figures')
+      
+      const data = await res.json()
+      setArrangedFigures(data.figures || [])
+      setIsSequenceFinalized(data.isFinalized || false)
+      setAiReasons(null)
+      if (data.figures?.length > 0 && !selectedArrangeFigure) {
+        setSelectedArrangeFigure(data.figures[0])
+      }
+    } catch (err) {
+      setArrangeError(err instanceof Error ? err.message : 'Failed to load figures')
+    } finally {
+      setArrangeLoading(false)
+    }
+  }
+
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveDragId(event.active.id as string)
+  }
+
+  const handleDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event
+    setActiveDragId(null)
+
+    if (!over || active.id === over.id) return
+    if (isSequenceFinalized) return
+
+    const oldIndex = arrangedFigures.findIndex(f => f.id === active.id)
+    const newIndex = arrangedFigures.findIndex(f => f.id === over.id)
+
+    if (oldIndex !== -1 && newIndex !== -1) {
+      const newOrder = arrayMove(arrangedFigures, oldIndex, newIndex)
+      // Update finalFigNo for each item
+      const updatedOrder = newOrder.map((fig, idx) => ({
+        ...fig,
+        finalFigNo: idx + 1
+      }))
+      setArrangedFigures(updatedOrder)
+      
+      // Fix #4: Update selected figure to reflect new position
+      if (selectedArrangeFigure) {
+        const updatedSelected = updatedOrder.find(f => f.id === selectedArrangeFigure.id)
+        if (updatedSelected) {
+          setSelectedArrangeFigure(updatedSelected)
+        }
+      }
+      
+      // Auto-save the sequence
+      await saveSequence(updatedOrder)
+    }
+  }
+
+  const saveSequence = async (figures: any[]) => {
+    if (!session?.id) return
+    
+    try {
+      setSavingSequence(true)
+      const sequence = figures.map(f => ({
+        id: f.id,
+        type: f.type,
+        sourceId: f.sourceId,
+        finalFigNo: f.finalFigNo
+      }))
+
+      await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'save_figure_sequence',
+          sessionId: session.id,
+          sequence
+        })
+      })
+    } catch (err) {
+      console.error('Failed to save sequence:', err)
+    } finally {
+      setSavingSequence(false)
+    }
+  }
+
+  const handleAIArrange = async () => {
+    if (!session?.id) return
+    
+    try {
+      setAiArranging(true)
+      setArrangeError(null)
+      setAiInsight(null)
+      setAiReasons(null)
+      
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'ai_arrange_figures',
+          sessionId: session.id
+        })
+      })
+      
+      if (!res.ok) throw new Error('Failed to arrange figures')
+      
+      const data = await res.json()
+      if (data.sequence) {
+        setArrangedFigures(data.sequence)
+        setAiReasons(data.reasons || null)
+        // Fix #4: Preserve selection if possible, otherwise select first
+        if (selectedArrangeFigure) {
+          const updatedSelected = data.sequence.find((f: any) => f.id === selectedArrangeFigure.id)
+          setSelectedArrangeFigure(updatedSelected || data.sequence[0] || null)
+        } else if (data.sequence.length > 0) {
+          setSelectedArrangeFigure(data.sequence[0])
+        }
+      }
+      if (data.insight) {
+        setAiInsight(data.insight)
+        setAiReasons(data.reasons || null)
+      }
+      
+      // Save the AI-suggested sequence
+      if (data.sequence) {
+        await saveSequence(data.sequence)
+      }
+    } catch (err) {
+      setArrangeError(err instanceof Error ? err.message : 'Failed to arrange figures')
+    } finally {
+      setAiArranging(false)
+    }
+  }
+
+  const handleFinalizeSequence = async () => {
+    if (!session?.id) return
+    
+    try {
+      setSavingSequence(true)
+      
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'finalize_figure_sequence',
+          sessionId: session.id
+        })
+      })
+      
+      if (!res.ok) throw new Error('Failed to finalize sequence')
+      
+      setIsSequenceFinalized(true)
+    } catch (err) {
+      setArrangeError(err instanceof Error ? err.message : 'Failed to finalize sequence')
+    } finally {
+      setSavingSequence(false)
+    }
+  }
+
+  const handleUnlockSequence = async () => {
+    if (!session?.id) return
+    
+    try {
+      setSavingSequence(true)
+      
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'unlock_figure_sequence',
+          sessionId: session.id
+        })
+      })
+      
+      if (!res.ok) throw new Error('Failed to unlock sequence')
+      
+      setIsSequenceFinalized(false)
+    } catch (err) {
+      setArrangeError(err instanceof Error ? err.message : 'Failed to unlock sequence')
+    } finally {
+      setSavingSequence(false)
+    }
+  }
+
+  const handleResetSequence = async () => {
+    // Reload original order
+    await loadCombinedFigures()
+    setAiInsight(null)
+    setAiReasons(null)
+  }
+
   const loadSketches = async () => {
     if (!session?.id) return
     
@@ -341,6 +650,116 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
       setSketchError(err instanceof Error ? err.message : 'Failed to load sketches')
     } finally {
       setSketchesLoading(false)
+    }
+  }
+
+  // === IMAGE EDITOR FUNCTIONS ===
+  
+  // Open miniPaint Image Editor
+  const openImageEditor = (
+    type: 'diagram' | 'sketch',
+    id: string | number,
+    imagePath: string,
+    title: string,
+    originalImagePath?: string | null
+  ) => {
+    setEditingImage({ type, id, imagePath, title, originalImagePath })
+    setImageEditorOpen(true)
+  }
+
+  // Handle save from miniPaint Image Editor (receives base64 directly)
+  const handleImageEditorSave = async (base64: string, imageObject: any) => {
+    if (!editingImage) return
+    
+    try {
+      setSavingEditedImage(true)
+      setError(null)
+      
+      const updateRes = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'update_image',
+          sessionId: session?.id,
+          type: editingImage.type,
+          id: editingImage.id,
+          imageBase64: base64,
+          filename: `${editingImage.title.replace(/[^a-zA-Z0-9]/g, '_')}_edited.png`,
+          preserveOriginal: true
+        })
+      })
+      
+      if (!updateRes.ok) {
+        const errData = await updateRes.json()
+        throw new Error(errData.error || 'Failed to save edited image')
+      }
+      
+      // Close editor and refresh
+      setImageEditorOpen(false)
+      setEditingImage(null)
+      
+      // Refresh data based on type
+      if (editingImage.type === 'sketch') {
+        await loadSketches()
+      } else {
+        await onRefresh()
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save edited image')
+    } finally {
+      setSavingEditedImage(false)
+    }
+  }
+
+  // Close image editor without saving
+  const handleImageEditorClose = () => {
+    setImageEditorOpen(false)
+    setEditingImage(null)
+  }
+
+  // Restore original image
+  const restoreOriginalImage = async () => {
+    if (!editingImage || !editingImage.originalImagePath) return
+    
+    if (!confirm('Restore the original AI-generated image? This will discard your edits.')) return
+    
+    try {
+      setSavingEditedImage(true)
+      
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'restore_original_image',
+          sessionId: session?.id,
+          type: editingImage.type,
+          id: editingImage.id
+        })
+      })
+      
+      if (!res.ok) {
+        const errData = await res.json()
+        throw new Error(errData.error || 'Failed to restore original')
+      }
+      
+      setImageEditorOpen(false)
+      setEditingImage(null)
+      
+      if (editingImage.type === 'sketch') {
+        await loadSketches()
+      } else {
+        await onRefresh()
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to restore original')
+    } finally {
+      setSavingEditedImage(false)
     }
   }
 
@@ -628,13 +1047,34 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
         const startingFigNo = existingFigureCount + 1
 
         // Create a custom prompt that incorporates the user-provided instructions
-        let customPrompt = `You are an expert patent illustrator generating PlantUML diagrams for a patent specification in jurisdiction ${activeJurisdiction}.
-Return a JSON array of exactly ${overrideList.length} custom diagrams based on the user's specific instructions.
-Each item must be: {"title":"Fig.X - descriptive title","purpose":"brief explanation of what this shows","plantuml":"@startuml...@enduml"}.
+        let customPrompt = `You are an expert patent illustrator generating simple block diagrams for a patent specification in jurisdiction ${activeJurisdiction}.
+Your task is to generate PlantUML diagrams that follow the user's specific instructions for new figures.
 
-These new figures will be numbered starting from Fig.${startingFigNo}.
+OUTPUT FORMAT (VERY IMPORTANT)
+- Output a JSON array of exactly ${overrideList.length} items.
+- Do NOT include markdown code fences, backticks, comments, or any extra text.
+- Each item must be an object with keys "title", "purpose", and "plantuml".
+- "title" must start with "Fig.X - " where X is the figure number (starting at ${startingFigNo} and increasing by 1).
+- "purpose" is one short sentence (max 200 characters) describing what the figure shows.
+- "plantuml" is a single PlantUML diagram between @startuml and @enduml, as a JSON string (you may use real newlines inside the string).
 
-User-provided instructions for each NEW figure:
+Minimal example of a single item (structure only):
+[
+  {
+    "title": "Fig.${startingFigNo} - Custom figure",
+    "purpose": "Brief explanation of what this figure shows.",
+    "plantuml": "@startuml
+scale max 1890x2917
+rectangle \"System 100\" as S100
+@enduml"
+  }
+]
+
+NUMBERING
+- These new figures will be numbered starting from Fig.${startingFigNo}.
+- Use titles like "Fig.${startingFigNo} - ...", "Fig.${startingFigNo + 1} - ...", etc., in order.
+
+USER INSTRUCTIONS FOR EACH NEW FIGURE
 ${overrideList.map((instruction, index) => `Fig.${startingFigNo + index}: ${instruction}`).join('\n')}`
 
         // Include existing figures context if checkbox is checked
@@ -671,9 +1111,9 @@ COMPONENTS & LABELING
 - Minimum text size: ${minTextSize} pt.
 
 ═══════════════════════════════════════════════════════════════════════════════
-PLANTUML SYNTAX RULES (ERRORS TO AVOID)
+DIAGRAM SYNTAX RULES (ERRORS TO AVOID)
 ═══════════════════════════════════════════════════════════════════════════════
-FORBIDDEN (will cause render failure):
+FORBIDDEN (will cause render failure or visual clutter):
 ✗ !theme, !include, !import, !pragma directives
 ✗ skinparam blocks or statements
 ✗ title, caption, header, footer inside the diagram
@@ -682,6 +1122,8 @@ FORBIDDEN (will cause render failure):
 ✗ Unclosed blocks (every "if" needs "endif", every "note" needs "end note")
 ✗ Multiple or nested @startuml/@enduml pairs (exactly ONE pair per diagram)
 ✗ Undefined aliases or dangling arrows
+✗ ANY "note" elements - no notes, no floating notes, no notes attached to components (these render as yellow boxes and clutter the diagram)
+✗ Comments or annotations on components
 
 ALLOWED (only these style directives):
 ✓ scale max 1890x2917 (for A4 fit)
@@ -698,12 +1140,14 @@ LAYOUT PRINCIPLES
 ═══════════════════════════════════════════════════════════════════════════════
 SELF-VALIDATION (DO THIS BEFORE RESPONDING)
 ═══════════════════════════════════════════════════════════════════════════════
-Before outputting, mentally verify:
+Before outputting, mentally COMPILE AND VALIDATE your code:
 1. ✓ All referenced components exist in the provided list?
-2. ✓ No forbidden directives (!theme, skinparam, title, etc.)?
+2. ✓ No forbidden directives (!theme, skinparam, title, note, etc.)?
 3. ✓ All connections have both endpoints?
 4. ✓ All blocks are properly closed?
 5. ✓ Exactly one @startuml/@enduml pair per diagram?
+6. ✓ NO "note" statements of any kind (no yellow comment boxes)?
+7. ✓ Mentally trace through code line-by-line to verify syntax correctness?
 
 Output: JSON array only, no markdown fences, no explanations.`
 
@@ -765,9 +1209,28 @@ Output: JSON array only, no markdown fences, no explanations.`
       ]
       const allowedPageSizes = allowedPageSizeList.join(', ')
 
-      const prompt = `You are an expert patent illustrator generating PlantUML diagrams for a patent specification in jurisdiction ${activeJurisdiction}.
-Return a JSON array of exactly ${diagramCount} simple, standard patent-style diagrams (no fancy rendering).
-Each item must be: {"title":"Fig.X - title","purpose":"brief explanation of what this shows","plantuml":"@startuml...@enduml"}.
+      const prompt = `You are an expert patent illustrator generating simple block diagrams for a patent specification in jurisdiction ${activeJurisdiction}.
+Your task is to propose clear PlantUML block diagrams that can be rendered directly without manual fixes.
+
+OUTPUT FORMAT (VERY IMPORTANT)
+- Output a JSON array of exactly ${diagramCount} items.
+- Do NOT include markdown code fences, backticks, comments, or any extra text.
+- Each item must be an object with keys "title", "purpose", and "plantuml".
+- "title" must start with "Fig.X - " where X is the figure number (1-based, in order).
+- "purpose" is one short sentence (max 200 characters) describing what the figure shows.
+- "plantuml" is a single PlantUML diagram between @startuml and @enduml, as a JSON string (you may use real newlines inside the string).
+
+Minimal example of a single item (structure only):
+[
+  {
+    "title": "Fig.1 - System overview",
+    "purpose": "Shows main components and data flow.",
+    "plantuml": "@startuml
+scale max 1890x2917
+rectangle \"System 100\" as S100
+@enduml"
+  }
+]
 
 ═══════════════════════════════════════════════════════════════════════════════
 CRITICAL: SEQUENTIAL ZOOM-IN HIERARCHY (MANDATORY)
@@ -814,17 +1277,31 @@ The following claims define the legal scope of this patent. Design figures that:
 ${claimsContext}
 ` : ''}
 ═══════════════════════════════════════════════════════════════════════════════
-PLANTUML SYNTAX RULES (ERRORS TO AVOID)
+DIAGRAM SYNTAX RULES (CRITICAL)
 ═══════════════════════════════════════════════════════════════════════════════
-FORBIDDEN (will cause render failure):
-✗ !theme, !include, !import, !pragma directives
-✗ skinparam blocks or statements
-✗ title, caption, header, footer inside the diagram
-✗ Mixing [hidden] with directions (wrong: "-[hidden]down-", correct: "-[hidden]-" OR "-down-")
-✗ Incomplete connections (wrong: "500 --", correct: "500 --> 600")
-✗ Unclosed blocks (every "if" needs "endif", every "note" needs "end note")
-✗ Multiple or nested @startuml/@enduml pairs (exactly ONE pair per diagram)
-✗ Undefined aliases or dangling arrows
+To ensure the diagrams render correctly, please follow these rules:
+
+1. ARROW DIRECTIONS: Use "-down->", "-up->", "-left->", "-right->" for layout control.
+   - CORRECT: A -down-> B
+   - CORRECT: A -[hidden]- B
+   - INCORRECT: A -[hidden]down- B (Do not mix [hidden] with direction)
+
+2. CONNECTIONS: Always specify both endpoints.
+   - CORRECT: 500 --> 600
+   - INCORRECT: 500 -- (Dangling connection)
+
+3. BLOCKS: Close all blocks properly.
+   - matching "endif" for every "if"
+   - matching "end" for every "start"
+
+4. STRUCTURE:
+   - Exactly ONE @startuml and ONE @enduml per diagram.
+   - NO "note" elements (they create visual clutter).
+   - NO comments on components.
+
+5. CONTENT:
+   - Use ONLY provided components/numerals.
+   - Do not invent new components.
 
 ALLOWED (only these style directives):
 ✓ scale max 1890x2917 (for A4 fit)
@@ -843,14 +1320,15 @@ LAYOUT PRINCIPLES
 ═══════════════════════════════════════════════════════════════════════════════
 SELF-VALIDATION (DO THIS BEFORE RESPONDING)
 ═══════════════════════════════════════════════════════════════════════════════
-Before outputting, mentally verify:
+Before outputting, mentally COMPILE AND VALIDATE your code:
 1. ✓ Figures are ordered broad→specific (zoom-in sequence)?
 2. ✓ All referenced components exist in the provided list?
-3. ✓ No forbidden directives (!theme, skinparam, title, etc.)?
+3. ✓ No forbidden directives (!theme, skinparam, title, note, etc.)?
 4. ✓ All connections have both endpoints?
 5. ✓ All blocks are properly closed?
-6. ✓ Exactly one @startuml/@enduml pair per diagram?${claimsContext ? `
-7. ✓ Diagrams illustrate the frozen claims where applicable?` : ''}
+6. ✓ Exactly one @startuml/@enduml pair per diagram?
+7. ✓ Mentally trace through code line-by-line to verify syntax correctness?${claimsContext ? `
+8. ✓ Diagrams illustrate the frozen claims where applicable?` : ''}
 
 Output: JSON array only, no markdown fences, no explanations.`
 
@@ -1004,7 +1482,7 @@ Output: JSON array only, no markdown fences, no explanations.`
   }
 
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       className="p-8 max-w-7xl mx-auto space-y-8"
@@ -1034,7 +1512,7 @@ Output: JSON array only, no markdown fences, no explanations.`
             }`}
           >
             <Code className="w-4 h-4" />
-            Diagrams (PlantUML)
+            Diagrams
             {diagramSources.length > 0 && (
               <Badge variant="secondary" className="ml-1">{diagramSources.length}</Badge>
             )}
@@ -1049,8 +1527,22 @@ Output: JSON array only, no markdown fences, no explanations.`
           >
             <Pencil className="w-4 h-4" />
             Sketches (AI Generated)
-            {sketches.length > 0 && (
-              <Badge variant="secondary" className="ml-1">{sketches.length}</Badge>
+            {sketches.filter(s => s.status === 'SUCCESS').length > 0 && (
+              <Badge variant="secondary" className="ml-1">{sketches.filter(s => s.status === 'SUCCESS').length}</Badge>
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab('arrange')}
+            className={`py-4 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors ${
+              activeTab === 'arrange'
+                ? 'border-indigo-600 text-indigo-600'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+            }`}
+          >
+            <Layers className="w-4 h-4" />
+            Arrange
+            {isSequenceFinalized && (
+              <Lock className="w-3 h-3 text-green-600" />
             )}
           </button>
         </nav>
@@ -1300,7 +1792,18 @@ Output: JSON array only, no markdown fences, no explanations.`
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {diagramSources
               .sort((a: any, b: any) => a.figureNo - b.figureNo)
-              .map((d: any) => (
+              .map((d: any) => {
+                const plan = figurePlans.find((f: any) => f.figureNo === d.figureNo)
+                const previewUrl = renderPreview[d.figureNo] as string | undefined
+                const serverImageUrl = d.imageFilename
+                  ? `/api/projects/${patent.project.id}/patents/${patent.id}/upload?filename=${encodeURIComponent(d.imageFilename)}`
+                  : undefined
+                const displayUrl = previewUrl || serverImageUrl
+                const editorImageUrl = previewUrl && !previewUrl.startsWith('blob:')
+                  ? previewUrl
+                  : serverImageUrl || previewUrl
+
+                return (
               <Card key={d.figureNo} className="overflow-hidden hover:shadow-lg transition-all duration-300">
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
@@ -1314,7 +1817,6 @@ Output: JSON array only, no markdown fences, no explanations.`
                   {/* Caption (Title) - shown prominently */}
                   <CardTitle className="text-base font-semibold text-gray-900 mt-2 line-clamp-2">
                     {(() => {
-                      const plan = figurePlans.find((f: any) => f.figureNo === d.figureNo)
                       const caption = plan?.title || `Figure ${d.figureNo}`
                       // Remove redundant "Fig. X" prefix from caption if present
                       return caption.replace(/^(Fig\.?\s*\d+\s*[-:–]\s*)/i, '').trim() || caption
@@ -1327,7 +1829,7 @@ Output: JSON array only, no markdown fences, no explanations.`
                   {(renderPreview[d.figureNo] || (d.imageFilename && !processingStatus[d.figureNo])) ? (
                     <>
                       <img 
-                        src={(renderPreview[d.figureNo] as string) || `/api/projects/${patent.project.id}/patents/${patent.id}/upload?filename=${encodeURIComponent(d.imageFilename)}`} 
+                        src={displayUrl || ''} 
                         alt={`Fig ${d.figureNo}`}
                         className="w-full h-64 object-contain bg-white"
                       />
@@ -1335,7 +1837,18 @@ Output: JSON array only, no markdown fences, no explanations.`
                         <Button variant="secondary" size="sm" onClick={() => setExpandedFigNo(d.figureNo)}>
                           <Eye className="w-4 h-4 mr-2" /> Expand
                         </Button>
-                  </div>
+                        <Button 
+                          variant="secondary" 
+                          size="sm" 
+                          onClick={() => {
+                            const imagePath = editorImageUrl || displayUrl || ''
+                            openImageEditor('diagram', d.figureNo, imagePath, plan?.title || `Figure ${d.figureNo}`, d.originalImagePath)
+                          }}
+                          title="Edit this image in miniPaint - add/remove labels, erase, draw shapes"
+                        >
+                          <Paintbrush className="w-4 h-4 mr-2" /> Edit
+                        </Button>
+                      </div>
                     </>
                   ) : (
                   <div className="flex flex-col items-center p-6 text-center">
@@ -1413,10 +1926,29 @@ Output: JSON array only, no markdown fences, no explanations.`
                   )
                 })()}
 
-                <div className="p-3 bg-white border-t grid grid-cols-2 gap-2">
+                <div className="p-3 bg-white border-t grid grid-cols-3 gap-2">
                   <Button variant="ghost" size="sm" className="w-full" onClick={() => { setModifyFigNo(d.figureNo); setModifyTextSaved('') }}>
-                    <Edit2 className="w-4 h-4 mr-2" /> Modify
+                    <Edit2 className="w-4 h-4 mr-2" /> Modify (AI)
                   </Button>
+                  {/* Edit Image button - visible when image exists */}
+                  {(renderPreview[d.figureNo] || d.imageFilename) ? (
+                    <Button 
+                      variant="ghost" 
+                      size="sm" 
+                      className="w-full text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
+                      onClick={() => {
+                        const imagePath = editorImageUrl || displayUrl || ''
+                        openImageEditor('diagram', d.figureNo, imagePath, plan?.title || `Figure ${d.figureNo}`, d.originalImagePath)
+                      }}
+                      title="Edit image in miniPaint - add/remove labels, erase, draw"
+                    >
+                      <Paintbrush className="w-4 h-4 mr-2" /> Edit Image
+                    </Button>
+                  ) : (
+                    <Button variant="ghost" size="sm" className="w-full" disabled>
+                      <Paintbrush className="w-4 h-4 mr-2 opacity-50" /> Edit Image
+                    </Button>
+                  )}
                   <Button variant="ghost" size="sm" className="w-full text-red-600 hover:text-red-700 hover:bg-red-50" 
                     onClick={async () => {
                       if(!confirm('Delete this figure?')) return
@@ -1484,7 +2016,7 @@ Output: JSON array only, no markdown fences, no explanations.`
                 )}
                 </div>
               </Card>
-            ))}
+              )})}
                       </div>
                     )}
                       </div>
@@ -1955,7 +2487,12 @@ Output: JSON array only, no markdown fences, no explanations.`
               </Card>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {sketches.filter(s => s.status !== 'SUGGESTED').map((sketch) => (
+                {sketches.filter((s) => s.status !== 'SUGGESTED').map((sketch) => {
+                  const sketchImageUrl = sketch.imageFilename
+                    ? `/api/projects/${patent.project.id}/patents/${patent.id}/upload?filename=${encodeURIComponent(sketch.imageFilename)}`
+                    : sketch.imagePath
+
+                  return (
                   <motion.div
                     key={sketch.id}
                     initial={{ opacity: 0, scale: 0.95 }}
@@ -1968,7 +2505,7 @@ Output: JSON array only, no markdown fences, no explanations.`
                       {/* Image Preview */}
                       <div
                         className="relative aspect-square bg-gray-100 cursor-pointer"
-                        onClick={() => sketch.imagePath && setExpandedSketchId(sketch.id)}
+                        onClick={() => sketchImageUrl && setExpandedSketchId(sketch.id)}
                       >
                         {sketch.status === 'PENDING' ? (
                           <div className="absolute inset-0 flex items-center justify-center">
@@ -1991,9 +2528,9 @@ Output: JSON array only, no markdown fences, no explanations.`
                               Retry
                             </Button>
                           </div>
-                        ) : sketch.imagePath ? (
+                        ) : sketchImageUrl ? (
                           <img
-                            src={sketch.imagePath}
+                            src={sketchImageUrl || ''}
                             alt={sketch.title}
                             className="w-full h-full object-contain"
                           />
@@ -2004,10 +2541,23 @@ Output: JSON array only, no markdown fences, no explanations.`
                         )}
 
                         {/* Hover overlay */}
-                        {sketch.imagePath && sketch.status === 'SUCCESS' && (
+                        {sketchImageUrl && sketch.status === 'SUCCESS' && (
                           <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                            <Button size="sm" variant="secondary">
+                            <Button size="sm" variant="secondary" onClick={(e) => { e.stopPropagation(); setExpandedSketchId(sketch.id) }}>
                               <Eye className="w-4 h-4" />
+                            </Button>
+                            <Button 
+                              size="sm" 
+                              variant="secondary"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                if (sketchImageUrl) {
+                                  openImageEditor('sketch', sketch.id, sketchImageUrl, sketch.title, sketch.originalImagePath)
+                                }
+                              }}
+                              title="Edit this sketch in miniPaint"
+                            >
+                              <Paintbrush className="w-4 h-4" />
                             </Button>
                           </div>
                         )}
@@ -2046,12 +2596,28 @@ Output: JSON array only, no markdown fences, no explanations.`
                             variant="ghost"
                             className="h-8 w-8 p-0"
                             onClick={() => handleToggleFavorite(sketch.id)}
+                            title="Toggle favorite"
                           >
                             {sketch.isFavorite ? (
                               <Star className="w-4 h-4 text-yellow-500 fill-yellow-500" />
                             ) : (
                               <StarOff className="w-4 h-4 text-gray-400" />
                             )}
+                          </Button>
+                          {/* Edit Image button */}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 w-8 p-0"
+                            onClick={() => {
+                              if (sketchImageUrl) {
+                                openImageEditor('sketch', sketch.id, sketchImageUrl, sketch.title, sketch.originalImagePath)
+                              }
+                            }}
+                            disabled={!sketchImageUrl || sketch.status !== 'SUCCESS'}
+                            title="Edit image in miniPaint"
+                          >
+                            <Paintbrush className={`w-4 h-4 ${sketchImageUrl && sketch.status === 'SUCCESS' ? 'text-indigo-500' : 'text-gray-300'}`} />
                           </Button>
                           <Button
                             size="sm"
@@ -2062,6 +2628,7 @@ Output: JSON array only, no markdown fences, no explanations.`
                               setModifySketchPrompt('')
                             }}
                             disabled={sketch.status !== 'SUCCESS'}
+                            title="Modify with AI"
                           >
                             <Edit2 className="w-4 h-4 text-gray-400" />
                           </Button>
@@ -2070,6 +2637,7 @@ Output: JSON array only, no markdown fences, no explanations.`
                             variant="ghost"
                             className="h-8 w-8 p-0"
                             onClick={() => handleDeleteSketch(sketch.id)}
+                            title="Delete sketch"
                           >
                             <Trash2 className="w-4 h-4 text-gray-400" />
                           </Button>
@@ -2077,7 +2645,8 @@ Output: JSON array only, no markdown fences, no explanations.`
                       </CardContent>
                     </Card>
                   </motion.div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>
@@ -2086,7 +2655,11 @@ Output: JSON array only, no markdown fences, no explanations.`
           <AnimatePresence>
             {expandedSketchId && (() => {
               const sketch = sketches.find(s => s.id === expandedSketchId)
-              if (!sketch?.imagePath) return null
+              if (!sketch) return null
+              const modalSketchImageUrl = sketch.imageFilename
+                ? `/api/projects/${patent.project.id}/patents/${patent.id}/upload?filename=${encodeURIComponent(sketch.imageFilename)}`
+                : sketch.imagePath
+              if (!modalSketchImageUrl) return null
 
               return (
                 <motion.div
@@ -2116,7 +2689,7 @@ Output: JSON array only, no markdown fences, no explanations.`
                     </div>
                     <div className="flex-1 overflow-auto p-4 bg-gray-100 flex items-center justify-center">
                       <img
-                        src={sketch.imagePath}
+                        src={modalSketchImageUrl}
                         alt={sketch.title}
                         className="max-w-full h-auto shadow-lg"
                       />
@@ -2153,6 +2726,10 @@ Output: JSON array only, no markdown fences, no explanations.`
               const sketch = sketches.find(s => s.id === modifyingSketchId)
               if (!sketch) return null
 
+              const modalSketchImageUrl = sketch.imageFilename
+                ? `/api/projects/${patent.project.id}/patents/${patent.id}/upload?filename=${encodeURIComponent(sketch.imageFilename)}`
+                : sketch.imagePath
+
               return (
                 <motion.div
                   initial={{ opacity: 0 }}
@@ -2173,10 +2750,10 @@ Output: JSON array only, no markdown fences, no explanations.`
                       Describe the changes you want to make to "{sketch.title}"
                     </p>
                     
-                    {sketch.imagePath && (
+                    {modalSketchImageUrl && (
                       <div className="mb-4 p-2 bg-gray-100 rounded">
                         <img
-                          src={sketch.imagePath}
+                          src={modalSketchImageUrl}
                           alt={sketch.title}
                           className="max-h-32 mx-auto"
                         />
@@ -2224,10 +2801,430 @@ Output: JSON array only, no markdown fences, no explanations.`
           </AnimatePresence>
         </div>
       )}
+
+      {/* ARRANGE TAB CONTENT */}
+      {activeTab === 'arrange' && (
+        <div className="space-y-6">
+          {/* Arrange Error Alert */}
+          {arrangeError && (
+            <Alert variant="destructive">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{arrangeError}</AlertDescription>
+            </Alert>
+          )}
+
+          {/* Header with instruction */}
+          <div className="border-b border-gray-200 pb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-gray-600">
+                Combine and order your figures for the final specification.
+              </p>
+              <p className="text-sm text-gray-500 mt-1">
+                {isSequenceFinalized 
+                  ? 'Sequence is finalized. Unlock to make changes.'
+                  : 'Drag to reorder. Changes are saved automatically.'}
+              </p>
+              <p className="text-xs text-gray-500 mt-1">
+                Tip: Click, hold, and drag anywhere on a figure card to reorder.
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleAIArrange}
+              disabled={isSequenceFinalized || aiArranging || arrangedFigures.length < 2}
+              className="shrink-0"
+            >
+              {aiArranging ? (
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+              ) : (
+                <Sparkles className="w-4 h-4 mr-2" />
+              )}
+              Suggest Order
+            </Button>
+          </div>
+
+          {/* AI Insight Banner - only show when present */}
+          {aiInsight && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-slate-50 border border-slate-200 rounded-lg p-4 flex flex-col gap-3"
+            >
+                <div className="flex items-start gap-3">
+                  <Info className="w-5 h-5 text-slate-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-slate-700">{aiInsight}</p>
+                </div>
+                {aiReasons && aiReasons.length > 0 && (
+                  <div className="space-y-2">
+                    <p className="text-xs text-slate-500">
+                      Follow the numbered order below (top to bottom).
+                    </p>
+                    <ol className="space-y-2">
+                      {aiReasons
+                        .slice()
+                        .sort((a, b) => (a.finalFigNo || 0) - (b.finalFigNo || 0))
+                        .map((r) => (
+                          <li key={r.id} className="rounded-md border border-slate-200 bg-white p-3">
+                            <div className="flex items-start gap-2">
+                              <span className="text-xs font-semibold text-slate-600 px-2 py-1 rounded bg-slate-100">
+                                {r.finalFigNo ? `#${r.finalFigNo}` : '?'}
+                              </span>
+                              <div>
+                                <div className="text-sm font-semibold text-slate-800">
+                                  {r.title}
+                                </div>
+                                <div className="text-sm text-slate-700 leading-relaxed mt-0.5">{r.reason}</div>
+                              </div>
+                            </div>
+                          </li>
+                        ))}
+                    </ol>
+                  </div>
+                )}
+            </motion.div>
+          )}
+
+          {arrangeLoading ? (
+            <div className="flex items-center justify-center py-16">
+              <Loader2 className="w-8 h-8 animate-spin text-gray-400" />
+            </div>
+          ) : arrangedFigures.length === 0 ? (
+            <Card className="border-dashed">
+              <CardContent className="py-12 text-center">
+                <Layers className="w-12 h-12 mx-auto text-gray-300 mb-4" />
+                <h4 className="text-lg font-medium text-gray-900 mb-2">No figures to arrange</h4>
+                <p className="text-gray-500">
+                  Generate diagrams or sketches first, then return here to arrange them.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Left: Sortable List */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-medium text-gray-700 uppercase tracking-wide">
+                    Figure Order
+                  </h3>
+                  <span className="text-xs text-gray-500">
+                    {arrangedFigures.length} figure{arrangedFigures.length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+
+                <DndContext
+                  sensors={sensors}
+                  collisionDetection={closestCenter}
+                  onDragStart={handleDragStart}
+                  onDragEnd={handleDragEnd}
+                >
+                  <SortableContext
+                    items={arrangedFigures.map(f => f.id)}
+                    strategy={verticalListSortingStrategy}
+                    disabled={isSequenceFinalized}
+                  >
+                    <div className="space-y-2">
+                      {arrangedFigures.map((figure) => (
+                        <SortableFigureItem
+                          key={figure.id}
+                          figure={figure}
+                          isSelected={selectedArrangeFigure?.id === figure.id}
+                          isFinalized={isSequenceFinalized}
+                          onSelect={() => setSelectedArrangeFigure(figure)}
+                          onAttemptReorder={() => {
+                            if (isSequenceFinalized) setShowUnlockPrompt(true)
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </SortableContext>
+
+                  <DragOverlay>
+                    {activeDragId ? (
+                      <div className="bg-white border border-gray-300 rounded-lg p-3 shadow-lg opacity-90">
+                        {(() => {
+                          const figure = arrangedFigures.find(f => f.id === activeDragId)
+                          if (!figure) return null
+                          return (
+                            <div className="flex items-center gap-3">
+                              <span className="text-sm font-mono text-gray-500 w-12">
+                                Fig {figure.finalFigNo}
+                              </span>
+                              <span className="text-sm font-medium text-gray-900 truncate">
+                                {figure.title}
+                              </span>
+                            </div>
+                          )
+                        })()}
+                      </div>
+                    ) : null}
+                  </DragOverlay>
+                </DndContext>
+              </div>
+
+              {/* Right: Preview Panel */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-sm font-medium text-gray-700 uppercase tracking-wide">
+                    Preview
+                  </h3>
+                </div>
+
+                {selectedArrangeFigure ? (
+                  <Card>
+                    <CardContent className="p-4">
+                      {/* Figure preview image */}
+                      <div className="aspect-video bg-gray-50 border border-gray-200 rounded-lg mb-4 flex items-center justify-center overflow-hidden">
+                        {selectedArrangeFigure.imagePath ? (
+                          <img
+                            src={selectedArrangeFigure.imagePath}
+                            alt={selectedArrangeFigure.title}
+                            className="max-w-full max-h-full object-contain"
+                          />
+                        ) : (
+                          <div className="text-gray-400 text-sm">No preview available</div>
+                        )}
+                      </div>
+
+                      {/* Figure details */}
+                      <div className="space-y-3">
+                        <div>
+                          <h4 className="font-medium text-gray-900">
+                            Fig {selectedArrangeFigure.finalFigNo} – {selectedArrangeFigure.title}
+                          </h4>
+                          <div className="flex items-center gap-2 mt-1">
+                            <Badge variant="outline" className="text-xs">
+                              {selectedArrangeFigure.type === 'diagram' ? 'Block Diagram' : 'AI Sketch'}
+                            </Badge>
+                          </div>
+                        </div>
+
+                        {selectedArrangeFigure.description && (
+                          <p className="text-sm text-gray-600">
+                            {selectedArrangeFigure.description}
+                          </p>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <Card className="border-dashed">
+                    <CardContent className="py-12 text-center">
+                      <p className="text-gray-500 text-sm">Select a figure to preview</p>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Action Buttons */}
+          {arrangedFigures.length > 0 && (
+            <div className="flex items-center justify-between pt-4 border-t border-gray-200">
+              <div className="flex items-center gap-3">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleResetSequence}
+                  disabled={isSequenceFinalized || arrangeLoading}
+                >
+                  <RotateCcw className="w-4 h-4 mr-2" />
+                  Reset
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleAIArrange}
+                  disabled={isSequenceFinalized || aiArranging || arrangedFigures.length < 2}
+                >
+                  {aiArranging ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <Sparkles className="w-4 h-4 mr-2" />
+                  )}
+                  Suggest Order
+                </Button>
+              </div>
+
+              <div className="flex items-center gap-3">
+                {savingSequence && (
+                  <span className="text-xs text-gray-500 flex items-center gap-1">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    Saving...
+                  </span>
+                )}
+                
+                {isSequenceFinalized ? (
+                  <Button
+                    variant="outline"
+                    onClick={handleUnlockSequence}
+                    disabled={savingSequence}
+                  >
+                    <Unlock className="w-4 h-4 mr-2" />
+                    Unlock to Edit
+                  </Button>
+                ) : (
+                  <Button
+                    onClick={handleFinalizeSequence}
+                    disabled={savingSequence || arrangedFigures.length === 0}
+                    className="bg-gray-900 hover:bg-gray-800 text-white"
+                  >
+                    <Lock className="w-4 h-4 mr-2" />
+                    Finalize Sequence
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      
+      {/* Unlock prompt when drag attempted while finalized */}
+      {showUnlockPrompt && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+            <div className="flex items-start gap-3">
+              <Lock className="w-5 h-5 text-gray-500 mt-1" />
+              <div>
+                <h4 className="text-lg font-semibold text-gray-900">Sequence locked</h4>
+                <p className="text-sm text-gray-600 mt-1">
+                  Unlock the figure sequence to rearrange images.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 mt-6">
+              <Button variant="outline" onClick={() => setShowUnlockPrompt(false)}>
+                Cancel
+              </Button>
+              <Button
+                onClick={async () => {
+                  setShowUnlockPrompt(false)
+                  await handleUnlockSequence()
+                }}
+                disabled={savingSequence}
+              >
+                <Unlock className="w-4 h-4 mr-2" />
+                Unlock to Edit
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MINIPAINT IMAGE EDITOR - Opens miniPaint with image preloaded */}
+      {imageEditorOpen && editingImage && (
+        <ImageEditor
+          imageSrc={editingImage.imagePath}
+          title={editingImage.title}
+          onSave={handleImageEditorSave}
+          onClose={handleImageEditorClose}
+        />
+      )}
       
       <div className="hidden">
         {/* Helper for preserving existing logic not explicitly in UI but needed for compilation if any */}
       </div>
     </motion.div>
+  )
+}
+
+// === SORTABLE FIGURE ITEM COMPONENT ===
+interface SortableFigureItemProps {
+  figure: any
+  isSelected: boolean
+  isFinalized: boolean
+  onSelect: () => void
+  onAttemptReorder?: () => void
+}
+
+function SortableFigureItem({ figure, isSelected, isFinalized, onSelect, onAttemptReorder }: SortableFigureItemProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ 
+    id: figure.id,
+    disabled: isFinalized
+  })
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+  }
+
+  // Allow dragging from the entire card (not just the handle)
+  const dragProps = isFinalized ? {} : { ...attributes, ...listeners }
+
+  const handleBlockedDrag = (e: React.MouseEvent | React.TouchEvent) => {
+    if (!isFinalized) return
+    e.preventDefault()
+    onAttemptReorder?.()
+  }
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={`
+        flex items-center gap-3 p-3 bg-white border rounded-lg transition-colors
+        ${isSelected ? 'border-indigo-300 bg-indigo-50/50' : 'border-gray-200 hover:border-gray-300'}
+        ${isDragging ? 'shadow-md' : ''}
+        ${isFinalized ? 'cursor-default' : 'cursor-pointer'}
+      `}
+      onClick={onSelect}
+      onMouseDown={handleBlockedDrag}
+      onTouchStart={handleBlockedDrag}
+      {...dragProps}
+    >
+      {/* Drag Handle - only attach drag listeners when not finalized */}
+      <button
+        className={`
+          p-1 rounded touch-none
+          ${isFinalized ? 'opacity-30 cursor-not-allowed' : 'cursor-grab active:cursor-grabbing hover:bg-gray-100'}
+        `}
+        disabled={isFinalized}
+        aria-label={isFinalized ? 'Sequence is locked' : 'Drag to reorder'}
+      >
+        <GripVertical className="w-4 h-4 text-gray-400" />
+      </button>
+
+      {/* Figure Number */}
+      <span className="text-sm font-mono text-gray-500 w-12 flex-shrink-0">
+        Fig {figure.finalFigNo}
+      </span>
+
+      {/* Thumbnail */}
+      <div className="w-10 h-10 bg-gray-100 border border-gray-200 rounded flex-shrink-0 overflow-hidden">
+        {figure.imagePath ? (
+          <img
+            src={figure.imagePath}
+            alt=""
+            className="w-full h-full object-cover"
+          />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center">
+            <ImageIcon className="w-4 h-4 text-gray-300" />
+          </div>
+        )}
+      </div>
+
+      {/* Title and Type */}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-gray-900 truncate">{figure.title}</p>
+        <p className="text-xs text-gray-500">
+          {figure.type === 'diagram' ? 'Diagram' : 'Sketch'}
+        </p>
+      </div>
+
+      {/* Type indicator */}
+      <div className={`
+        w-2 h-2 rounded-full flex-shrink-0
+        ${figure.type === 'diagram' ? 'bg-blue-400' : 'bg-amber-400'}
+      `} title={figure.type === 'diagram' ? 'Block Diagram' : 'AI Sketch'} />
+    </div>
   )
 }

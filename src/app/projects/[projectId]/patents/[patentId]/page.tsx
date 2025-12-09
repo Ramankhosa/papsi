@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
@@ -36,18 +36,7 @@ export default function PatentDetailPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [draftingSession, setDraftingSession] = useState<DraftingSession | null>(null)
 
-  useEffect(() => {
-    if (!authLoading && !user) {
-      router.push('/login')
-      return
-    }
-
-    if (!authLoading && user) {
-      checkPatentStatus()
-    }
-  }, [authLoading, user, router, projectId, patentId])
-
-  const checkPatentStatus = async () => {
+  const checkPatentStatus = useCallback(async () => {
     try {
       // Fetch patent details
       const patentResponse = await fetch(`/api/projects/${projectId}/patents/${patentId}`, {
@@ -106,7 +95,18 @@ export default function PatentDetailPage() {
       // Fallback to drafting page
       router.replace(`/patents/draft/new?projectId=${projectId}`)
     }
-  }
+  }, [patentId, projectId, router])
+
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.push('/login')
+      return
+    }
+
+    if (!authLoading && user) {
+      checkPatentStatus()
+    }
+  }, [authLoading, user, checkPatentStatus, router])
 
   if (authLoading || isLoading) {
     return (
@@ -129,7 +129,7 @@ export default function PatentDetailPage() {
             </svg>
           </div>
           <h2 className="text-xl font-semibold text-gray-900 mb-2">Patent Not Found</h2>
-          <p className="text-gray-600 mb-4">The patent you're looking for could not be found.</p>
+          <p className="text-gray-600 mb-4">The patent you&apos;re looking for could not be found.</p>
           <Link
             href={`/projects/${projectId}`}
             className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-blue-600 hover:bg-blue-700"

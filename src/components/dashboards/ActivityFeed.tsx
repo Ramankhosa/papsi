@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { FileText, Lightbulb, Search, Clock, Sparkles } from 'lucide-react'
 
 interface ActivityItem {
@@ -21,11 +21,7 @@ export default function ActivityFeed({ limit = 5 }: ActivityFeedProps) {
   const [activities, setActivities] = useState<ActivityItem[]>([])
   const [loading, setLoading] = useState(true)
 
-  useEffect(() => {
-    generateMockActivities()
-  }, [])
-
-  const generateMockActivities = async () => {
+  const generateMockActivities = useCallback(async () => {
     // In a real implementation, this would fetch from various APIs
     const mockActivities: ActivityItem[] = [
       {
@@ -79,7 +75,11 @@ export default function ActivityFeed({ limit = 5 }: ActivityFeedProps) {
       setActivities(mockActivities.slice(0, limit))
       setLoading(false)
     }, 500)
-  }
+  }, [limit])
+
+  useEffect(() => {
+    generateMockActivities()
+  }, [generateMockActivities])
 
   const formatTimeAgo = (date: Date) => {
     const now = new Date()

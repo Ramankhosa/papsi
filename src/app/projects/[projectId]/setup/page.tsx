@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
@@ -32,18 +32,7 @@ export default function ProjectSetupPage() {
   const [currentCollaborator, setCurrentCollaborator] = useState('')
   const [isAddingCollaborator, setIsAddingCollaborator] = useState(false)
 
-  useEffect(() => {
-    if (!authLoading && !user) {
-      router.push('/login')
-      return
-    }
-
-    if (!authLoading && user) {
-      fetchProject()
-    }
-  }, [authLoading, user, router, projectId])
-
-  const fetchProject = async () => {
+  const fetchProject = useCallback(async () => {
     try {
       const response = await fetch(`/api/projects/${projectId}`, {
         headers: {
@@ -66,7 +55,18 @@ export default function ProjectSetupPage() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [projectId, router])
+
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.push('/login')
+      return
+    }
+
+    if (!authLoading && user) {
+      fetchProject()
+    }
+  }, [authLoading, user, fetchProject, router])
 
   const addCollaborator = async () => {
     if (!currentCollaborator.trim() || !project) return
@@ -148,10 +148,10 @@ export default function ProjectSetupPage() {
             Project Created Successfully!
           </h1>
           <p className="text-lg text-gpt-gray-600 mb-2">
-            Your project "<span className="font-semibold text-gpt-gray-900">{project.name}</span>" has been created.
+            Your project <span className="font-semibold text-gpt-gray-900">&quot;{project.name}&quot;</span> has been created.
           </p>
           <p className="text-gpt-gray-600">
-            To get started, you'll need an applicant profile for patent filings.
+            To get started, you&apos;ll need an applicant profile for patent filings.
           </p>
         </div>
 

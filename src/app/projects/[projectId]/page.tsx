@@ -454,7 +454,7 @@ export default function ProjectDashboardPage() {
 
                 <div className="mb-4">
                   <p className="text-sm text-gray-600 mb-3">
-                    Are you sure you want to delete the patent <strong>"{deleteDialog.patentTitle}"</strong>?
+                    Are you sure you want to delete the patent <strong>&quot;{deleteDialog.patentTitle}&quot;</strong>?
                   </p>
                   <p className="text-sm text-gray-600 mb-3">
                     This action cannot be undone. All patent data, including drafting sessions and generated content, will be permanently removed.
@@ -463,7 +463,7 @@ export default function ProjectDashboardPage() {
                   {deleteDialog.hasDrafts && (
                     <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
                       <p className="text-sm text-red-800 mb-2">
-                        <strong>Warning:</strong> This patent has existing draft sessions. To confirm deletion, please type <strong>"delete"</strong> below:
+                        <strong>Warning:</strong> This patent has existing draft sessions. To confirm deletion, please type <strong>&quot;delete&quot;</strong> below:
                       </p>
                       <input
                         type="text"

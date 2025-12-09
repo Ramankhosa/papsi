@@ -80,6 +80,10 @@ const RelatedArtStage = React.memo(function RelatedArtStage({ session, patent, o
   const [hasRestoredFromStorage, setHasRestoredFromStorage] = useState(false)
   const [ideaBankVersion, setIdeaBankVersion] = useState(0) // Force re-renders
 
+  // ============= MAIN WORKFLOW NAVIGATION =============
+  // Primary tab navigation: search → analyze → select
+  const [mainTab, setMainTab] = useState<'search' | 'analyze' | 'select'>('search')
+
   // ============= TAB-BASED WORKFLOW STATES =============
   // Active tab: 'prior-art' = for drafting references, 'claim-refinement' = for claim comparison
   const [activeWorkflowTab, setActiveWorkflowTab] = useState<'prior-art' | 'claim-refinement'>('prior-art')
@@ -89,14 +93,12 @@ const RelatedArtStage = React.memo(function RelatedArtStage({ session, patent, o
   const [priorArtMode, setPriorArtMode] = useState<'ai' | 'manual' | 'hybrid'>('ai')
   const [priorArtSelected, setPriorArtSelected] = useState<Record<string, any>>({})
   const [priorArtManualText, setPriorArtManualText] = useState('')
-  const [priorArtThreatFilter, setPriorArtThreatFilter] = useState<string[]>([])
 
   // WORKFLOW B: Patents for Claim Refinement
   // These patents will be compared against claims to ensure novelty
   const [claimRefMode, setClaimRefMode] = useState<'ai' | 'manual' | 'hybrid'>('ai')
   const [claimRefSelected, setClaimRefSelected] = useState<Record<string, any>>({})
   const [claimRefManualText, setClaimRefManualText] = useState('')
-  const [claimRefThreatFilter, setClaimRefThreatFilter] = useState<string[]>(['anticipates', 'obvious']) // Default to high-risk
 
   // Skip Claim Refinement option - user confident in their claims
   const [skipClaimRefinement, setSkipClaimRefinement] = useState(false)
@@ -144,10 +146,15 @@ const RelatedArtStage = React.memo(function RelatedArtStage({ session, patent, o
   const [currentPage, setCurrentPage] = useState(1)
   const [autoSelectWarning, setAutoSelectWarning] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'warning'; text: string } | null>(null)
+  // Selection tab filters
+  const [priorArtThreatFilter, setPriorArtThreatFilter] = useState<string | null>(null)
+  const [claimRefThreatFilter, setClaimRefThreatFilter] = useState<string | null>(null)
 
   const autoSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const manualPriorArtRef = useRef<HTMLDivElement | null>(null)
   const lastLoadedRunIdRef = useRef<string | null>(null)
+  // Track the current session ID to detect when it changes (new patent)
+  const currentSessionIdRef = useRef<string | null>(null)
 
   // DEBUG: Log renders
   console.log('RelatedArtStage render - ideaBank:', ideaBank.length, 'ideaBankOpen:', ideaBankOpen, 'version:', ideaBankVersion)
@@ -246,6 +253,73 @@ const RelatedArtStage = React.memo(function RelatedArtStage({ session, patent, o
 
   // Track whether initial hydration has been done to avoid overwriting user changes
   const hasInitializedRef = useRef(false)
+
+  // CRITICAL FIX: Reset all state when session ID changes (navigating to a different patent)
+  // This prevents stale data from a previous patent from being shown
+  useEffect(() => {
+    const newSessionId = session?.id || null
+    const previousSessionId = currentSessionIdRef.current
+    
+    // Only reset if this is a genuine session change (not initial mount)
+    if (previousSessionId !== null && newSessionId !== previousSessionId) {
+      console.log('🔄 Session ID changed from', previousSessionId, 'to', newSessionId, '- Resetting all prior art state')
+      
+      // Reset all refs
+      hasInitializedRef.current = false
+      lastLoadedRunIdRef.current = null
+      
+      // Reset all state to initial values
+      setResults([])
+      setRunId(null)
+      setAiAnalysis({})
+      setHasLoadedSelections(false)
+      setCustomQuery('')
+      setShowCustomQuery(false)
+      setShowAdvancedSettings(false)
+      setReviewing(false)
+      setReviewInfo('')
+      setIdeaBank([])
+      setIdeaBankVersion(0)
+      setHasRestoredFromStorage(false)
+      setError(null)
+      
+      // Reset workflow states
+      setPriorArtMode('ai')
+      setPriorArtSelected({})
+      setPriorArtManualText('')
+      setPriorArtThreatFilter(null)
+      setClaimRefMode('ai')
+      setClaimRefSelected({})
+      setClaimRefManualText('')
+      setClaimRefThreatFilter(null)
+      setSkipClaimRefinement(false)
+      
+      // Reset UI states
+      setExpandedPatentDetails(new Set())
+      setExpandedSections({})
+      setSelected({})
+      setManualPriorArtText('')
+      setIsManualPriorArtSaved(false)
+      setUseOnlyManualPriorArt(false)
+      setUseManualAndAISearch(false)
+      setUseAutoPriorArt(true)
+      setUseManualPriorArtToggle(false)
+      setRelevanceFilters([])
+      setNoveltyThreatFilters([])
+      setCurrentPage(1)
+      setAutoSelectWarning(null)
+      setStatusMessage(null)
+      
+      // Clear sessionStorage for the old session
+      if (typeof window !== 'undefined' && previousSessionId) {
+        sessionStorage.removeItem(`ideaBank_${previousSessionId}`)
+        console.log('🗑️ Cleared sessionStorage for old session:', previousSessionId)
+      }
+    }
+    
+    // Update the ref to track the current session ID
+    currentSessionIdRef.current = newSessionId
+  }, [session?.id])
 
   // Load stored results and AI analysis on mount/session change
   useEffect(() => {
@@ -516,6 +590,10 @@ const RelatedArtStage = React.memo(function RelatedArtStage({ session, patent, o
 
     if (candidates.length === 0) {
       setAutoSelectWarning('⚠️ No adjacent-category patents found. Automatic selection may reduce novelty quality. Manual selection is recommended.')
+      setStatusMessage({
+        type: 'warning',
+        text: '⚠️ No adjacent-category patents found. Try selecting patents manually.'
+      })
       return
     }
 
@@ -526,7 +604,7 @@ const RelatedArtStage = React.memo(function RelatedArtStage({ session, patent, o
     })
 
     const top = candidates.slice(0, 10)
-    const nextSelected: typeof selected = { ...selected }
+    const nextSelected: Record<string, any> = { ...priorArtSelected }
 
     top.forEach(({ r, pn }) => {
       const title = (r as any).title || (r as any).invention_title || pn || 'Untitled'
@@ -545,6 +623,7 @@ const RelatedArtStage = React.memo(function RelatedArtStage({ session, patent, o
 
       nextSelected[pn] = {
         ...existing,
+        ...r,
         title,
         snippet,
         score,
@@ -560,8 +639,12 @@ const RelatedArtStage = React.memo(function RelatedArtStage({ session, patent, o
       }
     })
 
-    setSelected(nextSelected)
+    setPriorArtSelected(nextSelected)
     setAutoSelectWarning(null)
+    setStatusMessage({
+      type: 'success',
+      text: `✓ Auto-selected ${top.length} adjacent patents for drafting`
+    })
   }
 
 
@@ -1040,2249 +1123,1543 @@ const RelatedArtStage = React.memo(function RelatedArtStage({ session, patent, o
     }
   }
 
+  // Determine which tabs should be enabled based on workflow progress
+  const canAccessAnalyze = results.length > 0
+  const canAccessSelect = hasAIReview
+
   return (
-    <div className="p-8 max-w-7xl mx-auto">
-      <div className="mb-8">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Stage 3.5: Related Art Analysis</h2>
-        <p className="text-gray-600">Discover and curate relevant patents using AI-powered search and analysis.</p>
-        
-        {/* Quick View Buttons - Show transformation from raw data to insights */}
-        {(results.length > 0 || idea?.abstract) && (
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-gray-500 mr-2">Quick View:</span>
-            
-            {/* Your Invention Abstract */}
-          <button
-              onClick={() => setShowAbstractPanel(!showAbstractPanel)}
-              className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
-                showAbstractPanel 
-                  ? 'bg-indigo-100 border-indigo-300 text-indigo-700' 
-                  : 'bg-white border-gray-200 text-gray-600 hover:border-indigo-300 hover:text-indigo-600'
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/30">
+      {/* ============= HEADER WITH PROGRESS STEPS ============= */}
+      <div className="sticky top-0 z-40 bg-white/95 backdrop-blur-sm border-b border-gray-200 shadow-sm">
+        <div className="max-w-6xl mx-auto px-6 py-4">
+          {/* Title */}
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-xl font-bold text-gray-900">Prior Art Analysis</h2>
+              <p className="text-sm text-gray-500">Discover, analyze, and select relevant patents for your invention</p>
+            </div>
+            {/* Quick Stats */}
+            <div className="flex items-center gap-4 text-sm">
+              {results.length > 0 && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 rounded-full">
+                  <span className="text-blue-600 font-medium">{results.length}</span>
+                  <span className="text-blue-500">patents found</span>
+                </div>
+              )}
+              {hasAIReview && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 rounded-full">
+                  <span className="text-emerald-600 font-medium">{analysisSummary.total}</span>
+                  <span className="text-emerald-500">analyzed</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Step Navigation Tabs */}
+          <div className="flex items-center gap-2">
+            {/* Step 1: Search */}
+            <button
+              onClick={() => setMainTab('search')}
+              className={`flex items-center gap-3 px-5 py-3 rounded-xl font-medium transition-all ${
+                mainTab === 'search'
+                  ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200'
+                  : 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
               }`}
             >
-              <span>📄</span> Your Invention
-          </button>
-            
-            {/* AI Analysis Summary */}
-            {hasAIReview && (
-              <button
-                onClick={() => setShowAIAnalysisPanel(!showAIAnalysisPanel)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
-                  showAIAnalysisPanel 
-                    ? 'bg-emerald-100 border-emerald-300 text-emerald-700' 
-                    : 'bg-white border-gray-200 text-gray-600 hover:border-emerald-300 hover:text-emerald-600'
-                }`}
-              >
-                <span>🧠</span> AI Analysis
-                <span className="bg-emerald-200 text-emerald-800 px-1.5 py-0.5 rounded text-[10px]">{analysisSummary.total}</span>
-              </button>
-            )}
-            
-            {/* Raw Search Results */}
-            {results.length > 0 && (
-              <button
-                onClick={() => setShowRawResultsPanel(!showRawResultsPanel)}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all ${
-                  showRawResultsPanel 
-                    ? 'bg-gray-200 border-gray-400 text-gray-700' 
-                    : 'bg-white border-gray-200 text-gray-600 hover:border-gray-400 hover:text-gray-700'
-                }`}
-              >
-                <span>🔍</span> Raw Search Results
-                <span className="bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded text-[10px]">{results.length}</span>
-              </button>
-            )}
+              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold ${
+                mainTab === 'search' ? 'bg-white/20' : results.length > 0 ? 'bg-green-100 text-green-600' : 'bg-gray-100'
+              }`}>
+                {results.length > 0 ? '✓' : '1'}
+              </div>
+              <div className="text-left">
+                <div className="font-semibold">Search</div>
+                <div className={`text-xs ${mainTab === 'search' ? 'text-indigo-200' : 'text-gray-400'}`}>
+                  Find prior art
+                </div>
+              </div>
+            </button>
+
+            {/* Arrow */}
+            <svg className={`w-5 h-5 ${canAccessAnalyze ? 'text-gray-400' : 'text-gray-200'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+
+            {/* Step 2: Analyze */}
+            <button
+              onClick={() => canAccessAnalyze && setMainTab('analyze')}
+              disabled={!canAccessAnalyze}
+              className={`flex items-center gap-3 px-5 py-3 rounded-xl font-medium transition-all ${
+                mainTab === 'analyze'
+                  ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-200'
+                  : canAccessAnalyze
+                    ? 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
+                    : 'bg-gray-50 text-gray-300 cursor-not-allowed border border-gray-100'
+              }`}
+            >
+              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold ${
+                mainTab === 'analyze' ? 'bg-white/20' : hasAIReview ? 'bg-green-100 text-green-600' : canAccessAnalyze ? 'bg-gray-100' : 'bg-gray-50 text-gray-300'
+              }`}>
+                {hasAIReview ? '✓' : '2'}
+              </div>
+              <div className="text-left">
+                <div className="font-semibold">Analyze</div>
+                <div className={`text-xs ${mainTab === 'analyze' ? 'text-emerald-200' : canAccessAnalyze ? 'text-gray-400' : 'text-gray-300'}`}>
+                  AI review
+                </div>
+              </div>
+            </button>
+
+            {/* Arrow */}
+            <svg className={`w-5 h-5 ${canAccessSelect ? 'text-gray-400' : 'text-gray-200'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+
+            {/* Step 3: Select */}
+            <button
+              onClick={() => canAccessSelect && setMainTab('select')}
+              disabled={!canAccessSelect}
+              className={`flex items-center gap-3 px-5 py-3 rounded-xl font-medium transition-all ${
+                mainTab === 'select'
+                  ? 'bg-purple-600 text-white shadow-lg shadow-purple-200'
+                  : canAccessSelect
+                    ? 'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'
+                    : 'bg-gray-50 text-gray-300 cursor-not-allowed border border-gray-100'
+              }`}
+            >
+              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold ${
+                mainTab === 'select' ? 'bg-white/20' : canAccessSelect ? 'bg-gray-100' : 'bg-gray-50 text-gray-300'
+              }`}>
+                3
+              </div>
+              <div className="text-left">
+                <div className="font-semibold">Select</div>
+                <div className={`text-xs ${mainTab === 'select' ? 'text-purple-200' : canAccessSelect ? 'text-gray-400' : 'text-gray-300'}`}>
+                  Choose patents
+                </div>
+              </div>
+            </button>
+          </div>
         </div>
-        )}
-
-        {/* Expandable Panels */}
-        {/* Your Invention Abstract Panel */}
-        {showAbstractPanel && (
-          <div className="mt-4 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl border border-indigo-200 p-5 animate-fadeIn">
-            <div className="flex items-start justify-between mb-3">
-              <h4 className="font-semibold text-indigo-900 flex items-center gap-2">
-                <span className="text-lg">📄</span> Your Invention
-              </h4>
-              <button onClick={() => setShowAbstractPanel(false)} className="text-indigo-400 hover:text-indigo-600">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <div className="text-xs font-semibold text-indigo-600 uppercase tracking-wide mb-1">Title</div>
-                <div className="text-gray-900 font-medium">{idea?.title || 'Untitled'}</div>
-              </div>
-              {idea?.abstract && (
-                <div>
-                  <div className="text-xs font-semibold text-indigo-600 uppercase tracking-wide mb-1">Abstract</div>
-                  <div className="text-gray-700 text-sm leading-relaxed">{idea.abstract}</div>
-                </div>
-              )}
-              {idea?.problem && (
-                <div>
-                  <div className="text-xs font-semibold text-indigo-600 uppercase tracking-wide mb-1">Problem Solved</div>
-                  <div className="text-gray-700 text-sm">{idea.problem}</div>
-                </div>
-              )}
-              {searchQuery && (
-                <div>
-                  <div className="text-xs font-semibold text-indigo-600 uppercase tracking-wide mb-1">Optimized Search Query</div>
-                  <div className="text-gray-600 text-xs font-mono bg-white/50 p-2 rounded border border-indigo-100">{searchQuery}</div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* AI Analysis Summary Panel */}
-        {showAIAnalysisPanel && hasAIReview && (
-          <div className="mt-4 bg-gradient-to-r from-emerald-50 to-teal-50 rounded-xl border border-emerald-200 p-5 animate-fadeIn">
-            <div className="flex items-start justify-between mb-4">
-              <h4 className="font-semibold text-emerald-900 flex items-center gap-2">
-                <span className="text-lg">🧠</span> AI Relevance Analysis Summary
-                <span className="text-xs font-normal text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded-full">
-                  {analysisSummary.total} patents analyzed
-                </span>
-              </h4>
-              <button onClick={() => setShowAIAnalysisPanel(false)} className="text-emerald-400 hover:text-emerald-600">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            
-            {/* Threat Level Distribution */}
-            <div className="grid grid-cols-4 gap-3 mb-4">
-              <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-center">
-                <div className="text-2xl font-bold text-red-600">{analysisSummary.anticipates}</div>
-                <div className="text-xs text-red-700 font-medium">🛑 Anticipates</div>
-                <div className="text-[10px] text-red-500">High Risk</div>
-              </div>
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-center">
-                <div className="text-2xl font-bold text-amber-600">{analysisSummary.obvious}</div>
-                <div className="text-xs text-amber-700 font-medium">⚠️ Obvious</div>
-                <div className="text-[10px] text-amber-500">Medium Risk</div>
-              </div>
-              <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
-                <div className="text-2xl font-bold text-green-600">{analysisSummary.adjacent}</div>
-                <div className="text-xs text-green-700 font-medium">✅ Adjacent</div>
-                <div className="text-[10px] text-green-500">Low Risk</div>
-              </div>
-              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
-                <div className="text-2xl font-bold text-gray-600">{analysisSummary.remote}</div>
-                <div className="text-xs text-gray-700 font-medium">⚪ Remote</div>
-                <div className="text-[10px] text-gray-500">Safe</div>
-              </div>
-            </div>
-
-            {/* Detailed Analysis List */}
-            <div className="bg-white/50 rounded-lg border border-emerald-100 max-h-[300px] overflow-y-auto">
-              <div className="divide-y divide-emerald-100">
-                {results.slice(0, 15).map((r, i) => {
-                  const pn = getPatentKey(r, i)
-                  const analysis = aiAnalysis[pn]
-                  if (!analysis) return null
-                  return (
-                    <div key={pn} className="p-3 hover:bg-emerald-50/50">
-                      <div className="flex items-start gap-3">
-                        <span className={`mt-0.5 px-1.5 py-0.5 text-xs rounded ${
-                          analysis.noveltyThreat === 'anticipates' ? 'bg-red-100 text-red-700' :
-                          analysis.noveltyThreat === 'obvious' ? 'bg-amber-100 text-amber-700' :
-                          analysis.noveltyThreat === 'adjacent' ? 'bg-green-100 text-green-700' :
-                          'bg-gray-100 text-gray-600'
-                        }`}>
-                          {analysis.noveltyThreat}
-                        </span>
-                        <div className="flex-1 min-w-0">
-                          <div className="font-medium text-sm text-gray-900 truncate">{r.title}</div>
-                          <div className="text-xs text-gray-500">{pn}</div>
-                          {analysis.aiSummary && (
-                            <div className="text-xs text-gray-600 mt-1 line-clamp-2">{analysis.aiSummary}</div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-              {results.length > 15 && (
-                <div className="p-2 text-center text-xs text-emerald-600 bg-emerald-50">
-                  + {results.length - 15} more patents analyzed
-                </div>
-              )}
-            </div>
-
-            <div className="mt-3 text-xs text-emerald-700 bg-emerald-100/50 p-2 rounded-lg">
-              💡 <strong>What we did:</strong> Analyzed {analysisSummary.total} patents against your invention using AI to determine novelty threat levels, 
-              extract relevant disclosures, and provide actionable summaries.
-            </div>
-          </div>
-        )}
-
-        {/* Raw Search Results Panel */}
-        {showRawResultsPanel && results.length > 0 && (
-          <div className="mt-4 bg-gradient-to-r from-gray-50 to-slate-50 rounded-xl border border-gray-300 p-5 animate-fadeIn">
-            <div className="flex items-start justify-between mb-4">
-              <h4 className="font-semibold text-gray-900 flex items-center gap-2">
-                <span className="text-lg">🌍</span> Worldwide Relevant Prior Art Compilation
-                <span className="text-xs font-normal text-gray-600 bg-gray-200 px-2 py-0.5 rounded-full">
-                  {results.length} patents found
-                </span>
-              </h4>
-              <button onClick={() => setShowRawResultsPanel(false)} className="text-gray-400 hover:text-gray-600">
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            <div className="text-xs text-gray-500 mb-3">
-              Worldwide patent search results compiled from global patent databases. Sorted by relevance to your invention.
-            </div>
-
-            {/* Expandable Prior Art Results */}
-            <div className="bg-white rounded-lg border border-gray-200 max-h-[600px] overflow-y-auto">
-              <div className="divide-y divide-gray-100">
-                {results.map((r, i) => {
-                  const pn = r.pn || (r as any).patent_number || (r as any).publication_number || 'N/A'
-                  const score = r.score || (r as any).relevance || 0
-                  const pubDate = (r as any).publication_date || ''
-                  const patentAbstract = (r as any).abstract || (r as any).snippet || ''
-                  const analysis = aiAnalysis[pn]
-                  const isExpanded = expandedPatentDetails.has(`raw-${pn}`)
-
-                  return (
-                    <div key={i} className="border-b border-gray-100 last:border-b-0">
-                      <div className="flex items-center gap-3 p-3 hover:bg-gray-50 cursor-pointer" onClick={() => {
-                        setExpandedPatentDetails(prev => {
-                          const next = new Set(prev)
-                          const key = `raw-${pn}`
-                          if (next.has(key)) next.delete(key)
-                          else next.add(key)
-                          return next
-                        })
-                      }}>
-                        <div className="flex items-center gap-2 flex-1 min-w-0">
-                          <span className="text-sm text-gray-400 w-6">{i + 1}</span>
-                          <span className="font-mono text-sm text-gray-600">{pn}</span>
-                          <span className="text-sm text-gray-900 truncate flex-1">{r.title}</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs text-gray-500">{pubDate ? String(pubDate).slice(0, 10) : '-'}</span>
-                          <span className={`px-1.5 py-0.5 rounded text-xs ${
-                            score > 0.8 ? 'bg-indigo-100 text-indigo-700' :
-                            score > 0.6 ? 'bg-blue-100 text-blue-700' :
-                            'bg-gray-100 text-gray-600'
-                          }`}>
-                            {(score * 100).toFixed(0)}%
-                          </span>
-                          <svg className={`w-4 h-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                          </svg>
-                        </div>
-                      </div>
-
-                      {/* Expandable Detailed Analysis */}
-                      {isExpanded && (
-                        <div className="mx-3 mb-3 p-4 bg-gradient-to-r from-gray-50 to-slate-100 rounded-lg border border-gray-300 animate-fadeIn">
-                          {/* Section Toggle Controls */}
-                          <div className="mb-3 flex flex-wrap gap-2">
-                            <div className="text-xs font-semibold text-gray-700 uppercase tracking-wide mr-2">View:</div>
-
-                            {/* Patent Metadata */}
-                            <button
-                              onClick={() => toggleSection(`raw-${pn}`, 'metadata')}
-                              className={`px-2 py-1 text-xs rounded transition-colors ${
-                                getSectionVisibility(`raw-${pn}`).metadata
-                                  ? 'bg-blue-100 text-blue-700 border border-blue-300'
-                                  : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                              }`}
-                            >
-                              📋 Details
-                            </button>
-
-                            {patentAbstract && (
-                              <button
-                                onClick={() => toggleSection(`raw-${pn}`, 'abstract')}
-                                className={`px-2 py-1 text-xs rounded transition-colors ${
-                                  getSectionVisibility(`raw-${pn}`).abstract
-                                    ? 'bg-gray-200 text-gray-700 border border-gray-400'
-                                    : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                }`}
-                              >
-                                📄 Abstract
-                              </button>
-                            )}
-                            {analysis?.aiSummary && (
-                              <button
-                                onClick={() => toggleSection(`raw-${pn}`, 'aiSummary')}
-                                className={`px-2 py-1 text-xs rounded transition-colors ${
-                                  getSectionVisibility(`raw-${pn}`).aiSummary
-                                    ? 'bg-gray-200 text-gray-700 border border-gray-400'
-                                    : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                }`}
-                              >
-                                🤖 AI Summary
-                              </button>
-                            )}
-                            {analysis?.relevantParts && analysis.relevantParts.length > 0 && (
-                              <button
-                                onClick={() => toggleSection(`raw-${pn}`, 'relevantParts')}
-                                className={`px-2 py-1 text-xs rounded transition-colors ${
-                                  getSectionVisibility(`raw-${pn}`).relevantParts
-                                    ? 'bg-red-100 text-red-700 border border-red-300'
-                                    : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                }`}
-                              >
-                                ⚠️ Overlaps
-                              </button>
-                            )}
-                            {analysis?.irrelevantParts && analysis.irrelevantParts.length > 0 && (
-                              <button
-                                onClick={() => toggleSection(`raw-${pn}`, 'irrelevantParts')}
-                                className={`px-2 py-1 text-xs rounded transition-colors ${
-                                  getSectionVisibility(`raw-${pn}`).irrelevantParts
-                                    ? 'bg-green-100 text-green-700 border border-green-300'
-                                    : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                }`}
-                              >
-                                ✅ Differences
-                              </button>
-                            )}
-                            {analysis?.noveltyComparison && (
-                              <button
-                                onClick={() => toggleSection(`raw-${pn}`, 'noveltyComparison')}
-                                className={`px-2 py-1 text-xs rounded transition-colors ${
-                                  getSectionVisibility(`raw-${pn}`).noveltyComparison
-                                    ? 'bg-purple-100 text-purple-700 border border-purple-300'
-                                    : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                }`}
-                              >
-                                ⚖️ Comparison
-                              </button>
-                            )}
-                          </div>
-
-                          {/* Patent Metadata */}
-                          {getSectionVisibility(`raw-${pn}`).metadata && (
-                            <div className="mb-3">
-                              <div className="text-xs font-semibold text-blue-700 uppercase tracking-wide mb-2">📋 Patent Details</div>
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-                                <div>
-                                  <span className="font-medium text-gray-600">Patent Number:</span>
-                                  <span className="ml-2 font-mono text-gray-900">{pn}</span>
-                                </div>
-                                {(r as any).filing_date && (
-                                  <div>
-                                    <span className="font-medium text-gray-600">Filing Date:</span>
-                                    <span className="ml-2 text-gray-900">{String((r as any).filing_date).slice(0, 10)}</span>
-                                  </div>
-                                )}
-                                {(r as any).publication_date && (
-                                  <div>
-                                    <span className="font-medium text-gray-600">Publication Date:</span>
-                                    <span className="ml-2 text-gray-900">{String((r as any).publication_date).slice(0, 10)}</span>
-                                  </div>
-                                )}
-                                {(r as any).inventors && (r as any).inventors.length > 0 && (
-                                  <div className="md:col-span-2">
-                                    <span className="font-medium text-gray-600">Inventors:</span>
-                                    <span className="ml-2 text-gray-900">
-                                      {Array.isArray((r as any).inventors)
-                                        ? (r as any).inventors.join(', ')
-                                        : (r as any).inventors
-                                      }
-                                    </span>
-                                  </div>
-                                )}
-                                {(r as any).assignees && (r as any).assignees.length > 0 && (
-                                  <div className="md:col-span-2">
-                                    <span className="font-medium text-gray-600">Assignees:</span>
-                                    <span className="ml-2 text-gray-900">
-                                      {Array.isArray((r as any).assignees)
-                                        ? (r as any).assignees.join(', ')
-                                        : (r as any).assignees
-                                      }
-                                    </span>
-                                  </div>
-                                )}
-                                {(r as any).country && (
-                                  <div>
-                                    <span className="font-medium text-gray-600">Country:</span>
-                                    <span className="ml-2 text-gray-900">{(r as any).country}</span>
-                                  </div>
-                                )}
-                                {(r as any).patent_type && (
-                                  <div>
-                                    <span className="font-medium text-gray-600">Type:</span>
-                                    <span className="ml-2 text-gray-900">{(r as any).patent_type}</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Patent Abstract */}
-                          {patentAbstract && getSectionVisibility(`raw-${pn}`).abstract && (
-                            <div className="mb-3">
-                              <div className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">📄 Patent Abstract</div>
-                              <div className="text-sm text-gray-700 bg-white/50 p-2 rounded border border-gray-200">{patentAbstract}</div>
-                            </div>
-                          )}
-
-                          {/* AI Summary */}
-                          {analysis?.aiSummary && getSectionVisibility(`raw-${pn}`).aiSummary && (
-                            <div className="mb-3">
-                              <div className="text-xs font-semibold text-gray-700 uppercase tracking-wide mb-1">🤖 AI-Generated Summary</div>
-                              <div className="text-sm text-gray-700">{analysis.aiSummary}</div>
-                            </div>
-                          )}
-
-                          {/* Relevant Parts - Overlaps */}
-                          {analysis?.relevantParts && analysis.relevantParts.length > 0 && getSectionVisibility(`raw-${pn}`).relevantParts && (
-                            <div className="mb-3">
-                              <div className="text-xs font-semibold text-red-700 uppercase tracking-wide mb-1">⚠️ Potential Overlaps with Your Invention</div>
-                              <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-                                {analysis.relevantParts.map((part, idx) => (
-                                  <li key={idx} className="text-red-800">{part}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-
-                          {/* Irrelevant Parts - Differences */}
-                          {analysis?.irrelevantParts && analysis.irrelevantParts.length > 0 && getSectionVisibility(`raw-${pn}`).irrelevantParts && (
-                            <div className="mb-3">
-                              <div className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-1">✅ Key Differences from Your Invention</div>
-                              <ul className="list-disc list-inside text-sm text-gray-600 space-y-1">
-                                {analysis.irrelevantParts.map((part, idx) => (
-                                  <li key={idx} className="text-green-700">{part}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          )}
-
-                          {/* Novelty Comparison */}
-                          {analysis?.noveltyComparison && getSectionVisibility(`raw-${pn}`).noveltyComparison && (
-                            <div className="mb-0">
-                              <div className="text-xs font-semibold text-purple-700 uppercase tracking-wide mb-1">⚖️ Novelty Comparison</div>
-                              <div className="text-sm text-gray-700 bg-purple-50 p-2 rounded border border-purple-100">{analysis.noveltyComparison}</div>
-                            </div>
-                          )}
-
-                          {/* Threat Level */}
-                          {analysis?.noveltyThreat && (
-                            <div className="mt-3 pt-3 border-t border-gray-300">
-                              <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium ${
-                                analysis.noveltyThreat === 'anticipates' ? 'bg-red-100 text-red-800' :
-                                analysis.noveltyThreat === 'obvious' ? 'bg-amber-100 text-amber-800' :
-                                analysis.noveltyThreat === 'adjacent' ? 'bg-green-100 text-green-800' :
-                                'bg-gray-100 text-gray-700'
-                              }`}>
-                                Novelty Threat Level: {
-                                  analysis.noveltyThreat === 'anticipates' ? '🛑 High Risk (Anticipates)' :
-                                  analysis.noveltyThreat === 'obvious' ? '⚠️ Medium Risk (Obvious)' :
-                                  analysis.noveltyThreat === 'adjacent' ? '✅ Low Risk (Adjacent)' :
-                                  '⚪ Safe (Remote)'
-                                }
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-
-            <div className="mt-3 text-xs text-gray-600 bg-gray-100 p-2 rounded-lg">
-              🌍 <strong>Global Prior Art Compilation:</strong> Worldwide patent search results from global patent databases.
-              Expand any patent to view detailed analysis and control what information you see.
-            </div>
-          </div>
-        )}
-
-        {/* Value Proposition Banner - shown when AI review is complete */}
-        {hasAIReview && !showAIAnalysisPanel && !showRawResultsPanel && (
-          <div className="mt-4 bg-gradient-to-r from-violet-500 to-purple-600 rounded-xl p-4 text-white">
-            <div className="flex items-center gap-4">
-              <div className="text-3xl">✨</div>
-              <div className="flex-1">
-                <div className="font-semibold">AI-Powered Analysis Complete</div>
-                <div className="text-sm text-white/80">
-                  We transformed {results.length} raw patents into {analysisSummary.anticipates + analysisSummary.obvious} actionable threats and {analysisSummary.adjacent + analysisSummary.remote} safe references.
-                </div>
-              </div>
-              <button
-                onClick={() => setShowAIAnalysisPanel(true)}
-                className="px-4 py-2 bg-white/20 hover:bg-white/30 rounded-lg text-sm font-medium transition-colors"
-              >
-                View Details
-              </button>
-            </div>
-          </div>
-        )}
-
-        {isManualPriorArtSaved && (
-          <div className="mt-3 inline-flex items-center px-3 py-1 rounded-full text-sm bg-amber-100 text-amber-800 border border-amber-300">
-            📝 Manual prior art entered
-            {useOnlyManualPriorArt && <span className="ml-2">(Using only manual prior art)</span>}
-            {useManualAndAISearch && <span className="ml-2">(Combining with AI search results)</span>}
-          </div>
-        )}
       </div>
 
-      {error && (
-        <div className="mb-6 bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-800">{error}</div>
-      )}
-
-      <div className="space-y-8">
-        {/* STEP 1: Global Patent Search */}
-        <div className={`rounded-xl border transition-all duration-300 ${results.length > 0 ? 'bg-gray-50 border-gray-200' : 'bg-white border-indigo-100 shadow-sm'}`}>
-          <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-            <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-              <div className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-bold">1</div>
-              Global Patent Search
-            </h3>
-            {results.length > 0 && (
-              <span className="text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full flex items-center gap-1">
-                <CheckIcon className="w-3 h-3" /> Completed
-              </span>
-            )}
+      {/* ============= MAIN CONTENT AREA ============= */}
+      <div className="max-w-6xl mx-auto px-6 py-8">
+        {error && (
+          <div className="mb-6 bg-red-50 border border-red-200 rounded-xl p-4 flex items-start gap-3">
+            <span className="text-red-500 text-xl">⚠️</span>
+            <div>
+              <div className="font-medium text-red-800">Error</div>
+              <div className="text-sm text-red-600">{error}</div>
+            </div>
+            <button onClick={() => setError(null)} className="ml-auto text-red-400 hover:text-red-600">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </div>
-          
-          <div className="p-4">
-            <div className="grid md:grid-cols-2 gap-6">
-              <div className="text-sm text-gray-700 space-y-3">
-                <div>
-                  <span className="font-medium text-gray-500 block text-xs mb-1">Invention Title</span>
-                  <div className="font-medium">{idea?.title || 'Untitled'}</div>
-                </div>
-                <div>
-                  <span className="font-medium text-gray-500 block text-xs mb-1">Search Query (Optimized)</span>
-                  <div className="font-mono text-xs text-gray-600 bg-gray-100 p-2 rounded border border-gray-200 break-all">
-                    {searchQuery || 'No search query available'}
-                  </div>
+        )}
+
+        {/* ============= TAB 1: SEARCH ============= */}
+        {mainTab === 'search' && (
+          <div className="space-y-6 animate-fadeIn">
+            {/* Your Invention Context Card */}
+            <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-2xl border border-indigo-100 p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-12 h-12 rounded-xl bg-indigo-100 flex items-center justify-center text-2xl">💡</div>
+                <div className="flex-1">
+                  <h3 className="font-semibold text-gray-900 mb-1">Your Invention</h3>
+                  <p className="text-lg text-indigo-900 font-medium">{idea?.title || 'Untitled'}</p>
+                  {idea?.abstract && (
+                    <p className="text-sm text-gray-600 mt-2 line-clamp-2">{idea.abstract}</p>
+                  )}
                 </div>
               </div>
-              
-              <div className="space-y-4">
+            </div>
+
+            {/* Search Configuration */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+              <div className="p-6 border-b border-gray-100">
+                <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                  <span className="text-xl">🔍</span> Global Patent Search
+                </h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  Search through 12M+ patents worldwide using our AI-optimized query
+                </p>
+              </div>
+
+              <div className="p-6 space-y-6">
+                {/* Search Query Display */}
                 <div>
-                  <label className="flex items-center gap-2 text-sm text-gray-700 mb-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">AI-Optimized Search Query</label>
+                  <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+                    <code className="text-sm text-gray-700 break-all">{searchQuery || 'No search query available'}</code>
+                  </div>
+                </div>
+
+                {/* Custom Query Option */}
+                <div className="space-y-3">
+                  <label className="flex items-center gap-3 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={showCustomQuery}
                       onChange={(e) => setShowCustomQuery(e.target.checked)}
-                      className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                      className="w-4 h-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                     />
-                    Use custom search query
+                    <span className="text-sm text-gray-700">Use custom search query instead</span>
                   </label>
 
                   {showCustomQuery && (
-                    <div className="space-y-2 animate-fadeIn">
-                      <textarea
-                        className="w-full border rounded p-2 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                        rows={3}
-                        value={customQuery}
-                        onChange={(e) => setCustomQuery(e.target.value)}
-                        placeholder="Enter custom Boolean query..."
-                      />
+                    <textarea
+                      className="w-full border border-gray-300 rounded-xl p-4 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                      rows={3}
+                      value={customQuery}
+                      onChange={(e) => setCustomQuery(e.target.value)}
+                      placeholder="Enter your custom Boolean search query..."
+                    />
+                  )}
+                </div>
+
+                {/* Advanced Settings */}
+                <div className="border-t border-gray-100 pt-4">
+                  <button
+                    onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
+                    className="text-sm text-indigo-600 hover:text-indigo-700 font-medium flex items-center gap-1"
+                  >
+                    {showAdvancedSettings ? '▼' : '▶'} Advanced Settings
+                  </button>
+                  
+                  {showAdvancedSettings && (
+                    <div className="mt-4 grid md:grid-cols-2 gap-4 p-4 bg-gray-50 rounded-xl">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Results Limit</label>
+                        <select
+                          value={limit}
+                          onChange={(e) => setLimit(parseInt(e.target.value))}
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                        >
+                          <option value={10}>10 results</option>
+                          <option value={25}>25 results</option>
+                          <option value={50}>50 results</option>
+                          <option value={100}>100 results</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Published After</label>
+                        <input
+                          type="date"
+                          value={afterDate}
+                          onChange={(e) => setAfterDate(e.target.value)}
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                        />
+                      </div>
                     </div>
                   )}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3">
+                {/* Search Button */}
+                <div className="flex items-center gap-4">
                   <button
                     onClick={runSearch}
                     disabled={busy}
-                    className={`inline-flex items-center px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm
-                      ${searching 
-                        ? 'bg-indigo-50 text-indigo-700 border border-indigo-200 cursor-wait' 
-                        : 'bg-indigo-600 text-white hover:bg-indigo-700 focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500'
-                      } disabled:opacity-50 disabled:cursor-not-allowed`}
+                    className={`flex-1 md:flex-none px-8 py-4 rounded-xl text-base font-semibold transition-all shadow-lg ${
+                      searching
+                        ? 'bg-indigo-100 text-indigo-700 cursor-wait'
+                        : 'bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-indigo-200'
+                    } disabled:opacity-50`}
                   >
                     {searching ? (
-                      <>
-                        <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-indigo-700" fill="none" viewBox="0 0 24 24">
+                      <span className="flex items-center gap-3">
+                        <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
                           <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                           <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                         </svg>
-                        Searching prior-art database...
-                      </>
+                        Searching...
+                      </span>
                     ) : (
-                      <>
-                        <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <span className="flex items-center gap-2">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
                         </svg>
-                        {results.length > 0 ? 'Run New Search' : 'Search Related Patents'}
-                      </>
+                        {results.length > 0 ? 'Search Again' : 'Search Prior Art'}
+                      </span>
                     )}
                   </button>
 
-                  <button
-                    onClick={() => setShowAdvancedSettings(!showAdvancedSettings)}
-                    className="text-sm text-gray-600 hover:text-indigo-600 underline decoration-dotted"
-                  >
-                    {showAdvancedSettings ? 'Hide Settings' : 'Advanced Settings'}
-                  </button>
+                  {results.length > 0 && (
+                    <button
+                      onClick={() => setMainTab('analyze')}
+                      className="px-6 py-4 rounded-xl text-base font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition-all shadow-lg hover:shadow-emerald-200 flex items-center gap-2"
+                    >
+                      Continue to Analysis
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
 
-                {showAdvancedSettings && (
-                  <div className="p-3 bg-gray-50 rounded border border-gray-200 text-sm space-y-3">
+                {/* Search Progress */}
+                {searching && searchProgress && (
+                  <div className="bg-indigo-50 rounded-xl p-4 border border-indigo-100">
                     <div className="flex items-center gap-3">
-                      <label className="text-gray-600">Limit results:</label>
-                      <input
-                        type="number"
-                        min={10}
-                        max={50}
-                        value={limit}
-                        onChange={(e)=>setLimit(Math.max(10, Math.min(50, parseInt(e.target.value||'25',10))))}
-                        className="w-20 border rounded px-2 py-1"
-                      />
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <label className="text-gray-600">After Date:</label>
-                      <input
-                        type="date"
-                        value={afterDate}
-                        onChange={(e)=>setAfterDate(e.target.value)}
-                        className="border rounded px-2 py-1"
-                      />
+                      <div className="animate-pulse w-3 h-3 rounded-full bg-indigo-500"></div>
+                      <span className="text-sm text-indigo-700">{searchProgress}</span>
                     </div>
                   </div>
                 )}
               </div>
             </div>
 
-            {/* Search Progress Indicator */}
-            {searching && searchProgress && (
-              <div className="mt-6 bg-indigo-50 border border-indigo-100 rounded-lg p-4 animate-fadeIn">
-                <div className="flex items-center gap-3">
-                  <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-600"></div>
-                  <span className="text-indigo-800 font-medium text-sm">{searchProgress}</span>
-                </div>
-                <div className="mt-2 w-full bg-indigo-200 rounded-full h-1.5">
-                  <div className="bg-indigo-600 h-1.5 rounded-full animate-pulse" style={{width: '100%'}}></div>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* STEP 2: AI Relevance Review */}
-        {results.length > 0 && (
-          <div className={`rounded-xl border transition-all duration-300 ${hasAIReview ? 'bg-gray-50 border-gray-200' : 'bg-white border-emerald-100 shadow-sm ring-1 ring-emerald-50'}`}>
-            <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-                <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${hasAIReview ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-800 text-white'}`}>2</div>
-                AI Relevance Review
-              </h3>
-              {hasAIReview && (
-                <span className="text-xs font-medium text-emerald-600 bg-emerald-50 px-2 py-1 rounded-full flex items-center gap-1">
-                  <CheckIcon className="w-3 h-3" /> Analysis Complete
-                </span>
-              )}
-            </div>
-
-            <div className="p-6">
-              {!hasAIReview ? (
-                <div className="text-center">
-                  <div className="mb-4 text-gray-600">
-                    <p className="mb-2">We found {results.length} potential candidates.</p>
-                    <p className="text-sm">Now, let our AI analyze the full text of these patents to determine relevance and novelty threats.</p>
-                  </div>
-                  <button
-                    onClick={runAIReview}
-                    disabled={reviewing}
-                    className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-emerald-600 hover:bg-emerald-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-60"
-                  >
-                    {reviewing ? (
-                      <>
-                        <svg className="animate-spin -ml-1 mr-2 h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        Running AI Analysis...
-                      </>
-                    ) : (
-                      <>
-                        <span className="mr-2">🧠</span> Run AI Relevance Review
-                      </>
-                    )}
-                  </button>
-                  {reviewing && (
-                    <div className="mt-4 text-sm text-gray-500 animate-pulse">
-                      {reviewInfo || 'Processing patents batch by batch...'}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="flex items-center justify-between">
+            {/* Search Results Preview (if any) */}
+            {results.length > 0 && (
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                <div className="p-6 border-b border-gray-100 flex items-center justify-between">
                   <div>
-                    <div className="text-emerald-800 font-medium mb-1">AI Analysis Complete</div>
-                    <div className="text-sm text-emerald-600">
-                      Analyzed {results.length} patents. {Object.values(aiAnalysis).filter(a => a.noveltyThreat === 'anticipates' || a.noveltyThreat === 'obvious').length} potential threats identified.
-                    </div>
-                  </div>
-                  <button
-                    onClick={runAIReview}
-                    className="text-sm text-emerald-600 hover:text-emerald-700 font-medium underline decoration-dotted"
-                  >
-                    Re-run Analysis
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* STEP 3: Workflow Selection - Two Tabs */}
-        {results.length > 0 && hasAIReview && (
-          <div className="rounded-xl border transition-all duration-300 bg-white border-indigo-100 shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-gray-200">
-              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-                <div className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-bold">3</div>
-                Configure Prior Art Usage
-              </h3>
-              <p className="text-sm text-gray-500 mt-1">Select how to use the analyzed patents for drafting and claim refinement</p>
-            </div>
-
-            {/* Tab Navigation */}
-            <div className="border-b border-gray-200">
-              <nav className="flex" aria-label="Workflow tabs">
-                <button
-                  onClick={() => setActiveWorkflowTab('prior-art')}
-                  className={`flex-1 py-4 px-6 text-center border-b-2 font-medium text-sm transition-colors ${
-                    activeWorkflowTab === 'prior-art'
-                      ? 'border-indigo-500 text-indigo-600 bg-indigo-50/50'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  <div className="flex items-center justify-center gap-2">
-                    <span className="text-lg">📝</span>
-                    <span>Step 1: Background References</span>
-                    {(Object.keys(priorArtSelected).length > 0 || priorArtManualText.trim()) && (
-                      <span className="ml-1 bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full text-xs">
-                        {priorArtMode === 'manual' ? 'Manual' : priorArtMode === 'hybrid' ? `${Object.keys(priorArtSelected).length} + Manual` : Object.keys(priorArtSelected).length}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-gray-400 mt-1">References cited in your patent</p>
-                </button>
-                <button
-                  onClick={() => setActiveWorkflowTab('claim-refinement')}
-                  className={`flex-1 py-4 px-6 text-center border-b-2 font-medium text-sm transition-colors ${
-                    activeWorkflowTab === 'claim-refinement'
-                      ? 'border-amber-500 text-amber-600 bg-amber-50/50'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  <div className="flex items-center justify-center gap-2">
-                    <span className="text-lg">⚖️</span>
-                    <span>Step 2: Claim Novelty Check</span>
-                    {(Object.keys(claimRefSelected).length > 0 || claimRefManualText.trim()) && (
-                      <span className="ml-1 bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full text-xs">
-                        {claimRefMode === 'manual' ? 'Manual' : claimRefMode === 'hybrid' ? `${Object.keys(claimRefSelected).length} + Manual` : Object.keys(claimRefSelected).length}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-gray-400 mt-1">Claims compared against these</p>
-                </button>
-              </nav>
-            </div>
-
-            {/* Tab Content */}
-            <div className="p-6">
-              {/* ===== TAB A: Prior Art for Drafting ===== */}
-              {activeWorkflowTab === 'prior-art' && (
-                <div className="space-y-6">
-                  {/* Purpose explanation */}
-                  <div className="bg-indigo-50 border border-indigo-100 rounded-lg p-4">
-                    <h4 className="font-semibold text-indigo-900 mb-1">📝 Purpose: Prior Art References for Patent Draft</h4>
-                    <p className="text-sm text-indigo-700">
-                      These patents and/or your manual notes will be cited in the Background section and throughout your patent application to provide context for your invention.
+                    <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                      <span className="text-xl">📋</span> Search Results
+                    </h3>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Found {results.length} potentially relevant patents
                     </p>
                   </div>
-
-                  {/* Mode Selection */}
-                  <div className="space-y-3">
-                    <label className="text-sm font-medium text-gray-700">How would you like to provide prior art references?</label>
-                    <div className="grid grid-cols-3 gap-3">
-                      <label className={`relative flex flex-col items-center p-4 border-2 rounded-lg cursor-pointer transition-all ${priorArtMode === 'ai' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:border-indigo-300'}`}>
-                        <input type="radio" name="priorArtMode" value="ai" checked={priorArtMode === 'ai'} onChange={() => setPriorArtMode('ai')} className="sr-only" />
-                        <span className="text-2xl mb-2">🤖</span>
-                        <span className="font-medium text-sm">AI-Selected Only</span>
-                        <span className="text-xs text-gray-500 text-center mt-1">Use patents from AI review</span>
-                        {priorArtMode === 'ai' && <CheckIcon className="absolute top-2 right-2 w-5 h-5 text-indigo-600" />}
-                      </label>
-                      <label className={`relative flex flex-col items-center p-4 border-2 rounded-lg cursor-pointer transition-all ${priorArtMode === 'manual' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:border-indigo-300'}`}>
-                        <input type="radio" name="priorArtMode" value="manual" checked={priorArtMode === 'manual'} onChange={() => setPriorArtMode('manual')} className="sr-only" />
-                        <span className="text-2xl mb-2">✍️</span>
-                        <span className="font-medium text-sm">Manual Text Only</span>
-                        <span className="text-xs text-gray-500 text-center mt-1">Only use your own text</span>
-                        {priorArtMode === 'manual' && <CheckIcon className="absolute top-2 right-2 w-5 h-5 text-indigo-600" />}
-                      </label>
-                      <label className={`relative flex flex-col items-center p-4 border-2 rounded-lg cursor-pointer transition-all ${priorArtMode === 'hybrid' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:border-indigo-300'}`}>
-                        <input type="radio" name="priorArtMode" value="hybrid" checked={priorArtMode === 'hybrid'} onChange={() => setPriorArtMode('hybrid')} className="sr-only" />
-                        <span className="text-2xl mb-2">🔀</span>
-                        <span className="font-medium text-sm">Hybrid</span>
-                        <span className="text-xs text-gray-500 text-center mt-1">AI patents + your text</span>
-                        {priorArtMode === 'hybrid' && <CheckIcon className="absolute top-2 right-2 w-5 h-5 text-indigo-600" />}
-                      </label>
-                    </div>
-                  </div>
-
-                  {/* Manual Text Input (shown for manual and hybrid modes) */}
-                  {(priorArtMode === 'manual' || priorArtMode === 'hybrid') && (
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-700">Your Prior Art Notes</label>
-                      <textarea
-                        className="w-full border border-gray-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 min-h-[120px]"
-                        placeholder="Paste patent numbers, publication references, or describe prior art you want cited in your draft..."
-                        value={priorArtManualText}
-                        onChange={(e) => setPriorArtManualText(e.target.value)}
-                      />
-                      <p className="text-xs text-gray-500">Include patent numbers, titles, and brief descriptions of relevant disclosures.</p>
-                    </div>
-                  )}
-
-                  {/* AI Patent Selection (shown for ai and hybrid modes) */}
-                  {(priorArtMode === 'ai' || priorArtMode === 'hybrid') && (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <label className="text-sm font-medium text-gray-700">Select AI-Reviewed Patents</label>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => {
-                              // Auto-select adjacent/remote patents (good for background, not direct threats)
-                              const autoSelected: Record<string, any> = {}
-                              results.forEach((r) => {
-                                const pn = getPatentKey(r)
-                                const threat = aiAnalysis[pn]?.noveltyThreat
-                                if (threat === 'adjacent' || threat === 'remote') {
-                                  autoSelected[pn] = { ...r, noveltyThreat: threat }
-                                }
-                              })
-                              setPriorArtSelected(autoSelected)
-                            }}
-                            className="text-xs text-indigo-600 hover:text-indigo-700 font-medium"
-                          >
-                            Auto-select (Adjacent/Remote)
-                          </button>
-                          <button
-                            onClick={() => setPriorArtSelected({})}
-                            className="text-xs text-gray-500 hover:text-gray-700"
-                          >
-                            Clear All
-                          </button>
-                        </div>
-                      </div>
-                      
-                      {/* Threat Filter */}
-                      <div className="flex flex-wrap gap-2">
-                        {[
-                          { key: 'anticipates', label: 'Anticipates', color: 'red', count: Object.values(aiAnalysis).filter(a => a.noveltyThreat === 'anticipates').length },
-                          { key: 'obvious', label: 'Obvious', color: 'amber', count: Object.values(aiAnalysis).filter(a => a.noveltyThreat === 'obvious').length },
-                          { key: 'adjacent', label: 'Adjacent', color: 'green', count: Object.values(aiAnalysis).filter(a => a.noveltyThreat === 'adjacent').length },
-                          { key: 'remote', label: 'Remote', color: 'gray', count: Object.values(aiAnalysis).filter(a => a.noveltyThreat === 'remote').length },
-                        ].map(({ key, label, color, count }) => (
-                          <button
-                            key={key}
-                            onClick={() => setPriorArtThreatFilter(prev => prev.includes(key) ? prev.filter(f => f !== key) : [...prev, key])}
-                            className={`px-3 py-1 text-xs rounded-full border transition-colors ${
-                              priorArtThreatFilter.includes(key)
-                                ? `bg-${color}-100 border-${color}-300 text-${color}-700`
-                                : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
-                            }`}
-                          >
-                            {label} ({count})
-                          </button>
-                        ))}
-                      </div>
-
-                      {/* Patent List - Doubled height to show more patents for comparison */}
-                      <div className="border border-gray-200 rounded-lg max-h-[1200px] overflow-y-auto">
-                        {results
-                          .filter(r => {
-                            if (priorArtThreatFilter.length === 0) return true
-                            const pn = getPatentKey(r)
-                            return priorArtThreatFilter.includes(aiAnalysis[pn]?.noveltyThreat || '')
-                          })
-                          .map((r, i) => {
-                            const pn = getPatentKey(r, i)
-                            const analysis = aiAnalysis[pn]
-                            const isSelected = !!priorArtSelected[pn]
-                            const isExpanded = expandedPatentDetails.has(`priorArt-${pn}`)
-                            const patentAbstract = (r as any).abstract || (r as any).snippet || ''
-                            return (
-                              <div key={pn} className={`border-b border-gray-100 last:border-b-0 ${isSelected ? 'bg-indigo-50' : ''}`}>
-                                <label className={`flex items-start gap-3 p-3 cursor-pointer transition-colors ${!isSelected && 'hover:bg-gray-50'}`}>
-                                  <input
-                                    type="checkbox"
-                                    checked={isSelected}
-                                    onChange={() => {
-                                      setPriorArtSelected(prev => {
-                                        if (prev[pn]) {
-                                          const { [pn]: _, ...rest } = prev
-                                          return rest
-                                        }
-                                        return { ...prev, [pn]: { ...r, noveltyThreat: analysis?.noveltyThreat } }
-                                      })
-                                    }}
-                                    className="mt-1 h-4 w-4 rounded border-gray-300 text-indigo-600"
-                                  />
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      <span className="font-medium text-sm text-gray-900">{r.title}</span>
-                                      <span className={`px-1.5 py-0.5 text-xs rounded ${
-                                        analysis?.noveltyThreat === 'anticipates' ? 'bg-red-100 text-red-700' :
-                                        analysis?.noveltyThreat === 'obvious' ? 'bg-amber-100 text-amber-700' :
-                                        analysis?.noveltyThreat === 'adjacent' ? 'bg-green-100 text-green-700' :
-                                        'bg-gray-100 text-gray-600'
-                                      }`}>
-                                        {analysis?.noveltyThreat || 'unknown'}
-                                      </span>
-                                    </div>
-                                    <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2">
-                                      <span>{pn}</span>
-                                      {analysis && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.preventDefault()
-                                            e.stopPropagation()
-                                            setExpandedPatentDetails(prev => {
-                                              const next = new Set(prev)
-                                              const key = `priorArt-${pn}`
-                                              if (next.has(key)) next.delete(key)
-                                              else next.add(key)
-                                              return next
-                                            })
-                                          }}
-                                          className="text-indigo-600 hover:text-indigo-700 font-medium underline"
-                                        >
-                                          {isExpanded ? 'Hide Details' : 'View AI Analysis'}
-                                        </button>
-                                      )}
-                                    </div>
-                                  </div>
-                                </label>
-                                
-                                {/* Expandable Detailed Analysis */}
-                                {isExpanded && analysis && (
-                                  <div className="mx-3 mb-3 p-4 bg-gradient-to-r from-indigo-50 to-purple-50 rounded-lg border border-indigo-200 animate-fadeIn">
-                                    {/* Section Toggle Controls */}
-                                    <div className="mb-3 flex flex-wrap gap-2">
-                                      <div className="text-xs font-semibold text-indigo-700 uppercase tracking-wide mr-2">Show:</div>
-
-                                      {/* Patent Metadata */}
-                                      <button
-                                        onClick={() => toggleSection(`priorArt-${pn}`, 'metadata')}
-                                        className={`px-2 py-1 text-xs rounded transition-colors ${
-                                          getSectionVisibility(`priorArt-${pn}`).metadata
-                                            ? 'bg-blue-100 text-blue-700 border border-blue-300'
-                                            : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                        }`}
-                                      >
-                                        📋 Details
-                                      </button>
-
-                                      {patentAbstract && (
-                                        <button
-                                          onClick={() => toggleSection(`priorArt-${pn}`, 'abstract')}
-                                          className={`px-2 py-1 text-xs rounded transition-colors ${
-                                            getSectionVisibility(`priorArt-${pn}`).abstract
-                                              ? 'bg-indigo-100 text-indigo-700 border border-indigo-300'
-                                              : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                          }`}
-                                        >
-                                          📄 Abstract
-                                        </button>
-                                      )}
-                                      {analysis.aiSummary && (
-                                        <button
-                                          onClick={() => toggleSection(`priorArt-${pn}`, 'aiSummary')}
-                                          className={`px-2 py-1 text-xs rounded transition-colors ${
-                                            getSectionVisibility(`priorArt-${pn}`).aiSummary
-                                              ? 'bg-indigo-100 text-indigo-700 border border-indigo-300'
-                                              : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                          }`}
-                                        >
-                                          🤖 Summary
-                                        </button>
-                                      )}
-                                      {analysis.relevantParts && analysis.relevantParts.length > 0 && (
-                                        <button
-                                          onClick={() => toggleSection(`priorArt-${pn}`, 'relevantParts')}
-                                          className={`px-2 py-1 text-xs rounded transition-colors ${
-                                            getSectionVisibility(`priorArt-${pn}`).relevantParts
-                                              ? 'bg-green-100 text-green-700 border border-green-300'
-                                              : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                          }`}
-                                        >
-                                          ✅ Matches
-                                        </button>
-                                      )}
-                                      {analysis.irrelevantParts && analysis.irrelevantParts.length > 0 && (
-                                        <button
-                                          onClick={() => toggleSection(`priorArt-${pn}`, 'irrelevantParts')}
-                                          className={`px-2 py-1 text-xs rounded transition-colors ${
-                                            getSectionVisibility(`priorArt-${pn}`).irrelevantParts
-                                              ? 'bg-gray-100 text-gray-700 border border-gray-300'
-                                              : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                          }`}
-                                        >
-                                          ❌ Non-matches
-                                        </button>
-                                      )}
-                                      {analysis.noveltyComparison && (
-                                        <button
-                                          onClick={() => toggleSection(`priorArt-${pn}`, 'noveltyComparison')}
-                                          className={`px-2 py-1 text-xs rounded transition-colors ${
-                                            getSectionVisibility(`priorArt-${pn}`).noveltyComparison
-                                              ? 'bg-purple-100 text-purple-700 border border-purple-300'
-                                              : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                          }`}
-                                        >
-                                          ⚖️ Comparison
-                                        </button>
-                                      )}
-                                    </div>
-
-                                    {/* Patent Metadata */}
-                                    {getSectionVisibility(`priorArt-${pn}`).metadata && (
-                                      <div className="mb-3">
-                                        <div className="text-xs font-semibold text-blue-700 uppercase tracking-wide mb-2">📋 Patent Details</div>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-                                          <div>
-                                            <span className="font-medium text-gray-600">Patent Number:</span>
-                                            <span className="ml-2 font-mono text-gray-900">{pn}</span>
-                                          </div>
-                                          {(r as any).filing_date && (
-                                            <div>
-                                              <span className="font-medium text-gray-600">Filing Date:</span>
-                                              <span className="ml-2 text-gray-900">{String((r as any).filing_date).slice(0, 10)}</span>
-                                            </div>
-                                          )}
-                                          {(r as any).publication_date && (
-                                            <div>
-                                              <span className="font-medium text-gray-600">Publication Date:</span>
-                                              <span className="ml-2 text-gray-900">{String((r as any).publication_date).slice(0, 10)}</span>
-                                            </div>
-                                          )}
-                                          {(r as any).inventors && (r as any).inventors.length > 0 && (
-                                            <div className="md:col-span-2">
-                                              <span className="font-medium text-gray-600">Inventors:</span>
-                                              <span className="ml-2 text-gray-900">
-                                                {Array.isArray((r as any).inventors)
-                                                  ? (r as any).inventors.join(', ')
-                                                  : (r as any).inventors
-                                                }
-                                              </span>
-                                            </div>
-                                          )}
-                                          {(r as any).assignees && (r as any).assignees.length > 0 && (
-                                            <div className="md:col-span-2">
-                                              <span className="font-medium text-gray-600">Assignees:</span>
-                                              <span className="ml-2 text-gray-900">
-                                                {Array.isArray((r as any).assignees)
-                                                  ? (r as any).assignees.join(', ')
-                                                  : (r as any).assignees
-                                                }
-                                              </span>
-                                            </div>
-                                          )}
-                                          {(r as any).country && (
-                                            <div>
-                                              <span className="font-medium text-gray-600">Country:</span>
-                                              <span className="ml-2 text-gray-900">{(r as any).country}</span>
-                                            </div>
-                                          )}
-                                          {(r as any).patent_type && (
-                                            <div>
-                                              <span className="font-medium text-gray-600">Type:</span>
-                                              <span className="ml-2 text-gray-900">{(r as any).patent_type}</span>
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {/* Patent Abstract */}
-                                    {patentAbstract && getSectionVisibility(`priorArt-${pn}`).abstract && (
-                                      <div className="mb-3">
-                                        <div className="text-xs font-semibold text-indigo-700 uppercase tracking-wide mb-1">📄 Patent Abstract</div>
-                                        <div className="text-sm text-gray-700 bg-white/50 p-2 rounded border border-indigo-100">{patentAbstract}</div>
-                                      </div>
-                                    )}
-
-                                    {/* AI Summary - What this patent does */}
-                                    {analysis.aiSummary && getSectionVisibility(`priorArt-${pn}`).aiSummary && (
-                                      <div className="mb-3">
-                                        <div className="text-xs font-semibold text-indigo-700 uppercase tracking-wide mb-1">🤖 What This Patent Does</div>
-                                        <div className="text-sm text-gray-700">{analysis.aiSummary}</div>
-                                      </div>
-                                    )}
-
-                                    {/* Relevant Parts - What matches */}
-                                    {analysis.relevantParts && analysis.relevantParts.length > 0 && getSectionVisibility(`priorArt-${pn}`).relevantParts && (
-                                      <div className="mb-3">
-                                        <div className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-1">✅ What Matches (Relevant Parts)</div>
-                                        <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-                                          {analysis.relevantParts.map((part, idx) => (
-                                            <li key={idx} className="text-green-800">{part}</li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    )}
-
-                                    {/* Irrelevant Parts - What doesn't match */}
-                                    {analysis.irrelevantParts && analysis.irrelevantParts.length > 0 && getSectionVisibility(`priorArt-${pn}`).irrelevantParts && (
-                                      <div className="mb-3">
-                                        <div className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-1">❌ What Doesn't Match</div>
-                                        <ul className="list-disc list-inside text-sm text-gray-600 space-y-1">
-                                          {analysis.irrelevantParts.map((part, idx) => (
-                                            <li key={idx}>{part}</li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    )}
-
-                                    {/* Novelty Comparison */}
-                                    {analysis.noveltyComparison && getSectionVisibility(`priorArt-${pn}`).noveltyComparison && (
-                                      <div className="mb-0">
-                                        <div className="text-xs font-semibold text-purple-700 uppercase tracking-wide mb-1">⚖️ Novelty Comparison</div>
-                                        <div className="text-sm text-gray-700 bg-purple-50 p-2 rounded border border-purple-100">{analysis.noveltyComparison}</div>
-                                      </div>
-                                    )}
-
-                                    {/* Threat Level Explanation */}
-                                    <div className="mt-3 pt-3 border-t border-indigo-200">
-                                      <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium ${
-                                        analysis.noveltyThreat === 'anticipates' ? 'bg-red-100 text-red-800' :
-                                        analysis.noveltyThreat === 'obvious' ? 'bg-amber-100 text-amber-800' :
-                                        analysis.noveltyThreat === 'adjacent' ? 'bg-green-100 text-green-800' :
-                                        'bg-gray-100 text-gray-700'
-                                      }`}>
-                                        {analysis.noveltyThreat === 'anticipates' && '🛑 HIGH RISK: This patent may anticipate your invention'}
-                                        {analysis.noveltyThreat === 'obvious' && '⚠️ MEDIUM RISK: May raise obviousness concerns'}
-                                        {analysis.noveltyThreat === 'adjacent' && '✅ LOW RISK: Related but differentiable'}
-                                        {analysis.noveltyThreat === 'remote' && '⚪ SAFE: Remotely related, not a threat'}
-                                        {!analysis.noveltyThreat && '❓ Threat level not determined'}
-                                      </div>
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )
-                          })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Summary */}
-                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                    <div className="text-sm font-medium text-gray-700 mb-2">Summary for Patent Drafting:</div>
-                    <div className="text-sm text-gray-600">
-                      {priorArtMode === 'ai' && `${Object.keys(priorArtSelected).length} AI-reviewed patents selected`}
-                      {priorArtMode === 'manual' && (priorArtManualText.trim() ? 'Manual prior art text provided' : 'No manual text entered yet')}
-                      {priorArtMode === 'hybrid' && `${Object.keys(priorArtSelected).length} patents + ${priorArtManualText.trim() ? 'manual text' : 'no manual text'}`}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* ===== TAB B: Patents for Claim Refinement ===== */}
-              {activeWorkflowTab === 'claim-refinement' && (
-                <div className="space-y-6">
-                  {/* Skip notice */}
-                  {skipClaimRefinement && (
-                    <div className="bg-purple-50 border border-purple-200 rounded-lg p-4 flex items-start gap-3">
-                      <span className="text-2xl">⏭️</span>
-                      <div>
-                        <h4 className="font-semibold text-purple-900 mb-1">Claim Refinement Will Be Skipped</h4>
-                        <p className="text-sm text-purple-700">
-                          You've chosen to skip claim refinement. The configuration below will not be used. 
-                          Uncheck "Skip Claim Refinement" in the footer if you change your mind.
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Purpose explanation */}
-                  <div className={`bg-amber-50 border border-amber-100 rounded-lg p-4 ${skipClaimRefinement ? 'opacity-50' : ''}`}>
-                    <h4 className="font-semibold text-amber-900 mb-1">⚖️ Purpose: Differentiate Your Claims from Prior Art</h4>
-                    <p className="text-sm text-amber-700">
-                      Select patents that your claims should be compared against. The AI will analyze your claims and suggest refinements to ensure novelty and non-obviousness over these references.
-                    </p>
-                  </div>
-
-                  {/* Mode Selection */}
-                  <div className="space-y-3">
-                    <label className="text-sm font-medium text-gray-700">How would you like to provide comparison references?</label>
-                    <div className="grid grid-cols-3 gap-3">
-                      <label className={`relative flex flex-col items-center p-4 border-2 rounded-lg cursor-pointer transition-all ${claimRefMode === 'ai' ? 'border-amber-500 bg-amber-50' : 'border-gray-200 hover:border-amber-300'}`}>
-                        <input type="radio" name="claimRefMode" value="ai" checked={claimRefMode === 'ai'} onChange={() => setClaimRefMode('ai')} className="sr-only" />
-                        <span className="text-2xl mb-2">🤖</span>
-                        <span className="font-medium text-sm">AI-Selected Only</span>
-                        <span className="text-xs text-gray-500 text-center mt-1">High-risk patents from AI</span>
-                        {claimRefMode === 'ai' && <CheckIcon className="absolute top-2 right-2 w-5 h-5 text-amber-600" />}
-                      </label>
-                      <label className={`relative flex flex-col items-center p-4 border-2 rounded-lg cursor-pointer transition-all ${claimRefMode === 'manual' ? 'border-amber-500 bg-amber-50' : 'border-gray-200 hover:border-amber-300'}`}>
-                        <input type="radio" name="claimRefMode" value="manual" checked={claimRefMode === 'manual'} onChange={() => setClaimRefMode('manual')} className="sr-only" />
-                        <span className="text-2xl mb-2">✍️</span>
-                        <span className="font-medium text-sm">Manual Text Only</span>
-                        <span className="text-xs text-gray-500 text-center mt-1">Your own prior art notes</span>
-                        {claimRefMode === 'manual' && <CheckIcon className="absolute top-2 right-2 w-5 h-5 text-amber-600" />}
-                      </label>
-                      <label className={`relative flex flex-col items-center p-4 border-2 rounded-lg cursor-pointer transition-all ${claimRefMode === 'hybrid' ? 'border-amber-500 bg-amber-50' : 'border-gray-200 hover:border-amber-300'}`}>
-                        <input type="radio" name="claimRefMode" value="hybrid" checked={claimRefMode === 'hybrid'} onChange={() => setClaimRefMode('hybrid')} className="sr-only" />
-                        <span className="text-2xl mb-2">🔀</span>
-                        <span className="font-medium text-sm">Hybrid</span>
-                        <span className="text-xs text-gray-500 text-center mt-1">AI patents + your notes</span>
-                        {claimRefMode === 'hybrid' && <CheckIcon className="absolute top-2 right-2 w-5 h-5 text-amber-600" />}
-                      </label>
-                    </div>
-                  </div>
-
-                  {/* Manual Text Input (shown for manual and hybrid modes) */}
-                  {(claimRefMode === 'manual' || claimRefMode === 'hybrid') && (
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-700">Your Prior Art for Claim Comparison</label>
-                      <textarea
-                        className="w-full border border-gray-300 rounded-lg p-3 text-sm focus:ring-2 focus:ring-amber-500 focus:border-amber-500 min-h-[120px]"
-                        placeholder="Describe prior art that you want your claims to be differentiated from. Include patent numbers and key technical disclosures..."
-                        value={claimRefManualText}
-                        onChange={(e) => setClaimRefManualText(e.target.value)}
-                      />
-                      <p className="text-xs text-gray-500">Be specific about what aspects of the prior art might overlap with your claims.</p>
-                    </div>
-                  )}
-
-                  {/* AI Patent Selection (shown for ai and hybrid modes) */}
-                  {(claimRefMode === 'ai' || claimRefMode === 'hybrid') && (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <label className="text-sm font-medium text-gray-700">Select Patents to Compare Against</label>
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => {
-                              // Auto-select high-risk patents (anticipates/obvious)
-                              const autoSelected: Record<string, any> = {}
-                              results.forEach((r) => {
-                                const pn = getPatentKey(r)
-                                const threat = aiAnalysis[pn]?.noveltyThreat
-                                if (threat === 'anticipates' || threat === 'obvious') {
-                                  autoSelected[pn] = { ...r, noveltyThreat: threat }
-                                }
-                              })
-                              setClaimRefSelected(autoSelected)
-                            }}
-                            className="text-xs text-amber-600 hover:text-amber-700 font-medium"
-                          >
-                            Auto-select High-Risk
-                          </button>
-                          <button
-                            onClick={() => setClaimRefSelected({})}
-                            className="text-xs text-gray-500 hover:text-gray-700"
-                          >
-                            Clear All
-                          </button>
-                        </div>
-                      </div>
-                      
-                      {/* Threat Filter */}
-                      <div className="flex flex-wrap gap-2">
-                        {[
-                          { key: 'anticipates', label: '🛑 Anticipates', color: 'red', count: Object.values(aiAnalysis).filter(a => a.noveltyThreat === 'anticipates').length },
-                          { key: 'obvious', label: '⚠️ Obvious', color: 'amber', count: Object.values(aiAnalysis).filter(a => a.noveltyThreat === 'obvious').length },
-                          { key: 'adjacent', label: '✅ Adjacent', color: 'green', count: Object.values(aiAnalysis).filter(a => a.noveltyThreat === 'adjacent').length },
-                          { key: 'remote', label: '⚪ Remote', color: 'gray', count: Object.values(aiAnalysis).filter(a => a.noveltyThreat === 'remote').length },
-                        ].map(({ key, label, color, count }) => (
-                          <button
-                            key={key}
-                            onClick={() => setClaimRefThreatFilter(prev => prev.includes(key) ? prev.filter(f => f !== key) : [...prev, key])}
-                            className={`px-3 py-1 text-xs rounded-full border transition-colors ${
-                              claimRefThreatFilter.includes(key)
-                                ? `bg-${color}-100 border-${color}-300 text-${color}-700`
-                                : 'bg-white border-gray-200 text-gray-600 hover:border-gray-300'
-                            }`}
-                          >
-                            {label} ({count})
-                          </button>
-                        ))}
-                      </div>
-
-                      {/* Patent List - Doubled height to show more patents for comparison */}
-                      <div className="border border-gray-200 rounded-lg max-h-[1200px] overflow-y-auto">
-                        {results
-                          .filter(r => {
-                            if (claimRefThreatFilter.length === 0) return true
-                            const pn = getPatentKey(r)
-                            return claimRefThreatFilter.includes(aiAnalysis[pn]?.noveltyThreat || '')
-                          })
-                          .map((r, i) => {
-                            const pn = getPatentKey(r, i)
-                            const analysis = aiAnalysis[pn]
-                            const isSelected = !!claimRefSelected[pn]
-                            const isExpanded = expandedPatentDetails.has(`claimRef-${pn}`)
-                            const patentAbstract = (r as any).abstract || (r as any).snippet || ''
-                            return (
-                              <div key={pn} className={`border-b border-gray-100 last:border-b-0 ${isSelected ? 'bg-amber-50' : ''}`}>
-                                <label className={`flex items-start gap-3 p-3 cursor-pointer transition-colors ${!isSelected && 'hover:bg-gray-50'}`}>
-                                  <input
-                                    type="checkbox"
-                                    checked={isSelected}
-                                    onChange={() => {
-                                      setClaimRefSelected(prev => {
-                                        if (prev[pn]) {
-                                          const { [pn]: _, ...rest } = prev
-                                          return rest
-                                        }
-                                        return { ...prev, [pn]: { ...r, noveltyThreat: analysis?.noveltyThreat, aiSummary: analysis?.aiSummary } }
-                                      })
-                                    }}
-                                    className="mt-1 h-4 w-4 rounded border-gray-300 text-amber-600"
-                                  />
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2 flex-wrap">
-                                      <span className="font-medium text-sm text-gray-900">{r.title}</span>
-                                      <span className={`px-1.5 py-0.5 text-xs rounded ${
-                                        analysis?.noveltyThreat === 'anticipates' ? 'bg-red-100 text-red-700' :
-                                        analysis?.noveltyThreat === 'obvious' ? 'bg-amber-100 text-amber-700' :
-                                        analysis?.noveltyThreat === 'adjacent' ? 'bg-green-100 text-green-700' :
-                                        'bg-gray-100 text-gray-600'
-                                      }`}>
-                                        {analysis?.noveltyThreat || 'unknown'}
-                                      </span>
-                                    </div>
-                                    <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2">
-                                      <span>{pn}</span>
-                                      {analysis && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.preventDefault()
-                                            e.stopPropagation()
-                                            setExpandedPatentDetails(prev => {
-                                              const next = new Set(prev)
-                                              const key = `claimRef-${pn}`
-                                              if (next.has(key)) next.delete(key)
-                                              else next.add(key)
-                                              return next
-                                            })
-                                          }}
-                                          className="text-amber-600 hover:text-amber-700 font-medium underline"
-                                        >
-                                          {isExpanded ? 'Hide Details' : 'View AI Analysis'}
-                                        </button>
-                                      )}
-                                    </div>
-                                  </div>
-                                </label>
-                                
-                                {/* Expandable Detailed Analysis */}
-                                {isExpanded && analysis && (
-                                  <div className="mx-3 mb-3 p-4 bg-gradient-to-r from-amber-50 to-orange-50 rounded-lg border border-amber-200 animate-fadeIn">
-                                    {/* Section Toggle Controls */}
-                                    <div className="mb-3 flex flex-wrap gap-2">
-                                      <div className="text-xs font-semibold text-amber-700 uppercase tracking-wide mr-2">Show:</div>
-
-                                      {/* Patent Metadata */}
-                                      <button
-                                        onClick={() => toggleSection(`claimRef-${pn}`, 'metadata')}
-                                        className={`px-2 py-1 text-xs rounded transition-colors ${
-                                          getSectionVisibility(`claimRef-${pn}`).metadata
-                                            ? 'bg-blue-100 text-blue-700 border border-blue-300'
-                                            : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                        }`}
-                                      >
-                                        📋 Details
-                                      </button>
-
-                                      {patentAbstract && (
-                                        <button
-                                          onClick={() => toggleSection(`claimRef-${pn}`, 'abstract')}
-                                          className={`px-2 py-1 text-xs rounded transition-colors ${
-                                            getSectionVisibility(`claimRef-${pn}`).abstract
-                                              ? 'bg-amber-100 text-amber-700 border border-amber-300'
-                                              : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                          }`}
-                                        >
-                                          📄 Abstract
-                                        </button>
-                                      )}
-                                      {analysis.aiSummary && (
-                                        <button
-                                          onClick={() => toggleSection(`claimRef-${pn}`, 'aiSummary')}
-                                          className={`px-2 py-1 text-xs rounded transition-colors ${
-                                            getSectionVisibility(`claimRef-${pn}`).aiSummary
-                                              ? 'bg-amber-100 text-amber-700 border border-amber-300'
-                                              : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                          }`}
-                                        >
-                                          🤖 Summary
-                                        </button>
-                                      )}
-                                      {analysis.relevantParts && analysis.relevantParts.length > 0 && (
-                                        <button
-                                          onClick={() => toggleSection(`claimRef-${pn}`, 'relevantParts')}
-                                          className={`px-2 py-1 text-xs rounded transition-colors ${
-                                            getSectionVisibility(`claimRef-${pn}`).relevantParts
-                                              ? 'bg-red-100 text-red-700 border border-red-300'
-                                              : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                          }`}
-                                        >
-                                          ⚠️ Overlaps
-                                        </button>
-                                      )}
-                                      {analysis.irrelevantParts && analysis.irrelevantParts.length > 0 && (
-                                        <button
-                                          onClick={() => toggleSection(`claimRef-${pn}`, 'irrelevantParts')}
-                                          className={`px-2 py-1 text-xs rounded transition-colors ${
-                                            getSectionVisibility(`claimRef-${pn}`).irrelevantParts
-                                              ? 'bg-green-100 text-green-700 border border-green-300'
-                                              : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                          }`}
-                                        >
-                                          ✅ Differences
-                                        </button>
-                                      )}
-                                      {analysis.noveltyComparison && (
-                                        <button
-                                          onClick={() => toggleSection(`claimRef-${pn}`, 'noveltyComparison')}
-                                          className={`px-2 py-1 text-xs rounded transition-colors ${
-                                            getSectionVisibility(`claimRef-${pn}`).noveltyComparison
-                                              ? 'bg-purple-100 text-purple-700 border border-purple-300'
-                                              : 'bg-gray-100 text-gray-400 border border-gray-200 opacity-60'
-                                          }`}
-                                        >
-                                          ⚖️ Comparison
-                                        </button>
-                                      )}
-                                    </div>
-
-                                    {/* Patent Metadata */}
-                                    {getSectionVisibility(`claimRef-${pn}`).metadata && (
-                                      <div className="mb-3">
-                                        <div className="text-xs font-semibold text-blue-700 uppercase tracking-wide mb-2">📋 Patent Details</div>
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
-                                          <div>
-                                            <span className="font-medium text-gray-600">Patent Number:</span>
-                                            <span className="ml-2 font-mono text-gray-900">{pn}</span>
-                                          </div>
-                                          {(r as any).filing_date && (
-                                            <div>
-                                              <span className="font-medium text-gray-600">Filing Date:</span>
-                                              <span className="ml-2 text-gray-900">{String((r as any).filing_date).slice(0, 10)}</span>
-                                            </div>
-                                          )}
-                                          {(r as any).publication_date && (
-                                            <div>
-                                              <span className="font-medium text-gray-600">Publication Date:</span>
-                                              <span className="ml-2 text-gray-900">{String((r as any).publication_date).slice(0, 10)}</span>
-                                            </div>
-                                          )}
-                                          {(r as any).inventors && (r as any).inventors.length > 0 && (
-                                            <div className="md:col-span-2">
-                                              <span className="font-medium text-gray-600">Inventors:</span>
-                                              <span className="ml-2 text-gray-900">
-                                                {Array.isArray((r as any).inventors)
-                                                  ? (r as any).inventors.join(', ')
-                                                  : (r as any).inventors
-                                                }
-                                              </span>
-                                            </div>
-                                          )}
-                                          {(r as any).assignees && (r as any).assignees.length > 0 && (
-                                            <div className="md:col-span-2">
-                                              <span className="font-medium text-gray-600">Assignees:</span>
-                                              <span className="ml-2 text-gray-900">
-                                                {Array.isArray((r as any).assignees)
-                                                  ? (r as any).assignees.join(', ')
-                                                  : (r as any).assignees
-                                                }
-                                              </span>
-                                            </div>
-                                          )}
-                                          {(r as any).country && (
-                                            <div>
-                                              <span className="font-medium text-gray-600">Country:</span>
-                                              <span className="ml-2 text-gray-900">{(r as any).country}</span>
-                                            </div>
-                                          )}
-                                          {(r as any).patent_type && (
-                                            <div>
-                                              <span className="font-medium text-gray-600">Type:</span>
-                                              <span className="ml-2 text-gray-900">{(r as any).patent_type}</span>
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {/* Patent Abstract */}
-                                    {patentAbstract && getSectionVisibility(`claimRef-${pn}`).abstract && (
-                                      <div className="mb-3">
-                                        <div className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-1">📄 Patent Abstract</div>
-                                        <div className="text-sm text-gray-700 bg-white/50 p-2 rounded border border-amber-100">{patentAbstract}</div>
-                                      </div>
-                                    )}
-
-                                    {/* AI Summary - What this patent does */}
-                                    {analysis.aiSummary && getSectionVisibility(`claimRef-${pn}`).aiSummary && (
-                                      <div className="mb-3">
-                                        <div className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-1">🤖 What This Patent Does</div>
-                                        <div className="text-sm text-gray-700">{analysis.aiSummary}</div>
-                                      </div>
-                                    )}
-
-                                    {/* Relevant Parts - What overlaps */}
-                                    {analysis.relevantParts && analysis.relevantParts.length > 0 && getSectionVisibility(`claimRef-${pn}`).relevantParts && (
-                                      <div className="mb-3">
-                                        <div className="text-xs font-semibold text-red-700 uppercase tracking-wide mb-1">⚠️ What Overlaps With Your Claims</div>
-                                        <ul className="list-disc list-inside text-sm text-gray-700 space-y-1">
-                                          {analysis.relevantParts.map((part, idx) => (
-                                            <li key={idx} className="text-red-800">{part}</li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    )}
-
-                                    {/* Irrelevant Parts - What doesn't match */}
-                                    {analysis.irrelevantParts && analysis.irrelevantParts.length > 0 && getSectionVisibility(`claimRef-${pn}`).irrelevantParts && (
-                                      <div className="mb-3">
-                                        <div className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-1">✅ What Doesn't Overlap (Differentiation Opportunities)</div>
-                                        <ul className="list-disc list-inside text-sm text-gray-600 space-y-1">
-                                          {analysis.irrelevantParts.map((part, idx) => (
-                                            <li key={idx} className="text-green-700">{part}</li>
-                                          ))}
-                                        </ul>
-                                      </div>
-                                    )}
-
-                                    {/* Novelty Comparison */}
-                                    {analysis.noveltyComparison && getSectionVisibility(`claimRef-${pn}`).noveltyComparison && (
-                                      <div className="mb-0">
-                                        <div className="text-xs font-semibold text-purple-700 uppercase tracking-wide mb-1">⚖️ Novelty Comparison</div>
-                                        <div className="text-sm text-gray-700 bg-purple-50 p-2 rounded border border-purple-100">{analysis.noveltyComparison}</div>
-                                      </div>
-                                    )}
-
-                                    {/* Threat Level & Action */}
-                                    <div className="mt-3 pt-3 border-t border-amber-200">
-                                      <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium ${
-                                        analysis.noveltyThreat === 'anticipates' ? 'bg-red-100 text-red-800' :
-                                        analysis.noveltyThreat === 'obvious' ? 'bg-amber-100 text-amber-800' :
-                                        analysis.noveltyThreat === 'adjacent' ? 'bg-green-100 text-green-800' :
-                                        'bg-gray-100 text-gray-700'
-                                      }`}>
-                                        {analysis.noveltyThreat === 'anticipates' && '🛑 CRITICAL: Claims may need significant revision to overcome this reference'}
-                                        {analysis.noveltyThreat === 'obvious' && '⚠️ IMPORTANT: Claims should be differentiated from this reference'}
-                                        {analysis.noveltyThreat === 'adjacent' && '✅ RECOMMENDED: Include for defensive positioning'}
-                                        {analysis.noveltyThreat === 'remote' && '⚪ OPTIONAL: May provide useful context'}
-                                        {!analysis.noveltyThreat && '❓ Threat level not determined'}
-                                      </div>
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )
-                          })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Summary */}
-                  <div className="bg-gray-50 rounded-lg p-4 border border-gray-200">
-                    <div className="text-sm font-medium text-gray-700 mb-2">Summary for Claim Refinement:</div>
-                    <div className="text-sm text-gray-600">
-                      {claimRefMode === 'ai' && `${Object.keys(claimRefSelected).length} patents selected for claim comparison`}
-                      {claimRefMode === 'manual' && (claimRefManualText.trim() ? 'Manual comparison notes provided' : 'No manual notes entered yet')}
-                      {claimRefMode === 'hybrid' && `${Object.keys(claimRefSelected).length} patents + ${claimRefManualText.trim() ? 'manual notes' : 'no manual notes'}`}
-                    </div>
-                    {Object.keys(claimRefSelected).length > 0 && (
-                      <div className="text-xs text-amber-600 mt-2">
-                        ⚠️ {Object.values(claimRefSelected).filter((p: any) => p.noveltyThreat === 'anticipates' || p.noveltyThreat === 'obvious').length} high-risk patents will be analyzed
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* Legacy Step 3: Filter & Select (shown only when AI review not done) */}
-        {results.length > 0 && !hasAIReview && (
-          <div className="rounded-xl border transition-all duration-300 bg-white border-gray-200 shadow-sm">
-             <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-                <div className="w-6 h-6 rounded-full bg-gray-200 text-gray-600 flex items-center justify-center text-xs font-bold">3</div>
-                Configure Prior Art Usage
-              </h3>
-            </div>
-            <div className="p-6 text-center text-gray-500">
-              <p className="mb-4">Run the AI Relevance Review first to analyze patents and configure prior art usage.</p>
-              <button
-                onClick={runAIReview}
-                disabled={reviewing}
-                className="inline-flex items-center px-4 py-2 border border-emerald-300 text-sm font-medium rounded-md text-emerald-700 bg-emerald-50 hover:bg-emerald-100"
-              >
-                🧠 Run AI Relevance Review
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* LEGACY: Old Filter & Select UI - Hidden but kept for compatibility */}
-        {false && results.length > 0 && (
-          <div className="rounded-xl border transition-all duration-300 bg-white border-indigo-100 shadow-sm hidden">
-             <div className="p-4 border-b border-gray-200 flex items-center justify-between">
-              <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-                <div className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-xs font-bold">3</div>
-                Filter & Select Prior Art
-              </h3>
-              {Object.keys(selected).length > 0 && (
-                 <span className="text-xs font-medium text-indigo-600 bg-indigo-50 px-2 py-1 rounded-full">
-                   {Object.keys(selected).length} Selected
-                 </span>
-               )}
-            </div>
-
-            <div className="p-4">
-              {/* Controls Toolbar */}
-              <div className="flex flex-wrap items-center gap-3 mb-6 bg-gray-50 p-2 rounded-lg border border-gray-100">
-                <label className="flex items-center gap-2 px-3 py-1.5 bg-white border border-gray-200 rounded hover:bg-gray-50 cursor-pointer text-sm">
-                  <input
-                    type="checkbox"
-                    checked={results.length > 0 && Object.keys(selected).length === filteredResults.length}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        const allSelected: Record<string, any> = {}
-                        filteredResults.forEach((r) => {
-                          const key = getPatentKey(r)
-                          allSelected[key] = {
-                            title: r.title || (r as any).invention_title || key || 'Untitled',
-                            snippet: (r as any).snippet || (r as any).abstract || (r as any).summary || (r as any).description || '',
-                            score: (r as any).score || (r as any).relevance || 0,
-                            tags: [],
-                            publication_date: (r as any).publication_date,
-                            inventors: (r as any).inventors,
-                            assignees: (r as any).assignees
-                          }
-                        })
-                        setSelected(allSelected)
-                      } else {
-                        setSelected({})
-                      }
-                    }}
-                    className="rounded border-gray-300 text-indigo-600"
-                  />
-                  Select All
-                </label>
-
-                <div className="h-6 w-px bg-gray-300 mx-1"></div>
-
-                {/* Relevance Filter - Only active if results exist (always true here) */}
-                <Popover className="relative">
-                  <Popover.Button className={`inline-flex items-center px-3 py-1.5 border rounded text-sm transition-colors ${relevanceFilters.length > 0 ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'}`}>
-                    <span>Relevance Filter</span>
-                    {relevanceFilters.length > 0 && <span className="ml-2 bg-indigo-100 px-1.5 rounded-full text-xs font-bold">{relevanceFilters.length}</span>}
-                    <ChevronDownIcon className="ml-2 h-4 w-4" />
-                  </Popover.Button>
-                  <Transition as={Fragment} enter="transition ease-out duration-100" enterFrom="transform opacity-0 scale-95" enterTo="transform opacity-100 scale-100" leave="transition ease-in duration-75" leaveFrom="transform opacity-100 scale-100" leaveTo="transform opacity-0 scale-95">
-                    <Popover.Panel className="absolute z-10 mt-2 w-64 rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
-                      <div className="py-1">
-                        {['90-100', '80-90', '70-80', '60-70', '50-60', '<50'].map(range => (
-                          <div key={range} className="flex items-center px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 cursor-pointer" onClick={(e) => e.stopPropagation()}>
-                            <input
-                              type="checkbox"
-                              checked={relevanceFilters.includes(range)}
-                              onChange={() => handleRelevanceFilterChange(range)}
-                              className="h-4 w-4 rounded border-gray-300 text-indigo-600"
-                            />
-                            <label className="ml-3 flex-1 cursor-pointer">{range}{range.includes('-') && '%'}</label>
-                            <span className="text-xs text-gray-500 ml-2">({relevanceRangeCounts[range]})</span>
-                          </div>
-                        ))}
-                      </div>
-                    </Popover.Panel>
-                  </Transition>
-                </Popover>
-
-                {/* Novelty Threat Filter - Only active if AI Review is done */}
-                <Popover className="relative">
-                  <Popover.Button 
-                    disabled={!hasAIReview}
-                    className={`inline-flex items-center px-3 py-1.5 border rounded text-sm transition-colors ${!hasAIReview ? 'opacity-50 cursor-not-allowed bg-gray-100 border-gray-200 text-gray-400' : noveltyThreatFilters.length > 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'}`}
-                  >
-                    <span>Novelty Threat Filter</span>
-                    {noveltyThreatFilters.length > 0 && <span className="ml-2 bg-emerald-100 px-1.5 rounded-full text-xs font-bold">{noveltyThreatFilters.length}</span>}
-                    <ChevronDownIcon className="ml-2 h-4 w-4" />
-                  </Popover.Button>
-                  {hasAIReview && (
-                    <Transition as={Fragment} enter="transition ease-out duration-100" enterFrom="transform opacity-0 scale-95" enterTo="transform opacity-100 scale-100" leave="transition ease-in duration-75" leaveFrom="transform opacity-100 scale-100" leaveTo="transform opacity-0 scale-95">
-                      <Popover.Panel className="absolute z-10 mt-2 w-64 rounded-md bg-white shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none">
-                        <div className="py-1">
-                          {[
-                            { key: 'anticipates', label: 'Anticipates (High Risk)', color: 'text-red-600' },
-                            { key: 'obvious', label: 'Obvious (Medium Risk)', color: 'text-amber-600' },
-                            { key: 'adjacent', label: 'Adjacent (Low Risk)', color: 'text-green-600' },
-                            { key: 'remote', label: 'Remote (Safe)', color: 'text-gray-600' }
-                          ].map(({ key, label, color }) => (
-                            <div key={key} className="flex items-center px-4 py-2 text-sm hover:bg-gray-100 cursor-pointer" onClick={(e) => e.stopPropagation()}>
-                              <input
-                                type="checkbox"
-                                checked={noveltyThreatFilters.includes(key)}
-                                onChange={() => handleNoveltyThreatFilterChange(key)}
-                                className="h-4 w-4 rounded border-gray-300 text-emerald-600"
-                              />
-                              <label className={`ml-3 flex-1 cursor-pointer ${color}`}>{label}</label>
-                              <span className="text-xs text-gray-500 ml-2">({noveltyThreatCounts[key] || 0})</span>
-                            </div>
-                          ))}
-                        </div>
-                      </Popover.Panel>
-                    </Transition>
-                  )}
-                </Popover>
-
-                {hasAIReview && (
-                  <button
-                    type="button"
-                    onClick={handleAutoSelectAdjacent}
-                    className="inline-flex items-center px-3 py-1.5 border border-emerald-200 rounded text-sm font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100"
-                  >
-                    Auto-Select Relevant Prior Art
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={clearAllSelections}
-                  className="inline-flex items-center px-3 py-1.5 border border-gray-200 rounded text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
-                >
-                  Clear Selections
-                </button>
-
-                <div className="flex-1"></div>
-
-                <button
-                  onClick={() => setShowDisplayControls(!showDisplayControls)}
-                  className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1"
-                >
-                  <span className="text-xs uppercase tracking-wide font-semibold">View Options</span>
-                  <ChevronDownIcon className="w-4 h-4" />
-                </button>
-              </div>
-
-              {autoSelectWarning && (
-                <div className="mb-4 flex items-start gap-2 text-xs sm:text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                  <span className="text-base leading-none mt-0.5">⚠️</span>
-                  <span>{autoSelectWarning}</span>
-                </div>
-              )}
-
-              {/* Display Controls Panel */}
-              {showDisplayControls && (
-                <div className="mb-4 p-3 bg-gray-50 border border-gray-100 rounded-lg animate-fadeIn">
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    {[
-                      { key: 'showTitle', label: 'Title', default: true },
-                      { key: 'showPatentNumber', label: 'Patent Number', default: true },
-                      { key: 'showAbstract', label: 'Abstract', default: true },
-                      { key: 'showInventors', label: 'Inventors', default: true },
-                      { key: 'showAssignees', label: 'Assignees', default: false },
-                      { key: 'showPublicationDate', label: 'Publication Date', default: true },
-                      { key: 'showRelevanceScore', label: 'Relevance Score', default: true }
-                    ].map(({ key, label, default: defaultValue }) => (
-                      <label key={key} className="flex items-center gap-2 text-sm text-gray-600">
-                        <input
-                          type="checkbox"
-                          checked={displaySettings[key as keyof typeof displaySettings] ?? defaultValue}
-                          onChange={(e) => setDisplaySettings((prev: any) => ({ ...prev, [key]: e.target.checked }))}
-                          className="rounded border-gray-300 text-indigo-600"
-                        />
-                        {label}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Results List */}
-              <div className="space-y-4">
-                {paginatedResults.map((r, i) => {
-                  const patentNumber = r.pn || (r as any).patent_number || (r as any).publication_number || (r as any).publication_id || (r as any).publicationId || (r as any).patentId || (r as any).patent_id || (r as any).id || 'N/A'
-                  const title = r.title || (r as any).invention_title || patentNumber || 'Untitled'
-                  const abstract = (r as any).snippet || (r as any).abstract || (r as any).summary || (r as any).description || ''
-                  const pubDate = (r as any).publication_date || (r as any).filing_date || (r as any).date || ''
-                  const relevanceScore = typeof (r as any).score === 'number' ? (r as any).score : (typeof (r as any).relevance === 'number' ? (r as any).relevance : null)
-                  const inventors = (r as any).inventors || (r as any).inventor_names || []
-                  const assignees = (r as any).assignees || (r as any).assignee_names || []
-
-                  const key = getPatentKey(r, i)
-                  const checked = !!selected[key]
-                  const itemNumber = (currentPage - 1) * itemsPerPage + i + 1
-
-                  return (
-                    <div key={key} className={`group relative border rounded-lg transition-all duration-200 ${checked ? 'bg-indigo-50 border-indigo-200 shadow-sm' : 'bg-white border-gray-200 hover:border-indigo-300'}`}>
-                      <div className="p-4 flex items-start gap-4">
-                        <div className="flex items-center gap-3 pt-1">
-                          <div className="flex items-center justify-center w-6 h-6 rounded-full bg-gray-100 text-gray-600 font-medium text-xs">
-                            {itemNumber}
-                          </div>
-                          <input 
-                            type="checkbox" 
-                            checked={checked} 
-                            onChange={()=>toggleSelect({
-                              ...r,
-                              pn: patentNumber,
-                              title: title,
-                              snippet: abstract,
-                              publication_date: pubDate,
-                              score: relevanceScore,
-                              inventors: inventors,
-                              assignees: assignees
-                            }, i)} 
-                            className="h-5 w-5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500" 
-                          />
-                        </div>
-                        
-                        <div className="flex-1 min-w-0">
-                          {displaySettings.showTitle && (
-                            <div className="flex items-start justify-between gap-4">
-                              <div>
-                                <a 
-                                  className="text-lg font-medium text-indigo-700 hover:underline block mb-1" 
-                                  target="_blank" 
-                                  href={`https://lens.org/${encodeURIComponent(patentNumber).replace(/\s+/g,'-')}`}
-                                >
-                                  {title}
-                                </a>
-                                <div className="flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                                  {displaySettings.showPatentNumber && patentNumber !== 'N/A' && (
-                                    <span className="bg-gray-100 px-2 py-0.5 rounded text-gray-700 font-mono">{patentNumber}</span>
-                                  )}
-                                  {displaySettings.showPublicationDate && pubDate && (
-                                    <span>{String(pubDate).slice(0,10)}</span>
-                                  )}
-                                  {displaySettings.showRelevanceScore && relevanceScore !== null && (
-                                    <span className="font-medium text-indigo-600">{(relevanceScore * 100).toFixed(1)}% Relevance</span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          )}
-
-                          {displaySettings.showAbstract && abstract && (
-                            <div className="mt-3 text-sm text-gray-600 leading-relaxed line-clamp-3 hover:line-clamp-none transition-all">
-                              {abstract}
-                            </div>
-                          )}
-
-                          {/* Metadata */}
-                          {((displaySettings.showInventors && inventors?.length) || (displaySettings.showAssignees && assignees?.length)) && (
-                            <div className="mt-3 flex flex-wrap gap-4 text-xs text-gray-500">
-                              {displaySettings.showInventors && inventors?.length && (
-                                <div><span className="font-semibold">Inventors:</span> {Array.isArray(inventors) ? inventors.join(', ') : inventors}</div>
-                              )}
-                              {displaySettings.showAssignees && assignees?.length && (
-                                <div><span className="font-semibold">Assignees:</span> {Array.isArray(assignees) ? assignees.join(', ') : assignees}</div>
-                              )}
-                            </div>
-                          )}
-
-                          {/* AI Analysis Section */}
-                          {(selected[key]?.tags?.includes('AI_REVIEWED') || aiAnalysis[key]) && (
-                            <div className="mt-4 bg-white rounded-lg border border-gray-200 overflow-hidden">
-                              {/* Novelty Threat Header */}
-                              <div className={`px-4 py-2 border-b text-sm font-medium flex items-center gap-2 ${
-                                (selected[key]?.noveltyThreat || aiAnalysis[key]?.noveltyThreat) === 'anticipates' ? 'bg-red-50 text-red-800 border-red-100' :
-                                (selected[key]?.noveltyThreat || aiAnalysis[key]?.noveltyThreat) === 'obvious' ? 'bg-amber-50 text-amber-800 border-amber-100' :
-                                (selected[key]?.noveltyThreat || aiAnalysis[key]?.noveltyThreat) === 'adjacent' ? 'bg-green-50 text-green-800 border-green-100' :
-                                'bg-gray-50 text-gray-800 border-gray-200'
-                              }`}>
-                                <span className="text-lg">
-                                  {(selected[key]?.noveltyThreat || aiAnalysis[key]?.noveltyThreat) === 'anticipates' ? '🛑' :
-                                   (selected[key]?.noveltyThreat || aiAnalysis[key]?.noveltyThreat) === 'obvious' ? '⚠️' :
-                                   (selected[key]?.noveltyThreat || aiAnalysis[key]?.noveltyThreat) === 'adjacent' ? '✅' : '⚪'}
-                                </span>
-                                <span>
-                                  Novelty Threat: {(selected[key]?.noveltyThreat || aiAnalysis[key]?.noveltyThreat || 'unknown').toUpperCase()}
-                                </span>
-                              </div>
-
-                              {/* AI Summary */}
-                              <div className="p-4 space-y-4 text-sm">
-                                {(selected[key]?.aiSummary || aiAnalysis[key]?.aiSummary) && (
-                                  <div>
-                                    <div className="font-semibold text-gray-900 mb-1">Analysis</div>
-                                    <div className="text-gray-700">{selected[key]?.aiSummary || aiAnalysis[key]?.aiSummary}</div>
-                                  </div>
-                                )}
-                                
-                                {(() => {
-                                  const relevantParts =
-                                    (selected[key]?.relevantParts ||
-                                      aiAnalysis[key]?.relevantParts ||
-                                      []) as string[]
-                                  if (relevantParts.length === 0) return null
-                                  return (
-                                    <div>
-                                      <div className="font-semibold text-green-800 mb-1">Relevant Aspects</div>
-                                      <ul className="list-disc list-inside text-gray-700 pl-1">
-                                        {relevantParts.map((part: string, i: number) => (
-                                          <li key={i}>{part}</li>
-                                        ))}
-                                      </ul>
-                                    </div>
-                                  )
-                                })()}
-
-                                {(selected[key]?.noveltyComparison || aiAnalysis[key]?.noveltyComparison) && (
-                                  <div className="bg-purple-50 p-3 rounded border border-purple-100">
-                                    <div className="font-semibold text-purple-900 mb-1">Comparison</div>
-                                    <div className="text-purple-800">{selected[key]?.noveltyComparison || aiAnalysis[key]?.noveltyComparison}</div>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-      </div>
-    </div>
-  )
-                })}
-              </div>
-
-              {/* Pagination */}
-              {filteredResults.length > itemsPerPage && (
-                <div className="mt-6 flex items-center justify-between border-t pt-4">
-                  <div className="text-sm text-gray-500">
-                    Page {currentPage} of {totalPages}
-                  </div>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                      disabled={currentPage === 1}
-                      className="px-3 py-1 border rounded hover:bg-gray-50 disabled:opacity-50 text-sm"
-                    >
-                      Previous
-                    </button>
-                    <button
-                      onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                      disabled={currentPage === totalPages}
-                      className="px-3 py-1 border rounded hover:bg-gray-50 disabled:opacity-50 text-sm"
-                    >
-                      Next
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* LEGACY: Step 4 Manual Prior Art Input - Now integrated into tabs above */}
-        {/* Hidden but kept for ref anchor compatibility */}
-        <div ref={manualPriorArtRef} className="hidden" />
-
-        {/* Idea Bank */}
-        {ideaBankOpen && (
-          <div className="mt-8 bg-gradient-to-br from-amber-50 to-orange-50 rounded-xl border border-amber-200 p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-bold text-amber-900 flex items-center gap-2">
-                <span>💡</span> Idea Bank
-                <span className="text-xs font-normal bg-amber-200 text-amber-800 px-2 py-0.5 rounded-full">{ideaBank.length} generated</span>
-              </h3>
-            </div>
-            
-            {ideaBank.length > 0 ? (
-              <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {ideaBank.map((ib, idx) => (
-                  <div key={idx} className="bg-white p-4 rounded-lg border border-amber-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="font-bold text-gray-900 mb-2">{ib.title}</div>
-                    <div className="space-y-2 text-sm">
-                      <div>
-                        <span className="text-xs font-semibold text-amber-700 uppercase tracking-wide">Core Principle</span>
-                        <p className="text-gray-600 mt-0.5">{ib.core_principle}</p>
-                      </div>
-                      <div>
-                        <span className="text-xs font-semibold text-amber-700 uppercase tracking-wide">Advantage</span>
-                        <p className="text-gray-600 mt-0.5">{ib.expected_advantage}</p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-center py-8 text-amber-800/60">
-                Run the AI Relevance Review to generate new invention ideas from the prior art analysis.
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Floating Action Bar */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-4 shadow-lg z-50">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => setIdeaBankOpen(!ideaBankOpen)}
-              className="text-sm text-amber-700 hover:text-amber-800 font-medium flex items-center gap-2"
-            >
-              <span>💡</span> {ideaBankOpen ? 'Hide Ideas' : `View Idea Bank (${ideaBank.length})`}
-            </button>
-            {statusMessage && (
-              <div
-                className={`text-xs sm:text-sm ${
-                  statusMessage.type === 'success' ? 'text-emerald-700' : 'text-amber-700'
-                }`}
-              >
-                {statusMessage.text}
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center gap-3 flex-wrap justify-end">
-            {/* Workflow Status Badges */}
-            {hasAIReview && !skipClaimRefinement && (
-              <>
-                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 rounded-lg border border-indigo-100">
-                  <span className="text-xs">📝</span>
-                  <span className="text-xs font-medium text-indigo-700">
-                    For Background: {priorArtMode === 'manual' ? 'Manual only' : priorArtMode === 'hybrid' ? `${Object.keys(priorArtSelected).length} patents + Manual` : `${Object.keys(priorArtSelected).length} patents`}
-              </span>
-                </div>
-                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 rounded-lg border border-amber-100">
-                  <span className="text-xs">⚖️</span>
-                  <span className="text-xs font-medium text-amber-700">
-                    For Claims: {claimRefMode === 'manual' ? 'Manual only' : claimRefMode === 'hybrid' ? `${Object.keys(claimRefSelected).length} patents + Manual` : `${Object.keys(claimRefSelected).length} patents`}
+                  <span className="px-3 py-1.5 bg-green-100 text-green-700 rounded-full text-sm font-medium">
+                    ✓ Ready for Analysis
                   </span>
+                </div>
+
+                <div className="divide-y divide-gray-100 max-h-[400px] overflow-y-auto">
+                  {results.slice(0, 5).map((r, i) => {
+                    const pn = r.pn || (r as any).patent_number || 'N/A'
+                    const score = (r.score || 0) * 100
+                    return (
+                      <div key={i} className="p-4 hover:bg-gray-50 transition-colors">
+                        <div className="flex items-start gap-4">
+                          <div className="text-sm text-gray-400 w-6">{i + 1}</div>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium text-gray-900 truncate">{r.title}</div>
+                            <div className="text-xs text-gray-500 mt-1">{pn}</div>
+                          </div>
+                          <div className={`px-2 py-1 rounded text-xs font-medium ${
+                            score >= 80 ? 'bg-indigo-100 text-indigo-700' :
+                            score >= 60 ? 'bg-blue-100 text-blue-700' :
+                            'bg-gray-100 text-gray-600'
+                          }`}>
+                            {score.toFixed(0)}% match
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                  {results.length > 5 && (
+                    <div className="p-4 text-center text-sm text-gray-500 bg-gray-50">
+                      +{results.length - 5} more patents
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ============= TAB 2: ANALYZE ============= */}
+        {mainTab === 'analyze' && (
+          <div className="space-y-6 animate-fadeIn">
+            {/* AI Analysis CTA */}
+            {!hasAIReview && (
+              <div className="bg-gradient-to-r from-emerald-500 to-teal-600 rounded-2xl p-8 text-white shadow-xl">
+                <div className="flex items-start gap-6">
+                  <div className="w-16 h-16 rounded-2xl bg-white/20 flex items-center justify-center text-4xl">🧠</div>
+                  <div className="flex-1">
+                    <h3 className="text-2xl font-bold mb-2">Run AI Analysis</h3>
+                    <p className="text-emerald-100 mb-4">
+                      Our AI will analyze {results.length} patents against your invention to identify novelty threats, 
+                      extract relevant disclosures, and provide actionable insights.
+                    </p>
+                    <button
+                      onClick={runAIReview}
+                      disabled={reviewing || !runId}
+                      className="px-8 py-3 bg-white text-emerald-700 rounded-xl font-semibold hover:bg-emerald-50 transition-colors shadow-lg disabled:opacity-50"
+                    >
+                      {reviewing ? (
+                        <span className="flex items-center gap-2">
+                          <svg className="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          {reviewInfo || 'Analyzing...'}
+                        </span>
+                      ) : (
+                        'Start AI Analysis'
+                      )}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Analysis Complete - Summary */}
+            {hasAIReview && (
+              <>
+                {/* Threat Level Summary Cards */}
+                <div className="grid grid-cols-4 gap-4">
+                  <div className="bg-red-50 rounded-2xl p-6 border border-red-100">
+                    <div className="text-4xl font-bold text-red-600">{analysisSummary.anticipates}</div>
+                    <div className="text-sm font-medium text-red-800 mt-1">🛑 Anticipates</div>
+                    <div className="text-xs text-red-600 mt-0.5">High Risk</div>
+                  </div>
+                  <div className="bg-amber-50 rounded-2xl p-6 border border-amber-100">
+                    <div className="text-4xl font-bold text-amber-600">{analysisSummary.obvious}</div>
+                    <div className="text-sm font-medium text-amber-800 mt-1">⚠️ Obvious</div>
+                    <div className="text-xs text-amber-600 mt-0.5">Medium Risk</div>
+                  </div>
+                  <div className="bg-green-50 rounded-2xl p-6 border border-green-100">
+                    <div className="text-4xl font-bold text-green-600">{analysisSummary.adjacent}</div>
+                    <div className="text-sm font-medium text-green-800 mt-1">✅ Adjacent</div>
+                    <div className="text-xs text-green-600 mt-0.5">Low Risk</div>
+                  </div>
+                  <div className="bg-gray-50 rounded-2xl p-6 border border-gray-100">
+                    <div className="text-4xl font-bold text-gray-600">{analysisSummary.remote}</div>
+                    <div className="text-sm font-medium text-gray-800 mt-1">⚪ Remote</div>
+                    <div className="text-xs text-gray-500 mt-0.5">Safe</div>
+                  </div>
+                </div>
+
+                {/* Filter Bar */}
+                <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap items-center gap-3">
+                  <span className="text-sm text-gray-500">Filter by threat level:</span>
+                  {['anticipates', 'obvious', 'adjacent', 'remote'].map(threat => (
+                    <button
+                      key={threat}
+                      onClick={() => handleNoveltyThreatFilterChange(threat)}
+                      className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${
+                        noveltyThreatFilters.includes(threat)
+                          ? threat === 'anticipates' ? 'bg-red-100 text-red-700 border border-red-300' :
+                            threat === 'obvious' ? 'bg-amber-100 text-amber-700 border border-amber-300' :
+                            threat === 'adjacent' ? 'bg-green-100 text-green-700 border border-green-300' :
+                            'bg-gray-200 text-gray-700 border border-gray-300'
+                          : 'bg-white border border-gray-200 text-gray-500 hover:border-gray-300'
+                      }`}
+                    >
+                      {threat === 'anticipates' ? '🛑' : threat === 'obvious' ? '⚠️' : threat === 'adjacent' ? '✅' : '⚪'} {threat}
+                      <span className="ml-1 opacity-70">({noveltyThreatCounts[threat] || 0})</span>
+                    </button>
+                  ))}
+                  {noveltyThreatFilters.length > 0 && (
+                    <button
+                      onClick={() => setNoveltyThreatFilters([])}
+                      className="text-xs text-gray-400 hover:text-gray-600"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+
+                {/* Patent Analysis Results */}
+                <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                  <div className="p-6 border-b border-gray-100">
+                    <h3 className="font-semibold text-gray-900">Detailed Analysis Results</h3>
+                    <p className="text-sm text-gray-500 mt-1">
+                      Click on any patent to see the full analysis including abstract comparison
+                    </p>
+                  </div>
+
+                  <div className="divide-y divide-gray-100 max-h-[600px] overflow-y-auto">
+                    {filteredResults.slice(0, 20).map((r, i) => {
+                      const pn = getPatentKey(r, i)
+                      const analysis = aiAnalysis[pn]
+                      const isExpanded = expandedPatentDetails.has(`analyze-${pn}`)
+                      const patentAbstract = (r as any).abstract || (r as any).snippet || ''
+
+                      return (
+                        <div key={pn} className="border-b border-gray-100 last:border-b-0">
+                          <div 
+                            className="p-4 hover:bg-gray-50 cursor-pointer transition-colors"
+                            onClick={() => {
+                              setExpandedPatentDetails(prev => {
+                                const next = new Set(prev)
+                                const key = `analyze-${pn}`
+                                if (next.has(key)) next.delete(key)
+                                else next.add(key)
+                                return next
+                              })
+                            }}
+                          >
+                            <div className="flex items-center gap-4">
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                analysis?.noveltyThreat === 'anticipates' ? 'bg-red-100 text-red-700' :
+                                analysis?.noveltyThreat === 'obvious' ? 'bg-amber-100 text-amber-700' :
+                                analysis?.noveltyThreat === 'adjacent' ? 'bg-green-100 text-green-700' :
+                                'bg-gray-100 text-gray-600'
+                              }`}>
+                                {analysis?.noveltyThreat || 'unknown'}
+                              </span>
+                              <div className="flex-1 min-w-0">
+                                <div className="font-medium text-gray-900 truncate">{r.title}</div>
+                                <div className="text-xs text-gray-500 mt-0.5">{pn}</div>
+                              </div>
+                              <svg className={`w-5 h-5 text-gray-400 transition-transform ${isExpanded ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                              </svg>
+                            </div>
+                          </div>
+
+                          {/* Expanded Analysis - Side by Side View */}
+                          {isExpanded && (
+                            <div className="px-4 pb-4">
+                              <div className="bg-gradient-to-r from-slate-50 to-indigo-50/50 rounded-xl border border-gray-200 p-5">
+                                <div className="grid md:grid-cols-2 gap-6">
+                                  {/* Left: Patent Abstract */}
+                                  <div>
+                                    <h4 className="font-semibold text-gray-800 flex items-center gap-2 mb-3">
+                                      <span>📄</span> Patent Abstract
+                                    </h4>
+                                    <div className="bg-white rounded-lg p-4 border border-gray-200 text-sm text-gray-700 leading-relaxed">
+                                      {patentAbstract || 'No abstract available'}
+                                    </div>
+                                  </div>
+
+                                  {/* Right: AI Analysis */}
+                                  <div>
+                                    <h4 className="font-semibold text-gray-800 flex items-center gap-2 mb-3">
+                                      <span>🤖</span> AI Analysis
+                                    </h4>
+                                    {analysis ? (
+                                      <div className="space-y-3">
+                                        {analysis.aiSummary && (
+                                          <div className="bg-white rounded-lg p-4 border border-gray-200">
+                                            <div className="text-xs font-semibold text-indigo-600 uppercase tracking-wide mb-1">Summary</div>
+                                            <div className="text-sm text-gray-700">{analysis.aiSummary}</div>
+                                          </div>
+                                        )}
+                                        {analysis.relevantParts && analysis.relevantParts.length > 0 && (
+                                          <div className="bg-red-50 rounded-lg p-4 border border-red-100">
+                                            <div className="text-xs font-semibold text-red-600 uppercase tracking-wide mb-1">⚠️ Overlaps</div>
+                                            <ul className="text-sm text-red-800 space-y-1">
+                                              {analysis.relevantParts.map((part, idx) => (
+                                                <li key={idx} className="flex items-start gap-2">
+                                                  <span className="text-red-400">•</span>
+                                                  <span>{part}</span>
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        )}
+                                        {analysis.irrelevantParts && analysis.irrelevantParts.length > 0 && (
+                                          <div className="bg-green-50 rounded-lg p-4 border border-green-100">
+                                            <div className="text-xs font-semibold text-green-600 uppercase tracking-wide mb-1">✅ Differences</div>
+                                            <ul className="text-sm text-green-800 space-y-1">
+                                              {analysis.irrelevantParts.map((part, idx) => (
+                                                <li key={idx} className="flex items-start gap-2">
+                                                  <span className="text-green-400">•</span>
+                                                  <span>{part}</span>
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        )}
+                                        {analysis.noveltyComparison && (
+                                          <div className="bg-purple-50 rounded-lg p-4 border border-purple-100">
+                                            <div className="text-xs font-semibold text-purple-600 uppercase tracking-wide mb-1">⚖️ Novelty Assessment</div>
+                                            <div className="text-sm text-purple-800">{analysis.noveltyComparison}</div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div className="bg-white rounded-lg p-4 border border-gray-200 text-sm text-gray-500">
+                                        No AI analysis available for this patent
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Threat Level Badge */}
+                                {analysis?.noveltyThreat && (
+                                  <div className={`mt-4 pt-4 border-t border-gray-200 inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium ${
+                                    analysis.noveltyThreat === 'anticipates' ? 'bg-red-100 text-red-800' :
+                                    analysis.noveltyThreat === 'obvious' ? 'bg-amber-100 text-amber-800' :
+                                    analysis.noveltyThreat === 'adjacent' ? 'bg-green-100 text-green-800' :
+                                    'bg-gray-100 text-gray-700'
+                                  }`}>
+                                    {analysis.noveltyThreat === 'anticipates' ? '🛑 High Risk: May anticipate your invention' :
+                                     analysis.noveltyThreat === 'obvious' ? '⚠️ Medium Risk: May raise obviousness concerns' :
+                                     analysis.noveltyThreat === 'adjacent' ? '✅ Low Risk: Related but differentiable' :
+                                     '⚪ Safe: Remotely related'}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                {/* Continue Button */}
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => setMainTab('select')}
+                    className="px-8 py-4 rounded-xl text-base font-semibold bg-purple-600 text-white hover:bg-purple-700 transition-all shadow-lg hover:shadow-purple-200 flex items-center gap-2"
+                  >
+                    Continue to Selection
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                    </svg>
+                  </button>
                 </div>
               </>
             )}
+          </div>
+        )}
 
-            {/* Skip Claim Refinement Option */}
-            <label className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${
-              skipClaimRefinement 
-                ? 'bg-purple-50 border-purple-200 text-purple-700' 
-                : 'bg-gray-50 border-gray-200 text-gray-600 hover:border-gray-300'
-            }`}>
-              <input
-                type="checkbox"
-                checked={skipClaimRefinement}
-                onChange={(e) => setSkipClaimRefinement(e.target.checked)}
-                className="rounded border-gray-300 text-purple-600 focus:ring-purple-500"
-              />
-              <div className="flex flex-col">
-                <span className="text-xs font-medium">Skip Claim Refinement</span>
-                <span className="text-[10px] opacity-75">Claims are already optimized</span>
+        {/* ============= TAB 3: SELECT ============= */}
+        {mainTab === 'select' && (
+          <div className="space-y-6 animate-fadeIn">
+            {/* Purpose Explanation */}
+            <div className="bg-gradient-to-r from-purple-50 to-indigo-50 rounded-2xl p-6 border border-purple-100">
+              <h3 className="font-semibold text-gray-900 text-lg mb-2">Configure Prior Art Usage</h3>
+              <p className="text-gray-600">
+                Select which patents to use for drafting your patent application and for refining your claims.
+              </p>
+            </div>
+
+            {/* Selection Workflow Tabs */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+              {/* Sub-Tab Navigation */}
+              <div className="border-b border-gray-200 px-6 pt-4">
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => setActiveWorkflowTab('prior-art')}
+                    className={`pb-3 px-1 border-b-2 transition-colors ${
+                      activeWorkflowTab === 'prior-art'
+                        ? 'border-indigo-600 text-indigo-600 font-medium'
+                        : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span>📚</span> Prior Art for Drafting
+                      {Object.keys(priorArtSelected).length > 0 && (
+                        <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 rounded-full text-xs">
+                          {Object.keys(priorArtSelected).length}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => setActiveWorkflowTab('claim-refinement')}
+                    className={`pb-3 px-1 border-b-2 transition-colors ${
+                      activeWorkflowTab === 'claim-refinement'
+                        ? 'border-amber-600 text-amber-600 font-medium'
+                        : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      <span>⚖️</span> Claim Refinement
+                      {Object.keys(claimRefSelected).length > 0 && (
+                        <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-xs">
+                          {Object.keys(claimRefSelected).length}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                </div>
               </div>
-            </label>
-            
-            <button
-              onClick={async () => {
-                // Save both workflow configurations
-                setSavingPriorArt(true)
-                try {
+
+              <div className="p-6">
+                {/* Prior Art for Drafting Tab Content */}
+                {activeWorkflowTab === 'prior-art' && (
+                  <div className="space-y-6">
+                    <div className="bg-indigo-50 rounded-xl p-4 border border-indigo-100">
+                      <h4 className="font-medium text-indigo-900 mb-1">📚 Purpose: Background Section</h4>
+                      <p className="text-sm text-indigo-700">
+                        These patents will be cited in your patent's background section to establish the prior art landscape.
+                        Recommended: Select "adjacent" and "remote" patents that provide good context.
+                      </p>
+                    </div>
+
+                    {/* Threat Level Filter Badges */}
+                    {hasAIReview && (
+                      <div className="flex flex-wrap items-center gap-3">
+                        <span className="text-sm font-medium text-gray-600">Filter by threat:</span>
+                        {[
+                          { level: null, label: 'All', icon: '📋' },
+                          { level: 'anticipates', label: 'Anticipates', icon: '🛑' },
+                          { level: 'obvious', label: 'Obvious', icon: '⚠️' },
+                          { level: 'adjacent', label: 'Adjacent', icon: '✅' },
+                          { level: 'remote', label: 'Remote', icon: '⚪' }
+                        ].map(({ level, label, icon }) => {
+                          const count = level === null 
+                            ? results.length 
+                            : results.filter(r => aiAnalysis[getPatentKey(r)]?.noveltyThreat === level).length
+                          const isActive = priorArtThreatFilter === level
+                          
+                          return (
+                            <button
+                              key={label}
+                              onClick={() => setPriorArtThreatFilter(level)}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                                isActive 
+                                  ? level === 'anticipates' ? 'bg-red-100 text-red-800 ring-2 ring-red-300' :
+                                    level === 'obvious' ? 'bg-amber-100 text-amber-800 ring-2 ring-amber-300' :
+                                    level === 'adjacent' ? 'bg-green-100 text-green-800 ring-2 ring-green-300' :
+                                    level === 'remote' ? 'bg-gray-200 text-gray-800 ring-2 ring-gray-400' :
+                                    'bg-indigo-100 text-indigo-800 ring-2 ring-indigo-300'
+                                  : level === 'anticipates' ? 'bg-red-50 text-red-700 hover:bg-red-100' :
+                                    level === 'obvious' ? 'bg-amber-50 text-amber-700 hover:bg-amber-100' :
+                                    level === 'adjacent' ? 'bg-green-50 text-green-700 hover:bg-green-100' :
+                                    level === 'remote' ? 'bg-gray-100 text-gray-600 hover:bg-gray-200' :
+                                    'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                              }`}
+                            >
+                              <span>{icon}</span>
+                              <span>{label}</span>
+                              <span className={`px-1.5 py-0.5 rounded text-xs ${
+                                isActive ? 'bg-white/50' : 'bg-white/70'
+                              }`}>
+                                {count}
+                              </span>
+                            </button>
+                          )
+                        })}
+                      </div>
+                    )}
+
+                    {/* Mode Selection */}
+                    <div className="grid grid-cols-3 gap-4">
+                      {[
+                        { mode: 'ai' as const, icon: '🤖', label: 'AI-Selected', desc: 'Use AI-recommended patents' },
+                        { mode: 'manual' as const, icon: '✍️', label: 'Manual Only', desc: 'Enter your own prior art' },
+                        { mode: 'hybrid' as const, icon: '🔀', label: 'Hybrid', desc: 'AI patents + your notes' }
+                      ].map(({ mode, icon, label, desc }) => (
+                        <label
+                          key={mode}
+                          className={`relative flex flex-col items-center p-4 border-2 rounded-xl cursor-pointer transition-all ${
+                            priorArtMode === mode ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:border-indigo-300'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="priorArtMode"
+                            value={mode}
+                            checked={priorArtMode === mode}
+                            onChange={() => setPriorArtMode(mode)}
+                            className="sr-only"
+                          />
+                          <span className="text-2xl mb-2">{icon}</span>
+                          <span className="font-medium text-sm">{label}</span>
+                          <span className="text-xs text-gray-500 text-center mt-1">{desc}</span>
+                          {priorArtMode === mode && (
+                            <CheckIcon className="absolute top-2 right-2 w-5 h-5 text-indigo-600" />
+                          )}
+                        </label>
+                      ))}
+                    </div>
+
+                    {/* Manual Text Input */}
+                    {(priorArtMode === 'manual' || priorArtMode === 'hybrid') && (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Manual Prior Art Text</label>
+                        <textarea
+                          className="w-full border border-gray-300 rounded-xl p-4 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 min-h-[120px]"
+                          placeholder="Enter prior art references or descriptions..."
+                          value={priorArtManualText}
+                          onChange={(e) => setPriorArtManualText(e.target.value)}
+                        />
+                      </div>
+                    )}
+
+                    {/* AI Patent Selection */}
+                    {(priorArtMode === 'ai' || priorArtMode === 'hybrid') && (
+                      <div>
+                        <div className="flex items-center justify-between mb-3">
+                          <label className="text-sm font-medium text-gray-700">Select Patents for Background Section</label>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={handleAutoSelectAdjacent}
+                              className="text-xs text-indigo-600 hover:text-indigo-700 font-medium px-2 py-1 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition-colors"
+                            >
+                              ✨ Auto-select Adjacent
+                            </button>
+                            <button
+                              onClick={() => setPriorArtSelected({})}
+                              className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                            >
+                              Clear All
+                            </button>
+                          </div>
+                        </div>
+                        
+                        {/* Patent list with expandable details */}
+                        <div className="border border-gray-200 rounded-xl overflow-hidden">
+                          <div className="max-h-[600px] overflow-y-auto divide-y divide-gray-100">
+                            {results.filter(r => {
+                              const pn = getPatentKey(r)
+                              const threat = aiAnalysis[pn]?.noveltyThreat
+                              // Apply threat filter if set, otherwise show all patents
+                              if (priorArtThreatFilter !== null) {
+                                return threat === priorArtThreatFilter
+                              }
+                              // Default: show all patents when no filter (removed adjacent/remote only restriction)
+                              return true
+                            }).map((r, i) => {
+                              const pn = getPatentKey(r, i)
+                              const analysis = aiAnalysis[pn]
+                              const isSelected = !!priorArtSelected[pn]
+                              const isExpanded = expandedPatentDetails.has(`priorArt-select-${pn}`)
+                              const patentAbstract = (r as any).abstract || (r as any).snippet || ''
+                              
+                              return (
+                                <div key={pn} className={`${isSelected ? 'bg-indigo-50/50' : ''}`}>
+                                  {/* Patent header row */}
+                                  <div className="flex items-start gap-3 p-4">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      onChange={() => {
+                                        setPriorArtSelected(prev => {
+                                          if (prev[pn]) {
+                                            const { [pn]: _, ...rest } = prev
+                                            return rest
+                                          }
+                                          return { 
+                                            ...prev, 
+                                            [pn]: { 
+                                              ...r, 
+                                              noveltyThreat: analysis?.noveltyThreat,
+                                              aiSummary: analysis?.aiSummary,
+                                              relevantParts: analysis?.relevantParts,
+                                              irrelevantParts: analysis?.irrelevantParts,
+                                              noveltyComparison: analysis?.noveltyComparison
+                                            } 
+                                          }
+                                        })
+                                      }}
+                                      className="mt-1 w-4 h-4 rounded border-gray-300 text-indigo-600 cursor-pointer"
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <span className="font-medium text-sm text-gray-900">{r.title}</span>
+                                        <span className={`px-1.5 py-0.5 text-xs rounded flex-shrink-0 ${
+                                          analysis?.noveltyThreat === 'adjacent' ? 'bg-green-100 text-green-700' :
+                                          'bg-gray-100 text-gray-600'
+                                        }`}>
+                                          {analysis?.noveltyThreat || 'unknown'}
+                                        </span>
+                                      </div>
+                                      <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2">
+                                        <span className="font-mono">{pn}</span>
+                                        <span>•</span>
+                                        <button
+                                          onClick={(e) => {
+                                            e.preventDefault()
+                                            e.stopPropagation()
+                                            setExpandedPatentDetails(prev => {
+                                              const next = new Set(prev)
+                                              const key = `priorArt-select-${pn}`
+                                              if (next.has(key)) next.delete(key)
+                                              else next.add(key)
+                                              return next
+                                            })
+                                          }}
+                                          className="text-indigo-600 hover:text-indigo-700 font-medium"
+                                        >
+                                          {isExpanded ? 'Hide Details' : 'View Details'}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Expandable details */}
+                                  {isExpanded && (
+                                    <div className="px-4 pb-4">
+                                      <div className="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-xl border border-indigo-100 p-4 space-y-4">
+                                        {/* Patent Abstract */}
+                                        {patentAbstract && (
+                                          <div>
+                                            <h5 className="text-xs font-semibold text-indigo-700 uppercase tracking-wide mb-2 flex items-center gap-1">
+                                              📄 Patent Abstract
+                                            </h5>
+                                            <div className="text-sm text-gray-700 bg-white/60 rounded-lg p-3 border border-indigo-100">
+                                              {patentAbstract}
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {/* AI Summary */}
+                                        {analysis?.aiSummary && (
+                                          <div>
+                                            <h5 className="text-xs font-semibold text-indigo-700 uppercase tracking-wide mb-2 flex items-center gap-1">
+                                              🤖 AI Summary
+                                            </h5>
+                                            <div className="text-sm text-gray-700 bg-white/60 rounded-lg p-3 border border-indigo-100">
+                                              {analysis.aiSummary}
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {/* Matching Parts */}
+                                        {analysis?.relevantParts && analysis.relevantParts.length > 0 && (
+                                          <div>
+                                            <h5 className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-2 flex items-center gap-1">
+                                              ✅ Matching Parts (Relevant)
+                                            </h5>
+                                            <ul className="text-sm text-gray-700 bg-green-50/50 rounded-lg p-3 border border-green-100 space-y-1">
+                                              {analysis.relevantParts.map((part, idx) => (
+                                                <li key={idx} className="flex items-start gap-2">
+                                                  <span className="text-green-500 mt-0.5">•</span>
+                                                  <span>{part}</span>
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        )}
+
+                                        {/* Non-matching Parts */}
+                                        {analysis?.irrelevantParts && analysis.irrelevantParts.length > 0 && (
+                                          <div>
+                                            <h5 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2 flex items-center gap-1">
+                                              ❌ Non-matching Parts (Differences)
+                                            </h5>
+                                            <ul className="text-sm text-gray-600 bg-gray-50/50 rounded-lg p-3 border border-gray-200 space-y-1">
+                                              {analysis.irrelevantParts.map((part, idx) => (
+                                                <li key={idx} className="flex items-start gap-2">
+                                                  <span className="text-gray-400 mt-0.5">•</span>
+                                                  <span>{part}</span>
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          </div>
+                                        )}
+
+                                        {/* Novelty Comparison */}
+                                        {analysis?.noveltyComparison && (
+                                          <div>
+                                            <h5 className="text-xs font-semibold text-purple-700 uppercase tracking-wide mb-2 flex items-center gap-1">
+                                              ⚖️ Novelty Assessment
+                                            </h5>
+                                            <div className="text-sm text-gray-700 bg-purple-50/50 rounded-lg p-3 border border-purple-100">
+                                              {analysis.noveltyComparison}
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {/* Threat Level Badge */}
+                                        <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium ${
+                                          analysis?.noveltyThreat === 'adjacent' ? 'bg-green-100 text-green-800' :
+                                          analysis?.noveltyThreat === 'remote' ? 'bg-gray-100 text-gray-700' :
+                                          'bg-gray-100 text-gray-600'
+                                        }`}>
+                                          {analysis?.noveltyThreat === 'adjacent' ? '✅ Low Risk: Related but differentiable' :
+                                           analysis?.noveltyThreat === 'remote' ? '⚪ Safe: Remotely related' :
+                                           'Risk level unknown'}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Summary */}
+                    <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+                      <div className="text-sm font-medium text-gray-700">
+                        {priorArtMode === 'ai' && `${Object.keys(priorArtSelected).length} patents selected for drafting`}
+                        {priorArtMode === 'manual' && (priorArtManualText.trim() ? 'Manual prior art text provided' : 'No manual text entered')}
+                        {priorArtMode === 'hybrid' && `${Object.keys(priorArtSelected).length} patents + ${priorArtManualText.trim() ? 'manual text' : 'no manual text'}`}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Claim Refinement Tab Content */}
+                {activeWorkflowTab === 'claim-refinement' && (
+                  <div className="space-y-6">
+                    {/* Skip Option */}
+                    <label className="flex items-center gap-3 p-4 bg-purple-50 rounded-xl border border-purple-100 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={skipClaimRefinement}
+                        onChange={(e) => setSkipClaimRefinement(e.target.checked)}
+                        className="w-4 h-4 rounded border-purple-300 text-purple-600"
+                      />
+                      <div>
+                        <span className="font-medium text-purple-900">Skip Claim Refinement</span>
+                        <p className="text-sm text-purple-700">I'm confident in my claims and want to proceed directly to component planning</p>
+                      </div>
+                    </label>
+
+                    {!skipClaimRefinement && (
+                      <>
+                        <div className="bg-amber-50 rounded-xl p-4 border border-amber-100">
+                          <h4 className="font-medium text-amber-900 mb-1">⚖️ Purpose: Differentiate Your Claims</h4>
+                          <p className="text-sm text-amber-700">
+                            These patents will be compared against your claims to ensure novelty and non-obviousness.
+                            Recommended: Select high-risk patents (anticipates, obvious) for thorough claim refinement.
+                          </p>
+                        </div>
+
+                        {/* Threat Level Filter Badges */}
+                        {hasAIReview && (
+                          <div className="flex flex-wrap items-center gap-3">
+                            <span className="text-sm font-medium text-gray-600">Filter by threat:</span>
+                            {[
+                              { level: null, label: 'All', icon: '📋' },
+                              { level: 'anticipates', label: 'Anticipates', icon: '🛑' },
+                              { level: 'obvious', label: 'Obvious', icon: '⚠️' },
+                              { level: 'adjacent', label: 'Adjacent', icon: '✅' },
+                              { level: 'remote', label: 'Remote', icon: '⚪' }
+                            ].map(({ level, label, icon }) => {
+                              const count = level === null 
+                                ? results.length 
+                                : results.filter(r => aiAnalysis[getPatentKey(r)]?.noveltyThreat === level).length
+                              const isActive = claimRefThreatFilter === level
+                              
+                              return (
+                                <button
+                                  key={label}
+                                  onClick={() => setClaimRefThreatFilter(level)}
+                                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                                    isActive 
+                                      ? level === 'anticipates' ? 'bg-red-100 text-red-800 ring-2 ring-red-300' :
+                                        level === 'obvious' ? 'bg-amber-100 text-amber-800 ring-2 ring-amber-300' :
+                                        level === 'adjacent' ? 'bg-green-100 text-green-800 ring-2 ring-green-300' :
+                                        level === 'remote' ? 'bg-gray-200 text-gray-800 ring-2 ring-gray-400' :
+                                        'bg-amber-100 text-amber-800 ring-2 ring-amber-300'
+                                      : level === 'anticipates' ? 'bg-red-50 text-red-700 hover:bg-red-100' :
+                                        level === 'obvious' ? 'bg-amber-50 text-amber-700 hover:bg-amber-100' :
+                                        level === 'adjacent' ? 'bg-green-50 text-green-700 hover:bg-green-100' :
+                                        level === 'remote' ? 'bg-gray-100 text-gray-600 hover:bg-gray-200' :
+                                        'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                                  }`}
+                                >
+                                  <span>{icon}</span>
+                                  <span>{label}</span>
+                                  <span className={`px-1.5 py-0.5 rounded text-xs ${
+                                    isActive ? 'bg-white/50' : 'bg-white/70'
+                                  }`}>
+                                    {count}
+                                  </span>
+                                </button>
+                              )
+                            })}
+                          </div>
+                        )}
+
+                        {/* Mode Selection */}
+                        <div className="grid grid-cols-3 gap-4">
+                          {[
+                            { mode: 'ai' as const, icon: '🤖', label: 'AI-Selected', desc: 'High-risk patents from AI' },
+                            { mode: 'manual' as const, icon: '✍️', label: 'Manual Only', desc: 'Your own prior art notes' },
+                            { mode: 'hybrid' as const, icon: '🔀', label: 'Hybrid', desc: 'AI patents + your notes' }
+                          ].map(({ mode, icon, label, desc }) => (
+                            <label
+                              key={mode}
+                              className={`relative flex flex-col items-center p-4 border-2 rounded-xl cursor-pointer transition-all ${
+                                claimRefMode === mode ? 'border-amber-500 bg-amber-50' : 'border-gray-200 hover:border-amber-300'
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name="claimRefMode"
+                                value={mode}
+                                checked={claimRefMode === mode}
+                                onChange={() => setClaimRefMode(mode)}
+                                className="sr-only"
+                              />
+                              <span className="text-2xl mb-2">{icon}</span>
+                              <span className="font-medium text-sm">{label}</span>
+                              <span className="text-xs text-gray-500 text-center mt-1">{desc}</span>
+                              {claimRefMode === mode && (
+                                <CheckIcon className="absolute top-2 right-2 w-5 h-5 text-amber-600" />
+                              )}
+                            </label>
+                          ))}
+                        </div>
+
+                        {/* Manual Text Input */}
+                        {(claimRefMode === 'manual' || claimRefMode === 'hybrid') && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">Prior Art for Claim Comparison</label>
+                            <textarea
+                              className="w-full border border-gray-300 rounded-xl p-4 text-sm focus:ring-2 focus:ring-amber-500 focus:border-amber-500 min-h-[120px]"
+                              placeholder="Describe prior art that your claims should be differentiated from..."
+                              value={claimRefManualText}
+                              onChange={(e) => setClaimRefManualText(e.target.value)}
+                            />
+                          </div>
+                        )}
+
+                        {/* AI Patent Selection */}
+                        {(claimRefMode === 'ai' || claimRefMode === 'hybrid') && (
+                          <div>
+                            <div className="flex items-center justify-between mb-3">
+                              <label className="text-sm font-medium text-gray-700">Select High-Risk Patents for Claim Comparison</label>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => {
+                                    const autoSelected: Record<string, any> = {}
+                                    results.forEach((r) => {
+                                      const pn = getPatentKey(r)
+                                      const analysis = aiAnalysis[pn]
+                                      const threat = analysis?.noveltyThreat
+                                      if (threat === 'anticipates' || threat === 'obvious') {
+                                        autoSelected[pn] = { 
+                                          ...r, 
+                                          noveltyThreat: threat,
+                                          aiSummary: analysis?.aiSummary,
+                                          relevantParts: analysis?.relevantParts,
+                                          irrelevantParts: analysis?.irrelevantParts,
+                                          noveltyComparison: analysis?.noveltyComparison
+                                        }
+                                      }
+                                    })
+                                    setClaimRefSelected(autoSelected)
+                                    setStatusMessage({
+                                      type: 'success',
+                                      text: `✓ Auto-selected ${Object.keys(autoSelected).length} high-risk patents for claim comparison`
+                                    })
+                                  }}
+                                  className="text-xs text-amber-600 hover:text-amber-700 font-medium px-2 py-1 bg-amber-50 rounded-lg hover:bg-amber-100 transition-colors"
+                                >
+                                  ✨ Auto-select High-Risk
+                                </button>
+                                <button
+                                  onClick={() => setClaimRefSelected({})}
+                                  className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                                >
+                                  Clear All
+                                </button>
+                              </div>
+                            </div>
+                            
+                            {/* Patent list with expandable details */}
+                            <div className="border border-gray-200 rounded-xl overflow-hidden">
+                              <div className="max-h-[600px] overflow-y-auto divide-y divide-gray-100">
+                                {results.filter(r => {
+                                  const pn = getPatentKey(r)
+                                  const threat = aiAnalysis[pn]?.noveltyThreat
+                                  // Apply threat filter if set, otherwise show all patents
+                                  if (claimRefThreatFilter !== null) {
+                                    return threat === claimRefThreatFilter
+                                  }
+                                  // Default: show all patents when no filter
+                                  return true
+                                }).map((r, i) => {
+                                  const pn = getPatentKey(r, i)
+                                  const analysis = aiAnalysis[pn]
+                                  const isSelected = !!claimRefSelected[pn]
+                                  const isExpanded = expandedPatentDetails.has(`claimRef-select-${pn}`)
+                                  const patentAbstract = (r as any).abstract || (r as any).snippet || ''
+                                  
+                                  return (
+                                    <div key={pn} className={`${isSelected ? 'bg-amber-50/50' : ''}`}>
+                                      {/* Patent header row */}
+                                      <div className="flex items-start gap-3 p-4">
+                                        <input
+                                          type="checkbox"
+                                          checked={isSelected}
+                                          onChange={() => {
+                                            setClaimRefSelected(prev => {
+                                              if (prev[pn]) {
+                                                const { [pn]: _, ...rest } = prev
+                                                return rest
+                                              }
+                                              return { 
+                                                ...prev, 
+                                                [pn]: { 
+                                                  ...r, 
+                                                  noveltyThreat: analysis?.noveltyThreat,
+                                                  aiSummary: analysis?.aiSummary,
+                                                  relevantParts: analysis?.relevantParts,
+                                                  irrelevantParts: analysis?.irrelevantParts,
+                                                  noveltyComparison: analysis?.noveltyComparison
+                                                } 
+                                              }
+                                            })
+                                          }}
+                                          className="mt-1 w-4 h-4 rounded border-gray-300 text-amber-600 cursor-pointer"
+                                        />
+                                        <div className="flex-1 min-w-0">
+                                          <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="font-medium text-sm text-gray-900">{r.title}</span>
+                                            <span className={`px-1.5 py-0.5 text-xs rounded flex-shrink-0 ${
+                                              analysis?.noveltyThreat === 'anticipates' ? 'bg-red-100 text-red-700' :
+                                              'bg-amber-100 text-amber-700'
+                                            }`}>
+                                              {analysis?.noveltyThreat || 'unknown'}
+                                            </span>
+                                          </div>
+                                          <div className="text-xs text-gray-500 mt-0.5 flex items-center gap-2">
+                                            <span className="font-mono">{pn}</span>
+                                            <span>•</span>
+                                            <button
+                                              onClick={(e) => {
+                                                e.preventDefault()
+                                                e.stopPropagation()
+                                                setExpandedPatentDetails(prev => {
+                                                  const next = new Set(prev)
+                                                  const key = `claimRef-select-${pn}`
+                                                  if (next.has(key)) next.delete(key)
+                                                  else next.add(key)
+                                                  return next
+                                                })
+                                              }}
+                                              className="text-amber-600 hover:text-amber-700 font-medium"
+                                            >
+                                              {isExpanded ? 'Hide Details' : 'View Details'}
+                                            </button>
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      {/* Expandable details */}
+                                      {isExpanded && (
+                                        <div className="px-4 pb-4">
+                                          <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl border border-amber-100 p-4 space-y-4">
+                                            {/* Patent Abstract */}
+                                            {patentAbstract && (
+                                              <div>
+                                                <h5 className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2 flex items-center gap-1">
+                                                  📄 Patent Abstract
+                                                </h5>
+                                                <div className="text-sm text-gray-700 bg-white/60 rounded-lg p-3 border border-amber-100">
+                                                  {patentAbstract}
+                                                </div>
+                                              </div>
+                                            )}
+
+                                            {/* AI Summary */}
+                                            {analysis?.aiSummary && (
+                                              <div>
+                                                <h5 className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2 flex items-center gap-1">
+                                                  🤖 AI Summary
+                                                </h5>
+                                                <div className="text-sm text-gray-700 bg-white/60 rounded-lg p-3 border border-amber-100">
+                                                  {analysis.aiSummary}
+                                                </div>
+                                              </div>
+                                            )}
+
+                                            {/* Matching Parts - These are the THREATS */}
+                                            {analysis?.relevantParts && analysis.relevantParts.length > 0 && (
+                                              <div>
+                                                <h5 className="text-xs font-semibold text-red-700 uppercase tracking-wide mb-2 flex items-center gap-1">
+                                                  ⚠️ Overlapping Claims (Potential Conflicts)
+                                                </h5>
+                                                <ul className="text-sm text-gray-700 bg-red-50/50 rounded-lg p-3 border border-red-100 space-y-1">
+                                                  {analysis.relevantParts.map((part, idx) => (
+                                                    <li key={idx} className="flex items-start gap-2">
+                                                      <span className="text-red-500 mt-0.5">•</span>
+                                                      <span>{part}</span>
+                                                    </li>
+                                                  ))}
+                                                </ul>
+                                              </div>
+                                            )}
+
+                                            {/* Non-matching Parts - These are SAFE */}
+                                            {analysis?.irrelevantParts && analysis.irrelevantParts.length > 0 && (
+                                              <div>
+                                                <h5 className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-2 flex items-center gap-1">
+                                                  ✅ Key Differences (Your Advantages)
+                                                </h5>
+                                                <ul className="text-sm text-gray-600 bg-green-50/50 rounded-lg p-3 border border-green-100 space-y-1">
+                                                  {analysis.irrelevantParts.map((part, idx) => (
+                                                    <li key={idx} className="flex items-start gap-2">
+                                                      <span className="text-green-500 mt-0.5">•</span>
+                                                      <span>{part}</span>
+                                                    </li>
+                                                  ))}
+                                                </ul>
+                                              </div>
+                                            )}
+
+                                            {/* Novelty Comparison */}
+                                            {analysis?.noveltyComparison && (
+                                              <div>
+                                                <h5 className="text-xs font-semibold text-purple-700 uppercase tracking-wide mb-2 flex items-center gap-1">
+                                                  ⚖️ Novelty Assessment
+                                                </h5>
+                                                <div className="text-sm text-gray-700 bg-purple-50/50 rounded-lg p-3 border border-purple-100">
+                                                  {analysis.noveltyComparison}
+                                                </div>
+                                              </div>
+                                            )}
+
+                                            {/* Threat Level Badge */}
+                                            <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium ${
+                                              analysis?.noveltyThreat === 'anticipates' ? 'bg-red-100 text-red-800' :
+                                              analysis?.noveltyThreat === 'obvious' ? 'bg-amber-100 text-amber-800' :
+                                              'bg-gray-100 text-gray-600'
+                                            }`}>
+                                              {analysis?.noveltyThreat === 'anticipates' ? '🛑 High Risk: May anticipate your claims - needs differentiation' :
+                                               analysis?.noveltyThreat === 'obvious' ? '⚠️ Medium Risk: May raise obviousness concerns - strengthen claims' :
+                                               'Risk level unknown'}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Summary */}
+                        <div className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+                          <div className="text-sm font-medium text-gray-700">
+                            {claimRefMode === 'ai' && `${Object.keys(claimRefSelected).length} patents selected for claim comparison`}
+                            {claimRefMode === 'manual' && (claimRefManualText.trim() ? 'Manual prior art text provided' : 'No manual text entered')}
+                            {claimRefMode === 'hybrid' && `${Object.keys(claimRefSelected).length} patents + ${claimRefManualText.trim() ? 'manual text' : 'no manual text'}`}
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Status Message */}
+            {statusMessage && (
+              <div className={`p-4 rounded-xl border ${
+                statusMessage.type === 'success' 
+                  ? 'bg-green-50 border-green-200 text-green-800' 
+                  : 'bg-amber-50 border-amber-200 text-amber-800'
+              }`}>
+                {statusMessage.text}
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="flex items-center justify-between pt-6 border-t border-gray-200">
+              <button
+                onClick={async () => {
                   // Build prior art data for drafting
                   const priorArtPatentsArray = Object.entries(priorArtSelected).map(
                     ([patentNumber, patentData]) => ({ patentNumber, ...patentData })
                   )
                   
-                  // Build claim refinement data
+                  // Build claim refinement data  
                   const claimRefPatentsArray = Object.entries(claimRefSelected).map(
                     ([patentNumber, patentData]) => ({ patentNumber, ...patentData })
                   )
+
+                  try {
+                    setSavingPriorArt(true)
+                    await onComplete({
+                      action: 'save_prior_art_config',
+                      sessionId: session?.id,
+                      priorArtConfig: {
+                        mode: priorArtMode,
+                        selectedPatents: priorArtPatentsArray,
+                        manualText: priorArtManualText
+                      },
+                      claimRefConfig: {
+                        mode: claimRefMode,
+                        selectedPatents: claimRefPatentsArray,
+                        manualText: claimRefManualText
+                      },
+                      skipClaimRefinement
+                    })
+                    await onRefresh()
+                    setStatusMessage({
+                      type: 'success',
+                      text: `✓ Saved: ${priorArtPatentsArray.length} patents for drafting, ${claimRefPatentsArray.length} patents for claim refinement`
+                    })
+                  } catch (e) {
+                    console.error('Failed to save config:', e)
+                    setStatusMessage({
+                      type: 'warning',
+                      text: '⚠️ Failed to save configuration'
+                    })
+                  } finally {
+                    setSavingPriorArt(false)
+                  }
+                }}
+                disabled={savingPriorArt || !hasAIReview}
+                className="px-6 py-3 text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-xl disabled:opacity-50 transition-colors"
+              >
+                {savingPriorArt ? 'Saving...' : 'Save Selections'}
+              </button>
+
+              <button
+                onClick={async () => {
+                  // Build prior art data for drafting
+                  const priorArtPatentsArray = Object.entries(priorArtSelected).map(
+                    ([patentNumber, patentData]) => ({ patentNumber, ...patentData })
+                  )
                   
-                  console.log('💾 Saving configurations:', {
-                    priorArtCount: priorArtPatentsArray.length,
-                    claimRefCount: claimRefPatentsArray.length,
-                    priorArtMode,
-                    claimRefMode
-                  })
-                  
-                  // Save the configurations
-                  await onComplete({
-                    action: 'save_prior_art_config',
-                    sessionId: session?.id,
-                    priorArtConfig: {
-                      mode: priorArtMode,
+                  // Build claim refinement data  
+                  const claimRefPatentsArray = Object.entries(claimRefSelected).map(
+                    ([patentNumber, patentData]) => ({ patentNumber, ...patentData })
+                  )
+
+                  // Save configuration first
+                  try {
+                    await onComplete({
+                      action: 'save_prior_art_config',
+                      sessionId: session?.id,
+                      priorArtConfig: {
+                        mode: priorArtMode,
+                        selectedPatents: priorArtPatentsArray,
+                        manualText: priorArtManualText
+                      },
+                      claimRefConfig: {
+                        mode: claimRefMode,
+                        selectedPatents: claimRefPatentsArray,
+                        manualText: claimRefManualText
+                      },
+                      skipClaimRefinement
+                    })
+                  } catch (e) {
+                    console.error('Failed to save config before proceeding:', e)
+                  }
+
+                  // If skipping claim refinement, go directly to component planner
+                  if (skipClaimRefinement) {
+                    setStatusMessage({
+                      type: 'success',
+                      text: '✓ Skipping Claim Refinement, proceeding to Component Planner...'
+                    })
+
+                    await onComplete({
+                      action: 'set_stage',
+                      sessionId: session?.id,
+                      stage: 'COMPONENT_PLANNER',
+                      priorArtForDrafting: {
+                        mode: priorArtMode,
+                        selectedPatents: priorArtPatentsArray,
+                        manualText: priorArtManualText
+                      },
+                      claimRefinementSkipped: true,
+                      manualPriorArt: priorArtManualText ? {
+                        manualPriorArtText: priorArtManualText,
+                        useOnlyManualPriorArt: priorArtMode === 'manual',
+                        useManualAndAISearch: priorArtMode === 'hybrid'
+                      } : null,
                       selectedPatents: priorArtPatentsArray,
-                      manualText: priorArtManualText
-                    },
-                    claimRefConfig: {
-                      mode: claimRefMode,
-                      selectedPatents: claimRefPatentsArray,
-                      manualText: claimRefManualText
-                    },
-                    skipClaimRefinement
-                  })
+                      priorArtConfig: {
+                        useAuto: priorArtMode !== 'manual',
+                        useManual: priorArtMode === 'manual' || priorArtMode === 'hybrid',
+                        skippedClaimRefinement: true
+                      }
+                    })
+                    await onRefresh()
+                    return
+                  }
                   
-                  // Refresh session to get updated config
-                  await onRefresh()
+                  // Validate claim refinement selection
+                  const hasClaimRef = claimRefMode === 'manual' ? claimRefManualText.trim() :
+                                      claimRefMode === 'hybrid' ? (claimRefPatentsArray.length > 0 || claimRefManualText.trim()) :
+                                      claimRefPatentsArray.length > 0
                   
+                  if (!hasClaimRef) {
+                    setStatusMessage({
+                      type: 'warning',
+                      text: '⚠️ Please select patents or provide text for claim refinement, or enable "Skip Claim Refinement".'
+                    })
+                    setActiveWorkflowTab('claim-refinement')
+                    return
+                  }
+
                   setStatusMessage({
                     type: 'success',
-                    text: `✓ Saved: ${priorArtPatentsArray.length} patents for drafting, ${claimRefPatentsArray.length} patents for claim refinement`
-                  })
-                } catch (e) {
-                  console.error('Failed to save config:', e)
-                  setStatusMessage({
-                    type: 'warning',
-                    text: '⚠️ Failed to save configuration'
-                  })
-                } finally {
-                  setSavingPriorArt(false)
-                }
-              }}
-              disabled={savingPriorArt || !hasAIReview}
-              className="px-4 py-2 text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-md disabled:opacity-50"
-            >
-              {savingPriorArt ? 'Saving...' : 'Save Both Selections'}
-            </button>
-            <button
-              onClick={async () => {
-                // Build prior art data for drafting
-                const priorArtPatentsArray = Object.entries(priorArtSelected).map(
-                  ([patentNumber, patentData]) => ({ patentNumber, ...patentData })
-                )
-                
-                // Build claim refinement data  
-                const claimRefPatentsArray = Object.entries(claimRefSelected).map(
-                  ([patentNumber, patentData]) => ({ patentNumber, ...patentData })
-                )
-
-                // Save configuration first (so user can revisit and see selections)
-                try {
-                  await onComplete({
-                    action: 'save_prior_art_config',
-                    sessionId: session?.id,
-                    priorArtConfig: {
-                      mode: priorArtMode,
-                      selectedPatents: priorArtPatentsArray,
-                      manualText: priorArtManualText
-                    },
-                    claimRefConfig: {
-                      mode: claimRefMode,
-                      selectedPatents: claimRefPatentsArray,
-                      manualText: claimRefManualText
-                    },
-                    skipClaimRefinement
-                  })
-                  console.log('✅ Saved workflow configurations before proceeding')
-                } catch (e) {
-                  console.error('Failed to save config before proceeding:', e)
-                }
-
-                // If skipping claim refinement, go directly to component planner
-                if (skipClaimRefinement) {
-                  setStatusMessage({
-                    type: 'success',
-                    text: '✓ Skipping Claim Refinement, proceeding to Component Planner...'
+                    text: '✓ Proceeding to Claim Refinement...'
                   })
 
                   await onComplete({
                     action: 'set_stage',
                     sessionId: session?.id,
-                    stage: 'COMPONENT_PLANNER',
-                    // Prior art for drafting (background sections)
+                    stage: 'CLAIM_REFINEMENT',
                     priorArtForDrafting: {
                       mode: priorArtMode,
                       selectedPatents: priorArtPatentsArray,
                       manualText: priorArtManualText
                     },
-                    // Store that claim refinement was skipped
-                    claimRefinementSkipped: true,
-                    // Legacy fields for backward compatibility
+                    claimRefinementConfig: {
+                      mode: claimRefMode,
+                      selectedPatents: claimRefPatentsArray,
+                      manualText: claimRefManualText
+                    },
                     manualPriorArt: priorArtManualText ? {
                       manualPriorArtText: priorArtManualText,
                       useOnlyManualPriorArt: priorArtMode === 'manual',
                       useManualAndAISearch: priorArtMode === 'hybrid'
                     } : null,
-                    selectedPatents: priorArtPatentsArray,
+                    selectedPatents: claimRefPatentsArray,
                     priorArtConfig: {
-                      useAuto: priorArtMode !== 'manual',
-                      useManual: priorArtMode === 'manual' || priorArtMode === 'hybrid',
-                      skippedClaimRefinement: true
+                      useAuto: claimRefMode !== 'manual',
+                      useManual: claimRefMode === 'manual' || claimRefMode === 'hybrid'
                     }
                   })
                   await onRefresh()
-                  return
-                }
-                
-                // Validate at least some selection is made for claim refinement
-                const hasClaimRef = claimRefMode === 'manual' ? claimRefManualText.trim() :
-                                    claimRefMode === 'hybrid' ? (claimRefPatentsArray.length > 0 || claimRefManualText.trim()) :
-                                    claimRefPatentsArray.length > 0
-                
-                if (!hasClaimRef) {
-                  setStatusMessage({
-                    type: 'warning',
-                    text: '⚠️ Please select at least one patent or provide manual text for claim refinement, or check "Skip Claim Refinement".'
-                  })
-                  setActiveWorkflowTab('claim-refinement')
-                  return
-                }
+                }}
+                disabled={!hasAIReview}
+                className={`px-8 py-3 text-sm font-semibold text-white rounded-xl shadow-lg disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 transition-all ${
+                  skipClaimRefinement 
+                    ? 'bg-purple-600 hover:bg-purple-700 hover:shadow-purple-200' 
+                    : 'bg-emerald-600 hover:bg-emerald-700 hover:shadow-emerald-200'
+                }`}
+              >
+                <span>{skipClaimRefinement ? 'Skip to Component Planner' : 'Proceed to Claim Refinement'}</span>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
 
-                  setStatusMessage({
-                    type: 'success',
-                  text: '✓ Proceeding to Claim Refinement...'
-                  })
-
-                // Navigate to claim refinement with both configurations
-                await onComplete({
-                  action: 'set_stage',
-                  sessionId: session?.id,
-                  stage: 'CLAIM_REFINEMENT',
-                  // Prior art for drafting (background sections)
-                  priorArtForDrafting: {
-                    mode: priorArtMode,
-                    selectedPatents: priorArtPatentsArray,
-                    manualText: priorArtManualText
-                  },
-                  // Patents for claim comparison
-                  claimRefinementConfig: {
-                    mode: claimRefMode,
-                    selectedPatents: claimRefPatentsArray,
-                    manualText: claimRefManualText
-                  },
-                  // Legacy fields for backward compatibility
-                  manualPriorArt: priorArtManualText ? {
-                    manualPriorArtText: priorArtManualText,
-                    useOnlyManualPriorArt: priorArtMode === 'manual',
-                    useManualAndAISearch: priorArtMode === 'hybrid'
-                  } : null,
-                  selectedPatents: claimRefPatentsArray, // Use claim ref patents for claim refinement
-                  priorArtConfig: {
-                    useAuto: claimRefMode !== 'manual',
-                    useManual: claimRefMode === 'manual' || claimRefMode === 'hybrid'
-                  }
-                })
-                await onRefresh()
-              }}
-              disabled={!hasAIReview}
-              className={`px-6 py-2 text-sm font-medium text-white rounded-md shadow-sm disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 ${
-                skipClaimRefinement 
-                  ? 'bg-purple-600 hover:bg-purple-700' 
-                  : 'bg-emerald-600 hover:bg-emerald-700'
-              }`}
-            >
-              <span>{skipClaimRefinement ? 'Skip to Component Planner' : 'Proceed to Claim Refinement'}</span>
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+      {/* Idea Bank Floating Panel */}
+      {ideaBank.length > 0 && ideaBankOpen && (
+        <div className="fixed bottom-4 right-4 w-96 max-h-[500px] bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden z-50 animate-fadeIn">
+          <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-white px-4 py-3 flex items-center justify-between">
+            <h4 className="font-semibold flex items-center gap-2">
+              <span>💡</span> Idea Bank ({ideaBank.length})
+            </h4>
+            <button onClick={() => setIdeaBankOpen(false)} className="text-white/80 hover:text-white">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </div>
+          <div className="max-h-[400px] overflow-y-auto p-4 space-y-3">
+            {ideaBank.map((idea, i) => (
+              <div key={i} className="bg-amber-50 rounded-lg p-3 border border-amber-100">
+                <div className="font-medium text-gray-900 text-sm">{idea.title}</div>
+                <div className="text-xs text-gray-600 mt-1">{idea.core_principle}</div>
+                {idea.tags && idea.tags.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {idea.tags.map((tag, j) => (
+                      <span key={j} className="px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded text-[10px]">{tag}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
-      </div>
-      <div className="h-20"></div> {/* Spacer for fixed footer */}
+      )}
+
+      {/* Idea Bank Toggle Button */}
+      {ideaBank.length > 0 && !ideaBankOpen && (
+        <button
+          onClick={() => setIdeaBankOpen(true)}
+          className="fixed bottom-4 right-4 px-4 py-3 bg-gradient-to-r from-amber-500 to-orange-500 text-white rounded-xl shadow-lg hover:shadow-xl transition-all flex items-center gap-2 z-50"
+        >
+          <span>💡</span>
+          <span className="font-medium">Idea Bank</span>
+          <span className="bg-white/20 px-2 py-0.5 rounded-full text-sm">{ideaBank.length}</span>
+        </button>
+      )}
     </div>
   )
 })

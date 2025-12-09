@@ -1,4 +1,5 @@
 'use client'
+/* eslint-disable react/no-unescaped-entities */
 
 import { useEffect, useState, useCallback } from 'react'
 import { unstable_noStore as noStore } from 'next/cache'

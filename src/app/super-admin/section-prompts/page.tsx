@@ -1,6 +1,8 @@
 'use client'
+/* eslint-disable react/no-unescaped-entities */
+/* eslint-disable react/jsx-no-comment-textnodes */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { unstable_noStore as noStore } from 'next/cache'
 
@@ -54,19 +56,7 @@ export default function SuperAdminSectionPromptsPage() {
   const [supersetSections, setSupersetSections] = useState<SupersetSection[]>([])
   const [countryHeadings, setCountryHeadings] = useState<Record<string, Record<string, string>>>({})
 
-  useEffect(() => {
-    if (!user) {
-      window.location.href = '/login'
-      return
-    }
-    if (!user.roles?.some(role => role === 'SUPER_ADMIN')) {
-      window.location.href = '/dashboard'
-      return
-    }
-    fetchData()
-  }, [user])
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true)
       const response = await fetch('/api/super-admin/section-prompts', {
@@ -102,7 +92,19 @@ export default function SuperAdminSectionPromptsPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [selectedCountry])
+
+  useEffect(() => {
+    if (!user) {
+      window.location.href = '/login'
+      return
+    }
+    if (!user.roles?.some(role => role === 'SUPER_ADMIN')) {
+      window.location.href = '/dashboard'
+      return
+    }
+    fetchData()
+  }, [user, fetchData])
 
   // Helper to get section label: country-specific > superset > sectionKey
   const getSectionLabel = (countryCode: string, sectionKey: string): string => {

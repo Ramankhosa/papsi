@@ -221,12 +221,16 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
     const profileData = profile.profileData as any
     
     // Process structure to apply country-specific ordering from mappings
+    // AND add sections from CountrySectionMapping that are missing from the profile structure
     let structure = profileData?.structure || null
     if (structure?.variants) {
       structure = {
         ...structure,
         variants: structure.variants.map((variant: any) => {
           if (!variant.sections) return variant
+          
+          // Track which sectionKeys are already in the profile
+          const existingSectionKeys = new Set<string>()
           
           // Map sections with their country-specific displayOrder
           const sectionsWithOrder = variant.sections.map((sec: any) => {
@@ -237,6 +241,15 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
                 mapping = mappingByKey.get(key)
                 if (mapping) break
               }
+            }
+            
+            // Track this section's key
+            existingSectionKeys.add(sec.id)
+            if (sec.canonicalKeys) {
+              sec.canonicalKeys.forEach((k: string) => existingSectionKeys.add(k))
+            }
+            if (mapping?.sectionKey) {
+              existingSectionKeys.add(mapping.sectionKey)
             }
             
             return {
@@ -252,6 +265,40 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
               } : null
             }
           })
+          
+          // Add sections from CountrySectionMapping that are missing from the profile
+          // but are applicable (heading is not N/A)
+          for (const mapping of sectionMappings) {
+            // Skip if this section is already in the profile
+            if (existingSectionKeys.has(mapping.sectionKey)) continue
+            
+            // Skip N/A and implicit sections (not applicable for this jurisdiction)
+            if (
+              mapping.heading === '(N/A)' || 
+              mapping.heading === '(Implicit)' ||
+              mapping.heading === '(Recommended/NA)' ||
+              mapping.heading === '(Include in Detailed Desc)'
+            ) continue
+            
+            // Skip disabled sections
+            if (!mapping.isEnabled) continue
+            
+            // Add the section from the mapping
+            sectionsWithOrder.push({
+              id: mapping.sectionKey,
+              label: mapping.heading,
+              order: mapping.displayOrder ?? 999,
+              required: mapping.isRequired,
+              canonicalKeys: [mapping.sectionKey],
+              _mapping: {
+                heading: mapping.heading,
+                isRequired: mapping.isRequired,
+                isEnabled: mapping.isEnabled,
+                displayOrder: mapping.displayOrder
+              },
+              _fromMapping: true // Flag to indicate this was added from CountrySectionMapping
+            })
+          }
           
           // Sort sections by the resolved order
           sectionsWithOrder.sort((a: any, b: any) => (a.order || 999) - (b.order || 999))

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { DateRangePicker } from './DateRangePicker'
 import { UsageOverview } from './UsageOverview'
 import { UsageChart } from './UsageChart'
@@ -53,7 +53,7 @@ export function UsageAnalytics({ title, isSuperAdmin = false, tenantId }: UsageA
   const [period, setPeriod] = useState<'daily' | 'weekly' | 'monthly'>('monthly')
   const [groupBy, setGroupBy] = useState<'tenant' | 'user' | 'feature' | 'task' | 'model' | 'provider'>('user')
 
-  const fetchAnalytics = async () => {
+  const fetchAnalytics = useCallback(async () => {
     setLoading(true)
     setError(null)
 
@@ -85,11 +85,11 @@ export function UsageAnalytics({ title, isSuperAdmin = false, tenantId }: UsageA
     } finally {
       setLoading(false)
     }
-  }
+  }, [dateRange, groupBy, period, tenantId])
 
   useEffect(() => {
     fetchAnalytics()
-  }, [dateRange, period, groupBy, tenantId])
+  }, [fetchAnalytics])
 
   if (loading) {
     return (

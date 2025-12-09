@@ -31,8 +31,25 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
   const [exporting, setExporting] = useState(false)
   const availableJurisdictions = (Array.isArray(session?.draftingJurisdictions) && session.draftingJurisdictions.length > 0 ? session.draftingJurisdictions : ['IN']).map((c: string) => (c || '').toUpperCase())
   const [selectedJurisdiction, setSelectedJurisdiction] = useState<string>(() => (session?.activeJurisdiction || availableJurisdictions[0] || 'IN'))
-  const [exportOptions, setExportOptions] = useState({
-    autoNumberParagraphs: false
+  // Export config loaded from country profile (database)
+  const [countryExportConfig, setCountryExportConfig] = useState<{
+    addParagraphNumbers?: boolean
+    addPageNumbers?: boolean
+    fontFamily?: string
+    fontSizePt?: number
+    lineSpacing?: number
+    marginTopCm?: number
+    marginBottomCm?: number
+    marginLeftCm?: number
+    marginRightCm?: number
+    pageSize?: string
+    source?: string
+  } | null>(null)
+  // User-overridable export options - null means "use country default"
+  const [exportOptions, setExportOptions] = useState<{
+    autoNumberParagraphs: boolean | null
+  }>({
+    autoNumberParagraphs: null // null = use country default
   })
   const jurisdictionKey = availableJurisdictions.join(',')
 
@@ -72,6 +89,12 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
       if (res.ok) {
         setRich(data)
         setSections(Array.isArray(data.sections) ? data.sections : null)
+        // Load country export config from backend
+        if (data.exportConfig) {
+          setCountryExportConfig(data.exportConfig)
+          // Reset user override to null so country default is used
+          setExportOptions({ autoNumberParagraphs: null })
+        }
       }
     } catch {}
   }
@@ -88,18 +111,24 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
     setExporting(true)
 
     try {
+      // Build request body - only include autoNumberParagraphs if user explicitly set it
+      const requestBody: any = {
+        action: targetFormat === 'pdf' ? 'export_pdf' : 'export_docx',
+        sessionId: session?.id,
+        jurisdiction: selectedJurisdiction
+      }
+      // Only send autoNumberParagraphs if user explicitly toggled it (not null)
+      if (exportOptions.autoNumberParagraphs !== null) {
+        requestBody.autoNumberParagraphs = exportOptions.autoNumberParagraphs
+      }
+      
       const res = await fetch(`/api/patents/${patent.id}/drafting`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
         },
-        body: JSON.stringify({
-          action: targetFormat === 'pdf' ? 'export_pdf' : 'export_docx',
-          sessionId: session?.id,
-          autoNumberParagraphs: exportOptions.autoNumberParagraphs,
-          jurisdiction: selectedJurisdiction
-        })
+        body: JSON.stringify(requestBody)
       })
       if (!res.ok) {
         const data = await res.json().catch(()=>({ error: 'Export failed' }))
@@ -192,7 +221,9 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
                 <input
                   type="checkbox"
                   id="autoNumber"
-                  checked={exportOptions.autoNumberParagraphs}
+                  checked={exportOptions.autoNumberParagraphs !== null 
+                    ? exportOptions.autoNumberParagraphs 
+                    : (countryExportConfig?.addParagraphNumbers ?? false)}
                   onChange={(e) => setExportOptions(prev => ({ ...prev, autoNumberParagraphs: e.target.checked }))}
                   className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
                 />
@@ -201,14 +232,35 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
                   <span className="ml-1 text-gray-500 font-mono text-xs">
                     ({getNumberingFormatLabel(selectedJurisdiction)} style)
                   </span>
+                  {countryExportConfig?.addParagraphNumbers && exportOptions.autoNumberParagraphs === null && (
+                    <span className="ml-1 text-green-600 text-xs">(country default: ON)</span>
+                  )}
                 </label>
               </div>
-              {exportOptions.autoNumberParagraphs && (
+              {(exportOptions.autoNumberParagraphs === true || 
+                (exportOptions.autoNumberParagraphs === null && countryExportConfig?.addParagraphNumbers)) && (
                 <p className="text-xs text-gray-500 ml-6">
                   {selectedJurisdiction === 'JP' 
                     ? 'Japan format: 【0001】, 【0002】, ...' 
                     : 'Standard format: [0001], [0002], ...'}
                 </p>
+              )}
+
+              {/* Country Export Settings Info */}
+              {countryExportConfig && (
+                <div className="bg-blue-50 border border-blue-200 rounded-md p-3 mt-2">
+                  <p className="text-xs font-medium text-blue-800 mb-1">
+                    {selectedJurisdiction} Export Settings {countryExportConfig.source === 'country' && '(from database)'}
+                  </p>
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-blue-700">
+                    <span>Font: {countryExportConfig.fontFamily}, {countryExportConfig.fontSizePt}pt</span>
+                    <span>Line Spacing: {countryExportConfig.lineSpacing}</span>
+                    <span>Page: {countryExportConfig.pageSize}</span>
+                    <span>Margins: {countryExportConfig.marginTopCm}cm / {countryExportConfig.marginBottomCm}cm / {countryExportConfig.marginLeftCm}cm / {countryExportConfig.marginRightCm}cm</span>
+                    <span>Page Numbers: {countryExportConfig.addPageNumbers ? 'Yes' : 'No'}</span>
+                    <span>Paragraph Numbers: {countryExportConfig.addParagraphNumbers ? 'Yes' : 'No'}</span>
+                  </div>
+                </div>
               )}
 
               {/* Word Limit Warnings */}

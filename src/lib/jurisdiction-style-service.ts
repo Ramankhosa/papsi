@@ -329,27 +329,78 @@ export async function getExportConfig(
   sessionId?: string
 ): Promise<ExportConfig> {
   
-  // 1. Get country default
-  const countryConfig = await prisma.countryExportConfig.findUnique({
+  // Normalize country code
+  const normalizedCountryCode = countryCode.toUpperCase()
+  
+  // 1. Get country default - try exact match first
+  let countryConfig = await prisma.countryExportConfig.findUnique({
     where: {
-      countryCode_documentTypeId: { countryCode, documentTypeId }
+      countryCode_documentTypeId: { countryCode: normalizedCountryCode, documentTypeId }
     },
     include: { sectionHeadings: true }
   })
+  
+  // Fallback 1: if DOCX config is missing, try the PDF variant
+  if (!countryConfig && documentTypeId === 'spec_docx') {
+    countryConfig = await prisma.countryExportConfig.findUnique({
+      where: {
+        countryCode_documentTypeId: { countryCode: normalizedCountryCode, documentTypeId: 'spec_pdf' }
+      },
+      include: { sectionHeadings: true }
+    })
+    if (countryConfig) {
+      console.log(`[ExportConfig] Using PDF export config as fallback for DOCX for ${normalizedCountryCode}`)
+    }
+  }
+  
+  // Fallback 2: if still not found, try country-specific prefixed document type IDs
+  // (e.g., "in_spec_pdf" for India, "au_spec_pdf" for Australia)
+  if (!countryConfig) {
+    const countryLower = normalizedCountryCode.toLowerCase()
+    const prefixedDocType = documentTypeId.includes('docx') 
+      ? `${countryLower}_spec_docx`
+      : `${countryLower}_spec_pdf`
+    
+    countryConfig = await prisma.countryExportConfig.findUnique({
+      where: {
+        countryCode_documentTypeId: { countryCode: normalizedCountryCode, documentTypeId: prefixedDocType }
+      },
+      include: { sectionHeadings: true }
+    })
+    if (countryConfig) {
+      console.log(`[ExportConfig] Found country-prefixed config ${prefixedDocType} for ${normalizedCountryCode}`)
+    }
+  }
+  
+  // Fallback 3: if still not found, get ANY active export config for this country
+  if (!countryConfig) {
+    countryConfig = await prisma.countryExportConfig.findFirst({
+      where: { 
+        countryCode: normalizedCountryCode,
+        status: 'ACTIVE'
+      },
+      include: { sectionHeadings: true },
+      orderBy: { createdAt: 'desc' }
+    })
+    if (countryConfig) {
+      console.log(`[ExportConfig] Using first available config (${countryConfig.documentTypeId}) for ${normalizedCountryCode}`)
+    }
+  }
 
   // Build base config
   let config: ExportConfig = {
-    countryCode,
+    countryCode: normalizedCountryCode,
     documentTypeId,
-    label: `${countryCode} Specification`,
+    label: `${normalizedCountryCode} Specification`,
     ...DEFAULT_EXPORT_CONFIG,
     sectionHeadings: {},
     source: 'fallback'
   }
 
   if (countryConfig) {
+    console.log(`[ExportConfig] Loaded config for ${normalizedCountryCode}: fontSizePt=${countryConfig.fontSizePt}, addParagraphNumbers=${countryConfig.addParagraphNumbers}, margins=[${countryConfig.marginTopCm},${countryConfig.marginBottomCm},${countryConfig.marginLeftCm},${countryConfig.marginRightCm}]`)
     config = {
-      countryCode,
+      countryCode: normalizedCountryCode,
       documentTypeId: countryConfig.documentTypeId,
       label: countryConfig.label,
       pageSize: countryConfig.pageSize,
@@ -384,7 +435,7 @@ export async function getExportConfig(
         isActive: true,
         OR: [
           { jurisdiction: '*' },
-          { jurisdiction: countryCode }
+          { jurisdiction: normalizedCountryCode }
         ]
       },
       orderBy: [{ jurisdiction: 'desc' }]
@@ -404,7 +455,7 @@ export async function getExportConfig(
         isActive: true,
         OR: [
           { jurisdiction: '*' },
-          { jurisdiction: countryCode }
+          { jurisdiction: normalizedCountryCode }
         ]
       },
       orderBy: [{ jurisdiction: 'desc' }]

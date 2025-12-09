@@ -159,7 +159,7 @@ export default function FileUpload({ onFilesSelected, accept = "*", maxFiles = 6
     } finally {
       setIsAnalyzing(false)
     }
-  }, [autoSelect])
+  }, [analyzeFileForPatentContent, autoSelect, isAnalyzing, selectBestPatentFile])
 
   const handleFiles = useCallback((files: FileList | null, accumulate: boolean = false) => {
     if (!files) return
@@ -209,7 +209,7 @@ export default function FileUpload({ onFilesSelected, accept = "*", maxFiles = 6
     }
 
     // Files will be auto-analyzed via useEffect
-  }, [maxFiles, accept])
+  }, [accept, maxFiles, validateFiles])
 
   // Auto-analyze files when they change
   useEffect(() => {

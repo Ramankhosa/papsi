@@ -92,6 +92,46 @@ export function invalidateSessionInstructionCache(sessionId: string): void {
   cacheTimestamps.delete(sessionId)
 }
 
+/**
+ * Clone instructions from one session to another (e.g., when a session is reset/newly created).
+ * Skips any sectionKey/jurisdiction pairs that already exist on the target session.
+ * Returns number of instructions copied.
+ */
+export async function cloneInstructionsBetweenSessions(
+  sourceSessionId: string,
+  targetSessionId: string
+): Promise<number> {
+  if (!sourceSessionId || !targetSessionId || sourceSessionId === targetSessionId) return 0
+
+  const [source, targetExisting] = await Promise.all([
+    prisma.userSectionInstruction.findMany({ where: { sessionId: sourceSessionId } }),
+    prisma.userSectionInstruction.findMany({ where: { sessionId: targetSessionId } })
+  ])
+
+  if (!source.length) return 0
+
+  const existingKeys = new Set(targetExisting.map(i => `${i.sectionKey}:${i.jurisdiction}`))
+  const payload = source
+    .filter(i => !existingKeys.has(`${i.sectionKey}:${i.jurisdiction}`))
+    .map(i => ({
+      sessionId: targetSessionId,
+      jurisdiction: i.jurisdiction,
+      sectionKey: i.sectionKey,
+      instruction: i.instruction,
+      emphasis: i.emphasis,
+      avoid: i.avoid,
+      style: i.style,
+      wordCount: i.wordCount,
+      isActive: i.isActive
+    }))
+
+  if (payload.length === 0) return 0
+
+  await prisma.userSectionInstruction.createMany({ data: payload })
+  invalidateSessionInstructionCache(targetSessionId)
+  return payload.length
+}
+
 // ============================================================================
 // Core CRUD Operations
 // ============================================================================

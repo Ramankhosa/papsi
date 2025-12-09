@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import BackendActivityPanel from './BackendActivityPanel'
 import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
@@ -40,6 +40,146 @@ interface ValidationIssue {
 }
 
 // ============================================================================
+// Inline Diff View Component - Shows changes between original and revised text
+// ============================================================================
+
+function InlineDiffView({ original, revised }: { original: string; revised: string }) {
+  // Simple word-level diff for highlighting changes
+  const computeDiff = useMemo(() => {
+    try {
+      if (!original && !revised) return []
+      if (!original) return [{ type: 'add' as const, text: revised }]
+      if (!revised) return [{ type: 'remove' as const, text: original }]
+      
+      // Performance safeguard: for very long content, skip detailed diff
+      const MAX_CHARS_FOR_DIFF = 30000
+      if (original.length > MAX_CHARS_FOR_DIFF || revised.length > MAX_CHARS_FOR_DIFF) {
+        return [{ 
+          type: 'same' as const, 
+          text: '⚠️ Content too long for detailed diff view. Please compare the Original and Revised panels above.' 
+        }]
+      }
+      
+      // If content is identical, show message
+      if (original === revised) {
+        return [{ type: 'same' as const, text: '(No changes - content is identical)' }]
+      }
+      
+      // Split into words while preserving whitespace
+      const originalWords = original.split(/(\s+)/)
+      const revisedWords = revised.split(/(\s+)/)
+      
+      // Additional safeguard: limit word count for diff algorithm
+      const MAX_WORDS = 2000
+      if (originalWords.length > MAX_WORDS || revisedWords.length > MAX_WORDS) {
+        return [{ 
+          type: 'same' as const, 
+          text: '⚠️ Content has too many words for detailed diff. Please compare the Original and Revised panels above.' 
+        }]
+      }
+      
+      const result: Array<{ type: 'same' | 'add' | 'remove'; text: string }> = []
+      
+      // Simple LCS-based diff algorithm
+      const lcs = (a: string[], b: string[]): number[][] => {
+        const m = a.length, n = b.length
+        const dp: number[][] = Array(m + 1).fill(null).map(() => Array(n + 1).fill(0))
+        
+        for (let i = 1; i <= m; i++) {
+          for (let j = 1; j <= n; j++) {
+            if (a[i - 1] === b[j - 1]) {
+              dp[i][j] = dp[i - 1][j - 1] + 1
+            } else {
+              dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1])
+            }
+          }
+        }
+        return dp
+      }
+      
+      // Iterative backtrack to avoid stack overflow on large inputs
+      const backtrackIterative = (dp: number[][], a: string[], b: string[]): void => {
+        let i = a.length
+        let j = b.length
+        const stack: Array<{ type: 'same' | 'add' | 'remove'; text: string }> = []
+        
+        while (i > 0 || j > 0) {
+          if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+            stack.push({ type: 'same', text: a[i - 1] })
+            i--
+            j--
+          } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+            stack.push({ type: 'add', text: b[j - 1] })
+            j--
+          } else if (i > 0) {
+            stack.push({ type: 'remove', text: a[i - 1] })
+            i--
+          }
+        }
+        
+        // Reverse to get correct order
+        while (stack.length > 0) {
+          result.push(stack.pop()!)
+        }
+      }
+      
+      const dp = lcs(originalWords, revisedWords)
+      backtrackIterative(dp, originalWords, revisedWords)
+      
+      // Merge consecutive same-type segments
+      const merged: typeof result = []
+      for (const segment of result) {
+        if (merged.length > 0 && merged[merged.length - 1].type === segment.type) {
+          merged[merged.length - 1].text += segment.text
+        } else {
+          merged.push({ ...segment })
+        }
+      }
+      
+      return merged
+    } catch (error) {
+      console.error('Diff computation failed:', error)
+      // Fallback: show revised content without diff highlighting
+      return [{ type: 'same' as const, text: '⚠️ Could not compute diff. Showing revised content in the panel above.' }]
+    }
+  }, [original, revised])
+  
+  if (computeDiff.length === 0) {
+    return <span className="text-gray-400 italic">No changes detected</span>
+  }
+  
+  return (
+    <div className="text-sm leading-relaxed">
+      {computeDiff.map((segment, idx) => {
+        if (segment.type === 'same') {
+          return <span key={idx} className="text-gray-700">{segment.text}</span>
+        } else if (segment.type === 'add') {
+          return (
+            <span 
+              key={idx} 
+              className="bg-emerald-200 text-emerald-900 px-0.5 rounded"
+              title="Added"
+            >
+              {segment.text}
+            </span>
+          )
+        } else {
+          return (
+            <span 
+              key={idx} 
+              className="bg-red-200 text-red-900 line-through px-0.5 rounded"
+              title="Removed"
+            >
+              {segment.text}
+            </span>
+          )
+        }
+      })}
+    </div>
+  )
+}
+
+// ============================================================================
 // Comprehensive Validation Panel Component
 // ============================================================================
 
@@ -50,6 +190,8 @@ interface ValidationPanelProps {
   draft: Record<string, string>
   onFix: (sectionKey: string, fixedContent: string) => void
   onProceedToExport: () => void
+  /** Callback to sync AI issues to inline section validators */
+  onAIIssuesChange?: (issues: AIReviewIssue[]) => void
 }
 
 function ValidationPanel({ 
@@ -58,7 +200,8 @@ function ValidationPanel({
   patentId, 
   draft, 
   onFix,
-  onProceedToExport 
+  onProceedToExport,
+  onAIIssuesChange 
 }: ValidationPanelProps) {
   // Numerical validation state
   const [numericIssues, setNumericIssues] = useState<ValidationIssue[]>([])
@@ -82,6 +225,14 @@ function ValidationPanel({
   const [fixingIssue, setFixingIssue] = useState<string | null>(null)
   const [ignoredIssues, setIgnoredIssues] = useState<Set<string>>(new Set())
   const [appliedFixes, setAppliedFixes] = useState<Set<string>>(new Set())
+  
+  // Fix preview state - shows diff before applying
+  const [pendingFix, setPendingFix] = useState<{
+    issue: AIReviewIssue
+    sectionKey: string
+    originalContent: string
+    fixedContent: string
+  } | null>(null)
   
   // Last review timestamps
   const [lastNumericCheck, setLastNumericCheck] = useState<string | null>(null)
@@ -108,8 +259,9 @@ function ValidationPanel({
         const data = await res.json()
         if (data.success && data.latest?.[jurisdiction.toUpperCase()]) {
           const latestReview = data.latest[jurisdiction.toUpperCase()]
+          const issues = latestReview.issues || []
           // Restore review state
-          setAiIssues(latestReview.issues || [])
+          setAiIssues(issues)
           setAiSummary(latestReview.summary || null)
           setCurrentReviewId(latestReview.id)
           setLastAICheck(new Date(latestReview.reviewedAt).toLocaleTimeString())
@@ -124,6 +276,8 @@ function ValidationPanel({
               : []
           )
           setAppliedFixes(applied)
+          // Sync AI issues to inline section validators
+          onAIIssuesChange?.(issues)
         }
       } catch (err) {
         console.error('Failed to load existing reviews:', err)
@@ -133,7 +287,7 @@ function ValidationPanel({
     }
 
     loadExistingReviews()
-  }, [sessionId, jurisdiction, patentId])
+  }, [sessionId, jurisdiction, patentId, onAIIssuesChange])
 
   // Run numerical validation
   const runNumericValidation = useCallback(async () => {
@@ -189,13 +343,16 @@ function ValidationPanel({
       })
       const data = await res.json()
       if (data.success) {
-        setAiIssues(data.issues || [])
+        const issues = data.issues || []
+        setAiIssues(issues)
         setAiSummary(data.summary || null)
         setCurrentReviewId(data.reviewId || null)
         setLastAICheck(new Date().toLocaleTimeString())
         // Reset ignored/applied for new review
         setIgnoredIssues(new Set())
         setAppliedFixes(new Set())
+        // Sync AI issues to inline section validators
+        onAIIssuesChange?.(issues)
       } else if (data.upgradeRequired) {
         // Pro feature - show upgrade message
         setAiReviewUpgradeRequired(true)
@@ -216,10 +373,10 @@ function ValidationPanel({
     } finally {
       setAiLoading(false)
     }
-  }, [sessionId, jurisdiction, patentId, draft])
+  }, [sessionId, jurisdiction, patentId, draft, onAIIssuesChange])
 
-  // Apply fix for an AI issue
-  const applyFix = useCallback(async (issue: AIReviewIssue) => {
+  // Generate fix preview for an AI issue (shows diff before applying)
+  const generateFixPreview = useCallback(async (issue: AIReviewIssue) => {
     if (!sessionId || !jurisdiction || !patentId) return
     setFixingIssue(issue.id)
     try {
@@ -230,6 +387,8 @@ function ValidationPanel({
           if (draft[key]) relatedContent[key] = draft[key]
         }
       }
+
+      const originalContent = draft[issue.sectionKey] || ''
 
       const res = await fetch(`/api/patents/${patentId}/drafting`, {
         method: 'POST',
@@ -243,30 +402,62 @@ function ValidationPanel({
           jurisdiction,
           sectionKey: issue.sectionKey,
           issue,
-          currentContent: draft[issue.sectionKey],
-          relatedContent
+          currentContent: originalContent,
+          relatedContent,
+          previewOnly: true // Signal that we want preview, not direct apply
         })
       })
       const data = await res.json()
       if (data.success && data.fixedContent) {
-        onFix(issue.sectionKey, data.fixedContent)
-        // Track the applied fix locally
-        setAppliedFixes(prev => new Set(Array.from(prev).concat(issue.id)))
-        // Remove the fixed issue from the list
-        setAiIssues(prev => prev.filter(i => i.id !== issue.id))
+        // Show the diff preview instead of applying immediately
+        setPendingFix({
+          issue,
+          sectionKey: issue.sectionKey,
+          originalContent,
+          fixedContent: data.fixedContent
+        })
       } else if (data.upgradeRequired) {
-        // Pro feature - show upgrade message
         alert('AI Fix is a Pro feature. Please upgrade your plan to apply AI-suggested fixes automatically.')
       } else {
-        alert(`Failed to apply fix: ${data.error || 'Unknown error'}`)
+        alert(`Failed to generate fix: ${data.error || 'Unknown error'}`)
       }
     } catch (err) {
-      console.error('Apply fix error:', err)
-      alert('Failed to apply fix. Please try again.')
+      console.error('Generate fix preview error:', err)
+      alert('Failed to generate fix preview. Please try again.')
     } finally {
       setFixingIssue(null)
     }
-  }, [sessionId, jurisdiction, patentId, draft, onFix])
+  }, [sessionId, jurisdiction, patentId, draft])
+
+  // Approve and apply the pending fix
+  const approveFix = useCallback(() => {
+    if (!pendingFix) return
+    
+    const { issue, sectionKey, fixedContent } = pendingFix
+    
+    // Apply the fix
+    onFix(sectionKey, fixedContent)
+    
+    // Track the applied fix locally
+    setAppliedFixes(prev => new Set([...Array.from(prev), issue.id]))
+    
+    // Remove the fixed issue from the list and sync to inline validators
+    // Using functional update to ensure we have the latest state
+    setAiIssues(prev => {
+      const updatedIssues = prev.filter(i => i.id !== issue.id)
+      // Sync to inline validators with the updated list (not stale state)
+      onAIIssuesChange?.(updatedIssues)
+      return updatedIssues
+    })
+    
+    // Clear the pending fix
+    setPendingFix(null)
+  }, [pendingFix, onFix, onAIIssuesChange])
+
+  // Reject the pending fix
+  const rejectFix = useCallback(() => {
+    setPendingFix(null)
+  }, [])
 
   // Ignore an issue (persists to backend)
   const ignoreIssue = useCallback(async (issueId: string) => {
@@ -463,6 +654,110 @@ function ValidationPanel({
         </div>
       )}
 
+      {/* Fix Preview Modal - Shows diff before applying */}
+      {pendingFix && (
+        <div 
+          className="bg-white rounded-xl border-2 border-emerald-300 shadow-lg overflow-hidden animate-in slide-in-from-top-2 duration-300"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="fix-preview-title"
+          tabIndex={-1}
+          onKeyDown={(e) => { if (e.key === 'Escape') rejectFix() }}
+        >
+          <div className="px-6 py-4 bg-gradient-to-r from-emerald-50 to-teal-50 border-b border-emerald-200">
+            <div className="flex items-center justify-between">
+              <div>
+                <h4 id="fix-preview-title" className="font-semibold text-gray-900 flex items-center gap-2">
+                  <span>🔍</span> Review Proposed Changes
+                </h4>
+                <p className="text-sm text-gray-600 mt-1">
+                  Section: <strong>{pendingFix.issue.sectionLabel}</strong> • Issue: {pendingFix.issue.title}
+                </p>
+              </div>
+              <button
+                onClick={rejectFix}
+                className="p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg"
+                title="Close preview (Esc)"
+                aria-label="Close preview"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+          </div>
+          
+          <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
+            {/* Issue being fixed */}
+            <div className="bg-amber-50 rounded-lg p-4 border border-amber-200">
+              <div className="text-xs font-medium text-amber-700 mb-1">💡 Issue Being Fixed</div>
+              <p className="text-sm text-amber-800">{pendingFix.issue.description}</p>
+            </div>
+            
+            {/* Side-by-side diff view */}
+            <div className="grid grid-cols-2 gap-4">
+              {/* Original Content */}
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-red-600 px-2 py-0.5 bg-red-100 rounded">ORIGINAL</span>
+                  <span className="text-xs text-gray-500">Before fix</span>
+                </div>
+                <div className="bg-red-50 border border-red-200 rounded-lg p-4 max-h-[300px] overflow-y-auto">
+                  <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono leading-relaxed">
+                    {pendingFix.originalContent || <span className="text-gray-400 italic">No content</span>}
+                  </pre>
+                </div>
+              </div>
+              
+              {/* Fixed Content */}
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-emerald-600 px-2 py-0.5 bg-emerald-100 rounded">REVISED</span>
+                  <span className="text-xs text-gray-500">After fix</span>
+                </div>
+                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 max-h-[300px] overflow-y-auto">
+                  <pre className="text-sm text-gray-700 whitespace-pre-wrap font-mono leading-relaxed">
+                    {pendingFix.fixedContent || <span className="text-gray-400 italic">No content</span>}
+                  </pre>
+                </div>
+              </div>
+            </div>
+            
+            {/* Inline diff - highlight changes */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-violet-600 px-2 py-0.5 bg-violet-100 rounded">CHANGES HIGHLIGHTED</span>
+                <span className="text-xs text-gray-500">Added text in green, removed in red</span>
+              </div>
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 max-h-[200px] overflow-y-auto">
+                <InlineDiffView original={pendingFix.originalContent} revised={pendingFix.fixedContent} />
+              </div>
+            </div>
+          </div>
+          
+          {/* Action buttons */}
+          <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between">
+            <p className="text-xs text-gray-500">
+              Review the changes carefully before applying. This will update the draft section.
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={rejectFix}
+                className="px-4 py-2 bg-white text-gray-700 text-sm font-medium rounded-lg border border-gray-300 hover:bg-gray-50 flex items-center gap-2"
+              >
+                <span>✕</span> Reject
+              </button>
+              <button
+                onClick={approveFix}
+                className="px-6 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 flex items-center gap-2 shadow-sm"
+              >
+                <span>✓</span> Apply Changes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* AI Review Results */}
       {activeAiIssues.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
@@ -540,14 +835,14 @@ function ValidationPanel({
                     {/* Actions */}
                     <div className="flex flex-col gap-2">
                       <button
-                        onClick={() => applyFix(issue)}
-                        disabled={isFixing}
+                        onClick={() => generateFixPreview(issue)}
+                        disabled={isFixing || pendingFix !== null}
                         className="px-4 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-2 whitespace-nowrap"
                       >
                         {isFixing ? (
-                          <><span className="animate-spin">⏳</span> Fixing...</>
+                          <><span className="animate-spin">⏳</span> Generating...</>
                         ) : (
-                          <><span>🔧</span> Fix</>
+                          <><span>🔧</span> Preview Fix</>
                         )}
                       </button>
                       <button
@@ -939,6 +1234,11 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   const [regenRemarks, setRegenRemarks] = useState<Record<string, string>>({})
   const [regenOpen, setRegenOpen] = useState<Record<string, boolean>>({})
   const [sectionLoading, setSectionLoading] = useState<Record<string, boolean>>({})
+  const [autoMode, setAutoMode] = useState<boolean>(false)
+  const [autoModeRunning, setAutoModeRunning] = useState<boolean>(false)
+  const [autoModeProgress, setAutoModeProgress] = useState<{ current: number; total: number; currentSection: string } | null>(null)
+  // Ref for immediate cancellation check (state updates are async, refs are sync)
+  const autoModeCancelledRef = useRef<boolean>(false)
   const [activeJurisdiction, setActiveJurisdiction] = useState<string>(() => (session?.activeJurisdiction || session?.draftingJurisdictions?.[0] || 'IN'))
   const [sourceOfTruth, setSourceOfTruth] = useState<string>(() => {
     const status = (session as any)?.jurisdictionDraftStatus || {}
@@ -983,6 +1283,94 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   // Inline Section Validation (Post-generation feedback)
   const [inlineValidationIssues, setInlineValidationIssues] = useState<Record<string, UnifiedValidationIssue[]>>({})
   const [validationLoading, setValidationLoading] = useState<Record<string, boolean>>({})
+
+  // Handle AI Review issues sync to inline validators
+  const handleAIIssuesChange = useCallback((aiIssues: AIReviewIssue[]) => {
+    // Convert AI Review issues to ValidationIssue format and group by section
+    const issuesBySection: Record<string, UnifiedValidationIssue[]> = {}
+    
+    for (const issue of aiIssues) {
+      const sectionKey = issue.sectionKey
+      if (!issuesBySection[sectionKey]) {
+        issuesBySection[sectionKey] = []
+      }
+      
+      // Map AI issue type to validation severity
+      const severityMap: Record<string, 'error' | 'warning' | 'notice'> = {
+        'error': 'error',
+        'warning': 'warning',
+        'suggestion': 'notice'
+      }
+      
+      // Convert to ValidationIssue format
+      // Store original fixPrompt in metadata for API compatibility
+      const validationIssue: UnifiedValidationIssue = {
+        id: issue.id,
+        sectionId: issue.sectionKey,
+        severity: severityMap[issue.type] || 'notice',
+        code: `ai_${issue.category}_${issue.id.substring(0, 8)}`,
+        message: `${issue.title}${issue.description ? ': ' + issue.description : ''}`,
+        suggestedFix: issue.suggestion || issue.fixPrompt || '',
+        category: issue.category as UnifiedValidationIssue['category'],
+        relatedSections: issue.relatedSections,
+        isFixed: false,
+        isIgnored: false,
+        // Store original AI issue properties needed for API fix
+        metadata: {
+          fixPrompt: issue.fixPrompt,
+          sectionKey: issue.sectionKey,
+          sectionLabel: issue.sectionLabel,
+          title: issue.title,
+          description: issue.description,
+          suggestion: issue.suggestion,
+          originalType: issue.type,
+          originalSeverity: issue.severity
+        }
+      }
+      
+      issuesBySection[sectionKey].push(validationIssue)
+    }
+    
+    // Update inline validation issues (merge with existing, replacing AI issues)
+    setInlineValidationIssues(prev => {
+      const updated: Record<string, UnifiedValidationIssue[]> = {}
+      
+      // Collect all unique section keys
+      const prevKeys = Object.keys(prev)
+      const newKeys = Object.keys(issuesBySection)
+      const allSectionKeys: string[] = []
+      const seenKeys: Record<string, boolean> = {}
+      
+      for (const key of prevKeys) {
+        if (!seenKeys[key]) {
+          seenKeys[key] = true
+          allSectionKeys.push(key)
+        }
+      }
+      for (const key of newKeys) {
+        if (!seenKeys[key]) {
+          seenKeys[key] = true
+          allSectionKeys.push(key)
+        }
+      }
+      
+      // For each section, keep non-AI issues and add new AI issues
+      for (const sectionKey of allSectionKeys) {
+        const existingIssues = prev[sectionKey] || []
+        const newAIIssues = issuesBySection[sectionKey] || []
+        
+        // Filter out old AI issues (they start with 'ai-' or have code starting with 'ai_')
+        const nonAIIssues = existingIssues.filter(issue => 
+          !issue.id.startsWith('ai-') && !issue.code.startsWith('ai_')
+        )
+        
+        // Combine non-AI issues with new AI issues
+        updated[sectionKey] = [...nonAIIssues, ...newAIIssues]
+      }
+      
+      return updated
+    })
+  }, [])
 
   // Fetch validation for a section (debounced/on-demand)
   const validateSection = useCallback(async (sectionKey: string, content: string) => {
@@ -1031,9 +1419,178 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     return () => clearTimeout(debouncedValidate)
   }, [generated, activeJurisdiction])
 
-  // Data for figures
+  // Data for figures - use frozen sequence if available (includes both diagrams and sketches)
   const figurePlans = useMemo(() => Array.isArray(session?.figurePlans) ? session.figurePlans : [], [session?.figurePlans])
   const diagramSources = useMemo(() => Array.isArray(session?.diagramSources) ? session.diagramSources : [], [session?.diagramSources])
+  const sketchRecords = useMemo(() => Array.isArray(session?.sketchRecords) ? session.sketchRecords.filter((s: any) => s.status === 'SUCCESS') : [], [session?.sketchRecords])
+  const figureSequence = useMemo(() => Array.isArray((session as any)?.figureSequence) ? (session as any).figureSequence : [], [session])
+  const figureSequenceFinalized = (session as any)?.figureSequenceFinalized || false
+
+  // Build unified figures list using frozen sequence (matches export logic)
+  // Returns { figures, hasAppended, missingCount } for warning computation
+  const figuresData = useMemo(() => {
+    const figures: Array<{
+      figureNo: number
+      title: string
+      type: 'diagram' | 'sketch'
+      imageUrl: string | null
+      sourceId: string
+      isNew?: boolean
+    }> = []
+    let hasAppended = false
+    let missingCount = 0
+
+    if (figureSequenceFinalized && figureSequence.length > 0) {
+      // Use the finalized figure sequence (includes both diagrams and sketches in user-defined order)
+      const sequencedSourceIds = new Set(figureSequence.map((s: any) => s.sourceId))
+      
+      for (const seqItem of figureSequence) {
+        if (seqItem.type === 'diagram') {
+          const plan = figurePlans.find((f: any) => f.id === seqItem.sourceId)
+          const source = diagramSources.find((d: any) => d.figureNo === plan?.figureNo)
+          if (plan) {
+            let imgUrl: string | null = null
+            if (source?.imageFilename) {
+              imgUrl = `/api/projects/${patent?.project?.id ?? ''}/patents/${patent?.id ?? ''}/upload?filename=${encodeURIComponent(source.imageFilename)}`
+            } else if (source?.plantuml) {
+              try {
+                const encoded = plantumlEncoder.encode(source.plantuml)
+                imgUrl = `https://www.plantuml.com/plantuml/img/${encoded}`
+              } catch (e) {
+                console.error('Failed to encode plantuml', e)
+              }
+            }
+            figures.push({
+              figureNo: seqItem.finalFigNo,
+              title: plan.title || `Figure ${seqItem.finalFigNo}`,
+              type: 'diagram',
+              imageUrl: imgUrl,
+              sourceId: seqItem.sourceId
+            })
+          } else {
+            // Diagram was deleted after freezing
+            figures.push({
+              figureNo: seqItem.finalFigNo,
+              title: `Missing Diagram (Source ID: ${seqItem.sourceId})`,
+              type: 'diagram',
+              imageUrl: null,
+              sourceId: seqItem.sourceId
+            })
+            missingCount++
+          }
+        } else if (seqItem.type === 'sketch') {
+          const sketch = sketchRecords.find((s: any) => s.id === seqItem.sourceId)
+          if (sketch) {
+            figures.push({
+              figureNo: seqItem.finalFigNo,
+              title: sketch.title || `Figure ${seqItem.finalFigNo}`,
+              type: 'sketch',
+              imageUrl: sketch.imagePath || null,
+              sourceId: seqItem.sourceId
+            })
+          } else {
+            // Sketch was deleted after freezing
+            figures.push({
+              figureNo: seqItem.finalFigNo,
+              title: `Missing Sketch (Source ID: ${seqItem.sourceId})`,
+              type: 'sketch',
+              imageUrl: null,
+              sourceId: seqItem.sourceId
+            })
+            missingCount++
+          }
+        }
+      }
+
+      // Auto-append new diagrams added after sequence was finalized
+      figurePlans.forEach((plan: any) => {
+        if (!sequencedSourceIds.has(plan.id)) {
+          const source = diagramSources.find((d: any) => d.figureNo === plan.figureNo)
+          let imgUrl: string | null = null
+          if (source?.imageFilename) {
+            imgUrl = `/api/projects/${patent?.project?.id ?? ''}/patents/${patent?.id ?? ''}/upload?filename=${encodeURIComponent(source.imageFilename)}`
+          } else if (source?.plantuml) {
+            try {
+              const encoded = plantumlEncoder.encode(source.plantuml)
+              imgUrl = `https://www.plantuml.com/plantuml/img/${encoded}`
+            } catch (e) {
+              console.error('Failed to encode plantuml', e)
+            }
+          }
+          figures.push({
+            figureNo: figures.length + 1,
+            title: plan.title || `Figure ${figures.length + 1}`,
+            type: 'diagram',
+            imageUrl: imgUrl,
+            sourceId: plan.id,
+            isNew: true
+          })
+          hasAppended = true
+        }
+      })
+
+      // Auto-append new sketches added after sequence was finalized
+      sketchRecords.forEach((sketch: any) => {
+        if (!sequencedSourceIds.has(sketch.id)) {
+          figures.push({
+            figureNo: figures.length + 1,
+            title: sketch.title || `Figure ${figures.length + 1}`,
+            type: 'sketch',
+            imageUrl: sketch.imagePath || null,
+            sourceId: sketch.id,
+            isNew: true
+          })
+          hasAppended = true
+        }
+      })
+    } else {
+      // Fallback: use figurePlans sorted by figureNo, then append sketches
+      const sortedPlans = [...figurePlans].sort((a: any, b: any) => a.figureNo - b.figureNo)
+      for (const plan of sortedPlans) {
+        const source = diagramSources.find((d: any) => d.figureNo === plan.figureNo)
+        let imgUrl: string | null = null
+        if (source?.imageFilename) {
+          imgUrl = `/api/projects/${patent?.project?.id ?? ''}/patents/${patent?.id ?? ''}/upload?filename=${encodeURIComponent(source.imageFilename)}`
+        } else if (source?.plantuml) {
+          try {
+            const encoded = plantumlEncoder.encode(source.plantuml)
+            imgUrl = `https://www.plantuml.com/plantuml/img/${encoded}`
+          } catch (e) {
+            console.error('Failed to encode plantuml', e)
+          }
+        }
+        figures.push({
+          figureNo: plan.figureNo,
+          title: plan.title || `Figure ${plan.figureNo}`,
+          type: 'diagram',
+          imageUrl: imgUrl,
+          sourceId: plan.id
+        })
+      }
+      // Append sketches after diagrams
+      const maxFigNo = figures.length > 0 ? Math.max(...figures.map(f => f.figureNo)) : 0
+      sketchRecords.forEach((sketch: any, index: number) => {
+        figures.push({
+          figureNo: maxFigNo + index + 1,
+          title: sketch.title || `Figure ${maxFigNo + index + 1}`,
+          type: 'sketch',
+          imageUrl: sketch.imagePath || null,
+          sourceId: sketch.id
+        })
+      })
+    }
+
+    return { figures, hasAppended, missingCount }
+  }, [figurePlans, diagramSources, sketchRecords, figureSequence, figureSequenceFinalized, patent])
+
+  // Extract figures and warning state from memoized data
+  const unifiedFigures = figuresData.figures
+  const sequenceOutdated = figuresData.hasAppended || figuresData.missingCount > 0
+  const sequenceWarningMessage = figuresData.hasAppended 
+    ? `${figuresData.figures.filter(f => f.isNew).length} new figure(s) added after freezing - appended at end. Consider reordering in Planner stage.`
+    : figuresData.missingCount > 0
+      ? `${figuresData.missingCount} figure(s) deleted after freezing. Consider reordering in Planner stage.`
+      : ''
 
   const copySection = async (key: string) => {
     try {
@@ -1165,27 +1722,33 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       // Get extraSections from dedicated column OR legacy validationReport location
       const extraSections = (latest as any).extraSections || (latest.validationReport as any)?.extraSections || {}
       
+      // For REFERENCE drafts, section content is stored in _rawDraft
+      const rawDraft = extraSections._rawDraft || {}
+      const isReference = code === 'REFERENCE'
+      
       const initial: Record<string, string> = {
         // Legacy columns (dedicated DB fields)
-        title: latest.title || '',
-        fieldOfInvention: latest.fieldOfInvention || '',
-        background: latest.background || '',
-        summary: latest.summary || '',
-        briefDescriptionOfDrawings: latest.briefDescriptionOfDrawings || '',
-        detailedDescription: latest.detailedDescription || '',
-        bestMethod: latest.bestMethod || '',
-        industrialApplicability: latest.industrialApplicability || '',
-        claims: latest.claims || '',
-        abstract: latest.abstract || '',
-        listOfNumerals: latest.listOfNumerals || '',
+        // For REFERENCE: prefer rawDraft content, fallback to DB columns
+        title: isReference ? (rawDraft.title || latest.title || '') : (latest.title || ''),
+        fieldOfInvention: isReference ? (rawDraft.fieldOfInvention || latest.fieldOfInvention || '') : (latest.fieldOfInvention || ''),
+        background: isReference ? (rawDraft.background || latest.background || '') : (latest.background || ''),
+        summary: isReference ? (rawDraft.summary || latest.summary || '') : (latest.summary || ''),
+        briefDescriptionOfDrawings: isReference ? (rawDraft.briefDescriptionOfDrawings || latest.briefDescriptionOfDrawings || '') : (latest.briefDescriptionOfDrawings || ''),
+        detailedDescription: isReference ? (rawDraft.detailedDescription || latest.detailedDescription || '') : (latest.detailedDescription || ''),
+        bestMethod: isReference ? (rawDraft.bestMode || rawDraft.bestMethod || latest.bestMethod || '') : (latest.bestMethod || ''),
+        industrialApplicability: isReference ? (rawDraft.industrialApplicability || latest.industrialApplicability || '') : (latest.industrialApplicability || ''),
+        claims: isReference ? (rawDraft.claims || latest.claims || '') : (latest.claims || ''),
+        abstract: isReference ? (rawDraft.abstract || latest.abstract || '') : (latest.abstract || ''),
+        listOfNumerals: isReference ? (rawDraft.listOfNumerals || latest.listOfNumerals || '') : (latest.listOfNumerals || ''),
         // Extra sections (JSON column for scalable storage)
-        crossReference: extraSections.crossReference || '',
-        preamble: extraSections.preamble || '',
-        objectsOfInvention: extraSections.objectsOfInvention || '',
-        technicalProblem: extraSections.technicalProblem || '',
-        technicalSolution: extraSections.technicalSolution || '',
-        advantageousEffects: extraSections.advantageousEffects || '',
-        modeOfCarryingOut: extraSections.modeOfCarryingOut || ''
+        // For REFERENCE: prefer rawDraft, then extraSections
+        crossReference: isReference ? (rawDraft.crossReference || extraSections.crossReference || '') : (extraSections.crossReference || ''),
+        preamble: isReference ? (rawDraft.preamble || extraSections.preamble || '') : (extraSections.preamble || ''),
+        objectsOfInvention: isReference ? (rawDraft.objectsOfInvention || extraSections.objectsOfInvention || '') : (extraSections.objectsOfInvention || ''),
+        technicalProblem: isReference ? (rawDraft.technicalProblem || extraSections.technicalProblem || '') : (extraSections.technicalProblem || ''),
+        technicalSolution: isReference ? (rawDraft.technicalSolution || extraSections.technicalSolution || '') : (extraSections.technicalSolution || ''),
+        advantageousEffects: isReference ? (rawDraft.advantageousEffects || extraSections.advantageousEffects || '') : (extraSections.advantageousEffects || ''),
+        modeOfCarryingOut: isReference ? (rawDraft.modeOfCarryingOut || extraSections.modeOfCarryingOut || '') : (extraSections.modeOfCarryingOut || '')
       }
       setGenerated(initial)
     } else {
@@ -1330,58 +1893,116 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           title: 'title',
           technical_field: 'fieldOfInvention',
           field_of_invention: 'fieldOfInvention',
+          fieldofinvention: 'fieldOfInvention',
           field: 'fieldOfInvention',
           cross_reference: 'crossReference',
+          crossreference: 'crossReference',
           background: 'background',
           background_art: 'background',
           objects: 'objectsOfInvention',
           objects_of_invention: 'objectsOfInvention',
           objectsofinvention: 'objectsOfInvention',
+          // Direct camelCase mappings for canonical keys returned from API
+          objectsOfInvention: 'objectsOfInvention',
+          fieldOfInvention: 'fieldOfInvention',
+          crossReference: 'crossReference',
+          briefDescriptionOfDrawings: 'briefDescriptionOfDrawings',
+          detailedDescription: 'detailedDescription',
+          bestMethod: 'bestMethod',
+          industrialApplicability: 'industrialApplicability',
+          listOfNumerals: 'listOfNumerals',
+          technicalProblem: 'technicalProblem',
+          technicalSolution: 'technicalSolution',
+          advantageousEffects: 'advantageousEffects',
           summary_of_invention: 'summary',
           summary: 'summary',
           brief_drawings: 'briefDescriptionOfDrawings',
           brief_description_of_drawings: 'briefDescriptionOfDrawings',
+          briefdescriptionofdrawings: 'briefDescriptionOfDrawings',
           description: 'detailedDescription',
           detailed_description: 'detailedDescription',
+          detaileddescription: 'detailedDescription',
           best_mode: 'bestMethod',
           best_method: 'bestMethod',
+          bestmethod: 'bestMethod',
           industrial_applicability: 'industrialApplicability',
+          industrialapplicability: 'industrialApplicability',
           utility: 'industrialApplicability',
           claims: 'claims',
           abstract: 'abstract',
           reference_numerals: 'listOfNumerals',
           reference_signs: 'listOfNumerals',
           list_of_numerals: 'listOfNumerals',
+          listofnumerals: 'listOfNumerals',
           // PCT/JP specific
           technical_problem: 'technicalProblem',
+          technicalproblem: 'technicalProblem',
           technical_solution: 'technicalSolution',
-          advantageous_effects: 'advantageousEffects'
+          technicalsolution: 'technicalSolution',
+          advantageous_effects: 'advantageousEffects',
+          advantageouseffects: 'advantageousEffects'
         }
         const promptSections = profile?.prompts?.sections || {}
-        if (variant?.sections?.length) {
-          for (const sec of variant.sections) {
-            const keys = (sec.canonicalKeys || []).map((k: string) => k.toLowerCase())
-            let mapped: string | undefined
-            for (const k of keys) {
-              if (canonicalMap[k]) { mapped = canonicalMap[k]; break }
+        
+        // ============================================================================
+        // SECTIONS NOW COME EXCLUSIVELY FROM CountrySectionMapping TABLE
+        // This is the single source of truth for which sections appear per jurisdiction
+        // Configured via: /super-admin/jurisdiction-config
+        // ============================================================================
+        
+        if (Array.isArray(profile?.sectionMappings) && profile.sectionMappings.length > 0) {
+          // Build sections ONLY from CountrySectionMapping table entries
+          // Filter out N/A, Implicit, and disabled sections
+          const applicableMappings = profile.sectionMappings.filter((mapping: any) => 
+            mapping.sectionKey && 
+            mapping.heading && 
+            mapping.heading !== '(N/A)' && 
+            mapping.heading !== '(Implicit)' &&
+            mapping.heading !== '(Recommended/NA)' &&
+            mapping.heading !== '(Include in Detailed Desc)' &&
+            mapping.isEnabled !== false
+          )
+          
+          // Sort by displayOrder
+          applicableMappings.sort((a: any, b: any) => (a.displayOrder ?? 999) - (b.displayOrder ?? 999))
+          
+          for (const mapping of applicableMappings) {
+            const sectionKey = mapping.sectionKey
+            
+            // Resolve to canonical internal key using the mapping
+            const canonicalKey = canonicalMap[sectionKey] || canonicalMap[sectionKey.toLowerCase()] || sectionKey
+            
+            // Skip sections that don't resolve to a known canonical key (prevents prompt loading errors)
+            if (!canonicalKey) {
+              console.warn(`[AnnexureDraftStage] Skipping unmapped section: ${sectionKey}`)
+              continue
             }
-            if (!mapped && canonicalMap[sec.id]) mapped = canonicalMap[sec.id]
-            if (!mapped) continue
+            
             sections.push({
-              keys: [mapped],
-              label: sec.label || sec.id,
-              description: sec.description || sec.ui?.helpText || '',
-              constraints: promptSections?.[sec.id]?.constraints || [],
-              required: Boolean(sec.required)
+              keys: [canonicalKey],
+              label: mapping.heading, // Use exact heading from CountrySectionMapping table
+              description: promptSections?.[canonicalKey]?.description || promptSections?.[sectionKey]?.description || '',
+              constraints: promptSections?.[canonicalKey]?.constraints || promptSections?.[sectionKey]?.constraints || [],
+              required: mapping.isRequired ?? true
             })
           }
+          
+          console.log(`[AnnexureDraftStage] Loaded ${sections.length} sections from CountrySectionMapping for ${activeJurisdiction}`)
+        } else {
+          // No CountrySectionMapping found - this jurisdiction is not configured
+          console.error(`[AnnexureDraftStage] No CountrySectionMapping found for ${activeJurisdiction}. Configure via /super-admin/jurisdiction-config`)
         }
+        
         if (sections.length > 0) {
           setSectionConfigs(sections)
           setUsingFallback(false)
+          setProfileError(null)
         } else {
-          setSectionConfigs(fallbackSections)
+          // CRITICAL: Do not use fallback - CountrySectionMapping is the single source of truth
+          // Show error so admin knows to configure the jurisdiction
+          setSectionConfigs([])
           setUsingFallback(true)
+          setProfileError(`No sections configured for ${activeJurisdiction}. Please configure via /super-admin/jurisdiction-config`)
         }
       } catch (err) {
         console.error('Failed to load jurisdiction profile', err)
@@ -1491,26 +2112,32 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
         return
       }
       
-      // Check for partial failures (some sections couldn't be translated)
-      if (data.errors && data.errors.length > 0) {
-        const failedSections = data.errors.length
-        alert(`⚠️ Translation completed with ${failedSections} section(s) using fallback content:\n${data.errors.slice(0, 3).join('\n')}${data.errors.length > 3 ? '\n...' : ''}`)
+      // Check for high fallback rate warning
+      if (data.warning) {
+        console.warn('[Translation] Warning:', data.warning)
       }
       
       // Refresh to get updated session with translated draft
       await onRefresh()
       
-      // Show validation issues if any
+      // Build comprehensive success message
+      let message = `✅ Translation to ${code} complete!`
+      
+      // Add fallback warning if applicable
+      if (data.warning) {
+        message += `\n\n⚠️ ${data.warning}`
+      }
+      
+      // Add validation issues if any
       if (data.validation?.issues?.length > 0) {
         const errorCount = data.validation.issues.filter((i: any) => i.type === 'error').length
         const warnCount = data.validation.issues.filter((i: any) => i.type === 'warning').length
         if (errorCount > 0 || warnCount > 0) {
-          alert(`✅ Translation to ${code} complete!\n\n📋 Validation Report:\n• ${errorCount} error(s)\n• ${warnCount} warning(s)\n\nPlease review the Validation section.`)
+          message += `\n\n📋 Validation Report:\n• ${errorCount} error(s)\n• ${warnCount} warning(s)\n\nPlease review the Validation section.`
         }
-      } else {
-        // Success with no issues
-        alert(`✅ Translation to ${code} completed successfully!`)
       }
+      
+      alert(message)
       
       // Switch to translated jurisdiction
       if (data.draft) {
@@ -1525,39 +2152,79 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     }
   }
 
-  const handleGenerate = async (keys: string[]) => {
+  const handleGenerate = async (keys: string[], skipRefresh = false) => {
     if (loading) return
     setLoading(true)
     setShowActivity(true)
     setCurrentKeys(keys)
     try {
       const sections = keys.filter(Boolean)
-      const res = await onComplete({
-        action: 'generate_sections',
-        sessionId: session?.id,
-        sections,
-        usePersonaStyle,
-        jurisdiction: activeJurisdiction
-      })
-      const incoming = res?.generated || {}
-      const filtered: Record<string, string> = {}
-      Object.entries(incoming).forEach(([k, v]) => {
-        if (typeof v === 'string' && v.trim()) filtered[k] = v.trim()
-      })
-      setGenerated(prev => ({ ...prev, ...filtered }))
-      setDebugSteps(res?.debugSteps || [])
+      if (sections.length === 0) {
+        throw new Error('No valid sections to generate')
+      }
       
-      // Extract B+T+U prompt injection info from debug steps
-      const steps = res?.debugSteps || []
-      const injectionInfo: Record<string, any> = {}
-      steps.forEach((step: any) => {
-        if (step.step?.startsWith('build_prompt_') && step.meta?.promptInjection) {
-          const sectionKey = step.step.replace('build_prompt_', '')
-          injectionInfo[sectionKey] = step.meta.promptInjection
+      const isReference = activeJurisdiction.toUpperCase() === 'REFERENCE'
+      
+      // For REFERENCE jurisdiction, use generate_reference_section for proper persistence
+      // Handle both single and multi-key by looping
+      if (isReference) {
+        const generatedContent: Record<string, string> = {}
+        const debugStepsCollected: any[] = []
+        
+        for (const sectionKey of sections) {
+          const result = await generateSingleSection(sectionKey, true)
+          
+          if (result.success && result.content) {
+            generatedContent[sectionKey] = result.content
+            debugStepsCollected.push({ step: `generate_${sectionKey}`, status: 'done' })
+          } else {
+            // If generation fails, throw error with context
+            throw new Error(`Failed to generate ${displayName[sectionKey] || sectionKey}: ${result.error || 'Unknown error'}`)
+          }
         }
-      })
-      if (Object.keys(injectionInfo).length > 0) {
-        setPromptInjectionInfo(prev => ({ ...prev, ...injectionInfo }))
+        
+        // Update state with all generated content
+        setGenerated(prev => ({ ...prev, ...generatedContent }))
+        setDebugSteps(debugStepsCollected)
+        
+        // Refresh to get updated session with persisted draft
+        if (!skipRefresh) {
+          await onRefresh()
+        }
+      } else {
+        // Standard generation for non-REFERENCE jurisdictions
+        const res = await onComplete({
+          action: 'generate_sections',
+          sessionId: session?.id,
+          sections,
+          usePersonaStyle,
+          jurisdiction: activeJurisdiction
+        })
+        const incoming = res?.generated || {}
+        const filtered: Record<string, string> = {}
+        Object.entries(incoming).forEach(([k, v]) => {
+          if (typeof v === 'string' && v.trim()) filtered[k] = v.trim()
+        })
+        setGenerated(prev => ({ ...prev, ...filtered }))
+        setDebugSteps(res?.debugSteps || [])
+        
+        // Extract B+T+U prompt injection info from debug steps
+        const steps = res?.debugSteps || []
+        const injectionInfo: Record<string, any> = {}
+        steps.forEach((step: any) => {
+          if (step.step?.startsWith('build_prompt_') && step.meta?.promptInjection) {
+            const sectionKey = step.step.replace('build_prompt_', '')
+            injectionInfo[sectionKey] = step.meta.promptInjection
+          }
+        })
+        if (Object.keys(injectionInfo).length > 0) {
+          setPromptInjectionInfo(prev => ({ ...prev, ...injectionInfo }))
+        }
+        
+        // Refresh to persist changes
+        if (!skipRefresh) {
+          await onRefresh()
+        }
       }
     } catch (error) {
       console.error('Generation failed:', error)
@@ -1568,6 +2235,191 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       // Optionally hide activity after a delay
       // setTimeout(() => setShowActivity(false), 5000)
     }
+  }
+  
+  // Helper function to generate a single section (used by auto-mode)
+  const generateSingleSection = async (sectionKey: string, isReference: boolean): Promise<{ success: boolean; content?: string; error?: string }> => {
+    try {
+      if (isReference) {
+        // Use REFERENCE-specific API
+        const res = await fetch(`/api/patents/${patent?.id}/drafting`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+          },
+          body: JSON.stringify({
+            action: 'generate_reference_section',
+            sessionId: session?.id,
+            sectionKey
+          })
+        })
+        const data = await res.json()
+        if (!res.ok) {
+          return { success: false, error: data.error || 'Failed to generate section' }
+        }
+        if (data.success && data.content) {
+          return { success: true, content: data.content }
+        }
+        return { success: false, error: 'No content returned' }
+      } else {
+        // Standard generation
+        const res = await onComplete({
+          action: 'generate_sections',
+          sessionId: session?.id,
+          sections: [sectionKey],
+          usePersonaStyle,
+          jurisdiction: activeJurisdiction
+        })
+        const incoming = res?.generated || {}
+        const value = typeof incoming?.[sectionKey] === 'string' ? incoming[sectionKey].trim() : ''
+        if (value) {
+          return { success: true, content: value }
+        }
+        return { success: false, error: 'No content returned' }
+      }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  }
+  
+  // Auto-mode: Generate all sections sequentially without user interaction
+  const handleAutoGenerateAll = async () => {
+    if (autoModeRunning || loading) return
+    
+    // Get all section keys that don't have content yet
+    const pendingSections = sectionConfigs
+      .map(s => s.keys[0])
+      .filter(key => key && !generated?.[key]?.trim())
+    
+    if (pendingSections.length === 0) {
+      alert('All sections already have content. Use the regenerate option to update individual sections.')
+      return
+    }
+    
+    const confirmed = confirm(
+      `🚀 Auto-Generate Mode\n\n` +
+      `This will automatically generate ${pendingSections.length} section(s) one by one.\n\n` +
+      `Sections to generate:\n${pendingSections.map(k => `• ${displayName[k] || k}`).join('\n')}\n\n` +
+      `You can cancel at any time by clicking the Stop button.\n\n` +
+      `Do you want to continue?`
+    )
+    
+    if (!confirmed) return
+    
+    // Reset cancellation flag
+    autoModeCancelledRef.current = false
+    setAutoModeRunning(true)
+    setShowActivity(true)
+    
+    const isReference = activeJurisdiction.toUpperCase() === 'REFERENCE'
+    let successCount = 0
+    let failedSection: string | null = null
+    let failedError: string | null = null
+    
+    try {
+      for (let i = 0; i < pendingSections.length; i++) {
+        // Check if auto-mode was cancelled (using ref for immediate check)
+        if (autoModeCancelledRef.current) {
+          console.log('[AutoMode] Cancelled by user')
+          break
+        }
+        
+        const sectionKey = pendingSections[i]
+        const sectionLabel = displayName[sectionKey] || sectionKey
+        
+        setAutoModeProgress({
+          current: i + 1,
+          total: pendingSections.length,
+          currentSection: sectionLabel
+        })
+        
+        setCurrentKeys([sectionKey])
+        setSectionLoading(prev => ({ ...prev, [sectionKey]: true }))
+        
+        // First attempt
+        let result = await generateSingleSection(sectionKey, isReference)
+        
+        // If failed, retry once
+        if (!result.success) {
+          console.log(`[AutoMode] First attempt failed for ${sectionKey}, retrying...`)
+          setDebugSteps([{ step: `retry_${sectionKey}`, status: 'running' }])
+          
+          // Small delay before retry
+          await new Promise(resolve => setTimeout(resolve, 1000))
+          
+          // Check cancellation before retry
+          if (autoModeCancelledRef.current) {
+            setSectionLoading(prev => ({ ...prev, [sectionKey]: false }))
+            break
+          }
+          
+          result = await generateSingleSection(sectionKey, isReference)
+        }
+        
+        setSectionLoading(prev => ({ ...prev, [sectionKey]: false }))
+        
+        if (result.success && result.content) {
+          setGenerated(prev => ({ ...prev, [sectionKey]: result.content! }))
+          setDebugSteps([{ step: `generate_${sectionKey}`, status: 'done' }])
+          successCount++
+        } else {
+          // Failed after retry - stop auto-mode and notify user
+          console.error(`[AutoMode] Failed to generate ${sectionKey} after retry:`, result.error)
+          setDebugSteps([{ step: `generate_${sectionKey}`, status: 'fail', meta: { error: result.error } }])
+          failedSection = sectionLabel
+          failedError = result.error || 'Unknown error'
+          break // Stop the loop
+        }
+        
+        // Small delay between sections to avoid overwhelming the API
+        if (i < pendingSections.length - 1 && !autoModeCancelledRef.current) {
+          await new Promise(resolve => setTimeout(resolve, 500))
+        }
+      }
+      
+      // Final refresh to ensure all content is persisted
+      await onRefresh()
+      
+      // Show appropriate message based on outcome
+      if (autoModeCancelledRef.current) {
+        alert(`⏹ Auto-generation stopped.\n\n${successCount} of ${pendingSections.length} section(s) were generated and saved.`)
+      } else if (failedSection) {
+        alert(
+          `❌ Auto-generation stopped due to error.\n\n` +
+          `Failed section: ${failedSection}\n` +
+          `Error: ${failedError}\n\n` +
+          `${successCount} of ${pendingSections.length} section(s) were generated and saved.\n\n` +
+          `You can try generating the remaining sections manually or restart auto-mode.`
+        )
+      } else {
+        // Success - show different message based on jurisdiction
+        if (isReference) {
+          alert(
+            `✅ Reference Draft Complete!\n\n` +
+            `${successCount} section(s) have been generated and saved.\n\n` +
+            `🔓 Other jurisdictions (${availableJurisdictions.join(', ')}) are now unlocked for translation.`
+          )
+        } else {
+          alert(`✅ Auto-generation complete!\n\n${successCount} section(s) have been generated and saved.`)
+        }
+      }
+    } catch (error) {
+      console.error('[AutoMode] Unexpected error:', error)
+      alert(`Auto-generation failed unexpectedly: ${error instanceof Error ? error.message : 'Unknown error'}\n\n${successCount} section(s) were generated before the error.`)
+    } finally {
+      setAutoModeRunning(false)
+      setAutoModeProgress(null)
+      setCurrentKeys(null)
+      // Reset cancellation flag
+      autoModeCancelledRef.current = false
+    }
+  }
+  
+  // Stop auto-mode immediately
+  const handleStopAutoMode = () => {
+    autoModeCancelledRef.current = true // Immediate flag for sync check
+    setAutoMode(false)
   }
 
   const handleApproveSave = async (keys: string[]) => {
@@ -1591,35 +2443,68 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     setSectionLoading(prev => ({ ...prev, [key]: true }))
     setShowActivity(true)
     try {
-      const instructions: Record<string, string> = {}
-      if (regenRemarks[key]) instructions[key] = regenRemarks[key]
-      const res = await onComplete({
-        action: 'generate_sections',
-        sessionId: session?.id,
-        sections: [key],
-        instructions,
-        usePersonaStyle,
-        jurisdiction: activeJurisdiction
-      })
-      const incoming = res?.generated || {}
-      const value = typeof incoming?.[key] === 'string' ? incoming[key].trim() : ''
-      if (value) setGenerated(prev => ({ ...prev, [key]: value }))
-      setDebugSteps(res?.debugSteps || [])
+      const isReference = activeJurisdiction.toUpperCase() === 'REFERENCE'
+      
+      if (isReference) {
+        // Use REFERENCE-specific API for proper persistence
+        const res = await fetch(`/api/patents/${patent?.id}/drafting`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+          },
+          body: JSON.stringify({
+            action: 'generate_reference_section',
+            sessionId: session?.id,
+            sectionKey: key
+          })
+        })
+        const data = await res.json()
+        if (!res.ok) {
+          throw new Error(data.error || 'Failed to regenerate section')
+        }
+        if (data.success && data.content) {
+          setGenerated(prev => ({ ...prev, [key]: data.content }))
+        }
+        setDebugSteps([{ step: `regenerate_${key}`, status: 'done' }])
+        // Refresh to persist changes
+        await onRefresh()
+      } else {
+        // Standard regeneration for non-REFERENCE jurisdictions
+        const instructions: Record<string, string> = {}
+        if (regenRemarks[key]) instructions[key] = regenRemarks[key]
+        const res = await onComplete({
+          action: 'generate_sections',
+          sessionId: session?.id,
+          sections: [key],
+          instructions,
+          usePersonaStyle,
+          jurisdiction: activeJurisdiction
+        })
+        const incoming = res?.generated || {}
+        const value = typeof incoming?.[key] === 'string' ? incoming[key].trim() : ''
+        if (value) setGenerated(prev => ({ ...prev, [key]: value }))
+        setDebugSteps(res?.debugSteps || [])
+        
+        // Extract B+T+U prompt injection info from debug steps
+        const steps = res?.debugSteps || []
+        const injectionInfo: Record<string, any> = {}
+        steps.forEach((step: any) => {
+          if (step.step?.startsWith('build_prompt_') && step.meta?.promptInjection) {
+            const sectionKey = step.step.replace('build_prompt_', '')
+            injectionInfo[sectionKey] = step.meta.promptInjection
+          }
+        })
+        if (Object.keys(injectionInfo).length > 0) {
+          setPromptInjectionInfo(prev => ({ ...prev, ...injectionInfo }))
+        }
+        
+        // Refresh to persist changes
+        await onRefresh()
+      }
+      
       setRegenOpen(prev => ({ ...prev, [key]: false }))
       setRegenRemarks(prev => ({ ...prev, [key]: '' }))
-      
-      // Extract B+T+U prompt injection info from debug steps
-      const steps = res?.debugSteps || []
-      const injectionInfo: Record<string, any> = {}
-      steps.forEach((step: any) => {
-        if (step.step?.startsWith('build_prompt_') && step.meta?.promptInjection) {
-          const sectionKey = step.step.replace('build_prompt_', '')
-          injectionInfo[sectionKey] = step.meta.promptInjection
-        }
-      })
-      if (Object.keys(injectionInfo).length > 0) {
-        setPromptInjectionInfo(prev => ({ ...prev, ...injectionInfo }))
-      }
     } catch (error) {
       console.error('Regeneration failed:', error)
       alert(`Regeneration failed: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again or contact support if the issue persists.`)
@@ -1702,12 +2587,69 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             </button>
           </div>
 
+          {/* Auto-Mode Controls */}
+          <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full shadow-sm border transition-colors ${
+            autoModeRunning
+              ? 'bg-amber-50 border-amber-300'
+              : autoMode 
+                ? 'bg-emerald-50 border-emerald-300' 
+                : 'bg-gray-50 border-gray-200'
+          }`}>
+            <button
+              onClick={() => setAutoMode(!autoMode)}
+              disabled={autoModeRunning}
+              className={`relative w-10 h-5 rounded-full transition-colors ${
+                autoMode ? 'bg-emerald-500' : 'bg-gray-300'
+              } ${autoModeRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
+              title={autoMode ? 'Auto-mode is ON' : 'Auto-mode is OFF'}
+            >
+              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                autoMode ? 'left-5' : 'left-0.5'
+              }`} />
+            </button>
+            <span className={`text-xs font-medium ${autoMode ? 'text-emerald-700' : 'text-gray-500'}`}>
+              {autoModeRunning ? '⏳ Generating...' : autoMode ? '🚀 Auto ON' : '○ Auto OFF'}
+            </span>
+            {autoMode && !autoModeRunning && (
+              <button
+                onClick={handleAutoGenerateAll}
+                disabled={loading}
+                className="px-3 py-1 text-xs rounded-lg bg-emerald-500 text-white hover:bg-emerald-600 font-medium transition-colors disabled:opacity-50"
+              >
+                Generate All
+              </button>
+            )}
+            {autoModeRunning && (
+              <button
+                onClick={handleStopAutoMode}
+                className="px-3 py-1 text-xs rounded-lg bg-red-500 text-white hover:bg-red-600 font-medium transition-colors"
+              >
+                ⏹ Stop
+              </button>
+            )}
+          </div>
+          
+          {/* Auto-Mode Progress Indicator */}
+          {autoModeProgress && (
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-50 border border-blue-200">
+              <div className="flex items-center gap-1">
+                <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                <span className="text-xs font-medium text-blue-700">
+                  {autoModeProgress.current}/{autoModeProgress.total}
+                </span>
+              </div>
+              <span className="text-xs text-blue-600 max-w-[150px] truncate">
+                {autoModeProgress.currentSection}
+              </span>
+            </div>
+          )}
+
           {/* Clear/Delete controls */}
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => handleDeleteDraft(activeJurisdiction, false)}
-              disabled={loading || deletingJurisdiction === activeJurisdiction}
+              disabled={loading || deletingJurisdiction === activeJurisdiction || autoModeRunning}
               className="inline-flex items-center rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50 disabled:opacity-50"
               title="Clear the generated draft for the active jurisdiction but keep it selected."
             >
@@ -1716,7 +2658,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             <button
               type="button"
               onClick={() => handleDeleteDraft(activeJurisdiction, true)}
-              disabled={loading || deletingJurisdiction === activeJurisdiction}
+              disabled={loading || deletingJurisdiction === activeJurisdiction || autoModeRunning}
               className="inline-flex items-center rounded-md border border-red-500 bg-white px-3 py-1.5 text-xs font-medium text-red-700 shadow-sm hover:bg-red-50 disabled:opacity-50"
               title="Delete the draft and remove this jurisdiction from the drafting list."
             >
@@ -1886,40 +2828,13 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
               </div>
             )}
             
-            {/* Action buttons for multi-jurisdiction */}
+            {/* Action buttons for multi-jurisdiction - same UI pattern as other jurisdictions */}
             <div className="mt-4 flex flex-wrap gap-2">
-              {activeJurisdiction === 'REFERENCE' && !session?.referenceDraftComplete && (
-                <button
-                  onClick={() => handleGenerateReferenceDraft()}
-                  disabled={generatingReference}
-                  className="px-4 py-2 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700 disabled:opacity-60 flex items-center gap-2"
-                >
-                  {generatingReference ? (
-                    <>
-                      <span className="animate-spin">⏳</span>
-                      Generating Reference Draft...
-                    </>
-                  ) : (
-                    <>
-                      <span>📝</span>
-                      Generate Reference Draft
-                    </>
-                  )}
-                </button>
-              )}
-              
               {activeJurisdiction === 'REFERENCE' && session?.referenceDraftComplete && (
                 <div className="flex flex-wrap gap-2">
                   <span className="px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-sm flex items-center gap-2">
                     ✅ Reference Draft Complete
                   </span>
-                  <button
-                    onClick={() => handleGenerateReferenceDraft()}
-                    disabled={generatingReference}
-                    className="px-3 py-2 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200 flex items-center gap-1"
-                  >
-                    🔄 Regenerate
-                  </button>
                 </div>
               )}
               
@@ -2141,6 +3056,18 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                       
                       return (
                         <div className="relative flex items-center gap-1">
+                          {hasInstruction && (
+                            <span
+                              className={`text-[10px] px-2 py-1 rounded-full ${
+                                isActive
+                                  ? 'bg-emerald-100 text-emerald-700 border border-emerald-200'
+                                  : 'bg-amber-100 text-amber-700 border border-amber-200'
+                              }`}
+                              title={isActive ? 'Instruction is active' : 'Instruction is saved but inactive'}
+                            >
+                              {isActive ? 'INSTR ON' : 'INSTR OFF'}
+                            </span>
+                          )}
                           {/* Quick toggle button - only show if instruction exists */}
                           {hasInstruction && (
                             <button
@@ -2411,57 +3338,67 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                   </h3>
                </div>
                
+               {/* Warning when figures have been added/deleted after freezing the sequence */}
+               {sequenceOutdated && figureSequenceFinalized && (
+                 <div className="mb-6 p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-3">
+                   <svg className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                   </svg>
+                   <div>
+                     <p className="text-sm text-amber-800 font-medium">Figure sequence may be outdated</p>
+                     <p className="text-xs text-amber-700 mt-0.5">{sequenceWarningMessage}</p>
+                   </div>
+                 </div>
+               )}
+
                <div className="space-y-16">
-                 {figurePlans.length === 0 ? (
+                 {unifiedFigures.length === 0 ? (
                     <div className="text-center py-12 border-2 border-dashed border-gray-100 rounded-lg">
                       <div className="text-gray-400 font-medium mb-1">No figures defined</div>
                       <div className="text-xs text-gray-300">Define figures in the Planner stage to see them here.</div>
                     </div>
                  ) : (
-                   figurePlans.map((plan: any) => {
-                     const source = diagramSources.find((d: any) => d.figureNo === plan.figureNo)
-                     
-                     // PRIORITIZE STORED IMAGES OVER LIVE RENDERING
-                     let imgUrl = null
-                     
-                     if (source?.imageFilename) {
-                       // Use uploaded/stored image
-                       imgUrl = `/api/projects/${patent.project.id}/patents/${patent.id}/upload?filename=${encodeURIComponent(source.imageFilename)}`
-                     } else if (source?.plantuml) {
-                       // Fallback to live render if no stored image
-                       try {
-                         const encoded = plantumlEncoder.encode(source.plantuml)
-                         imgUrl = `https://www.plantuml.com/plantuml/img/${encoded}`
-                       } catch (e) {
-                         console.error('Failed to encode plantuml', e)
-                       }
-                     }
-                     
-                     return (
-                       <div key={plan.figureNo} className="flex flex-col items-center break-inside-avoid">
-                         <div className="w-full max-w-3xl bg-white border border-gray-200 shadow-sm rounded-lg overflow-hidden min-h-[400px] flex items-center justify-center bg-gray-50/50 p-4">
-                            {imgUrl ? (
-                              <img 
-                                src={imgUrl} 
-                                alt={`Figure ${plan.figureNo}`}
-                                className="max-w-full max-h-[600px] object-contain mix-blend-multiply"
-                                loading="lazy"
-                              />
-                            ) : (
-                              <div className="text-center p-8 text-gray-400 flex flex-col items-center">
-                                <svg className="w-12 h-12 mb-3 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
-                                <span className="text-sm font-medium">Figure {plan.figureNo}</span>
-                                <span className="text-xs opacity-75 mt-1">Draft pending</span>
-                              </div>
-                            )}
-                         </div>
-                         <div className="mt-4 text-center max-w-xl">
-                           <div className="font-bold text-gray-900 uppercase tracking-widest text-sm">FIG. {plan.figureNo}</div>
-                           {plan.title && <div className="text-sm text-gray-600 mt-1">{plan.title}</div>}
-                         </div>
+                   unifiedFigures.map((figure) => (
+                     <div key={`${figure.type}-${figure.sourceId}`} className="flex flex-col items-center break-inside-avoid">
+                       <div className="w-full max-w-3xl bg-white border border-gray-200 shadow-sm rounded-lg overflow-hidden min-h-[400px] flex items-center justify-center bg-gray-50/50 p-4">
+                          {figure.imageUrl ? (
+                            <img 
+                              src={figure.imageUrl} 
+                              alt={`Figure ${figure.figureNo}`}
+                              className="max-w-full max-h-[600px] object-contain mix-blend-multiply"
+                              loading="lazy"
+                              onError={(e) => {
+                                // Hide broken image and show placeholder instead
+                                const target = e.currentTarget
+                                target.style.display = 'none'
+                                const placeholder = target.nextElementSibling as HTMLElement
+                                if (placeholder) placeholder.style.display = 'flex'
+                              }}
+                            />
+                          ) : null}
+                          <div 
+                            className="text-center p-8 text-gray-400 flex-col items-center"
+                            style={{ display: figure.imageUrl ? 'none' : 'flex' }}
+                          >
+                            <svg className="w-12 h-12 mb-3 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                            <span className="text-sm font-medium">Figure {figure.figureNo}</span>
+                            <span className="text-xs opacity-75 mt-1">
+                              {figure.title.startsWith('Missing') ? figure.title : (figure.type === 'sketch' ? 'Sketch pending' : 'Draft pending')}
+                            </span>
+                          </div>
                        </div>
-                     )
-                   })
+                       <div className="mt-4 text-center max-w-xl">
+                         <div className="font-bold text-gray-900 uppercase tracking-widest text-sm flex items-center justify-center gap-2">
+                           FIG. {figure.figureNo}
+                           {figure.type === 'sketch' && (
+                             <span className="text-xs font-normal text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">Sketch</span>
+                           )}
+                           {figure.isNew && <span className="text-xs font-normal text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">New</span>}
+                         </div>
+                         {figure.title && <div className="text-sm text-gray-600 mt-1">{figure.title}</div>}
+                       </div>
+                     </div>
+                   ))
                  )}
                </div>
             </div>
@@ -2487,6 +3424,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                       exportSection.scrollIntoView({ behavior: 'smooth' })
                     }
                   }}
+                  onAIIssuesChange={handleAIIssuesChange}
                 />
                 
                 {/* Export Section */}
@@ -2520,6 +3458,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                       exportSection.scrollIntoView({ behavior: 'smooth' })
                     }
                   }}
+                  onAIIssuesChange={handleAIIssuesChange}
                 />
                 
                 {/* Export Section */}
@@ -2583,6 +3522,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           }}
         />
       )}
+
     </div>
   )
 }

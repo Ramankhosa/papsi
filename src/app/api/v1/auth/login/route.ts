@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { prisma } from '@/lib/prisma'
-import { verifyPassword, generateJWT, createAuditLog } from '@/lib/auth'
+import { verifyPassword, generateJWT, generateRefreshToken, storeRefreshToken, createAuditLog } from '@/lib/auth'
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -133,8 +133,8 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Generate JWT with scope information
-    const token = generateJWT({
+    // Generate JWT with scope information (short-lived access token)
+    const accessToken = generateJWT({
       sub: user.id,
       email: user.email,
       tenant_id: user.tenantId, // Always set - no more null for super admin
@@ -144,11 +144,17 @@ export async function POST(request: NextRequest) {
       scope: isPlatformScope ? 'platform' : 'tenant' // Add explicit scope
     })
 
-    // Audit log
+    // Get request metadata for token tracking
     const ip = request.headers.get('x-forwarded-for') ||
                request.headers.get('x-real-ip') ||
                'unknown'
+    const userAgent = request.headers.get('user-agent') || undefined
 
+    // Generate and store refresh token (long-lived, in httpOnly cookie)
+    const refreshTokenData = generateRefreshToken(user.id)
+    await storeRefreshToken(user.id, refreshTokenData, { userAgent, ipAddress: ip })
+
+    // Audit log
     await createAuditLog({
       actorUserId: user.id,
       tenantId: user.tenantId || undefined, // Convert null to undefined for audit log
@@ -163,10 +169,22 @@ export async function POST(request: NextRequest) {
       }
     })
 
-    return NextResponse.json({
-      token,
-      expires_in: 3600 // 1 hour in seconds
+    // Create response with access token in body
+    const response = NextResponse.json({
+      token: accessToken,
+      expires_in: 900 // 15 minutes in seconds (matches JWT_EXPIRES_IN)
     }, { status: 200 })
+
+    // Set refresh token as httpOnly cookie (not accessible via JavaScript - XSS protection)
+    response.cookies.set('refresh_token', refreshTokenData.token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 60 * 60 * 24 * 7, // 7 days
+      path: '/'
+    })
+
+    return response
 
   } catch (error) {
     if (error instanceof z.ZodError) {

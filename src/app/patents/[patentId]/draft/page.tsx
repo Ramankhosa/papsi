@@ -31,11 +31,15 @@ interface DraftingSession {
   referenceMap?: any
   figurePlans?: any[]
   diagramSources?: any[]
+  sketchRecords?: any[]
   annexureDrafts?: any[]
   priorArtConfig?: any
   manualPriorArt?: any
   relatedArtRuns?: any[]
   relatedArtSelections?: any[]
+  // Figure sequence for unified ordering of diagrams + sketches
+  figureSequence?: Array<{ id: string; type: 'diagram' | 'sketch'; sourceId: string; finalFigNo: number }>
+  figureSequenceFinalized?: boolean
 }
 
 interface Patent {
@@ -389,16 +393,16 @@ export default function PatentDraftingPage() {
     }
   }
 
-  const getCurrentStage = () => {
+  const getCurrentStage = useCallback(() => {
     if (!session) return 'IDEA_ENTRY'
     return session.status
-  }
+  }, [session?.status])
 
   const StageComponent = useMemo(() => {
     const stage = getCurrentStage()
     const Component = STAGE_COMPONENTS[stage as keyof typeof STAGE_COMPONENTS]
     return Component || IdeaEntryStage
-  }, [session?.status])
+  }, [getCurrentStage])
 
   const getPrevNextStages = () => {
     const stage = getCurrentStage() as keyof typeof STAGE_COMPONENTS

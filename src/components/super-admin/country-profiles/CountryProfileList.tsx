@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 
 interface CountryProfile {
   id: string
@@ -38,7 +38,7 @@ export function CountryProfileList({ refreshTrigger, onRefresh }: CountryProfile
   const [editingProfile, setEditingProfile] = useState<CountryProfile | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
 
-  const fetchProfiles = async () => {
+  const fetchProfiles = useCallback(async () => {
     try {
       setLoading(true)
       const params = new URLSearchParams()
@@ -65,11 +65,11 @@ export function CountryProfileList({ refreshTrigger, onRefresh }: CountryProfile
     } finally {
       setLoading(false)
     }
-  }
+  }, [statusFilter])
 
   useEffect(() => {
     fetchProfiles()
-  }, [statusFilter, refreshTrigger])
+  }, [fetchProfiles, refreshTrigger])
 
   const handleStatusChange = async (profileId: string, newStatus: string) => {
     try {

@@ -961,7 +961,9 @@ Respond in this exact JSON shape:
         // Check database first (via promptCfg which comes from getDraftingPrompts)
         const dbImportFigures = (promptCfg as any)?.importFiguresDirectly === true
         const jsonImportFigures = sectionPromptCfg?.importFiguresDirectly === true
-        const importFiguresDirectly = dbImportFigures || jsonImportFigures
+        // Force importFiguresDirectly=true for briefDescriptionOfDrawings to ensure all figures (including sketches) are included
+        const isBriefDescriptionSection = s === 'briefDescriptionOfDrawings' || s === 'brief_drawings' || sectionKey === 'briefDescriptionOfDrawings'
+        const importFiguresDirectly = isBriefDescriptionSection || dbImportFigures || jsonImportFigures
         
         sectionResources[s] = {
           prompt: promptCfg,
@@ -997,55 +999,206 @@ Respond in this exact JSON shape:
       )
       const fallbackPool = userSelectedPool.length ? userSelectedPool : rawRelatedArtSelections
 
+      // Check for prior art selections saved in priorArtConfig.priorArtForDrafting (from Stage 3.5 workflow)
+      const priorArtConfig = (session as any).priorArtConfig || {}
+      const priorArtForDraftingConfig = priorArtConfig.priorArtForDrafting || {}
+      const configSelectedPatents = Array.isArray(priorArtForDraftingConfig.selectedPatents) 
+        ? priorArtForDraftingConfig.selectedPatents 
+        : []
+      
+      // Track the source of prior art for debugging
+      let priorArtSource: 'explicit' | 'priorArtConfig' | 'relatedArtSelections' | 'manual_only' | 'none' = 'none'
+
+      // Helper: Normalize patent number for consistent matching (handles "US-123" vs "US123")
+      const normalizePN = (pn: string | undefined | null): string => 
+        pn ? pn.replace(/[-\s]/g, '').toUpperCase().trim() : ''
+
+      // Helper: Safe sort by score (handles missing/non-numeric scores)
+      const safeScoreSort = (a: any, b: any): number => {
+        const aScore = typeof a.score === 'number' ? a.score : 0
+        const bScore = typeof b.score === 'number' ? b.score : 0
+        return bScore - aScore
+      }
+
+      // Helper: Deduplicate and enrich patents, skipping those with missing IDs
+      const processPatents = (
+        patents: any[], 
+        enrichSource: any[], 
+        preferConfigData: boolean = false
+      ): any[] => {
+        const uniqueMap = new Map<string, any>()
+        
+        for (const sel of patents) {
+          const rawPN = sel.patentNumber || sel.pn || ''
+          const normalizedPN = normalizePN(rawPN)
+          
+          // Skip patents with missing/invalid patent numbers
+          if (!normalizedPN) {
+            console.warn(`[DraftingService] Skipping prior art with missing patent number`)
+            continue
+          }
+          
+          // Skip if already processed (deduplication)
+          if (uniqueMap.has(normalizedPN)) continue
+          
+          // Find enrichment data using normalized PN matching
+          const fullPatentData = enrichSource.find((r: any) => 
+            normalizePN(r.patentNumber) === normalizedPN
+          ) || {}
+          
+          // Merge data: prefer non-empty values from available sources
+          const merged = {
+            ...fullPatentData,
+            ...(preferConfigData ? sel : {}),
+            patentNumber: rawPN || fullPatentData.patentNumber, // Keep original format
+            // Prefer non-empty values for AI analysis fields
+            aiSummary: sel.aiSummary || fullPatentData.aiSummary || aiAnalysis[rawPN]?.aiSummary || '',
+            noveltyComparison: sel.noveltyComparison || fullPatentData.noveltyComparison || aiAnalysis[rawPN]?.noveltyComparison || '',
+            noveltyThreat: sel.noveltyThreat || fullPatentData.noveltyThreat || aiAnalysis[rawPN]?.noveltyThreat || 'unknown'
+          }
+          
+          uniqueMap.set(normalizedPN, merged)
+        }
+        
+        return Array.from(uniqueMap.values()).sort(safeScoreSort)
+      }
+
       if (selectedPatents && selectedPatents.length > 0) {
         // User explicitly picked patents in the UI
-        selectedPriorArtPatents = selectedPatents
-          .map((sel: any) => {
-            const fullPatentData =
-              rawRelatedArtSelections.find((r: any) => r.patentNumber === sel.patentNumber) || sel
-            return {
-              ...fullPatentData,
-              aiSummary: aiAnalysis[sel.patentNumber]?.aiSummary || '',
-              noveltyComparison: aiAnalysis[sel.patentNumber]?.noveltyComparison || '',
-              noveltyThreat: aiAnalysis[sel.patentNumber]?.noveltyThreat || 'unknown'
-            }
-          })
-          .sort((a: any, b: any) => (b.score || 0) - (a.score || 0))
-          .slice(0, 6)
+        priorArtSource = 'explicit'
+        selectedPriorArtPatents = processPatents(selectedPatents, rawRelatedArtSelections, false)
+      } else if (configSelectedPatents.length > 0) {
+        // Use prior art selections saved in priorArtConfig from Stage 3.5 Prior Art for Drafting tab
+        priorArtSource = 'priorArtConfig'
+        console.log(`[DraftingService] Using ${configSelectedPatents.length} patents from priorArtConfig.priorArtForDrafting`)
+        selectedPriorArtPatents = processPatents(configSelectedPatents, rawRelatedArtSelections, true)
       } else if (manualPriorArt?.useOnlyManualPriorArt) {
         // Respect user preference: no AI/related art
+        priorArtSource = 'manual_only'
         selectedPriorArtPatents = []
       } else {
         // Use the best available pool (user-selected if present; otherwise all related art)
-        selectedPriorArtPatents = fallbackPool
-          .map((sel: any) => ({
-            ...sel,
-            aiSummary: aiAnalysis[sel.patentNumber]?.aiSummary || '',
-            noveltyComparison: aiAnalysis[sel.patentNumber]?.noveltyComparison || '',
-            noveltyThreat: aiAnalysis[sel.patentNumber]?.noveltyThreat || 'unknown'
-          }))
-          .sort((a: any, b: any) => (b.score || 0) - (a.score || 0))
-          .slice(0, 6)
+        priorArtSource = 'relatedArtSelections'
+        console.log(`[DraftingService] Using ${fallbackPool.length} patents from relatedArtSelections (USER_SELECTED: ${userSelectedPool.length})`)
+        selectedPriorArtPatents = processPatents(fallbackPool, [], false)
       }
 
-      // Merge figures from plans AND diagram sources (regardless of upload status)
-      // This ensures ALL figures are available for drafting, not just uploaded ones
-      const planFigures = (session.figurePlans || []).map((f: any) => ({
-        figureNo: f.figureNo,
-        title: this.sanitizeFigureTitle(f.title) || `Figure ${f.figureNo}`
-      }))
-      // Include ALL diagram sources, not just uploaded ones - a figure with PlantUML code is still valid
-      const diagramFigures = (session.diagramSources || []).map((d: any) => {
+      // Build figures list - use finalized sequence if available, otherwise merge from plans and sources
+      let figures: Array<{ figureNo: number; title: string; description?: string; type?: string }> = []
+
+      // Debug: Log sketch records availability
+      const sketchCount = (session.sketchRecords || []).length
+      if (sketchCount > 0) {
+        console.log(`[DraftingService] Found ${sketchCount} sketches in session`)
+      }
+
+      if (session.figureSequenceFinalized && Array.isArray(session.figureSequence) && session.figureSequence.length > 0) {
+        // Use the finalized figure sequence (includes both diagrams and sketches in user-defined order)
+        const figureSequence = session.figureSequence as Array<{ id: string; type: string; sourceId: string; finalFigNo: number }>
+        const sequencedSourceIds = new Set(figureSequence.map(s => s.sourceId))
+        
+        for (const seqItem of figureSequence) {
+          if (seqItem.type === 'diagram') {
+            // Find the diagram from figurePlans or diagramSources
+            const plan = (session.figurePlans || []).find((f: any) => f.id === seqItem.sourceId)
+            const source = (session.diagramSources || []).find((d: any) => d.figureNo === plan?.figureNo)
+            if (plan) {
+              figures.push({
+                figureNo: seqItem.finalFigNo,
+                title: this.sanitizeFigureTitle(plan.title) || `Figure ${seqItem.finalFigNo}`,
+                description: plan.description || source?.description || '',
+                type: 'diagram'
+              })
+            } else {
+              // Fix #2: Log warning for missing sequence references
+              console.warn(`[DraftingService] Diagram in sequence not found: sourceId=${seqItem.sourceId}`)
+            }
+          } else if (seqItem.type === 'sketch') {
+            // Find the sketch from sketchRecords
+            const sketch = (session.sketchRecords || []).find((s: any) => s.id === seqItem.sourceId)
+            console.log(`[DraftingService] Processing sketch ${seqItem.sourceId} -> Fig.${seqItem.finalFigNo}, found: ${!!sketch}`)
+            if (sketch && sketch.status === 'SUCCESS') {
+              figures.push({
+                figureNo: seqItem.finalFigNo,
+                title: this.sanitizeFigureTitle(sketch.title) || `Figure ${seqItem.finalFigNo}`,
+                description: sketch.description || '',
+                type: 'sketch'
+              })
+            } else {
+              // Fix #2: Log warning for missing sequence references
+              console.warn(`[DraftingService] Sketch in sequence not found or not SUCCESS: sourceId=${seqItem.sourceId}`)
+            }
+          }
+        }
+        
+        // Fix #1: Auto-append figures added after sequence was finalized
+        // Check for diagrams not in sequence
+        for (const plan of (session.figurePlans || [])) {
+          if (!sequencedSourceIds.has(plan.id)) {
+            console.warn(`[DraftingService] Diagram added after sequence finalized, appending: ${plan.id}`)
+            figures.push({
+              figureNo: figures.length + 1,
+              title: this.sanitizeFigureTitle(plan.title) || `Figure ${figures.length + 1}`,
+              description: plan.description || '',
+              type: 'diagram'
+            })
+          }
+        }
+        // Check for sketches not in sequence
+        const successSketches = (session.sketchRecords || []).filter((s: any) => s.status === 'SUCCESS')
+        for (const sketch of successSketches) {
+          if (!sequencedSourceIds.has(sketch.id)) {
+            console.log(`[DraftingService] Adding sketch ${sketch.id} as fallback figure ${figures.length + 1}`)
+            figures.push({
+              figureNo: figures.length + 1,
+              title: this.sanitizeFigureTitle(sketch.title) || `Figure ${figures.length + 1}`,
+              description: sketch.description || '',
+              type: 'sketch'
+            })
+          }
+        }
+      } else {
+        // Fallback: Merge figures from plans AND diagram sources AND sketches (legacy behavior)
+        // This ensures ALL figures are available for drafting, not just uploaded ones
+        const planFigures = (session.figurePlans || []).map((f: any) => ({
+          figureNo: f.figureNo,
+          title: this.sanitizeFigureTitle(f.title) || `Figure ${f.figureNo}`,
+          description: f.description || ''
+        }))
+        // Include ALL diagram sources, not just uploaded ones - a figure with PlantUML code is still valid
+        const diagramFigures = (session.diagramSources || []).map((d: any) => {
           const found = planFigures.find((f: any) => f.figureNo === d.figureNo)
           const sanitized = this.sanitizeFigureTitle(found?.title || d.title)
-          return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}` }
+          return {
+            figureNo: d.figureNo,
+            title: sanitized || `Figure ${d.figureNo}`,
+            description: found?.description || d.description || ''
+          }
         })
-      const mergedByNo = new Map<number, any>()
-      // Add all plan figures first
-      for (const f of planFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
-      // Add/overwrite with diagram figures (may have additional metadata or corrected titles)
-      for (const f of diagramFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
-      const figures = Array.from(mergedByNo.values()).sort((a:any,b:any)=>a.figureNo-b.figureNo)
+        // Include ALL sketches with SUCCESS status
+        const allDiagramNos = [...planFigures, ...diagramFigures].map(f => f.figureNo)
+        const maxDiagramNo = allDiagramNos.length > 0 ? Math.max(...allDiagramNos) : 0
+        const sketchFigures = (session.sketchRecords || [])
+          .filter((s: any) => s.status === 'SUCCESS')
+          .map((s: any, index: number) => {
+            const figNo = maxDiagramNo + index + 1
+            return {
+              figureNo: figNo,
+              title: this.sanitizeFigureTitle(s.title) || `Figure ${figNo}`,
+              description: s.description || '',
+              type: 'sketch'
+            }
+          })
+
+        const mergedByNo = new Map<number, any>()
+        // Add all plan figures first
+        for (const f of planFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title, description: f.description, type: 'diagram' })
+        // Add/overwrite with diagram figures (may have additional metadata or corrected titles)
+        for (const f of diagramFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title, description: f.description, type: 'diagram' })
+        // Add sketches
+        for (const f of sketchFigures) mergedByNo.set(f.figureNo, f)
+        figures = Array.from(mergedByNo.values()).sort((a:any,b:any)=>a.figureNo-b.figureNo)
+      }
       debugSteps.push({
         step: 'load_context',
         status: 'ok',
@@ -1053,10 +1206,15 @@ Respond in this exact JSON shape:
           ideaLoaded: !!idea,
           componentsCount: referenceMap.components?.length || 0,
           figuresCount: figures.length,
+          figuresBreakdown: figures.map(f => ({ figureNo: f.figureNo, title: f.title, type: f.type })),
           manualPriorArtProvided: !!manualPriorArt,
           manualPriorArtPreview: manualPriorArt?.manualPriorArtText ? String(manualPriorArt.manualPriorArtText).slice(0, 140) + (String(manualPriorArt.manualPriorArtText).length > 140 ? '…' : '') : null,
           useOnlyManualPriorArt: !!manualPriorArt?.useOnlyManualPriorArt,
           useManualAndAISearch: !!manualPriorArt?.useManualAndAISearch,
+          priorArtSource,
+          priorArtConfigPatentsCount: configSelectedPatents.length,
+          relatedArtSelectionsCount: rawRelatedArtSelections.length,
+          userSelectedCount: userSelectedPool.length,
           selectedPriorArtPatentsCount: selectedPriorArtPatents.length,
           selectedPriorArtPreview: selectedPriorArtPatents.slice(0, 6).map((p: any) => ({
             patentNumber: p.patentNumber || p.pn || 'Unknown',
@@ -1085,6 +1243,7 @@ Respond in this exact JSON shape:
         if (sectionResources[s]?.importFiguresDirectly && figures.length > 0) {
           // Direct import: Format figures as Brief Description of Drawings
           // This preserves the exact titles from figure planning stage
+          console.log(`[DraftingService] Direct import for ${s}: ${figures.length} figures including ${figures.filter((f:any)=>f.type==='sketch').length} sketches`)
           const figureLines = figures.map((f: any) => {
             const figNo = f.figureNo
             let title = f.title || `a view of Figure ${figNo}`
@@ -1364,7 +1523,7 @@ Respond in this exact JSON shape:
         )
         if (!check.ok) {
           debugSteps.push({ step: `critic_${s}`, status: 'fail', meta: { reason: check.reason } })
-          const fixed = this.minimalFix(s, val, { reason: check.reason, approvedTitle, referenceMap, sectionChecks: sectionResources[s]?.checks, claimsRules: sectionResources[s]?.claimsRules })
+          const fixed = this.minimalFix(s, val, { reason: check.reason, approvedTitle, referenceMap, figures: payload.figures, sectionChecks: sectionResources[s]?.checks, claimsRules: sectionResources[s]?.claimsRules })
           if (fixed && fixed.trim() && fixed !== val) {
             val = fixed.trim()
             const recheck = this.guardrailCheck(
@@ -1830,30 +1989,29 @@ Return ONLY a valid JSON object exactly matching the schema above.`
         let priorArtCount = 0
         if (manualPriorArt) {
           if (manualPriorArt.useOnlyManualPriorArt) {
-            priorArtRefs = `Available prior-art pool (select 5-6 most relevant):
+            priorArtRefs = `Available prior-art pool (reference ALL provided):
 Manual analysis (user-provided): ${manualPriorArt.manualPriorArtText}`
             priorArtCount = 1
           } else if (manualPriorArt.useManualAndAISearch) {
-            const maxAdditionalPatents = 4
-            const additionalPatents = selectedPriorArtPatents.slice(0, maxAdditionalPatents)
-            const aiLines = additionalPatents.map((patent: any) => {
+            // Include ALL selected patents - no artificial limit
+            const aiLines = selectedPriorArtPatents.map((patent: any) => {
               const patentNumber = patent.patentNumber || patent.pn || 'Unknown'
               return `- ${patentNumber} - AI relevance: ${String(patent.aiSummary || '').substring(0, 200)}... | Novelty: ${String(patent.noveltyComparison || '').substring(0, 200)}...`
             }).join('\n')
-            priorArtRefs = `Available prior-art pool (select total 5-6 most relevant):
+            priorArtRefs = `Available prior-art pool (reference ALL provided patents):
 Manual analysis (user-provided): ${manualPriorArt.manualPriorArtText}
 ${aiLines ? `AI-adjacent patents:
 ${aiLines}` : ''}`
-            priorArtCount = 2 + additionalPatents.length
+            priorArtCount = 1 + selectedPriorArtPatents.length
           }
         } else {
-          const topAIRefs = selectedPriorArtPatents.slice(0, 6)
-          priorArtRefs = `Available prior-art pool (select 5-6 most relevant):
-${topAIRefs.map((patent: any) => {
+          // Include ALL selected prior art patents - no artificial limit
+          priorArtRefs = `Available prior-art pool (reference ALL provided patents):
+${selectedPriorArtPatents.map((patent: any) => {
             const patentNumber = patent.patentNumber || patent.pn || 'Unknown'
             return `- ${patentNumber} - AI relevance: ${String(patent.aiSummary || '').substring(0, 200)}... | Novelty: ${String(patent.noveltyComparison || '').substring(0, 200)}...`
           }).join('\n')}`
-          priorArtCount = topAIRefs.length
+          priorArtCount = selectedPriorArtPatents.length
         }
 
         return `
@@ -1861,10 +2019,11 @@ ${roleToneHeader}
 Task: Draft the Background / Prior Art section.
 Rules:
 - 250-400 words, 2-3 paragraphs max.
-- Para 1: Context/problem space; Para 2+: Prior art comparison (5-6 references), identify drawbacks/gaps; Final sentence: segue to invention.
+- Para 1: Context/problem space; Para 2+: Prior art comparison referencing ALL ${priorArtCount} provided patents, identify drawbacks/gaps; Final sentence: segue to invention.
+- IMPORTANT: Reference ALL ${priorArtCount} prior art patents provided - do not skip any.
 - Avoid claiming novelty; focus on shortcomings of prior art.
 - No claim-like language or self-praise.
-Available prior art (${priorArtCount} references available):
+Available prior art (${priorArtCount} references - discuss ALL):
 ${priorArtRefs || 'No prior art supplied; objectively describe the problem space.'}
 Context:
 problem=${idea?.problem || ''}; objectives=${idea?.objectives || ''}; numerals=[${numerals}]; figures=[${figs}].
@@ -2102,10 +2261,9 @@ Return ONLY a valid JSON object exactly matching the schema above.`
         fieldOfInvention: 80,
         background: 400,
         summary: 300,
-        // IMPORTANT: briefDescriptionOfDrawings needs ~25 words per figure
-        // Set to 500 to support up to 20 figures (20 * 25 = 500)
-        // This should NOT truncate figure descriptions - each figure needs its own line
-        briefDescriptionOfDrawings: 500,
+        // IMPORTANT: briefDescriptionOfDrawings - no word limit
+        // Each figure needs its own line with full description (no truncation)
+        briefDescriptionOfDrawings: 10000,
         detailedDescription: 1200,
         bestMethod: 350,
         claims: 900,
@@ -2359,17 +2517,36 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       return out
     }
     if (section === 'briefDescriptionOfDrawings') {
-      const allowed = new Set((ctx.figures||[]).map((f:any)=>String(f.figureNo)))
+      const figuresArray = ctx.figures || []
+      const allowed = new Set(figuresArray.map((f:any)=>String(f.figureNo)))
       const lines = out.split(/\n+/).map(l=>l.trim()).filter(Boolean)
+      
+      // If we have a known figures list, filter to only those figures
+      // If no figures list available (empty), pass through all valid figure descriptions
       const cleaned = lines
         .filter(l=>{
-          const m = l.match(/Fig\.?\s*(\d+)/i); return !!(m && allowed.has(String(m[1])))
+          const m = l.match(/Fig\.?\s*(\d+)/i)
+          if (!m) return false
+          // If we have no figures in allowed set, accept all figure references
+          // This prevents filtering out valid content when figures aren't loaded
+          if (allowed.size === 0) return true
+          return allowed.has(String(m[1]))
         })
         .map(l=>l.replace(/\b(advantage|advantages|benefit|benefits|claim|claims)\b/gi,'').trim())
-        .map(l=>{
-          const w = l.split(/\s+/); return w.length>40? w.slice(0,40).join(' ') : l
-        })
-      return cleaned.length > 0 ? cleaned.join('\n') : 'No valid figure descriptions.'
+      
+      // If we have valid lines, return them (one figure per line with blank line between)
+      if (cleaned.length > 0) {
+        return cleaned.join('\n\n')
+      }
+      // If original text has figure references but none matched, return original rather than error
+      if (lines.length > 0 && lines.some(l => /Fig\.?\s*\d+/i.test(l))) {
+        return out
+      }
+      // Only show error message if there truly is no figure content
+      // Generate figure descriptions from figures array (one per line with blank line between)
+      return figuresArray.length > 0 
+        ? figuresArray.map((f: any) => `FIG. ${f.figureNo} is ${f.title || 'a view of the invention'}.`).join('\n\n')
+        : out || 'Brief description of drawings will be added when figures are available.'
     }
     if (section === 'claims') {
       // Normalize parentheses around claim numbers in text body
@@ -2707,7 +2884,7 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       console.error('PlantUML generation error:', error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'PlantUML generation failed'
+        error: error instanceof Error ? error.message : 'Diagram generation failed'
       };
     }
   }
@@ -2909,7 +3086,7 @@ Return ONLY a valid JSON object exactly matching the schema above.`
 
       defs.push({
         key: sectionKey,
-        label: mapping.heading && mapping.heading !== '(N/A)' ? mapping.heading : this.getDefaultLabel(sectionKey),
+        label: mapping.heading && mapping.heading !== '(N/A)' && mapping.heading !== '(Implicit)' && mapping.heading !== '(Recommended/NA)' && mapping.heading !== '(Include in Detailed Desc)' ? mapping.heading : this.getDefaultLabel(sectionKey),
         required: this.isSectionRequired(sectionKey, jurisdiction),
         constraints: supersetPrompt?.constraints || [],
         altKeys: [mapping.supersetCode.toLowerCase()]
@@ -3011,20 +3188,93 @@ Return ONLY a valid JSON object exactly matching the schema above.`
   ): Promise<string> {
     const idea = session.ideaRecord;
     const components: any[] = session.referenceMap?.components || [];
-    const planFigures: any[] = (session.figurePlans || []).map((f: any) => ({
-      figureNo: f.figureNo,
-      title: this.sanitizeFigureTitle(f.title) || `Figure ${f.figureNo}`
-    }));
-    // Include ALL diagram sources, not just uploaded ones
-    const diagramFigures: any[] = (session.diagramSources || []).map((d: any) => {
+    
+    // Build figures list - use finalized sequence if available
+    let figures: Array<{ figureNo: number; title: string; description?: string }> = []
+    
+    if (session.figureSequenceFinalized && Array.isArray(session.figureSequence) && session.figureSequence.length > 0) {
+      // Use the finalized figure sequence (includes both diagrams and sketches)
+      const figureSequence = session.figureSequence as Array<{ id: string; type: string; sourceId: string; finalFigNo: number }>
+      const sequencedSourceIds = new Set(figureSequence.map(s => s.sourceId))
+      
+      for (const seqItem of figureSequence) {
+        if (seqItem.type === 'diagram') {
+          const plan = (session.figurePlans || []).find((f: any) => f.id === seqItem.sourceId)
+          if (plan) {
+            figures.push({
+              figureNo: seqItem.finalFigNo,
+              title: this.sanitizeFigureTitle(plan.title) || `Figure ${seqItem.finalFigNo}`,
+              description: plan.description || ''
+            })
+          } else {
+            console.warn(`[DraftingService] Annexure: Diagram in sequence not found: sourceId=${seqItem.sourceId}`)
+          }
+        } else if (seqItem.type === 'sketch') {
+          const sketch = (session.sketchRecords || []).find((s: any) => s.id === seqItem.sourceId)
+          if (sketch && sketch.status === 'SUCCESS') {
+            figures.push({
+              figureNo: seqItem.finalFigNo,
+              title: this.sanitizeFigureTitle(sketch.title) || `Figure ${seqItem.finalFigNo}`,
+              description: sketch.description || ''
+            })
+          } else {
+            console.warn(`[DraftingService] Annexure: Sketch in sequence not found: sourceId=${seqItem.sourceId}`)
+          }
+        }
+      }
+      
+      // Auto-append figures added after sequence was finalized
+      for (const plan of (session.figurePlans || [])) {
+        if (!sequencedSourceIds.has(plan.id)) {
+          figures.push({
+            figureNo: figures.length + 1,
+            title: this.sanitizeFigureTitle(plan.title) || `Figure ${figures.length + 1}`,
+            description: plan.description || ''
+          })
+        }
+      }
+      for (const sketch of (session.sketchRecords || []).filter((s: any) => s.status === 'SUCCESS')) {
+        if (!sequencedSourceIds.has(sketch.id)) {
+          figures.push({
+            figureNo: figures.length + 1,
+            title: this.sanitizeFigureTitle(sketch.title) || `Figure ${figures.length + 1}`,
+            description: sketch.description || ''
+          })
+        }
+      }
+    } else {
+      // Fallback: Merge figures from plans AND diagram sources AND sketches (legacy behavior)
+      const planFigures: any[] = (session.figurePlans || []).map((f: any) => ({
+        figureNo: f.figureNo,
+        title: this.sanitizeFigureTitle(f.title) || `Figure ${f.figureNo}`,
+        description: f.description || ''
+      }));
+      // Include ALL diagram sources, not just uploaded ones
+      const diagramFigures: any[] = (session.diagramSources || []).map((d: any) => {
         const found = planFigures.find((f: any) => f.figureNo === d.figureNo)
         const sanitized = this.sanitizeFigureTitle(found?.title || d.title)
-        return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}` }
+        return { figureNo: d.figureNo, title: sanitized || `Figure ${d.figureNo}`, description: found?.description || '' }
       })
-    const mergedByNo = new Map<number, any>()
-    for (const f of planFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
-    for (const f of diagramFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title })
-    const figures: any[] = Array.from(mergedByNo.values()).sort((a,b)=>a.figureNo-b.figureNo)
+      const mergedByNo = new Map<number, any>()
+      for (const f of planFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title, description: f.description })
+      for (const f of diagramFigures) mergedByNo.set(f.figureNo, { figureNo: f.figureNo, title: f.title, description: f.description })
+      
+      // Include ALL sketches with SUCCESS status (appending after diagrams)
+      const allDiagramNos = Array.from(mergedByNo.keys())
+      const maxDiagramNo = allDiagramNos.length > 0 ? Math.max(...allDiagramNos) : 0
+      const successSketches = (session.sketchRecords || []).filter((s: any) => s.status === 'SUCCESS')
+      for (let i = 0; i < successSketches.length; i++) {
+        const sketch = successSketches[i]
+        const figNo = maxDiagramNo + i + 1
+        mergedByNo.set(figNo, {
+          figureNo: figNo,
+          title: this.sanitizeFigureTitle(sketch.title) || `Figure ${figNo}`,
+          description: sketch.description || ''
+        })
+      }
+      
+      figures = Array.from(mergedByNo.values()).sort((a,b)=>a.figureNo-b.figureNo)
+    }
 
     let profile = await getCountryProfile(jurisdiction)
     if (profile && preferredLanguage) {
@@ -3091,7 +3341,7 @@ Objectives: ${idea.objectives || 'Not specified'}
 Components: ${components.map(c => `${c.name} (${c.numeral})`).join(', ')}
 Logic: ${idea.logic || 'Not specified'}
 ${figures.length > 0 ? `Figures: ${figures.map(f => `Fig.${f.figureNo}: ${f.title}`).join(', ')}` : ''}
-${priorArtSelections.length > 0 ? `Prior art for context (approved): ${priorArtSelections.slice(0,6).map(p=>`${p.patentNumber}${p.title?`: ${p.title}`:''}`).join(' | ')}` : ''}
+${priorArtSelections.length > 0 ? `Prior art for context (approved - ALL ${priorArtSelections.length} patents): ${priorArtSelections.map(p=>`${p.patentNumber}${p.title?`: ${p.title}`:''}`).join(' | ')}` : ''}
 
 ${referenceBlock}
 

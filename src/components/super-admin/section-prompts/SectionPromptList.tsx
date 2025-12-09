@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { SectionPromptEditor } from './SectionPromptEditor'
 
 interface SectionPrompt {
@@ -45,7 +45,7 @@ export function SectionPromptList({ refreshTrigger, onRefresh }: SectionPromptLi
   const [isCreating, setIsCreating] = useState(false)
   const [includeArchived, setIncludeArchived] = useState(false)
 
-  const fetchPrompts = async () => {
+  const fetchPrompts = useCallback(async () => {
     try {
       setLoading(true)
       const params = new URLSearchParams()
@@ -71,7 +71,7 @@ export function SectionPromptList({ refreshTrigger, onRefresh }: SectionPromptLi
     } finally {
       setLoading(false)
     }
-  }
+  }, [includeArchived])
 
   const fetchHistory = async (countryCode: string, sectionKey: string) => {
     try {
@@ -149,7 +149,7 @@ export function SectionPromptList({ refreshTrigger, onRefresh }: SectionPromptLi
 
   useEffect(() => {
     fetchPrompts()
-  }, [refreshTrigger, includeArchived])
+  }, [fetchPrompts, includeArchived, refreshTrigger])
 
   useEffect(() => {
     if (showHistory) {

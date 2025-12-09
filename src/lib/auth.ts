@@ -62,7 +62,10 @@ export function generateResetToken(): string {
 
 // JWT utilities
 const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secure-jwt-secret-change-in-production-min-32-chars'
-const JWT_EXPIRES_IN = '1h'
+const JWT_EXPIRES_IN = '15m' // Short-lived access token (15 minutes)
+const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET || 'your-super-secure-refresh-secret-change-in-production-min-32-chars'
+const REFRESH_TOKEN_EXPIRES_IN = '7d' // Long-lived refresh token (7 days)
+const REFRESH_TOKEN_EXPIRES_MS = 7 * 24 * 60 * 60 * 1000 // 7 days in milliseconds
 
 export interface JWTPayload {
   sub: string // user_id
@@ -104,6 +107,191 @@ export function verifyJWT(token: string): JWTPayload | null {
     });
     return null;
   }
+}
+
+// Refresh token utilities
+export interface RefreshTokenPayload {
+  sub: string // user_id
+  tokenId: string // unique token identifier (maps to DB id)
+  familyId: string // token family for rotation detection
+  iat: number
+  exp: number
+}
+
+export interface RefreshTokenResult {
+  token: string
+  tokenId: string
+  familyId: string
+  tokenHash: string
+  expiresAt: Date
+}
+
+/**
+ * Generate a new refresh token with family tracking for rotation
+ * @param userId - The user's ID
+ * @param familyId - Optional family ID for token rotation (new family if not provided)
+ */
+export function generateRefreshToken(userId: string, familyId?: string): RefreshTokenResult {
+  const tokenId = crypto.randomBytes(32).toString('hex')
+  const newFamilyId = familyId || crypto.randomBytes(16).toString('hex')
+  
+  const payload: Omit<RefreshTokenPayload, 'iat' | 'exp'> = {
+    sub: userId,
+    tokenId,
+    familyId: newFamilyId
+  }
+  
+  const token = jwt.sign(payload, REFRESH_TOKEN_SECRET, { expiresIn: REFRESH_TOKEN_EXPIRES_IN })
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex')
+  const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_MS)
+  
+  return { token, tokenId, familyId: newFamilyId, tokenHash, expiresAt }
+}
+
+/**
+ * Verify a refresh token's signature and expiry
+ */
+export function verifyRefreshToken(token: string): RefreshTokenPayload | null {
+  try {
+    if (!token || typeof token !== 'string') {
+      console.error('verifyRefreshToken: Token is null, undefined, or not a string');
+      return null;
+    }
+
+    const payload = jwt.verify(token, REFRESH_TOKEN_SECRET) as RefreshTokenPayload;
+
+    if (!payload || typeof payload !== 'object') {
+      console.error('verifyRefreshToken: Payload is not a valid object');
+      return null;
+    }
+
+    return payload;
+  } catch (error) {
+    // Don't log token expired as error - it's expected
+    const isExpired = error instanceof jwt.TokenExpiredError
+    if (!isExpired) {
+      console.error('Refresh token verification failed:', {
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+    return null;
+  }
+}
+
+/**
+ * Hash a refresh token for secure storage
+ */
+export function hashRefreshToken(token: string): string {
+  return crypto.createHash('sha256').update(token).digest('hex')
+}
+
+/**
+ * Store a refresh token in the database
+ */
+export async function storeRefreshToken(
+  userId: string,
+  tokenData: RefreshTokenResult,
+  metadata?: { userAgent?: string; ipAddress?: string }
+): Promise<void> {
+  await prisma.refreshToken.create({
+    data: {
+      id: tokenData.tokenId,
+      userId,
+      tokenHash: tokenData.tokenHash,
+      familyId: tokenData.familyId,
+      expiresAt: tokenData.expiresAt,
+      userAgent: metadata?.userAgent,
+      ipAddress: metadata?.ipAddress
+    }
+  })
+}
+
+/**
+ * Validate a refresh token against the database
+ * Returns the token record if valid, null otherwise
+ */
+export async function validateStoredRefreshToken(tokenHash: string): Promise<{
+  valid: boolean
+  token?: any
+  error?: string
+}> {
+  const storedToken = await prisma.refreshToken.findUnique({
+    where: { tokenHash },
+    include: { user: { include: { tenant: true } } }
+  })
+
+  if (!storedToken) {
+    return { valid: false, error: 'TOKEN_NOT_FOUND' }
+  }
+
+  if (storedToken.isRevoked) {
+    // Token was revoked - possible token theft, revoke entire family
+    await revokeTokenFamily(storedToken.familyId, 'security')
+    return { valid: false, error: 'TOKEN_REVOKED' }
+  }
+
+  if (new Date() > storedToken.expiresAt) {
+    return { valid: false, error: 'TOKEN_EXPIRED' }
+  }
+
+  return { valid: true, token: storedToken }
+}
+
+/**
+ * Revoke a specific refresh token
+ */
+export async function revokeRefreshToken(tokenHash: string, reason: string = 'logout'): Promise<void> {
+  await prisma.refreshToken.updateMany({
+    where: { tokenHash },
+    data: { 
+      isRevoked: true, 
+      revokedAt: new Date(),
+      revokedReason: reason
+    }
+  })
+}
+
+/**
+ * Revoke all tokens in a family (for security - detected reuse)
+ */
+export async function revokeTokenFamily(familyId: string, reason: string = 'rotation'): Promise<void> {
+  await prisma.refreshToken.updateMany({
+    where: { familyId },
+    data: { 
+      isRevoked: true, 
+      revokedAt: new Date(),
+      revokedReason: reason
+    }
+  })
+}
+
+/**
+ * Revoke all refresh tokens for a user (logout from all devices)
+ */
+export async function revokeAllUserTokens(userId: string, reason: string = 'logout_all'): Promise<void> {
+  await prisma.refreshToken.updateMany({
+    where: { userId },
+    data: { 
+      isRevoked: true, 
+      revokedAt: new Date(),
+      revokedReason: reason
+    }
+  })
+}
+
+/**
+ * Clean up expired refresh tokens (run periodically)
+ */
+export async function cleanupExpiredTokens(): Promise<number> {
+  const result = await prisma.refreshToken.deleteMany({
+    where: {
+      OR: [
+        { expiresAt: { lt: new Date() } },
+        { isRevoked: true, revokedAt: { lt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } // 30 days old revoked tokens
+      ]
+    }
+  })
+  return result.count
 }
 
 // ATI Token utilities

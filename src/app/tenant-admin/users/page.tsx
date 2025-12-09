@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 
 interface TeamInfo {
@@ -49,7 +49,7 @@ export default function TenantAdminUsersPage() {
   const [newRole, setNewRole] = useState<string>('')
   const [saving, setSaving] = useState(false)
 
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     if (!token) return
     
     try {
@@ -70,11 +70,11 @@ export default function TenantAdminUsersPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [token])
 
   useEffect(() => {
     fetchUsers()
-  }, [token])
+  }, [fetchUsers])
 
   const handleRoleChange = async () => {
     if (!selectedUser || !newRole || !token) return

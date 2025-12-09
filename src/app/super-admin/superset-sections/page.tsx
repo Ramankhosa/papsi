@@ -1,6 +1,7 @@
 'use client'
+/* eslint-disable react/no-unescaped-entities */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { unstable_noStore as noStore } from 'next/cache'
 
@@ -29,19 +30,12 @@ export default function SuperAdminSupersetSectionsPage() {
   const [newAlias, setNewAlias] = useState('')
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
 
-  useEffect(() => {
-    if (!user) {
-      window.location.href = '/login'
-      return
-    }
-    if (!user.roles?.some(role => role === 'SUPER_ADMIN')) {
-      window.location.href = '/dashboard'
-      return
-    }
-    fetchSections()
-  }, [user])
+  const showToast = useCallback((type: 'success' | 'error', message: string) => {
+    setToast({ type, message })
+    setTimeout(() => setToast(null), 3000)
+  }, [])
 
-  const fetchSections = async () => {
+  const fetchSections = useCallback(async () => {
     try {
       setLoading(true)
       const response = await fetch('/api/super-admin/superset-sections', {
@@ -57,12 +51,19 @@ export default function SuperAdminSupersetSectionsPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [showToast])
 
-  const showToast = (type: 'success' | 'error', message: string) => {
-    setToast({ type, message })
-    setTimeout(() => setToast(null), 3000)
-  }
+  useEffect(() => {
+    if (!user) {
+      window.location.href = '/login'
+      return
+    }
+    if (!user.roles?.some(role => role === 'SUPER_ADMIN')) {
+      window.location.href = '/dashboard'
+      return
+    }
+    fetchSections()
+  }, [user, fetchSections])
 
   const handleAddAlias = async () => {
     if (!editingSection || !newAlias.trim()) return

@@ -44,6 +44,7 @@ export interface SketchGenerationRequest {
   sourceSketchId?: string // For REFINE mode or modification chains
   uploadedImageBase64?: string // For REFINE mode
   uploadedImageMimeType?: string
+  language?: string // Primary language for labels/annotations (from Stage 0)
 }
 
 export interface SketchContextBundle {
@@ -53,6 +54,7 @@ export interface SketchContextBundle {
   diagramSummaries: string[]
   referenceNumerals: Record<string, string>
   inventionType: string
+  language: string // Primary language for labels/annotations
 }
 
 export interface SketchGenerationResult {
@@ -78,7 +80,8 @@ const GEMINI_IMAGE_MODEL = 'gemini-3-pro-image-preview' // Gemini 3 Pro with ima
 export async function buildSketchContextBundle(
   patentId: string,
   sessionId: string | undefined,
-  flags: SketchContextFlags = { useIdeaSummary: true, useClaims: true, useDiagrams: true, useComponents: true }
+  flags: SketchContextFlags = { useIdeaSummary: true, useClaims: true, useDiagrams: true, useComponents: true },
+  requestedLanguage?: string
 ): Promise<SketchContextBundle> {
   const bundle: SketchContextBundle = {
     ideaSummary: '',
@@ -86,7 +89,8 @@ export async function buildSketchContextBundle(
     claims: [],
     diagramSummaries: [],
     referenceNumerals: {},
-    inventionType: 'GENERAL'
+    inventionType: 'GENERAL',
+    language: requestedLanguage || 'en'
   }
 
   // Get session with related data
@@ -103,6 +107,20 @@ export async function buildSketchContextBundle(
       }
     }
   }) : null
+
+  // Extract figures language from session if not explicitly provided
+  if (!requestedLanguage && session) {
+    const status = (session as any)?.jurisdictionDraftStatus || {}
+    if (typeof status.__figuresLanguage === 'string' && status.__figuresLanguage.trim()) {
+      bundle.language = status.__figuresLanguage.trim().toLowerCase()
+    } else {
+      // Fallback to active jurisdiction's language
+      const activeJurisdiction = ((session as any)?.activeJurisdiction || '').toUpperCase()
+      if (activeJurisdiction && status?.[activeJurisdiction]?.language) {
+        bundle.language = status[activeJurisdiction].language
+      }
+    }
+  }
 
   // 1. Idea Summary
   if (flags.useIdeaSummary && session?.ideaRecord) {
@@ -164,40 +182,44 @@ export async function buildSketchContextBundle(
  * USPTO/EPO/WIPO-compliant patent line drawing rules with anti-hallucination.
  */
 function buildSystemPrompt(): string {
-  return `You are a USPTO/EPO/WIPO-compliant patent line drawing generator. Follow ALL rules exactly. Do NOT interpret or add detail beyond the invention description.
+  return `SYSTEM ROLE — USPTO/EPO/WIPO Patent Line Drawing Generator
+
+Generate a USPTO/EPO/WIPO-compliant black-and-white line drawing. Follow ALL rules exactly. Do NOT interpret or add detail beyond the invention description.
 
 ═══════════════════════════════════════════════════════════════════════════════
 DRAWING RULES (STRICT COMPLIANCE)
 ═══════════════════════════════════════════════════════════════════════════════
-- BLACK AND WHITE LINE ART ONLY
-- Solid lines = visible features
-- Dashed lines = internal/hidden features ONLY where explicitly specified
-- Clean, precise lines suitable for patent filings
-- Professional engineering/technical drawing style
-- Clear component separation with distinct boundaries
+• Solid lines = visible features
+• Dashed lines = internal/hidden features ONLY where explicitly specified
+• Clean, precise lines suitable for patent filings
+• Professional engineering/technical drawing style
+• Clear component separation with distinct boundaries
+• NO shading, gradients, textures, icons, dimension lines, motion marks, UI elements, or decorative curves
 
 ═══════════════════════════════════════════════════════════════════════════════
-LABELING RULES (STRICT)
+LABELING RULES (STRICT — NO EXCEPTIONS)
 ═══════════════════════════════════════════════════════════════════════════════
-- ONLY numeric reference labels are allowed (100, 200, 300, etc.)
-- NO alphabetic words or text descriptions may appear in the drawing
-- NO figure numbers or "FIG." labels in the drawing
-- Each component labeled once per view unless clarity requires repetition
-- Labels must NOT overlap geometry - place clearly near components
-- Use leader lines to connect labels to components when needed
+• ONLY numeric reference labels are allowed (#100, #200, #300, etc.)
+• NO alphabetic words or text descriptions may appear ANYWHERE in the drawing
+• NO part names, titles, or descriptors in the drawing
+• NO figure numbers or "FIG." labels in the drawing
+• Each component labeled once per view unless clarity requires repetition
+• Labels must NOT overlap geometry — use leader lines to connect labels to components
+• Place labels clearly near their corresponding components
 
 ═══════════════════════════════════════════════════════════════════════════════
 PROHIBITED ELEMENTS (NO EXCEPTIONS)
 ═══════════════════════════════════════════════════════════════════════════════
-❌ Text descriptions or part names in the drawing
+❌ Text descriptions or part names
 ❌ Shading, gradients, or textures
 ❌ Icons or symbolic representations
-❌ Arrows (except as explicit flow indicators if specified)
+❌ Arrows (except as explicit flow indicators when specified)
 ❌ Dimension lines or measurements
 ❌ Motion marks or rotation indicators
 ❌ UI elements or decorative curves
 ❌ Extra components not in the invention context
 ❌ Hidden assumptions or inferred mechanical details
+❌ Symbolic embellishments
 ❌ Any element not explicitly described in the invention
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -207,24 +229,63 @@ ANTI-HALLUCINATION CONSTRAINTS
 2. Use ONLY reference numerals from the provided numeral list
 3. Do NOT invent or add components, features, or structures
 4. Do NOT assume internal mechanisms unless explicitly described
-5. If information is ambiguous or missing, use simplified block representation
+5. If information is ambiguous → use simplified block representation
 6. When in doubt between detailed and simple → choose SIMPLE + TRUTHFUL
 
 ═══════════════════════════════════════════════════════════════════════════════
-PRIORITY ORDER
+OUTPUT REQUIREMENTS
 ═══════════════════════════════════════════════════════════════════════════════
-1. Patent office compliance (USPTO/EPO/WIPO rules) - HIGHEST
-2. Truthfulness to invention context
-3. User layout/aesthetic preferences - LOWEST
+1. MAIN VIEW: Primary assembled view (orientation based on invention context)
+2. SECONDARY VIEW: Cross-section, exploded, or alternate view showing internal arrangement
+   (Use cross-section if not otherwise specified)
 
-OUTPUT: Generate a clear, patent-compliant technical sketch that accurately represents ONLY what is described in the invention context.`
+═══════════════════════════════════════════════════════════════════════════════
+ENFORCEMENT
+═══════════════════════════════════════════════════════════════════════════════
+If ANY rule would be violated, simplify the drawing until compliant.
+If the invention description is too ambiguous to draw, use simplified block diagram.
+
+═══════════════════════════════════════════════════════════════════════════════
+COMPLIANCE CHECKLIST (Self-verify before output)
+═══════════════════════════════════════════════════════════════════════════════
+✔ Only listed components shown (no extras)
+✔ Numeric labels only (#100, #200, etc.)
+✔ Two views provided (main + secondary)
+✔ Dashed lines used correctly (internal/hidden only)
+✔ No forbidden elements present`
 }
 
 /**
  * Builds the user prompt for AUTO mode generation.
  */
 function buildAutoModePrompt(context: SketchContextBundle, viewConfig?: SketchViewConfig): string {
+  // Language labels mapping
+  const languageLabels: Record<string, string> = {
+    en: 'English',
+    hi: 'Hindi',
+    ja: 'Japanese',
+    zh: 'Chinese',
+    ko: 'Korean',
+    de: 'German',
+    fr: 'French',
+    es: 'Spanish',
+    pt: 'Portuguese',
+    ru: 'Russian',
+    ar: 'Arabic',
+    it: 'Italian',
+    nl: 'Dutch',
+    sv: 'Swedish',
+  }
+  const languageLabel = languageLabels[context.language] || context.language.toUpperCase()
+
   let prompt = `Generate a USPTO/EPO/WIPO-compliant patent line drawing for this invention:
+
+═══════════════════════════════════════════════════════════════════════════════
+LANGUAGE REQUIREMENT
+═══════════════════════════════════════════════════════════════════════════════
+PRIMARY LANGUAGE: ${languageLabel} (${context.language})
+All labels, descriptions, and annotations in the drawing MUST be in ${languageLabel}.
+${context.language !== 'en' ? `Use proper ${languageLabel} characters and terminology. Only use English for standard technical terms with no ${languageLabel} equivalent.` : ''}
 
 ═══════════════════════════════════════════════════════════════════════════════
 INVENTION CONTEXT
@@ -244,7 +305,7 @@ ${context.keyComponents.map((c, i) => `- ${c}`).join('\n')}
     prompt += `REFERENCE NUMERALS (use ONLY these numbers as labels):
 ${Object.entries(context.referenceNumerals).map(([num, name]) => `${num} → ${name}`).join('\n')}
 
-IMPORTANT: In the drawing, use ONLY the numeric labels (100, 200, etc.), NOT the component names.
+IMPORTANT: In the drawing, use ONLY the numeric labels (#100, #200, etc. or as per component numbering provided), NOT the component names.
 `
   }
 
@@ -293,12 +354,11 @@ REQUIRED VIEWS
 ═══════════════════════════════════════════════════════════════════════════════
 COMPLIANCE CHECKLIST (Self-verify before output)
 ═══════════════════════════════════════════════════════════════════════════════
-✓ Only components from the provided list are shown
-✓ Only numeric reference labels (no text/names in drawing)
-✓ Solid lines for visible features, dashed for hidden/internal
-✓ No shading, gradients, textures, icons, or arrows
-✓ No dimension lines, motion marks, or decorative elements
-✓ No figure numbers or FIG. labels in the drawing
+✔ Only listed components shown (no extras)
+✔ Numeric labels only (#100, #200, etc.)
+✔ Two views provided (main + secondary)
+✔ Dashed lines used correctly (internal/hidden only)
+✔ No forbidden elements present
 
 If ANY rule would be violated, simplify the drawing until compliant.`
 
@@ -337,6 +397,38 @@ EXAMPLES OF WHAT TO IGNORE:
 }
 
 /**
+ * Builds the language requirement section for sketch prompts.
+ * Shared across all prompt modes for consistency.
+ */
+function buildLanguageRequirementSection(context: SketchContextBundle): string {
+  const languageLabels: Record<string, string> = {
+    en: 'English',
+    hi: 'Hindi',
+    ja: 'Japanese',
+    zh: 'Chinese',
+    ko: 'Korean',
+    de: 'German',
+    fr: 'French',
+    es: 'Spanish',
+    pt: 'Portuguese',
+    ru: 'Russian',
+    ar: 'Arabic',
+    it: 'Italian',
+    nl: 'Dutch',
+    sv: 'Swedish',
+  }
+  const languageLabel = languageLabels[context.language] || context.language.toUpperCase()
+  
+  return `═══════════════════════════════════════════════════════════════════════════════
+LANGUAGE REQUIREMENT
+═══════════════════════════════════════════════════════════════════════════════
+PRIMARY LANGUAGE: ${languageLabel} (${context.language})
+All labels, descriptions, and annotations in the drawing MUST be in ${languageLabel}.
+${context.language !== 'en' ? `Use proper ${languageLabel} characters and terminology. Only use English for standard technical terms with no ${languageLabel} equivalent.` : ''}
+`
+}
+
+/**
  * Builds the prompt for REFINE mode (cleaning up uploaded sketches).
  */
 function buildRefineModePrompt(
@@ -345,6 +437,7 @@ function buildRefineModePrompt(
 ): string {
   let prompt = `Interpret and refine this user-uploaded sketch into a USPTO/EPO/WIPO-compliant patent line drawing.
 
+${buildLanguageRequirementSection(context)}
 ═══════════════════════════════════════════════════════════════════════════════
 INVENTION CONTEXT (Source of Truth for components and numerals)
 ═══════════════════════════════════════════════════════════════════════════════
@@ -399,13 +492,13 @@ ${userPrompt}
 
   prompt += `
 ═══════════════════════════════════════════════════════════════════════════════
-COMPLIANCE CHECKLIST (verify before output)
+COMPLIANCE CHECKLIST (Self-verify before output)
 ═══════════════════════════════════════════════════════════════════════════════
-✓ Only official components shown (extras removed)
-✓ Only numeric labels (all text converted or removed)
-✓ Clean line art (no shading, gradients, textures)
-✓ No arrows, icons, or decorative elements
-✓ Dashed lines only for explicitly internal/hidden features`
+✔ Only listed components shown (no extras)
+✔ Numeric labels only (#100, #200, etc. or as per component numbering provided)
+✔ Clean line art (no shading, gradients, textures)
+✔ Dashed lines used correctly (internal/hidden only)
+✔ No forbidden elements present`
 
   return prompt
 }
@@ -745,12 +838,12 @@ export async function generateSketch(
       await fs.writeFile(filePath, imageBuffer)
 
       // Get image dimensions from buffer
-      const { imageSize: getImageSize } = require('image-size')
+      const imageSize = require('image-size').default || require('image-size')
       let width: number | undefined
       let height: number | undefined
       try {
         // Pass buffer directly to imageSize for more reliable parsing
-        const dimensions = getImageSize(imageBuffer)
+        const dimensions = imageSize(imageBuffer)
         width = dimensions.width
         height = dimensions.height
       } catch (e) {
@@ -1075,11 +1168,11 @@ export async function generateFromSuggestion(
       await fs.writeFile(filePath, imageBuffer)
 
       // Get image dimensions
-      const { imageSize: getImageSize } = require('image-size')
+      const imageSize = require('image-size').default || require('image-size')
       let width: number | undefined
       let height: number | undefined
       try {
-        const dimensions = getImageSize(imageBuffer)
+        const dimensions = imageSize(imageBuffer)
         width = dimensions.width
         height = dimensions.height
       } catch (e) {
@@ -1149,7 +1242,7 @@ export async function generateFromSuggestion(
 
 /**
  * Builds a focused prompt from a sketch suggestion.
- * Uses the pre-defined title and description for maximum image quality.
+ * Uses the pre-defined title and description along with full invention context.
  */
 function buildPromptFromSuggestion(
   context: SketchContextBundle,
@@ -1158,6 +1251,7 @@ function buildPromptFromSuggestion(
 ): string {
   let prompt = `Generate a USPTO/EPO/WIPO-compliant patent line drawing.
 
+${buildLanguageRequirementSection(context)}
 ═══════════════════════════════════════════════════════════════════════════════
 FIGURE TO GENERATE
 ═══════════════════════════════════════════════════════════════════════════════
@@ -1182,18 +1276,42 @@ ${context.keyComponents.map(c => `- ${c}`).join('\n')}
     prompt += `REFERENCE NUMERALS (use ONLY these numbers as labels):
 ${Object.entries(context.referenceNumerals).map(([num, name]) => `${num} → ${name}`).join('\n')}
 
-IMPORTANT: In the drawing, use ONLY the numeric labels (100, 200, etc.), NOT the component names.
+IMPORTANT: In the drawing, use ONLY the numeric labels (#100, #200, etc.), NOT the component names.
 `
   }
 
-  prompt += `
+  if (context.claims.length > 0) {
+    prompt += `KEY CLAIMS (for structural reference only):
+${context.claims.join('\n')}
+
+`
+  }
+
+  if (context.diagramSummaries.length > 0) {
+    prompt += `EXISTING DIAGRAMS (maintain visual consistency):
+${context.diagramSummaries.join('\n')}
+
+`
+  }
+
+  prompt += `INVENTION TYPE: ${context.inventionType}
+
 ═══════════════════════════════════════════════════════════════════════════════
-FOCUS ON IMAGE QUALITY
+DRAWING REQUIREMENTS
 ═══════════════════════════════════════════════════════════════════════════════
-Your ONLY task is to generate a high-quality patent-style sketch.
-- Focus all attention on accurate, detailed line art
-- Follow all patent drawing rules strictly
-- No text output needed - just generate the image`
+Generate the sketch as described in the title and description above.
+The drawing should clearly show the relevant components and their relationships.
+
+═══════════════════════════════════════════════════════════════════════════════
+COMPLIANCE CHECKLIST (Self-verify before output)
+═══════════════════════════════════════════════════════════════════════════════
+✔ Only listed components shown (no extras)
+✔ Numeric labels only (#100, #200, etc.)
+✔ Main view + secondary view provided
+✔ Dashed lines used correctly (internal/hidden only)
+✔ No forbidden elements present
+
+If ANY rule would be violated, simplify the drawing until compliant.`
 
   return prompt
 }

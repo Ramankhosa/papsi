@@ -329,7 +329,11 @@ export async function getMergedPrompt(
         sectionKey: canonicalKey
       }
     })
-    if (mapping?.heading && mapping.heading !== '(N/A)' && mapping.heading !== '(Implicit)') {
+    if (mapping?.heading && 
+        mapping.heading !== '(N/A)' && 
+        mapping.heading !== '(Implicit)' &&
+        mapping.heading !== '(Recommended/NA)' &&
+        mapping.heading !== '(Include in Detailed Desc)') {
       sectionLabel = mapping.heading
     }
   } catch (error) {
@@ -358,12 +362,14 @@ export async function getMergedPrompt(
   }
   
   // Step 10: MERGE prompts based on strategy
+  const hasUser = !!userInstr
   let mergedInstruction = mergeInstructions(
     basePrompt.instruction,
     topUp?.instruction,
     mergeStrategy,
     jurisdiction,
-    sectionLabel
+    sectionLabel,
+    hasUser
   )
   
   // Append user instructions at the end (highest priority)
@@ -381,7 +387,6 @@ export async function getMergedPrompt(
   // Build debug info
   const hasBase = !!basePrompt?.instruction
   const hasTopUp = !!topUp?.instruction
-  const hasUser = !!userInstr
   
   return {
     instruction: mergedInstruction,
@@ -410,6 +415,36 @@ export async function getMergedPrompt(
 }
 
 /**
+ * Build the priority hierarchy header for LLM prompt
+ * This helps the LLM understand which instructions take precedence in case of conflicts
+ */
+function buildPriorityHierarchyHeader(
+  jurisdiction: string,
+  hasBase: boolean,
+  hasTopUp: boolean,
+  hasUser: boolean
+): string {
+  const activeLayers: string[] = []
+  if (hasBase) activeLayers.push('BASE (universal)')
+  if (hasTopUp) activeLayers.push(`COUNTRY-SPECIFIC (${jurisdiction})`)
+  if (hasUser) activeLayers.push('USER CUSTOM (session)')
+  
+  return `
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  INSTRUCTION PRIORITY HIERARCHY (follow in case of conflicts)               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  Priority 1 (LOWEST):  BASE PROMPT - Universal patent drafting guidelines   │
+│  Priority 2 (MEDIUM):  COUNTRY TOP-UP - ${jurisdiction.padEnd(3, ' ')} jurisdiction-specific rules      │
+│  Priority 3 (HIGHEST): USER INSTRUCTIONS - Custom session instructions      │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  Active instruction layers: ${activeLayers.join(' → ').padEnd(44, ' ')} │
+│  If instructions conflict, ALWAYS follow the HIGHER priority instruction.  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+`
+}
+
+/**
  * Merge base instruction with country-specific top-up
  */
 function mergeInstructions(
@@ -417,27 +452,40 @@ function mergeInstructions(
   topUpInstruction?: string,
   strategy: MergeStrategy = 'append',
   jurisdiction?: string,
-  sectionLabel?: string
+  sectionLabel?: string,
+  hasUser?: boolean
 ): string {
+  const hasBase = !!baseInstruction
+  const hasTopUp = !!topUpInstruction
+  
+  // Add priority hierarchy header
+  const priorityHeader = buildPriorityHierarchyHeader(
+    jurisdiction || 'UNIVERSAL',
+    hasBase,
+    hasTopUp,
+    hasUser || false
+  )
+  
   if (!topUpInstruction) {
-    return baseInstruction
+    return priorityHeader + `**[PRIORITY 1 - BASE PROMPT]:**\n${baseInstruction}`
   }
   
-  const jurisdictionHeader = `\n\n**Jurisdiction-Specific Guidance (${jurisdiction}):**\n`
+  const baseLabel = '**[PRIORITY 1 - BASE PROMPT]:**\n'
+  const topUpLabel = `**[PRIORITY 2 - ${jurisdiction} COUNTRY TOP-UP]:**\n`
   
   switch (strategy) {
     case 'replace':
-      // Country completely overrides base
-      return topUpInstruction
+      // Country completely overrides base (still show hierarchy)
+      return priorityHeader + `${topUpLabel}${topUpInstruction}\n\n(Note: Country prompt replaces base prompt for this section)`
       
     case 'prepend':
       // Country guidance comes first
-      return `${jurisdictionHeader}${topUpInstruction}\n\n**Base Guidance:**\n${baseInstruction}`
+      return priorityHeader + `${topUpLabel}${topUpInstruction}\n\n${baseLabel}${baseInstruction}`
       
     case 'append':
     default:
       // Base first, then country additions
-      return `${baseInstruction}${jurisdictionHeader}${topUpInstruction}`
+      return priorityHeader + `${baseLabel}${baseInstruction}\n\n${topUpLabel}${topUpInstruction}`
   }
 }
 

@@ -16,6 +16,24 @@ type CountryOption = {
   languages: string[]
 }
 
+// Language display names
+const LANGUAGE_LABELS: Record<string, string> = {
+  en: 'English',
+  hi: 'Hindi (हिन्दी)',
+  ja: 'Japanese (日本語)',
+  zh: 'Chinese (中文)',
+  ko: 'Korean (한국어)',
+  de: 'German (Deutsch)',
+  fr: 'French (Français)',
+  es: 'Spanish (Español)',
+  pt: 'Portuguese (Português)',
+  ru: 'Russian (Русский)',
+  ar: 'Arabic (العربية)',
+  it: 'Italian (Italiano)',
+  nl: 'Dutch (Nederlands)',
+  sv: 'Swedish (Svenska)',
+}
+
 interface Project {
   id: string
   name: string
@@ -42,8 +60,137 @@ function NewPatentDraftPageContent() {
   const [loadingCountries, setLoadingCountries] = useState<boolean>(true)
   const [allowRefine, setAllowRefine] = useState<boolean>(true)
 
+  // ============================================================================
+  // LANGUAGE CONFIGURATION STATE
+  // ============================================================================
+  // Language Mode:
+  // - 'common': All content + figures in one language (requires common language across jurisdictions)
+  // - 'individual_english_figures': Each jurisdiction in its own language, figures always English
+  // Future: 'full_individual' - per-jurisdiction figures as well
+  type LanguageMode = 'common' | 'individual_english_figures'
+  
+  const [languageMode, setLanguageMode] = useState<LanguageMode>('common')
+  const [languageByJurisdiction, setLanguageByJurisdiction] = useState<Record<string, string>>({})
+  const [figuresLanguage, setFiguresLanguage] = useState<string>('en') // Primary language for diagrams/sketches
+  const [commonLanguage, setCommonLanguage] = useState<string>('en') // Used when mode='common'
+
   // Derived: currently selected project object from list
   const selectedProjectObj = projects.find(p => p.id === selectedProject)
+
+  // ============================================================================
+  // COMPUTED LANGUAGE PROPERTIES
+  // ============================================================================
+  
+  // Selected country objects
+  const selectedCountryObjects = selectedCodes.map(code => availableCountries.find(c => c.code === code)).filter(Boolean) as CountryOption[]
+  
+  // Get unique languages across all selected jurisdictions (union)
+  const allLanguagesSet = new Set<string>()
+  selectedCountryObjects.forEach(country => {
+    (country.languages || []).forEach(lang => allLanguagesSet.add(lang))
+  })
+  const allLanguages = Array.from(allLanguagesSet)
+
+  // Get common languages (intersection - supported by ALL selected jurisdictions)
+  const commonLanguages = selectedCountryObjects.length > 0
+    ? allLanguages.filter(lang => selectedCountryObjects.every(c => (c.languages || []).includes(lang)))
+    : []
+
+  // Check if all jurisdictions support English
+  const allSupportEnglish = selectedCountryObjects.every(c => (c.languages || []).includes('en'))
+  
+  // Check if there are non-English languages available
+  const hasNonEnglishLanguages = allLanguages.some(lang => lang !== 'en')
+  
+  // Check if common language mode is available (at least one shared language)
+  const canUseCommonMode = commonLanguages.length > 0 || selectedCodes.length <= 1
+  
+  // Determine if we're in a multi-jurisdiction scenario
+  const isMultiJurisdiction = selectedCodes.length > 1
+
+  // ============================================================================
+  // LANGUAGE CONFIGURATION EFFECT
+  // ============================================================================
+  
+  // Helper: Get safe language array with fallback to English
+  const getSafeLanguages = (country: CountryOption | undefined): string[] => {
+    const langs = country?.languages || []
+    // If no languages defined (data error), fallback to English
+    return langs.length > 0 ? langs : ['en']
+  }
+
+  // Effect 1: Initialize/update language defaults when jurisdictions change
+  useEffect(() => {
+    if (selectedCodes.length === 0) return
+
+    // Update per-jurisdiction language defaults
+    const newLanguageByJurisdiction: Record<string, string> = {}
+    selectedCodes.forEach(code => {
+      const country = availableCountries.find(c => c.code === code)
+      const langs = getSafeLanguages(country)
+      // Default to English if available, otherwise first language
+      const defaultLang = langs.includes('en') ? 'en' : langs[0]
+      // Preserve existing selection if valid, otherwise use default
+      const existingLang = languageByJurisdiction[code]
+      newLanguageByJurisdiction[code] = (existingLang && langs.includes(existingLang)) ? existingLang : defaultLang
+    })
+    setLanguageByJurisdiction(newLanguageByJurisdiction)
+
+    // Single jurisdiction: ALWAYS force common mode (no choice)
+    if (selectedCodes.length === 1) {
+      const country = availableCountries.find(c => c.code === selectedCodes[0])
+      const langs = getSafeLanguages(country)
+      const defaultLang = langs.includes('en') ? 'en' : langs[0]
+      setLanguageMode('common')
+      setCommonLanguage(defaultLang)
+      setFiguresLanguage(defaultLang)
+      return
+    }
+
+    // Multi-jurisdiction: smart defaults based on shared languages
+    const countriesSelected = selectedCodes.map(code => availableCountries.find(c => c.code === code)).filter(Boolean) as CountryOption[]
+    const sharedLanguages = allLanguages.filter(lang => countriesSelected.every(c => getSafeLanguages(c).includes(lang)))
+    
+    if (sharedLanguages.length > 0) {
+      // There's at least one common language - default to common mode with English (if available)
+      const preferredCommon = sharedLanguages.includes('en') ? 'en' : sharedLanguages[0]
+      // Only set defaults if not already configured (avoid overwriting user choices)
+      if (!commonLanguages.includes(commonLanguage)) {
+        setLanguageMode('common')
+        setCommonLanguage(preferredCommon)
+        setFiguresLanguage(preferredCommon)
+      }
+    } else {
+      // No common language - MUST use individual mode with English figures
+      setLanguageMode('individual_english_figures')
+      setFiguresLanguage('en') // Figures always English when no common language
+    }
+  }, [selectedCodes, availableCountries])
+
+  // Effect 2: Sync figures language when mode or common language changes
+  useEffect(() => {
+    if (languageMode === 'common') {
+      setFiguresLanguage(commonLanguage || 'en')
+    } else {
+      // Individual mode: figures always in English
+      setFiguresLanguage('en')
+    }
+  }, [languageMode, commonLanguage])
+
+  // Effect 3: Sync per-jurisdiction languages when mode changes to common
+  // This ensures all jurisdictions use the common language in common mode
+  useEffect(() => {
+    if (languageMode === 'common' && selectedCodes.length > 0 && commonLanguage) {
+      const synced: Record<string, string> = {}
+      selectedCodes.forEach(code => {
+        const country = availableCountries.find(c => c.code === code)
+        const langs = getSafeLanguages(country)
+        // In common mode, set all to common language if supported, else keep existing
+        synced[code] = langs.includes(commonLanguage) ? commonLanguage : languageByJurisdiction[code] || langs[0]
+      })
+      setLanguageByJurisdiction(synced)
+    }
+  }, [languageMode, commonLanguage, selectedCodes.length])
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -284,7 +431,7 @@ function NewPatentDraftPageContent() {
       const draftSessionData = await draftingResponse.json()
       const sessionId = draftSessionData.session.id
 
-      // Persist jurisdiction choice immediately
+      // Persist jurisdiction choice and language preferences
       const setStageResponse = await fetch(`/api/patents/${patentId}/drafting`, {
         method: 'POST',
         headers: {
@@ -297,7 +444,12 @@ function NewPatentDraftPageContent() {
           // Keep the session in the initial stage while persisting jurisdiction choice
           stage: 'IDEA_ENTRY',
           draftingJurisdictions: finalSelection,
-          activeJurisdiction: finalSelection[0]
+          activeJurisdiction: finalSelection[0],
+          // Language configuration
+          languageMode: languageMode,
+          languageByJurisdiction: languageByJurisdiction,
+          figuresLanguage: figuresLanguage,
+          commonLanguage: languageMode === 'common' ? commonLanguage : null
         })
       })
 
@@ -441,6 +593,213 @@ function NewPatentDraftPageContent() {
               <p className="text-xs text-gray-500 mt-2">
                 Your chosen active jurisdiction will drive figures and validation; you can generate other jurisdictions later.
               </p>
+
+              {/* ================================================================
+                   LANGUAGE CONFIGURATION SECTION
+                   ================================================================ */}
+              {selectedCodes.length > 0 && (
+                <div className="mt-4 pt-4 border-t border-gray-200">
+                  <div className="flex items-center justify-between mb-3">
+                    <div>
+                      <div className="text-sm font-semibold text-gray-900">Language Configuration</div>
+                      <p className="text-xs text-gray-600">Configure drafting language for content and figures</p>
+                    </div>
+                    {!canUseCommonMode && isMultiJurisdiction && (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-800">
+                        <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                        </svg>
+                        No Common Language
+                      </span>
+                    )}
+                  </div>
+
+                  {/* ============ SINGLE JURISDICTION ============ */}
+                  {!isMultiJurisdiction && (
+                    <div className="space-y-3">
+                      {(() => {
+                        const country = availableCountries.find(c => c.code === selectedCodes[0])
+                        const langs = country?.languages || []
+                        return (
+                          <div>
+                            <label className="text-xs text-gray-600 block mb-1">
+                              Drafting language for {country?.label || selectedCodes[0]}:
+                            </label>
+                            <select
+                              className="w-full border border-gray-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                              value={commonLanguage}
+                              onChange={(e) => {
+                                setCommonLanguage(e.target.value)
+                                setLanguageByJurisdiction(prev => ({ ...prev, [selectedCodes[0]]: e.target.value }))
+                              }}
+                            >
+                              {langs.map(lang => (
+                                <option key={lang} value={lang}>
+                                  {LANGUAGE_LABELS[lang] || lang.toUpperCase()}
+                                </option>
+                              ))}
+                            </select>
+                            <p className="text-xs text-gray-500 mt-1">
+                              Both content and figures will be generated in {LANGUAGE_LABELS[commonLanguage] || commonLanguage}.
+                            </p>
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  )}
+
+                  {/* ============ MULTI-JURISDICTION ============ */}
+                  {isMultiJurisdiction && (
+                    <div className="space-y-4">
+                      {/* Language Mode Selection */}
+                      <div className="bg-gray-100 rounded-lg p-3">
+                        <div className="text-xs font-medium text-gray-700 mb-2">Language Mode</div>
+                        <div className="space-y-2">
+                          {/* Common Language Mode */}
+                          <label className={`flex items-start gap-3 p-2 rounded border cursor-pointer transition-colors ${
+                            languageMode === 'common' 
+                              ? 'bg-indigo-50 border-indigo-300' 
+                              : canUseCommonMode ? 'bg-white border-gray-200 hover:bg-gray-50' : 'bg-gray-50 border-gray-200 opacity-50 cursor-not-allowed'
+                          }`}>
+                            <input
+                              type="radio"
+                              className="mt-1 h-4 w-4 text-indigo-600"
+                              checked={languageMode === 'common'}
+                              onChange={() => setLanguageMode('common')}
+                              disabled={!canUseCommonMode}
+                            />
+                            <div className="flex-1">
+                              <div className="text-sm font-medium text-gray-900">Common Language</div>
+                              <div className="text-xs text-gray-600">
+                                All content and figures in one shared language
+                                {!canUseCommonMode && <span className="text-amber-600 ml-1">(No common language available)</span>}
+                              </div>
+                              {commonLanguages.length > 0 && (
+                                <div className="text-xs text-gray-500 mt-1">
+                                  Available: {commonLanguages.map(l => LANGUAGE_LABELS[l] || l).join(', ')}
+                                </div>
+                              )}
+                            </div>
+                          </label>
+
+                          {/* Individual Languages Mode */}
+                          <label className={`flex items-start gap-3 p-2 rounded border cursor-pointer transition-colors ${
+                            languageMode === 'individual_english_figures' 
+                              ? 'bg-indigo-50 border-indigo-300' 
+                              : 'bg-white border-gray-200 hover:bg-gray-50'
+                          }`}>
+                            <input
+                              type="radio"
+                              className="mt-1 h-4 w-4 text-indigo-600"
+                              checked={languageMode === 'individual_english_figures'}
+                              onChange={() => setLanguageMode('individual_english_figures')}
+                            />
+                            <div className="flex-1">
+                              <div className="text-sm font-medium text-gray-900">Individual Languages (English Figures)</div>
+                              <div className="text-xs text-gray-600">
+                                Each jurisdiction in its own language; figures/sketches always in English
+                              </div>
+                              <div className="text-xs text-indigo-600 mt-1">
+                                ✓ Recommended for international filings with diverse language requirements
+                              </div>
+                            </div>
+                          </label>
+                        </div>
+                      </div>
+
+                      {/* Common Language Selector */}
+                      {languageMode === 'common' && canUseCommonMode && (
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                          <label className="text-xs font-medium text-green-800 block mb-2">
+                            Select common language:
+                          </label>
+                          <select
+                            className="w-full border border-green-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-green-500 bg-white"
+                            value={commonLanguage}
+                            onChange={(e) => setCommonLanguage(e.target.value)}
+                          >
+                            {commonLanguages.map(lang => (
+                              <option key={lang} value={lang}>
+                                {LANGUAGE_LABELS[lang] || lang.toUpperCase()}
+                              </option>
+                            ))}
+                          </select>
+                          <p className="text-xs text-green-700 mt-2">
+                            <span className="font-medium">✓</span> All content and figures will be generated in {LANGUAGE_LABELS[commonLanguage] || commonLanguage}.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Individual Language Configuration */}
+                      {languageMode === 'individual_english_figures' && (
+                        <div className="space-y-3">
+                          {/* Figures Language Notice */}
+                          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                            <div className="flex items-start gap-2">
+                              <svg className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                              </svg>
+                              <div className="text-sm text-blue-800">
+                                <p className="font-medium">Figures & Sketches: English Only</p>
+                                <p className="text-xs mt-1">
+                                  All diagrams, flowcharts, and technical sketches will be generated in English for universal compatibility across jurisdictions.
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Per-Jurisdiction Content Language */}
+                          <div className="border border-gray-200 rounded-lg p-3 bg-white">
+                            <label className="text-xs font-medium text-gray-700 block mb-2">
+                              Content language per jurisdiction:
+                            </label>
+                            <div className="space-y-2">
+                              {selectedCodes.map(code => {
+                                const country = availableCountries.find(c => c.code === code)
+                                // Safe languages with fallback to English if none defined
+                                const rawLangs = country?.languages || []
+                                const langs = rawLangs.length > 0 ? rawLangs : ['en']
+                                const hasNoDefinedLanguages = rawLangs.length === 0
+                                return (
+                                  <div key={code} className="flex items-center gap-3 p-2 bg-gray-50 rounded">
+                                    <span className="text-sm font-medium text-gray-800 w-20 flex-shrink-0">{code}</span>
+                                    <select
+                                      className={`flex-1 border rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 ${hasNoDefinedLanguages ? 'border-amber-300 bg-amber-50' : 'border-gray-300'}`}
+                                      value={languageByJurisdiction[code] || langs[0] || 'en'}
+                                      onChange={(e) => setLanguageByJurisdiction(prev => ({ ...prev, [code]: e.target.value }))}
+                                    >
+                                      {langs.map(lang => (
+                                        <option key={lang} value={lang}>
+                                          {LANGUAGE_LABELS[lang] || lang.toUpperCase()}
+                                        </option>
+                                      ))}
+                                    </select>
+                                    <span className={`text-xs w-28 flex-shrink-0 ${hasNoDefinedLanguages ? 'text-amber-600' : 'text-gray-500'}`}>
+                                      {hasNoDefinedLanguages ? '⚠️ Default' : `${rawLangs.length} lang${rawLangs.length !== 1 ? 's' : ''}`}
+                                    </span>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Summary */}
+                      <div className="bg-gray-50 border border-gray-200 rounded p-3 text-xs">
+                        <div className="font-medium text-gray-700 mb-1">Configuration Summary</div>
+                        <div className="text-gray-600 space-y-1">
+                          <div>• <span className="font-medium">Mode:</span> {languageMode === 'common' ? 'Common Language' : 'Individual Languages'}</div>
+                          <div>• <span className="font-medium">Figures/Sketches:</span> {LANGUAGE_LABELS[figuresLanguage] || figuresLanguage}</div>
+                          {languageMode === 'individual_english_figures' && (
+                            <div>• <span className="font-medium">Content:</span> Per-jurisdiction (see above)</div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Project Display / Selector */}
@@ -543,11 +902,11 @@ function NewPatentDraftPageContent() {
                 Note: Word documents (.docx) and PDFs are not supported yet. To convert:
               </p>
               <ul className="mt-1 text-xs text-gray-400 list-disc list-inside">
-                <li>In Word: File → Save As → Plain Text (.txt)</li>
-                <li>In Google Docs: File → Download → Plain text (.txt)</li>
+                <li>In Word: File &rarr; Save As &rarr; Plain Text (.txt)</li>
+                <li>In Google Docs: File &rarr; Download &rarr; Plain text (.txt)</li>
               </ul>
               <p className="mt-1 text-xs text-blue-600">
-                💡 Tip: If you upload a file, it will replace any text you've entered above
+                Tip: Uploading a file replaces any text you&apos;ve entered above
               </p>
             </div>
 

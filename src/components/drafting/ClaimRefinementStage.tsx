@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { AlertCircle, CheckCircle2, Sparkles, Lock } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Sparkles, Lock, Unlock, Pencil, Save, X, Plus, Trash2, Wand2, ArrowRight, ChevronDown, ChevronUp } from 'lucide-react'
 
 interface ClaimRefinementStageProps {
   session: any
@@ -151,6 +151,30 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
   const [error, setError] = useState<string | null>(null)
   const [showAdditionalInstructions, setShowAdditionalInstructions] = useState(false)
   const [additionalInstructions, setAdditionalInstructions] = useState('')
+  const [expandedPatentRefs, setExpandedPatentRefs] = useState<Set<string>>(new Set())
+  const [showPatentReferences, setShowPatentReferences] = useState(true)
+  
+  // Manual editing states
+  const [isEditMode, setIsEditMode] = useState(false)
+  const [editableClaims, setEditableClaims] = useState<ClaimRow[]>([])
+  const [savingClaims, setSavingClaims] = useState(false)
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [unfreezing, setUnfreezing] = useState(false)
+  const [showInputsPanel, setShowInputsPanel] = useState(true)
+  
+  // Check if claims are frozen
+  const isFrozen = !!normalized.claimsApprovedAt
+
+  // Toggle patent expansion
+  const togglePatentRef = (patentId: string) => {
+    setExpandedPatentRefs(prev => {
+      const next = new Set(prev)
+      if (next.has(patentId)) next.delete(patentId)
+      else next.add(patentId)
+      return next
+    })
+  }
 
   useEffect(() => {
     const mode = claimRefConfig.mode || 'ai'
@@ -170,6 +194,98 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
       setAcceptMap(defaults)
     }
   }, [preview])
+
+  // Initialize editable claims when entering edit mode or when baseClaims change
+  useEffect(() => {
+    if (isEditMode && editableClaims.length === 0) {
+      setEditableClaims([...baseClaims])
+    }
+  }, [isEditMode, baseClaims, editableClaims.length])
+
+  // Track unsaved changes
+  useEffect(() => {
+    if (isEditMode && editableClaims.length > 0) {
+      const hasChanges = editableClaims.some((ec, idx) => {
+        const original = baseClaims[idx]
+        return !original || ec.text !== original.text || ec.number !== original.number
+      }) || editableClaims.length !== baseClaims.length
+      setHasUnsavedChanges(hasChanges)
+    }
+  }, [editableClaims, baseClaims, isEditMode])
+
+  // Enter edit mode
+  const handleStartEditing = () => {
+    setEditableClaims([...baseClaims])
+    setIsEditMode(true)
+    setSuccessMessage(null)
+  }
+
+  // Cancel editing
+  const handleCancelEditing = () => {
+    setEditableClaims([])
+    setIsEditMode(false)
+    setHasUnsavedChanges(false)
+  }
+
+  // Update a claim's text
+  const handleClaimTextChange = (index: number, newText: string) => {
+    setEditableClaims(prev => {
+      const updated = [...prev]
+      updated[index] = { ...updated[index], text: newText }
+      return updated
+    })
+  }
+
+  // Add a new claim
+  const handleAddClaim = () => {
+    const maxNumber = editableClaims.reduce((max, c) => Math.max(max, c.number), 0)
+    setEditableClaims(prev => [...prev, { number: maxNumber + 1, text: '' }])
+  }
+
+  // Remove a claim
+  const handleRemoveClaim = (index: number) => {
+    setEditableClaims(prev => {
+      const updated = prev.filter((_, i) => i !== index)
+      // Renumber claims
+      return updated.map((c, idx) => ({ ...c, number: idx + 1 }))
+    })
+  }
+
+  // Save edited claims
+  const handleSaveClaims = async () => {
+    if (!session?.id) return
+    try {
+      setSavingClaims(true)
+      setError(null)
+      
+      // Convert editable claims back to HTML and structured format
+      const claimsHtml = editableClaims.map(c => `<p>${c.number}. ${c.text}</p>`).join('\n')
+      const claimsStructured = editableClaims.map(c => ({
+        number: c.number,
+        text: c.text,
+        type: c.number === 1 ? 'independent' : 'dependent',
+        category: c.number === 1 ? 'independent' : 'dependent'
+      }))
+
+      await onComplete({
+        action: 'save_claims',
+        sessionId: session.id,
+        claims: claimsHtml,
+        claimsStructured
+      })
+      
+      await onRefresh()
+      setIsEditMode(false)
+      setHasUnsavedChanges(false)
+      setSuccessMessage('Claims saved successfully!')
+      setTimeout(() => setSuccessMessage(null), 3000)
+    } catch (e) {
+      console.error('Save claims failed', e)
+      setError('Failed to save claims.')
+    } finally {
+      setSavingClaims(false)
+    }
+  }
 
   const handlePreview = async () => {
     if (!session?.id) return
@@ -217,6 +333,17 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
 
   const handleFreeze = async () => {
     if (!session?.id) return
+    
+    // Warn if there are unsaved changes
+    if (isEditMode && hasUnsavedChanges) {
+      const confirmProceed = window.confirm('You have unsaved changes. Do you want to save them before freezing?')
+      if (confirmProceed) {
+        await handleSaveClaims()
+        // Wait for refresh to complete
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+    }
+    
     try {
       setFreezing(true)
       setError(null)
@@ -233,6 +360,8 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
         stage: 'COMPONENT_PLANNER'
       })
       await onRefresh()
+      setSuccessMessage('Claims frozen and ready for next stage!')
+      setTimeout(() => setSuccessMessage(null), 3000)
     } catch (e) {
       console.error('Freeze failed', e)
       setError('Failed to freeze claims.')
@@ -241,201 +370,487 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
     }
   }
 
+  const handleUnfreeze = async () => {
+    if (!session?.id) return
+    try {
+      setUnfreezing(true)
+      setError(null)
+      await onComplete({
+        action: 'unfreeze_claims',
+        sessionId: session.id
+      })
+      await onRefresh()
+      setSuccessMessage('Claims unfrozen. You can now edit them.')
+      setTimeout(() => setSuccessMessage(null), 3000)
+    } catch (e) {
+      console.error('Unfreeze failed', e)
+      setError('Failed to unfreeze claims.')
+    } finally {
+      setUnfreezing(false)
+    }
+  }
+
   const refinedClaims = preview?.refinedClaims || []
 
   return (
-    <div className="px-6 py-8 max-w-6xl mx-auto space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-            <Sparkles className="w-6 h-6 text-indigo-600" />
-            Refine Claims based on prior art findings
-          </h2>
-          <p className="text-gray-600 text-sm mt-1">
-            Kisho will refine the claims to establish novelty against patents from the Obvious and Anticipates categories.
-          </p>
-        </div>
-        <Badge variant={normalized.claimsApprovedAt ? 'default' : 'secondary'}>
-          {normalized.claimsApprovedAt ? 'Frozen' : 'Provisional'}
-        </Badge>
-      </div>
-
-      {error && (
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      <div className="grid md:grid-cols-3 gap-4">
-        <div className="md:col-span-2 bg-white border border-gray-200 rounded-lg shadow-sm p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-semibold text-gray-900">Current / Provisional Claims</h3>
-            <Badge variant="outline">{baseClaims.length} claims</Badge>
-          </div>
-          <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
-            {baseClaims.map((c) => (
-              <div key={c.number} className="border border-gray-100 rounded-md p-3">
-                <div className="text-xs text-gray-500 mb-1">Claim {c.number}</div>
-                <div className="text-sm text-gray-800">{c.text}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-4 space-y-3">
-          <h3 className="text-sm font-semibold text-gray-900">Prior art inputs</h3>
-          <div className="space-y-2">
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input
-                type="checkbox"
-                checked={useAuto}
-                onChange={(e) => setUseAuto(e.target.checked)}
-                className="rounded border-gray-300"
-              />
-              Use automatic prior-art findings
-            </label>
-            <label className="flex items-center gap-2 text-sm text-gray-700">
-              <input
-                type="checkbox"
-                checked={useManual}
-                onChange={(e) => setUseManual(e.target.checked)}
-                className="rounded border-gray-300"
-              />
-              Use my manual prior-art notes
-            </label>
-          </div>
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white">
+      <div className="max-w-6xl mx-auto px-6 py-8 space-y-8">
+        {/* Header */}
+        <div className="flex items-start justify-between">
           <div className="space-y-1">
-            <div className="text-xs text-gray-500 font-medium">Patents selected for claim refinement</div>
-            <div className="max-h-48 overflow-y-auto space-y-1">
-              {priorArtOptions.length === 0 && (
-                <div className="bg-amber-50 border border-amber-200 rounded-md p-2">
-                  <p className="text-sm text-amber-800">No patents selected for claim refinement.</p>
-                  <p className="text-xs text-amber-600 mt-1">Go back to Related Art stage and select patents in the "Patents for Claim Refinement" tab.</p>
-                </div>
-              )}
-              {priorArtOptions.map((p: { id: string; title: string; threat: string }) => (
-                <label key={p.id} className="flex items-center gap-2 text-sm text-gray-800">
-                  <input
-                    type="checkbox"
-                    checked={selectedPatents.includes(p.id)}
-                    onChange={(e) => {
-                      setSelectedPatents((prev) => {
-                        if (e.target.checked) return Array.from(new Set([...prev, p.id]))
-                        return prev.filter((x) => x !== p.id)
-                      })
-                    }}
-                    className="rounded border-gray-300"
-                  />
-                  <span className="font-medium">{p.id}</span>
-                  <span className="text-gray-500 truncate">{p.title}</span>
-                  <Badge variant="outline" className="text-xs">{p.threat.replace('AI_', '')}</Badge>
-                </label>
-              ))}
-            </div>
-            {useManual && (claimRefManualText || (session?.manualPriorArt as any)?.manualPriorArtText || (session?.manualPriorArt as any)?.text) && (
-              <div className="text-xs text-gray-500">
-                Using manual notes from claim refinement setup.
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-indigo-200">
+                <Wand2 className="w-5 h-5 text-white" />
               </div>
-            )}
-            <div className="pt-2 border-t border-gray-100 space-y-2">
-              <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={showAdditionalInstructions}
-                  onChange={(e) => setShowAdditionalInstructions(e.target.checked)}
-                  className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                />
-                <span className="font-medium">Additional Instructions</span>
-              </label>
-              {showAdditionalInstructions && (
-                <div className="space-y-1">
-                  <div className="flex items-center gap-1 text-xs text-amber-700 bg-amber-50 px-2 py-1 rounded">
-                    <AlertCircle className="w-3 h-3" />
-                    <span>These instructions are treated as MANDATORY. The LLM must follow them or explicitly fail.</span>
-                  </div>
-                  <textarea
-                    className="w-full border border-indigo-200 rounded-md text-sm p-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-indigo-50"
-                    rows={3}
-                    placeholder="Example: Ensure claims emphasize safety interlocks and exclude battery charging. Focus on novelty over patent XYZ."
-                    value={additionalInstructions}
-                    onChange={(e) => setAdditionalInstructions(e.target.value)}
-                  />
-                </div>
-              )}
+              <div>
+                <h1 className="text-2xl font-semibold text-slate-900 tracking-tight">Claim Refinement</h1>
+                <p className="text-slate-500 text-sm">AI-powered novelty optimization</p>
+              </div>
             </div>
           </div>
-          <div className="flex flex-col gap-2">
-            <Button onClick={handlePreview} disabled={loadingPreview} className="w-full">
-              {loadingPreview ? 'Generating refined objectives…' : 'Generate Refined Objectives'}
-            </Button>
-            <Button variant="outline" onClick={handleApply} disabled={applying || !preview} className="w-full">
-              {applying ? 'Applying...' : 'Apply selected refinements'}
-            </Button>
-            <Button variant="outline" onClick={handleFreeze} disabled={freezing} className="w-full bg-emerald-600 text-white hover:bg-emerald-700">
-              <Lock className="w-4 h-4 mr-2" />
-              {freezing ? 'Freezing...' : 'Freeze Final Claims'}
-            </Button>
+          <div className={`px-3 py-1.5 rounded-full text-xs font-medium ${
+            isFrozen 
+              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+              : 'bg-amber-50 text-amber-700 border border-amber-200'
+          }`}>
+            {isFrozen ? '✓ Claims Finalized' : '○ Draft Mode'}
           </div>
         </div>
-      </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-4 space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-900">Refinement preview</h3>
-          {preview && <Badge variant="secondary">Generated</Badge>}
-        </div>
-        {!preview && (
-          <p className="text-sm text-gray-600">Generate refinement suggestions to compare against your current claims.</p>
+        {/* Alerts */}
+        {error && (
+          <div className="bg-red-50 border border-red-100 rounded-xl p-4 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+            <div className="text-sm text-red-700">{error}</div>
+          </div>
         )}
-        {preview && (
-          <div className="space-y-3">
-            {baseClaims.map((c) => {
-              const refined = refinedClaims.find((r: any) => Number(r.number) === Number(c.number))
-              const refinedText = refined?.refined_text || ''
-              const originalText = refined?.original_text || c.text
-              const accepted = acceptMap[c.number] ?? Boolean(refinedText)
-              return (
-                <div key={c.number} className="border border-gray-100 rounded-md p-3">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2 text-sm text-gray-900">
-                      <span className="font-semibold">Claim {c.number}</span>
-                      {refinedText ? (
-                        <Badge variant="outline" className="text-xs text-emerald-700 border-emerald-200 bg-emerald-50">Refined</Badge>
-                      ) : (
-                        <Badge variant="outline" className="text-xs text-gray-600 border-gray-200">Keep as is</Badge>
+
+        {successMessage && (
+          <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-4 flex items-start gap-3">
+            <CheckCircle2 className="w-5 h-5 text-emerald-500 flex-shrink-0 mt-0.5" />
+            <div className="text-sm text-emerald-700">{successMessage}</div>
+          </div>
+        )}
+
+        {/* Main Content Grid */}
+        <div className="grid lg:grid-cols-5 gap-6">
+          {/* Claims Panel - 3 columns */}
+          <div className="lg:col-span-3 space-y-4">
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <h2 className="font-medium text-slate-900">
+                    {isEditMode ? 'Editing Claims' : 'Your Claims'}
+                  </h2>
+                  <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-xs font-medium">
+                    {isEditMode ? editableClaims.length : baseClaims.length}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {!isEditMode ? (
+                    <button
+                      onClick={handleStartEditing}
+                      disabled={isFrozen}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                      Edit
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={handleCancelEditing}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-500 hover:text-slate-700 hover:bg-slate-50 rounded-lg transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleSaveClaims}
+                        disabled={savingClaims || !hasUnsavedChanges}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors disabled:opacity-50"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        {savingClaims ? 'Saving...' : 'Save'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {isFrozen && !isEditMode && (
+                <div className="px-5 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between">
+                  <span className="text-xs text-slate-600">Claims are locked. Unlock to make changes.</span>
+                  <button
+                    onClick={handleUnfreeze}
+                    disabled={unfreezing}
+                    className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-amber-700 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 rounded-lg transition-colors"
+                  >
+                    <Unlock className="w-3 h-3" />
+                    {unfreezing ? 'Unlocking...' : 'Unlock'}
+                  </button>
+                </div>
+              )}
+
+              {hasUnsavedChanges && isEditMode && (
+                <div className="px-5 py-2.5 bg-blue-50 border-b border-blue-100 flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                  <span className="text-xs text-blue-700">Unsaved changes</span>
+                </div>
+              )}
+
+              <div className="p-5 max-h-[480px] overflow-y-auto space-y-3">
+                {isEditMode ? (
+                  <>
+                    {editableClaims.map((c, index) => (
+                      <div key={index} className="group relative">
+                        <div className="absolute -left-3 top-3 w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 text-xs font-medium flex items-center justify-center">
+                          {c.number}
+                        </div>
+                        <div className="ml-5 bg-slate-50 rounded-xl p-4 border border-slate-200 hover:border-indigo-200 transition-colors">
+                          <textarea
+                            value={c.text}
+                            onChange={(e) => handleClaimTextChange(index, e.target.value)}
+                            className="w-full text-sm text-slate-700 bg-transparent border-0 p-0 focus:outline-none focus:ring-0 resize-none min-h-[60px]"
+                            placeholder="Enter claim text..."
+                          />
+                          <button
+                            onClick={() => handleRemoveClaim(index)}
+                            className="absolute top-2 right-2 p-1.5 text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    <button
+                      onClick={handleAddClaim}
+                      className="ml-5 w-[calc(100%-1.25rem)] py-3 border-2 border-dashed border-slate-200 rounded-xl text-sm text-slate-400 hover:text-indigo-600 hover:border-indigo-300 transition-colors flex items-center justify-center gap-2"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add claim
+                    </button>
+                  </>
+                ) : (
+                  baseClaims.map((c) => (
+                    <div key={c.number} className="flex gap-3">
+                      <div className="w-6 h-6 rounded-full bg-slate-100 text-slate-500 text-xs font-medium flex items-center justify-center flex-shrink-0 mt-0.5">
+                        {c.number}
+                      </div>
+                      <div className="text-sm text-slate-700 leading-relaxed">{c.text}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* AI Preview Panel */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-violet-500" />
+                  <h2 className="font-medium text-slate-900">AI Suggestions</h2>
+                </div>
+                {preview && (
+                  <span className="px-2 py-0.5 rounded-full bg-violet-50 text-violet-600 text-xs font-medium">
+                    {refinedClaims.filter((r: any) => r.refined_text).length} refined
+                  </span>
+                )}
+              </div>
+              <div className="p-5">
+                {!preview ? (
+                  <div className="text-center py-8">
+                    <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center mx-auto mb-3">
+                      <Wand2 className="w-6 h-6 text-slate-400" />
+                    </div>
+                    <p className="text-sm text-slate-500">Run AI refinement to see suggestions</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {baseClaims.map((c) => {
+                      const refined = refinedClaims.find((r: any) => Number(r.number) === Number(c.number))
+                      const refinedText = refined?.refined_text || ''
+                      const originalText = refined?.original_text || c.text
+                      const accepted = acceptMap[c.number] ?? Boolean(refinedText)
+                      
+                      return (
+                        <div key={c.number} className={`rounded-xl p-4 transition-colors bg-white border ${
+                          refinedText ? 'border-emerald-200' : 'border-slate-200'
+                        }`}>
+                          <div className="flex items-center justify-between mb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-medium text-slate-500">Claim {c.number}</span>
+                              {refinedText ? (
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 text-[10px] font-medium">Modified</span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 text-[10px] font-medium">Unchanged</span>
+                              )}
+                            </div>
+                            {refinedText && (
+                              <label className="flex items-center gap-1.5 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={accepted}
+                                  onChange={(e) => setAcceptMap((prev) => ({ ...prev, [c.number]: e.target.checked }))}
+                                  className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                />
+                                <span className="text-[10px] text-slate-500">Accept</span>
+                              </label>
+                            )}
+                          </div>
+                          <div className="text-sm">
+                            {refinedText ? renderDiff(originalText, refinedText) : (
+                              <span className="text-slate-600">{originalText}</span>
+                            )}
+                          </div>
+                          {refined?.change_reason && (
+                            <div className="mt-2 pt-2 border-t border-emerald-100 text-xs text-emerald-700 flex items-start gap-1.5">
+                              <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                              <span>{refined.change_reason}</span>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Actions Panel - 2 columns */}
+          <div className="lg:col-span-2 space-y-4">
+            {/* Workflow Steps */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-100">
+                <h2 className="font-medium text-slate-900">Workflow</h2>
+              </div>
+              <div className="p-5 space-y-3">
+                {/* Step 1 */}
+                <button
+                  onClick={handlePreview}
+                  disabled={loadingPreview || isFrozen}
+                  className="w-full group"
+                >
+                  <div className={`flex items-center gap-4 p-4 rounded-xl border-2 transition-all ${
+                    loadingPreview 
+                      ? 'border-indigo-300 bg-indigo-50' 
+                      : 'border-slate-200 hover:border-indigo-300 hover:bg-indigo-50/50'
+                  } ${isFrozen ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                    <div className="w-8 h-8 rounded-full bg-indigo-600 text-white text-sm font-semibold flex items-center justify-center flex-shrink-0">
+                      1
+                    </div>
+                    <div className="flex-1 text-left">
+                      <div className="font-medium text-slate-900 text-sm">Generate Refinements</div>
+                      <div className="text-xs text-slate-500">AI analyzes claims against patents</div>
+                    </div>
+                    {loadingPreview ? (
+                      <div className="w-5 h-5 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <Wand2 className="w-5 h-5 text-slate-400 group-hover:text-indigo-600 transition-colors" />
+                    )}
+                  </div>
+                </button>
+
+                {/* Arrow */}
+                <div className="flex justify-center">
+                  <ArrowRight className="w-4 h-4 text-slate-300 rotate-90" />
+                </div>
+
+                {/* Step 2 */}
+                <button
+                  onClick={handleApply}
+                  disabled={applying || !preview || isFrozen}
+                  className="w-full group"
+                >
+                  <div className={`flex items-center gap-4 p-4 rounded-xl border-2 transition-all ${
+                    applying 
+                      ? 'border-violet-300 bg-violet-50' 
+                      : !preview 
+                        ? 'border-slate-100 bg-slate-50 opacity-60' 
+                        : 'border-slate-200 hover:border-violet-300 hover:bg-violet-50/50'
+                  } ${isFrozen ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                    <div className={`w-8 h-8 rounded-full text-sm font-semibold flex items-center justify-center flex-shrink-0 ${
+                      preview ? 'bg-violet-600 text-white' : 'bg-slate-200 text-slate-400'
+                    }`}>
+                      2
+                    </div>
+                    <div className="flex-1 text-left">
+                      <div className="font-medium text-slate-900 text-sm">Apply Changes</div>
+                      <div className="text-xs text-slate-500">Accept selected refinements</div>
+                    </div>
+                    {applying ? (
+                      <div className="w-5 h-5 border-2 border-violet-600 border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <CheckCircle2 className={`w-5 h-5 transition-colors ${preview ? 'text-slate-400 group-hover:text-violet-600' : 'text-slate-300'}`} />
+                    )}
+                  </div>
+                </button>
+
+                {/* Arrow */}
+                <div className="flex justify-center">
+                  <ArrowRight className="w-4 h-4 text-slate-300 rotate-90" />
+                </div>
+
+                {/* Step 3 - Freeze/Unfreeze */}
+                <button
+                  onClick={isFrozen ? handleUnfreeze : handleFreeze}
+                  disabled={freezing || unfreezing}
+                  className="w-full group"
+                >
+                  <div className={`flex items-center gap-4 p-4 rounded-xl border-2 transition-all ${
+                    isFrozen 
+                      ? 'border-emerald-200 bg-emerald-50 hover:border-amber-300 hover:bg-amber-50' 
+                      : 'border-slate-200 hover:border-emerald-300 hover:bg-emerald-50/50'
+                  }`}>
+                    <div className={`w-8 h-8 rounded-full text-sm font-semibold flex items-center justify-center flex-shrink-0 ${
+                      isFrozen ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500'
+                    }`}>
+                      3
+                    </div>
+                    <div className="flex-1 text-left">
+                      <div className="font-medium text-slate-900 text-sm">
+                        {isFrozen ? 'Unlock Claims' : 'Finalize Claims'}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {isFrozen ? 'Unlock to make more changes' : 'Lock and proceed to next stage'}
+                      </div>
+                    </div>
+                    {(freezing || unfreezing) ? (
+                      <div className="w-5 h-5 border-2 border-emerald-600 border-t-transparent rounded-full animate-spin" />
+                    ) : isFrozen ? (
+                      <Unlock className="w-5 h-5 text-amber-500 group-hover:text-amber-600 transition-colors" />
+                    ) : (
+                      <Lock className="w-5 h-5 text-slate-400 group-hover:text-emerald-600 transition-colors" />
+                    )}
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* Inputs Panel */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+              <button
+                onClick={() => setShowInputsPanel(!showInputsPanel)}
+                className="w-full px-5 py-4 flex items-center justify-between hover:bg-slate-50 transition-colors"
+              >
+                <h2 className="font-medium text-slate-900">Refinement Settings</h2>
+                {showInputsPanel ? (
+                  <ChevronUp className="w-4 h-4 text-slate-400" />
+                ) : (
+                  <ChevronDown className="w-4 h-4 text-slate-400" />
+                )}
+              </button>
+              
+              {showInputsPanel && (
+                <div className="px-5 pb-5 space-y-4 border-t border-slate-100 pt-4">
+                  {/* Source toggles */}
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 hover:bg-slate-100 cursor-pointer transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={useAuto}
+                        onChange={(e) => setUseAuto(e.target.checked)}
+                        className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <div>
+                        <div className="text-sm font-medium text-slate-700">Patent References</div>
+                        <div className="text-xs text-slate-500">{priorArtOptions.length} selected</div>
+                      </div>
+                    </label>
+                    <label className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 hover:bg-slate-100 cursor-pointer transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={useManual}
+                        onChange={(e) => setUseManual(e.target.checked)}
+                        className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <div>
+                        <div className="text-sm font-medium text-slate-700">Manual Notes</div>
+                        <div className="text-xs text-slate-500">Custom guidance</div>
+                      </div>
+                    </label>
+                  </div>
+
+                  {priorArtOptions.length === 0 && (
+                    <div className="p-3 rounded-lg bg-amber-50 border border-amber-100">
+                      <p className="text-xs text-amber-700">No patents selected. Go to Related Art stage to select patents for refinement.</p>
+                    </div>
+                  )}
+
+                  {priorArtOptions.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium text-slate-500">Selected Patents</span>
+                        <button
+                          onClick={() => setShowPatentReferences(!showPatentReferences)}
+                          className="text-xs text-indigo-600 hover:text-indigo-700"
+                        >
+                          {showPatentReferences ? 'Hide' : 'Show'}
+                        </button>
+                      </div>
+                      {showPatentReferences && (
+                        <div className="max-h-48 overflow-y-auto space-y-1.5 p-2 bg-slate-50 rounded-lg">
+                          {claimRefSelectedPatentsFromConfig.map((patent: any) => {
+                            const patentId = patent?.patentNumber || patent?.pn || patent?.id || ''
+                            const threat = patent?.noveltyThreat || resolveThreat(patent?.tags, patent?.noveltyThreat)
+                            return (
+                              <label key={patentId} className="flex items-center gap-2 p-2 rounded-lg hover:bg-white cursor-pointer transition-colors">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedPatents.includes(patentId)}
+                                  onChange={(e) => {
+                                    setSelectedPatents((prev) => {
+                                      if (e.target.checked) return [...prev, patentId]
+                                      return prev.filter((x) => x !== patentId)
+                                    })
+                                  }}
+                                  className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600"
+                                />
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-xs font-mono text-slate-600 truncate">{patentId}</div>
+                                </div>
+                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${
+                                  threat === 'anticipates' ? 'bg-red-100 text-red-700' :
+                                  threat === 'obvious' ? 'bg-amber-100 text-amber-700' :
+                                  'bg-slate-100 text-slate-600'
+                                }`}>
+                                  {threat}
+                                </span>
+                              </label>
+                            )
+                          })}
+                        </div>
                       )}
                     </div>
-                    {refinedText && (
-                      <label className="flex items-center gap-2 text-sm text-gray-700">
-                        <input
-                          type="checkbox"
-                          checked={accepted}
-                          onChange={(e) => setAcceptMap((prev) => ({ ...prev, [c.number]: e.target.checked }))}
-                          className="rounded border-gray-300"
-                        />
-                        Accept refinement
-                      </label>
-                    )}
-                  </div>
+                  )}
+
+                  {/* Additional Instructions */}
                   <div className="space-y-2">
-                    <div className="text-xs text-gray-500">Diff</div>
-                    {refinedText ? renderDiff(originalText, refinedText) : <div className="text-sm text-gray-700">{originalText}</div>}
-                    {refined?.change_reason && (
-                      <div className="text-xs text-gray-500 flex items-center gap-1">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                        {refined.change_reason}
-                      </div>
-                    )}
-                    {refined?.prior_art_refs && refined.prior_art_refs.length > 0 && (
-                      <div className="text-xs text-gray-500">Refs: {refined.prior_art_refs.join(', ')}</div>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={showAdditionalInstructions}
+                        onChange={(e) => setShowAdditionalInstructions(e.target.checked)}
+                        className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600"
+                      />
+                      <span className="text-xs font-medium text-slate-600">Custom Instructions</span>
+                    </label>
+                    {showAdditionalInstructions && (
+                      <textarea
+                        className="w-full text-sm text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-none"
+                        rows={3}
+                        placeholder="E.g., Focus on mechanical aspects, exclude software claims..."
+                        value={additionalInstructions}
+                        onChange={(e) => setAdditionalInstructions(e.target.value)}
+                      />
                     )}
                   </div>
                 </div>
-              )
-            })}
+              )}
+            </div>
           </div>
-        )}
+        </div>
       </div>
     </div>
   )

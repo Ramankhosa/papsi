@@ -6,7 +6,8 @@ import {
   getAllUserInstructions,
   deleteUserInstruction,
   deactivateUserInstruction,
-  invalidateSessionInstructionCache
+  invalidateSessionInstructionCache,
+  cloneInstructionsBetweenSessions
 } from '@/lib/user-instruction-service'
 
 export const runtime = 'nodejs'
@@ -60,7 +61,29 @@ export async function GET(
     }
 
     // Get all instructions for session
-    const instructions = await getAllUserInstructions(sessionId, jurisdiction || undefined)
+    let instructions = await getAllUserInstructions(sessionId, jurisdiction || undefined)
+
+    // If none exist for this session, attempt to clone from the latest prior session for this patent/user
+    if (!instructions.length) {
+      const fallbackSession = await prisma.draftingSession.findFirst({
+        where: {
+          patentId: params.patentId,
+          userId: authResult.user.id,
+          NOT: { id: sessionId },
+          userSectionInstructions: { some: {} }
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true }
+      })
+
+      if (fallbackSession?.id) {
+        const copied = await cloneInstructionsBetweenSessions(fallbackSession.id, sessionId)
+        if (copied > 0) {
+          instructions = await getAllUserInstructions(sessionId, jurisdiction || undefined)
+          console.log(`[UserInstructions:GET] Auto-copied ${copied} instructions from ${fallbackSession.id} to ${sessionId}`)
+        }
+      }
+    }
     
     // Group by jurisdiction for easier frontend use
     const grouped: Record<string, Record<string, any>> = {}

@@ -143,6 +143,7 @@ model User {
   // Auth tokens
   emailVerificationTokens EmailVerificationToken[]
   passwordResetTokens     PasswordResetToken[]
+  refreshTokens           RefreshToken[]
 
   // Idea Bank relations
   createdIdeaBankIdeas    IdeaBankIdea[]         @relation("IdeaBankIdeaCreator")
@@ -208,6 +209,28 @@ model PasswordResetToken {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("password_reset_tokens")
+}
+
+// Refresh tokens for JWT rotation (stored for revocation capability)
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique // SHA256 hash of the token
+  familyId  String   // Token family for rotation detection
+  expiresAt DateTime
+  isRevoked Boolean  @default(false)
+  revokedAt DateTime?
+  revokedReason String? // "logout", "rotation", "security", "admin"
+  userAgent String?  // Browser/device info for session management
+  ipAddress String?  // IP address at token creation
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([familyId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }
 
 model ATIToken {
@@ -1554,6 +1577,11 @@ model DraftingSession {
   // Sketch records
   sketchRecords           SketchRecord[]
 
+  // Figure sequence for unified ordering of diagrams + sketches
+  // Array of { type: 'diagram'|'sketch', sourceId: string, finalFigNo: number }
+  figureSequence          Json?
+  figureSequenceFinalized Boolean @default(false) @map("figure_sequence_finalized")
+
   @@map("drafting_sessions")
 }
 
@@ -1642,6 +1670,10 @@ model DiagramSource {
   imagePath       String?
   imageChecksum   String?
   imageUploadedAt DateTime?
+  
+  // Original image backup (for image editor restore)
+  originalImagePath     String?
+  originalImageFilename String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

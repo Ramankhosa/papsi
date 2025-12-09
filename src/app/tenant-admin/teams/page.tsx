@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 
 interface TeamMember {
@@ -55,7 +55,7 @@ export default function TenantAdminTeamsPage() {
   const [newTeamIsDefault, setNewTeamIsDefault] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  const fetchTeams = async () => {
+  const fetchTeams = useCallback(async () => {
     if (!token) return
     
     try {
@@ -75,11 +75,11 @@ export default function TenantAdminTeamsPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [token])
 
   useEffect(() => {
     fetchTeams()
-  }, [token])
+  }, [fetchTeams])
 
   const handleCreateTeam = async () => {
     if (!newTeamName.trim() || !token) return

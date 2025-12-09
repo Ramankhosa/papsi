@@ -1,25 +1,59 @@
 # 🌱 Seed Scripts for Production Deployment
 
-This folder contains all database seed scripts needed for deploying the multi-country patent filing system.
+This folder contains utility scripts for the multi-country patent filing system.
 
-## Quick Start
+## Master Seed Script
+
+**All country-specific seeding is now consolidated into a single script:**
 
 ```bash
+# Location: Countries/MasterSeed.js
+
 # Run all seeds in correct order
-node Seed/seed-all.js
+node Countries/MasterSeed.js
 
 # Run with force (overwrite existing)
-node Seed/seed-all.js --force
+node Countries/MasterSeed.js --force
 
 # Dry run (preview without changes)
-node Seed/seed-all.js --dry-run
+node Countries/MasterSeed.js --dry-run
+
+# Seed specific country only
+node Countries/MasterSeed.js --country=IN
+
+# Skip jurisdiction styles (diagram/export configs)
+node Countries/MasterSeed.js --skip-styles
 ```
 
-## Individual Seeds
+## What MasterSeed.js Does
 
-### 1. Superset Sections (`seed-superset-sections.js`)
+The master seed script handles all country-specific data in the correct order:
 
-Seeds the 15 universal patent sections that form the foundation:
+1. **Superset Sections** - 17 universal patent sections (title, background, claims, etc.)
+2. **Country Names** - 28+ countries with continents
+3. **Country Section Mappings** - Which sections apply to each jurisdiction
+4. **Country Section Prompts** - Top-up prompts for jurisdiction-specific drafting
+5. **Country Profiles** - Full country configuration from JSON files
+6. **Jurisdiction Styles** - Diagram, export, and validation configs
+
+## Database Tables Populated
+
+| Table | Purpose |
+|-------|---------|
+| `superset_sections` | 17 universal section definitions |
+| `country_names` | Country code → name mapping |
+| `country_profiles` | Country configurations & metadata |
+| `country_section_mappings` | Which sections each country uses |
+| `country_section_prompts` | Country-specific prompt top-ups |
+| `country_section_prompt_history` | Audit trail for prompt changes |
+| `country_diagram_config` | Drawing/diagram rules per country |
+| `country_diagram_hint` | Diagram generation hints |
+| `country_export_config` | PDF/document export settings |
+| `country_export_heading` | Section heading styles |
+| `country_section_validation` | Word/char limits, legal requirements |
+| `country_cross_validation` | Cross-section consistency checks |
+
+## Superset Sections (17 Universal Sections)
 
 | # | Section Key | Required |
 |---|-------------|----------|
@@ -38,24 +72,13 @@ Seeds the 15 universal patent sections that form the foundation:
 | 13 | industrialApplicability | No |
 | 14 | claims | Yes |
 | 15 | abstract | Yes |
+| 16 | listOfNumerals | No |
+| 17 | crossReference | No |
 
-```bash
-node Seed/seed-superset-sections.js
-node Seed/seed-superset-sections.js --force    # Overwrite existing
-node Seed/seed-superset-sections.js --dry-run  # Preview changes
-```
+## Supported Countries
 
-### 2. Country Profiles (`seed-country-profiles.js`)
+Country configurations are loaded from JSON files in `Countries/`:
 
-Seeds country profiles from JSON files in `Countries/`:
-
-```bash
-node Seed/seed-country-profiles.js
-node Seed/seed-country-profiles.js --country=IN  # Specific country
-node Seed/seed-country-profiles.js --force       # Overwrite existing
-```
-
-Reads from:
 - `Countries/IN.json` → India
 - `Countries/US.json` → United States
 - `Countries/AU.json` → Australia
@@ -63,36 +86,7 @@ Reads from:
 - `Countries/pct.json` → PCT (International)
 - `Countries/canada.json` → Canada
 
-### 3. Section Prompts (`seed-section-prompts.js`)
-
-Seeds country-specific top-up prompts that merge with superset:
-
-```bash
-node Seed/seed-section-prompts.js
-node Seed/seed-section-prompts.js --country=IN  # Specific country
-node Seed/seed-section-prompts.js --force       # Overwrite existing
-```
-
-## Execution Order
-
-**IMPORTANT:** Seeds must run in this order:
-
-1. **Superset Sections** - Creates foundation tables
-2. **Country Profiles** - Creates country configurations  
-3. **Section Prompts** - Creates top-up prompts (depends on above)
-
-The `seed-all.js` script handles this automatically.
-
-## Database Tables Populated
-
-| Table | Purpose |
-|-------|---------|
-| `superset_sections` | 15 universal section definitions |
-| `country_profiles` | Country configurations & metadata |
-| `country_names` | Country code → name mapping |
-| `country_section_mappings` | Which sections each country uses |
-| `country_section_prompts` | Country-specific prompt top-ups |
-| `country_section_prompt_history` | Audit trail for prompt changes |
+Additional countries are loaded from `production-seed-backup.json`.
 
 ## Prerequisites
 
@@ -134,8 +128,13 @@ Check JSON syntax in `Countries/*.json` files.
 
 ## Adding New Countries
 
-1. Create `Countries/XX.json` (use `Countries/TEMPLATE_COUNTRY.json`)
-2. Run: `node Seed/seed-country-profiles.js --country=XX`
-3. Run: `node Seed/seed-section-prompts.js --country=XX`
-4. Or use admin UI: `/super-admin/jurisdiction-config` → Add Country
+1. Create `Countries/XX.json` (use `Countries/TEMPLATE_COUNTRY.json` as template)
+2. Run: `node Countries/MasterSeed.js --country=XX`
+3. Or use admin UI: `/super-admin/jurisdiction-config` → Add Country
 
+## Other Utility Scripts in This Folder
+
+| Script | Purpose |
+|--------|---------|
+| `create-tenant-admin.js` | Create tenant admin users |
+| `reset-password.js` | Reset user passwords |

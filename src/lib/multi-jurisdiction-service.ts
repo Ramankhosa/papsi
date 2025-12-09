@@ -82,52 +82,162 @@ export const OPTIONAL_SUPERSET_SECTIONS = [
 export const FULL_SUPERSET_SECTIONS = [...SUPERSET_SECTIONS, ...OPTIONAL_SUPERSET_SECTIONS]
 
 // Alias mapping for backward compatibility and flexible key resolution
+// Includes country-specific keys (JP, IN, CN, etc.) that map to superset keys
 export const SUPERSET_KEY_ALIASES: Record<string, string> = {
+  // Field of Invention aliases
   'field': 'fieldOfInvention',
   'technicalField': 'fieldOfInvention',
   'technical_field': 'fieldOfInvention',
   'field_of_invention': 'fieldOfInvention',
+  'techfield': 'fieldOfInvention',           // JP-specific
+  'technicalfield': 'fieldOfInvention',
+  
+  // Background aliases
   'backgroundOfInvention': 'background',
   'background_of_invention': 'background',
   'priorArt': 'background',
   'prior_art': 'background',
+  'backgroundart': 'background',             // PCT/JP
+  'background_art': 'background',
+  
+  // Objects of Invention aliases
   'objects': 'objectsOfInvention',
   'objects_of_invention': 'objectsOfInvention',
+  
+  // Summary aliases
   'summaryOfInvention': 'summary',
   'summary_of_invention': 'summary',
   'disclosureOfInvention': 'summary',
+  'summary(gen)': 'summary',                 // JP-specific
+  'summaryoftheinvention': 'summary',
+  
+  // Technical Problem aliases
   'technical_problem': 'technicalProblem',
+  '07a.techproblem': 'technicalProblem',     // JP-specific
+  'techproblem': 'technicalProblem',
+  'problemtobesolved': 'technicalProblem',
+  'problem_to_be_solved': 'technicalProblem',
+  
+  // Technical Solution aliases
   'technical_solution': 'technicalSolution',
+  '07b.techsolution': 'technicalSolution',   // JP-specific
+  'techsolution': 'technicalSolution',
+  'solutiontoproblem': 'technicalSolution',
+  'solution_to_problem': 'technicalSolution',
+  'meansforsolving': 'technicalSolution',
+  
+  // Advantageous Effects aliases
   'advantageous_effects': 'advantageousEffects',
+  '07c.effects': 'advantageousEffects',      // JP-specific
+  'effects': 'advantageousEffects',
+  'beneficialeffects': 'advantageousEffects',
+  'beneficial_effects': 'advantageousEffects',
+  
+  // Brief Description of Drawings aliases
   'brief_description_of_drawings': 'briefDescriptionOfDrawings',
   'brief_drawings': 'briefDescriptionOfDrawings',
   'drawings': 'briefDescriptionOfDrawings',
+  'briefdescriptionofdrawings': 'briefDescriptionOfDrawings',
+  'figuredescription': 'briefDescriptionOfDrawings',
+  
+  // Detailed Description aliases
   'detailed_description': 'detailedDescription',
   'detailedDescriptionOfInvention': 'detailedDescription',
+  'detaileddesc': 'detailedDescription',     // JP-specific
+  'detaileddescription': 'detailedDescription',
+  'descriptionofembodiments': 'detailedDescription',
+  'description_of_embodiments': 'detailedDescription',
+  'embodiments': 'detailedDescription',
+  
+  // Best Mode aliases
   'bestMethod': 'bestMode',
   'best_method': 'bestMode',
   'best_mode': 'bestMode',
+  'bestmodeofcarryingout': 'bestMode',
+  
+  // Industrial Applicability aliases
   'industrial_applicability': 'industrialApplicability',
   'utility': 'industrialApplicability',
+  'ind.applicability': 'industrialApplicability',  // IN/JP-specific
+  'industrialapplicability': 'industrialApplicability',
+  'industryapplicability': 'industrialApplicability',
+  
+  // List of Numerals aliases
   'list_of_numerals': 'listOfNumerals',
   'referenceNumerals': 'listOfNumerals',
   'reference_numerals': 'listOfNumerals',
+  'listofreferencenumerals': 'listOfNumerals',
+  'referencesigns': 'listOfNumerals',
+  
+  // Cross Reference aliases
   'cross_reference': 'crossReference',
-  'relatedApplications': 'crossReference'
+  'relatedApplications': 'crossReference',
+  'crossreferencetorealtedapplications': 'crossReference',
+  'priorityclaims': 'crossReference',
+  
+  // Title aliases
+  'titleofinvention': 'title',
+  'title_of_invention': 'title',
+  
+  // Abstract aliases
+  'abstractofinvention': 'abstract',
+  'abstract_of_invention': 'abstract',
+  
+  // Claims aliases
+  'patentclaims': 'claims',
+  'patent_claims': 'claims'
 }
 
 /**
  * Normalize a section key to its canonical superset key
+ * Handles various formats: camelCase, snake_case, lowercase, with dots, etc.
  */
 export function normalizeToSupersetKey(key: string): string {
   if (!key) return key
-  const normalized = key.trim()
-  // Check if it's already a valid superset key
-  if (FULL_SUPERSET_SECTIONS.includes(normalized)) {
-    return normalized
+  const trimmed = key.trim()
+  
+  // Check if it's already a valid superset key (exact match)
+  if (FULL_SUPERSET_SECTIONS.includes(trimmed)) {
+    return trimmed
   }
-  // Check aliases
-  return SUPERSET_KEY_ALIASES[normalized] || normalized
+  
+  // Check aliases (exact match)
+  if (SUPERSET_KEY_ALIASES[trimmed]) {
+    return SUPERSET_KEY_ALIASES[trimmed]
+  }
+  
+  // Try lowercase version
+  const lowercased = trimmed.toLowerCase()
+  if (SUPERSET_KEY_ALIASES[lowercased]) {
+    return SUPERSET_KEY_ALIASES[lowercased]
+  }
+  
+  // Try removing dots, spaces, and underscores for matching
+  const cleaned = lowercased.replace(/[.\s_-]/g, '')
+  if (SUPERSET_KEY_ALIASES[cleaned]) {
+    return SUPERSET_KEY_ALIASES[cleaned]
+  }
+  
+  // Try to match against superset sections (case-insensitive)
+  for (const section of FULL_SUPERSET_SECTIONS) {
+    if (section.toLowerCase() === lowercased || section.toLowerCase() === cleaned) {
+      return section
+    }
+  }
+  
+  // Try partial matching for common patterns
+  // e.g., "07a.techproblem" should match "technicalProblem"
+  for (const [alias, canonical] of Object.entries(SUPERSET_KEY_ALIASES)) {
+    const aliasClean = alias.toLowerCase().replace(/[.\s_-]/g, '')
+    if (cleaned === aliasClean || cleaned.includes(aliasClean) || aliasClean.includes(cleaned)) {
+      return canonical
+    }
+  }
+  
+  // Log unmatched keys for debugging
+  console.warn(`[normalizeToSupersetKey] Could not normalize key: "${key}" - returning as-is`)
+  
+  return trimmed
 }
 
 // ============================================================================
@@ -246,8 +356,10 @@ Generate diagrams that comply with ALL jurisdiction requirements.`
 
 /**
  * Compute the dynamic superset of sections needed for the selected jurisdictions
- * This optimizes reference draft generation by only including sections that are
- * actually used by at least one of the selected countries.
+ * 
+ * DIRECTLY QUERIES CountrySectionMapping table - the database is the ONLY source of truth.
+ * The sectionKey field in the database IS the canonical superset key.
+ * NO JSON fallbacks, NO normalization - database data must be correct.
  * 
  * @param jurisdictions - Array of country codes (e.g., ['US', 'EP', 'JP'])
  * @returns Object containing the dynamic sections array and per-jurisdiction mappings
@@ -263,55 +375,92 @@ export async function computeDynamicSuperset(
   const sectionDetails: Record<string, { label: string; requiredBy: string[] }> = {}
   const jurisdictionMappings: Record<string, SectionMapping[]> = {}
 
-  // Always include essential sections that are universally required
-  const essentialSections = ['title', 'abstract', 'claims', 'detailedDescription']
-  for (const key of essentialSections) {
-    uniqueSections.add(key)
-    sectionDetails[key] = { label: getDefaultHeading(key), requiredBy: ['ALL'] }
+  // Filter out REFERENCE pseudo-jurisdiction
+  const validJurisdictions = jurisdictions
+    .map(j => j.toUpperCase())
+    .filter(j => j !== 'REFERENCE')
+
+  if (validJurisdictions.length === 0) {
+    console.warn('[computeDynamicSuperset] No valid jurisdictions provided')
+    return { sections: [], sectionDetails: {}, jurisdictionMappings: {} }
   }
 
-  // Get mappings for each jurisdiction and collect unique superset keys
-  for (const jurisdiction of jurisdictions) {
-    const code = jurisdiction.toUpperCase()
-    if (code === 'REFERENCE') continue // Skip the reference pseudo-jurisdiction
-    
-    try {
-      const mappings = await getSectionMapping(code)
-      jurisdictionMappings[code] = mappings
+  // DIRECTLY query the database CountrySectionMapping table
+  // This is the ONLY source of truth - no JSON, no fallbacks
+  const dbMappings = await prisma.countrySectionMapping.findMany({
+    where: {
+      countryCode: { in: validJurisdictions },
+      isEnabled: true
+    },
+    orderBy: [
+      { countryCode: 'asc' },
+      { displayOrder: 'asc' }
+    ]
+  })
 
-      for (const mapping of mappings) {
-        if (!mapping.isApplicable) continue // Skip N/A sections
-        
-        const supersetKey = normalizeToSupersetKey(mapping.supersetKey)
-        uniqueSections.add(supersetKey)
-        
-        if (!sectionDetails[supersetKey]) {
-          sectionDetails[supersetKey] = {
-            label: getDefaultHeading(supersetKey),
-            requiredBy: []
-          }
-        }
-        if (!sectionDetails[supersetKey].requiredBy.includes(code)) {
-          sectionDetails[supersetKey].requiredBy.push(code)
-        }
-      }
-    } catch (err) {
-      console.error(`[computeDynamicSuperset] Failed to get mappings for ${code}:`, err)
+  console.log(`[computeDynamicSuperset] Found ${dbMappings.length} mappings from CountrySectionMapping table for: ${validJurisdictions.join(', ')}`)
+
+  // Process database mappings - sectionKey IS the canonical superset key
+  for (const mapping of dbMappings) {
+    const countryCode = mapping.countryCode
+    const sectionKey = mapping.sectionKey // This IS the canonical superset key from database
+    const heading = mapping.heading || ''
+    
+    // Skip N/A, Implicit, or other non-applicable sections
+    const isApplicable = heading !== '(N/A)' && 
+                         heading !== '(Implicit)' && 
+                         heading !== '(Recommended/NA)' && 
+                         heading !== '(Include in Detailed Desc)' &&
+                         heading.trim() !== ''
+
+    if (!isApplicable) {
+      continue
     }
+
+    // Add to unique sections set - use sectionKey directly from database
+    uniqueSections.add(sectionKey)
+
+    // Track which jurisdictions need this section
+    if (!sectionDetails[sectionKey]) {
+      sectionDetails[sectionKey] = {
+        label: heading,
+        requiredBy: []
+      }
+    }
+    if (!sectionDetails[sectionKey].requiredBy.includes(countryCode)) {
+      sectionDetails[sectionKey].requiredBy.push(countryCode)
+    }
+
+    // Build jurisdiction mappings for translation later
+    if (!jurisdictionMappings[countryCode]) {
+      jurisdictionMappings[countryCode] = []
+    }
+    jurisdictionMappings[countryCode].push({
+      supersetKey: sectionKey,
+      countryKey: sectionKey,
+      countryHeading: heading,
+      isApplicable: true
+    })
   }
 
   // Sort sections by the canonical order defined in SUPERSET_SECTIONS
-  const orderedSections = SUPERSET_SECTIONS.filter(key => uniqueSections.has(key))
+  // Only include sections that exist in our superset definitions
+  const orderedSections: string[] = []
   
-  // Add any additional sections that were found but not in the main superset
-  const uniqueSectionsArray = Array.from(uniqueSections)
-  for (const key of uniqueSectionsArray) {
-    if (!orderedSections.includes(key)) {
+  for (const key of SUPERSET_SECTIONS) {
+    if (uniqueSections.has(key)) {
+      orderedSections.push(key)
+    }
+  }
+  
+  // Add optional sections that were found
+  for (const key of OPTIONAL_SUPERSET_SECTIONS) {
+    if (uniqueSections.has(key) && !orderedSections.includes(key)) {
       orderedSections.push(key)
     }
   }
 
-  console.log(`[computeDynamicSuperset] Computed ${orderedSections.length} sections for ${jurisdictions.length} jurisdictions:`, orderedSections)
+  console.log(`[computeDynamicSuperset] Result: ${orderedSections.length} sections from database for ${validJurisdictions.length} jurisdictions:`, orderedSections)
 
   return {
     sections: orderedSections,
@@ -340,66 +489,36 @@ export function formatDynamicSupersetSummary(
 
 /**
  * Get section mapping from superset to country-specific sections
+ * DIRECTLY from CountrySectionMapping database table - the ONLY source of truth
  */
 export async function getSectionMapping(
   countryCode: string
 ): Promise<SectionMapping[]> {
-  const mappings: SectionMapping[] = []
   const code = countryCode.toUpperCase()
 
-  try {
-    // Get from database
-    const dbMappings = await prisma.countrySectionMapping.findMany({
-      where: { countryCode: code, isEnabled: true },
-      orderBy: { displayOrder: 'asc' }
-    })
+  // Query database directly - no JSON fallback
+  const dbMappings = await prisma.countrySectionMapping.findMany({
+    where: { countryCode: code, isEnabled: true },
+    orderBy: { displayOrder: 'asc' }
+  })
 
-    if (dbMappings.length > 0) {
-      for (const m of dbMappings) {
-        // Extract superset key from supersetCode (e.g., "01. Title" -> "title")
-        const supersetKey = extractSupersetKey(m.supersetCode)
-        mappings.push({
-          supersetKey,
-          countryKey: m.sectionKey,
-          countryHeading: m.heading || m.sectionKey,
-          isApplicable: m.heading !== '(N/A)' && m.heading !== '(Implicit)'
-        })
-      }
-      return mappings
-    }
-
-    // Fallback to JSON profile
-    const profile = await getCountryProfile(code)
-    const variant = profile?.profileData?.structure?.variants?.find(
-      (v: any) => v.id === profile?.profileData?.structure?.defaultVariant
-    ) || profile?.profileData?.structure?.variants?.[0]
-
-    if (variant?.sections) {
-      for (const section of variant.sections) {
-        const supersetKey = section.canonicalKeys?.[0] || section.id
-        mappings.push({
-          supersetKey: normalizeToSuperset(supersetKey),
-          countryKey: section.id,
-          countryHeading: section.label || section.id,
-          isApplicable: true
-        })
-      }
-    }
-  } catch (err) {
-    console.error(`Failed to get section mapping for ${code}:`, err)
+  if (dbMappings.length === 0) {
+    console.warn(`[getSectionMapping] No mappings found in database for ${code}`)
+    return []
   }
 
-  // If no mappings found, return 1:1 mapping for superset sections
-  if (mappings.length === 0) {
-    return SUPERSET_SECTIONS.map(key => ({
-      supersetKey: key,
-      countryKey: key,
-      countryHeading: getDefaultHeading(key),
-      isApplicable: true
-    }))
-  }
-
-  return mappings
+  // Map database records to SectionMapping interface
+  // sectionKey IS the canonical superset key
+  return dbMappings.map(m => ({
+    supersetKey: m.sectionKey,
+    countryKey: m.sectionKey,
+    countryHeading: m.heading || m.sectionKey,
+    isApplicable: m.heading !== '(N/A)' && 
+                  m.heading !== '(Implicit)' && 
+                  m.heading !== '(Recommended/NA)' && 
+                  m.heading !== '(Include in Detailed Desc)' &&
+                  (m.heading || '').trim() !== ''
+  }))
 }
 
 function extractSupersetKey(supersetCode: string): string {
@@ -655,13 +774,93 @@ export async function generateReferenceDraft(
   session: any,
   jurisdictions?: string[],
   tenantId?: string,
-  requestHeaders?: Record<string, string>
+  requestHeaders?: Record<string, string>,
+  frozenClaimsText?: string
 ): Promise<ReferenceDraftResultExtended> {
   try {
     const idea = session.ideaRecord || {}
     const referenceMap = session.referenceMap || { components: [] }
-    const figures = Array.isArray(session.figurePlans) ? session.figurePlans : []
     const components = Array.isArray(referenceMap.components) ? referenceMap.components : []
+    
+    // Build figures list - use finalized sequence if available (includes both diagrams and sketches)
+    let figures: Array<{ figureNo: number; title: string; description?: string; type?: string }> = []
+    
+    if (session.figureSequenceFinalized && Array.isArray(session.figureSequence) && session.figureSequence.length > 0) {
+      const figureSequence = session.figureSequence as Array<{ id: string; type: string; sourceId: string; finalFigNo: number }>
+      const sequencedSourceIds = new Set(figureSequence.map(s => s.sourceId))
+      
+      for (const seqItem of figureSequence) {
+        if (seqItem.type === 'diagram') {
+          const plan = (session.figurePlans || []).find((f: any) => f.id === seqItem.sourceId)
+          if (plan) {
+            figures.push({
+              figureNo: seqItem.finalFigNo,
+              title: plan.title || `Figure ${seqItem.finalFigNo}`,
+              description: plan.description || '',
+              type: 'diagram'
+            })
+          } else {
+            console.warn(`[ReferenceDraft] Diagram in sequence not found: sourceId=${seqItem.sourceId}`)
+          }
+        } else if (seqItem.type === 'sketch') {
+          const sketch = (session.sketchRecords || []).find((s: any) => s.id === seqItem.sourceId)
+          if (sketch && sketch.status === 'SUCCESS') {
+            figures.push({
+              figureNo: seqItem.finalFigNo,
+              title: sketch.title || `Figure ${seqItem.finalFigNo}`,
+              description: sketch.description || '',
+              type: 'sketch'
+            })
+          } else {
+            console.warn(`[ReferenceDraft] Sketch in sequence not found: sourceId=${seqItem.sourceId}`)
+          }
+        }
+      }
+      
+      // Auto-append figures added after sequence was finalized
+      for (const plan of (session.figurePlans || [])) {
+        if (!sequencedSourceIds.has(plan.id)) {
+          figures.push({
+            figureNo: figures.length + 1,
+            title: plan.title || `Figure ${figures.length + 1}`,
+            description: plan.description || '',
+            type: 'diagram'
+          })
+        }
+      }
+      for (const sketch of (session.sketchRecords || []).filter((s: any) => s.status === 'SUCCESS')) {
+        if (!sequencedSourceIds.has(sketch.id)) {
+          console.log(`[ReferenceDraft] Adding sketch ${sketch.id} as fallback figure ${figures.length + 1}`)
+          figures.push({
+            figureNo: figures.length + 1,
+            title: sketch.title || `Figure ${figures.length + 1}`,
+            description: sketch.description || '',
+            type: 'sketch'
+          })
+        }
+      }
+    } else {
+      // Fallback: use figurePlans AND sketches directly (legacy behavior)
+      const planFigures = Array.isArray(session.figurePlans) ? session.figurePlans.map((f: any) => ({
+        figureNo: f.figureNo,
+        title: f.title || `Figure ${f.figureNo}`,
+        description: f.description || '',
+        type: 'diagram'
+      })) : []
+      
+      // Also include sketches in fallback mode
+      const sketchRecords = (session.sketchRecords || []).filter((s: any) => s.status === 'SUCCESS')
+      const maxPlanNo = planFigures.length > 0 ? Math.max(...planFigures.map((f: any) => f.figureNo)) : 0
+      const sketchFigures = sketchRecords.map((s: any, index: number) => ({
+        figureNo: maxPlanNo + index + 1,
+        title: s.title || `Figure ${maxPlanNo + index + 1}`,
+        description: s.description || '',
+        type: 'sketch'
+      }))
+      
+      figures = [...planFigures, ...sketchFigures]
+      console.log(`[ReferenceDraft] Fallback mode: ${planFigures.length} diagrams + ${sketchFigures.length} sketches`)
+    }
 
     // Determine the dynamic superset based on selected jurisdictions
     const selectedJurisdictions = jurisdictions?.length 
@@ -684,38 +883,43 @@ export async function generateReferenceDraft(
       const constraints = prompt.constraints.length > 0 
         ? `\n   Constraints: ${prompt.constraints.join('; ')}`
         : ''
+      const instructionText = key === 'claims' && frozenClaimsText
+        ? 'Use the frozen claims provided in the context below verbatim. Do NOT regenerate or modify numbering/text; simply return the approved claims.'
+        : prompt.instruction
       
-      return `═══════════════════════════════════════════════════════════════
-SECTION ${idx + 1}: ${prompt.label} (key: "${key}")
+      return `==== SECTION ${idx + 1}: ${prompt.label} (key: "${key}") ====
 Required by: ${requiredBy}
-═══════════════════════════════════════════════════════════════
-${prompt.instruction}${constraints}`
+${instructionText}${constraints}`
     }).join('\n\n')
+
+    const claimsContext = frozenClaimsText
+      ? `\nFROZEN CLAIMS (approved; do NOT rewrite):\n${frozenClaimsText.slice(0, 3000)}${frozenClaimsText.length > 3000 ? '... [truncated]' : ''}\n`
+      : ''
 
     const prompt = `You are generating a REFERENCE PATENT DRAFT that will be translated to these specific jurisdictions: ${selectedJurisdictions.join(', ')}.
 
 This draft must be COUNTRY-NEUTRAL and contain ONLY the ${dynamicSections.length} sections required by the selected jurisdictions.
 The reference draft serves as the master source from which jurisdiction-specific drafts will be derived.
 
-══════════════════════════════════════════════════════════════════════════════
+==============================================================================
 INVENTION CONTEXT
-══════════════════════════════════════════════════════════════════════════════
+==============================================================================
 Title: ${idea.title || 'Untitled'}
 Problem Statement: ${idea.problem || 'Not specified'}
 Objectives: ${idea.objectives || 'Not specified'}
 Key Components: ${components.map((c: any) => `${c.name} (${c.numeral})`).join(', ') || 'Not specified'}
 Working Principle: ${idea.logic || 'Not specified'}
-${figures.length > 0 ? `Figures: ${figures.map((f: any) => `Fig.${f.figureNo}: ${f.title}`).join(', ')}` : ''}
+${figures.length > 0 ? `Figures:\n${figures.map((f: any) => `  Fig.${f.figureNo}: ${f.title}${f.description ? ` - ${f.description}` : ''}`).join('\n')}` : ''}${claimsContext}
 
-══════════════════════════════════════════════════════════════════════════════
+==============================================================================
 SECTION-BY-SECTION INSTRUCTIONS (generate EXACTLY these ${dynamicSections.length} sections)
-══════════════════════════════════════════════════════════════════════════════
+==============================================================================
 
 ${sectionInstructions}
 
-══════════════════════════════════════════════════════════════════════════════
+==============================================================================
 OUTPUT FORMAT
-══════════════════════════════════════════════════════════════════════════════
+==============================================================================
 - Return ONLY a JSON object with these exact keys: ${dynamicSections.map(k => `"${k}"`).join(', ')}
 - Each value should be the complete section content following the instructions above
 - Do not include markdown code fences or explanations
@@ -759,6 +963,36 @@ OUTPUT FORMAT
       console.warn(`[generateReferenceDraft] Missing or empty sections: ${missingSections.join(', ')}`)
     }
 
+    // Post-process: Ensure briefDescriptionOfDrawings includes ALL figures (diagrams + sketches)
+    // This guarantees that sketches don't get lost during LLM generation
+    if (figures.length > 0 && dynamicSections.includes('briefDescriptionOfDrawings')) {
+      const generatedBDOD = draft.briefDescriptionOfDrawings || ''
+      const figureLines: string[] = []
+      
+      for (const fig of figures) {
+        let title = fig.title || `a view of Figure ${fig.figureNo}`
+        // Clean up title
+        title = title.replace(/^(FIG\.?\s*\d+\s*(is\s*)?|Figure\s*\d+\s*(is\s*)?)/i, '').trim()
+        // Ensure title starts with an article
+        if (!/^(a|an|the)\s/i.test(title)) {
+          const firstWord = title.split(/\s+/)[0]?.toLowerCase() || ''
+          const needsAn = /^[aeiou]/i.test(firstWord)
+          title = `${needsAn ? 'an' : 'a'} ${title}`
+        }
+        const line = `FIG. ${fig.figureNo} is ${title}.`
+        figureLines.push(line)
+      }
+      
+      // Replace the LLM-generated briefDescriptionOfDrawings with our accurate version
+      // to ensure ALL figures (including sketches) are included
+      draft.briefDescriptionOfDrawings = figureLines.join('\n\n')
+      console.log(`[generateReferenceDraft] Replaced briefDescriptionOfDrawings with ${figureLines.length} figures (${figures.filter((f:any)=>f.type==='sketch').length} sketches)`)
+    }
+
+    if (frozenClaimsText) {
+      draft.claims = frozenClaimsText
+    }
+
     return {
       success: true,
       draft,
@@ -777,364 +1011,237 @@ OUTPUT FORMAT
 }
 
 /**
- * Parse LLM response into a draft object
- * @param output - Raw LLM output string
- * @param expectedSections - Optional array of section keys to extract (defaults to full SUPERSET_SECTIONS)
- */
-function parseReferenceDraftResponse(
-  output: string, 
-  expectedSections?: string[]
-): Record<string, string> | null {
-  try {
-    let text = (output || '').trim()
-    
-    // Extract JSON from code fence if present
-    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-    if (fenceMatch) {
-      text = fenceMatch[1].trim()
-    }
-    
-    // Find JSON object
-    const start = text.indexOf('{')
-    const end = text.lastIndexOf('}')
-    if (start === -1 || end === -1) {
-      console.error('[parseReferenceDraftResponse] No JSON object found in output')
-      return null
-    }
-    
-    text = text.slice(start, end + 1)
-    text = text.replace(/,(\s*[}\]])/g, '$1') // Remove trailing commas
-    
-    const parsed = JSON.parse(text)
-    
-    if (typeof parsed !== 'object' || parsed === null) {
-      console.error('[parseReferenceDraftResponse] Parsed result is not an object')
-      return null
-    }
-    
-    // Use provided sections or default to full superset
-    const sectionsToExtract = expectedSections || SUPERSET_SECTIONS
-    
-    // Extract sections, trying aliases if direct key not found
-    const draft: Record<string, string> = {}
-    for (const key of sectionsToExtract) {
-      // Try direct key first
-      if (typeof parsed[key] === 'string') {
-        draft[key] = parsed[key].trim()
-        continue
-      }
-      
-      // Try to find via alias
-      let found = false
-      for (const [alias, canonical] of Object.entries(SUPERSET_KEY_ALIASES)) {
-        if (canonical === key && typeof parsed[alias] === 'string') {
-          draft[key] = parsed[alias].trim()
-          found = true
-          break
-        }
-      }
-      
-      if (!found) {
-        // Section not found - log warning and set empty
-        console.warn(`[parseReferenceDraftResponse] Section '${key}' not found in LLM output`)
-        draft[key] = ''
-      }
-    }
-    
-    return draft
-  } catch (err) {
-    console.error('Failed to parse reference draft:', err)
-    return null
-  }
-}
-
-// ============================================================================
-// Section Translation
-// ============================================================================
-
-/**
- * Translate a single section from reference draft to target jurisdiction
- * Uses temperature=0 for deterministic output
+ * Generate a SINGLE section of the reference draft
+ * This allows section-by-section generation with user approval to avoid JSON errors
+ * and enable iterative refinement where earlier sections inform later ones.
  * 
- * @param referenceContent - The content from the reference draft
- * @param referenceSectionKey - The superset section key (e.g., 'fieldOfInvention')
- * @param targetJurisdiction - The target country code (e.g., 'DE', 'JP')
- * @param targetSectionKey - The country-specific section key
- * @param targetHeading - The country-specific heading for the section
- * @param targetLanguage - The target language for translation (e.g., 'German', 'Japanese')
+ * @param session - The drafting session with ideaRecord, referenceMap, figurePlans
+ * @param sectionKey - The superset section key to generate (e.g., 'title', 'background')
+ * @param jurisdictions - Array of selected jurisdiction codes
+ * @param existingSections - Already generated sections (for context in subsequent sections)
  * @param tenantId - Optional tenant ID for metering
  * @param requestHeaders - Optional request headers
+ * @param frozenClaimsText - Optional frozen claims text (for claims section)
  */
-export async function translateSection(
-  referenceContent: string,
-  referenceSectionKey: string,
-  targetJurisdiction: string,
-  targetSectionKey: string,
-  targetHeading: string,
-  targetLanguage?: string,
+export async function generateReferenceDraftSection(
+  session: any,
+  sectionKey: string,
+  jurisdictions?: string[],
+  existingSections?: Record<string, string>,
   tenantId?: string,
-  requestHeaders?: Record<string, string>
-): Promise<TranslationResult> {
+  requestHeaders?: Record<string, string>,
+  frozenClaimsText?: string
+): Promise<{
+  success: boolean
+  content?: string
+  sectionKey?: string
+  error?: string
+}> {
   try {
-    const code = targetJurisdiction.toUpperCase()
+    const idea = session.ideaRecord || {}
+    const referenceMap = session.referenceMap || { components: [] }
+    const components = Array.isArray(referenceMap.components) ? referenceMap.components : []
     
-    // Get jurisdiction-specific rules
-    const profile = await getCountryProfile(code)
-    const validation = await prisma.countrySectionValidation.findUnique({
-      where: { countryCode_sectionKey: { countryCode: code, sectionKey: targetSectionKey } }
-    })
-
-    // Resolve target language - use provided language or fall back to country profile
-    const availableLanguages: string[] = Array.isArray(profile?.profileData?.meta?.languages)
-      ? profile.profileData.meta.languages
-      : ['English']
-    const resolvedLanguage = targetLanguage && availableLanguages.includes(targetLanguage)
-      ? targetLanguage
-      : availableLanguages[0] || 'English'
-    const requiresTranslation = resolvedLanguage.toLowerCase() !== 'english'
-
-    // Build constraints from validation rules
-    const constraints: string[] = []
-    if (validation?.maxWords) {
-      constraints.push(`Maximum ${validation.maxWords} words`)
+    // Build figures list (same logic as generateReferenceDraft)
+    let figures: Array<{ figureNo: number; title: string; description?: string; type?: string }> = []
+    
+    if (session.figureSequenceFinalized && Array.isArray(session.figureSequence) && session.figureSequence.length > 0) {
+      const figureSequence = session.figureSequence as Array<{ id: string; type: string; sourceId: string; finalFigNo: number }>
+      for (const seqItem of figureSequence) {
+        if (seqItem.type === 'diagram') {
+          const plan = (session.figurePlans || []).find((f: any) => f.id === seqItem.sourceId)
+          if (plan) {
+            figures.push({
+              figureNo: seqItem.finalFigNo,
+              title: plan.title || `Figure ${seqItem.finalFigNo}`,
+              description: plan.description || '',
+              type: 'diagram'
+            })
+          }
+        } else if (seqItem.type === 'sketch') {
+          const sketch = (session.sketchRecords || []).find((s: any) => s.id === seqItem.sourceId)
+          if (sketch && sketch.status === 'SUCCESS') {
+            figures.push({
+              figureNo: seqItem.finalFigNo,
+              title: sketch.title || `Figure ${seqItem.finalFigNo}`,
+              description: sketch.description || '',
+              type: 'sketch'
+            })
+          }
+        }
+      }
+    } else {
+      // Fallback: use figurePlans directly
+      const planFigures = Array.isArray(session.figurePlans) ? session.figurePlans.map((f: any) => ({
+        figureNo: f.figureNo,
+        title: f.title || `Figure ${f.figureNo}`,
+        description: f.description || '',
+        type: 'diagram'
+      })) : []
+      figures = planFigures
     }
-    if (validation?.maxChars) {
-      constraints.push(`Maximum ${validation.maxChars} characters`)
-    }
-    if (validation?.legalReference) {
-      constraints.push(`Per ${validation.legalReference}`)
+
+    // Get dynamic superset sections and prompts
+    const selectedJurisdictions = jurisdictions?.length 
+      ? jurisdictions 
+      : (session.draftingJurisdictions || ['US'])
+    
+    const { sections: dynamicSections, sectionDetails } = await computeDynamicSuperset(selectedJurisdictions)
+
+    // Verify the requested section is in the dynamic superset
+    if (!dynamicSections.includes(sectionKey)) {
+      return {
+        success: false,
+        error: `Section "${sectionKey}" is not required for the selected jurisdictions: ${selectedJurisdictions.join(', ')}`
+      }
     }
 
-    const constraintText = constraints.length > 0 
-      ? `\n\nCONSTRAINTS FOR ${code}:\n${constraints.map(c => `- ${c}`).join('\n')}`
+    // Get the prompt for this section
+    const sectionPrompts = await getSupersetSectionPrompts([sectionKey])
+    const sectionPrompt = sectionPrompts[sectionKey]
+    
+    if (!sectionPrompt) {
+      return {
+        success: false,
+        error: `No prompt found for section: ${sectionKey}`
+      }
+    }
+
+    const requiredBy = sectionDetails[sectionKey]?.requiredBy.join(', ') || 'General'
+
+    // Build context from existing sections (for continuity)
+    let existingSectionsContext = ''
+    if (existingSections && Object.keys(existingSections).length > 0) {
+      const contextParts: string[] = []
+      for (const [key, content] of Object.entries(existingSections)) {
+        if (content && content.trim()) {
+          // Truncate very long sections for context
+          const truncated = content.length > 1500 ? content.slice(0, 1500) + '...[truncated]' : content
+          contextParts.push(`### ${key}\n${truncated}`)
+        }
+      }
+      if (contextParts.length > 0) {
+        existingSectionsContext = `
+==============================================================================
+PREVIOUSLY GENERATED SECTIONS (for context and consistency)
+==============================================================================
+${contextParts.join('\n\n')}
+`
+      }
+    }
+
+    // Special handling for claims - use frozen claims if provided
+    if (sectionKey === 'claims' && frozenClaimsText) {
+      return {
+        success: true,
+        content: frozenClaimsText,
+        sectionKey
+      }
+    }
+
+    // Build section-specific instruction
+    const constraints = sectionPrompt.constraints?.length > 0 
+      ? `\nConstraints: ${sectionPrompt.constraints.join('; ')}`
       : ''
 
-    // Build language instruction
-    const languageInstruction = requiresTranslation
-      ? `\n\nLANGUAGE REQUIREMENT:\n- Output MUST be in ${resolvedLanguage}\n- Translate all content from English to ${resolvedLanguage}\n- Use proper ${resolvedLanguage} legal/patent terminology\n- Maintain technical accuracy in translation`
-      : ''
+    const prompt = `You are generating a SINGLE SECTION of a REFERENCE PATENT DRAFT for these jurisdictions: ${selectedJurisdictions.join(', ')}.
 
-    const prompt = `You are translating a patent section from a Reference Draft to ${code} jurisdiction format.
+==============================================================================
+INVENTION CONTEXT
+==============================================================================
+Title: ${idea.title || 'Untitled'}
+Problem Statement: ${idea.problem || 'Not specified'}
+Objectives: ${idea.objectives || 'Not specified'}
+Key Components: ${components.map((c: any) => `${c.name} (${c.numeral})`).join(', ') || 'Not specified'}
+Working Principle: ${idea.logic || 'Not specified'}
+${figures.length > 0 ? `Figures:\n${figures.map((f: any) => `  Fig.${f.figureNo}: ${f.title}${f.description ? ` - ${f.description}` : ''}`).join('\n')}` : ''}
+${existingSectionsContext}
+==============================================================================
+SECTION TO GENERATE: ${sectionPrompt.label} (key: "${sectionKey}")
+==============================================================================
+Required by: ${requiredBy}
 
-TASK: ${requiresTranslation ? `Translate to ${resolvedLanguage} AND adapt` : 'Adapt'} to ${code} jurisdiction requirements - do NOT add new technical content.
+${sectionPrompt.instruction}${constraints}
 
-SOURCE SECTION: ${referenceSectionKey}
-SOURCE CONTENT:
-${referenceContent}
-
-TARGET SECTION: ${targetSectionKey}
-TARGET HEADING: "${targetHeading}"
-TARGET JURISDICTION: ${code}
-TARGET LANGUAGE: ${resolvedLanguage}
-${constraintText}${languageInstruction}
-
-RULES:
-1. Do NOT add new technical information not in the source
-2. Do NOT re-interpret or expand on the invention
-3. ONLY adapt format, structure, and phrasing to ${code} requirements
-4. Maintain exact technical meaning and terminology
-5. Use heading format appropriate for ${code}
-6. If the source content is empty, return an empty string
-${requiresTranslation ? `7. ALL output must be in ${resolvedLanguage} - no English unless quoting technical terms` : ''}
-
-OUTPUT: Return ONLY the ${requiresTranslation ? `${resolvedLanguage} ` : ''}translated section content. No explanations or markdown.`
+==============================================================================
+OUTPUT REQUIREMENTS
+==============================================================================
+- Write ONLY the content for the "${sectionKey}" section
+- Do NOT include section headers, JSON formatting, or markdown code fences
+- Write in clear, technical English suitable for international filing
+- Be comprehensive but concise
+- Maintain consistency with previously generated sections (if any)
+- Return ONLY the section content text, nothing else`
 
     const result = await llmGateway.executeLLMOperation({ headers: requestHeaders || {} }, {
       taskCode: 'LLM2_DRAFT',
       prompt,
-      parameters: { 
-        tenantId, 
-        jurisdiction: code,
-        language: resolvedLanguage,
-        temperature: 0, // Deterministic for translation
-        purpose: 'section_translation'
-      },
+      parameters: { tenantId, purpose: 'reference_draft_section' },
       idempotencyKey: crypto.randomUUID(),
       metadata: {
-        purpose: 'section_translation',
-        sourceSection: referenceSectionKey,
-        targetSection: targetSectionKey,
-        jurisdiction: code,
-        targetLanguage: resolvedLanguage
+        patentId: session.patentId,
+        sessionId: session.id,
+        purpose: 'reference_draft_section_generation',
+        sectionKey,
+        jurisdictions: selectedJurisdictions
       }
     })
 
     if (!result.success || !result.response) {
       return {
         success: false,
-        error: result.error?.message || 'Translation failed'
+        error: result.error?.message || `Failed to generate section: ${sectionKey}`
       }
     }
 
-    // Clean up response (remove any accidental markdown)
+    // Clean up the response (remove any accidental markdown or JSON formatting)
     let content = (result.response.output || '').trim()
-    content = content.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, '')
+    
+    // Remove markdown code fences if present
+    content = content.replace(/^```[\w]*\n?/gm, '').replace(/\n?```$/gm, '').trim()
+    
+    // Remove JSON-like wrapping if present
+    if (content.startsWith('{') && content.includes(`"${sectionKey}"`)) {
+      try {
+        const parsed = JSON.parse(content)
+        if (parsed[sectionKey]) {
+          content = parsed[sectionKey]
+        }
+      } catch {
+        // Not valid JSON, use as-is
+      }
+    }
+
+    console.log(`[generateReferenceDraftSection] Generated "${sectionKey}" section (${content.length} chars)`)
 
     return {
       success: true,
-      translatedContent: content,
-      tokensUsed: result.response.outputTokens
+      content,
+      sectionKey
     }
   } catch (error) {
-    console.error('Section translation error:', error)
+    console.error(`[generateReferenceDraftSection] Error generating ${sectionKey}:`, error)
     return {
       success: false,
-      error: error instanceof Error ? error.message : 'Translation failed'
+      error: error instanceof Error ? error.message : `Failed to generate section: ${sectionKey}`
     }
   }
 }
 
 /**
- * BATCH Translation Mode - Translates ALL sections in a SINGLE LLM call
- * This is the most token-efficient approach, reducing overhead significantly.
- * 
- * @param sectionsToTranslate - Array of sections with content and mapping info
- * @param targetJurisdiction - Target country code
- * @param targetLanguage - Target language
- * @param tenantId - Optional tenant ID
- * @param requestHeaders - Optional headers
+ * Get the list of sections needed for the reference draft based on selected jurisdictions
+ * This allows the UI to know which sections to show for sequential generation
  */
-async function translateSectionsBatch(
-  sectionsToTranslate: Array<{
-    supersetKey: string
-    countryKey: string
-    countryHeading: string
-    content: string
-  }>,
-  targetJurisdiction: string,
-  targetLanguage: string,
-  tenantId?: string,
-  requestHeaders?: Record<string, string>
+export async function getReferenceDraftSections(
+  jurisdictions: string[]
 ): Promise<{
-  success: boolean
-  translations?: Record<string, string>
-  error?: string
-  tokensUsed?: number
+  sections: string[]
+  sectionDetails: Record<string, { label: string; requiredBy: string[] }>
 }> {
-  if (sectionsToTranslate.length === 0) {
-    return { success: true, translations: {} }
-  }
-
-  const code = targetJurisdiction.toUpperCase()
-  const requiresTranslation = targetLanguage.toLowerCase() !== 'english'
-
-  // Build the batch input - all sections in one structured format
-  const sectionsInput = sectionsToTranslate.map((s, idx) => 
-    `### SECTION ${idx + 1}: ${s.supersetKey} → ${s.countryKey}
-TARGET HEADING: "${s.countryHeading}"
-SOURCE CONTENT:
-${s.content}
----`
-  ).join('\n\n')
-
-  // Build expected output keys
-  const outputKeys = sectionsToTranslate.map(s => s.countryKey)
-
-  const languageInstruction = requiresTranslation
-    ? `\n\nLANGUAGE REQUIREMENT:
-- ALL output MUST be in ${targetLanguage}
-- Translate all content from English to ${targetLanguage}
-- Use proper ${targetLanguage} legal/patent terminology
-- Maintain technical accuracy in translation`
-    : ''
-
-  const prompt = `You are translating a patent from Reference Draft to ${code} jurisdiction format.
-${requiresTranslation ? `ALL OUTPUT MUST BE IN ${targetLanguage.toUpperCase()}.` : ''}
-
-TASK: ${requiresTranslation ? `Translate to ${targetLanguage} AND adapt` : 'Adapt'} ALL sections below to ${code} jurisdiction requirements.
-
-TARGET JURISDICTION: ${code}
-TARGET LANGUAGE: ${targetLanguage}
-NUMBER OF SECTIONS: ${sectionsToTranslate.length}
-${languageInstruction}
-
-SECTIONS TO TRANSLATE:
-${sectionsInput}
-
-RULES:
-1. Do NOT add new technical information not in the source
-2. Do NOT re-interpret or expand on the invention
-3. ONLY adapt format, structure, and phrasing to ${code} requirements
-4. Maintain exact technical meaning and terminology
-5. Use heading format appropriate for ${code}
-6. If source content is empty, return empty string for that section
-
-OUTPUT FORMAT:
-Return a JSON object with these exact keys: ${outputKeys.map(k => `"${k}"`).join(', ')}
-Each value should be the translated section content.
-Do NOT include markdown code fences or explanations.
-Return ONLY the JSON object.`
-
-  try {
-    const result = await llmGateway.executeLLMOperation({ headers: requestHeaders || {} }, {
-      taskCode: 'LLM2_DRAFT',
-      prompt,
-      parameters: { 
-        tenantId, 
-        jurisdiction: code,
-        language: targetLanguage,
-        temperature: 0,
-        purpose: 'batch_translation'
-      },
-      idempotencyKey: crypto.randomUUID(),
-      metadata: {
-        purpose: 'batch_section_translation',
-        jurisdiction: code,
-        targetLanguage,
-        sectionCount: sectionsToTranslate.length,
-        sections: outputKeys
-      }
-    })
-
-    if (!result.success || !result.response) {
-      return {
-        success: false,
-        error: result.error?.message || 'Batch translation failed'
-      }
-    }
-
-    // Parse the JSON response
-    let text = (result.response.output || '').trim()
-    
-    // Extract JSON from code fence if present
-    const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-    if (fenceMatch) {
-      text = fenceMatch[1].trim()
-    }
-    
-    const start = text.indexOf('{')
-    const end = text.lastIndexOf('}')
-    if (start === -1 || end === -1) {
-      return {
-        success: false,
-        error: 'Failed to parse batch translation response - no JSON object found'
-      }
-    }
-    
-    text = text.slice(start, end + 1)
-    text = text.replace(/,(\s*[}\]])/g, '$1')
-    
-    const parsed = JSON.parse(text)
-    
-    // Extract translations
-    const translations: Record<string, string> = {}
-    for (const key of outputKeys) {
-      translations[key] = typeof parsed[key] === 'string' ? parsed[key].trim() : ''
-    }
-
-    return {
-      success: true,
-      translations,
-      tokensUsed: result.response.outputTokens
-    }
-  } catch (error) {
-    console.error('[translateSectionsBatch] Error:', error)
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Batch translation failed'
-    }
-  }
+  const { sections, sectionDetails } = await computeDynamicSuperset(jurisdictions)
+  return { sections, sectionDetails }
 }
+
 
 // Interface for section translation tasks
 interface SectionToTranslate {
@@ -1175,6 +1282,7 @@ export async function translateReferenceDraft(
   errors?: string[]
   language?: string
   stats?: { translated: number; skipped: number; failed: number; batchMode: boolean; tokensUsed?: number }
+  warning?: string
 }> {
   const code = targetJurisdiction.toUpperCase()
   const mappings = await getSectionMapping(code)
@@ -1241,40 +1349,126 @@ export async function translateReferenceDraft(
 
   console.log(`[translateReferenceDraft] ${sectionsToTranslate.length} sections to translate, Batch Mode: ${useBatchMode}`)
 
-  // Use BATCH MODE (single LLM call) for token efficiency
-  if (useBatchMode && sectionsToTranslate.length > 0) {
-    console.log(`[translateReferenceDraft] Using BATCH MODE - single LLM call for all ${sectionsToTranslate.length} sections (token-efficient)`)
-    
-    const batchResult = await translateSectionsBatch(
-      sectionsToTranslate,
-      code,
-      resolvedLanguage,
-      tenantId,
-      requestHeaders
-    )
+  // Early return if no sections need translation
+  if (sectionsToTranslate.length === 0) {
+    console.log(`[translateReferenceDraft] No sections to translate - returning with skipped sections only`)
+    return {
+      success: true,
+      draft: translatedDraft,
+      language: resolvedLanguage,
+      stats: {
+        translated: 0,
+        skipped: skippedCount,
+        failed: 0,
+        batchMode: useBatchMode,
+        tokensUsed: 0
+      }
+    }
+  }
 
-    if (batchResult.success && batchResult.translations) {
-      // Apply batch translations
-      for (const section of sectionsToTranslate) {
-        const translated = batchResult.translations[section.countryKey]
-        if (translated && translated.trim()) {
-          translatedDraft[section.countryKey] = translated
-          translatedCount++
+  // Use CHUNKED BATCH MODE for optimal cost/reliability balance
+  // Adapts batch size based on content length to avoid output truncation
+  if (useBatchMode) {
+    // Calculate adaptive batch size based on total content length
+    // Smaller batches for larger content to avoid truncation
+    const totalContentLength = sectionsToTranslate.reduce((sum, s) => sum + (s.content?.length || 0), 0)
+    // Safe division - sectionsToTranslate.length is guaranteed > 0 at this point
+    const avgContentLength = totalContentLength / sectionsToTranslate.length
+    
+    // Adaptive batch sizing:
+    // - Very large sections (>3000 chars avg): 2 sections per batch
+    // - Large sections (>1500 chars avg): 3 sections per batch
+    // - Medium sections (>500 chars avg): 4 sections per batch
+    // - Small sections: 5 sections per batch
+    let BATCH_CHUNK_SIZE: number
+    if (avgContentLength > 3000) {
+      BATCH_CHUNK_SIZE = 2
+    } else if (avgContentLength > 1500) {
+      BATCH_CHUNK_SIZE = 3
+    } else if (avgContentLength > 500) {
+      BATCH_CHUNK_SIZE = 4
+    } else {
+      BATCH_CHUNK_SIZE = 5
+    }
+    
+    const totalBatches = Math.ceil(sectionsToTranslate.length / BATCH_CHUNK_SIZE)
+    console.log(`[translateReferenceDraft] Using CHUNKED BATCH MODE - ${totalBatches} batches of ~${BATCH_CHUNK_SIZE} sections (avg content: ${Math.round(avgContentLength)} chars)`)
+    
+    // Process sections in chunks
+    for (let batchIndex = 0; batchIndex < sectionsToTranslate.length; batchIndex += BATCH_CHUNK_SIZE) {
+      const chunk = sectionsToTranslate.slice(batchIndex, batchIndex + BATCH_CHUNK_SIZE)
+      const batchNumber = Math.floor(batchIndex / BATCH_CHUNK_SIZE) + 1
+      
+      console.log(`[translateReferenceDraft] Processing batch ${batchNumber}/${totalBatches}: ${chunk.map(s => s.countryKey).join(', ')}`)
+      
+      try {
+        const batchResult = await translateSectionsBatch(
+          chunk,
+          code,
+          resolvedLanguage,
+          tenantId,
+          requestHeaders
+        )
+
+        if (batchResult.success && batchResult.translations) {
+          // Apply batch translations
+          for (const section of chunk) {
+            const translated = batchResult.translations[section.countryKey]
+            if (translated && translated.trim()) {
+              translatedDraft[section.countryKey] = translated
+              translatedCount++
+            } else {
+              // Fallback to reference content if translation is empty
+              translatedDraft[section.countryKey] = section.content
+              errors.push(`Empty translation for ${section.supersetKey} → ${section.countryKey} (batch ${batchNumber})`)
+            }
+          }
+          totalTokensUsed += batchResult.tokensUsed || 0
+          console.log(`[translateReferenceDraft] Batch ${batchNumber}/${totalBatches} completed successfully`)
         } else {
-          // Fallback to reference content if translation is empty
+          // This batch failed - try individual translation for these sections
+          console.warn(`[translateReferenceDraft] Batch ${batchNumber} failed: ${batchResult.error}. Falling back to individual mode for this batch.`)
+          
+          // Fallback: translate individually for failed batch
+          for (const section of chunk) {
+            try {
+              const individualResult = await translateSection(
+                section.content,
+                section.supersetKey,
+                code,
+                section.countryKey,
+                section.countryHeading,
+                resolvedLanguage,
+                tenantId,
+                requestHeaders
+              )
+              
+              if (individualResult.success && individualResult.translatedContent) {
+                translatedDraft[section.countryKey] = individualResult.translatedContent
+                translatedCount++
+                totalTokensUsed += individualResult.tokensUsed || 0
+              } else {
+                translatedDraft[section.countryKey] = section.content
+                errors.push(`Failed ${section.supersetKey} → ${section.countryKey}: ${individualResult.error}`)
+              }
+            } catch (err) {
+              translatedDraft[section.countryKey] = section.content
+              errors.push(`Failed ${section.supersetKey} → ${section.countryKey}: ${err instanceof Error ? err.message : 'Unknown error'}`)
+            }
+          }
+        }
+      } catch (batchError) {
+        // Batch call itself threw an error - fallback to reference content
+        console.error(`[translateReferenceDraft] Batch ${batchNumber} threw error:`, batchError)
+        for (const section of chunk) {
           translatedDraft[section.countryKey] = section.content
-          errors.push(`Empty translation for ${section.supersetKey} → ${section.countryKey}`)
+          errors.push(`Batch ${batchNumber} error for ${section.countryKey}: ${batchError instanceof Error ? batchError.message : 'Unknown error'}`)
         }
       }
-      totalTokensUsed = batchResult.tokensUsed || 0
-    } else {
-      // Batch failed - fall back to individual translations
-      console.warn(`[translateReferenceDraft] Batch mode failed: ${batchResult.error}. Falling back to individual translations.`)
-      errors.push(`Batch translation failed: ${batchResult.error}`)
       
-      // Fallback: use reference content for all sections
-      for (const section of sectionsToTranslate) {
-        translatedDraft[section.countryKey] = section.content
+      // Small delay between batches to avoid rate limiting
+      if (batchIndex + BATCH_CHUNK_SIZE < sectionsToTranslate.length) {
+        await new Promise(resolve => setTimeout(resolve, 300))
       }
     }
   } 
@@ -1336,14 +1530,267 @@ export async function translateReferenceDraft(
     tokensUsed: totalTokensUsed
   }
 
+  // Check fallback rate - warn if more than 20% of sections used fallback content
+  const totalAttempted = sectionsToTranslate.length
+  const fallbackRate = totalAttempted > 0 ? (errors.length / totalAttempted) * 100 : 0
+  const hasHighFallbackRate = fallbackRate > 20
+  
+  if (hasHighFallbackRate) {
+    console.warn(`[translateReferenceDraft] HIGH FALLBACK RATE: ${fallbackRate.toFixed(1)}% of sections (${errors.length}/${totalAttempted}) used reference content instead of translation`)
+  }
+
   console.log(`[translateReferenceDraft] Complete. Translated: ${stats.translated}, Skipped: ${stats.skipped}, Failed: ${stats.failed}, Tokens: ${stats.tokensUsed}`)
 
   return {
-    success: errors.length === 0,
+    // Success if no errors OR if we got at least 80% translated (partial success is acceptable)
+    success: errors.length === 0 || !hasHighFallbackRate,
     draft: translatedDraft,
     errors: errors.length > 0 ? errors : undefined,
     language: resolvedLanguage,
-    stats
+    stats,
+    // Include warning for UI to display if needed
+    warning: hasHighFallbackRate 
+      ? `${errors.length} of ${totalAttempted} sections (${fallbackRate.toFixed(0)}%) could not be translated and used reference content instead.`
+      : undefined
+  }
+}
+
+// ============================================================================
+// Section Translation Functions
+// ============================================================================
+
+/**
+ * Translate sections in batch mode (single LLM call for all sections)
+ * Uses CountrySectionMapping for section mappings and CountrySectionPrompt for top-up prompts
+ */
+async function translateSectionsBatch(
+  sectionsToTranslate: SectionToTranslate[],
+  targetJurisdiction: string,
+  targetLanguage: string,
+  tenantId?: string,
+  requestHeaders?: Record<string, string>
+): Promise<{
+  success: boolean
+  translations?: Record<string, string>
+  error?: string
+  tokensUsed?: number
+}> {
+  try {
+    const code = targetJurisdiction.toUpperCase()
+    
+    // Fetch top-up prompts for this jurisdiction from CountrySectionPrompt table
+    const topUpPrompts = await prisma.countrySectionPrompt.findMany({
+      where: {
+        countryCode: code,
+        status: 'ACTIVE'
+      }
+    })
+    
+    // Create a map of sectionKey -> topUp instruction
+    const topUpMap: Record<string, { instruction: string; constraints: string[] }> = {}
+    for (const prompt of topUpPrompts) {
+      topUpMap[prompt.sectionKey] = {
+        instruction: prompt.instruction || '',
+        constraints: Array.isArray(prompt.constraints) ? prompt.constraints as string[] : []
+      }
+    }
+    
+    console.log(`[translateSectionsBatch] Found ${topUpPrompts.length} top-up prompts for ${code}`)
+    
+    // Build the batch prompt with all sections
+    const sectionInstructions = sectionsToTranslate.map((section, idx) => {
+      const topUp = topUpMap[section.countryKey] || topUpMap[section.supersetKey]
+      const topUpInstruction = topUp?.instruction ? `\nJURISDICTION-SPECIFIC REQUIREMENTS:\n${topUp.instruction}` : ''
+      const topUpConstraints = topUp?.constraints?.length ? `\nCONSTRAINTS: ${topUp.constraints.join('; ')}` : ''
+      
+      return `
+=== SECTION ${idx + 1}: ${section.countryHeading} (key: "${section.countryKey}") ===
+ORIGINAL CONTENT FROM REFERENCE DRAFT:
+${section.content}
+${topUpInstruction}${topUpConstraints}
+`
+    }).join('\n')
+
+    const prompt = `You are translating a patent reference draft to ${code} jurisdiction format in ${targetLanguage}.
+
+TASK: Translate/adapt the following ${sectionsToTranslate.length} sections according to ${code} patent office requirements.
+
+IMPORTANT RULES:
+1. Apply jurisdiction-specific formatting and terminology for ${code}
+2. Output MUST be in ${targetLanguage}
+3. Maintain technical accuracy while adapting to local patent practice
+4. Apply any section-specific constraints provided below
+5. Keep reference numerals consistent with the original
+
+${sectionInstructions}
+
+OUTPUT FORMAT:
+Return a JSON object with the translated sections. Each key should be the section key, and the value should be the translated content.
+Example: {"${sectionsToTranslate[0]?.countryKey || 'sectionKey'}": "translated content...", ...}
+
+Return ONLY the JSON object, no markdown code fences or explanations.`
+
+    const result = await llmGateway.executeLLMOperation({ headers: requestHeaders || {} }, {
+      taskCode: 'LLM2_DRAFT',
+      prompt,
+      parameters: { tenantId, purpose: 'translate_sections_batch', temperature: 0 },
+      idempotencyKey: crypto.randomUUID(),
+      metadata: {
+        purpose: 'translate_sections_batch',
+        targetJurisdiction: code,
+        targetLanguage,
+        sectionCount: sectionsToTranslate.length
+      }
+    })
+
+    if (!result.success || !result.response) {
+      return {
+        success: false,
+        error: result.error?.message || 'Batch translation LLM call failed'
+      }
+    }
+
+    // Parse the JSON response
+    const output = (result.response.output || '').trim()
+    let translations: Record<string, string> = {}
+    
+    try {
+      // Try to extract JSON from the response
+      const jsonMatch = output.match(/\{[\s\S]*\}/)
+      if (jsonMatch) {
+        translations = JSON.parse(jsonMatch[0])
+      } else {
+        return {
+          success: false,
+          error: 'Could not parse JSON from batch translation response'
+        }
+      }
+    } catch (parseErr) {
+      console.error('[translateSectionsBatch] JSON parse error:', parseErr)
+      return {
+        success: false,
+        error: 'Failed to parse batch translation response as JSON'
+      }
+    }
+
+    return {
+      success: true,
+      translations,
+      tokensUsed: (result.response.inputTokens || 0) + (result.response.outputTokens || 0)
+    }
+  } catch (error) {
+    console.error('[translateSectionsBatch] Error:', error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Batch translation failed'
+    }
+  }
+}
+
+/**
+ * Translate a single section from reference draft to jurisdiction-specific format
+ * Uses CountrySectionPrompt for top-up prompts
+ */
+async function translateSection(
+  referenceContent: string,
+  supersetKey: string,
+  targetJurisdiction: string,
+  countryKey: string,
+  countryHeading: string,
+  targetLanguage: string,
+  tenantId?: string,
+  requestHeaders?: Record<string, string>
+): Promise<{
+  success: boolean
+  translatedContent?: string
+  error?: string
+  tokensUsed?: number
+}> {
+  try {
+    const code = targetJurisdiction.toUpperCase()
+    
+    // Fetch top-up prompt for this section from CountrySectionPrompt table
+    const topUpPrompt = await prisma.countrySectionPrompt.findFirst({
+      where: {
+        countryCode: code,
+        sectionKey: countryKey,
+        status: 'ACTIVE'
+      }
+    })
+    
+    // If no prompt found for countryKey, try supersetKey
+    const fallbackPrompt = !topUpPrompt ? await prisma.countrySectionPrompt.findFirst({
+      where: {
+        countryCode: code,
+        sectionKey: supersetKey,
+        status: 'ACTIVE'
+      }
+    }) : null
+    
+    const effectivePrompt = topUpPrompt || fallbackPrompt
+    
+    const topUpInstruction = effectivePrompt?.instruction 
+      ? `\nJURISDICTION-SPECIFIC REQUIREMENTS (${code}):\n${effectivePrompt.instruction}` 
+      : ''
+    const topUpConstraints = effectivePrompt?.constraints?.length 
+      ? `\nCONSTRAINTS: ${(effectivePrompt.constraints as string[]).join('; ')}` 
+      : ''
+    
+    console.log(`[translateSection] Translating ${supersetKey} -> ${countryKey} for ${code}, TopUp: ${effectivePrompt ? 'YES' : 'NO'}`)
+
+    const prompt = `You are translating a patent section from reference draft to ${code} jurisdiction format.
+
+TASK: Translate/adapt the following section according to ${code} patent office requirements.
+
+SECTION: ${countryHeading} (${countryKey})
+
+ORIGINAL CONTENT FROM REFERENCE DRAFT:
+${referenceContent}
+${topUpInstruction}${topUpConstraints}
+
+IMPORTANT RULES:
+1. Apply jurisdiction-specific formatting and terminology for ${code}
+2. Output MUST be in ${targetLanguage}
+3. Maintain technical accuracy while adapting to local patent practice
+4. Apply the jurisdiction-specific requirements above if provided
+5. Keep reference numerals consistent with the original
+
+OUTPUT: Return ONLY the translated section content, no headers or formatting markers.`
+
+    const result = await llmGateway.executeLLMOperation({ headers: requestHeaders || {} }, {
+      taskCode: 'LLM2_DRAFT',
+      prompt,
+      parameters: { tenantId, purpose: 'translate_section', temperature: 0 },
+      idempotencyKey: crypto.randomUUID(),
+      metadata: {
+        purpose: 'translate_section',
+        targetJurisdiction: code,
+        targetLanguage,
+        sectionKey: countryKey,
+        supersetKey
+      }
+    })
+
+    if (!result.success || !result.response) {
+      return {
+        success: false,
+        error: result.error?.message || 'Section translation LLM call failed'
+      }
+    }
+
+    const translatedContent = (result.response.output || '').trim()
+
+    return {
+      success: true,
+      translatedContent,
+      tokensUsed: (result.response.inputTokens || 0) + (result.response.outputTokens || 0)
+    }
+  } catch (error) {
+    console.error(`[translateSection] Error translating ${supersetKey}:`, error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Section translation failed'
+    }
   }
 }
 

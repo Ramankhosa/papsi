@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -82,11 +82,6 @@ export default function IdeaBankDashboard() {
     'Energy', 'Transportation', 'Agriculture', 'Manufacturing', 'Finance', 'Other'
   ]
 
-  useEffect(() => {
-    loadStats()
-    loadIdeas()
-  }, [])
-
   // Auto refresh ideas every 30 seconds (only when no filters active)
   useEffect(() => {
     const interval = setInterval(() => {
@@ -97,14 +92,14 @@ export default function IdeaBankDashboard() {
     }, 30000) // 30 seconds
 
     return () => clearInterval(interval)
-  }, [currentPage, searchQuery, selectedDomain])
+  }, []) // Empty dependency array since loadIdeas is not defined yet
 
   // Manual refresh (subtle - only refresh ideas, not stats)
   useEffect(() => {
     if (lastRefresh > 0) {
       loadIdeas(currentPage, true) // Silent refresh for manual refresh
     }
-  }, [lastRefresh, currentPage])
+  }, [currentPage, lastRefresh, loadIdeas])
 
   // Update filters when search query changes (debounced)
   useEffect(() => {
@@ -126,9 +121,9 @@ export default function IdeaBankDashboard() {
   // Load ideas whenever filters, page or page size change
   useEffect(() => {
     loadIdeas(currentPage)
-  }, [filters, currentPage, pageSize])
+  }, [currentPage, filters, loadIdeas, pageSize])
 
-  const loadStats = async () => {
+  const loadStats = useCallback(async () => {
     try {
       const response = await fetch('/api/idea-bank/stats', {
         headers: {
@@ -148,9 +143,9 @@ export default function IdeaBankDashboard() {
       // Set default stats if there's an error
       setStats({ totalIdeas: 0, publicIdeas: 0, reservedIdeas: 0, userReservations: 0 })
     }
-  }
+  }, [])
 
-  const loadIdeas = async (page: number = 1, silent: boolean = false) => {
+  const loadIdeas = useCallback(async (page: number = 1, silent: boolean = false) => {
     if (!silent) setSearchLoading(true)
     if (silent) setIsRefreshing(true)
     try {
@@ -203,7 +198,25 @@ export default function IdeaBankDashboard() {
         setIsRefreshing(false)
       }
     }
-  }
+  }, [filters, pageSize])
+
+  // Load initial data
+  useEffect(() => {
+    loadStats()
+    loadIdeas()
+  }, [loadIdeas, loadStats])
+
+  // Auto refresh ideas every 30 seconds (only when no filters active)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // Only auto-refresh ideas when no active search filters
+      if (!searchQuery && !selectedDomain) {
+        loadIdeas(currentPage, true) // Silent refresh, no loading spinner
+      }
+    }, 30000) // 30 seconds
+
+    return () => clearInterval(interval)
+  }, [currentPage, loadIdeas, searchQuery, selectedDomain])
 
   const handleCreateIdea = async () => {
     if (!createForm.title.trim() || !createForm.description.trim()) return

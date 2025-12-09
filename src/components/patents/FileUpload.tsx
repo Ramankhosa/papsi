@@ -121,7 +121,7 @@ export default function FileUpload({ onFileProcessed, projectId, patentId, disab
       setSelectedFile(file)
       processFile(file)
     }
-  }, [disabled])
+  }, [disabled, processFile])
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files

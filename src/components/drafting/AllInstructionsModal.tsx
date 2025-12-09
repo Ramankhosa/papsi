@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 
 interface UserInstruction {
   id: string
@@ -88,16 +88,7 @@ export default function AllInstructionsModal({
   const [togglingId, setTogglingId] = useState<string | null>(null)
   const [bulkOperating, setBulkOperating] = useState(false)
 
-  useEffect(() => {
-    fetchInstructions()
-  }, [sessionId])
-
-  useEffect(() => {
-    // Reset new instruction form when jurisdiction changes
-    setNewJurisdiction(activeJurisdiction)
-  }, [activeJurisdiction])
-
-  const fetchInstructions = async () => {
+  const fetchInstructions = useCallback(async () => {
     setLoading(true)
     try {
       const response = await fetch(
@@ -113,7 +104,16 @@ export default function AllInstructionsModal({
     } finally {
       setLoading(false)
     }
-  }
+  }, [patentId, sessionId])
+
+  useEffect(() => {
+    fetchInstructions()
+  }, [fetchInstructions])
+
+  useEffect(() => {
+    // Reset new instruction form when jurisdiction changes
+    setNewJurisdiction(activeJurisdiction)
+  }, [activeJurisdiction])
 
   const handleDelete = async (instruction: UserInstruction) => {
     if (!confirm(`Delete instruction for "${sectionLabels[instruction.sectionKey] || instruction.sectionKey}"?`)) {

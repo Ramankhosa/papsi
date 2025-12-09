@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -45,11 +45,7 @@ export default function NoveltySearchHistory({ projectId, showStats = true }: No
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchHistory();
-  }, [projectId]);
-
-  const fetchHistory = async () => {
+  const fetchHistory = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
@@ -84,7 +80,11 @@ export default function NoveltySearchHistory({ projectId, showStats = true }: No
     } finally {
       setLoading(false);
     }
-  };
+  }, [projectId]);
+
+  useEffect(() => {
+    fetchHistory();
+  }, [fetchHistory]);
 
   const downloadReport = async (searchId: string, reportUrl: string) => {
     try {

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { useRouter } from 'next/navigation'
 import { getRandomGreeting, getCurrentTimeString, getTimeSegment } from '@/lib/greetings'
@@ -35,13 +35,6 @@ export default function UserDashboard() {
   const [showIdleMessage, setShowIdleMessage] = useState(false)
   const [projectsList, setProjectsList] = useState<any[]>([])
   const projectsScrollRef = useRef<HTMLDivElement | null>(null)
-
-  useEffect(() => {
-    if (user) {
-      initializeDashboard()
-    }
-  }, [user])
-
 
   // Idle detection and intelligence cues
   useEffect(() => {
@@ -89,38 +82,7 @@ export default function UserDashboard() {
     }
   }, [showIdleMessage])
 
-  const initializeDashboard = async () => {
-    setIsLoading(true)
-
-    // Set initial greeting and time
-    const initialTimeSegment = getTimeSegment()
-    currentTimeSegmentRef.current = initialTimeSegment
-    setGreeting(getRandomGreeting())
-    setCurrentTime(getCurrentTimeString())
-
-    // Update time every minute and check if time segment changed
-    const timeInterval = setInterval(() => {
-      const newTime = getCurrentTimeString()
-      const newTimeSegment = getTimeSegment()
-
-      setCurrentTime(newTime)
-
-      // Update greeting if time segment changed (morning/afternoon/evening)
-      if (newTimeSegment !== currentTimeSegmentRef.current) {
-        currentTimeSegmentRef.current = newTimeSegment
-        setGreeting(getRandomGreeting())
-      }
-    }, 60000)
-
-    // Fetch dashboard stats
-    await fetchDashboardStats()
-
-    setIsLoading(false)
-
-    return () => clearInterval(timeInterval)
-  }
-
-  const fetchDashboardStats = async () => {
+  const fetchDashboardStats = useCallback(async () => {
     try {
       // Fetch idea bank stats
       const ideaResponse = await fetch('/api/idea-bank/stats', {
@@ -182,7 +144,44 @@ export default function UserDashboard() {
     } catch (error) {
       console.error('Failed to fetch dashboard stats:', error)
     }
-  }
+  }, [])
+
+  const initializeDashboard = useCallback(async () => {
+    setIsLoading(true)
+
+    // Set initial greeting and time
+    const initialTimeSegment = getTimeSegment()
+    currentTimeSegmentRef.current = initialTimeSegment
+    setGreeting(getRandomGreeting())
+    setCurrentTime(getCurrentTimeString())
+
+    // Update time every minute and check if time segment changed
+    const timeInterval = setInterval(() => {
+      const newTime = getCurrentTimeString()
+      const newTimeSegment = getTimeSegment()
+
+      setCurrentTime(newTime)
+
+      // Update greeting if time segment changed (morning/afternoon/evening)
+      if (newTimeSegment !== currentTimeSegmentRef.current) {
+        currentTimeSegmentRef.current = newTimeSegment
+        setGreeting(getRandomGreeting())
+      }
+    }, 60000)
+
+    // Fetch dashboard stats
+    await fetchDashboardStats()
+
+    setIsLoading(false)
+
+    return () => clearInterval(timeInterval)
+  }, [fetchDashboardStats])
+
+  useEffect(() => {
+    if (user) {
+      initializeDashboard()
+    }
+  }, [user, initializeDashboard])
 
   const handleCardHover = (cardType: string, message: string) => {
     setHoverTooltip(message)

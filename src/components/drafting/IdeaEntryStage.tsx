@@ -764,6 +764,19 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
                     </div>
                   )}
 
+                  {/* Multi-Jurisdiction Notice */}
+                  {allJurisdictions.length > 1 && (
+                    <div className="px-6 py-3 bg-blue-50 border-b border-blue-100">
+                      <div className="flex items-start gap-2 text-sm text-blue-800">
+                        <Globe className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                        <div>
+                          <span className="font-medium">Multi-Jurisdiction Filing:</span>{' '}
+                          <span>These reference claims are generated for initial review using {activeJurisdiction} rules. Jurisdiction-specific claims will be drafted one-by-one during the drafting stage.</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Claims Editor */}
                   <div className="p-6">
                     {!claimsText && !isGeneratingClaims ? (

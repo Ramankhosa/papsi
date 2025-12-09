@@ -72,7 +72,7 @@ async function createSuperAdmin() {
 
     // Check if Super Admin already exists
     const existingSuperAdmin = await prisma.user.findFirst({
-      where: { role: 'SUPER_ADMIN' }
+      where: { roles: { has: 'SUPER_ADMIN' } }
     })
 
     let superAdmin
@@ -94,15 +94,24 @@ async function createSuperAdmin() {
     } else {
       console.log('➕ Creating new Super Admin...')
 
-      // Create platform tenant for super admin tokens
-      console.log('🏢 Creating platform tenant...')
-      const platformTenant = await prisma.tenant.create({
-        data: {
-          name: 'Platform Administration',
-          atiId: 'PLATFORM',
-          status: 'ACTIVE'
-        }
+      // Find or create platform tenant for super admin tokens
+      console.log('🏢 Finding platform tenant...')
+      let platformTenant = await prisma.tenant.findUnique({
+        where: { atiId: 'PLATFORM' }
       })
+
+      if (!platformTenant) {
+        console.log('🏢 Creating platform tenant...')
+        platformTenant = await prisma.tenant.create({
+          data: {
+            name: 'Platform Administration',
+            atiId: 'PLATFORM',
+            status: 'ACTIVE'
+          }
+        })
+      } else {
+        console.log('🏢 Using existing platform tenant...')
+      }
 
       // Generate platform-level ATI token for super admin onboarding
       console.log('🔐 Generating platform ATI token...')
@@ -130,7 +139,7 @@ async function createSuperAdmin() {
           email,
           passwordHash,
           name,
-          role: 'SUPER_ADMIN',
+          roles: ['SUPER_ADMIN'],
           status: 'ACTIVE',
           signupAtiTokenId: platformToken.id // Track the ATI token used
         }
@@ -144,7 +153,7 @@ async function createSuperAdmin() {
     console.log(`ID: ${superAdmin.id}`)
     console.log(`Email: ${superAdmin.email}`)
     console.log(`Name: ${superAdmin.name}`)
-    console.log(`Role: ${superAdmin.role}`)
+    console.log(`Role: ${superAdmin.roles?.join(', ') || 'None'}`)
     console.log(`Status: ${superAdmin.status}`)
     console.log(`Created: ${superAdmin.createdAt.toISOString()}`)
 

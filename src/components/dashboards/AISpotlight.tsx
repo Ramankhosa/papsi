@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Sparkles, X, ArrowRight, BrainCircuit } from 'lucide-react'
 
@@ -15,11 +15,7 @@ export default function AISpotlight({ draftsCount, latestNoveltySearch, userRese
   const [isVisible, setIsVisible] = useState(true)
   const [currentSuggestion, setCurrentSuggestion] = useState<any>(null)
 
-  useEffect(() => {
-    generateSuggestion()
-  }, [draftsCount, latestNoveltySearch, userReservations])
-
-  const generateSuggestion = () => {
+  const generateSuggestion = useCallback(() => {
     const suggestions = []
 
     // Draft completion suggestion
@@ -68,7 +64,11 @@ export default function AISpotlight({ draftsCount, latestNoveltySearch, userRese
 
     const randomIndex = Math.floor(Math.random() * suggestions.length)
     setCurrentSuggestion(suggestions[randomIndex])
-  }
+  }, [draftsCount, latestNoveltySearch, router, userReservations])
+
+  useEffect(() => {
+    generateSuggestion()
+  }, [generateSuggestion])
 
   if (!isVisible || !currentSuggestion) return null
 
