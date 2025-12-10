@@ -44,6 +44,80 @@ const JURISDICTIONS = [
   { code: 'AU', label: '🇦🇺 Australia' }
 ]
 
+// Section-specific word limits - should match backend
+const SECTION_WORD_LIMITS: Record<string, { min: number; max: number; recommended: { min: number; max: number } }> = {
+  title: { min: 3, max: 50, recommended: { min: 5, max: 30 } },
+  fieldOfInvention: { min: 5, max: 200, recommended: { min: 10, max: 100 } },
+  background: { min: 10, max: 1000, recommended: { min: 50, max: 300 } },
+  objectsOfInvention: { min: 5, max: 500, recommended: { min: 20, max: 200 } },
+  summary: { min: 10, max: 1000, recommended: { min: 50, max: 300 } },
+  briefDescriptionOfDrawings: { min: 5, max: 500, recommended: { min: 20, max: 150 } },
+  detailedDescription: { min: 20, max: 2000, recommended: { min: 100, max: 500 } },
+  claims: { min: 10, max: 1500, recommended: { min: 50, max: 400 } },
+  abstract: { min: 10, max: 500, recommended: { min: 50, max: 200 } },
+  technicalProblem: { min: 10, max: 500, recommended: { min: 30, max: 200 } },
+  technicalSolution: { min: 10, max: 500, recommended: { min: 30, max: 200 } },
+  advantageousEffects: { min: 10, max: 500, recommended: { min: 30, max: 200 } },
+  industrialApplicability: { min: 5, max: 300, recommended: { min: 20, max: 150 } },
+  bestMethod: { min: 10, max: 1000, recommended: { min: 50, max: 300 } },
+  preamble: { min: 5, max: 200, recommended: { min: 10, max: 100 } },
+  crossReference: { min: 5, max: 300, recommended: { min: 10, max: 100 } }
+}
+
+// Default limits for unknown sections
+const DEFAULT_LIMITS = { min: 5, max: 1000, recommended: { min: 10, max: 300 } }
+
+// Word count indicator component with visual feedback
+function WordCountIndicator({ text, sectionKey }: { text: string; sectionKey: string }) {
+  const wordCount = text.trim().split(/\s+/).filter(w => w).length
+  const limits = SECTION_WORD_LIMITS[sectionKey] || DEFAULT_LIMITS
+  
+  // Determine status
+  let status: 'error' | 'warning' | 'good' | 'optimal' = 'good'
+  let message = ''
+  
+  if (wordCount < limits.min) {
+    status = 'error'
+    message = `Min ${limits.min} words required`
+  } else if (wordCount > limits.max) {
+    status = 'error'
+    message = `Max ${limits.max} words allowed`
+  } else if (wordCount < limits.recommended.min) {
+    status = 'warning'
+    message = `Below recommended (${limits.recommended.min}+)`
+  } else if (wordCount > limits.recommended.max) {
+    status = 'warning'
+    message = `Above recommended (${limits.recommended.max})`
+  } else {
+    status = 'optimal'
+    message = 'Good length ✓'
+  }
+  
+  const colors = {
+    error: 'text-red-500',
+    warning: 'text-yellow-600 dark:text-yellow-400',
+    good: 'text-gray-500',
+    optimal: 'text-green-600 dark:text-green-400'
+  }
+  
+  return (
+    <div className="flex flex-col text-xs">
+      <span className={colors[status]}>
+        {wordCount} words
+        {(status === 'error' || status === 'warning') && (
+          <span className="ml-1">• {message}</span>
+        )}
+        {status === 'optimal' && (
+          <span className="ml-1">• {message}</span>
+        )}
+      </span>
+      <span className="text-gray-400 text-[10px]">
+        Recommended: {limits.recommended.min}-{limits.recommended.max} words
+      </span>
+    </div>
+  )
+}
+
 export default function PersonasPage() {
   const { token, user } = useAuth()
   const [myPersonas, setMyPersonas] = useState<Persona[]>([])
@@ -301,9 +375,32 @@ export default function PersonasPage() {
         })
       })
 
+      const data = await res.json()
+
       if (!res.ok) {
-        const data = await res.json()
-        throw new Error(data.error || 'Failed to save sample')
+        // Handle specific error codes
+        if (data.code === 'ORG_PERSONA_READONLY') {
+          alert('You cannot edit samples in organization personas you did not create.\n\nTo customize this persona, click "Copy" to create your own version.')
+          return
+        }
+        if (data.code === 'PERSONA_NOT_FOUND') {
+          alert('This persona was not found or you no longer have access to it. Please refresh the page.')
+          return
+        }
+        
+        // Show validation details if available
+        let errorMessage = data.error || 'Failed to save sample'
+        if (data.wordCount !== undefined && data.limits) {
+          errorMessage += `\n\nYour sample: ${data.wordCount} words\nAllowed: ${data.limits.min} - ${data.limits.max} words`
+        }
+        
+        throw new Error(errorMessage)
+      }
+
+      // Show warning if sample was saved but with a suggestion
+      if (data.warning) {
+        console.log('[PersonaSample] Warning:', data.warning)
+        // Could show a toast/notification here in the future
       }
 
       setEditingSample(null)
@@ -576,14 +673,15 @@ export default function PersonasPage() {
                               <textarea
                                 value={editingSample.text}
                                 onChange={(e) => setEditingSample({ sectionKey: section.key, text: e.target.value })}
-                                rows={4}
-                                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm"
-                                placeholder={`Paste a sample of your writing style for ${section.label}...`}
+                                rows={6}
+                                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white text-sm resize-y min-h-[100px]"
+                                placeholder={`Paste a sample of your writing style for ${section.label}...\n\nThis can be from a previous patent application or a draft you've written. The AI will learn to mimic your vocabulary, sentence structure, and formatting preferences.`}
                               />
                               <div className="flex justify-between items-center mt-2">
-                                <span className="text-xs text-gray-500">
-                                  {editingSample.text.trim().split(/\s+/).filter(w => w).length} words (10-200 recommended)
-                                </span>
+                                <WordCountIndicator 
+                                  text={editingSample.text} 
+                                  sectionKey={section.key} 
+                                />
                                 <div className="flex gap-2">
                                   <button
                                     onClick={() => setEditingSample(null)}
@@ -593,7 +691,7 @@ export default function PersonasPage() {
                                   </button>
                                   <button
                                     onClick={() => handleSaveSample(section.key, editingSample.text)}
-                                    disabled={saving || !editingSample.text.trim()}
+                                    disabled={saving || !editingSample.text.trim() || editingSample.text.trim().split(/\s+/).filter(w => w).length < 3}
                                     className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
                                   >
                                     {saving ? 'Saving...' : 'Save'}

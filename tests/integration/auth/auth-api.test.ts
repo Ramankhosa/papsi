@@ -1,6 +1,6 @@
 import request from 'supertest'
-import { createTestServer } from '../setup/test-server'
-import { setupTestDatabase, cleanupTestDatabase } from '../setup/test-db'
+import { createTestServer } from '../../setup/test-server'
+import { setupTestDatabase, cleanupTestDatabase } from '../../setup/test-db'
 
 const app = createTestServer()
 

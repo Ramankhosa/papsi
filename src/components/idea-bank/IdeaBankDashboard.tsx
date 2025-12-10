@@ -82,47 +82,6 @@ export default function IdeaBankDashboard() {
     'Energy', 'Transportation', 'Agriculture', 'Manufacturing', 'Finance', 'Other'
   ]
 
-  // Auto refresh ideas every 30 seconds (only when no filters active)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      // Only auto-refresh ideas when no active search filters
-      if (!searchQuery && !selectedDomain) {
-        loadIdeas(currentPage, true) // Silent refresh, no loading spinner
-      }
-    }, 30000) // 30 seconds
-
-    return () => clearInterval(interval)
-  }, []) // Empty dependency array since loadIdeas is not defined yet
-
-  // Manual refresh (subtle - only refresh ideas, not stats)
-  useEffect(() => {
-    if (lastRefresh > 0) {
-      loadIdeas(currentPage, true) // Silent refresh for manual refresh
-    }
-  }, [currentPage, lastRefresh, loadIdeas])
-
-  // Update filters when search query changes (debounced)
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setFilters(prev => ({ ...prev, query: searchQuery }))
-      setCurrentPage(1)
-    }, 300)
-
-    return () => clearTimeout(timer)
-  }, [searchQuery])
-
-  // Update filters when domain changes
-  useEffect(() => {
-    const newDomainTags = selectedDomain ? [selectedDomain] : undefined
-    setFilters(prev => ({ ...prev, domainTags: newDomainTags }))
-    setCurrentPage(1)
-  }, [selectedDomain])
-
-  // Load ideas whenever filters, page or page size change
-  useEffect(() => {
-    loadIdeas(currentPage)
-  }, [currentPage, filters, loadIdeas, pageSize])
-
   const loadStats = useCallback(async () => {
     try {
       const response = await fetch('/api/idea-bank/stats', {
@@ -205,6 +164,35 @@ export default function IdeaBankDashboard() {
     loadStats()
     loadIdeas()
   }, [loadIdeas, loadStats])
+
+  // Manual refresh (subtle - only refresh ideas, not stats)
+  useEffect(() => {
+    if (lastRefresh > 0) {
+      loadIdeas(currentPage, true) // Silent refresh for manual refresh
+    }
+  }, [currentPage, lastRefresh, loadIdeas])
+
+  // Update filters when search query changes (debounced)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setFilters(prev => ({ ...prev, query: searchQuery }))
+      setCurrentPage(1)
+    }, 300)
+
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+
+  // Update filters when domain changes
+  useEffect(() => {
+    const newDomainTags = selectedDomain ? [selectedDomain] : undefined
+    setFilters(prev => ({ ...prev, domainTags: newDomainTags }))
+    setCurrentPage(1)
+  }, [selectedDomain])
+
+  // Load ideas whenever filters, page or page size change
+  useEffect(() => {
+    loadIdeas(currentPage)
+  }, [currentPage, filters, loadIdeas, pageSize])
 
   // Auto refresh ideas every 30 seconds (only when no filters active)
   useEffect(() => {

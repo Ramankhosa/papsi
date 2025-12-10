@@ -288,7 +288,7 @@ export default function SuperAdminDashboard() {
               </button>
               <span className="text-sm text-gray-500">Welcome, {user?.email}</span>
               <button
-                onClick={logout}
+                onClick={() => logout()}
                 className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
               >
                 Logout

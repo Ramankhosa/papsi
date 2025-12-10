@@ -10,6 +10,7 @@
 
 import { prisma } from '@/lib/prisma'
 import { llmGateway } from '@/lib/metering'
+import type { LLMRequest } from '@/lib/metering'
 import { getCountryProfile } from '@/lib/country-profile-service'
 import crypto from 'crypto'
 
@@ -46,6 +47,481 @@ export interface SectionMapping {
   countryKey: string
   countryHeading: string
   isApplicable: boolean
+}
+
+// Context injection requirements for a section
+export interface SectionContextRequirements {
+  requiresPriorArt: boolean
+  requiresFigures: boolean
+  requiresClaims: boolean
+  requiresComponents: boolean
+}
+
+// ============================================================================
+// Section Context Requirements (Database-Driven)
+// ============================================================================
+
+// Fallback defaults when database doesn't have the section (safe defaults based on section purpose)
+// These match the user's injection analysis table - updated 2024-12
+const FALLBACK_CONTEXT_REQUIREMENTS: Record<string, SectionContextRequirements> = {
+  // Sections that need PRIOR ART only
+  background: { requiresPriorArt: true, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+  technicalProblem: { requiresPriorArt: true, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+  
+  // Sections that need CLAIMS only
+  summary: { requiresPriorArt: false, requiresFigures: false, requiresClaims: true, requiresComponents: false },
+  technicalSolution: { requiresPriorArt: false, requiresFigures: false, requiresClaims: true, requiresComponents: false },
+  
+  // Sections that need FIGURES + COMPONENTS
+  briefDescriptionOfDrawings: { requiresPriorArt: false, requiresFigures: true, requiresClaims: false, requiresComponents: true },
+  detailedDescription: { requiresPriorArt: false, requiresFigures: true, requiresClaims: false, requiresComponents: true },
+  bestMode: { requiresPriorArt: false, requiresFigures: true, requiresClaims: false, requiresComponents: true },
+  
+  // Sections that need COMPONENTS only
+  claims: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: true },
+  listOfNumerals: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: true },
+  
+  // Sections that need NOTHING (standalone or procedural)
+  title: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+  preamble: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+  fieldOfInvention: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+  objectsOfInvention: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+  advantageousEffects: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+  industrialApplicability: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+  abstract: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+  crossReference: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false }
+}
+
+// ============================================================================
+// Jurisdiction Language Mapping
+// ============================================================================
+
+/**
+ * Map jurisdiction code to ISO 639-1 language code
+ * Used for selecting language-specific figures
+ */
+const JURISDICTION_LANGUAGE_MAP: Record<string, string> = {
+  // Asia
+  JP: 'ja',    // Japan → Japanese
+  CN: 'zh',    // China → Chinese
+  KR: 'ko',    // Korea → Korean
+  IN: 'en',    // India → English (official patent language)
+  TW: 'zh',    // Taiwan → Chinese
+  MY: 'en',    // Malaysia → English
+  SG: 'en',    // Singapore → English
+  
+  // Europe
+  EP: 'en',    // European Patent → English (primary)
+  DE: 'de',    // Germany → German
+  FR: 'fr',    // France → French
+  ES: 'es',    // Spain → Spanish
+  IT: 'it',    // Italy → Italian
+  NL: 'nl',    // Netherlands → Dutch
+  CH: 'de',    // Switzerland → German (primary)
+  AT: 'de',    // Austria → German
+  SE: 'sv',    // Sweden → Swedish
+  PL: 'pl',    // Poland → Polish
+  
+  // Americas
+  US: 'en',    // United States → English
+  CA: 'en',    // Canada → English (primary)
+  BR: 'pt',    // Brazil → Portuguese
+  MX: 'es',    // Mexico → Spanish
+  AR: 'es',    // Argentina → Spanish
+  
+  // Other
+  AU: 'en',    // Australia → English
+  NZ: 'en',    // New Zealand → English
+  RU: 'ru',    // Russia → Russian
+  IL: 'he',    // Israel → Hebrew
+  SA: 'ar',    // Saudi Arabia → Arabic
+  UAE: 'ar',   // UAE → Arabic
+  ZA: 'en',    // South Africa → English
+  
+  // International
+  PCT: 'en',   // PCT → English (default)
+  WIPO: 'en',  // WIPO → English
+}
+
+/**
+ * Get language code for a jurisdiction
+ */
+export function getJurisdictionLanguage(jurisdiction: string): string {
+  return JURISDICTION_LANGUAGE_MAP[jurisdiction.toUpperCase()] || 'en'
+}
+
+// ============================================================================
+// Language-Aware Figure Selection
+// ============================================================================
+
+interface FigureInfo {
+  figureNo: number
+  title: string
+  description?: string
+  type?: string
+  language?: string
+}
+
+/**
+ * Get figures for a jurisdiction with language fallback
+ * 
+ * Priority:
+ * 1. Figures in jurisdiction's language
+ * 2. English figures (fallback)
+ * 3. Any available figures (last resort)
+ * 
+ * @param session - The drafting session with figure data
+ * @param jurisdiction - Target jurisdiction code
+ * @returns Array of figures with language preference applied
+ */
+export function getFiguresForJurisdiction(
+  session: any,
+  jurisdiction: string
+): FigureInfo[] {
+  // Validate inputs
+  if (!session) {
+    console.warn('[getFiguresForJurisdiction] Session is null/undefined - returning empty figures')
+    return []
+  }
+  
+  const safeJurisdiction = jurisdiction || 'US'
+  const targetLanguage = getJurisdictionLanguage(safeJurisdiction)
+  
+  // Collect all diagram sources with language info (with warnings for missing data)
+  const diagramSources = Array.isArray(session.diagramSources) ? session.diagramSources : []
+  const figurePlans = Array.isArray(session.figurePlans) ? session.figurePlans : []
+  const sketchRecords = Array.isArray(session.sketchRecords) 
+    ? session.sketchRecords.filter((s: any) => s.status === 'SUCCESS' && !s.isDeleted)
+    : []
+  
+  // Log warnings for debugging if figure data seems missing but was expected
+  if (!session.diagramSources && !session.figurePlans && !session.sketchRecords) {
+    console.warn('[getFiguresForJurisdiction] No figure data found in session - this may be intentional or indicate missing includes')
+  }
+  
+  // Group diagrams by figureNo and language
+  const diagramsByFigure = new Map<number, Map<string, any>>()
+  for (const source of diagramSources) {
+    const figNo = source.figureNo
+    const lang = source.language || 'en'
+    if (!diagramsByFigure.has(figNo)) {
+      diagramsByFigure.set(figNo, new Map())
+    }
+    diagramsByFigure.get(figNo)!.set(lang, source)
+  }
+  
+  // Build figure list with language preference
+  const figures: FigureInfo[] = []
+  
+  // Use finalized sequence if available
+  if (session.figureSequenceFinalized && Array.isArray(session.figureSequence) && session.figureSequence.length > 0) {
+    const figureSequence = session.figureSequence as Array<{ id: string; type: string; sourceId: string; finalFigNo: number }>
+    
+    for (const seqItem of figureSequence) {
+      if (seqItem.type === 'diagram') {
+        const plan = figurePlans.find((f: any) => f.id === seqItem.sourceId)
+        const diagramLangs = diagramsByFigure.get(seqItem.finalFigNo)
+        
+        // Select best language version
+        let selectedSource: any = null
+        let selectedLanguage = 'en'
+        
+        if (diagramLangs) {
+          // Priority: target language → English → any
+          if (diagramLangs.has(targetLanguage)) {
+            selectedSource = diagramLangs.get(targetLanguage)
+            selectedLanguage = targetLanguage
+          } else if (diagramLangs.has('en')) {
+            selectedSource = diagramLangs.get('en')
+            selectedLanguage = 'en'
+          } else {
+            // Use first available
+            const firstEntry = diagramLangs.entries().next().value
+            if (firstEntry) {
+              selectedLanguage = firstEntry[0]
+              selectedSource = firstEntry[1]
+            }
+          }
+        }
+        
+        figures.push({
+          figureNo: seqItem.finalFigNo,
+          title: plan?.title || `Figure ${seqItem.finalFigNo}`,
+          description: plan?.description || '',
+          type: 'diagram',
+          language: selectedLanguage
+        })
+      } else if (seqItem.type === 'sketch') {
+        const sketch = sketchRecords.find((s: any) => s.id === seqItem.sourceId)
+        if (sketch) {
+          figures.push({
+            figureNo: seqItem.finalFigNo,
+            title: sketch.title || `Figure ${seqItem.finalFigNo}`,
+            description: sketch.description || '',
+            type: 'sketch',
+            language: 'en' // Sketches are typically language-neutral
+          })
+        }
+      }
+    }
+  } else {
+    // Fallback: use figurePlans directly
+    for (const plan of figurePlans) {
+      const diagramLangs = diagramsByFigure.get(plan.figureNo)
+      let selectedLanguage = 'en'
+      
+      if (diagramLangs) {
+        if (diagramLangs.has(targetLanguage)) {
+          selectedLanguage = targetLanguage
+        } else if (diagramLangs.has('en')) {
+          selectedLanguage = 'en'
+        } else {
+          const firstEntry = diagramLangs.entries().next().value
+          if (firstEntry) selectedLanguage = firstEntry[0]
+        }
+      }
+      
+      figures.push({
+        figureNo: plan.figureNo,
+        title: plan.title || `Figure ${plan.figureNo}`,
+        description: plan.description || '',
+        type: 'diagram',
+        language: selectedLanguage
+      })
+    }
+  }
+  
+  // Log language selection
+  const langCounts = figures.reduce((acc, f) => {
+    acc[f.language || 'unknown'] = (acc[f.language || 'unknown'] || 0) + 1
+    return acc
+  }, {} as Record<string, number>)
+  console.log(`[getFiguresForJurisdiction] ${jurisdiction} (target: ${targetLanguage}): ${figures.length} figures`, langCounts)
+  
+  return figures
+}
+
+// ============================================================================
+// Batch Context Requirements Helper
+// ============================================================================
+
+/**
+ * Check what context types are needed by any section in a batch
+ * Used to determine what data to include in the prompt for batch generation
+ * Also validates for obvious misconfigurations
+ */
+export function getBatchContextNeeds(
+  contextRequirements: Record<string, SectionContextRequirements>
+): { needsPriorArt: boolean; needsFigures: boolean; needsClaims: boolean; needsComponents: boolean } {
+  let needsPriorArt = false
+  let needsFigures = false
+  let needsClaims = false
+  let needsComponents = false
+  
+  for (const [sectionKey, req] of Object.entries(contextRequirements)) {
+    if (req.requiresPriorArt) needsPriorArt = true
+    if (req.requiresFigures) needsFigures = true
+    if (req.requiresClaims) needsClaims = true
+    if (req.requiresComponents) needsComponents = true
+    
+    // Warn about obvious misconfigurations that could produce empty/broken sections
+    if (sectionKey === 'briefDescriptionOfDrawings' && !req.requiresFigures) {
+      console.warn(`[ContextValidation] briefDescriptionOfDrawings has requiresFigures=false - section may be empty`)
+    }
+    if (sectionKey === 'listOfNumerals' && !req.requiresComponents) {
+      console.warn(`[ContextValidation] listOfNumerals has requiresComponents=false - section may be empty`)
+    }
+  }
+  
+  return { needsPriorArt, needsFigures, needsClaims, needsComponents }
+}
+
+/**
+ * Get context requirements for a section from database with fallback
+ * 
+ * Priority:
+ * 1. CountrySectionMapping override (jurisdiction-specific)
+ * 2. SupersetSection defaults (universal)
+ * 3. Fallback constants (hardcoded safe defaults)
+ * 
+ * @param sectionKey - The canonical superset section key
+ * @param jurisdiction - Optional jurisdiction code for country-specific overrides
+ */
+export async function getSectionContextRequirements(
+  sectionKey: string,
+  jurisdiction?: string
+): Promise<SectionContextRequirements> {
+  // Default result
+  let result: SectionContextRequirements = {
+    requiresPriorArt: false,
+    requiresFigures: false,
+    requiresClaims: false,
+    requiresComponents: false
+  }
+
+  // 1. Check CountrySectionMapping for jurisdiction-specific override
+  if (jurisdiction) {
+    try {
+      const mapping = await prisma.countrySectionMapping.findFirst({
+        where: { 
+          countryCode: jurisdiction.toUpperCase(), 
+          sectionKey,
+          isEnabled: true
+        }
+      })
+      
+      if (mapping) {
+        // Use overrides if explicitly set (not null)
+        if ((mapping as any).requiresPriorArtOverride !== null) {
+          result.requiresPriorArt = (mapping as any).requiresPriorArtOverride ?? false
+        }
+        if ((mapping as any).requiresFiguresOverride !== null) {
+          result.requiresFigures = (mapping as any).requiresFiguresOverride ?? false
+        }
+        if ((mapping as any).requiresClaimsOverride !== null) {
+          result.requiresClaims = (mapping as any).requiresClaimsOverride ?? false
+        }
+        if ((mapping as any).requiresComponentsOverride !== null) {
+          result.requiresComponents = (mapping as any).requiresComponentsOverride ?? false
+        }
+        
+        // If any override was set, we have a valid result
+        const hasOverride = [
+          (mapping as any).requiresPriorArtOverride,
+          (mapping as any).requiresFiguresOverride,
+          (mapping as any).requiresClaimsOverride,
+          (mapping as any).requiresComponentsOverride
+        ].some(v => v !== null && v !== undefined)
+        
+        if (hasOverride) {
+          return result
+        }
+      }
+    } catch (err) {
+      console.warn(`[getSectionContextRequirements] Error checking CountrySectionMapping for ${jurisdiction}/${sectionKey}:`, err)
+    }
+  }
+
+  // 2. Check SupersetSection for universal defaults
+  try {
+    const supersetSection = await prisma.supersetSection.findUnique({
+      where: { sectionKey }
+    })
+    
+    if (supersetSection) {
+      return {
+        requiresPriorArt: (supersetSection as any).requiresPriorArt ?? false,
+        requiresFigures: (supersetSection as any).requiresFigures ?? false,
+        requiresClaims: (supersetSection as any).requiresClaims ?? false,
+        requiresComponents: (supersetSection as any).requiresComponents ?? false
+      }
+    }
+  } catch (err) {
+    console.warn(`[getSectionContextRequirements] Error checking SupersetSection for ${sectionKey}:`, err)
+  }
+
+  // 3. Fallback to hardcoded defaults
+  const fallback = FALLBACK_CONTEXT_REQUIREMENTS[sectionKey]
+  if (fallback) {
+    return fallback
+  }
+
+  return result
+}
+
+/**
+ * Batch fetch context requirements for multiple sections
+ * More efficient than calling getSectionContextRequirements for each section
+ */
+export async function getBatchSectionContextRequirements(
+  sectionKeys: string[],
+  jurisdiction?: string
+): Promise<Record<string, SectionContextRequirements>> {
+  const result: Record<string, SectionContextRequirements> = {}
+  
+  try {
+    // Fetch all SupersetSections at once
+    const supersetSections = await prisma.supersetSection.findMany({
+      where: { sectionKey: { in: sectionKeys } }
+    })
+    
+    const supersetMap = new Map(supersetSections.map(s => [s.sectionKey, s]))
+    
+    // Fetch CountrySectionMappings if jurisdiction provided
+    let mappingsMap = new Map<string, any>()
+    if (jurisdiction) {
+      const mappings = await prisma.countrySectionMapping.findMany({
+        where: {
+          countryCode: jurisdiction.toUpperCase(),
+          sectionKey: { in: sectionKeys },
+          isEnabled: true
+        }
+      })
+      mappingsMap = new Map(mappings.map(m => [m.sectionKey, m]))
+    }
+    
+    // Build result for each section
+    for (const key of sectionKeys) {
+      const mapping = mappingsMap.get(key)
+      const superset = supersetMap.get(key)
+      const fallback = FALLBACK_CONTEXT_REQUIREMENTS[key]
+      
+      // Start with defaults
+      let requirements: SectionContextRequirements = {
+        requiresPriorArt: false,
+        requiresFigures: false,
+        requiresClaims: false,
+        requiresComponents: false
+      }
+      
+      // Apply fallback
+      if (fallback) {
+        requirements = { ...fallback }
+      }
+      
+      // Apply SupersetSection defaults
+      if (superset) {
+        requirements = {
+          requiresPriorArt: (superset as any).requiresPriorArt ?? requirements.requiresPriorArt,
+          requiresFigures: (superset as any).requiresFigures ?? requirements.requiresFigures,
+          requiresClaims: (superset as any).requiresClaims ?? requirements.requiresClaims,
+          requiresComponents: (superset as any).requiresComponents ?? requirements.requiresComponents
+        }
+      }
+      
+      // Apply jurisdiction-specific overrides
+      if (mapping) {
+        if ((mapping as any).requiresPriorArtOverride !== null && (mapping as any).requiresPriorArtOverride !== undefined) {
+          requirements.requiresPriorArt = (mapping as any).requiresPriorArtOverride
+        }
+        if ((mapping as any).requiresFiguresOverride !== null && (mapping as any).requiresFiguresOverride !== undefined) {
+          requirements.requiresFigures = (mapping as any).requiresFiguresOverride
+        }
+        if ((mapping as any).requiresClaimsOverride !== null && (mapping as any).requiresClaimsOverride !== undefined) {
+          requirements.requiresClaims = (mapping as any).requiresClaimsOverride
+        }
+        if ((mapping as any).requiresComponentsOverride !== null && (mapping as any).requiresComponentsOverride !== undefined) {
+          requirements.requiresComponents = (mapping as any).requiresComponentsOverride
+        }
+      }
+      
+      result[key] = requirements
+    }
+  } catch (err) {
+    console.warn('[getBatchSectionContextRequirements] Error fetching context requirements:', err)
+    
+    // Fallback to hardcoded defaults for all sections
+    for (const key of sectionKeys) {
+      result[key] = FALLBACK_CONTEXT_REQUIREMENTS[key] || {
+        requiresPriorArt: false,
+        requiresFigures: false,
+        requiresClaims: false,
+        requiresComponents: false
+      }
+    }
+  }
+  
+  return result
 }
 
 // ============================================================================
@@ -751,6 +1227,69 @@ async function getSupersetSectionPrompts(sectionKeys: string[]): Promise<Record<
   return prompts
 }
 
+function parseReferenceDraftResponse(output: string, sectionKeys: string[]): Record<string, string> | null {
+  if (!output) return null
+
+  const text = output.trim()
+  const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi
+  let merged: Record<string, any> = {}
+  let fenceMatch: RegExpExecArray | null
+
+  while ((fenceMatch = fenceRegex.exec(text)) !== null) {
+    let block = (fenceMatch[1] || '').trim()
+    if (!block) continue
+    block = block.replace(/,(\s*[}\]])/g, '$1')
+    try {
+      const obj = JSON.parse(block)
+      if (obj && typeof obj === 'object') {
+        merged = { ...merged, ...obj }
+      }
+    } catch {
+      try {
+        const fallback = JSON.parse(block.replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:/g, '$1"$2":'))
+        if (fallback && typeof fallback === 'object') {
+          merged = { ...merged, ...fallback }
+        }
+      } catch {
+        continue
+      }
+    }
+  }
+
+  let parsed: any = Object.keys(merged).length > 0 ? merged : null
+
+  if (!parsed) {
+    let jsonText = text
+    const start = jsonText.indexOf('{')
+    if (start !== -1) {
+      jsonText = jsonText.slice(start)
+    }
+    jsonText = jsonText.replace(/```/g, '').replace(/,(\s*[}\]])/g, '$1')
+    try {
+      parsed = JSON.parse(jsonText)
+    } catch {
+      return null
+    }
+  }
+
+  const normalized: Record<string, string> = {}
+  if (parsed && typeof parsed === 'object') {
+    for (const [key, value] of Object.entries(parsed)) {
+      const normalizedKey = normalizeToSupersetKey(key)
+      if (typeof value === 'string' && !normalized[normalizedKey]) {
+        normalized[normalizedKey] = value.trim()
+      }
+    }
+  }
+
+  const draft: Record<string, string> = {}
+  for (const key of sectionKeys) {
+    draft[key] = normalized[key] || ''
+  }
+
+  return draft
+}
+
 /**
  * Extended result type that includes dynamic superset info
  */
@@ -781,6 +1320,81 @@ export async function generateReferenceDraft(
     const idea = session.ideaRecord || {}
     const referenceMap = session.referenceMap || { components: [] }
     const components = Array.isArray(referenceMap.components) ? referenceMap.components : []
+    
+    // ======================================================================
+    // PRIOR ART EXTRACTION - Critical for background and crossReference sections
+    // Follows same logic as DraftingService.generateSections()
+    // ======================================================================
+    const manualPriorArt = (session as any).manualPriorArt || null
+    const rawRelatedArtSelections = Array.isArray(session.relatedArtSelections)
+      ? session.relatedArtSelections
+      : []
+    const aiAnalysis = (session as any).aiAnalysisData || {}
+    
+    // Check for prior art selections from Stage 3.5 workflow
+    const priorArtConfig = (session as any).priorArtConfig || {}
+    const priorArtForDraftingConfig = priorArtConfig.priorArtForDrafting || {}
+    const configSelectedPatents = Array.isArray(priorArtForDraftingConfig.selectedPatents) 
+      ? priorArtForDraftingConfig.selectedPatents 
+      : []
+    
+    // Strategy: Use user-selected patents first; fallback to any available related art
+    let selectedPriorArtPatents: any[] = []
+    let priorArtSource: 'explicit' | 'priorArtConfig' | 'relatedArtSelections' | 'manual_only' | 'none' = 'none'
+    
+    // Helper: Normalize patent number for consistent matching
+    const normalizePN = (pn: string | undefined | null): string => 
+      pn ? pn.replace(/[-\s]/g, '').toUpperCase().trim() : ''
+    
+    // Helper: Safe sort by score
+    const safeScoreSort = (a: any, b: any): number => {
+      const aScore = typeof a.score === 'number' ? a.score : 0
+      const bScore = typeof b.score === 'number' ? b.score : 0
+      return bScore - aScore
+    }
+    
+    // Helper: Process and deduplicate patents
+    const processPatents = (patents: any[], enrichSource: any[], preferConfigData: boolean = false): any[] => {
+      const uniqueMap = new Map<string, any>()
+      for (const sel of patents) {
+        const rawPN = sel.patentNumber || sel.pn || ''
+        const normalizedPN = normalizePN(rawPN)
+        if (!normalizedPN || uniqueMap.has(normalizedPN)) continue
+        
+        const fullPatentData = enrichSource.find((r: any) => normalizePN(r.patentNumber) === normalizedPN) || {}
+        const merged = {
+          ...fullPatentData,
+          ...(preferConfigData ? sel : {}),
+          patentNumber: rawPN || fullPatentData.patentNumber,
+          aiSummary: sel.aiSummary || fullPatentData.aiSummary || aiAnalysis[rawPN]?.aiSummary || '',
+          noveltyComparison: sel.noveltyComparison || fullPatentData.noveltyComparison || aiAnalysis[rawPN]?.noveltyComparison || '',
+          noveltyThreat: sel.noveltyThreat || fullPatentData.noveltyThreat || aiAnalysis[rawPN]?.noveltyThreat || 'unknown'
+        }
+        uniqueMap.set(normalizedPN, merged)
+      }
+      return Array.from(uniqueMap.values()).sort(safeScoreSort)
+    }
+    
+    // Determine prior art source and process patents
+    const userSelectedPool = rawRelatedArtSelections.filter(
+      (sel: any) => Array.isArray(sel.tags) && sel.tags.includes('USER_SELECTED')
+    )
+    const fallbackPool = userSelectedPool.length ? userSelectedPool : rawRelatedArtSelections
+    
+    if (configSelectedPatents.length > 0) {
+      priorArtSource = 'priorArtConfig'
+      selectedPriorArtPatents = processPatents(configSelectedPatents, rawRelatedArtSelections, true)
+      console.log(`[generateReferenceDraft] Using ${selectedPriorArtPatents.length} patents from priorArtConfig.priorArtForDrafting`)
+    } else if (manualPriorArt?.useOnlyManualPriorArt) {
+      priorArtSource = 'manual_only'
+      selectedPriorArtPatents = []
+    } else if (fallbackPool.length > 0) {
+      priorArtSource = 'relatedArtSelections'
+      selectedPriorArtPatents = processPatents(fallbackPool, [], false)
+      console.log(`[generateReferenceDraft] Using ${selectedPriorArtPatents.length} patents from relatedArtSelections`)
+    }
+    
+    console.log(`[generateReferenceDraft] Prior art source: ${priorArtSource}, Manual: ${!!manualPriorArt}, Patents: ${selectedPriorArtPatents.length}`)
     
     // Build figures list - use finalized sequence if available (includes both diagrams and sketches)
     let figures: Array<{ figureNo: number; title: string; description?: string; type?: string }> = []
@@ -876,25 +1490,216 @@ export async function generateReferenceDraft(
     const sectionPrompts = await getSupersetSectionPrompts(dynamicSections)
     console.log(`[generateReferenceDraft] Loaded ${Object.keys(sectionPrompts).length} section prompts from database`)
 
+    // Fetch context requirements for all sections from database (batch query for efficiency)
+    const contextRequirements = await getBatchSectionContextRequirements(dynamicSections)
+    
+    // Calculate what context is needed by the batch of sections
+    const batchNeeds = getBatchContextNeeds(contextRequirements)
+    
+    const priorArtSections = dynamicSections.filter(key => contextRequirements[key]?.requiresPriorArt)
+    const figureSections = dynamicSections.filter(key => contextRequirements[key]?.requiresFigures)
+    const componentSections = dynamicSections.filter(key => contextRequirements[key]?.requiresComponents)
+    const claimsSections = dynamicSections.filter(key => contextRequirements[key]?.requiresClaims)
+    
+    console.log(`[generateReferenceDraft] Context needs (database-driven):`)
+    console.log(`  - Prior Art: ${priorArtSections.join(', ') || 'none'}`)
+    console.log(`  - Figures: ${figureSections.join(', ') || 'none'}`)
+    console.log(`  - Components: ${componentSections.join(', ') || 'none'}`)
+    console.log(`  - Claims: ${claimsSections.join(', ') || 'none'}`)
+
     // Build section instructions using database prompts
+    // Add section-specific context based on database-driven requirements
     const sectionInstructions = dynamicSections.map((key, idx) => {
       const prompt = sectionPrompts[key]
       const requiredBy = sectionDetails[key]?.requiredBy.join(', ') || 'General'
       const constraints = prompt.constraints.length > 0 
         ? `\n   Constraints: ${prompt.constraints.join('; ')}`
         : ''
-      const instructionText = key === 'claims' && frozenClaimsText
-        ? 'Use the frozen claims provided in the context below verbatim. Do NOT regenerate or modify numbering/text; simply return the approved claims.'
-        : prompt.instruction
+      
+      let instructionText = prompt.instruction
+      let contextAddendum = ''
+      
+      // Get database-driven context requirements for this section
+      const requirements = contextRequirements[key] || { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false }
+      
+      // Special handling for claims - use frozen claims
+      if (key === 'claims' && frozenClaimsText) {
+        instructionText = 'Use the frozen claims provided in the context below verbatim. Do NOT regenerate or modify numbering/text; simply return the approved claims.'
+      }
+      // Database-driven: Add context-specific instructions based on requirements
+      else {
+        // Prior Art instructions
+        if (requirements.requiresPriorArt && priorArtCount > 0) {
+          if (key === 'background') {
+            contextAddendum += `
+   
+   CRITICAL PRIOR ART REQUIREMENTS (database-driven):
+   - You MUST reference ALL ${priorArtCount} prior art patents/references provided in the PRIOR ART REFERENCES section.
+   - Para 1: Establish the technical context and problem space.
+   - Para 2+: Discuss EACH prior art reference, identifying its approach and limitations/gaps.
+   - Final paragraph: Segue to the present invention without claiming novelty.
+   - Do NOT skip any prior art reference - discuss ALL ${priorArtCount} references.`
+          } else if (key === 'technicalProblem') {
+            contextAddendum += `
+   
+   PRIOR ART CONTEXT (database-driven):
+   - Frame the technical problem in terms of what was lacking in the prior art.
+   - Reference specific limitations from the PRIOR ART REFERENCES section.`
+          }
+        }
+        
+        // Figures instructions
+        if (requirements.requiresFigures && figures.length > 0) {
+          if (key === 'briefDescriptionOfDrawings') {
+            contextAddendum += `
+   
+   FIGURES CONTEXT (database-driven):
+   - Use the FIGURES list provided in the INVENTION CONTEXT section.
+   - Generate one line per figure in format: "FIG. X is [description]."
+   - Include ALL ${figures.length} figures listed.`
+          } else if (key === 'detailedDescription') {
+            contextAddendum += `
+   
+   FIGURES CONTEXT (database-driven):
+   - Reference figures using format: "As shown in FIG. X, ...".
+   - Use reference numerals from the COMPONENTS list when referring to elements.`
+          }
+        }
+        
+        // Components instructions
+        if (requirements.requiresComponents && components.length > 0) {
+          if (key === 'detailedDescription' || key === 'briefDescriptionOfDrawings') {
+            contextAddendum += `
+   
+   COMPONENTS CONTEXT (database-driven):
+   - Use reference numerals from the COMPONENTS list when describing elements.
+   - Format: "component name (numeral)", e.g., "processor (102)".`
+          } else if (key === 'claims') {
+            contextAddendum += `
+   
+   COMPONENTS CONTEXT (database-driven):
+   - Use consistent terminology matching the COMPONENTS list.
+   - Maintain proper antecedent basis throughout claims.`
+          }
+        }
+        
+        // Claims context instructions
+        if (requirements.requiresClaims && frozenClaimsText) {
+          if (key === 'summary') {
+            contextAddendum += `
+   
+   CLAIMS ALIGNMENT (database-driven):
+   - Align the summary with the FROZEN CLAIMS provided.
+   - Include all essential elements from Claim 1.`
+          } else if (key === 'technicalSolution') {
+            contextAddendum += `
+   
+   CLAIMS ALIGNMENT (database-driven):
+   - The technical solution must align with the claimed features.
+   - Reference the FROZEN CLAIMS for the distinguishing features.`
+          }
+        }
+      }
       
       return `==== SECTION ${idx + 1}: ${prompt.label} (key: "${key}") ====
 Required by: ${requiredBy}
-${instructionText}${constraints}`
+${instructionText}${constraints}${contextAddendum}`
     }).join('\n\n')
 
-    const claimsContext = frozenClaimsText
-      ? `\nFROZEN CLAIMS (approved; do NOT rewrite):\n${frozenClaimsText.slice(0, 3000)}${frozenClaimsText.length > 3000 ? '... [truncated]' : ''}\n`
-      : ''
+    // ======================================================================
+    // BUILD CONTEXT DATA - ONLY INCLUDE WHAT'S NEEDED BY SECTIONS
+    // ======================================================================
+    
+    // Claims context - only if any section needs it
+    // Claims context - only if any section needs it (log if truncated)
+    let claimsContext = ''
+    if (batchNeeds.needsClaims && frozenClaimsText) {
+      const CLAIMS_LIMIT = 3000
+      const isTruncated = frozenClaimsText.length > CLAIMS_LIMIT
+      if (isTruncated) {
+        console.warn(`[generateReferenceDraft] Claims truncated: ${frozenClaimsText.length} chars → ${CLAIMS_LIMIT} chars (${frozenClaimsText.length - CLAIMS_LIMIT} chars lost)`)
+      }
+      claimsContext = `
+FROZEN CLAIMS (for sections requiring claims alignment):
+${frozenClaimsText.slice(0, CLAIMS_LIMIT)}${isTruncated ? '... [truncated]' : ''}
+`
+    }
+
+    // Prior Art context - only if any section needs it
+    let priorArtContext = ''
+    let priorArtCount = 0
+    
+    if (batchNeeds.needsPriorArt) {
+      if (manualPriorArt) {
+        const manualText = manualPriorArt.manualPriorArtText || manualPriorArt.text || ''
+        if (manualPriorArt.useOnlyManualPriorArt && manualText) {
+          priorArtContext = `
+PRIOR ART REFERENCES (for sections: ${priorArtSections.join(', ')}):
+MANUAL PRIOR ART ANALYSIS (user-provided - treat as highly relevant):
+${manualText}
+`
+          priorArtCount = 1
+        } else if (manualPriorArt.useManualAndAISearch) {
+          const aiPatentLines = selectedPriorArtPatents.map((patent: any) => {
+            const pn = patent.patentNumber || patent.pn || 'Unknown'
+            const title = patent.title ? ` - ${String(patent.title).substring(0, 100)}` : ''
+            const summary = patent.aiSummary ? `\n   Relevance: ${String(patent.aiSummary).substring(0, 200)}...` : ''
+            const novelty = patent.noveltyComparison ? `\n   Novelty Analysis: ${String(patent.noveltyComparison).substring(0, 200)}...` : ''
+            return `- ${pn}${title}${summary}${novelty}`
+          }).join('\n')
+          
+          priorArtContext = `
+PRIOR ART REFERENCES (for sections: ${priorArtSections.join(', ')}):
+MANUAL PRIOR ART ANALYSIS (user-provided):
+${manualText}
+
+AI-IDENTIFIED RELATED PATENTS (${selectedPriorArtPatents.length} references):
+${aiPatentLines || 'No AI-selected patents'}
+`
+          priorArtCount = 1 + selectedPriorArtPatents.length
+        }
+      } else if (selectedPriorArtPatents.length > 0) {
+        const patentLines = selectedPriorArtPatents.map((patent: any) => {
+          const pn = patent.patentNumber || patent.pn || 'Unknown'
+          const title = patent.title ? ` - ${String(patent.title).substring(0, 100)}` : ''
+          const summary = patent.aiSummary ? `\n   Relevance: ${String(patent.aiSummary).substring(0, 200)}...` : ''
+          const novelty = patent.noveltyComparison ? `\n   Novelty Analysis: ${String(patent.noveltyComparison).substring(0, 200)}...` : ''
+          return `- ${pn}${title}${summary}${novelty}`
+        }).join('\n')
+        
+        priorArtContext = `
+PRIOR ART REFERENCES (for sections: ${priorArtSections.join(', ')}):
+RELATED PATENTS (${selectedPriorArtPatents.length} references - discuss ALL in Background section):
+${patentLines}
+`
+        priorArtCount = selectedPriorArtPatents.length
+      }
+      console.log(`[generateReferenceDraft] Prior art context: ${priorArtCount} references available`)
+    }
+    
+    // Figures context - only if any section needs it (use language-aware selection)
+    let figuresContext = ''
+    if (batchNeeds.needsFigures && figures.length > 0) {
+      // Use language-aware figure selection for primary jurisdiction
+      const primaryJurisdiction = selectedJurisdictions[0] || 'US'
+      const languageAwareFigures = getFiguresForJurisdiction(session, primaryJurisdiction)
+      
+      figuresContext = `
+FIGURES (for sections: ${figureSections.join(', ')}):
+${languageAwareFigures.map((f: FigureInfo) => `  Fig.${f.figureNo}: ${f.title}${f.description ? ` - ${f.description}` : ''}${f.language && f.language !== 'en' ? ` [${f.language}]` : ''}`).join('\n')}
+`
+      console.log(`[generateReferenceDraft] Figures context: ${languageAwareFigures.length} figures included`)
+    }
+    
+    // Components context - only if any section needs it
+    let componentsContext = ''
+    if (batchNeeds.needsComponents && components.length > 0) {
+      componentsContext = `
+COMPONENTS (for sections: ${componentSections.join(', ')}):
+${components.map((c: any) => `  - ${c.name} (${c.numeral})`).join('\n')}
+`
+      console.log(`[generateReferenceDraft] Components context: ${components.length} components included`)
+    }
 
     const prompt = `You are generating a REFERENCE PATENT DRAFT that will be translated to these specific jurisdictions: ${selectedJurisdictions.join(', ')}.
 
@@ -902,14 +1707,13 @@ This draft must be COUNTRY-NEUTRAL and contain ONLY the ${dynamicSections.length
 The reference draft serves as the master source from which jurisdiction-specific drafts will be derived.
 
 ==============================================================================
-INVENTION CONTEXT
+INVENTION CONTEXT (Basic Information - available to all sections)
 ==============================================================================
 Title: ${idea.title || 'Untitled'}
 Problem Statement: ${idea.problem || 'Not specified'}
 Objectives: ${idea.objectives || 'Not specified'}
-Key Components: ${components.map((c: any) => `${c.name} (${c.numeral})`).join(', ') || 'Not specified'}
 Working Principle: ${idea.logic || 'Not specified'}
-${figures.length > 0 ? `Figures:\n${figures.map((f: any) => `  Fig.${f.figureNo}: ${f.title}${f.description ? ` - ${f.description}` : ''}`).join('\n')}` : ''}${claimsContext}
+${componentsContext}${figuresContext}${claimsContext}${priorArtContext}
 
 ==============================================================================
 SECTION-BY-SECTION INSTRUCTIONS (generate EXACTLY these ${dynamicSections.length} sections)
@@ -1042,6 +1846,62 @@ export async function generateReferenceDraftSection(
     const referenceMap = session.referenceMap || { components: [] }
     const components = Array.isArray(referenceMap.components) ? referenceMap.components : []
     
+    // ======================================================================
+    // PRIOR ART EXTRACTION - Same logic as generateReferenceDraft
+    // Critical for background and crossReference sections
+    // ======================================================================
+    const manualPriorArt = (session as any).manualPriorArt || null
+    const rawRelatedArtSelections = Array.isArray(session.relatedArtSelections)
+      ? session.relatedArtSelections
+      : []
+    const aiAnalysis = (session as any).aiAnalysisData || {}
+    
+    const priorArtConfig = (session as any).priorArtConfig || {}
+    const priorArtForDraftingConfig = priorArtConfig.priorArtForDrafting || {}
+    const configSelectedPatents = Array.isArray(priorArtForDraftingConfig.selectedPatents) 
+      ? priorArtForDraftingConfig.selectedPatents 
+      : []
+    
+    let selectedPriorArtPatents: any[] = []
+    
+    // Helper functions
+    const normalizePN = (pn: string | undefined | null): string => 
+      pn ? pn.replace(/[-\s]/g, '').toUpperCase().trim() : ''
+    const safeScoreSort = (a: any, b: any): number => {
+      const aScore = typeof a.score === 'number' ? a.score : 0
+      const bScore = typeof b.score === 'number' ? b.score : 0
+      return bScore - aScore
+    }
+    const processPatents = (patents: any[], enrichSource: any[], preferConfigData: boolean = false): any[] => {
+      const uniqueMap = new Map<string, any>()
+      for (const sel of patents) {
+        const rawPN = sel.patentNumber || sel.pn || ''
+        const normalizedPN = normalizePN(rawPN)
+        if (!normalizedPN || uniqueMap.has(normalizedPN)) continue
+        const fullPatentData = enrichSource.find((r: any) => normalizePN(r.patentNumber) === normalizedPN) || {}
+        const merged = {
+          ...fullPatentData,
+          ...(preferConfigData ? sel : {}),
+          patentNumber: rawPN || fullPatentData.patentNumber,
+          aiSummary: sel.aiSummary || fullPatentData.aiSummary || aiAnalysis[rawPN]?.aiSummary || '',
+          noveltyComparison: sel.noveltyComparison || fullPatentData.noveltyComparison || aiAnalysis[rawPN]?.noveltyComparison || ''
+        }
+        uniqueMap.set(normalizedPN, merged)
+      }
+      return Array.from(uniqueMap.values()).sort(safeScoreSort)
+    }
+    
+    const userSelectedPool = rawRelatedArtSelections.filter(
+      (sel: any) => Array.isArray(sel.tags) && sel.tags.includes('USER_SELECTED')
+    )
+    const fallbackPool = userSelectedPool.length ? userSelectedPool : rawRelatedArtSelections
+    
+    if (configSelectedPatents.length > 0) {
+      selectedPriorArtPatents = processPatents(configSelectedPatents, rawRelatedArtSelections, true)
+    } else if (!manualPriorArt?.useOnlyManualPriorArt && fallbackPool.length > 0) {
+      selectedPriorArtPatents = processPatents(fallbackPool, [], false)
+    }
+    
     // Build figures list (same logic as generateReferenceDraft)
     let figures: Array<{ figureNo: number; title: string; description?: string; type?: string }> = []
     
@@ -1144,24 +2004,181 @@ ${contextParts.join('\n\n')}
       ? `\nConstraints: ${sectionPrompt.constraints.join('; ')}`
       : ''
 
+    // Get database-driven context requirements for this section
+    const contextRequirements = await getSectionContextRequirements(sectionKey, selectedJurisdictions[0])
+    console.log(`[generateReferenceDraftSection] Section "${sectionKey}" context requirements (from DB):`, {
+      requiresPriorArt: contextRequirements.requiresPriorArt,
+      requiresFigures: contextRequirements.requiresFigures,
+      requiresComponents: contextRequirements.requiresComponents,
+      requiresClaims: contextRequirements.requiresClaims
+    })
+
+    // ======================================================================
+    // BUILD CONTEXT DATA - ONLY INCLUDE WHAT THIS SECTION NEEDS
+    // ======================================================================
+    
+    // Prior Art context - only if this section needs it
+    let priorArtContext = ''
+    let priorArtCount = 0
+    
+    if (contextRequirements.requiresPriorArt && (manualPriorArt || selectedPriorArtPatents.length > 0)) {
+      if (manualPriorArt) {
+        const manualText = manualPriorArt.manualPriorArtText || manualPriorArt.text || ''
+        if (manualPriorArt.useOnlyManualPriorArt && manualText) {
+          priorArtContext = `
+PRIOR ART REFERENCES (REQUIRED for this section):
+${manualText}
+`
+          priorArtCount = 1
+        } else if (manualPriorArt.useManualAndAISearch) {
+          const aiPatentLines = selectedPriorArtPatents.map((patent: any) => {
+            const pn = patent.patentNumber || patent.pn || 'Unknown'
+            const title = patent.title ? ` - ${String(patent.title).substring(0, 100)}` : ''
+            const summary = patent.aiSummary ? `\n   Relevance: ${String(patent.aiSummary).substring(0, 200)}...` : ''
+            return `- ${pn}${title}${summary}`
+          }).join('\n')
+          
+          priorArtContext = `
+PRIOR ART REFERENCES (REQUIRED for this section):
+MANUAL ANALYSIS: ${manualText}
+AI-IDENTIFIED PATENTS:
+${aiPatentLines || 'No AI-selected patents'}
+`
+          priorArtCount = 1 + selectedPriorArtPatents.length
+        }
+      } else if (selectedPriorArtPatents.length > 0) {
+        const patentLines = selectedPriorArtPatents.map((patent: any) => {
+          const pn = patent.patentNumber || patent.pn || 'Unknown'
+          const title = patent.title ? ` - ${String(patent.title).substring(0, 100)}` : ''
+          const summary = patent.aiSummary ? `\n   Relevance: ${String(patent.aiSummary).substring(0, 200)}...` : ''
+          return `- ${pn}${title}${summary}`
+        }).join('\n')
+        
+        priorArtContext = `
+PRIOR ART REFERENCES (REQUIRED for this section - ${selectedPriorArtPatents.length} references):
+${patentLines}
+`
+        priorArtCount = selectedPriorArtPatents.length
+      }
+      console.log(`[generateReferenceDraftSection] Prior art context: ${priorArtCount} references`)
+    }
+    
+    // Figures context - only if this section needs it (use language-aware selection)
+    let figuresContext = ''
+    if (contextRequirements.requiresFigures && figures.length > 0) {
+      const primaryJurisdiction = selectedJurisdictions[0] || 'US'
+      const languageAwareFigures = getFiguresForJurisdiction(session, primaryJurisdiction)
+      figuresContext = `
+FIGURES (REQUIRED for this section):
+${languageAwareFigures.map((f: FigureInfo) => `  Fig.${f.figureNo}: ${f.title}${f.description ? ` - ${f.description}` : ''}${f.language && f.language !== 'en' ? ` [${f.language}]` : ''}`).join('\n')}
+`
+      console.log(`[generateReferenceDraftSection] Figures context: ${languageAwareFigures.length} figures`)
+    }
+    
+    // Components context - only if this section needs it
+    let componentsContext = ''
+    if (contextRequirements.requiresComponents && components.length > 0) {
+      componentsContext = `
+COMPONENTS (REQUIRED for this section):
+${components.map((c: any) => `  - ${c.name} (${c.numeral})`).join('\n')}
+`
+      console.log(`[generateReferenceDraftSection] Components context: ${components.length} components`)
+    }
+    
+    // Claims context - only if this section needs it
+    let claimsContext = ''
+    if (contextRequirements.requiresClaims && frozenClaimsText) {
+      const CLAIMS_LIMIT = 2000
+      const isTruncated = frozenClaimsText.length > CLAIMS_LIMIT
+      if (isTruncated) {
+        console.warn(`[generateReferenceDraftSection] Claims truncated: ${frozenClaimsText.length} → ${CLAIMS_LIMIT} chars`)
+      }
+      claimsContext = `
+FROZEN CLAIMS (for alignment in this section):
+${frozenClaimsText.slice(0, CLAIMS_LIMIT)}${isTruncated ? '... [truncated]' : ''}
+`
+      console.log(`[generateReferenceDraftSection] Claims context included`)
+    }
+
+    // Build section-specific instructions based on requirements
+    let contextInstructions = ''
+    
+    // Prior art instructions
+    if (contextRequirements.requiresPriorArt && priorArtCount > 0) {
+      if (sectionKey === 'background') {
+        contextInstructions += `
+
+PRIOR ART REQUIREMENTS:
+- You MUST reference ALL ${priorArtCount} prior art patents/references provided above.
+- Para 1: Establish the technical context and problem space.
+- Para 2+: Discuss EACH prior art reference, identifying its approach and limitations.
+- Final paragraph: Segue to the present invention without claiming novelty.`
+      } else if (sectionKey === 'technicalProblem') {
+        contextInstructions += `
+
+PRIOR ART REQUIREMENTS:
+- Frame the technical problem based on limitations identified in the prior art above.`
+      }
+    }
+    
+    // Figures instructions
+    if (contextRequirements.requiresFigures && figures.length > 0) {
+      if (sectionKey === 'briefDescriptionOfDrawings') {
+        contextInstructions += `
+
+FIGURES REQUIREMENTS:
+- Generate one line per figure in format: "FIG. X is [description]."
+- Include ALL ${figures.length} figures listed above.`
+      } else if (sectionKey === 'detailedDescription') {
+        contextInstructions += `
+
+FIGURES REQUIREMENTS:
+- Reference figures using format: "As shown in FIG. X, ...".
+- Describe each figure's content in detail.`
+      }
+    }
+    
+    // Components instructions
+    if (contextRequirements.requiresComponents && components.length > 0) {
+      contextInstructions += `
+
+COMPONENTS REQUIREMENTS:
+- Use reference numerals from the COMPONENTS list when describing elements.
+- Format: "component name (numeral)", e.g., "processor (102)".`
+    }
+    
+    // Claims instructions
+    if (contextRequirements.requiresClaims && frozenClaimsText) {
+      if (sectionKey === 'summary') {
+        contextInstructions += `
+
+CLAIMS ALIGNMENT:
+- Align the summary with the FROZEN CLAIMS provided.
+- Include all essential elements from Claim 1.`
+      } else if (sectionKey === 'technicalSolution') {
+        contextInstructions += `
+
+CLAIMS ALIGNMENT:
+- The technical solution must align with the claimed features.`
+      }
+    }
+
     const prompt = `You are generating a SINGLE SECTION of a REFERENCE PATENT DRAFT for these jurisdictions: ${selectedJurisdictions.join(', ')}.
 
 ==============================================================================
-INVENTION CONTEXT
+INVENTION CONTEXT (Basic Information)
 ==============================================================================
 Title: ${idea.title || 'Untitled'}
 Problem Statement: ${idea.problem || 'Not specified'}
 Objectives: ${idea.objectives || 'Not specified'}
-Key Components: ${components.map((c: any) => `${c.name} (${c.numeral})`).join(', ') || 'Not specified'}
 Working Principle: ${idea.logic || 'Not specified'}
-${figures.length > 0 ? `Figures:\n${figures.map((f: any) => `  Fig.${f.figureNo}: ${f.title}${f.description ? ` - ${f.description}` : ''}`).join('\n')}` : ''}
-${existingSectionsContext}
+${componentsContext}${figuresContext}${claimsContext}${priorArtContext}${existingSectionsContext}
 ==============================================================================
 SECTION TO GENERATE: ${sectionPrompt.label} (key: "${sectionKey}")
 ==============================================================================
 Required by: ${requiredBy}
 
-${sectionPrompt.instruction}${constraints}
+${sectionPrompt.instruction}${constraints}${contextInstructions}
 
 ==============================================================================
 OUTPUT REQUIREMENTS
@@ -1630,7 +2647,7 @@ Example: {"${sectionsToTranslate[0]?.countryKey || 'sectionKey'}": "translated c
 
 Return ONLY the JSON object, no markdown code fences or explanations.`
 
-    const result = await llmGateway.executeLLMOperation({ headers: requestHeaders || {} }, {
+    const llmRequest: LLMRequest = {
       taskCode: 'LLM2_DRAFT',
       prompt,
       parameters: { tenantId, purpose: 'translate_sections_batch', temperature: 0 },
@@ -1641,7 +2658,9 @@ Return ONLY the JSON object, no markdown code fences or explanations.`
         targetLanguage,
         sectionCount: sectionsToTranslate.length
       }
-    })
+    }
+
+    const result = await llmGateway.executeLLMOperation({ headers: requestHeaders || {} }, llmRequest)
 
     if (!result.success || !result.response) {
       return {
@@ -1676,7 +2695,7 @@ Return ONLY the JSON object, no markdown code fences or explanations.`
     return {
       success: true,
       translations,
-      tokensUsed: (result.response.inputTokens || 0) + (result.response.outputTokens || 0)
+      tokensUsed: (llmRequest.inputTokens || 0) + (result.response.outputTokens || 0)
     }
   } catch (error) {
     console.error('[translateSectionsBatch] Error:', error)
@@ -1728,12 +2747,15 @@ async function translateSection(
     }) : null
     
     const effectivePrompt = topUpPrompt || fallbackPrompt
+    const constraintList = Array.isArray(effectivePrompt?.constraints)
+      ? effectivePrompt?.constraints as string[]
+      : []
     
     const topUpInstruction = effectivePrompt?.instruction 
       ? `\nJURISDICTION-SPECIFIC REQUIREMENTS (${code}):\n${effectivePrompt.instruction}` 
       : ''
-    const topUpConstraints = effectivePrompt?.constraints?.length 
-      ? `\nCONSTRAINTS: ${(effectivePrompt.constraints as string[]).join('; ')}` 
+    const topUpConstraints = constraintList.length 
+      ? `\nCONSTRAINTS: ${constraintList.join('; ')}` 
       : ''
     
     console.log(`[translateSection] Translating ${supersetKey} -> ${countryKey} for ${code}, TopUp: ${effectivePrompt ? 'YES' : 'NO'}`)
@@ -1757,7 +2779,7 @@ IMPORTANT RULES:
 
 OUTPUT: Return ONLY the translated section content, no headers or formatting markers.`
 
-    const result = await llmGateway.executeLLMOperation({ headers: requestHeaders || {} }, {
+    const llmRequest: LLMRequest = {
       taskCode: 'LLM2_DRAFT',
       prompt,
       parameters: { tenantId, purpose: 'translate_section', temperature: 0 },
@@ -1769,7 +2791,9 @@ OUTPUT: Return ONLY the translated section content, no headers or formatting mar
         sectionKey: countryKey,
         supersetKey
       }
-    })
+    }
+
+    const result = await llmGateway.executeLLMOperation({ headers: requestHeaders || {} }, llmRequest)
 
     if (!result.success || !result.response) {
       return {
@@ -1783,7 +2807,7 @@ OUTPUT: Return ONLY the translated section content, no headers or formatting mar
     return {
       success: true,
       translatedContent,
-      tokensUsed: (result.response.inputTokens || 0) + (result.response.outputTokens || 0)
+      tokensUsed: (llmRequest.inputTokens || 0) + (result.response.outputTokens || 0)
     }
   } catch (error) {
     console.error(`[translateSection] Error translating ${supersetKey}:`, error)
@@ -1916,4 +2940,3 @@ export function canGenerateJurisdictionDraft(session: any, jurisdiction: string)
   
   return session?.referenceDraftComplete === true
 }
-

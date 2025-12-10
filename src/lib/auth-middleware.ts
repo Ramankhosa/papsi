@@ -55,6 +55,42 @@ export async function authenticateUser(request: NextRequest): Promise<{
       }
     }
 
+    // Check if user is active
+    if (user.status !== 'ACTIVE') {
+      return {
+        user: null,
+        error: {
+          code: 'USER_SUSPENDED',
+          message: 'User account is suspended.',
+          status: 401
+        }
+      }
+    }
+
+    // For non-social login users, validate ATI token
+    if (!user.oauthProvider && !user.signupAtiTokenId) {
+      return {
+        user: null,
+        error: {
+          code: 'MISSING_SIGNUP_TOKEN',
+          message: 'User signup ATI token not found.',
+          status: 401
+        }
+      }
+    }
+
+    // Check tenant status if user has a tenant
+    if (user.tenant && user.tenant.status !== 'ACTIVE') {
+      return {
+        user: null,
+        error: {
+          code: 'TENANT_INACTIVE',
+          message: 'Tenant is not active.',
+          status: 401
+        }
+      }
+    }
+
     return {
       user: {
         id: user.id,

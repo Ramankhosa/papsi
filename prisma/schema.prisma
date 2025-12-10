@@ -106,6 +106,13 @@ model Tenant {
   @@map("tenants")
 }
 
+enum OAuthProvider {
+  GOOGLE
+  FACEBOOK
+  LINKEDIN
+  TWITTER
+}
+
 model User {
   id               String     @id @default(cuid())
   tenantId         String?
@@ -119,6 +126,12 @@ model User {
   status           UserStatus @default(ACTIVE)
   emailVerified    Boolean    @default(false)
   noveltySearchesCompleted Int @default(0) // Track successful novelty searches
+
+  // Social login fields
+  oauthProvider   OAuthProvider?
+  oauthProviderId String?
+  oauthProfile    Json? // Store additional OAuth profile data
+
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 
@@ -2281,6 +2294,13 @@ model SupersetSection {
   constraints   Json     @default("[]") // Base constraints array
   isRequired    Boolean  @default(true) @map("is_required") // Default required status
   isActive      Boolean  @default(true) @map("is_active") // Can be disabled without deleting
+  
+  // Context injection flags - determines what data to inject into section prompts
+  requiresPriorArt    Boolean @default(false) @map("requires_prior_art")    // Inject prior art references (background, crossReference, etc.)
+  requiresFigures     Boolean @default(false) @map("requires_figures")      // Inject figure list (briefDescriptionOfDrawings, detailedDescription)
+  requiresClaims      Boolean @default(false) @map("requires_claims")       // Inject claims context (abstract, summary)
+  requiresComponents  Boolean @default(false) @map("requires_components")   // Inject component/numeral list (detailedDescription)
+  
   createdBy     String?  @map("created_by")
   updatedBy     String?  @map("updated_by")
   createdAt     DateTime @default(now()) @map("created_at")
@@ -2304,6 +2324,13 @@ model CountrySectionMapping {
   isRequired   Boolean  @default(true) @map("is_required") // Whether this section is required for this country
   isEnabled    Boolean  @default(true) @map("is_enabled") // Whether to include in drafting for this country
   displayOrder Int?     @map("display_order") // Country-specific order override
+  
+  // Country-specific overrides for context injection (null = use SupersetSection default)
+  requiresPriorArtOverride   Boolean? @map("requires_prior_art_override")   // Override: inject prior art
+  requiresFiguresOverride    Boolean? @map("requires_figures_override")     // Override: inject figures
+  requiresClaimsOverride     Boolean? @map("requires_claims_override")      // Override: inject claims
+  requiresComponentsOverride Boolean? @map("requires_components_override")  // Override: inject components
+  
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 

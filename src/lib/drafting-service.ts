@@ -14,6 +14,11 @@ import {
   getSectionStyleHints,
   type WritingSampleContext
 } from '@/lib/writing-sample-service';
+import {
+  getSectionContextRequirements,
+  getFiguresForJurisdiction,
+  type SectionContextRequirements
+} from '@/lib/multi-jurisdiction-service';
 import crypto from 'crypto';
 
 // Hard-coded Superset Section Prompts (Country-Neutral Base Prompts)
@@ -473,6 +478,8 @@ interface SectionPromptContext {
   writingSample?: WritingSampleContext | null;
   userId?: string | null;
   usePersonaStyle?: boolean;
+  // Database-driven context injection requirements
+  contextRequirements?: SectionContextRequirements | null;
 }
 
 export interface SectionGenerationResult {
@@ -1299,6 +1306,15 @@ Respond in this exact JSON shape:
           }
         }
 
+        // Fetch context injection requirements for this section (database-driven)
+        let contextRequirements: SectionContextRequirements | null = null
+        try {
+          contextRequirements = await getSectionContextRequirements(s, jurisdictionCode)
+          console.log(`[DraftingService] Section "${s}" context requirements:`, contextRequirements)
+        } catch (err) {
+          console.warn(`[DraftingService] Failed to get context requirements for ${s}:`, err)
+        }
+
         const prompt = this.buildSectionPrompt(s, payload, {
           jurisdiction: jurisdictionCode,
           countryProfile,
@@ -1312,7 +1328,8 @@ Respond in this exact JSON shape:
           claimsRules: sectionResources[s]?.claimsRules,
           writingSample,
           userId: session?.userId,
-          usePersonaStyle
+          usePersonaStyle,
+          contextRequirements // Pass database-driven context requirements
         })
         // Add debug info about prompt injection (B+T+U)
         const promptDebug = sectionResources[s]?.prompt?.debug
@@ -1985,48 +2002,58 @@ ${targetDisplay || 'Target length: 40-80 words.'}
 Output JSON: { "fieldOfInvention": "..." }
 Return ONLY a valid JSON object exactly matching the schema above.`
       case 'background': {
+        // Database-driven: Only include prior art if requiresPriorArt is true (default true for backward compat)
+        const shouldIncludePriorArt = ctx?.contextRequirements?.requiresPriorArt !== false
+        
         let priorArtRefs = ''
         let priorArtCount = 0
-        if (manualPriorArt) {
-          if (manualPriorArt.useOnlyManualPriorArt) {
-            priorArtRefs = `Available prior-art pool (reference ALL provided):
+        
+        if (shouldIncludePriorArt) {
+          if (manualPriorArt) {
+            if (manualPriorArt.useOnlyManualPriorArt) {
+              priorArtRefs = `Available prior-art pool (reference ALL provided):
 Manual analysis (user-provided): ${manualPriorArt.manualPriorArtText}`
-            priorArtCount = 1
-          } else if (manualPriorArt.useManualAndAISearch) {
-            // Include ALL selected patents - no artificial limit
-            const aiLines = selectedPriorArtPatents.map((patent: any) => {
-              const patentNumber = patent.patentNumber || patent.pn || 'Unknown'
-              return `- ${patentNumber} - AI relevance: ${String(patent.aiSummary || '').substring(0, 200)}... | Novelty: ${String(patent.noveltyComparison || '').substring(0, 200)}...`
-            }).join('\n')
-            priorArtRefs = `Available prior-art pool (reference ALL provided patents):
+              priorArtCount = 1
+            } else if (manualPriorArt.useManualAndAISearch) {
+              // Include ALL selected patents - no artificial limit
+              const aiLines = selectedPriorArtPatents.map((patent: any) => {
+                const patentNumber = patent.patentNumber || patent.pn || 'Unknown'
+                return `- ${patentNumber} - AI relevance: ${String(patent.aiSummary || '').substring(0, 200)}... | Novelty: ${String(patent.noveltyComparison || '').substring(0, 200)}...`
+              }).join('\n')
+              priorArtRefs = `Available prior-art pool (reference ALL provided patents):
 Manual analysis (user-provided): ${manualPriorArt.manualPriorArtText}
 ${aiLines ? `AI-adjacent patents:
 ${aiLines}` : ''}`
-            priorArtCount = 1 + selectedPriorArtPatents.length
-          }
-        } else {
-          // Include ALL selected prior art patents - no artificial limit
-          priorArtRefs = `Available prior-art pool (reference ALL provided patents):
+              priorArtCount = 1 + selectedPriorArtPatents.length
+            }
+          } else if (selectedPriorArtPatents.length > 0) {
+            // Include ALL selected prior art patents - no artificial limit
+            priorArtRefs = `Available prior-art pool (reference ALL provided patents):
 ${selectedPriorArtPatents.map((patent: any) => {
-            const patentNumber = patent.patentNumber || patent.pn || 'Unknown'
-            return `- ${patentNumber} - AI relevance: ${String(patent.aiSummary || '').substring(0, 200)}... | Novelty: ${String(patent.noveltyComparison || '').substring(0, 200)}...`
-          }).join('\n')}`
-          priorArtCount = selectedPriorArtPatents.length
+              const patentNumber = patent.patentNumber || patent.pn || 'Unknown'
+              return `- ${patentNumber} - AI relevance: ${String(patent.aiSummary || '').substring(0, 200)}... | Novelty: ${String(patent.noveltyComparison || '').substring(0, 200)}...`
+            }).join('\n')}`
+            priorArtCount = selectedPriorArtPatents.length
+          }
         }
+
+        const priorArtSection = priorArtCount > 0 ? `
+Available prior art (${priorArtCount} references - discuss ALL):
+${priorArtRefs}
+IMPORTANT: Reference ALL ${priorArtCount} prior art patents provided - do not skip any.` 
+          : 'No prior art supplied; objectively describe the problem space.'
 
         return `
 ${roleToneHeader}
 Task: Draft the Background / Prior Art section.
 Rules:
 - 250-400 words, 2-3 paragraphs max.
-- Para 1: Context/problem space; Para 2+: Prior art comparison referencing ALL ${priorArtCount} provided patents, identify drawbacks/gaps; Final sentence: segue to invention.
-- IMPORTANT: Reference ALL ${priorArtCount} prior art patents provided - do not skip any.
+- Para 1: Context/problem space; Para 2+: Prior art comparison identifying drawbacks/gaps; Final sentence: segue to invention.
 - Avoid claiming novelty; focus on shortcomings of prior art.
 - No claim-like language or self-praise.
-Available prior art (${priorArtCount} references - discuss ALL):
-${priorArtRefs || 'No prior art supplied; objectively describe the problem space.'}
+${priorArtSection}
 Context:
-problem=${idea?.problem || ''}; objectives=${idea?.objectives || ''}; numerals=[${numerals}]; figures=[${figs}].
+problem=${idea?.problem || ''}; objectives=${idea?.objectives || ''}.
 Instructions(background): ${instr}.
 ${targetDisplay || 'Target length: 250-400 words.'}
 Output JSON: { "background": "..." }
@@ -2062,11 +2089,18 @@ ${targetDisplay || 'Target length: 80-150 words.'}
 Output JSON: { "objectsOfInvention": "..." }
 Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, or line breaks outside JSON.`
       case 'crossReference': {
-        const priorArtList = (selectedPriorArtPatents || []).map((p: any, idx: number) => {
-          const pn = p.patentNumber || p.pn || `Ref-${idx + 1}`
-          const title = p.title ? `: ${String(p.title).substring(0, 120)}...` : ''
-          return `- ${pn}${title}`
-        }).join('\n')
+        // Database-driven: Only include prior art references if requiresPriorArt is true
+        const shouldIncludePriorArtRefs = ctx?.contextRequirements?.requiresPriorArt !== false
+        
+        let priorArtList = ''
+        if (shouldIncludePriorArtRefs && selectedPriorArtPatents && selectedPriorArtPatents.length > 0) {
+          priorArtList = selectedPriorArtPatents.map((p: any, idx: number) => {
+            const pn = p.patentNumber || p.pn || `Ref-${idx + 1}`
+            const title = p.title ? `: ${String(p.title).substring(0, 120)}...` : ''
+            return `- ${pn}${title}`
+          }).join('\n')
+        }
+        
         return `
 ${roleToneHeader}
 Task: Draft the Cross-Reference to Related Applications / cited references.
@@ -2074,8 +2108,7 @@ Rules:
 - 60-120 words.
 - Mention related applications or cited patents by number; keep concise.
 - Do not assert priority unless provided by the user; avoid legal conclusions.
-Available references:
-${priorArtList || '- None supplied; keep section minimal and generic.'}
+${priorArtList ? `Available references:\n${priorArtList}` : '- No references supplied; keep section minimal and generic.'}
 Instructions(crossReference): ${instr}.
 ${targetDisplay || 'Target length: 60-120 words.'}
 Output JSON: { "crossReference": "..." }
@@ -2134,7 +2167,11 @@ Instructions(advantageousEffects): ${instr}.
 ${targetDisplay || 'Target length: 60-120 words.'}
 Output JSON: { "advantageousEffects": "..." }
 Return ONLY a valid JSON object exactly matching the schema above.`
-      case 'briefDescriptionOfDrawings':
+      case 'briefDescriptionOfDrawings': {
+        // Database-driven: Only include figures if requiresFigures is true
+        const shouldIncludeFiguresForBDOD = ctx?.contextRequirements?.requiresFigures !== false
+        const figuresContextBDOD = shouldIncludeFiguresForBDOD && figs ? `figures=[${figs}]` : 'No figures provided'
+        
         return `
 ${roleToneHeader}
 Task: Write the Brief Description of Drawings.
@@ -2142,28 +2179,41 @@ Rules:
 - Mention every figure number sequentially; for each, provide 1-2 sentences on what it depicts.
 - No functionality analysis; just descriptive.
 - Use "Fig. X" format; ensure numerals referenced exist.
-Context: figures=[${figs}].
+Context: ${figuresContextBDOD}.
 Instructions(briefDescriptionOfDrawings): ${instr}.
 ${targetDisplay || 'Target length: 80-150 words.'}
 Output JSON: { "briefDescriptionOfDrawings": "..." }
 Return ONLY a valid JSON object exactly matching the schema above.`
-      case 'detailedDescription':
+      }
+      case 'detailedDescription': {
         const deepProto = this.getArchetypeInstructions(archetype)
+        // Database-driven: Conditionally include figures and components
+        const shouldIncludeFigures = ctx?.contextRequirements?.requiresFigures !== false
+        const shouldIncludeComponents = ctx?.contextRequirements?.requiresComponents !== false
+        
+        const figuresContext = shouldIncludeFigures && figs ? `figures=[${figs}]` : ''
+        const componentsContext = shouldIncludeComponents && numerals ? `numerals=[${numerals}]` : ''
+        
+        const figureRules = shouldIncludeFigures 
+          ? '- Use numerals for every component mention; reference figures appropriately (Fig. X).'
+          : '- Use numerals for every component mention if applicable.'
+        
         return `
 ${roleToneHeader}
 Task: Draft the Detailed Description of the Invention.
 Rules:
 - Structure: overview -> components/functions -> control/data flow -> variations -> fail-safes/edge cases -> method steps (if any) -> hardware/software considerations.
-- Use numerals for every component mention; reference figures appropriately (Fig. X).
+${figureRules}
 - Avoid claim language; describe embodiments and enablement.
 - Avoid repetition; be concise but enabling.
 Context:
-idea.title=${idea?.title || ''}; numerals=[${numerals}]; figures=[${figs}]; objectives=${idea?.objectives || ''}; logic=${idea?.logic || ''}; variants=${idea?.variants || ''}; bestMethod=${idea?.bestMethod || ''}.
+idea.title=${idea?.title || ''}; ${componentsContext}${componentsContext && figuresContext ? '; ' : ''}${figuresContext}; objectives=${idea?.objectives || ''}; logic=${idea?.logic || ''}; variants=${idea?.variants || ''}; bestMethod=${idea?.bestMethod || ''}.
 Instructions(detailedDescription): ${instr}.
 ${deepProto}
 ${targetDisplay || 'Target length: 600-1200 words (apply judgment based on complexity).'}
 Output JSON: { "detailedDescription": "..." }
 Return ONLY a valid JSON object exactly matching the schema above.`
+      }
       case 'modeOfCarryingOut':
         return `
 ${roleToneHeader}
@@ -2191,7 +2241,11 @@ Instructions(bestMethod): ${instr}.
 ${targetDisplay || 'Target length: 150-300 words.'}
 Output JSON: { "bestMethod": "..." }
 Return ONLY a valid JSON object exactly matching the schema above.`
-      case 'claims':
+      case 'claims': {
+        // Database-driven: Conditionally include components
+        const shouldIncludeComponentsForClaims = ctx?.contextRequirements?.requiresComponents !== false
+        const componentsContextClaims = shouldIncludeComponentsForClaims && numerals ? `components=[${numerals}]` : ''
+        
         return `
 ${roleToneHeader}
 Task: Draft Claims aligned to this jurisdiction (clear, concise, supported).
@@ -2202,10 +2256,11 @@ Rules:
 - Avoid result-oriented language; no business method framing.
 - Number claims sequentially; no missing numbers.
 Context:
-components=[${numerals}]; figures=[${figs}]; objectives=${idea?.objectives || ''}; logic=${idea?.logic || ''}.
+${componentsContextClaims}${componentsContextClaims ? '; ' : ''}objectives=${idea?.objectives || ''}; logic=${idea?.logic || ''}.
 Instructions(claims): ${instr}.
 Output JSON: { "claims": "..." }
 Return ONLY a valid JSON object exactly matching the schema above.`
+      }
       case 'industrialApplicability':
         return `
 ${roleToneHeader}

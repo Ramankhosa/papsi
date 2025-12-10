@@ -301,7 +301,7 @@ export default function ServiceControlPage() {
               {isViewer ? '👁️ Viewer' : '⚡ Admin'}: {user.email}
             </span>
             <button
-              onClick={logout}
+              onClick={() => logout()}
               className="px-4 py-2 text-sm font-medium rounded-md text-slate-300 bg-slate-700 hover:bg-slate-600 border border-slate-600"
             >
               Logout

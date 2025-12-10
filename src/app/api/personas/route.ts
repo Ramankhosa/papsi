@@ -136,8 +136,8 @@ export async function GET(request: NextRequest) {
  * Create a new persona
  * 
  * Body:
- * - name: string (required)
- * - description?: string
+ * - name: string (required, max 100 chars)
+ * - description?: string (max 500 chars)
  * - visibility: 'PRIVATE' | 'ORGANIZATION' (default: PRIVATE)
  * - isTemplate?: boolean (admin only)
  * - allowCopy?: boolean
@@ -151,45 +151,162 @@ export async function POST(request: NextRequest) {
 
     // Check permission to create personas
     if (!canCreateOwnPersona(user as any)) {
-      return NextResponse.json({ error: 'Permission denied' }, { status: 403 })
+      return NextResponse.json({ 
+        error: 'Permission denied. Your role does not allow creating personas.',
+        code: 'PERMISSION_DENIED'
+      }, { status: 403 })
     }
 
-    const body = await request.json()
+    let body: any
+    try {
+      body = await request.json()
+    } catch (parseError) {
+      return NextResponse.json({ 
+        error: 'Invalid request body',
+        code: 'INVALID_JSON'
+      }, { status: 400 })
+    }
+
     const { name, description, visibility = 'PRIVATE', isTemplate = false, allowCopy = true } = body
 
-    if (!name || typeof name !== 'string' || name.trim().length === 0) {
-      return NextResponse.json({ error: 'Name is required' }, { status: 400 })
+    // === NAME VALIDATION ===
+    if (!name || typeof name !== 'string') {
+      return NextResponse.json({ 
+        error: 'Name is required',
+        code: 'NAME_REQUIRED'
+      }, { status: 400 })
     }
 
-    if (name.length > 100) {
-      return NextResponse.json({ error: 'Name must be 100 characters or less' }, { status: 400 })
+    const trimmedName = name.trim()
+    if (trimmedName.length === 0) {
+      return NextResponse.json({ 
+        error: 'Name cannot be empty',
+        code: 'NAME_EMPTY'
+      }, { status: 400 })
+    }
+
+    if (trimmedName.length < 2) {
+      return NextResponse.json({ 
+        error: 'Name must be at least 2 characters',
+        code: 'NAME_TOO_SHORT'
+      }, { status: 400 })
+    }
+
+    if (trimmedName.length > 100) {
+      return NextResponse.json({ 
+        error: 'Name must be 100 characters or less',
+        code: 'NAME_TOO_LONG'
+      }, { status: 400 })
+    }
+
+    // Check for invalid characters in name
+    if (!/^[\w\s\-\.]+$/.test(trimmedName)) {
+      return NextResponse.json({ 
+        error: 'Name can only contain letters, numbers, spaces, hyphens, and dots',
+        code: 'NAME_INVALID_CHARS'
+      }, { status: 400 })
+    }
+
+    // === DESCRIPTION VALIDATION ===
+    if (description !== undefined && description !== null) {
+      if (typeof description !== 'string') {
+        return NextResponse.json({ 
+          error: 'Description must be a string',
+          code: 'DESCRIPTION_INVALID'
+        }, { status: 400 })
+      }
+      if (description.trim().length > 500) {
+        return NextResponse.json({ 
+          error: 'Description must be 500 characters or less',
+          code: 'DESCRIPTION_TOO_LONG'
+        }, { status: 400 })
+      }
+    }
+
+    // === VISIBILITY VALIDATION ===
+    if (!['PRIVATE', 'ORGANIZATION'].includes(visibility)) {
+      return NextResponse.json({ 
+        error: 'Visibility must be "PRIVATE" or "ORGANIZATION"',
+        code: 'VISIBILITY_INVALID'
+      }, { status: 400 })
     }
 
     // Check if trying to create org-wide persona
     if (visibility === 'ORGANIZATION' && !canCreateOrgPersona(user as any)) {
-      return NextResponse.json(
-        { error: 'Only OWNER or ADMIN can create organization-wide personas' },
-        { status: 403 }
-      )
+      return NextResponse.json({
+        error: 'Only OWNER or ADMIN can create organization-wide personas',
+        code: 'ORG_PERSONA_PERMISSION_DENIED'
+      }, { status: 403 })
     }
 
-    // Check if name already exists for this user
-    const existing = await prisma.writingPersona.findUnique({
-      where: { createdBy_name: { createdBy: user.id, name: name.trim() } }
+    // === CHECK FOR DUPLICATE NAME ===
+    // Check both active and inactive personas to prevent confusion
+    const existing = await prisma.writingPersona.findFirst({
+      where: { 
+        createdBy: user.id, 
+        name: trimmedName
+      }
     })
 
     if (existing) {
-      return NextResponse.json(
-        { error: 'You already have a persona with this name' },
-        { status: 400 }
-      )
+      if (existing.isActive) {
+        return NextResponse.json({
+          error: `You already have a persona named "${trimmedName}". Please choose a different name.`,
+          code: 'DUPLICATE_NAME'
+        }, { status: 400 })
+      } else {
+        // Inactive persona with same name - reactivate it instead
+        const reactivated = await prisma.writingPersona.update({
+          where: { id: existing.id },
+          data: {
+            isActive: true,
+            description: description?.trim() || existing.description,
+            visibility: visibility as PersonaVisibility,
+            isTemplate: canCreateOrgPersona(user as any) ? isTemplate : false,
+            allowCopy,
+            updatedAt: new Date()
+          }
+        })
+
+        // Audit log
+        await prisma.auditLog.create({
+          data: {
+            actorUserId: user.id,
+            tenantId: user.tenantId,
+            action: 'PERSONA_REACTIVATE',
+            resource: `persona:${reactivated.id}`,
+            meta: { name: reactivated.name, visibility: reactivated.visibility }
+          }
+        })
+
+        // Get sample count
+        const sampleCount = await prisma.writingSample.count({
+          where: { personaId: reactivated.id }
+        })
+
+        return NextResponse.json({
+          success: true,
+          reactivated: true,
+          message: `Persona "${trimmedName}" has been reactivated with ${sampleCount} existing samples`,
+          persona: {
+            id: reactivated.id,
+            name: reactivated.name,
+            description: reactivated.description,
+            visibility: reactivated.visibility,
+            isTemplate: reactivated.isTemplate,
+            allowCopy: reactivated.allowCopy,
+            sampleCount
+          }
+        }, { status: 200 })
+      }
     }
 
+    // === CREATE PERSONA ===
     const persona = await prisma.writingPersona.create({
       data: {
         tenantId: user.tenantId,
         createdBy: user.id,
-        name: name.trim(),
+        name: trimmedName,
         description: description?.trim() || null,
         visibility: visibility as PersonaVisibility,
         isTemplate: canCreateOrgPersona(user as any) ? isTemplate : false,
@@ -198,15 +315,20 @@ export async function POST(request: NextRequest) {
     })
 
     // Audit log
-    await prisma.auditLog.create({
-      data: {
-        actorUserId: user.id,
-        tenantId: user.tenantId,
-        action: 'PERSONA_CREATE',
-        resource: `persona:${persona.id}`,
-        meta: { name: persona.name, visibility: persona.visibility }
-      }
-    })
+    try {
+      await prisma.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          tenantId: user.tenantId,
+          action: 'PERSONA_CREATE',
+          resource: `persona:${persona.id}`,
+          meta: { name: persona.name, visibility: persona.visibility }
+        }
+      })
+    } catch (auditError) {
+      // Don't fail creation if audit logging fails
+      console.warn('[Personas] Audit log failed:', auditError)
+    }
 
     return NextResponse.json({
       success: true,
@@ -221,12 +343,21 @@ export async function POST(request: NextRequest) {
       }
     }, { status: 201 })
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('[Personas] POST error:', error)
-    return NextResponse.json(
-      { error: 'Failed to create persona' },
-      { status: 500 }
-    )
+    
+    // Handle unique constraint violations
+    if (error?.code === 'P2002') {
+      return NextResponse.json({
+        error: 'A persona with this name already exists',
+        code: 'DUPLICATE_NAME'
+      }, { status: 400 })
+    }
+    
+    return NextResponse.json({
+      error: 'Failed to create persona. Please try again.',
+      code: 'INTERNAL_ERROR'
+    }, { status: 500 })
   }
 }
 
@@ -235,7 +366,7 @@ export async function POST(request: NextRequest) {
  * Update or copy a persona
  * 
  * Body for update:
- * - action: 'update'
+ * - action: 'update' (optional, default)
  * - id: string
  * - name?, description?, visibility?, isTemplate?, allowCopy?, isActive?
  * 
@@ -251,34 +382,93 @@ export async function PATCH(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const body = await request.json()
+    let body: any
+    try {
+      body = await request.json()
+    } catch (parseError) {
+      return NextResponse.json({ 
+        error: 'Invalid request body',
+        code: 'INVALID_JSON'
+      }, { status: 400 })
+    }
+
     const { action } = body
 
+    // === COPY OPERATION ===
     if (action === 'copy') {
-      // Copy an org persona to own personas
       const { sourceId, newName } = body
 
-      if (!sourceId || !newName) {
-        return NextResponse.json({ error: 'sourceId and newName required' }, { status: 400 })
+      if (!sourceId || typeof sourceId !== 'string') {
+        return NextResponse.json({ 
+          error: 'sourceId is required for copy operation',
+          code: 'SOURCE_ID_REQUIRED'
+        }, { status: 400 })
       }
 
-      // Get source persona
+      if (!newName || typeof newName !== 'string') {
+        return NextResponse.json({ 
+          error: 'newName is required for copy operation',
+          code: 'NEW_NAME_REQUIRED'
+        }, { status: 400 })
+      }
+
+      const trimmedNewName = newName.trim()
+      if (trimmedNewName.length < 2 || trimmedNewName.length > 100) {
+        return NextResponse.json({ 
+          error: 'New name must be between 2 and 100 characters',
+          code: 'NAME_INVALID_LENGTH'
+        }, { status: 400 })
+      }
+
+      // Check if user already has a persona with this name
+      const existingWithName = await prisma.writingPersona.findFirst({
+        where: { createdBy: user.id, name: trimmedNewName, isActive: true }
+      })
+
+      if (existingWithName) {
+        return NextResponse.json({ 
+          error: `You already have a persona named "${trimmedNewName}"`,
+          code: 'DUPLICATE_NAME'
+        }, { status: 400 })
+      }
+
+      // Get source persona with samples
       const source = await prisma.writingPersona.findUnique({
         where: { id: sourceId },
-        include: { samples: true }
+        include: { samples: { where: { isActive: true } } }
       })
 
       if (!source) {
-        return NextResponse.json({ error: 'Source persona not found' }, { status: 404 })
+        return NextResponse.json({ 
+          error: 'Source persona not found',
+          code: 'SOURCE_NOT_FOUND'
+        }, { status: 404 })
+      }
+
+      if (!source.isActive) {
+        return NextResponse.json({ 
+          error: 'Cannot copy a deleted persona',
+          code: 'SOURCE_DELETED'
+        }, { status: 400 })
       }
 
       // Check visibility - can only copy org personas or own
-      if (source.createdBy !== user.id && source.visibility !== 'ORGANIZATION') {
-        return NextResponse.json({ error: 'Cannot copy this persona' }, { status: 403 })
+      const isSourceOwner = source.createdBy === user.id
+      const isOrgPersona = source.visibility === 'ORGANIZATION'
+      const isSameTenant = source.tenantId === user.tenantId
+
+      if (!isSourceOwner && !(isOrgPersona && isSameTenant)) {
+        return NextResponse.json({ 
+          error: 'You can only copy your own personas or organization-shared personas',
+          code: 'COPY_PERMISSION_DENIED'
+        }, { status: 403 })
       }
 
-      if (!source.allowCopy && source.createdBy !== user.id) {
-        return NextResponse.json({ error: 'This persona does not allow copying' }, { status: 403 })
+      if (!source.allowCopy && !isSourceOwner) {
+        return NextResponse.json({ 
+          error: 'The owner of this persona has disabled copying',
+          code: 'COPY_DISABLED'
+        }, { status: 403 })
       }
 
       // Create copy
@@ -286,48 +476,77 @@ export async function PATCH(request: NextRequest) {
         data: {
           tenantId: user.tenantId,
           createdBy: user.id,
-          name: newName.trim(),
-          description: source.description ? `Copied from: ${source.name}. ${source.description}` : `Copied from: ${source.name}`,
-          visibility: 'PRIVATE',
+          name: trimmedNewName,
+          description: source.description 
+            ? `Copied from: ${source.name}. ${source.description}` 
+            : `Copied from: ${source.name}`,
+          visibility: 'PRIVATE', // Copies are always private initially
           isTemplate: false,
           allowCopy: true
         }
       })
 
       // Copy samples
+      let copiedSampleCount = 0
       if (source.samples.length > 0) {
-        await prisma.writingSample.createMany({
+        const result = await prisma.writingSample.createMany({
           data: source.samples.map(s => ({
             userId: user.id,
             tenantId: user.tenantId!,
             personaId: copied.id,
-            personaName: newName.trim(),
+            personaName: trimmedNewName,
             jurisdiction: s.jurisdiction,
             sectionKey: s.sectionKey,
             sampleText: s.sampleText,
             notes: s.notes,
             wordCount: s.wordCount,
             isActive: true
-          }))
+          })),
+          skipDuplicates: true // Skip any that might violate constraints
         })
+        copiedSampleCount = result.count
+      }
+
+      // Audit log
+      try {
+        await prisma.auditLog.create({
+          data: {
+            actorUserId: user.id,
+            tenantId: user.tenantId,
+            action: 'PERSONA_COPY',
+            resource: `persona:${copied.id}`,
+            meta: { 
+              newName: copied.name, 
+              sourceId: source.id,
+              sourceName: source.name,
+              samplesCopied: copiedSampleCount
+            }
+          }
+        })
+      } catch (auditError) {
+        console.warn('[Personas] Audit log failed:', auditError)
       }
 
       return NextResponse.json({
         success: true,
+        message: `Created "${trimmedNewName}" with ${copiedSampleCount} samples`,
         persona: {
           id: copied.id,
           name: copied.name,
           description: copied.description,
-          sampleCount: source.samples.length
+          sampleCount: copiedSampleCount
         }
       })
     }
 
-    // Update persona
+    // === UPDATE OPERATION ===
     const { id, name, description, visibility, isTemplate, allowCopy, isActive } = body
 
-    if (!id) {
-      return NextResponse.json({ error: 'Persona ID required' }, { status: 400 })
+    if (!id || typeof id !== 'string') {
+      return NextResponse.json({ 
+        error: 'Persona ID is required',
+        code: 'ID_REQUIRED'
+      }, { status: 400 })
     }
 
     const persona = await prisma.writingPersona.findUnique({
@@ -335,7 +554,10 @@ export async function PATCH(request: NextRequest) {
     })
 
     if (!persona) {
-      return NextResponse.json({ error: 'Persona not found' }, { status: 404 })
+      return NextResponse.json({ 
+        error: 'Persona not found',
+        code: 'PERSONA_NOT_FOUND'
+      }, { status: 404 })
     }
 
     // Check ownership or admin rights
@@ -343,43 +565,116 @@ export async function PATCH(request: NextRequest) {
     const canManage = canManageOrgPersonas(user as any)
 
     if (!isOwner && !canManage) {
-      return NextResponse.json({ error: 'Permission denied' }, { status: 403 })
+      return NextResponse.json({ 
+        error: 'You can only update your own personas',
+        code: 'PERMISSION_DENIED'
+      }, { status: 403 })
+    }
+
+    // Validate name if provided
+    if (name !== undefined) {
+      if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 100) {
+        return NextResponse.json({ 
+          error: 'Name must be between 2 and 100 characters',
+          code: 'NAME_INVALID_LENGTH'
+        }, { status: 400 })
+      }
+
+      // Check for duplicate name (excluding self)
+      const existingWithName = await prisma.writingPersona.findFirst({
+        where: { 
+          createdBy: user.id, 
+          name: name.trim(), 
+          isActive: true,
+          NOT: { id: persona.id }
+        }
+      })
+
+      if (existingWithName) {
+        return NextResponse.json({ 
+          error: `You already have a persona named "${name.trim()}"`,
+          code: 'DUPLICATE_NAME'
+        }, { status: 400 })
+      }
     }
 
     // Non-owners can't change visibility to ORGANIZATION
-    if (!canCreateOrgPersona(user as any) && visibility === 'ORGANIZATION') {
-      return NextResponse.json(
-        { error: 'Only OWNER or ADMIN can make personas organization-wide' },
-        { status: 403 }
-      )
+    if (visibility === 'ORGANIZATION' && !canCreateOrgPersona(user as any)) {
+      return NextResponse.json({
+        error: 'Only OWNER or ADMIN can make personas organization-wide',
+        code: 'ORG_VISIBILITY_DENIED'
+      }, { status: 403 })
+    }
+
+    // Build update data
+    const updateData: any = {}
+    if (name !== undefined) updateData.name = name.trim()
+    if (description !== undefined) updateData.description = description?.trim() || null
+    if (visibility !== undefined && (isOwner || canManage)) {
+      // Only allow visibility change if user has permission
+      if (visibility === 'ORGANIZATION' && canCreateOrgPersona(user as any)) {
+        updateData.visibility = visibility
+      } else if (visibility === 'PRIVATE') {
+        updateData.visibility = visibility
+      }
+    }
+    if (isTemplate !== undefined && canManage) updateData.isTemplate = isTemplate
+    if (allowCopy !== undefined) updateData.allowCopy = allowCopy
+    if (isActive !== undefined) updateData.isActive = isActive
+
+    // Prevent empty updates
+    if (Object.keys(updateData).length === 0) {
+      return NextResponse.json({ 
+        error: 'No valid fields to update',
+        code: 'NO_CHANGES'
+      }, { status: 400 })
     }
 
     const updated = await prisma.writingPersona.update({
       where: { id },
       data: {
-        ...(name !== undefined && { name: name.trim() }),
-        ...(description !== undefined && { description: description?.trim() || null }),
-        ...(visibility !== undefined && canCreateOrgPersona(user as any) && { visibility }),
-        ...(isTemplate !== undefined && canManage && { isTemplate }),
-        ...(allowCopy !== undefined && { allowCopy }),
-        ...(isActive !== undefined && { isActive })
+        ...updateData,
+        updatedAt: new Date()
       }
     })
 
-    return NextResponse.json({ success: true, persona: updated })
+    return NextResponse.json({ 
+      success: true, 
+      persona: {
+        id: updated.id,
+        name: updated.name,
+        description: updated.description,
+        visibility: updated.visibility,
+        isTemplate: updated.isTemplate,
+        allowCopy: updated.allowCopy,
+        isActive: updated.isActive
+      }
+    })
 
-  } catch (error) {
+  } catch (error: any) {
     console.error('[Personas] PATCH error:', error)
-    return NextResponse.json(
-      { error: 'Failed to update persona' },
-      { status: 500 }
-    )
+    
+    // Handle unique constraint violations
+    if (error?.code === 'P2002') {
+      return NextResponse.json({
+        error: 'A persona with this name already exists',
+        code: 'DUPLICATE_NAME'
+      }, { status: 400 })
+    }
+    
+    return NextResponse.json({
+      error: 'Failed to update persona. Please try again.',
+      code: 'INTERNAL_ERROR'
+    }, { status: 500 })
   }
 }
 
 /**
  * DELETE /api/personas
  * Soft delete a persona (set isActive = false)
+ * 
+ * This preserves the persona and its samples in case user wants to recover.
+ * To permanently delete, admin would need to use a separate hard-delete function.
  * 
  * Query params:
  * - id: string
@@ -394,51 +689,92 @@ export async function DELETE(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const id = searchParams.get('id')
 
-    if (!id) {
-      return NextResponse.json({ error: 'Persona ID required' }, { status: 400 })
+    if (!id || typeof id !== 'string') {
+      return NextResponse.json({ 
+        error: 'Persona ID is required',
+        code: 'ID_REQUIRED'
+      }, { status: 400 })
     }
 
+    // Get persona with sample count for better feedback
     const persona = await prisma.writingPersona.findUnique({
-      where: { id }
+      where: { id },
+      include: {
+        _count: { select: { samples: true } }
+      }
     })
 
     if (!persona) {
-      return NextResponse.json({ error: 'Persona not found' }, { status: 404 })
+      return NextResponse.json({ 
+        error: 'Persona not found',
+        code: 'PERSONA_NOT_FOUND'
+      }, { status: 404 })
+    }
+
+    if (!persona.isActive) {
+      return NextResponse.json({ 
+        error: 'This persona has already been deleted',
+        code: 'ALREADY_DELETED'
+      }, { status: 400 })
     }
 
     // Check ownership or admin rights
     const isOwner = persona.createdBy === user.id
     const canManage = canManageOrgPersonas(user as any)
+    const isOrgPersona = persona.visibility === 'ORGANIZATION'
 
     if (!isOwner && !canManage) {
-      return NextResponse.json({ error: 'Permission denied' }, { status: 403 })
+      if (isOrgPersona) {
+        return NextResponse.json({ 
+          error: 'Only the creator or an admin can delete organization personas',
+          code: 'ORG_PERSONA_PERMISSION_DENIED'
+        }, { status: 403 })
+      }
+      return NextResponse.json({ 
+        error: 'You can only delete your own personas',
+        code: 'PERMISSION_DENIED'
+      }, { status: 403 })
     }
 
-    // Soft delete
+    // Soft delete (preserves samples for potential recovery)
     await prisma.writingPersona.update({
       where: { id },
       data: { isActive: false }
     })
 
     // Audit log
-    await prisma.auditLog.create({
-      data: {
-        actorUserId: user.id,
-        tenantId: user.tenantId,
-        action: 'PERSONA_DELETE',
-        resource: `persona:${id}`,
-        meta: { name: persona.name }
-      }
+    try {
+      await prisma.auditLog.create({
+        data: {
+          actorUserId: user.id,
+          tenantId: user.tenantId,
+          action: 'PERSONA_DELETE',
+          resource: `persona:${id}`,
+          meta: { 
+            name: persona.name,
+            visibility: persona.visibility,
+            sampleCount: persona._count.samples,
+            deletedByOwner: isOwner
+          }
+        }
+      })
+    } catch (auditError) {
+      console.warn('[Personas] Audit log failed:', auditError)
+    }
+
+    return NextResponse.json({ 
+      success: true,
+      message: `Persona "${persona.name}" has been deleted`,
+      deletedSamplesPreserved: persona._count.samples > 0,
+      sampleCount: persona._count.samples
     })
 
-    return NextResponse.json({ success: true })
-
-  } catch (error) {
+  } catch (error: any) {
     console.error('[Personas] DELETE error:', error)
-    return NextResponse.json(
-      { error: 'Failed to delete persona' },
-      { status: 500 }
-    )
+    return NextResponse.json({
+      error: 'Failed to delete persona. Please try again.',
+      code: 'INTERNAL_ERROR'
+    }, { status: 500 })
   }
 }
 

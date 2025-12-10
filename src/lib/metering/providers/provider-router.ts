@@ -127,6 +127,9 @@ export class LLMProviderRouter {
     // Special handling for relevance analysis (PRIOR_ART_SEARCH) - use Flash-Lite
     const isRelevanceAnalysis = request.taskCode === 'LLM5_NOVELTY_ASSESS' && !isMultimodal
 
+    // Special handling for diagram generation - use GPT-4o for PlantUML code generation
+    const isDiagramGeneration = request.taskCode === 'LLM3_DIAGRAM'
+
     let activePriorities: ProviderPriority[]
 
     if (isMultimodal) {
@@ -134,6 +137,12 @@ export class LLMProviderRouter {
       activePriorities = [
         { provider: 'gemini', priority: 1, fallback: true },
         { provider: 'openai', priority: 2, fallback: true }
+      ]
+    } else if (isDiagramGeneration) {
+      // For diagram generation: GPT-4o primary (better PlantUML code), Gemini fallback
+      activePriorities = [
+        { provider: 'openai', priority: 1, fallback: true },
+        { provider: 'gemini', priority: 2, fallback: true }
       ]
     } else if (isRelevanceAnalysis) {
       // For relevance analysis: Gemini 2.5 Flash-Lite primary, GPT-4o fallback

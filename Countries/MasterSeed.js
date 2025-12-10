@@ -55,6 +55,11 @@ const SUPERSET_SECTIONS = [
     label: 'Title of the Invention',
     description: 'The title should be brief, descriptive, and indicative of the technical field.',
     isRequired: true,
+    // Context injection flags - determines what data to inject into section prompts
+    requiresPriorArt: false,      // Does not need prior art references
+    requiresFigures: false,       // Does not need figure list
+    requiresClaims: false,        // Does not need claims context
+    requiresComponents: false,    // Does not need component/numeral list
     instruction: `**Role:** Formalities Officer (US/EP/PCT Compliance).
 
 **Task:** Generate a strict, descriptive Title.
@@ -81,6 +86,10 @@ const SUPERSET_SECTIONS = [
     label: 'Preamble',
     description: 'Legal preamble for patent applications (used in some jurisdictions).',
     isRequired: false,
+    requiresPriorArt: false,
+    requiresFigures: false,
+    requiresClaims: false,
+    requiresComponents: false,
     instruction: `**Role:** Legal Formalities Engine.
 
 **Task:** Generate the formal Preamble for an international patent application.`,
@@ -93,6 +102,10 @@ const SUPERSET_SECTIONS = [
     label: 'Field of the Invention',
     description: 'A brief statement of the technical field to which the invention pertains.',
     isRequired: true,
+    requiresPriorArt: false,
+    requiresFigures: false,
+    requiresClaims: false,
+    requiresComponents: false,
     instruction: `**Role:** Classification Engine (IPC/CPC Expert).
 
 **Task:** Generate a concise Field of Invention statement.
@@ -112,6 +125,10 @@ const SUPERSET_SECTIONS = [
     label: 'Background of the Invention',
     description: 'Description of the prior art and problems with existing solutions.',
     isRequired: true,
+    requiresPriorArt: true,       // ✅ MUST reference prior art patents
+    requiresFigures: false,
+    requiresClaims: false,
+    requiresComponents: false,
     instruction: `**Role:** Prior Art Analyst and Technical Writer.
 
 **Task:** Generate a Background section that establishes the need for the invention.
@@ -135,6 +152,10 @@ const SUPERSET_SECTIONS = [
     label: 'Objects of the Invention',
     description: 'Specific objectives and goals the invention aims to achieve.',
     isRequired: false,
+    requiresPriorArt: false,      // ❌ No prior art - uses Basic Information instead
+    requiresFigures: false,
+    requiresClaims: false,
+    requiresComponents: false,
     instruction: `**Role:** Patent Drafting Specialist.
 
 **Task:** Generate the Objects of the Invention section.
@@ -155,6 +176,10 @@ Use the format: "It is an object of the present invention to..."
     label: 'Summary of the Invention',
     description: 'A concise summary of the invention and its key features.',
     isRequired: true,
+    requiresPriorArt: false,
+    requiresFigures: false,
+    requiresClaims: true,         // ✅ Should align with claims
+    requiresComponents: false,    // ❌ No components - high-level summary only
     instruction: `**Role:** Patent Claim Strategist.
 
 **Task:** Generate a Summary that bridges the Background to the Detailed Description.
@@ -177,6 +202,10 @@ Use the format: "It is an object of the present invention to..."
     label: 'Technical Problem',
     description: 'Clear statement of the technical problem solved (used in some jurisdictions like EP/JP).',
     isRequired: false,
+    requiresPriorArt: true,       // ✅ Derived from prior art limitations
+    requiresFigures: false,
+    requiresClaims: false,
+    requiresComponents: false,
     instruction: `**Role:** Problem-Solution Analyst.
 
 **Task:** Generate a clear Technical Problem statement.
@@ -194,6 +223,10 @@ Use the format: "It is an object of the present invention to..."
     label: 'Technical Solution',
     description: 'Description of how the invention solves the technical problem.',
     isRequired: false,
+    requiresPriorArt: false,
+    requiresFigures: false,
+    requiresClaims: true,         // ✅ Should align with claimed features
+    requiresComponents: false,    // ❌ No components - derives from claims + problem only
     instruction: `**Role:** Technical Solution Architect.
 
 **Task:** Generate a Technical Solution statement that directly addresses the Technical Problem.
@@ -210,6 +243,10 @@ Use the format: "It is an object of the present invention to..."
     label: 'Advantageous Effects',
     description: 'Technical advantages and beneficial effects of the invention.',
     isRequired: false,
+    requiresPriorArt: false,
+    requiresFigures: false,
+    requiresClaims: false,
+    requiresComponents: false,
     instruction: `**Role:** Benefits Analyst.
 
 **Task:** Generate an Advantageous Effects section.
@@ -227,6 +264,10 @@ Use the format: "It is an object of the present invention to..."
     label: 'Brief Description of the Drawings',
     description: 'Descriptions of each figure in the patent drawings.',
     isRequired: true,
+    requiresPriorArt: false,
+    requiresFigures: true,        // ✅ MUST list all figures
+    requiresClaims: false,
+    requiresComponents: true,     // ✅ References components shown in figures
     instruction: `**Role:** Figure Cataloger.
 
 **Task:** Generate brief descriptions for each drawing figure.
@@ -242,6 +283,10 @@ Use the format: "It is an object of the present invention to..."
     label: 'Detailed Description',
     description: 'Comprehensive description of the invention with reference to drawings.',
     isRequired: true,
+    requiresPriorArt: false,
+    requiresFigures: true,        // ✅ References figures throughout
+    requiresClaims: false,        // ❌ No claims - must not use BI; uses technical sections + figures/components
+    requiresComponents: true,     // ✅ Uses component numerals throughout
     instruction: `**Role:** Technical Writer and Patent Enablement Specialist.
 
 **Task:** Generate a comprehensive Detailed Description that enables one skilled in the art to practice the invention.
@@ -265,6 +310,10 @@ Use the format: "It is an object of the present invention to..."
     label: 'Best Mode',
     description: 'Description of the best mode contemplated by the inventor (required in some jurisdictions).',
     isRequired: false,
+    requiresPriorArt: false,
+    requiresFigures: true,        // ✅ May reference figures
+    requiresClaims: false,
+    requiresComponents: true,     // ✅ Uses component numerals
     instruction: `**Role:** Best Mode Compliance Officer.
 
 **Task:** Ensure the specification discloses the best mode known to the inventor.`,
@@ -277,6 +326,10 @@ Use the format: "It is an object of the present invention to..."
     label: 'Industrial Applicability',
     description: 'Statement of industrial applicability (required in some jurisdictions).',
     isRequired: false,
+    requiresPriorArt: false,
+    requiresFigures: false,
+    requiresClaims: false,
+    requiresComponents: false,
     instruction: `**Role:** Industrial Application Analyst.
 
 **Task:** Generate an Industrial Applicability statement.
@@ -293,6 +346,10 @@ Use the format: "It is an object of the present invention to..."
     label: 'Claims',
     description: 'The legal claims defining the scope of patent protection.',
     isRequired: true,
+    requiresPriorArt: false,
+    requiresFigures: false,
+    requiresClaims: false,        // Claims don't need claims context (they ARE the claims)
+    requiresComponents: true,     // ✅ Uses component references
     instruction: `**Role:** Patent Claim Architect.
 
 **Task:** Generate a complete claim set.
@@ -315,6 +372,10 @@ Use the format: "It is an object of the present invention to..."
     label: 'Abstract',
     description: 'A brief abstract summarizing the invention for searching purposes.',
     isRequired: true,
+    requiresPriorArt: false,
+    requiresFigures: false,       // ❌ No figures - abstract should be standalone
+    requiresClaims: false,        // ❌ No claims - uses optional BI for high-level phrasing
+    requiresComponents: false,
     instruction: `**Role:** Abstract Generator (USPTO/WIPO Compliant).
 
 **Task:** Generate a patent abstract.
@@ -333,6 +394,10 @@ Use the format: "It is an object of the present invention to..."
     label: 'List of Reference Numerals',
     description: 'A table or list mapping reference numerals to component names used in the specification.',
     isRequired: false,
+    requiresPriorArt: false,
+    requiresFigures: false,
+    requiresClaims: false,
+    requiresComponents: true,     // ✅ Lists all components
     instruction: `**Role:** Reference Numeral Cataloger.
 
 **Task:** Generate a comprehensive list of reference numerals used in the specification.
@@ -349,6 +414,10 @@ Use the format: "It is an object of the present invention to..."
     label: 'Cross-Reference to Related Applications',
     description: 'References to related patent applications, priority claims, and continuations.',
     isRequired: false,
+    requiresPriorArt: false,      // ❌ No prior art - procedural section only
+    requiresFigures: false,
+    requiresClaims: false,
+    requiresComponents: false,
     instruction: `**Role:** Legal Formalities Engine.
 
 **Task:** Generate a Cross-Reference to Related Applications section.
@@ -504,6 +573,14 @@ async function seedSupersetSections(systemUserId) {
         continue;
       }
 
+      // Build context flags summary for logging
+      const contextFlags = [
+        section.requiresPriorArt ? 'priorArt' : null,
+        section.requiresFigures ? 'figures' : null,
+        section.requiresClaims ? 'claims' : null,
+        section.requiresComponents ? 'components' : null
+      ].filter(Boolean).join(',') || 'none';
+
       if (existing) {
         await prisma.supersetSection.update({
           where: { sectionKey: section.sectionKey },
@@ -515,10 +592,15 @@ async function seedSupersetSections(systemUserId) {
             constraints: section.constraints,
             isRequired: section.isRequired,
             aliases: section.aliases || [],
+            // Context injection flags
+            requiresPriorArt: section.requiresPriorArt ?? false,
+            requiresFigures: section.requiresFigures ?? false,
+            requiresClaims: section.requiresClaims ?? false,
+            requiresComponents: section.requiresComponents ?? false,
             updatedBy: systemUserId
           }
         });
-        console.log(`  ✏️  [UPDATE] ${section.sectionKey}`);
+        console.log(`  ✏️  [UPDATE] ${section.sectionKey} (context: ${contextFlags})`);
         updated++;
       } else {
         await prisma.supersetSection.create({
@@ -532,10 +614,15 @@ async function seedSupersetSections(systemUserId) {
             isRequired: section.isRequired,
             aliases: section.aliases || [],
             isActive: true,
+            // Context injection flags
+            requiresPriorArt: section.requiresPriorArt ?? false,
+            requiresFigures: section.requiresFigures ?? false,
+            requiresClaims: section.requiresClaims ?? false,
+            requiresComponents: section.requiresComponents ?? false,
             createdBy: systemUserId
           }
         });
-        console.log(`  ✅ [CREATE] ${section.sectionKey}`);
+        console.log(`  ✅ [CREATE] ${section.sectionKey} (context: ${contextFlags})`);
         created++;
       }
     } catch (err) {

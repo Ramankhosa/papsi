@@ -71,12 +71,13 @@ describe('AuthContext', () => {
 
       const { result } = renderHook(() => useAuth(), { wrapper })
 
-      let loginResult
+      let loginResult: Awaited<ReturnType<typeof result.current.login>> | undefined
       await act(async () => {
         loginResult = await result.current.login('test@example.com', 'password')
       })
 
-      expect(loginResult.success).toBe(true)
+      expect(loginResult).toBeDefined()
+      expect(loginResult!.success).toBe(true)
       expect(result.current.user).toEqual(mockUser)
       expect(localStorageMock.setItem).toHaveBeenCalledWith('auth_token', 'new-token')
     })
@@ -90,13 +91,14 @@ describe('AuthContext', () => {
 
       const { result } = renderHook(() => useAuth(), { wrapper })
 
-      let loginResult
+      let loginResult: Awaited<ReturnType<typeof result.current.login>> | undefined
       await act(async () => {
         loginResult = await result.current.login('test@example.com', 'wrong-password')
       })
 
-      expect(loginResult.success).toBe(false)
-      expect(loginResult.error).toBe('Invalid credentials')
+      expect(loginResult).toBeDefined()
+      expect(loginResult!.success).toBe(false)
+      expect(loginResult!.error).toBe('Invalid credentials')
       expect(result.current.user).toBeNull()
       expect(localStorageMock.setItem).not.toHaveBeenCalled()
     })
@@ -123,12 +125,13 @@ describe('AuthContext', () => {
 
       const { result } = renderHook(() => useAuth(), { wrapper })
 
-      let signupResult
+      let signupResult: Awaited<ReturnType<typeof result.current.signup>> | undefined
       await act(async () => {
         signupResult = await result.current.signup('new@example.com', 'password123', 'ati-token', 'John', 'Doe')
       })
 
-      expect(signupResult.success).toBe(true)
+      expect(signupResult).toBeDefined()
+      expect(signupResult!.success).toBe(true)
       expect(mockFetch).toHaveBeenCalledWith('/api/v1/auth/signup', expect.objectContaining({
         method: 'POST',
         body: JSON.stringify({
@@ -147,7 +150,7 @@ describe('AuthContext', () => {
       const mockUser = { user_id: '1', email: 'admin@test.com', roles: ['SUPER_ADMIN'], tenant_id: null, ati_id: null }
 
       // Test the useRoleAccess hook with a mock user
-      let roleAccessResult
+      let roleAccessResult: ReturnType<typeof useRoleAccess> | undefined
       const TestComponent = () => {
         roleAccessResult = useRoleAccess()
         return null
@@ -167,8 +170,9 @@ describe('AuthContext', () => {
 
       renderHook(() => <TestComponent />, { wrapper })
 
-      expect(roleAccessResult.isSuperAdmin).toBe(true)
-      expect(roleAccessResult.canManageTenants).toBe(true)
+      expect(roleAccessResult).toBeDefined()
+      expect(roleAccessResult!.isSuperAdmin).toBe(true)
+      expect(roleAccessResult!.canManageTenants).toBe(true)
 
       // Restore original function
       require('@/lib/auth-context').useAuth = originalUseAuth
@@ -178,7 +182,7 @@ describe('AuthContext', () => {
       const mockUser = { user_id: '2', email: 'tenant@test.com', roles: ['OWNER'], tenant_id: 'tenant-1', ati_id: 'TEST' }
 
       // Test the useRoleAccess hook with a mock user
-      let roleAccessResult
+      let roleAccessResult: ReturnType<typeof useRoleAccess> | undefined
       const TestComponent = () => {
         roleAccessResult = useRoleAccess()
         return null
@@ -198,8 +202,9 @@ describe('AuthContext', () => {
 
       renderHook(() => <TestComponent />, { wrapper })
 
-      expect(roleAccessResult.isSuperAdmin).toBe(false)
-      expect(roleAccessResult.isTenantAdmin).toBe(true)
+      expect(roleAccessResult).toBeDefined()
+      expect(roleAccessResult!.isSuperAdmin).toBe(false)
+      expect(roleAccessResult!.isTenantAdmin).toBe(true)
 
       // Restore original function
       require('@/lib/auth-context').useAuth = originalUseAuth
@@ -209,7 +214,7 @@ describe('AuthContext', () => {
       const mockUser = { user_id: '3', email: 'user@test.com', roles: ['VIEWER'], tenant_id: 'tenant-1', ati_id: 'TEST' }
 
       // Test the useRoleAccess hook with a mock user
-      let roleAccessResult
+      let roleAccessResult: ReturnType<typeof useRoleAccess> | undefined
       const TestComponent = () => {
         roleAccessResult = useRoleAccess()
         return null
@@ -229,9 +234,10 @@ describe('AuthContext', () => {
 
       renderHook(() => <TestComponent />, { wrapper })
 
-      expect(roleAccessResult.isSuperAdmin).toBe(false)
-      expect(roleAccessResult.isTenantAdmin).toBe(false)
-      expect(roleAccessResult.canViewReports).toBe(true)
+      expect(roleAccessResult).toBeDefined()
+      expect(roleAccessResult!.isSuperAdmin).toBe(false)
+      expect(roleAccessResult!.isTenantAdmin).toBe(false)
+      expect(roleAccessResult!.canViewReports).toBe(true)
 
       // Restore original function
       require('@/lib/auth-context').useAuth = originalUseAuth
@@ -245,13 +251,14 @@ describe('AuthContext', () => {
 
       const { result } = renderHook(() => useAuth(), { wrapper })
 
-      let loginResult
+      let loginResult: Awaited<ReturnType<typeof result.current.login>> | undefined
       await act(async () => {
         loginResult = await result.current.login('test@example.com', 'password')
       })
 
-      expect(loginResult.success).toBe(false)
-      expect(loginResult.error).toBe('Network error')
+      expect(loginResult).toBeDefined()
+      expect(loginResult!.success).toBe(false)
+      expect(loginResult!.error).toBe('Network error')
     })
 
     test('should handle invalid JSON responses', async () => {
@@ -264,13 +271,14 @@ describe('AuthContext', () => {
 
       const { result } = renderHook(() => useAuth(), { wrapper })
 
-      let loginResult
+      let loginResult: Awaited<ReturnType<typeof result.current.login>> | undefined
       await act(async () => {
         loginResult = await result.current.login('test@example.com', 'password')
       })
 
-      expect(loginResult.success).toBe(false)
-      expect(loginResult.error).toBe('Network error')
+      expect(loginResult).toBeDefined()
+      expect(loginResult!.success).toBe(false)
+      expect(loginResult!.error).toBe('Network error')
     })
   })
 

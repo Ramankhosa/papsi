@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
   Bot, 
@@ -36,8 +36,7 @@ import {
   UploadCloud,
   HelpCircle,
   Paintbrush,
-  Languages,
-  Globe
+  Languages
 } from 'lucide-react'
 
 // DnD Kit imports
@@ -135,16 +134,16 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   }))
 
   const [isUploading, setIsUploading] = useState(false)
-  const [uploaded, setUploaded] = useState<Record<number, boolean>>({})
+  const [uploaded, setUploaded] = useState<Record<string, boolean>>({})
   const [modifyIdx, setModifyIdx] = useState<number | null>(null)
-  const [processingStatus, setProcessingStatus] = useState<Record<number, string>>({})
-  const [processingStep, setProcessingStep] = useState<Record<number, number>>({})
+  const [processingStatus, setProcessingStatus] = useState<Record<string, string>>({})
+  const [processingStep, setProcessingStep] = useState<Record<string, number>>({})
   const [modifyText, setModifyText] = useState('')
   const [modifyFigNo, setModifyFigNo] = useState<number | null>(null)
   const [modifyTextSaved, setModifyTextSaved] = useState('')
   const [isViewing, setIsViewing] = useState<Record<number, boolean>>({})
-  const [rendering, setRendering] = useState<Record<number, boolean>>({})
-  const [renderPreview, setRenderPreview] = useState<Record<number, string | null>>({})
+  const [rendering, setRendering] = useState<Record<string, boolean>>({})
+  const [renderPreview, setRenderPreview] = useState<Record<string, string | null>>({})
   const [expandedFigNo, setExpandedFigNo] = useState<number | null>(null)
   const [addCount, setAddCount] = useState(0)
   const [addInputs, setAddInputs] = useState<string[]>([])
@@ -279,6 +278,60 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   }, [activeJurisdiction])
 
   const countWords = (text: string) => (text || '').trim().split(/\s+/).filter(Boolean).length
+  const getDiagramKey = (figureNo: number, language?: string | null) => `${figureNo}_${(language || 'en').toLowerCase()}`
+  const preferredFigureLanguage = useMemo(() => {
+    const status = (session as any)?.jurisdictionDraftStatus || {}
+    const explicitFiguresLang = typeof status.__figuresLanguage === 'string' && status.__figuresLanguage.trim()
+      ? status.__figuresLanguage.trim().toLowerCase()
+      : null
+    const activeLang = typeof status?.[activeJurisdiction]?.language === 'string' && status?.[activeJurisdiction]?.language.trim()
+      ? status[activeJurisdiction].language.trim().toLowerCase()
+      : null
+    const commonLang = typeof status.__commonLanguage === 'string' && status.__commonLanguage.trim()
+      ? status.__commonLanguage.trim().toLowerCase()
+      : null
+    return explicitFiguresLang || activeLang || commonLang || 'en'
+  }, [session?.jurisdictionDraftStatus, activeJurisdiction])
+
+  // Group diagram sources by figure number for language-tabbed view
+  const diagramsByFigure = useMemo(() => {
+    const grouped: Record<number, any[]> = {}
+    diagramSources.forEach((ds: any) => {
+      const figNo = ds.figureNo
+      if (!grouped[figNo]) grouped[figNo] = []
+      grouped[figNo].push(ds)
+    })
+    // Keep languages sorted for stable tab order (English first)
+    Object.values(grouped).forEach(list => {
+      list.sort((a: any, b: any) => {
+        const la = (a.language || 'en').toLowerCase()
+        const lb = (b.language || 'en').toLowerCase()
+        if (la === 'en' && lb !== 'en') return -1
+        if (lb === 'en' && la !== 'en') return 1
+        return la.localeCompare(lb)
+      })
+    })
+    return grouped
+  }, [diagramSources])
+
+  // Default selected language per figure to English (or first available)
+  useEffect(() => {
+    const updates: Record<number, string> = {}
+    Object.entries(diagramsByFigure).forEach(([figNoStr, list]) => {
+      const figNo = Number(figNoStr)
+      if (selectedLangByFigure[figNo]) return
+      const langs = list.map((d: any) => (d.language || 'en').toLowerCase())
+      const preferred = langs.includes(preferredFigureLanguage)
+        ? preferredFigureLanguage
+        : langs.includes('en')
+          ? 'en'
+          : langs[0]
+      if (preferred) updates[figNo] = preferred
+    })
+    if (Object.keys(updates).length > 0) {
+      setSelectedLangByFigure(prev => ({ ...prev, ...updates }))
+    }
+  }, [diagramsByFigure, selectedLangByFigure, preferredFigureLanguage])
 
   // Load diagram translations on mount
   useEffect(() => {
@@ -482,8 +535,8 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
     "🎯 Finalizing patent-grade visualization..."
   ]
 
-  // Track which figures have been queued for rendering to prevent duplicate calls
-  const queuedForRenderRef = useRef<Set<number>>(new Set())
+  // Track which figures have been queued for rendering to prevent duplicate calls (language-aware)
+  const queuedForRenderRef = useRef<Set<string>>(new Set())
 
   // Automatically process diagrams when PlantUML code is available
   // This effect runs after state initialization and when diagramSources change
@@ -493,6 +546,8 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
     // Immediate processing without delay for better responsiveness
     diagramSources.forEach((d: any) => {
       const figNo = d.figureNo
+      const lang = (d.language || 'en').toLowerCase()
+      const key = getDiagramKey(figNo, lang)
       // Check all conditions for auto-rendering:
       // 1. Has PlantUML code
       // 2. Not already uploaded/rendered
@@ -502,15 +557,15 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
       // 6. Not already queued for rendering (prevents duplicate calls)
       const shouldRender =
         d.plantumlCode &&
-        !uploaded[figNo] &&
+        !uploaded[key] &&
         !d.imageUploadedAt &&
-        !rendering[figNo] &&
-        !processingStatus[figNo] &&
-        !queuedForRenderRef.current.has(figNo)
+        !rendering[key] &&
+        !processingStatus[key] &&
+        !queuedForRenderRef.current.has(key)
 
       if (shouldRender) {
-        queuedForRenderRef.current.add(figNo)
-        autoProcessDiagram(figNo, d.plantumlCode)
+        queuedForRenderRef.current.add(key)
+        autoProcessDiagram(figNo, d.plantumlCode, lang)
       }
     })
   }, [diagramSources, uploaded, rendering, processingStatus, stateInitialized])
@@ -519,44 +574,45 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   // Also reset uploaded state when image data is cleared (e.g., after regeneration)
   useEffect(() => {
     const newFigureNos = diagramSources.map((d: any) => d.figureNo)
+    const newDiagramKeys = diagramSources.map((d: any) => getDiagramKey(d.figureNo, d.language || 'en'))
     setUploaded((prev) => {
       const updated = { ...prev }
-      newFigureNos.forEach((no: number) => {
-        const source = diagramSources.find((d: any) => d.figureNo === no)
+      diagramSources.forEach((d: any) => {
+        const key = getDiagramKey(d.figureNo, d.language || 'en')
         // Reset to false if no image exists OR if imageUploadedAt is null (cleared after regeneration)
-        if (updated[no] === undefined || (!source?.imageUploadedAt && updated[no] === true)) {
-          updated[no] = false
+        if (updated[key] === undefined || (!d?.imageUploadedAt && updated[key] === true)) {
+          updated[key] = false
           // Also clear from queued set to allow re-rendering
-          queuedForRenderRef.current.delete(no)
+          queuedForRenderRef.current.delete(key)
         }
       })
       return updated
     })
     setRendering((prev) => {
       const updated = { ...prev }
-      newFigureNos.forEach((no: number) => {
-        if (updated[no] === undefined) updated[no] = false
+      newDiagramKeys.forEach((key: string) => {
+        if (updated[key] === undefined) updated[key] = false
       })
       return updated
     })
     setProcessingStatus((prev) => {
       const updated = { ...prev }
-      newFigureNos.forEach((no: number) => {
-        if (updated[no] === undefined) updated[no] = ''
+      newDiagramKeys.forEach((key: string) => {
+        if (updated[key] === undefined) updated[key] = ''
       })
       return updated
     })
     setProcessingStep((prev) => {
       const updated = { ...prev }
-      newFigureNos.forEach((no: number) => {
-        if (updated[no] === undefined) updated[no] = 0
+      newDiagramKeys.forEach((key: string) => {
+        if (updated[key] === undefined) updated[key] = 0
       })
       return updated
     })
     setRenderPreview((prev) => {
       const updated = { ...prev }
-      newFigureNos.forEach((no: number) => {
-        if (updated[no] === undefined) updated[no] = null
+      newDiagramKeys.forEach((key: string) => {
+        if (updated[key] === undefined) updated[key] = null
       })
       return updated
     })
@@ -1553,17 +1609,18 @@ Output: JSON array only, no markdown fences, no explanations.`
     }
   }
 
-  const runSingleRender = async (figureNo: number, plantumlCode: string) => {
-    setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[0] }))
-    setProcessingStep(prev => ({ ...prev, [figureNo]: 0 }))
+  const runSingleRender = async (figureNo: number, plantumlCode: string, language = 'en') => {
+    const key = getDiagramKey(figureNo, language)
+    setProcessingStatus(prev => ({ ...prev, [key]: intelligentMessages[0] }))
+    setProcessingStep(prev => ({ ...prev, [key]: 0 }))
 
     try {
       // Minimal delay for UI feedback
       await new Promise(resolve => setTimeout(resolve, 100))
-      setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[1] }))
-      setProcessingStep(prev => ({ ...prev, [figureNo]: 1 }))
+      setProcessingStatus(prev => ({ ...prev, [key]: intelligentMessages[1] }))
+      setProcessingStep(prev => ({ ...prev, [key]: 1 }))
 
-      setRendering((prev) => ({ ...prev, [figureNo]: true }))
+      setRendering((prev) => ({ ...prev, [key]: true }))
       setError(null)
 
       const resp = await fetch('/api/test/plantuml-proxy', {
@@ -1583,50 +1640,50 @@ Output: JSON array only, no markdown fences, no explanations.`
         throw new Error(info.error || 'Render failed')
       }
 
-      setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[2] }))
-      setProcessingStep(prev => ({ ...prev, [figureNo]: 2 }))
+      setProcessingStatus(prev => ({ ...prev, [key]: intelligentMessages[2] }))
+      setProcessingStep(prev => ({ ...prev, [key]: 2 }))
 
       const blob = await resp.blob()
       const url = URL.createObjectURL(blob)
-      setRenderPreview((prev) => ({ ...prev, [figureNo]: url }))
+      setRenderPreview((prev) => ({ ...prev, [key]: url }))
 
-      setProcessingStatus(prev => ({ ...prev, [figureNo]: intelligentMessages[3] }))
-      setProcessingStep(prev => ({ ...prev, [figureNo]: 3 }))
+      setProcessingStatus(prev => ({ ...prev, [key]: intelligentMessages[3] }))
+      setProcessingStep(prev => ({ ...prev, [key]: 3 }))
 
       setIsUploading(true)
-      const filename = `figure_${figureNo}_${Date.now()}.png`
+      const filename = `figure_${figureNo}_${language}_${Date.now()}.png`
       const file = new File([blob], filename, { type: 'image/png' })
-      await handleUploadImage(figureNo, file, filename)
+      await handleUploadImage(figureNo, file, filename, language)
 
       // Clear processing status
-      setProcessingStatus(prev => ({ ...prev, [figureNo]: '' }))
-      setProcessingStep(prev => ({ ...prev, [figureNo]: 0 }))
+      setProcessingStatus(prev => ({ ...prev, [key]: '' }))
+      setProcessingStep(prev => ({ ...prev, [key]: 0 }))
 
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : 'Unknown error'
       console.error(`Processing failed for figure ${figureNo}:`, errorMessage)
       setError(`Figure ${figureNo} processing failed: ${errorMessage}`)
-      setProcessingStatus(prev => ({ ...prev, [figureNo]: `❌ Failed: ${errorMessage}` }))
-      setProcessingStep(prev => ({ ...prev, [figureNo]: -1 })) // Mark as failed
+      setProcessingStatus(prev => ({ ...prev, [key]: `Failed: ${errorMessage}` }))
+      setProcessingStep(prev => ({ ...prev, [key]: -1 })) // Mark as failed
       // Clear from queued set so user can retry
-      queuedForRenderRef.current.delete(figureNo)
+      queuedForRenderRef.current.delete(key)
     } finally {
-      setRendering((prev) => ({ ...prev, [figureNo]: false }))
+      setRendering((prev) => ({ ...prev, [key]: false }))
       setIsUploading(false)
     }
   }
 
   // Intelligent automatic diagram processing with serialized queue and reduced gap between requests
-  const autoProcessDiagram = (figureNo: number, plantumlCode: string) => {
+  const autoProcessDiagram = (figureNo: number, plantumlCode: string, language = 'en') => {
     renderQueueRef.current = renderQueueRef.current.then(async () => {
       // Reduced gap between render requests for better responsiveness
       await new Promise(resolve => setTimeout(resolve, 500))
-      await runSingleRender(figureNo, plantumlCode)
+      await runSingleRender(figureNo, plantumlCode, language)
     })
     return renderQueueRef.current
   }
 
-  const handleUploadImage = async (figureNo: number, file: File, customFilename?: string) => {
+  const handleUploadImage = async (figureNo: number, file: File, customFilename?: string, language = 'en') => {
     try {
       setIsUploading(true)
       setError(null)
@@ -1648,8 +1705,8 @@ Output: JSON array only, no markdown fences, no explanations.`
       const uploadedMeta = await uploadResp.json()
       // Use custom filename if provided, otherwise use the filename from response
       const filename = customFilename || uploadedMeta.filename
-      await onComplete({ action: 'upload_diagram', sessionId: session?.id, figureNo, filename, checksum: uploadedMeta.checksum, imagePath: uploadedMeta.path })
-      setUploaded((prev) => ({ ...prev, [figureNo]: true }))
+      await onComplete({ action: 'upload_diagram', sessionId: session?.id, figureNo, language, filename, checksum: uploadedMeta.checksum, imagePath: uploadedMeta.path })
+      setUploaded((prev) => ({ ...prev, [getDiagramKey(figureNo, language)]: true }))
       await onRefresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Upload failed')
@@ -1995,20 +2052,37 @@ Output: JSON array only, no markdown fences, no explanations.`
           </div>
         </div>
 
-        {diagramSources.length === 0 ? (
+        
+{diagramSources.length === 0 ? (
           <div className="text-center py-12 bg-gray-50 rounded-xl border border-dashed border-gray-200">
             <ImageIcon className="w-12 h-12 text-gray-300 mx-auto mb-3" />
             <p className="text-gray-500">No diagrams created yet.</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {diagramSources
-              .sort((a: any, b: any) => a.figureNo - b.figureNo)
-              .map((d: any) => {
-                const plan = figurePlans.find((f: any) => f.figureNo === d.figureNo)
-                const previewUrl = renderPreview[d.figureNo] as string | undefined
-                const serverImageUrl = d.imageFilename
-                  ? `/api/projects/${patent.project.id}/patents/${patent.id}/upload?filename=${encodeURIComponent(d.imageFilename)}`
+            {Object.keys(diagramsByFigure)
+              .map(n => Number(n))
+              .sort((a, b) => a - b)
+              .map((figNo: number) => {
+                const sources = diagramsByFigure[figNo] || []
+                if (sources.length === 0) return null
+
+                const availableLangs = Array.from(new Set(sources.map((s: any) => (s.language || 'en').toLowerCase())))
+                const selectedLang = (() => {
+                  const chosen = selectedLangByFigure[figNo]
+                  if (chosen && availableLangs.includes(chosen)) return chosen
+                  if (availableLangs.includes(preferredFigureLanguage)) return preferredFigureLanguage
+                  if (availableLangs.includes('en')) return 'en'
+                  return availableLangs[0]
+                })()
+
+                const selectedSource = sources.find((s: any) => (s.language || 'en').toLowerCase() === selectedLang) || sources[0]
+
+                const plan = figurePlans.find((f: any) => f.figureNo === figNo)
+                const diagramKey = getDiagramKey(figNo, selectedSource.language || 'en')
+                const previewUrl = renderPreview[diagramKey] as string | undefined
+                const serverImageUrl = selectedSource.imageFilename
+                  ? `/api/projects/${patent.project.id}/patents/${patent.id}/upload?filename=${encodeURIComponent(selectedSource.imageFilename)}`
                   : undefined
                 const displayUrl = previewUrl || serverImageUrl
                 const editorImageUrl = previewUrl && !previewUrl.startsWith('blob:')
@@ -2016,60 +2090,70 @@ Output: JSON array only, no markdown fences, no explanations.`
                   : serverImageUrl || previewUrl
 
                 return (
-              <Card key={`${d.figureNo}_${d.language || 'en'}`} className="overflow-hidden hover:shadow-lg transition-all duration-300">
+              <Card key={`figure_${figNo}`} className="overflow-hidden hover:shadow-lg transition-all duration-300">
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Badge variant={uploaded[d.figureNo] || d.imageUploadedAt ? 'default' : 'secondary'} className="shrink-0">
-                        Fig. {d.figureNo}
+                      <Badge variant={uploaded[diagramKey] || selectedSource.imageUploadedAt ? 'default' : 'secondary'} className="shrink-0">
+                        Fig. {figNo}
                       </Badge>
-                      {/* Show language badge */}
-                      {d.language && d.language !== 'en' && (
-                        <Badge variant="outline" className="text-xs bg-purple-50 text-purple-600 border-purple-200">
-                          <Globe className="w-3 h-3 mr-1" />
-                          {LANGUAGE_LABELS[d.language]?.split(' ')[0] || d.language.toUpperCase()}
-                        </Badge>
-                      )}
                       {/* Show translation count if available */}
-                      {diagramTranslations[d.figureNo]?.length > 1 && d.language === 'en' && (
+                      {diagramTranslations[figNo]?.length > 1 && (
                         <Badge variant="outline" className="text-xs text-green-600 bg-green-50 border-green-200">
-                          {diagramTranslations[d.figureNo].length - 1} translation{diagramTranslations[d.figureNo].length > 2 ? 's' : ''}
+                          {diagramTranslations[figNo].length - 1} translation{diagramTranslations[figNo].length > 2 ? 's' : ''}
                         </Badge>
                       )}
                     </div>
                     <Badge variant="outline" className="text-xs text-gray-500">
-                      {d.imageUploadedAt ? 'Rendered' : d.plantumlCode ? 'Code Ready' : 'Pending'}
+                      {selectedSource.imageUploadedAt ? 'Rendered' : selectedSource.plantumlCode ? 'Code Ready' : 'Pending'}
                     </Badge>
                   </div>
                   {/* Caption (Title) - shown prominently */}
                   <CardTitle className="text-base font-semibold text-gray-900 mt-2 line-clamp-2">
                     {(() => {
-                      const caption = plan?.title || `Figure ${d.figureNo}`
+                      const caption = plan?.title || `Figure ${figNo}`
                       // Remove redundant "Fig. X" prefix from caption if present
-                      return caption.replace(/^(Fig\.?\s*\d+\s*[-:–]\s*)/i, '').trim() || caption
+                      return caption.replace(/^(Fig\.\s*\d+\s*[-:"]\s*)/i, '').trim() || caption
                     })()}
                   </CardTitle>
                 </CardHeader>
                 
+                <div className="px-4 pb-3 flex flex-wrap gap-2 border-b bg-white">
+                  {availableLangs.map(lang => (
+                    <button
+                      key={`${figNo}_${lang}`}
+                      onClick={() => setSelectedLangByFigure(prev => ({ ...prev, [figNo]: lang }))}
+                      className={`px-3 py-1 rounded-md text-sm border transition ${
+                        lang === selectedLang
+                          ? 'bg-green-50 border-green-500 text-green-700 font-semibold'
+                          : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                      }`}
+                    >
+                      {LANGUAGE_LABELS[lang]?.split(' ')[0] || lang.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+                
                 <CardContent className="p-0 relative bg-gray-100 min-h-[200px] flex items-center justify-center group">
                   {/* Preview Image */}
-                  {(renderPreview[d.figureNo] || (d.imageFilename && !processingStatus[d.figureNo])) ? (
+                  {(renderPreview[diagramKey] || (selectedSource.imageFilename && !processingStatus[diagramKey])) ? (
                     <>
                       <img 
                         src={displayUrl || ''} 
-                        alt={`Fig ${d.figureNo}`}
+                        alt={`Fig ${figNo}`}
                         className="w-full h-64 object-contain bg-white"
                       />
                       <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                        <Button variant="secondary" size="sm" onClick={() => setExpandedFigNo(d.figureNo)}>
+                        <Button variant="secondary" size="sm" onClick={() => setExpandedFigNo(figNo)}>
                           <Eye className="w-4 h-4 mr-2" /> Expand
                         </Button>
                         <Button 
                           variant="secondary" 
                           size="sm" 
+                          className="w-full text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
                           onClick={() => {
                             const imagePath = editorImageUrl || displayUrl || ''
-                            openImageEditor('diagram', d.figureNo, imagePath, plan?.title || `Figure ${d.figureNo}`, d.originalImagePath)
+                            openImageEditor('diagram', figNo, imagePath, plan?.title || `Figure ${figNo}`, selectedSource.originalImagePath)
                           }}
                           title="Edit this image in miniPaint - add/remove labels, erase, draw shapes"
                         >
@@ -2079,7 +2163,7 @@ Output: JSON array only, no markdown fences, no explanations.`
                     </>
                   ) : (
                   <div className="flex flex-col items-center p-6 text-center">
-                    {processingStatus[d.figureNo] ? (
+                    {processingStatus[diagramKey] ? (
                       <div className="space-y-3">
                         <div className="relative w-16 h-16 mx-auto">
                           <div className="absolute inset-0 border-4 border-indigo-100 rounded-full"></div>
@@ -2087,32 +2171,32 @@ Output: JSON array only, no markdown fences, no explanations.`
                           <Sparkles className="absolute inset-0 m-auto w-6 h-6 text-indigo-500 animate-pulse" />
                         </div>
                         <p className="text-sm font-medium text-indigo-600 animate-pulse">
-                          {processingStatus[d.figureNo]}
+                          {processingStatus[diagramKey]}
                         </p>
-                        {processingStep[d.figureNo] === -1 && d.plantumlCode && (
+                        {processingStep[diagramKey] === -1 && selectedSource.plantumlCode && (
                           <Button
                             size="sm"
                             variant="outline"
                             className="mt-2"
                             onClick={() => {
                               // Clear states and re-queue for rendering
-                              setProcessingStatus(prev => ({ ...prev, [d.figureNo]: '' }))
-                              setProcessingStep(prev => ({ ...prev, [d.figureNo]: 0 }))
-                              queuedForRenderRef.current.delete(d.figureNo) // Allow re-queueing
-                              autoProcessDiagram(d.figureNo, d.plantumlCode)
+                              setProcessingStatus(prev => ({ ...prev, [diagramKey]: '' }))
+                              setProcessingStep(prev => ({ ...prev, [diagramKey]: 0 }))
+                              queuedForRenderRef.current.delete(diagramKey) // Allow re-queueing
+                              autoProcessDiagram(figNo, selectedSource.plantumlCode, selectedSource.language || 'en')
                             }}
                           >
                             <RefreshCw className="w-4 h-4 mr-2" /> Retry Render
                           </Button>
                         )}
                       </div>
-                    ) : d.plantumlCode ? (
+                    ) : selectedSource.plantumlCode ? (
                       <div className="text-center">
                         <Code className="w-12 h-12 text-gray-300 mx-auto mb-2" />
                         <p className="text-sm text-gray-500 mb-4">Code ready for processing</p>
                         <Button size="sm" onClick={() => {
-                          queuedForRenderRef.current.delete(d.figureNo) // Ensure it can be queued
-                          autoProcessDiagram(d.figureNo, d.plantumlCode)
+                          queuedForRenderRef.current.delete(diagramKey) // Ensure it can be queued
+                          autoProcessDiagram(figNo, selectedSource.plantumlCode, selectedSource.language || 'en')
                         }}>
                           <RefreshCw className="w-4 h-4 mr-2" /> Render Image
                         </Button>
@@ -2126,11 +2210,10 @@ Output: JSON array only, no markdown fences, no explanations.`
 
                 {/* Figure Caption & Description - Academic Style */}
                 {(() => {
-                  const plan = figurePlans.find((f: any) => f.figureNo === d.figureNo)
                   const caption = plan?.title || ''
                   const description = plan?.description || ''
                   // Clean caption: remove "Fig. X -" prefix if present
-                  const cleanCaption = caption.replace(/^(Fig\.?\s*\d+\s*[-:–]\s*)/i, '').trim()
+                  const cleanCaption = caption.replace(/^(Fig\.\s*\d+\s*[-:"]\s*)/i, '').trim()
                   
                   // Only show this section if there's either a caption or description
                   if (!cleanCaption && !description) return null
@@ -2140,7 +2223,7 @@ Output: JSON array only, no markdown fences, no explanations.`
                       {/* Caption Line - for draft export (one line max) */}
                       {cleanCaption && (
                         <p className="text-sm font-medium text-gray-800 truncate" title={cleanCaption}>
-                          <span className="text-indigo-600">Fig. {d.figureNo}:</span> {cleanCaption}
+                          <span className="text-indigo-600">Fig. {figNo}:</span> {cleanCaption}
                         </p>
                       )}
                       {/* Description - detailed explanation */}
@@ -2154,18 +2237,18 @@ Output: JSON array only, no markdown fences, no explanations.`
                 })()}
 
                 <div className="p-3 bg-white border-t grid grid-cols-4 gap-2">
-                  <Button variant="ghost" size="sm" className="w-full" onClick={() => { setModifyFigNo(d.figureNo); setModifyTextSaved('') }}>
+                  <Button variant="ghost" size="sm" className="w-full" onClick={() => { setModifyFigNo(figNo); setModifyTextSaved('') }}>
                     <Edit2 className="w-4 h-4 mr-2" /> Modify
                   </Button>
                   {/* Edit Image button - visible when image exists */}
-                  {(renderPreview[d.figureNo] || d.imageFilename) ? (
+                  {(renderPreview[diagramKey] || selectedSource.imageFilename) ? (
                     <Button 
                       variant="ghost" 
                       size="sm" 
                       className="w-full text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50"
                       onClick={() => {
                         const imagePath = editorImageUrl || displayUrl || ''
-                        openImageEditor('diagram', d.figureNo, imagePath, plan?.title || `Figure ${d.figureNo}`, d.originalImagePath)
+                        openImageEditor('diagram', figNo, imagePath, plan?.title || `Figure ${figNo}`, selectedSource.originalImagePath)
                       }}
                       title="Edit image in miniPaint - add/remove labels, erase, draw"
                     >
@@ -2182,7 +2265,7 @@ Output: JSON array only, no markdown fences, no explanations.`
                     size="sm" 
                     className="w-full text-purple-600 hover:text-purple-700 hover:bg-purple-50"
                     onClick={() => {
-                      setTranslateFigureNo(d.figureNo)
+                      setTranslateFigureNo(figNo)
                       setShowTranslateModal(true)
                     }}
                     title="Translate diagram labels to another language"
@@ -2191,37 +2274,38 @@ Output: JSON array only, no markdown fences, no explanations.`
                   </Button>
                   <Button variant="ghost" size="sm" className="w-full text-red-600 hover:text-red-700 hover:bg-red-50" 
                     onClick={async () => {
-                      if(!confirm('Delete this figure?')) return
+                      const langLabel = LANGUAGE_LABELS[selectedLang]?.split(' ')[0] || selectedLang.toUpperCase()
+                      if(!confirm(`Delete Figure ${figNo} (${langLabel})?`)) return
                       try {
-                        await onComplete({ action: 'delete_figure', sessionId: session?.id, figureNo: d.figureNo })
+                        await onComplete({ action: 'delete_figure', sessionId: session?.id, figureNo: figNo, language: selectedLang })
                         await onRefresh()
                       } catch (e) { setError('Failed to delete') }
                     }}>
                     <Trash2 className="w-4 h-4 mr-2" /> Delete
                   </Button>
                   
-                  {d.plantumlCode && (
+                  {selectedSource.plantumlCode && (
                     <div className="col-span-2">
                         <Button 
                           variant="ghost" 
                           size="sm" 
                           className="w-full text-xs text-gray-500"
-                          onClick={() => setShowPlantUML(prev => ({ ...prev, [d.figureNo]: !prev[d.figureNo] }))}
+                          onClick={() => setShowPlantUML(prev => ({ ...prev, [figNo]: !prev[figNo] }))}
                         >
-                          {showPlantUML[d.figureNo] ? 'Hide Source Code' : 'View Source Code'}
+                          {showPlantUML[figNo] ? 'Hide Source Code' : 'View Source Code'}
                         </Button>
-                        {showPlantUML[d.figureNo] && (
+                        {showPlantUML[figNo] && (
                            <div className="mt-2 relative">
                              <Textarea 
                         readOnly
-                        value={d.plantumlCode}
+                        value={selectedSource.plantumlCode}
                                className="font-mono text-xs h-32 bg-gray-50"
                       />
                              <Button 
                                size="sm" 
                                variant="secondary"
                                className="absolute top-2 right-2 h-6 text-xs"
-                        onClick={() => navigator.clipboard.writeText(d.plantumlCode)}
+                        onClick={() => navigator.clipboard.writeText(selectedSource.plantumlCode)}
                       >
                         Copy
                              </Button>
@@ -2231,7 +2315,7 @@ Output: JSON array only, no markdown fences, no explanations.`
                 )}
 
                   {/* Modification Panel */}
-                {modifyFigNo === d.figureNo && (
+                {modifyFigNo === figNo && (
                     <div className="col-span-2 mt-2 pt-2 border-t">
                       <Label className="text-xs mb-1 block">Describe changes:</Label>
                       <Textarea 
@@ -2242,7 +2326,7 @@ Output: JSON array only, no markdown fences, no explanations.`
                       <div className="flex gap-2">
                         <Button size="sm" className="flex-1" onClick={async () => {
                           try {
-                            const resp = await onComplete({ action: 'regenerate_diagram_llm', sessionId: session?.id, figureNo: d.figureNo, instructions: modifyTextSaved })
+                            const resp = await onComplete({ action: 'regenerate_diagram_llm', sessionId: session?.id, figureNo: figNo, instructions: modifyTextSaved })
                             if (resp?.diagramSource?.plantumlCode) {
                               await onRefresh()
                               setModifyFigNo(null)
@@ -2260,7 +2344,6 @@ Output: JSON array only, no markdown fences, no explanations.`
                       </div>
                     )}
                       </div>
-
       {/* Manual Upload Section (Collapsible) */}
       <div ref={uploadSectionRef}>
         <AnimatePresence>
@@ -2392,8 +2475,19 @@ Output: JSON array only, no markdown fences, no explanations.`
       {/* Expanded Image Modal */}
       <AnimatePresence>
         {(() => {
-          const diagramSource = diagramSources.find((d: any) => d.figureNo === expandedFigNo)
-          const hasImage = expandedFigNo && (renderPreview[expandedFigNo] || (diagramSource?.imageFilename && !processingStatus[expandedFigNo]))
+          const sources = diagramSources.filter((d: any) => d.figureNo === expandedFigNo)
+          const availableLangs = Array.from(new Set(sources.map((s: any) => (s.language || 'en').toLowerCase())))
+          const selectedLang = (() => {
+            if (!expandedFigNo) return null
+            const chosen = selectedLangByFigure[expandedFigNo]
+            if (chosen && availableLangs.includes(chosen)) return chosen
+            if (availableLangs.includes(preferredFigureLanguage)) return preferredFigureLanguage
+            if (availableLangs.includes('en')) return 'en'
+            return availableLangs[0] || null
+          })()
+          const diagramSource = sources.find((d: any) => (d.language || 'en').toLowerCase() === selectedLang) || sources[0]
+          const expandedKey = diagramSource ? getDiagramKey(diagramSource.figureNo, diagramSource.language || 'en') : ''
+          const hasImage = expandedFigNo && (renderPreview[expandedKey] || (diagramSource?.imageFilename && !processingStatus[expandedKey]))
 
           return hasImage ? (
           <motion.div
@@ -2429,7 +2523,7 @@ Output: JSON array only, no markdown fences, no explanations.`
                   initial={{ opacity: 0, scale: 0.9 }}
                   animate={{ opacity: 1, scale: 1 }}
                   transition={{ delay: 0.1, duration: 0.3 }}
-                  src={renderPreview[expandedFigNo] || `/api/projects/${patent.project.id}/patents/${patent.id}/upload?filename=${encodeURIComponent(diagramSource?.imageFilename || '')}`}
+                  src={renderPreview[expandedKey] || `/api/projects/${patent.project.id}/patents/${patent.id}/upload?filename=${encodeURIComponent(diagramSource?.imageFilename || '')}`}
                   alt={`Preview Fig.${expandedFigNo}`}
                   className="max-w-full h-auto shadow-lg"
                   style={{ willChange: 'transform, opacity' }}

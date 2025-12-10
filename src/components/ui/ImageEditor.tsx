@@ -3,6 +3,8 @@
 import { useState, useRef, useEffect } from 'react'
 import { Loader2, X, ExternalLink, Upload, Check, AlertTriangle, ArrowRight, Image as ImageIcon, Download } from 'lucide-react'
 
+const MINI_PAINT_URL = 'https://viliusle.github.io/miniPaint/'
+
 interface ImageEditorProps {
   imageSrc: string
   onSave: (editedImageBase64: string, imageObject: any) => void
@@ -31,10 +33,18 @@ export default function ImageEditor({ imageSrc, onSave, onClose, title }: ImageE
     // 1. CORS preflight requirements
     // 2. Canvas tainting (even with CORS headers, miniPaint may not load with crossOrigin="anonymous")
     // 3. Browser security policies for localhost
-    const url = 'https://viliusle.github.io/miniPaint/'
+    const url = MINI_PAINT_URL
     console.log('Opening miniPaint (manual image load required)')
     miniPaintWindowRef.current = window.open(url, '_blank', 'noopener')
     setStep('editing')
+  }
+
+  const reopenMiniPaint = () => {
+    if (miniPaintWindowRef.current && !miniPaintWindowRef.current.closed) {
+      miniPaintWindowRef.current.focus()
+      return
+    }
+    miniPaintWindowRef.current = window.open(MINI_PAINT_URL, '_blank', 'noopener')
   }
   
   // Download the image for user to manually open in miniPaint
@@ -265,8 +275,8 @@ export default function ImageEditor({ imageSrc, onSave, onClose, title }: ImageE
                 Cancel
               </button>
               <div className="flex gap-3">
-                <button
-                  onClick={() => window.open(getMiniPaintUrl(), '_blank')}
+              <button
+                  onClick={reopenMiniPaint}  
                   className="flex items-center gap-2 px-4 py-2 border border-gray-300 hover:border-gray-400 text-gray-700 font-medium rounded-xl transition-colors"
                 >
                   <ExternalLink className="w-4 h-4" />

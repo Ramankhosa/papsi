@@ -16,6 +16,11 @@ interface SupersetSection {
   constraints: any[]
   isRequired: boolean
   isActive: boolean
+  // Context injection flags
+  requiresPriorArt: boolean
+  requiresFigures: boolean
+  requiresClaims: boolean
+  requiresComponents: boolean
   createdAt: string
   updatedAt: string
 }
@@ -164,6 +169,41 @@ export default function SuperAdminSupersetSectionsPage() {
     }
   }
 
+  const handleToggleContextFlag = async (
+    section: SupersetSection, 
+    flag: 'requiresPriorArt' | 'requiresFigures' | 'requiresClaims' | 'requiresComponents'
+  ) => {
+    try {
+      const response = await fetch('/api/super-admin/superset-sections', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+        },
+        body: JSON.stringify({
+          action: 'update_context_flags',
+          sectionKey: section.sectionKey,
+          [flag]: !section[flag]
+        })
+      })
+      
+      if (response.ok) {
+        const flagLabels = {
+          requiresPriorArt: 'Prior Art',
+          requiresFigures: 'Figures',
+          requiresClaims: 'Claims',
+          requiresComponents: 'Components'
+        }
+        showToast('success', `${flagLabels[flag]} ${section[flag] ? 'disabled' : 'enabled'} for ${section.sectionKey}`)
+        fetchSections()
+      } else {
+        showToast('error', 'Failed to update context flag')
+      }
+    } catch (err) {
+      showToast('error', 'Failed to update context flag')
+    }
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
@@ -211,73 +251,164 @@ export default function SuperAdminSupersetSectionsPage() {
           </p>
         </div>
 
+        {/* Context Injection Legend */}
+        <div className="bg-violet-500/10 border border-violet-500/30 rounded-lg p-4 mb-6">
+          <p className="text-violet-200 text-sm font-medium mb-2">📊 Context Injection Flags</p>
+          <p className="text-violet-200/80 text-sm mb-2">
+            These checkboxes control what data gets injected into section prompts during draft generation:
+          </p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded bg-rose-500"></span>
+              <span className="text-slate-300"><strong>Prior Art</strong> - Patent references for Background</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded bg-cyan-500"></span>
+              <span className="text-slate-300"><strong>Figures</strong> - Figure list for drawings sections</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded bg-amber-500"></span>
+              <span className="text-slate-300"><strong>Claims</strong> - Claims context for summaries</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded bg-emerald-500"></span>
+              <span className="text-slate-300"><strong>Components</strong> - Reference numerals</span>
+            </div>
+          </div>
+        </div>
+
         {/* Sections table */}
-        <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden">
+        <div className="bg-slate-900 rounded-xl border border-slate-800 overflow-hidden overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="bg-slate-800/50">
-                <th className="px-4 py-3 text-left text-sm font-medium text-slate-400">#</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-slate-400">Section Key</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-slate-400">Label</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-slate-400">Aliases</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-slate-400">Required</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-slate-400">Status</th>
-                <th className="px-4 py-3 text-center text-sm font-medium text-slate-400">Actions</th>
+                <th className="px-3 py-3 text-left text-sm font-medium text-slate-400">#</th>
+                <th className="px-3 py-3 text-left text-sm font-medium text-slate-400">Section Key</th>
+                <th className="px-3 py-3 text-left text-sm font-medium text-slate-400">Label</th>
+                <th className="px-3 py-3 text-center text-sm font-medium text-slate-400" colSpan={4}>
+                  <span className="text-violet-400">Context Injection</span>
+                </th>
+                <th className="px-3 py-3 text-left text-sm font-medium text-slate-400">Aliases</th>
+                <th className="px-3 py-3 text-left text-sm font-medium text-slate-400">Status</th>
+                <th className="px-3 py-3 text-center text-sm font-medium text-slate-400">Actions</th>
+              </tr>
+              <tr className="bg-slate-800/30 text-xs">
+                <th></th>
+                <th></th>
+                <th></th>
+                <th className="px-2 py-1 text-center text-rose-400" title="Inject Prior Art references">🔴 Prior Art</th>
+                <th className="px-2 py-1 text-center text-cyan-400" title="Inject Figure list">🔵 Figures</th>
+                <th className="px-2 py-1 text-center text-amber-400" title="Inject Claims context">🟡 Claims</th>
+                <th className="px-2 py-1 text-center text-emerald-400" title="Inject Component numerals">🟢 Components</th>
+                <th></th>
+                <th></th>
+                <th></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800">
               {sections.map((section) => (
                 <tr key={section.id} className="hover:bg-slate-800/30 transition-colors">
-                  <td className="px-4 py-3 text-sm text-slate-500">{section.displayOrder}</td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3 text-sm text-slate-500">{section.displayOrder}</td>
+                  <td className="px-3 py-3">
                     <code className="text-violet-400 bg-slate-800 px-2 py-1 rounded text-sm">
                       {section.sectionKey}
                     </code>
                   </td>
-                  <td className="px-4 py-3 text-sm">{section.label}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-1">
+                  <td className="px-3 py-3 text-sm max-w-[150px] truncate" title={section.label}>{section.label}</td>
+                  
+                  {/* Context Injection Checkboxes */}
+                  <td className="px-2 py-3 text-center">
+                    <button
+                      onClick={() => handleToggleContextFlag(section, 'requiresPriorArt')}
+                      className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
+                        section.requiresPriorArt 
+                          ? 'bg-rose-500 border-rose-500 text-white' 
+                          : 'border-slate-600 hover:border-rose-400'
+                      }`}
+                      title={`${section.requiresPriorArt ? 'Disable' : 'Enable'} Prior Art injection`}
+                    >
+                      {section.requiresPriorArt && '✓'}
+                    </button>
+                  </td>
+                  <td className="px-2 py-3 text-center">
+                    <button
+                      onClick={() => handleToggleContextFlag(section, 'requiresFigures')}
+                      className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
+                        section.requiresFigures 
+                          ? 'bg-cyan-500 border-cyan-500 text-white' 
+                          : 'border-slate-600 hover:border-cyan-400'
+                      }`}
+                      title={`${section.requiresFigures ? 'Disable' : 'Enable'} Figures injection`}
+                    >
+                      {section.requiresFigures && '✓'}
+                    </button>
+                  </td>
+                  <td className="px-2 py-3 text-center">
+                    <button
+                      onClick={() => handleToggleContextFlag(section, 'requiresClaims')}
+                      className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
+                        section.requiresClaims 
+                          ? 'bg-amber-500 border-amber-500 text-white' 
+                          : 'border-slate-600 hover:border-amber-400'
+                      }`}
+                      title={`${section.requiresClaims ? 'Disable' : 'Enable'} Claims injection`}
+                    >
+                      {section.requiresClaims && '✓'}
+                    </button>
+                  </td>
+                  <td className="px-2 py-3 text-center">
+                    <button
+                      onClick={() => handleToggleContextFlag(section, 'requiresComponents')}
+                      className={`w-6 h-6 rounded border-2 flex items-center justify-center transition-colors ${
+                        section.requiresComponents 
+                          ? 'bg-emerald-500 border-emerald-500 text-white' 
+                          : 'border-slate-600 hover:border-emerald-400'
+                      }`}
+                      title={`${section.requiresComponents ? 'Disable' : 'Enable'} Components injection`}
+                    >
+                      {section.requiresComponents && '✓'}
+                    </button>
+                  </td>
+                  
+                  <td className="px-3 py-3">
+                    <div className="flex flex-wrap gap-1 max-w-[120px]">
                       {section.aliases.length > 0 ? (
-                        section.aliases.map(alias => (
+                        section.aliases.slice(0, 2).map(alias => (
                           <span key={alias} className="bg-amber-500/20 text-amber-300 px-2 py-0.5 rounded text-xs">
                             {alias}
                           </span>
                         ))
                       ) : (
-                        <span className="text-slate-500 text-xs">No aliases</span>
+                        <span className="text-slate-500 text-xs">-</span>
+                      )}
+                      {section.aliases.length > 2 && (
+                        <span className="text-slate-400 text-xs">+{section.aliases.length - 2}</span>
                       )}
                     </div>
                   </td>
-                  <td className="px-4 py-3">
-                    <span className={`text-xs px-2 py-1 rounded ${
-                      section.isRequired ? 'bg-emerald-500/20 text-emerald-300' : 'bg-slate-700 text-slate-400'
-                    }`}>
-                      {section.isRequired ? 'Required' : 'Optional'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
+                  <td className="px-3 py-3">
                     <span className={`text-xs px-2 py-1 rounded ${
                       section.isActive ? 'bg-emerald-500/20 text-emerald-300' : 'bg-red-500/20 text-red-300'
                     }`}>
-                      {section.isActive ? 'Active' : 'Inactive'}
+                      {section.isActive ? 'Active' : 'Off'}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-center">
+                  <td className="px-3 py-3 text-center">
                     <button
                       onClick={() => setEditingSection(section)}
-                      className="px-3 py-1 bg-violet-600 hover:bg-violet-500 rounded text-xs mr-2"
+                      className="px-2 py-1 bg-violet-600 hover:bg-violet-500 rounded text-xs mr-1"
                     >
-                      Edit Aliases
+                      Aliases
                     </button>
                     <button
                       onClick={() => handleToggleActive(section)}
-                      className={`px-3 py-1 rounded text-xs ${
+                      className={`px-2 py-1 rounded text-xs ${
                         section.isActive 
                           ? 'bg-slate-700 hover:bg-slate-600' 
                           : 'bg-emerald-600 hover:bg-emerald-500'
                       }`}
                     >
-                      {section.isActive ? 'Deactivate' : 'Activate'}
+                      {section.isActive ? 'Off' : 'On'}
                     </button>
                   </td>
                 </tr>
@@ -287,7 +418,7 @@ export default function SuperAdminSupersetSectionsPage() {
         </div>
 
         {/* Stats */}
-        <div className="mt-6 flex gap-4">
+        <div className="mt-6 flex flex-wrap gap-4">
           <div className="bg-slate-900 rounded-lg px-4 py-3 border border-slate-800">
             <p className="text-slate-400 text-xs">Total Sections</p>
             <p className="text-2xl font-bold">{sections.length}</p>
@@ -297,12 +428,25 @@ export default function SuperAdminSupersetSectionsPage() {
             <p className="text-2xl font-bold">{sections.reduce((sum, s) => sum + s.aliases.length, 0)}</p>
           </div>
           <div className="bg-slate-900 rounded-lg px-4 py-3 border border-slate-800">
-            <p className="text-slate-400 text-xs">Required</p>
-            <p className="text-2xl font-bold">{sections.filter(s => s.isRequired).length}</p>
-          </div>
-          <div className="bg-slate-900 rounded-lg px-4 py-3 border border-slate-800">
             <p className="text-slate-400 text-xs">Active</p>
             <p className="text-2xl font-bold text-emerald-400">{sections.filter(s => s.isActive).length}</p>
+          </div>
+          {/* Context injection stats */}
+          <div className="bg-slate-900 rounded-lg px-4 py-3 border border-rose-500/30">
+            <p className="text-rose-400 text-xs">🔴 Prior Art</p>
+            <p className="text-2xl font-bold text-rose-400">{sections.filter(s => s.requiresPriorArt).length}</p>
+          </div>
+          <div className="bg-slate-900 rounded-lg px-4 py-3 border border-cyan-500/30">
+            <p className="text-cyan-400 text-xs">🔵 Figures</p>
+            <p className="text-2xl font-bold text-cyan-400">{sections.filter(s => s.requiresFigures).length}</p>
+          </div>
+          <div className="bg-slate-900 rounded-lg px-4 py-3 border border-amber-500/30">
+            <p className="text-amber-400 text-xs">🟡 Claims</p>
+            <p className="text-2xl font-bold text-amber-400">{sections.filter(s => s.requiresClaims).length}</p>
+          </div>
+          <div className="bg-slate-900 rounded-lg px-4 py-3 border border-emerald-500/30">
+            <p className="text-emerald-400 text-xs">🟢 Components</p>
+            <p className="text-2xl font-bold text-emerald-400">{sections.filter(s => s.requiresComponents).length}</p>
           </div>
         </div>
       </div>

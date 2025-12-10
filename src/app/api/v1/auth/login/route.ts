@@ -28,6 +28,18 @@ export async function POST(request: NextRequest) {
 
     // Verify password
     if (!user.passwordHash) {
+      // Check if this is a social login user
+      if (user.oauthProvider) {
+        const providerName = user.oauthProvider.charAt(0) + user.oauthProvider.slice(1).toLowerCase()
+        return NextResponse.json(
+          { 
+            code: 'SOCIAL_LOGIN_REQUIRED', 
+            message: `This account uses ${providerName} login. Please sign in with ${providerName} instead.`,
+            provider: user.oauthProvider.toLowerCase()
+          },
+          { status: 401 }
+        )
+      }
       return NextResponse.json(
         { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password' },
         { status: 401 }
@@ -58,9 +70,75 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Determine scope based on tenant membership
-    const isPlatformScope = user.tenantId && user.tenant?.atiId === 'PLATFORM'
-    const isTenantScope = user.tenantId && user.tenant?.atiId !== 'PLATFORM'
+    // Check if this is a social login user (OAuth users don't need ATI token validation)
+    const isSocialLogin = !!user.oauthProvider
+
+    let isPlatformScope = false
+    let isTenantScope = false
+
+    if (isSocialLogin) {
+      // For social login users, determine scope based on tenant membership
+      isPlatformScope = !!(user.tenantId && user.tenant?.atiId === 'PLATFORM')
+      isTenantScope = !!(user.tenantId && user.tenant?.atiId !== 'PLATFORM')
+    } else {
+      // For regular users, validate ATI token first
+      isPlatformScope = !!(user.tenantId && user.tenant?.atiId === 'PLATFORM')
+      isTenantScope = !!(user.tenantId && user.tenant?.atiId !== 'PLATFORM')
+
+      // Validate ATI token based on scope for non-social users
+      if (!user.signupAtiTokenId) {
+        const scopeType = isPlatformScope ? 'platform' : 'tenant'
+        return NextResponse.json(
+          { code: 'MISSING_SIGNUP_TOKEN', message: `User ${scopeType} ATI token not found. Please contact your administrator.` },
+          { status: 401 }
+        )
+      }
+
+      const signupToken = await prisma.aTIToken.findUnique({
+        where: { id: user.signupAtiTokenId },
+        include: { tenant: true }
+      })
+
+      if (!signupToken) {
+        return NextResponse.json(
+          { code: 'SIGNUP_TOKEN_NOT_FOUND', message: 'User signup ATI token not found. Please contact your administrator.' },
+          { status: 401 }
+        )
+      }
+
+      // Verify token belongs to the correct scope
+      const tokenScope = signupToken.tenant?.atiId === 'PLATFORM' ? 'platform' : 'tenant'
+      const userScope = isPlatformScope ? 'platform' : 'tenant'
+
+      if (tokenScope !== userScope) {
+        return NextResponse.json(
+          { code: 'SCOPE_MISMATCH', message: 'ATI token scope does not match user scope.' },
+          { status: 401 }
+        )
+      }
+
+      // Check if signup token is still valid
+      if (signupToken.status === 'REVOKED') {
+        return NextResponse.json(
+          { code: 'SIGNUP_TOKEN_REVOKED', message: 'Your signup ATI token has been revoked. Please contact your administrator.' },
+          { status: 401 }
+        )
+      }
+
+      if (signupToken.status === 'EXPIRED' || (signupToken.expiresAt && new Date() > signupToken.expiresAt)) {
+        return NextResponse.json(
+          { code: 'SIGNUP_TOKEN_EXPIRED', message: 'Your signup ATI token has expired. Please contact your administrator.' },
+          { status: 401 }
+        )
+      }
+
+      if (signupToken.status === 'USED_UP' || (signupToken.maxUses && signupToken.usageCount >= signupToken.maxUses)) {
+        return NextResponse.json(
+          { code: 'SIGNUP_TOKEN_USED_UP', message: 'Your signup ATI token usage limit has been reached. Please contact your administrator.' },
+          { status: 401 }
+        )
+      }
+    }
 
     // Validate scope: every user must have exactly one scope
     if (!isPlatformScope && !isTenantScope) {
@@ -75,60 +153,6 @@ export async function POST(request: NextRequest) {
       const scopeType = isPlatformScope ? 'platform' : 'tenant'
       return NextResponse.json(
         { code: 'SCOPE_INACTIVE', message: `${scopeType} scope is inactive. Please contact administrator.` },
-        { status: 401 }
-      )
-    }
-
-    // Validate ATI token based on scope
-    if (!user.signupAtiTokenId) {
-      const scopeType = isPlatformScope ? 'platform' : 'tenant'
-      return NextResponse.json(
-        { code: 'MISSING_SIGNUP_TOKEN', message: `User ${scopeType} ATI token not found. Please contact your administrator.` },
-        { status: 401 }
-      )
-    }
-
-    const signupToken = await prisma.aTIToken.findUnique({
-      where: { id: user.signupAtiTokenId },
-      include: { tenant: true }
-    })
-
-    if (!signupToken) {
-      return NextResponse.json(
-        { code: 'SIGNUP_TOKEN_NOT_FOUND', message: 'User signup ATI token not found. Please contact your administrator.' },
-        { status: 401 }
-      )
-    }
-
-    // Verify token belongs to the correct scope
-    const tokenScope = signupToken.tenant?.atiId === 'PLATFORM' ? 'platform' : 'tenant'
-    const userScope = isPlatformScope ? 'platform' : 'tenant'
-
-    if (tokenScope !== userScope) {
-      return NextResponse.json(
-        { code: 'SCOPE_MISMATCH', message: 'ATI token scope does not match user scope.' },
-        { status: 401 }
-      )
-    }
-
-    // Check if signup token is still valid
-    if (signupToken.status === 'REVOKED') {
-      return NextResponse.json(
-        { code: 'SIGNUP_TOKEN_REVOKED', message: 'Your signup ATI token has been revoked. Please contact your administrator.' },
-        { status: 401 }
-      )
-    }
-
-    if (signupToken.status === 'EXPIRED' || (signupToken.expiresAt && new Date() > signupToken.expiresAt)) {
-      return NextResponse.json(
-        { code: 'SIGNUP_TOKEN_EXPIRED', message: 'Your signup ATI token has expired. Please contact your administrator.' },
-        { status: 401 }
-      )
-    }
-
-    if (signupToken.status === 'USED_UP' || (signupToken.maxUses && signupToken.usageCount >= signupToken.maxUses)) {
-      return NextResponse.json(
-        { code: 'SIGNUP_TOKEN_USED_UP', message: 'Your signup ATI token usage limit has been reached. Please contact your administrator.' },
         { status: 401 }
       )
     }

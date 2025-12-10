@@ -18,6 +18,11 @@ interface SupersetSection {
   isRequired: boolean
   isActive: boolean
   mappingCount: number
+  // Context injection flags (base defaults for all countries)
+  requiresPriorArt: boolean
+  requiresFigures: boolean
+  requiresClaims: boolean
+  requiresComponents: boolean
 }
 
 interface CountryConfig {
@@ -38,6 +43,11 @@ interface MatrixRow {
   isActive: boolean
   baseInstruction: string
   baseConstraints: string[]
+  // Base context flags from superset section
+  requiresPriorArt: boolean
+  requiresFigures: boolean
+  requiresClaims: boolean
+  requiresComponents: boolean
   countries: Record<string, {
     mapped: boolean
     enabled: boolean
@@ -45,6 +55,11 @@ interface MatrixRow {
     heading: string | null
     hasPrompt: boolean
     promptVersion: number | null
+    // Context override flags (null = use superset default)
+    requiresPriorArtOverride: boolean | null
+    requiresFiguresOverride: boolean | null
+    requiresClaimsOverride: boolean | null
+    requiresComponentsOverride: boolean | null
   }>
 }
 
@@ -731,6 +746,12 @@ function AddSectionModal({
   const [isRequired, setIsRequired] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  
+  // Context injection flags (defaults for new section)
+  const [requiresPriorArt, setRequiresPriorArt] = useState(false)
+  const [requiresFigures, setRequiresFigures] = useState(false)
+  const [requiresClaims, setRequiresClaims] = useState(false)
+  const [requiresComponents, setRequiresComponents] = useState(false)
 
   const handleSubmit = async () => {
     if (!sectionKey || !label || !instruction) {
@@ -762,7 +783,12 @@ function AddSectionModal({
           description: description || null,
           instruction,
           constraints: [],
-          isRequired
+          isRequired,
+          // Context injection flags
+          requiresPriorArt,
+          requiresFigures,
+          requiresClaims,
+          requiresComponents
         })
       })
 
@@ -855,6 +881,56 @@ function AddSectionModal({
           <span className="text-slate-300">Required by default for all countries</span>
         </label>
 
+        {/* Context Injection Defaults */}
+        <div className="bg-slate-700/30 rounded-lg p-4 border border-slate-600">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-lg">🔧</span>
+            <h4 className="text-white font-medium text-sm">Context Injection Defaults</h4>
+          </div>
+          <p className="text-xs text-slate-400 mb-3">
+            What data should be injected into this section's AI prompt?
+          </p>
+          
+          <div className="grid grid-cols-2 gap-3">
+            <label className="flex items-center gap-2 bg-slate-800/50 rounded p-2 cursor-pointer hover:bg-slate-800/70">
+              <input
+                type="checkbox"
+                checked={requiresPriorArt}
+                onChange={(e) => setRequiresPriorArt(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-600 text-emerald-500"
+              />
+              <span className="text-slate-300 text-sm">📚 Prior Art</span>
+            </label>
+            <label className="flex items-center gap-2 bg-slate-800/50 rounded p-2 cursor-pointer hover:bg-slate-800/70">
+              <input
+                type="checkbox"
+                checked={requiresFigures}
+                onChange={(e) => setRequiresFigures(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-600 text-emerald-500"
+              />
+              <span className="text-slate-300 text-sm">🖼️ Figures</span>
+            </label>
+            <label className="flex items-center gap-2 bg-slate-800/50 rounded p-2 cursor-pointer hover:bg-slate-800/70">
+              <input
+                type="checkbox"
+                checked={requiresClaims}
+                onChange={(e) => setRequiresClaims(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-600 text-emerald-500"
+              />
+              <span className="text-slate-300 text-sm">📋 Claims</span>
+            </label>
+            <label className="flex items-center gap-2 bg-slate-800/50 rounded p-2 cursor-pointer hover:bg-slate-800/70">
+              <input
+                type="checkbox"
+                checked={requiresComponents}
+                onChange={(e) => setRequiresComponents(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-600 text-emerald-500"
+              />
+              <span className="text-slate-300 text-sm">⚙️ Components</span>
+            </label>
+          </div>
+        </div>
+
         <div className="flex justify-end gap-3 pt-4 border-t border-slate-700">
           <button onClick={onClose} className="px-4 py-2 text-slate-300 hover:text-white">
             Cancel
@@ -890,8 +966,50 @@ function EditSectionModal({
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState('')
+  
+  // Context injection flags (base defaults for all countries)
+  const [requiresPriorArt, setRequiresPriorArt] = useState(section.requiresPriorArt ?? false)
+  const [requiresFigures, setRequiresFigures] = useState(section.requiresFigures ?? false)
+  const [requiresClaims, setRequiresClaims] = useState(section.requiresClaims ?? false)
+  const [requiresComponents, setRequiresComponents] = useState(section.requiresComponents ?? false)
 
   const handleSave = async () => {
+    // Check if context injection flags changed
+    const contextFlagsChanged = 
+      requiresPriorArt !== (section.requiresPriorArt ?? false) ||
+      requiresFigures !== (section.requiresFigures ?? false) ||
+      requiresClaims !== (section.requiresClaims ?? false) ||
+      requiresComponents !== (section.requiresComponents ?? false)
+
+    // Warn if global defaults changed and there are mapped countries
+    if (contextFlagsChanged && section.mappingCount > 0) {
+      const changedFlags: string[] = []
+      if (requiresPriorArt !== (section.requiresPriorArt ?? false)) {
+        changedFlags.push(`Prior Art: ${requiresPriorArt ? 'ON' : 'OFF'}`)
+      }
+      if (requiresFigures !== (section.requiresFigures ?? false)) {
+        changedFlags.push(`Figures: ${requiresFigures ? 'ON' : 'OFF'}`)
+      }
+      if (requiresClaims !== (section.requiresClaims ?? false)) {
+        changedFlags.push(`Claims: ${requiresClaims ? 'ON' : 'OFF'}`)
+      }
+      if (requiresComponents !== (section.requiresComponents ?? false)) {
+        changedFlags.push(`Components: ${requiresComponents ? 'ON' : 'OFF'}`)
+      }
+
+      const confirmed = confirm(
+        `⚠️ GLOBAL CHANGE WARNING\n\n` +
+        `You are changing context injection defaults for "${section.label}":\n` +
+        `${changedFlags.map(f => `  • ${f}`).join('\n')}\n\n` +
+        `This will affect up to ${section.mappingCount} country mapping(s) that don't have overrides.\n\n` +
+        `Are you sure you want to proceed?`
+      )
+
+      if (!confirmed) {
+        return
+      }
+    }
+
     setSaving(true)
     setError('')
 
@@ -910,13 +1028,24 @@ function EditSectionModal({
           description: description || null,
           instruction,
           isRequired,
-          isActive
+          isActive,
+          // Context injection flags
+          requiresPriorArt,
+          requiresFigures,
+          requiresClaims,
+          requiresComponents
         })
       })
 
+      const result = await response.json()
+
       if (!response.ok) {
-        const err = await response.json()
-        throw new Error(err.error || 'Failed to update section')
+        throw new Error(result.error || 'Failed to update section')
+      }
+
+      // Show warning if API returned one
+      if (result.warning) {
+        alert(`✓ Section updated.\n\n⚠️ ${result.warning}`)
       }
 
       onSuccess()
@@ -1035,6 +1164,80 @@ function EditSectionModal({
           </label>
         </div>
 
+        {/* Context Injection Defaults - applies to ALL countries */}
+        <div className="bg-slate-700/30 rounded-lg p-4 border border-slate-600">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-lg">🔧</span>
+            <h4 className="text-white font-medium">Context Injection Defaults</h4>
+          </div>
+          <p className="text-xs text-slate-400 mb-4">
+            Select what data should be injected into this section's AI prompt by default. 
+            These apply to ALL countries unless overridden at the country level.
+          </p>
+          
+          <div className="grid grid-cols-2 gap-4">
+            {/* Prior Art */}
+            <label className="flex items-center gap-3 bg-slate-800/50 rounded-lg p-3 cursor-pointer hover:bg-slate-800/70 transition">
+              <input
+                type="checkbox"
+                checked={requiresPriorArt}
+                onChange={(e) => setRequiresPriorArt(e.target.checked)}
+                className="w-5 h-5 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500"
+              />
+              <div>
+                <div className="text-slate-200 text-sm font-medium">📚 Prior Art</div>
+                <div className="text-xs text-slate-500">Related patents, manual prior art</div>
+              </div>
+            </label>
+
+            {/* Figures */}
+            <label className="flex items-center gap-3 bg-slate-800/50 rounded-lg p-3 cursor-pointer hover:bg-slate-800/70 transition">
+              <input
+                type="checkbox"
+                checked={requiresFigures}
+                onChange={(e) => setRequiresFigures(e.target.checked)}
+                className="w-5 h-5 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500"
+              />
+              <div>
+                <div className="text-slate-200 text-sm font-medium">🖼️ Figures</div>
+                <div className="text-xs text-slate-500">Figure plans, sketches, diagrams</div>
+              </div>
+            </label>
+
+            {/* Claims */}
+            <label className="flex items-center gap-3 bg-slate-800/50 rounded-lg p-3 cursor-pointer hover:bg-slate-800/70 transition">
+              <input
+                type="checkbox"
+                checked={requiresClaims}
+                onChange={(e) => setRequiresClaims(e.target.checked)}
+                className="w-5 h-5 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500"
+              />
+              <div>
+                <div className="text-slate-200 text-sm font-medium">📋 Claims</div>
+                <div className="text-xs text-slate-500">Patent claims text</div>
+              </div>
+            </label>
+
+            {/* Components */}
+            <label className="flex items-center gap-3 bg-slate-800/50 rounded-lg p-3 cursor-pointer hover:bg-slate-800/70 transition">
+              <input
+                type="checkbox"
+                checked={requiresComponents}
+                onChange={(e) => setRequiresComponents(e.target.checked)}
+                className="w-5 h-5 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500"
+              />
+              <div>
+                <div className="text-slate-200 text-sm font-medium">⚙️ Components</div>
+                <div className="text-xs text-slate-500">Component list with numerals</div>
+              </div>
+            </label>
+          </div>
+
+          <div className="mt-3 pt-3 border-t border-slate-600 text-xs text-slate-500">
+            💡 Countries can override these defaults in their individual mappings
+          </div>
+        </div>
+
         <div className="flex justify-between pt-4 border-t border-slate-700">
           <button
             onClick={handleDelete}
@@ -1092,6 +1295,21 @@ function MappingDetailsModal({
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   
+  // Context override flags state (null = use superset default, true/false = override)
+  const countryCell = section?.countries[countryCode]
+  const [requiresPriorArtOverride, setRequiresPriorArtOverride] = useState<boolean | null>(
+    countryCell?.requiresPriorArtOverride ?? null
+  )
+  const [requiresFiguresOverride, setRequiresFiguresOverride] = useState<boolean | null>(
+    countryCell?.requiresFiguresOverride ?? null
+  )
+  const [requiresClaimsOverride, setRequiresClaimsOverride] = useState<boolean | null>(
+    countryCell?.requiresClaimsOverride ?? null
+  )
+  const [requiresComponentsOverride, setRequiresComponentsOverride] = useState<boolean | null>(
+    countryCell?.requiresComponentsOverride ?? null
+  )
+  
   // Prompt editing state
   const [activeTab, setActiveTab] = useState<'mapping' | 'prompt'>('mapping')
   const [promptInstruction, setPromptInstruction] = useState(existingPrompt?.instruction || '')
@@ -1129,21 +1347,34 @@ function MappingDetailsModal({
           heading,
           isRequired,
           isEnabled,
-          displayOrder: countryDisplayOrder ?? section?.displayOrder
+          displayOrder: countryDisplayOrder ?? section?.displayOrder,
+          // Context override flags
+          requiresPriorArtOverride,
+          requiresFiguresOverride,
+          requiresClaimsOverride,
+          requiresComponentsOverride
         })
       })
 
+      const result = await response.json()
+      
       if (!response.ok) {
-        const err = await response.json()
-        throw new Error(err.error || 'Failed to save mapping')
+        throw new Error(result.error || 'Failed to save mapping')
       }
 
-      setSuccess(isNew 
+      // Build success message with any warnings
+      let successMsg = isNew 
         ? `✓ Mapping created successfully for ${country?.name || countryCode} → ${section?.label}`
-        : `✓ Mapping updated successfully for ${country?.name || countryCode} → ${section?.label}`)
+        : `✓ Mapping updated successfully for ${country?.name || countryCode} → ${section?.label}`
       
-      // Auto-close after showing success
-      setTimeout(() => onSuccess(), 1500)
+      if (result.warnings && result.warnings.length > 0) {
+        successMsg += `\n⚠️ Note: ${result.warnings.join('; ')}`
+      }
+      
+      setSuccess(successMsg)
+      
+      // Auto-close after showing success (longer if warnings)
+      setTimeout(() => onSuccess(), result.warnings?.length ? 3000 : 1500)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save mapping')
     } finally {
@@ -1263,11 +1494,17 @@ function MappingDetailsModal({
       <div className="space-y-4">
         {/* Success Message */}
         {success && (
-          <div className="bg-emerald-500/20 border border-emerald-500/30 rounded-lg p-3 text-emerald-400 text-sm flex items-center gap-2">
-            <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            {success}
+          <div className={`rounded-lg p-3 text-sm ${
+            success.includes('⚠️') 
+              ? 'bg-amber-500/20 border border-amber-500/30 text-amber-400' 
+              : 'bg-emerald-500/20 border border-emerald-500/30 text-emerald-400'
+          }`}>
+            <div className="flex items-start gap-2">
+              <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div className="whitespace-pre-line">{success}</div>
+            </div>
           </div>
         )}
         
@@ -1397,6 +1634,198 @@ function MappingDetailsModal({
                 />
                 <span className="text-slate-300">Required section</span>
               </label>
+            </div>
+
+            {/* Context Injection Overrides */}
+            <div className="bg-slate-700/30 rounded-lg p-4 border border-slate-600">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-lg">🔧</span>
+                <h4 className="text-white font-medium">Context Injection Overrides</h4>
+              </div>
+              <p className="text-xs text-slate-400 mb-4">
+                Override what data gets injected into this section for {country?.name || countryCode}. 
+                Use "Default" to inherit from the superset section settings.
+              </p>
+              
+              <div className="grid grid-cols-2 gap-4">
+                {/* Prior Art Override */}
+                <div className="bg-slate-800/50 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-slate-300 text-sm font-medium">📚 Prior Art</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      section?.requiresPriorArt ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-600 text-slate-400'
+                    }`}>
+                      Base: {section?.requiresPriorArt ? 'ON' : 'OFF'}
+                    </span>
+                  </div>
+                  <select
+                    value={requiresPriorArtOverride === null ? 'default' : requiresPriorArtOverride ? 'true' : 'false'}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      setRequiresPriorArtOverride(val === 'default' ? null : val === 'true')
+                    }}
+                    className="w-full px-2 py-1.5 bg-slate-700 border border-slate-600 rounded text-white text-sm focus:border-amber-500"
+                  >
+                    <option value="default">Default (use superset)</option>
+                    <option value="true">✓ Inject Prior Art</option>
+                    <option value="false">✗ Don't Inject</option>
+                  </select>
+                </div>
+
+                {/* Figures Override */}
+                <div className="bg-slate-800/50 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-slate-300 text-sm font-medium">🖼️ Figures</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      section?.requiresFigures ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-600 text-slate-400'
+                    }`}>
+                      Base: {section?.requiresFigures ? 'ON' : 'OFF'}
+                    </span>
+                  </div>
+                  <select
+                    value={requiresFiguresOverride === null ? 'default' : requiresFiguresOverride ? 'true' : 'false'}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      setRequiresFiguresOverride(val === 'default' ? null : val === 'true')
+                    }}
+                    className="w-full px-2 py-1.5 bg-slate-700 border border-slate-600 rounded text-white text-sm focus:border-amber-500"
+                  >
+                    <option value="default">Default (use superset)</option>
+                    <option value="true">✓ Inject Figures</option>
+                    <option value="false">✗ Don't Inject</option>
+                  </select>
+                </div>
+
+                {/* Claims Override */}
+                <div className="bg-slate-800/50 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-slate-300 text-sm font-medium">📋 Claims</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      section?.requiresClaims ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-600 text-slate-400'
+                    }`}>
+                      Base: {section?.requiresClaims ? 'ON' : 'OFF'}
+                    </span>
+                  </div>
+                  <select
+                    value={requiresClaimsOverride === null ? 'default' : requiresClaimsOverride ? 'true' : 'false'}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      setRequiresClaimsOverride(val === 'default' ? null : val === 'true')
+                    }}
+                    className="w-full px-2 py-1.5 bg-slate-700 border border-slate-600 rounded text-white text-sm focus:border-amber-500"
+                  >
+                    <option value="default">Default (use superset)</option>
+                    <option value="true">✓ Inject Claims</option>
+                    <option value="false">✗ Don't Inject</option>
+                  </select>
+                </div>
+
+                {/* Components Override */}
+                <div className="bg-slate-800/50 rounded-lg p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-slate-300 text-sm font-medium">⚙️ Components</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      section?.requiresComponents ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-600 text-slate-400'
+                    }`}>
+                      Base: {section?.requiresComponents ? 'ON' : 'OFF'}
+                    </span>
+                  </div>
+                  <select
+                    value={requiresComponentsOverride === null ? 'default' : requiresComponentsOverride ? 'true' : 'false'}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      setRequiresComponentsOverride(val === 'default' ? null : val === 'true')
+                    }}
+                    className="w-full px-2 py-1.5 bg-slate-700 border border-slate-600 rounded text-white text-sm focus:border-amber-500"
+                  >
+                    <option value="default">Default (use superset)</option>
+                    <option value="true">✓ Inject Components</option>
+                    <option value="false">✗ Don't Inject</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Effective values summary */}
+              <div className="mt-3 pt-3 border-t border-slate-600">
+                <div className="text-xs text-slate-400 mb-2">Effective values for this country/section:</div>
+                <div className="flex flex-wrap gap-2">
+                  {/* Prior Art - with override indicator */}
+                  {(() => {
+                    const baseVal = section?.requiresPriorArt ?? false
+                    const effectiveVal = requiresPriorArtOverride ?? baseVal
+                    const isOverridden = requiresPriorArtOverride !== null
+                    return (
+                      <span className={`text-xs px-2 py-1 rounded ${
+                        effectiveVal ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700 text-slate-500'
+                      } ${isOverridden ? 'ring-1 ring-amber-500/50' : ''}`}
+                        title={isOverridden ? `Override active (base: ${baseVal ? 'ON' : 'OFF'})` : 'Using superset default'}
+                      >
+                        📚 Prior Art: {effectiveVal ? 'YES' : 'NO'}
+                        {isOverridden && <span className="ml-1 text-amber-400">*</span>}
+                      </span>
+                    )
+                  })()}
+                  
+                  {/* Figures - with override indicator */}
+                  {(() => {
+                    const baseVal = section?.requiresFigures ?? false
+                    const effectiveVal = requiresFiguresOverride ?? baseVal
+                    const isOverridden = requiresFiguresOverride !== null
+                    return (
+                      <span className={`text-xs px-2 py-1 rounded ${
+                        effectiveVal ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700 text-slate-500'
+                      } ${isOverridden ? 'ring-1 ring-amber-500/50' : ''}`}
+                        title={isOverridden ? `Override active (base: ${baseVal ? 'ON' : 'OFF'})` : 'Using superset default'}
+                      >
+                        🖼️ Figures: {effectiveVal ? 'YES' : 'NO'}
+                        {isOverridden && <span className="ml-1 text-amber-400">*</span>}
+                      </span>
+                    )
+                  })()}
+                  
+                  {/* Claims - with override indicator */}
+                  {(() => {
+                    const baseVal = section?.requiresClaims ?? false
+                    const effectiveVal = requiresClaimsOverride ?? baseVal
+                    const isOverridden = requiresClaimsOverride !== null
+                    return (
+                      <span className={`text-xs px-2 py-1 rounded ${
+                        effectiveVal ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700 text-slate-500'
+                      } ${isOverridden ? 'ring-1 ring-amber-500/50' : ''}`}
+                        title={isOverridden ? `Override active (base: ${baseVal ? 'ON' : 'OFF'})` : 'Using superset default'}
+                      >
+                        📋 Claims: {effectiveVal ? 'YES' : 'NO'}
+                        {isOverridden && <span className="ml-1 text-amber-400">*</span>}
+                      </span>
+                    )
+                  })()}
+                  
+                  {/* Components - with override indicator */}
+                  {(() => {
+                    const baseVal = section?.requiresComponents ?? false
+                    const effectiveVal = requiresComponentsOverride ?? baseVal
+                    const isOverridden = requiresComponentsOverride !== null
+                    return (
+                      <span className={`text-xs px-2 py-1 rounded ${
+                        effectiveVal ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700 text-slate-500'
+                      } ${isOverridden ? 'ring-1 ring-amber-500/50' : ''}`}
+                        title={isOverridden ? `Override active (base: ${baseVal ? 'ON' : 'OFF'})` : 'Using superset default'}
+                      >
+                        ⚙️ Components: {effectiveVal ? 'YES' : 'NO'}
+                        {isOverridden && <span className="ml-1 text-amber-400">*</span>}
+                      </span>
+                    )
+                  })()}
+                </div>
+                
+                {/* Legend for override indicators */}
+                {(requiresPriorArtOverride !== null || requiresFiguresOverride !== null || 
+                  requiresClaimsOverride !== null || requiresComponentsOverride !== null) && (
+                  <div className="text-xs text-amber-400/70 mt-2 flex items-center gap-1">
+                    <span>*</span> = override active (differs from superset default)
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="flex justify-between pt-4 border-t border-slate-700">

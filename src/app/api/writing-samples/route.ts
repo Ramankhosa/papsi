@@ -1,44 +1,104 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { authenticateUser } from '@/lib/auth-middleware'
 import { prisma } from '@/lib/prisma'
+import { SECTION_WORD_LIMITS, DEFAULT_LIMITS, MAX_CHARS } from './limits/route'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-// Validation constants
-const MIN_WORDS = 10
-const MAX_WORDS = 200
-const MAX_CHARS = 1500
+// Get limits for a specific section
+function getSectionLimits(sectionKey: string) {
+  return SECTION_WORD_LIMITS[sectionKey] || DEFAULT_LIMITS
+}
 
-// Canonical section keys that support writing samples
-const VALID_SECTION_KEYS = [
-  'title',
-  'fieldOfInvention',
-  'background',
-  'objectsOfInvention',
-  'summary',
-  'briefDescriptionOfDrawings',
-  'detailedDescription',
-  'claims',
-  'abstract',
-  'technicalProblem',
-  'technicalSolution',
-  'advantageousEffects',
-  'industrialApplicability',
-  'bestMethod',
-  'preamble',
-  'crossReference'
-]
-
-// Helper to count words
+// Helper to count words (handles multi-language content)
 function countWords(text: string): number {
+  if (!text || typeof text !== 'string') return 0
+  // Clean up excessive whitespace and count meaningful words
   return text.trim().split(/\s+/).filter(w => w.length > 0).length
 }
 
 // Helper to validate jurisdiction
 function isValidJurisdiction(j: string): boolean {
+  if (!j || typeof j !== 'string') return false
   // "*" for universal, or 2-3 letter country codes
   return j === '*' || /^[A-Z]{2,3}$/.test(j.toUpperCase())
+}
+
+// Fetch valid section keys dynamically from database
+async function getValidSectionKeys(): Promise<string[]> {
+  try {
+    // Get section keys from superset sections (source of truth)
+    const sections = await prisma.supersetSection.findMany({
+      where: { isActive: true },
+      select: { sectionKey: true }
+    })
+    
+    if (sections.length > 0) {
+      return sections.map(s => s.sectionKey)
+    }
+    
+    // Fallback to hardcoded list if DB query fails or empty
+    return Object.keys(SECTION_WORD_LIMITS)
+  } catch (error) {
+    console.warn('[WritingSamples] Failed to fetch section keys from DB, using fallback')
+    return Object.keys(SECTION_WORD_LIMITS)
+  }
+}
+
+// Validate sample text content
+function validateSampleText(
+  sampleText: string, 
+  sectionKey: string
+): { valid: boolean; error?: string; warning?: string; wordCount: number } {
+  if (!sampleText || typeof sampleText !== 'string') {
+    return { valid: false, error: 'Sample text is required', wordCount: 0 }
+  }
+  
+  const trimmedText = sampleText.trim()
+  
+  if (trimmedText.length === 0) {
+    return { valid: false, error: 'Sample text cannot be empty', wordCount: 0 }
+  }
+  
+  const wordCount = countWords(trimmedText)
+  const limits = getSectionLimits(sectionKey)
+  
+  // Hard validation - reject if outside absolute limits
+  if (wordCount < limits.min) {
+    return { 
+      valid: false, 
+      error: `Sample too short for ${sectionKey}. Minimum ${limits.min} words required (you have ${wordCount} words)`,
+      wordCount 
+    }
+  }
+  
+  if (wordCount > limits.max) {
+    return { 
+      valid: false, 
+      error: `Sample too long for ${sectionKey}. Maximum ${limits.max} words allowed (you have ${wordCount} words). Try using a more concise example.`,
+      wordCount 
+    }
+  }
+  
+  // Character limit (generous but prevents abuse)
+  if (trimmedText.length > MAX_CHARS) {
+    return { 
+      valid: false, 
+      error: `Sample exceeds maximum character limit (${MAX_CHARS}). Please use a shorter example.`,
+      wordCount 
+    }
+  }
+  
+  // Soft validation - warn if outside recommended range
+  let warning: string | undefined
+  if (wordCount < limits.recommended.min) {
+    warning = `Sample is shorter than recommended (${limits.recommended.min}-${limits.recommended.max} words). It may not provide enough context for the AI to learn your style.`
+  } else if (wordCount > limits.recommended.max) {
+    warning = `Sample is longer than recommended (${limits.recommended.min}-${limits.recommended.max} words). The AI works best with focused examples.`
+  }
+  
+  return { valid: true, warning, wordCount }
 }
 
 /**
@@ -141,6 +201,11 @@ export async function GET(request: NextRequest) {
 /**
  * POST /api/writing-samples
  * Create or update a writing sample
+ * 
+ * Supports:
+ * - Personal samples (no personaId) 
+ * - Persona-linked samples (with personaId)
+ * - Permission checking for org personas
  */
 export async function POST(request: NextRequest) {
   try {
@@ -149,13 +214,33 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const body = await request.json()
-    const { jurisdiction, sectionKey, sampleText, notes, isActive } = body
-
-    // Validation
-    if (!jurisdiction || !sectionKey || !sampleText) {
+    let body: any
+    try {
+      body = await request.json()
+    } catch (parseError) {
       return NextResponse.json({ 
-        error: 'jurisdiction, sectionKey, and sampleText are required' 
+        error: 'Invalid request body. Please send valid JSON.' 
+      }, { status: 400 })
+    }
+
+    const { jurisdiction, sectionKey, sampleText, notes, isActive, personaId, personaName: providedPersonaName } = body
+
+    // === BASIC VALIDATION ===
+    if (!jurisdiction || typeof jurisdiction !== 'string') {
+      return NextResponse.json({ 
+        error: 'jurisdiction is required (e.g., "IN", "US", "*" for universal)' 
+      }, { status: 400 })
+    }
+    
+    if (!sectionKey || typeof sectionKey !== 'string') {
+      return NextResponse.json({ 
+        error: 'sectionKey is required (e.g., "claims", "abstract", "detailedDescription")' 
+      }, { status: 400 })
+    }
+    
+    if (!sampleText) {
+      return NextResponse.json({ 
+        error: 'sampleText is required' 
       }, { status: 400 })
     }
 
@@ -163,58 +248,98 @@ export async function POST(request: NextRequest) {
     
     if (!isValidJurisdiction(normalizedJurisdiction)) {
       return NextResponse.json({ 
-        error: 'Invalid jurisdiction. Use "*" for universal or 2-3 letter country code (e.g., "US", "IN", "EP")' 
+        error: 'Invalid jurisdiction. Use "*" for universal or 2-3 letter country code (e.g., "US", "IN", "EP", "PCT")' 
       }, { status: 400 })
     }
 
-    if (!VALID_SECTION_KEYS.includes(sectionKey)) {
+    // === VALIDATE SECTION KEY (Dynamic from DB) ===
+    const validSectionKeys = await getValidSectionKeys()
+    if (!validSectionKeys.includes(sectionKey)) {
+      // Be permissive - log warning but allow unknown sections
+      console.warn(`[WritingSamples] Unknown section key "${sectionKey}" - allowing but may not be used`)
+    }
+
+    // === VALIDATE SAMPLE TEXT CONTENT ===
+    const validation = validateSampleText(sampleText, sectionKey)
+    if (!validation.valid) {
       return NextResponse.json({ 
-        error: `Invalid sectionKey. Valid keys: ${VALID_SECTION_KEYS.join(', ')}` 
+        error: validation.error,
+        wordCount: validation.wordCount,
+        limits: getSectionLimits(sectionKey)
       }, { status: 400 })
     }
 
     const trimmedText = sampleText.trim()
-    const wordCount = countWords(trimmedText)
+    const wordCount = validation.wordCount
 
-    if (wordCount < MIN_WORDS) {
-      return NextResponse.json({ 
-        error: `Sample too short. Minimum ${MIN_WORDS} words required (currently ${wordCount} words)` 
-      }, { status: 400 })
-    }
+    // === PERSONA PERMISSION CHECK ===
+    let targetPersonaId = personaId || null
+    let effectivePersonaName = providedPersonaName || 'Default'
+    let isOrgPersonaSample = false
 
-    if (wordCount > MAX_WORDS) {
-      return NextResponse.json({ 
-        error: `Sample too long. Maximum ${MAX_WORDS} words allowed (currently ${wordCount} words)` 
-      }, { status: 400 })
-    }
-
-    if (trimmedText.length > MAX_CHARS) {
-      return NextResponse.json({ 
-        error: `Sample too long. Maximum ${MAX_CHARS} characters allowed` 
-      }, { status: 400 })
-    }
-
-    // Get personaId from request (optional) - required for the unique constraint
-    const { personaId, personaName: providedPersonaName } = body
-    const effectivePersonaName = providedPersonaName || 'Default'
-
-    // Upsert the sample - note: unique key includes personaId
-    // For samples without a persona (personaId = null), use findFirst
-    let existing
     if (personaId) {
+      // Verify persona exists and user has access
+      const persona = await prisma.writingPersona.findFirst({
+        where: {
+          id: personaId,
+          isActive: true,
+          OR: [
+            { createdBy: authResult.user.id }, // User's own persona
+            { 
+              tenantId: authResult.user.tenantId, 
+              visibility: 'ORGANIZATION' 
+            } // Org persona
+          ]
+        },
+        select: { 
+          id: true, 
+          name: true, 
+          createdBy: true, 
+          visibility: true,
+          tenantId: true 
+        }
+      })
+
+      if (!persona) {
+        return NextResponse.json({ 
+          error: 'Persona not found or you do not have access to it',
+          code: 'PERSONA_NOT_FOUND'
+        }, { status: 404 })
+      }
+
+      // Check if this is an org persona they don't own
+      isOrgPersonaSample = persona.visibility === 'ORGANIZATION' && persona.createdBy !== authResult.user.id
+      
+      // For org personas: only the creator can add/edit samples
+      // This prevents random users from modifying shared persona samples
+      if (isOrgPersonaSample) {
+        return NextResponse.json({ 
+          error: 'You cannot add samples to organization personas you did not create. Copy the persona first to create your own version.',
+          code: 'ORG_PERSONA_READONLY'
+        }, { status: 403 })
+      }
+
+      effectivePersonaName = persona.name
+    }
+
+    // === UPSERT SAMPLE ===
+    // Handle the unique constraint properly for null personaId case
+    let existing
+    if (targetPersonaId) {
       // With persona - use compound unique key
       existing = await prisma.writingSample.findUnique({
         where: {
           userId_jurisdiction_personaId_sectionKey: {
             userId: authResult.user.id,
             jurisdiction: normalizedJurisdiction,
-            personaId,
+            personaId: targetPersonaId,
             sectionKey
           }
         }
       })
     } else {
       // Without persona - find any sample without a persona for this user/jurisdiction/section
+      // Note: NULL personaId doesn't participate in unique constraint properly in some DBs
       existing = await prisma.writingSample.findFirst({
         where: {
           userId: authResult.user.id,
@@ -234,7 +359,8 @@ export async function POST(request: NextRequest) {
           notes: notes?.trim() || null,
           wordCount,
           personaName: effectivePersonaName,
-          isActive: isActive !== undefined ? isActive : true
+          isActive: isActive !== undefined ? isActive : true,
+          updatedAt: new Date()
         }
       })
     } else {
@@ -242,7 +368,7 @@ export async function POST(request: NextRequest) {
         data: {
           userId: authResult.user.id,
           tenantId: authResult.user.tenantId || 'default',
-          personaId: personaId || null,
+          personaId: targetPersonaId,
           personaName: effectivePersonaName,
           jurisdiction: normalizedJurisdiction,
           sectionKey,
@@ -254,14 +380,34 @@ export async function POST(request: NextRequest) {
       })
     }
 
-    return NextResponse.json({
+    const response: any = {
       success: true,
       sample: result,
-      message: `Writing sample ${existing ? 'updated' : 'created'} for ${sectionKey} (${normalizedJurisdiction === '*' ? 'universal' : normalizedJurisdiction})`
-    })
-  } catch (error) {
+      message: `Writing sample ${existing ? 'updated' : 'created'} for ${sectionKey} (${normalizedJurisdiction === '*' ? 'universal' : normalizedJurisdiction})`,
+      wordCount
+    }
+    
+    // Include warning if sample is outside recommended range
+    if (validation.warning) {
+      response.warning = validation.warning
+    }
+
+    return NextResponse.json(response)
+  } catch (error: any) {
     console.error('[WritingSamples:POST] error:', error)
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
+    
+    // Handle unique constraint violations gracefully
+    if (error?.code === 'P2002') {
+      return NextResponse.json({ 
+        error: 'A sample for this section and jurisdiction already exists. Try updating instead.',
+        code: 'DUPLICATE_SAMPLE'
+      }, { status: 409 })
+    }
+    
+    return NextResponse.json({ 
+      error: 'Failed to save writing sample. Please try again.',
+      code: 'INTERNAL_ERROR'
+    }, { status: 500 })
   }
 }
 

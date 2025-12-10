@@ -5840,6 +5840,14 @@ If in doubt, prefer a SIMPLE, VALID diagram over a complex one.
     try {
       await prisma.figurePlan.deleteMany({ where: { sessionId } })
       await prisma.diagramSource.deleteMany({ where: { sessionId } })
+      // Also reset the frozen figure sequence since we're replacing all diagrams
+      await prisma.draftingSession.update({
+        where: { id: sessionId },
+        data: { 
+          figureSequence: [],
+          figureSequenceFinalized: false
+        }
+      })
     } catch (clearErr) {
       console.error('Error clearing old figures:', clearErr)
       // Continue with generation even if clearing fails
@@ -6471,11 +6479,18 @@ Return ONLY the translated PlantUML code. No explanations, no markdown formattin
         const buffer = Buffer.from(arrayBuffer)
         const imageChecksum = crypto.createHash('sha256').update(buffer).digest('hex')
         const filename = `figure_${figureNo}_${targetLanguage}_${Date.now()}.png`
-        const uploadDir = path.join(process.cwd(), 'uploads', patentId)
+        // Store alongside other figure images so the UI can serve it via the same endpoint
+        const patent = await prisma.patent.findUnique({
+          where: { id: patentId },
+          select: { projectId: true }
+        })
+        const uploadDir = patent?.projectId
+          ? path.join(process.cwd(), 'uploads', 'projects', patent.projectId, 'patents', patentId, 'figures')
+          : path.join(process.cwd(), 'uploads', 'patents', patentId, 'figures')
         const imagePath = path.join(uploadDir, filename)
 
-        await fs.promises.mkdir(uploadDir, { recursive: true })
-        await fs.promises.writeFile(imagePath, buffer)
+        await fs.mkdir(uploadDir, { recursive: true })
+        await fs.writeFile(imagePath, buffer)
 
         await prisma.diagramSource.update({
           where: { id: translatedDiagram.id },
@@ -6675,7 +6690,7 @@ async function handleGetDiagramTranslations(
   }
 
   // Get unique languages across all diagrams
-  const allLanguages = [...new Set(diagrams.map((d: any) => d.language || 'en'))]
+  const allLanguages = Array.from(new Set(diagrams.map((d: any) => d.language || 'en')))
 
   return NextResponse.json({
     translations: byFigure,
@@ -7175,16 +7190,45 @@ Items:\n- ${instructionsList.join('\n- ')}`
 }
 
 async function handleDeleteFigure(user: any, patentId: string, data: any) {
-  const { sessionId, figureNo } = data
+  const { sessionId, figureNo, language } = data
   if (!sessionId || !figureNo) return NextResponse.json({ error: 'Session ID and figure number required' }, { status: 400 })
 
-  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id } })
+  const session = await prisma.draftingSession.findFirst({ 
+    where: { id: sessionId, patentId, userId: user.id },
+    select: { id: true, figureSequence: true, figureSequenceFinalized: true }
+  })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
-  await prisma.diagramSource.deleteMany({ where: { sessionId, figureNo } })
-  await prisma.figurePlan.deleteMany({ where: { sessionId, figureNo } })
+  // Get the figurePlan ID before deletion (needed to clean up sequence)
+  const figurePlan = await prisma.figurePlan.findUnique({
+    where: { sessionId_figureNo: { sessionId, figureNo } },
+    select: { id: true }
+  })
 
-  return NextResponse.json({ deleted: true })
+  // Delete only the requested language variant (default to English)
+  const targetLang = (language || 'en').toLowerCase()
+  await prisma.diagramSource.deleteMany({ where: { sessionId, figureNo, language: targetLang } })
+
+  // If no diagram sources remain for this figure, clean up the plan as well
+  const remainingSources = await prisma.diagramSource.count({ where: { sessionId, figureNo } })
+  if (remainingSources === 0) {
+    await prisma.figurePlan.deleteMany({ where: { sessionId, figureNo } })
+    
+    // Also remove this figure from the frozen figureSequence if it exists
+    if (figurePlan && Array.isArray(session.figureSequence)) {
+      const currentSequence = session.figureSequence as Array<{ id: string; type: string; sourceId: string; finalFigNo: number }>
+      const updatedSequence = currentSequence
+        .filter(item => !(item.type === 'diagram' && item.sourceId === figurePlan.id))
+        .map((item, index) => ({ ...item, finalFigNo: index + 1 })) // Re-number figures
+      
+      await prisma.draftingSession.update({
+        where: { id: sessionId },
+        data: { figureSequence: updatedSequence }
+      })
+    }
+  }
+
+  return NextResponse.json({ deleted: true, remainingSources })
 }
 
 async function handleCreateManualFigure(user: any, patentId: string, data: any) {
@@ -8494,7 +8538,8 @@ async function handleRestoreOriginalImage(user: any, patentId: string, data: any
 }
 
 async function handleUploadDiagram(user: any, patentId: string, data: any) {
-  const { sessionId, figureNo, filename, checksum, imagePath } = data;
+  const { sessionId, figureNo, filename, checksum, imagePath, language = 'en' } = data;
+  const normalizedLanguage = typeof language === 'string' && language.trim() ? language.trim().toLowerCase() : 'en';
 
   if (!sessionId || !figureNo || !filename || !checksum) {
     return NextResponse.json(
@@ -8527,7 +8572,7 @@ async function handleUploadDiagram(user: any, patentId: string, data: any) {
 
   // Upsert diagram source and set upload metadata
   await prisma.diagramSource.upsert({
-    where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
+    where: { sessionId_figureNo_language: { sessionId, figureNo, language: normalizedLanguage } },
     update: {
       imageFilename: filename,
       imageChecksum: checksum,
@@ -8537,7 +8582,7 @@ async function handleUploadDiagram(user: any, patentId: string, data: any) {
     create: {
       sessionId,
       figureNo,
-      language: 'en',
+      language: normalizedLanguage,
       plantumlCode: '',
       checksum: '',
       imageFilename: filename,
@@ -8549,9 +8594,11 @@ async function handleUploadDiagram(user: any, patentId: string, data: any) {
 
   // Return success with counts; do not auto-advance stage
   const totalFigures = await prisma.figurePlan.count({ where: { sessionId } });
-  const uploadedFigures = await prisma.diagramSource.count({
-    where: { sessionId, imageUploadedAt: { not: null } }
-  });
+  const uploadedFigures = await prisma.diagramSource.findMany({
+    where: { sessionId, imageUploadedAt: { not: null } },
+    select: { figureNo: true },
+    distinct: ['figureNo']
+  }).then(results => results.length);
 
   return NextResponse.json({
     message: 'Diagram uploaded successfully',
@@ -9400,7 +9447,9 @@ async function handleGenerateReferenceDraft(
       // Include sketches for unified figure sequence
       sketchRecords: {
         where: { isDeleted: false, status: 'SUCCESS' }
-      }
+      },
+      // Include related art selections for prior art in background/crossReference sections
+      relatedArtSelections: true
     }
   })
 

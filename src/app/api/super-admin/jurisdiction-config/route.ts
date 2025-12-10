@@ -63,7 +63,12 @@ export async function GET(request: NextRequest) {
         heading: true,
         isRequired: true,
         isEnabled: true,
-        displayOrder: true
+        displayOrder: true,
+        // Context override flags
+        requiresPriorArtOverride: true,
+        requiresFiguresOverride: true,
+        requiresClaimsOverride: true,
+        requiresComponentsOverride: true
       }
     })
 
@@ -158,6 +163,11 @@ export async function GET(request: NextRequest) {
       isActive: boolean
       baseInstruction: string
       baseConstraints: any[]
+      // Base context flags from superset section
+      requiresPriorArt: boolean
+      requiresFigures: boolean
+      requiresClaims: boolean
+      requiresComponents: boolean
       countries: Record<string, {
         mapped: boolean
         enabled: boolean
@@ -165,6 +175,11 @@ export async function GET(request: NextRequest) {
         heading: string | null
         hasPrompt: boolean
         promptVersion: number | null
+        // Context override flags (null = use superset default)
+        requiresPriorArtOverride: boolean | null
+        requiresFiguresOverride: boolean | null
+        requiresClaimsOverride: boolean | null
+        requiresComponentsOverride: boolean | null
       }>
     }> = []
 
@@ -181,7 +196,12 @@ export async function GET(request: NextRequest) {
           required: mapping?.isRequired ?? section.isRequired,
           heading: mapping?.heading || null,
           hasPrompt: !!prompt,
-          promptVersion: prompt?.version || null
+          promptVersion: prompt?.version || null,
+          // Context override flags (null = use superset default)
+          requiresPriorArtOverride: mapping?.requiresPriorArtOverride ?? null,
+          requiresFiguresOverride: mapping?.requiresFiguresOverride ?? null,
+          requiresClaimsOverride: mapping?.requiresClaimsOverride ?? null,
+          requiresComponentsOverride: mapping?.requiresComponentsOverride ?? null
         }
       }
 
@@ -193,6 +213,11 @@ export async function GET(request: NextRequest) {
         isActive: section.isActive,
         baseInstruction: section.instruction,
         baseConstraints: section.constraints as any[],
+        // Base context flags from superset section
+        requiresPriorArt: section.requiresPriorArt,
+        requiresFigures: section.requiresFigures,
+        requiresClaims: section.requiresClaims,
+        requiresComponents: section.requiresComponents,
         countries: countryData
       })
     }
@@ -218,7 +243,12 @@ export async function GET(request: NextRequest) {
         constraints: s.constraints,
         isRequired: s.isRequired,
         isActive: s.isActive,
-        mappingCount: s.mappings.length
+        mappingCount: s.mappings.length,
+        // Context injection flags (base defaults)
+        requiresPriorArt: s.requiresPriorArt,
+        requiresFigures: s.requiresFigures,
+        requiresClaims: s.requiresClaims,
+        requiresComponents: s.requiresComponents
       })),
       countries,
       matrix,
@@ -247,7 +277,10 @@ export async function POST(request: NextRequest) {
     switch (action) {
       // Create new superset section
       case 'createSupersetSection': {
-        const { sectionKey, label, displayOrder, description, instruction, constraints, isRequired } = data
+        const { 
+          sectionKey, label, displayOrder, description, instruction, constraints, isRequired,
+          requiresPriorArt, requiresFigures, requiresClaims, requiresComponents
+        } = data
 
         if (!sectionKey || !label || displayOrder === undefined || !instruction) {
           return NextResponse.json(
@@ -277,8 +310,20 @@ export async function POST(request: NextRequest) {
             constraints: constraints || [],
             isRequired: isRequired ?? true,
             isActive: true,
+            // Context injection flags (defaults to false if not provided)
+            requiresPriorArt: requiresPriorArt ?? false,
+            requiresFigures: requiresFigures ?? false,
+            requiresClaims: requiresClaims ?? false,
+            requiresComponents: requiresComponents ?? false,
             createdBy: admin.email
           }
+        })
+
+        console.log(`[JurisdictionConfig] New superset section "${sectionKey}" created by ${admin.email} with context flags:`, {
+          priorArt: requiresPriorArt ?? false,
+          figures: requiresFigures ?? false,
+          claims: requiresClaims ?? false,
+          components: requiresComponents ?? false
         })
 
         return NextResponse.json({ success: true, section }, { status: 201 })
@@ -341,7 +386,10 @@ export async function POST(request: NextRequest) {
 
       // Create section mapping for a country
       case 'createMapping': {
-        const { countryCode, sectionKey, heading, isRequired, isEnabled, displayOrder } = data
+        const { 
+          countryCode, sectionKey, heading, isRequired, isEnabled, displayOrder,
+          requiresPriorArtOverride, requiresFiguresOverride, requiresClaimsOverride, requiresComponentsOverride
+        } = data
 
         if (!countryCode || !sectionKey) {
           return NextResponse.json(
@@ -374,6 +422,24 @@ export async function POST(request: NextRequest) {
           )
         }
 
+        // Log warnings for unusual override patterns (enabling something that's off in base)
+        const warnings: string[] = []
+        if (requiresPriorArtOverride === true && !supersetSection.requiresPriorArt) {
+          warnings.push(`Prior art injection enabled for ${code}/${sectionKey} (base is OFF)`)
+        }
+        if (requiresFiguresOverride === true && !supersetSection.requiresFigures) {
+          warnings.push(`Figures injection enabled for ${code}/${sectionKey} (base is OFF)`)
+        }
+        if (requiresClaimsOverride === true && !supersetSection.requiresClaims) {
+          warnings.push(`Claims injection enabled for ${code}/${sectionKey} (base is OFF)`)
+        }
+        if (requiresComponentsOverride === true && !supersetSection.requiresComponents) {
+          warnings.push(`Components injection enabled for ${code}/${sectionKey} (base is OFF)`)
+        }
+        if (warnings.length > 0) {
+          console.warn(`[JurisdictionConfig] Unusual overrides by ${admin.email}:`, warnings)
+        }
+
         // Create mapping
         const mapping = await prisma.countrySectionMapping.create({
           data: {
@@ -383,11 +449,20 @@ export async function POST(request: NextRequest) {
             heading: heading || supersetSection.label,
             isRequired: isRequired ?? supersetSection.isRequired,
             isEnabled: isEnabled ?? true,
-            displayOrder: displayOrder ?? supersetSection.displayOrder
+            displayOrder: displayOrder ?? supersetSection.displayOrder,
+            // Context override flags (null = use superset default)
+            requiresPriorArtOverride: requiresPriorArtOverride ?? null,
+            requiresFiguresOverride: requiresFiguresOverride ?? null,
+            requiresClaimsOverride: requiresClaimsOverride ?? null,
+            requiresComponentsOverride: requiresComponentsOverride ?? null
           }
         })
 
-        return NextResponse.json({ success: true, mapping }, { status: 201 })
+        return NextResponse.json({ 
+          success: true, 
+          mapping,
+          warnings: warnings.length > 0 ? warnings : undefined
+        }, { status: 201 })
       }
 
       // Bulk create mappings for a country (map all superset sections)
@@ -475,10 +550,22 @@ export async function PUT(request: NextRequest) {
     switch (action) {
       // Update superset section
       case 'updateSupersetSection': {
-        const { id, sectionKey, label, displayOrder, description, instruction, constraints, isRequired, isActive } = data
+        const { 
+          id, sectionKey, label, displayOrder, description, instruction, constraints, isRequired, isActive,
+          requiresPriorArt, requiresFigures, requiresClaims, requiresComponents
+        } = data
 
         if (!id && !sectionKey) {
           return NextResponse.json({ error: 'id or sectionKey required' }, { status: 400 })
+        }
+
+        // Get current section to check for changes
+        const currentSection = await prisma.supersetSection.findUnique({
+          where: id ? { id } : { sectionKey }
+        })
+
+        if (!currentSection) {
+          return NextResponse.json({ error: 'Section not found' }, { status: 404 })
         }
 
         const section = await prisma.supersetSection.update({
@@ -491,25 +578,83 @@ export async function PUT(request: NextRequest) {
             ...(constraints !== undefined && { constraints }),
             ...(isRequired !== undefined && { isRequired }),
             ...(isActive !== undefined && { isActive }),
+            // Context injection flags (base defaults for all countries)
+            ...(requiresPriorArt !== undefined && { requiresPriorArt }),
+            ...(requiresFigures !== undefined && { requiresFigures }),
+            ...(requiresClaims !== undefined && { requiresClaims }),
+            ...(requiresComponents !== undefined && { requiresComponents }),
             updatedBy: admin.email
           }
         })
 
-        return NextResponse.json({ success: true, section })
+        // Check if context flags changed
+        const contextChanged = 
+          (requiresPriorArt !== undefined && requiresPriorArt !== currentSection.requiresPriorArt) ||
+          (requiresFigures !== undefined && requiresFigures !== currentSection.requiresFigures) ||
+          (requiresClaims !== undefined && requiresClaims !== currentSection.requiresClaims) ||
+          (requiresComponents !== undefined && requiresComponents !== currentSection.requiresComponents)
+
+        let warning: string | undefined
+
+        if (contextChanged) {
+          // Count countries that will be affected (those without overrides)
+          const affectedMappings = await prisma.countrySectionMapping.count({
+            where: {
+              sectionKey: currentSection.sectionKey,
+              // Only count mappings without explicit overrides
+              OR: [
+                { requiresPriorArtOverride: null },
+                { requiresFiguresOverride: null },
+                { requiresClaimsOverride: null },
+                { requiresComponentsOverride: null }
+              ]
+            }
+          })
+
+          console.log(`[JurisdictionConfig] Superset section "${currentSection.sectionKey}" context defaults updated by ${admin.email}:`, {
+            priorArt: { old: currentSection.requiresPriorArt, new: requiresPriorArt },
+            figures: { old: currentSection.requiresFigures, new: requiresFigures },
+            claims: { old: currentSection.requiresClaims, new: requiresClaims },
+            components: { old: currentSection.requiresComponents, new: requiresComponents },
+            affectedMappings
+          })
+
+          if (affectedMappings > 0) {
+            warning = `Context defaults changed. ${affectedMappings} country mapping(s) without overrides will inherit these new defaults.`
+          }
+        }
+
+        return NextResponse.json({ success: true, section, warning })
       }
 
       // Update section mapping
       case 'updateMapping': {
-        const { countryCode, sectionKey, heading, isRequired, isEnabled, displayOrder } = data
+        const { 
+          countryCode, sectionKey, heading, isRequired, isEnabled, displayOrder,
+          requiresPriorArtOverride, requiresFiguresOverride, requiresClaimsOverride, requiresComponentsOverride
+        } = data
 
         if (!countryCode || !sectionKey) {
           return NextResponse.json({ error: 'countryCode and sectionKey required' }, { status: 400 })
         }
 
+        const code = countryCode.toUpperCase()
+
+        // Verify mapping exists before updating
+        const existingMapping = await prisma.countrySectionMapping.findUnique({
+          where: { countryCode_sectionKey: { countryCode: code, sectionKey } }
+        })
+        if (!existingMapping) {
+          return NextResponse.json(
+            { error: `Mapping not found for ${code}/${sectionKey}` },
+            { status: 404 }
+          )
+        }
+
         const mapping = await prisma.countrySectionMapping.update({
           where: {
             countryCode_sectionKey: {
-              countryCode: countryCode.toUpperCase(),
+              countryCode: code,
               sectionKey
             }
           },
@@ -517,9 +662,32 @@ export async function PUT(request: NextRequest) {
             ...(heading !== undefined && { heading }),
             ...(isRequired !== undefined && { isRequired }),
             ...(isEnabled !== undefined && { isEnabled }),
-            ...(displayOrder !== undefined && { displayOrder })
+            ...(displayOrder !== undefined && { displayOrder }),
+            // Context override flags (explicit null allowed to reset to default)
+            ...(requiresPriorArtOverride !== undefined && { requiresPriorArtOverride }),
+            ...(requiresFiguresOverride !== undefined && { requiresFiguresOverride }),
+            ...(requiresClaimsOverride !== undefined && { requiresClaimsOverride }),
+            ...(requiresComponentsOverride !== undefined && { requiresComponentsOverride }),
+            // Audit trail
+            updatedAt: new Date()
           }
         })
+
+        // Log significant context override changes
+        const contextChanged = 
+          requiresPriorArtOverride !== undefined ||
+          requiresFiguresOverride !== undefined ||
+          requiresClaimsOverride !== undefined ||
+          requiresComponentsOverride !== undefined
+        
+        if (contextChanged) {
+          console.log(`[JurisdictionConfig] Context overrides updated for ${code}/${sectionKey} by ${admin.email}:`, {
+            priorArt: requiresPriorArtOverride,
+            figures: requiresFiguresOverride,
+            claims: requiresClaimsOverride,
+            components: requiresComponentsOverride
+          })
+        }
 
         return NextResponse.json({ success: true, mapping })
       }
@@ -543,7 +711,13 @@ export async function PUT(request: NextRequest) {
                 ...(update.heading !== undefined && { heading: update.heading }),
                 ...(update.isRequired !== undefined && { isRequired: update.isRequired }),
                 ...(update.isEnabled !== undefined && { isEnabled: update.isEnabled }),
-                ...(update.displayOrder !== undefined && { displayOrder: update.displayOrder })
+                ...(update.displayOrder !== undefined && { displayOrder: update.displayOrder }),
+                // Context override flags support in bulk updates
+                ...(update.requiresPriorArtOverride !== undefined && { requiresPriorArtOverride: update.requiresPriorArtOverride }),
+                ...(update.requiresFiguresOverride !== undefined && { requiresFiguresOverride: update.requiresFiguresOverride }),
+                ...(update.requiresClaimsOverride !== undefined && { requiresClaimsOverride: update.requiresClaimsOverride }),
+                ...(update.requiresComponentsOverride !== undefined && { requiresComponentsOverride: update.requiresComponentsOverride }),
+                updatedAt: new Date()
               }
             })
             results.push({ sectionKey, success: true, mapping })
@@ -552,6 +726,7 @@ export async function PUT(request: NextRequest) {
           }
         }
 
+        console.log(`[JurisdictionConfig] Bulk update for ${code} by ${admin.email}: ${results.filter(r => r.success).length} updated`)
         return NextResponse.json({ success: true, results })
       }
 

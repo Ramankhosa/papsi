@@ -66,12 +66,15 @@
     "date-fns": "^4.1.0",
     "docx": "^9.5.1",
     "dotenv": "^17.2.3",
+    "facebook-nodejs-business-sdk": "^24.0.1",
     "framer-motion": "^11.11.17",
+    "google-auth-library": "^10.5.0",
     "html2canvas": "^1.4.1",
     "image-size": "^2.0.2",
     "js-cookie": "^3.0.5",
     "jsonwebtoken": "^9.0.2",
     "jspdf": "^3.0.3",
+    "linkedin-api-client": "^0.3.0",
     "lucide-react": "^0.544.0",
     "mammoth": "^1.11.0",
     "multer": "^2.0.2",
@@ -85,6 +88,7 @@
     "react-dom": "^18",
     "recharts": "^3.2.1",
     "tailwind-merge": "^3.3.1",
+    "twitter-api-v2": "^1.28.0",
     "zod": "^3.22.4"
   },
   "devDependencies": {

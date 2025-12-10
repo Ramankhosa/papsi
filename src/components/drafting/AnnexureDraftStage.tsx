@@ -571,20 +571,34 @@ function ValidationPanel({
     }
   }, [sessionId, jurisdiction, patentId, currentReviewId])
 
-  // Auto-run numeric validation when draft changes
+  // Auto-run numeric validation when draft changes (light debounce to avoid excessive calls)
   useEffect(() => {
-    if (Object.keys(draft).length > 0) {
+    if (Object.keys(draft).length === 0) return
+    const timer = setTimeout(() => {
       runNumericValidation()
-    }
-  }, [jurisdiction])
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [draft, jurisdiction, runNumericValidation])
 
   // Sync AI issues to parent when they change (avoids render-phase setState)
   // This handles cases like approveFix where issues are filtered
   const aiIssuesRef = useRef(aiIssues)
+  const aiIssuesSignatureRef = useRef<string>(JSON.stringify(aiIssues))
   useEffect(() => {
-    // Only sync if issues actually changed (skip initial mount and redundant syncs)
-    if (aiIssuesRef.current !== aiIssues && aiIssues.length !== aiIssuesRef.current.length) {
+    // Only sync if the issue set truly changed (not just reference or same length)
+    const signature = JSON.stringify(
+      aiIssues.map(i => ({
+        id: i.id,
+        type: i.type,
+        category: i.category,
+        sectionKey: i.sectionKey,
+        title: i.title,
+        description: i.description
+      }))
+    )
+    if (signature !== aiIssuesSignatureRef.current) {
       onAIIssuesChange?.(aiIssues)
+      aiIssuesSignatureRef.current = signature
     }
     aiIssuesRef.current = aiIssues
   }, [aiIssues, onAIIssuesChange])
@@ -593,7 +607,7 @@ function ValidationPanel({
   useEffect(() => {
     const currentScore = aiSummary?.overallScore ?? null
     // Only celebrate if score just became 100 (wasn't 100 before)
-    if (currentScore === 100 && prevScoreRef.current !== null && prevScoreRef.current !== 100) {
+    if (currentScore === 100 && prevScoreRef.current !== 100) {
       setCelebrationMessage(getCelebrationMessage())
       setShowCelebration(true)
       // Auto-hide after 8 seconds
@@ -2710,7 +2724,9 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   // Auto-mode: Generate all sections sequentially without user interaction
   const handleAutoGenerateAll = async () => {
     if (autoModeRunning || loading) return
-    
+
+    if (!sectionConfigs) return
+
     // Get all section keys that don't have content yet
     const pendingSections = sectionConfigs
       .map(s => s.keys[0])

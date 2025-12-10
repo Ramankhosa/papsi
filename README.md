@@ -43,6 +43,16 @@ A modern, professional authentication system built with Next.js, featuring ChatG
    NEXTAUTH_URL=http://localhost:3000/
    NEXTAUTH_SECRET=your-secret-key-change-in-production
 
+   # Social Login (Optional)
+   GOOGLE_CLIENT_ID=your-google-client-id
+   GOOGLE_CLIENT_SECRET=your-google-client-secret
+   FACEBOOK_CLIENT_ID=your-facebook-client-id
+   FACEBOOK_CLIENT_SECRET=your-facebook-client-secret
+   LINKEDIN_CLIENT_ID=your-linkedin-client-id
+   LINKEDIN_CLIENT_SECRET=your-linkedin-client-secret
+   TWITTER_CLIENT_ID=your-twitter-client-id
+   TWITTER_CLIENT_SECRET=your-twitter-client-secret
+
    # External Access
    NEXT_PUBLIC_TINYMCE_API_KEY=your-tinymce-api-key
    SENDGRID_API_KEY=your-sendgrid-api-key

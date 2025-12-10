@@ -33,6 +33,11 @@ export async function GET(request: NextRequest) {
         constraints: s.constraints,
         isRequired: s.isRequired,
         isActive: s.isActive,
+        // Context injection flags - determines what data to inject into section prompts
+        requiresPriorArt: (s as any).requiresPriorArt ?? false,
+        requiresFigures: (s as any).requiresFigures ?? false,
+        requiresClaims: (s as any).requiresClaims ?? false,
+        requiresComponents: (s as any).requiresComponents ?? false,
         createdAt: s.createdAt.toISOString(),
         updatedAt: s.updatedAt.toISOString()
       }))
@@ -136,6 +141,39 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ 
           success: true, 
           message: `Section ${newIsActive ? 'activated' : 'deactivated'}` 
+        })
+      }
+
+      case 'update_context_flags': {
+        // Update context injection flags for a section
+        const { requiresPriorArt, requiresFigures, requiresClaims, requiresComponents } = body
+        
+        const updateData: Record<string, any> = {
+          updatedBy: authResult.user.id
+        }
+        
+        // Only update fields that are explicitly provided
+        if (typeof requiresPriorArt === 'boolean') {
+          updateData.requiresPriorArt = requiresPriorArt
+        }
+        if (typeof requiresFigures === 'boolean') {
+          updateData.requiresFigures = requiresFigures
+        }
+        if (typeof requiresClaims === 'boolean') {
+          updateData.requiresClaims = requiresClaims
+        }
+        if (typeof requiresComponents === 'boolean') {
+          updateData.requiresComponents = requiresComponents
+        }
+
+        await prisma.supersetSection.update({
+          where: { sectionKey },
+          data: updateData
+        })
+
+        return NextResponse.json({ 
+          success: true, 
+          message: `Updated context flags for ${sectionKey}` 
         })
       }
 
