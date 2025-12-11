@@ -72,7 +72,7 @@ export default function Header() {
   // Reset menu state when user changes (after login/logout)
   useEffect(() => {
     closeMenu()
-  }, [user?.id, closeMenu])
+  }, [user?.user_id, closeMenu])
 
   // Cleanup on unmount
   useEffect(() => {
