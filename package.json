@@ -28,6 +28,7 @@
     "seed": "node scripts/setup-full-hierarchy.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.2",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
@@ -80,6 +81,7 @@
     "multer": "^2.0.2",
     "next": "14.2.3",
     "next-auth": "^4.24.7",
+    "openai": "^6.10.0",
     "pdf-parse-fork": "^1.2.0",
     "pdf2text": "^1.1.0",
     "pdfkit": "^0.17.2",

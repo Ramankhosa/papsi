@@ -601,10 +601,12 @@ model Plan {
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
-  tenantPlans   TenantPlan[]
-  planFeatures  PlanFeature[]
-  planLLMAccess PlanLLMAccess[]
-  policyRules   PolicyRule[]
+  tenantPlans        TenantPlan[]
+  planFeatures       PlanFeature[]
+  planLLMAccess      PlanLLMAccess[]
+  policyRules        PolicyRule[]
+  stageModelConfigs  PlanStageModelConfig[]
+  taskModelConfigs   PlanTaskModelConfig[]
 
   @@map("plans")
 }
@@ -709,6 +711,120 @@ model PolicyRule {
 
   @@unique([scope, scopeId, taskCode, key])
   @@map("policy_rules")
+}
+
+// ============================================================================
+// FLEXIBLE LLM MODEL CONFIGURATION SYSTEM
+// Super Admin can configure ANY model for ANY task/stage per plan
+// ============================================================================
+
+// LLM Model Registry - All available models (super admin can add/remove)
+model LLMModel {
+  id              String   @id @default(cuid())
+  code            String   @unique  // e.g., "gpt-4o", "claude-3.5-sonnet"
+  displayName     String             // Human-readable name
+  provider        String             // "openai", "anthropic", "google", "deepseek", "groq"
+  
+  // Capabilities & Metadata
+  contextWindow   Int      @default(128000)  // Max context tokens
+  supportsVision  Boolean  @default(false)
+  supportsStreaming Boolean @default(true)
+  
+  // Cost tracking (per 1M tokens, in USD cents for precision)
+  inputCostPer1M  Int      @default(0)   // e.g., 250 = $2.50
+  outputCostPer1M Int      @default(0)   // e.g., 1000 = $10.00
+  
+  // Status
+  isActive        Boolean  @default(true)
+  isDefault       Boolean  @default(false)  // System-wide fallback
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  stageConfigs    PlanStageModelConfig[]
+  taskConfigs     PlanTaskModelConfig[]
+  
+  @@map("llm_models")
+}
+
+// Workflow Stages - All stages across all features (super admin can add)
+model WorkflowStage {
+  id              String   @id @default(cuid())
+  code            String   @unique  // e.g., "DRAFT_IDEA_ENTRY", "NOVELTY_REPORT"
+  displayName     String             // "Idea Entry", "Report Generation"
+  featureCode     String             // Links to feature: "PATENT_DRAFTING", "PRIOR_ART_SEARCH"
+  description     String?
+  sortOrder       Int      @default(0)  // Display order in admin UI
+  isActive        Boolean  @default(true)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Relations
+  stageConfigs    PlanStageModelConfig[]
+  
+  @@map("workflow_stages")
+}
+
+// Plan → Stage → Model Mapping (Core flexibility table)
+model PlanStageModelConfig {
+  id               String   @id @default(cuid())
+  planId           String
+  stageId          String
+  modelId          String   // Primary model for this plan+stage
+  
+  // Fallback chain (JSON array of model IDs in priority order)
+  fallbackModelIds String?  // e.g., '["model-id-1", "model-id-2"]'
+  
+  // Stage-specific limits (override plan defaults)
+  maxTokensIn      Int?
+  maxTokensOut     Int?
+  temperature      Float?   @default(0.7)
+  
+  // Status
+  isActive         Boolean  @default(true)
+  priority         Int      @default(0)  // If multiple configs, higher wins
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  
+  // Relations
+  plan             Plan           @relation(fields: [planId], references: [id], onDelete: Cascade)
+  stage            WorkflowStage  @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  model            LLMModel       @relation(fields: [modelId], references: [id])
+  
+  @@unique([planId, stageId])
+  @@index([planId])
+  @@index([stageId])
+  @@map("plan_stage_model_configs")
+}
+
+// Plan → Task → Model Mapping (Backward compatible with existing TaskCode system)
+model PlanTaskModelConfig {
+  id               String   @id @default(cuid())
+  planId           String
+  taskCode         TaskCode
+  modelId          String   // Primary model for this plan+task
+  
+  // Fallback chain
+  fallbackModelIds String?
+  
+  // Task-specific limits
+  maxTokensIn      Int?
+  maxTokensOut     Int?
+  temperature      Float?   @default(0.7)
+  
+  isActive         Boolean  @default(true)
+  
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  
+  plan             Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  model            LLMModel @relation(fields: [modelId], references: [id])
+  
+  @@unique([planId, taskCode])
+  @@map("plan_task_model_configs")
 }
 
 model UsageReservation {

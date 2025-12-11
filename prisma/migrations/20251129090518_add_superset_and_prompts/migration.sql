@@ -1,34 +1,44 @@
 /*
-  Warnings:
-
-  - The `status` column on the `country_section_prompts` table would be dropped and recreated. This will lead to data loss if there is data in the column.
-  - A unique constraint covering the columns `[country_code,section_key]` on the table `country_section_prompts` will be added. If there are existing duplicate values, this will fail.
-
+  This migration creates the superset_sections table and updates related tables.
+  Made idempotent with IF NOT EXISTS/IF EXISTS checks.
 */
--- CreateEnum
-CREATE TYPE "CountrySectionPromptStatus" AS ENUM ('ACTIVE', 'DRAFT', 'ARCHIVED');
 
--- AlterTable
-ALTER TABLE "country_names" ALTER COLUMN "created_at" SET DATA TYPE TIMESTAMP(3),
-ALTER COLUMN "updated_at" DROP DEFAULT,
-ALTER COLUMN "updated_at" SET DATA TYPE TIMESTAMP(3);
+-- CreateEnum (skip if already exists - created in previous migration)
+DO $$ BEGIN
+    CREATE TYPE "CountrySectionPromptStatus" AS ENUM ('ACTIVE', 'DRAFT', 'ARCHIVED');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- AlterTable
-ALTER TABLE "country_section_mappings" ADD COLUMN     "display_order" INTEGER,
-ADD COLUMN     "is_enabled" BOOLEAN NOT NULL DEFAULT true,
-ADD COLUMN     "is_required" BOOLEAN NOT NULL DEFAULT true,
-ALTER COLUMN "created_at" SET DATA TYPE TIMESTAMP(3),
-ALTER COLUMN "updated_at" DROP DEFAULT,
-ALTER COLUMN "updated_at" SET DATA TYPE TIMESTAMP(3);
+-- AlterTable country_names (make timestamp columns consistent)
+ALTER TABLE "country_names" ALTER COLUMN "created_at" SET DATA TYPE TIMESTAMP(3);
+DO $$ BEGIN
+    ALTER TABLE "country_names" ALTER COLUMN "updated_at" DROP DEFAULT;
+EXCEPTION
+    WHEN others THEN null;
+END $$;
+ALTER TABLE "country_names" ALTER COLUMN "updated_at" SET DATA TYPE TIMESTAMP(3);
 
--- AlterTable
-ALTER TABLE "country_section_prompts" DROP COLUMN "status",
-ADD COLUMN     "status" "CountrySectionPromptStatus" NOT NULL DEFAULT 'ACTIVE';
+-- AlterTable country_section_mappings
+ALTER TABLE "country_section_mappings" ADD COLUMN IF NOT EXISTS "display_order" INTEGER;
+ALTER TABLE "country_section_mappings" ADD COLUMN IF NOT EXISTS "is_enabled" BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE "country_section_mappings" ADD COLUMN IF NOT EXISTS "is_required" BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE "country_section_mappings" ALTER COLUMN "created_at" SET DATA TYPE TIMESTAMP(3);
+DO $$ BEGIN
+    ALTER TABLE "country_section_mappings" ALTER COLUMN "updated_at" DROP DEFAULT;
+EXCEPTION
+    WHEN others THEN null;
+END $$;
+ALTER TABLE "country_section_mappings" ALTER COLUMN "updated_at" SET DATA TYPE TIMESTAMP(3);
 
--- CreateTable
-CREATE TABLE "superset_sections" (
+-- NOTE: country_section_prompts.status is already created with the correct enum type in previous migration
+-- No need to DROP and ADD the column
+
+-- CreateTable superset_sections
+CREATE TABLE IF NOT EXISTS "superset_sections" (
     "id" TEXT NOT NULL,
     "section_key" TEXT NOT NULL,
+    "aliases" TEXT[] DEFAULT ARRAY[]::TEXT[],
     "display_order" INTEGER NOT NULL,
     "label" TEXT NOT NULL,
     "description" TEXT,
@@ -45,34 +55,20 @@ CREATE TABLE "superset_sections" (
 );
 
 -- CreateIndex
-CREATE UNIQUE INDEX "superset_sections_section_key_key" ON "superset_sections"("section_key");
+CREATE UNIQUE INDEX IF NOT EXISTS "superset_sections_section_key_key" ON "superset_sections"("section_key");
 
 -- CreateIndex
-CREATE INDEX "superset_sections_display_order_idx" ON "superset_sections"("display_order");
+CREATE INDEX IF NOT EXISTS "superset_sections_display_order_idx" ON "superset_sections"("display_order");
 
 -- CreateIndex
-CREATE INDEX "superset_sections_is_active_idx" ON "superset_sections"("is_active");
+CREATE INDEX IF NOT EXISTS "superset_sections_is_active_idx" ON "superset_sections"("is_active");
 
--- CreateIndex
-CREATE INDEX "country_section_mappings_country_code_idx" ON "country_section_mappings"("country_code");
+-- CreateIndex (if not already exists)
+CREATE INDEX IF NOT EXISTS "country_section_mappings_country_code_idx" ON "country_section_mappings"("country_code");
 
--- CreateIndex
-CREATE INDEX "country_section_mappings_section_key_idx" ON "country_section_mappings"("section_key");
+-- CreateIndex (if not already exists)
+CREATE INDEX IF NOT EXISTS "country_section_mappings_section_key_idx" ON "country_section_mappings"("section_key");
 
--- CreateIndex
-CREATE INDEX "country_section_prompts_status_idx" ON "country_section_prompts"("status");
-
--- CreateIndex
-CREATE UNIQUE INDEX "country_section_prompts_country_code_section_key_key" ON "country_section_prompts"("country_code", "section_key");
-
--- AddForeignKey
-ALTER TABLE "country_section_prompt_history" ADD CONSTRAINT "country_section_prompt_history_prompt_id_fkey" FOREIGN KEY ("prompt_id") REFERENCES "country_section_prompts"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
--- RenameIndex
-ALTER INDEX "country_section_mappings_country_section_key" RENAME TO "country_section_mappings_country_code_section_key_key";
-
--- RenameIndex
-ALTER INDEX "country_section_prompt_history_country_section_idx" RENAME TO "country_section_prompt_history_country_code_section_key_idx";
-
--- RenameIndex
-ALTER INDEX "user_section_instructions_session_section_unique" RENAME TO "user_section_instructions_session_id_section_key_key";
+-- Note: Index renames are no longer needed because the previous migration 
+-- (20251129000000_add_section_prompts) now creates indexes with the correct names already.
+-- The old rename operations have been removed to prevent errors.

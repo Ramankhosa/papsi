@@ -12,6 +12,7 @@ import { prisma } from '@/lib/prisma'
 import { llmGateway } from '@/lib/metering'
 import type { LLMRequest } from '@/lib/metering'
 import { getCountryProfile } from '@/lib/country-profile-service'
+import { getSectionStageCode } from '@/lib/metering/section-stage-mapping'
 import crypto from 'crypto'
 
 // ============================================================================
@@ -2190,8 +2191,14 @@ OUTPUT REQUIREMENTS
 - Maintain consistency with previously generated sections (if any)
 - Return ONLY the section content text, nothing else`
 
+    // Get the stage code for model resolution
+    // This maps section key to workflow stage (e.g., 'background' -> 'DRAFT_ANNEXURE_BACKGROUND')
+    // The admin configures which LLM model to use for each stage in the LLM Config page
+    const stageCode = getSectionStageCode(sectionKey)
+
     const result = await llmGateway.executeLLMOperation({ headers: requestHeaders || {} }, {
       taskCode: 'LLM2_DRAFT',
+      stageCode, // Pass stage code for section-specific model resolution
       prompt,
       parameters: { tenantId, purpose: 'reference_draft_section' },
       idempotencyKey: crypto.randomUUID(),
@@ -2200,6 +2207,7 @@ OUTPUT REQUIREMENTS
         sessionId: session.id,
         purpose: 'reference_draft_section_generation',
         sectionKey,
+        stageCode, // Include in metadata for debugging
         jurisdictions: selectedJurisdictions
       }
     })
@@ -2779,8 +2787,13 @@ IMPORTANT RULES:
 
 OUTPUT: Return ONLY the translated section content, no headers or formatting markers.`
 
-    const llmRequest: LLMRequest = {
+    // Get the stage code for model resolution based on the superset key
+    // Translation uses the same model as the original section generation
+    const stageCode = getSectionStageCode(supersetKey)
+
+    const llmRequest: LLMRequest & { stageCode?: string } = {
       taskCode: 'LLM2_DRAFT',
+      stageCode, // Pass stage code for section-specific model resolution
       prompt,
       parameters: { tenantId, purpose: 'translate_section', temperature: 0 },
       idempotencyKey: crypto.randomUUID(),
@@ -2789,7 +2802,8 @@ OUTPUT: Return ONLY the translated section content, no headers or formatting mar
         targetJurisdiction: code,
         targetLanguage,
         sectionKey: countryKey,
-        supersetKey
+        supersetKey,
+        stageCode // Include for debugging
       }
     }
 

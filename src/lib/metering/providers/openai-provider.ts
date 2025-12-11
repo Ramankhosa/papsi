@@ -6,7 +6,24 @@ import type { LLMProvider, ProviderConfig } from './llm-provider'
 
 export class OpenAIProvider implements LLMProvider {
   name = 'openai'
-  supportedModels = ['gpt-4o']
+  supportedModels = [
+    // GPT-4 Series
+    'gpt-4o', 
+    'gpt-4o-mini', 
+    'gpt-4-turbo', 
+    'gpt-4',
+    // GPT-5 Series
+    'gpt-5',
+    'gpt-5.1',
+    'gpt-5-mini',
+    'gpt-5-nano',
+    // GPT-3.5 Series
+    'gpt-3.5-turbo',
+    // o1 Reasoning Models
+    'o1',
+    'o1-mini',
+    'o1-preview'
+  ]
 
   private config: ProviderConfig
 
@@ -15,7 +32,13 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async execute(request: LLMRequest, limits: EnforcementDecision): Promise<LLMResponse> {
-    // Apply enforcement limits
+    // Use the model specified in the request (from model resolver) or fall back to config default
+    const modelToUse = request.modelClass || this.config.model
+    
+    // Check if this is an o1 reasoning model (requires different parameters)
+    const isO1Model = modelToUse.startsWith('o1')
+    
+    // Apply enforcement limits - o1 models use max_completion_tokens instead of max_tokens
     const maxTokens = limits.maxTokensOut || 4096
 
     try {
@@ -43,23 +66,36 @@ export class OpenAIProvider implements LLMProvider {
         messageContent = request.prompt || ''
       }
 
+      // Build request body with model-specific parameters
+      const requestBody: any = {
+        model: modelToUse,
+        messages: [
+          {
+            role: 'user',
+            content: messageContent
+          }
+        ]
+      }
+      
+      // o1 models use different parameters:
+      // - max_completion_tokens instead of max_tokens
+      // - Do NOT support temperature parameter
+      if (isO1Model) {
+        requestBody.max_completion_tokens = maxTokens
+        // Note: o1 models do not accept temperature - omit it entirely
+        console.log(`[OpenAIProvider] Using o1-specific params for ${modelToUse} (max_completion_tokens: ${maxTokens})`)
+      } else {
+        requestBody.max_tokens = maxTokens
+        requestBody.temperature = request.parameters?.temperature ?? 0.7
+      }
+      
       const response = await fetch(`${this.config.baseURL}/chat/completions`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${this.config.apiKey}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model: this.config.model,
-          messages: [
-            {
-              role: 'user',
-              content: messageContent
-            }
-          ],
-          max_tokens: maxTokens,
-          temperature: 0.7,
-        }),
+        body: JSON.stringify(requestBody),
       })
 
       if (!response.ok) {
@@ -75,12 +111,13 @@ export class OpenAIProvider implements LLMProvider {
       return {
         output: choice.message.content,
         outputTokens: usage?.completion_tokens || 0,
-        modelClass: this.config.model,
+        modelClass: modelToUse, // Use the actual model that was called
         metadata: {
           provider: 'openai',
           inputTokens: usage?.prompt_tokens || 0,
           totalTokens: usage?.total_tokens || 0,
-          finishReason: choice.finish_reason
+          finishReason: choice.finish_reason,
+          modelUsed: modelToUse
         }
       }
     } catch (error) {
@@ -90,19 +127,51 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   getTokenLimits(modelName: string): { input: number, output: number } {
-    // GPT-4o limits
-    return {
-      input: 128000,  // 128K tokens
-      output: 16384   // 16K tokens
+    // Token limits per model family
+    const limits: Record<string, { input: number, output: number }> = {
+      // GPT-4 Series
+      'gpt-4o': { input: 128000, output: 16384 },
+      'gpt-4o-mini': { input: 128000, output: 16384 },
+      'gpt-4-turbo': { input: 128000, output: 4096 },
+      'gpt-4': { input: 8192, output: 4096 },
+      // GPT-5 Series (estimated based on typical patterns)
+      'gpt-5': { input: 256000, output: 32768 },
+      'gpt-5.1': { input: 256000, output: 32768 },
+      'gpt-5-mini': { input: 128000, output: 16384 },
+      'gpt-5-nano': { input: 64000, output: 8192 },
+      // GPT-3.5 Series
+      'gpt-3.5-turbo': { input: 16384, output: 4096 },
+      // o1 Reasoning Models
+      'o1': { input: 200000, output: 100000 },
+      'o1-mini': { input: 128000, output: 65536 },
+      'o1-preview': { input: 128000, output: 32768 }
     }
+    
+    return limits[modelName] || { input: 128000, output: 16384 }
   }
 
   getCostPerToken(modelName: string): { input: number, output: number } {
-    // GPT-4o pricing (per million tokens)
-    return {
-      input: 0.000005,   // $5.00 per million input tokens
-      output: 0.000015   // $15.00 per million output tokens
+    // Pricing per token (converted from per-million pricing)
+    const costs: Record<string, { input: number, output: number }> = {
+      // GPT-4 Series
+      'gpt-4o': { input: 0.0000025, output: 0.000010 },           // $2.50/$10.00 per M
+      'gpt-4o-mini': { input: 0.00000015, output: 0.0000006 },    // $0.15/$0.60 per M
+      'gpt-4-turbo': { input: 0.00001, output: 0.00003 },         // $10/$30 per M
+      'gpt-4': { input: 0.00003, output: 0.00006 },               // $30/$60 per M
+      // GPT-5 Series (estimated pricing)
+      'gpt-5': { input: 0.00001, output: 0.00003 },               // $10/$30 per M
+      'gpt-5.1': { input: 0.000012, output: 0.000036 },           // $12/$36 per M
+      'gpt-5-mini': { input: 0.000003, output: 0.000012 },        // $3/$12 per M
+      'gpt-5-nano': { input: 0.0000005, output: 0.000002 },       // $0.50/$2.00 per M
+      // GPT-3.5 Series
+      'gpt-3.5-turbo': { input: 0.0000005, output: 0.0000015 },   // $0.50/$1.50 per M
+      // o1 Reasoning Models
+      'o1': { input: 0.000015, output: 0.00006 },                 // $15/$60 per M
+      'o1-mini': { input: 0.000003, output: 0.000012 },           // $3/$12 per M
+      'o1-preview': { input: 0.000015, output: 0.00006 }          // $15/$60 per M
     }
+    
+    return costs[modelName] || { input: 0.000005, output: 0.000015 }
   }
 
   async isHealthy(): Promise<boolean> {

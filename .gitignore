@@ -55,3 +55,19 @@ uploads/
 # Temporary files
 *.tmp
 *.temp
+
+# Database backups
+database-backup-*/
+
+# Test results and reports
+test-results/
+playwright-report/
+playwright-report/
+
+# Backup and restore scripts (temporary)
+backup-all-data.js
+restore-*.js
+
+# LLM seed scripts (already in Seed folder)
+scripts/seed-llm-models.ts
+scripts/test-*.ts

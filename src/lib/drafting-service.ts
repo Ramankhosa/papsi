@@ -19,6 +19,7 @@ import {
   getFiguresForJurisdiction,
   type SectionContextRequirements
 } from '@/lib/multi-jurisdiction-service';
+import { getSectionStageCode } from '@/lib/metering/section-stage-mapping';
 import crypto from 'crypto';
 
 // Hard-coded Superset Section Prompts (Country-Neutral Base Prompts)
@@ -759,12 +760,14 @@ Respond in this exact JSON shape:
   "ipcCodes": ["primary IPC code like G06F 17/30", "optional secondary"]
 }`;
 
-      console.log('Calling LLM gateway with taskCode: LLM2_DRAFT');
+      console.log('Calling LLM gateway with taskCode: LLM2_DRAFT, stageCode: DRAFT_IDEA_ENTRY');
 
       // Execute through LLM gateway
+      // Use DRAFT_IDEA_ENTRY stage for model resolution - admin can configure which model to use
       const request = { headers: requestHeaders || {} };
       const llmResult = await llmGateway.executeLLMOperation(request, {
         taskCode: 'LLM2_DRAFT',
+        stageCode: 'DRAFT_IDEA_ENTRY', // Stage for idea normalization
         prompt,
         parameters: { tenantId, ...(allowRefine ? { temperature: 0.4 } : { temperature: 0.0 }) },
         idempotencyKey: crypto.randomUUID()
@@ -1351,8 +1354,14 @@ Respond in this exact JSON shape:
         // Increase tokens for long sections
         const sectionMaxTokens = s === 'detailedDescription' ? 6000 : undefined
 
+        // Get the stage code for section-specific model resolution
+        // This maps section key to workflow stage (e.g., 'background' -> 'DRAFT_ANNEXURE_BACKGROUND')
+        // The admin configures which LLM model to use for each stage in the LLM Config page
+        const sectionStageCode = getSectionStageCode(s)
+
         const result = await llmGateway.executeLLMOperation(request, {
           taskCode: 'LLM2_DRAFT',
+          stageCode: sectionStageCode, // Pass stage code for section-specific model resolution
           prompt,
           parameters: { tenantId, ...(sectionMaxTokens && { maxOutputTokens: sectionMaxTokens }) },
           idempotencyKey: crypto.randomUUID(),
@@ -1360,6 +1369,7 @@ Respond in this exact JSON shape:
             patentId: session.patentId,
             sessionId: session.id,
             section: s,
+            stageCode: sectionStageCode, // Include for debugging
             purpose: 'draft_section'
           }
         })

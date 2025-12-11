@@ -6,7 +6,19 @@ import type { LLMProvider, ProviderConfig } from './llm-provider'
 
 export class GeminiProvider implements LLMProvider {
   name = 'gemini'
-  supportedModels = ['gemini-2.5-pro', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite']
+  supportedModels = [
+    // Gemini 2.x Series (Text)
+    'gemini-2.5-pro',
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-2.5-flash-lite',
+    // Gemini 1.5 Series
+    'gemini-1.5-pro',
+    'gemini-1.5-flash',
+    // Gemini 3.x Image Generation Models (for Sketch Generation)
+    'gemini-3.0-nano-banana',
+    'gemini-3-pro-image-preview'
+  ]
 
   private config: ProviderConfig
   private client: any // Google Generative AI client
@@ -44,10 +56,9 @@ export class GeminiProvider implements LLMProvider {
     // Use modelClass from request, or fallback to configured model, or first supported model
     const modelClass = request.modelClass || this.config.model || this.supportedModels[0]
 
-    // Validate model access
-    if (!this.supportedModels.includes(modelClass)) {
-      throw new Error(`Model ${modelClass} not supported by Gemini provider`)
-    }
+    // Note: Model validation is now handled by the model resolver
+    // We allow any model code to be passed through since new models can be added via admin UI
+    console.log(`[GeminiProvider] Using model: ${modelClass}`)
 
     // Use enforcement limits, with provider limits as fallback
     const providerLimits = this.getTokenLimits(modelClass)
@@ -167,38 +178,42 @@ export class GeminiProvider implements LLMProvider {
   }
 
   getTokenLimits(modelName: string): { input: number, output: number } {
-    switch (modelName) {
-      case 'gemini-2.0-flash-lite':
-      case 'gemini-2.5-flash-lite':
-        return {
-          input: 1048576, // 1M tokens
-          output: 8192
-        }
-      case 'gemini-2.5-pro':
-      default:
-        return {
-          input: 2097152, // 2M tokens
-          output: 16384   // Increased ceiling for longer reports
-        }
+    const limits: Record<string, { input: number, output: number }> = {
+      // Flash Lite models
+      'gemini-2.0-flash-lite': { input: 1048576, output: 8192 },
+      'gemini-2.5-flash-lite': { input: 1048576, output: 8192 },
+      // Flash models
+      'gemini-2.0-flash': { input: 1048576, output: 8192 },
+      // Pro models
+      'gemini-2.5-pro': { input: 2097152, output: 16384 },
+      'gemini-1.5-pro': { input: 2097152, output: 16384 },
+      'gemini-1.5-flash': { input: 1048576, output: 8192 },
+      // Image generation models
+      'gemini-3.0-nano-banana': { input: 128000, output: 8192 },
+      'gemini-3-pro-image-preview': { input: 128000, output: 8192 }
     }
+    
+    return limits[modelName] || { input: 2097152, output: 16384 }
   }
 
   getCostPerToken(modelName: string): { input: number, output: number } {
-    // Pricing per million tokens
-    switch (modelName) {
-      case 'gemini-2.0-flash-lite':
-      case 'gemini-2.5-flash-lite':
-        return {
-          input: 0.00000035,  // $0.35 per million input tokens
-          output: 0.00000070   // $0.70 per million output tokens
-        }
-      case 'gemini-2.5-pro':
-      default:
-        return {
-          input: 0.00000125,  // $1.25 per million input tokens
-          output: 0.000005    // $5.00 per million output tokens
-        }
+    // Pricing per token (converted from per-million pricing)
+    const costs: Record<string, { input: number, output: number }> = {
+      // Flash Lite models
+      'gemini-2.0-flash-lite': { input: 0.00000008, output: 0.0000003 },    // $0.08/$0.30 per M
+      'gemini-2.5-flash-lite': { input: 0.00000035, output: 0.0000007 },    // $0.35/$0.70 per M
+      // Flash models
+      'gemini-2.0-flash': { input: 0.0000001, output: 0.0000004 },          // $0.10/$0.40 per M
+      // Pro models
+      'gemini-2.5-pro': { input: 0.00000125, output: 0.000005 },            // $1.25/$5.00 per M
+      'gemini-1.5-pro': { input: 0.00000125, output: 0.000005 },            // $1.25/$5.00 per M
+      'gemini-1.5-flash': { input: 0.0000001, output: 0.0000004 },          // $0.10/$0.40 per M
+      // Image generation models
+      'gemini-3.0-nano-banana': { input: 0.000001, output: 0.000004 },      // $1.00/$4.00 per M
+      'gemini-3-pro-image-preview': { input: 0.000001, output: 0.000004 }   // $1.00/$4.00 per M
     }
+    
+    return costs[modelName] || { input: 0.00000125, output: 0.000005 }
   }
 
   async isHealthy(): Promise<boolean> {

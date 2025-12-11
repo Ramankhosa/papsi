@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 
@@ -12,6 +12,20 @@ interface Tenant {
   user_count: number
   ati_token_count: number
   created_at: string
+}
+
+interface NavItem {
+  label: string
+  icon: string
+  href?: string
+  action?: () => void
+  badge?: string
+}
+
+interface NavGroup {
+  title: string
+  icon: string
+  items: NavItem[]
 }
 
 export default function SuperAdminDashboard() {
@@ -34,13 +48,41 @@ export default function SuperAdminDashboard() {
   const [newTenant, setNewTenant] = useState({
     name: '',
     atiId: '',
-    generateInitialToken: true, // Re-enable ATI token generation
+    generateInitialToken: true,
     expires_at: '',
     max_uses: '',
     plan_tier: 'BASIC',
     notes: 'Initial tenant onboarding token'
   })
   const [isCreating, setIsCreating] = useState(false)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({
+    analytics: true,
+    ai: true,
+    jurisdiction: false,
+    access: true
+  })
+  const [showUserMenu, setShowUserMenu] = useState(false)
+  const userMenuRef = useRef<HTMLDivElement>(null)
+
+  // Handle clicks outside user menu to close it
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setShowUserMenu(false)
+      }
+    }
+
+    if (showUserMenu) {
+      document.addEventListener('mousedown', handleClickOutside)
+      // Auto-close after 5 seconds of inactivity
+      const timeout = setTimeout(() => setShowUserMenu(false), 5000)
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside)
+        clearTimeout(timeout)
+      }
+    }
+  }, [showUserMenu])
 
   useEffect(() => {
     fetchTenants()
@@ -78,7 +120,7 @@ export default function SuperAdminDashboard() {
       const requestBody: any = {
         name: newTenant.name.trim(),
         atiId: newTenant.atiId.trim().toUpperCase(),
-        generateInitialToken: true // Enable ATI token generation for tenant onboarding
+        generateInitialToken: true
       }
 
       if (newTenant.generateInitialToken) {
@@ -100,7 +142,6 @@ export default function SuperAdminDashboard() {
           initialTokenConfig.notes = newTenant.notes.trim()
         }
 
-        // Only include initialTokenConfig if it has at least one property
         if (Object.keys(initialTokenConfig).length > 0) {
           requestBody.initialTokenConfig = initialTokenConfig
         }
@@ -130,7 +171,6 @@ export default function SuperAdminDashboard() {
         })
         fetchTenants()
 
-        // Show success message with token info if generated
         if (data.initial_token) {
           setCreatedTokenInfo({
             token: data.initial_token.token_display_once,
@@ -150,16 +190,10 @@ export default function SuperAdminDashboard() {
     }
   }
 
-  const navigateToATIManagement = () => {
-    router.push('/ati-management')
-  }
-
   const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)
-      // Could add a toast notification here
     } catch (err) {
-      // Fallback for older browsers
       const textArea = document.createElement('textarea')
       textArea.value = text
       document.body.appendChild(textArea)
@@ -208,7 +242,7 @@ export default function SuperAdminDashboard() {
 
       if (response.ok) {
         alert('Expiry notifications sent successfully!')
-        await checkExpiryNotifications() // Refresh status
+        await checkExpiryNotifications()
       } else {
         const error = await response.json()
         alert(error.message || 'Failed to send expiry notifications')
@@ -221,619 +255,623 @@ export default function SuperAdminDashboard() {
     }
   }
 
+  const toggleGroup = (group: string) => {
+    setExpandedGroups(prev => ({ ...prev, [group]: !prev[group] }))
+  }
+
+  // Navigation structure
+  const navGroups: NavGroup[] = [
+    {
+      title: 'Analytics & Monitoring',
+      icon: '📊',
+      items: [
+        { label: 'Platform Analytics', icon: '📈', href: '/super-admin/analytics' },
+        { label: 'User Service Usage', icon: '👥', href: '/super-admin/user-service-usage' },
+        { label: 'Quota Controller', icon: '⚡', href: '/super-admin/quota-controller' }
+      ]
+    },
+    {
+      title: 'AI & LLM Settings',
+      icon: '🤖',
+      items: [
+        { label: 'LLM Model Control', icon: '🧠', href: '/super-admin/llm-config', badge: 'NEW' },
+        { label: 'Model Costs', icon: '💰', href: '/super-admin/model-costs' }
+      ]
+    },
+    {
+      title: 'Jurisdiction & Content',
+      icon: '🌍',
+      items: [
+        { label: 'Jurisdiction Config', icon: '🏗️', href: '/super-admin/jurisdiction-config' },
+        { label: 'Country Profiles', icon: '🗺️', href: '/super-admin/countries' },
+        { label: 'Section Prompts', icon: '📝', href: '/super-admin/section-prompts' },
+        { label: 'Jurisdiction Styles', icon: '🎨', href: '/super-admin/jurisdiction-styles' },
+        { label: 'Superset Sections', icon: '📚', href: '/super-admin/superset-sections' }
+      ]
+    },
+    {
+      title: 'Access Management',
+      icon: '🔐',
+      items: [
+        { label: 'ATI Token Management', icon: '🎟️', href: '/ati-management' },
+        { label: 'Service Control', icon: '🎛️', href: '/super-admin/service-control' }
+      ]
+    }
+  ]
+
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center py-6">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900">Super Admin Dashboard</h1>
-              <p className="text-gray-600">Platform management and tenant oversight</p>
-            </div>
-            <div className="flex items-center space-x-4">
-              <button
-                onClick={navigateToATIManagement}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-purple-600 hover:bg-purple-700"
-              >
-                ATI Management
-              </button>
-              <button
-                onClick={() => router.push('/super-admin/analytics')}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
-              >
-                📊 Analytics
-              </button>
-              <button
-                onClick={() => router.push('/super-admin/quota-controller')}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-orange-500 hover:bg-orange-600"
-              >
-                Quota Controller
-              </button>
-              <button
-                onClick={() => router.push('/super-admin/user-service-usage')}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700"
-              >
-                User wise service usage
-              </button>
-              <button
-                onClick={() => router.push('/super-admin/jurisdiction-config')}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-amber-600 hover:bg-amber-700"
-              >
-                🏗️ Jurisdiction Config
-              </button>
-              <button
-                onClick={() => router.push('/super-admin/countries')}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-teal-600 hover:bg-teal-700"
-              >
-                🌍 Countries
-              </button>
-              <button
-                onClick={() => router.push('/super-admin/section-prompts')}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-pink-600 hover:bg-pink-700"
-              >
-                📝 Section Prompts
-              </button>
-              <button
-                onClick={() => router.push('/super-admin/jurisdiction-styles')}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-cyan-600 hover:bg-cyan-700"
-              >
-                🎨 Jurisdiction Styles
-              </button>
-              <button
-                onClick={() => setShowCreateTenant(true)}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700"
-              >
-                Create Tenant
-              </button>
-              <span className="text-sm text-gray-500">Welcome, {user?.email}</span>
-              <button
-                onClick={() => logout()}
-                className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
-              >
-                Logout
-              </button>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        {/* Stats Overview */}
-        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-4 mb-8">
-          <div className="bg-white overflow-hidden shadow rounded-lg">
-            <div className="p-5">
-              <div className="flex items-center">
-                <div className="flex-shrink-0">
-                  <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
-                    <span className="text-white text-sm font-bold">T</span>
-                  </div>
-                </div>
-                <div className="ml-5 w-0 flex-1">
-                  <dl>
-                    <dt className="text-sm font-medium text-gray-500 truncate">Total Tenants</dt>
-                    <dd className="text-lg font-medium text-gray-900">{tenants.length}</dd>
-                  </dl>
-                </div>
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
+      {/* Sidebar */}
+      <aside className={`fixed inset-y-0 left-0 z-50 flex flex-col bg-slate-900/95 backdrop-blur-xl border-r border-slate-700/50 transition-all duration-300 ${sidebarCollapsed ? 'w-16' : 'w-64'}`}>
+        {/* Logo Area */}
+        <div className="flex items-center justify-between h-16 px-4 border-b border-slate-700/50">
+          {!sidebarCollapsed && (
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center">
+                <span className="text-white font-bold text-sm">SA</span>
               </div>
+              <span className="font-semibold text-white">Super Admin</span>
             </div>
-          </div>
-
-          <div className="bg-white overflow-hidden shadow rounded-lg">
-            <div className="p-5">
-              <div className="flex items-center">
-                <div className="flex-shrink-0">
-                  <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center">
-                    <span className="text-white text-sm font-bold">U</span>
-                  </div>
-                </div>
-                <div className="ml-5 w-0 flex-1">
-                  <dl>
-                    <dt className="text-sm font-medium text-gray-500 truncate">Total Users</dt>
-                    <dd className="text-lg font-medium text-gray-900">{totalUsers}</dd>
-                  </dl>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white overflow-hidden shadow rounded-lg">
-            <div className="p-5">
-              <div className="flex items-center">
-                <div className="flex-shrink-0">
-                  <div className="w-8 h-8 bg-purple-500 rounded-full flex items-center justify-center">
-                    <span className="text-white text-sm font-bold">A</span>
-                  </div>
-                </div>
-                <div className="ml-5 w-0 flex-1">
-                  <dl>
-                    <dt className="text-sm font-medium text-gray-500 truncate">ATI Tokens</dt>
-                    <dd className="text-lg font-medium text-gray-900">{totalTokens}</dd>
-                  </dl>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white overflow-hidden shadow rounded-lg">
-            <div className="p-5">
-              <div className="flex items-center">
-                <div className="flex-shrink-0">
-                  <div className="w-8 h-8 bg-yellow-500 rounded-full flex items-center justify-center">
-                    <span className="text-white text-sm font-bold">A</span>
-                  </div>
-                </div>
-                <div className="ml-5 w-0 flex-1">
-                  <dl>
-                    <dt className="text-sm font-medium text-gray-500 truncate">Active Tenants</dt>
-                    <dd className="text-lg font-medium text-gray-900">
-                      {tenants.filter(t => t.status === 'ACTIVE').length}
-                    </dd>
-                  </dl>
-                </div>
-              </div>
-            </div>
-          </div>
+          )}
+          <button
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition-colors"
+          >
+            <svg className={`w-5 h-5 transition-transform ${sidebarCollapsed ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+            </svg>
+          </button>
         </div>
 
-        {/* Create Tenant Modal */}
-        {showCreateTenant && (
-          <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-            <div className="relative top-8 mx-auto p-6 border max-w-2xl w-full shadow-xl rounded-lg bg-white max-h-[90vh] overflow-y-auto">
-              {/* Header */}
-              <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-200">
-                <div>
-                  <h2 className="text-xl font-semibold text-gray-900">Create New Tenant</h2>
-                  <p className="mt-1 text-sm text-gray-600">Set up a new tenant organization with optional initial ATI token</p>
-                </div>
-                <button
-                  onClick={() => setShowCreateTenant(false)}
-                  className="text-gray-400 hover:text-gray-600 transition-colors duration-200"
-                >
-                  <span className="sr-only">Close</span>
-                  <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
+        {/* Navigation */}
+        <nav className="flex-1 overflow-y-auto py-4 px-2 space-y-1">
+          {/* Quick Actions */}
+          <button
+            onClick={() => setShowCreateTenant(true)}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-medium hover:from-emerald-600 hover:to-teal-600 transition-all shadow-lg shadow-emerald-500/20 ${sidebarCollapsed ? 'justify-center' : ''}`}
+          >
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+            </svg>
+            {!sidebarCollapsed && <span>Create Tenant</span>}
+          </button>
 
-              <form onSubmit={handleCreateTenant} className="space-y-8">
-                {/* Basic Information Section */}
-                <div className="space-y-6">
-                  <div>
-                    <h3 className="text-lg font-medium text-gray-900 mb-4">Basic Information</h3>
-                    <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-                      <div className="sm:col-span-2">
-                        <label htmlFor="tenant_name" className="block text-sm font-medium text-gray-700 mb-2">
-                          Tenant Name
-                        </label>
-                        <input
-                          type="text"
-                          id="tenant_name"
-                          value={newTenant.name}
-                          onChange={(e) => setNewTenant(prev => ({ ...prev, name: e.target.value }))}
-                          className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                          placeholder="e.g., Acme Corporation"
-                          required
-                        />
-                        <p className="mt-1 text-xs text-gray-500">The display name for this tenant organization</p>
-                      </div>
-
-                      <div className="sm:col-span-2">
-                        <label htmlFor="ati_id" className="block text-sm font-medium text-gray-700 mb-2">
-                          ATI ID
-                        </label>
-                        <input
-                          type="text"
-                          id="ati_id"
-                          value={newTenant.atiId}
-                          onChange={(e) => setNewTenant(prev => ({ ...prev, atiId: e.target.value.toUpperCase() }))}
-                          className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm uppercase"
-                          placeholder="e.g., ACME"
-                          required
-                        />
-                        <p className="mt-1 text-xs text-gray-500">
-                          A unique uppercase identifier for this tenant (used for ATI tokens and routing)
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* ATI Token Configuration Section */}
-                <div className="border-t border-gray-200 pt-6">
-                  <div className="space-y-6">
-                    <div>
-                      <h3 className="text-lg font-medium text-gray-900 mb-4">Initial ATI Token</h3>
-                      <div className="flex items-start">
-                        <div className="flex items-center h-5">
-                          <input
-                            id="generate_initial_token"
-                            type="checkbox"
-                            checked={newTenant.generateInitialToken}
-                            onChange={(e) => setNewTenant(prev => ({ ...prev, generateInitialToken: e.target.checked }))}
-                            className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
-                          />
-                        </div>
-                        <div className="ml-3">
-                          <label htmlFor="generate_initial_token" className="text-sm font-medium text-gray-900">
-                            Generate Initial ATI Token
-                          </label>
-                          <p className="text-sm text-gray-600 mt-1">
-                            Create an onboarding token that tenant administrators can use to add their first users
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {newTenant.generateInitialToken && (
-                      <div className="ml-7 pl-4 border-l-2 border-indigo-100 space-y-6">
-                        <div>
-                          <h4 className="text-base font-medium text-gray-900 mb-4">Token Configuration</h4>
-                          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-                            <div>
-                              <label htmlFor="token_expires_at" className="block text-sm font-medium text-gray-700 mb-2">
-                                Expiration Date (Optional)
-                              </label>
-                              <input
-                                type="datetime-local"
-                                id="token_expires_at"
-                                value={newTenant.expires_at}
-                                onChange={(e) => setNewTenant(prev => ({ ...prev, expires_at: e.target.value }))}
-                                className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                              />
-                              <p className="mt-1 text-xs text-gray-500">When this token will expire</p>
-                            </div>
-
-                            <div>
-                              <label htmlFor="token_max_uses" className="block text-sm font-medium text-gray-700 mb-2">
-                                Max Uses (Optional)
-                              </label>
-                              <input
-                                type="number"
-                                id="token_max_uses"
-                                value={newTenant.max_uses}
-                                onChange={(e) => setNewTenant(prev => ({ ...prev, max_uses: e.target.value }))}
-                                className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                                placeholder="Unlimited if empty"
-                                min="1"
-                              />
-                              <p className="mt-1 text-xs text-gray-500">Maximum number of uses for this token</p>
-                            </div>
-
-                            <div>
-                              <label htmlFor="token_plan_tier" className="block text-sm font-medium text-gray-700 mb-2">
-                                Plan Tier
-                              </label>
-                              <select
-                                id="token_plan_tier"
-                                value={newTenant.plan_tier}
-                                onChange={(e) => setNewTenant(prev => ({ ...prev, plan_tier: e.target.value }))}
-                                className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                              >
-                                <option value="BASIC">Basic</option>
-                                <option value="PRO">Pro</option>
-                                <option value="ENTERPRISE">Enterprise</option>
-                              </select>
-                              <p className="mt-1 text-xs text-gray-500">The plan tier this token grants access to</p>
-                            </div>
-
-                            <div>
-                              <label htmlFor="token_notes" className="block text-sm font-medium text-gray-700 mb-2">
-                                Notes (Optional)
-                              </label>
-                              <input
-                                type="text"
-                                id="token_notes"
-                                value={newTenant.notes}
-                                onChange={(e) => setNewTenant(prev => ({ ...prev, notes: e.target.value }))}
-                                className="block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
-                                placeholder="Purpose or recipient"
-                              />
-                              <p className="mt-1 text-xs text-gray-500">Additional notes about this token</p>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Security Warning */}
-                        <div className="bg-yellow-50 border border-yellow-200 rounded-md p-4">
-                          <div className="flex">
-                            <div className="flex-shrink-0">
-                              <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
-                                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                              </svg>
-                            </div>
-                            <div className="ml-3">
-                              <h4 className="text-sm font-medium text-yellow-800">
-                                Security Notice
-                              </h4>
-                              <div className="mt-2 text-sm text-yellow-700">
-                                <p>
-                                  This token will be displayed only once after creation. Make sure to securely share it with the tenant administrators.
-                                  It cannot be recovered if lost.
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Action Buttons */}
-                <div className="flex justify-end space-x-3 pt-6 border-t border-gray-200">
-                  <button
-                    type="button"
-                    onClick={() => setShowCreateTenant(false)}
-                    className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors duration-200"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isCreating}
-                    className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200"
-                  >
-                    {isCreating ? (
-                      <>
-                        <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        Creating...
-                      </>
-                    ) : (
-                      <>
-                        <svg className="-ml-1 mr-2 h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                        </svg>
-                        Create Tenant
-                      </>
-                    )}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {/* Success Modal for Token Display */}
-        {showSuccessModal && createdTokenInfo && (
-          <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-            <div className="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
-              <div className="mt-3">
-                <div className="flex items-center justify-between mb-4">
-                  <h3 className="text-lg font-medium text-green-900">
-                    ✅ Tenant Created Successfully
-                  </h3>
-                  <button
-                    onClick={() => {
-                      setShowSuccessModal(false)
-                      setCreatedTokenInfo(null)
-                    }}
-                    className="text-gray-400 hover:text-gray-600"
-                  >
-                    <span className="sr-only">Close</span>
-                    <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-
-                <div className="space-y-4">
-                  <div className="bg-green-50 border border-green-200 rounded-md p-4">
-                    <div className="flex">
-                      <div className="flex-shrink-0">
-                        <svg className="h-5 w-5 text-green-400" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                        </svg>
-                      </div>
-                      <div className="ml-3">
-                        <h3 className="text-sm font-medium text-green-800">
-                          Tenant "{createdTokenInfo.tenantName}" created successfully!
-                        </h3>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-yellow-50 border border-yellow-200 rounded-md p-4">
-                    <div className="flex">
-                      <div className="flex-shrink-0">
-                        <svg className="h-5 w-5 text-yellow-400" viewBox="0 0 20 20" fill="currentColor">
-                          <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                        </svg>
-                      </div>
-                      <div className="ml-3 flex-1">
-                        <h3 className="text-sm font-medium text-yellow-800">
-                          Initial ATI Token Generated
-                        </h3>
-                        <div className="mt-2 text-sm text-yellow-700">
-                          <p className="font-mono bg-yellow-100 p-2 rounded break-all mb-2">
-                            {createdTokenInfo.token}
-                          </p>
-                          <p className="text-xs mb-2">
-                            <strong>Fingerprint:</strong> <code className="bg-yellow-200 px-1 rounded">{createdTokenInfo.fingerprint}</code>
-                          </p>
-                          <p className="mb-3">
-                            <strong>⚠️ Security Warning:</strong> Copy this token now and share it securely with your tenant administrators.
-                            This token will never be shown again for security reasons.
-                          </p>
-                          <button
-                            onClick={() => copyToClipboard(createdTokenInfo.token)}
-                            className="inline-flex items-center px-3 py-1 border border-yellow-300 text-sm font-medium rounded-md text-yellow-800 bg-yellow-100 hover:bg-yellow-200"
-                          >
-                            📋 Copy Token to Clipboard
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex justify-end">
+          <div className="pt-4 space-y-1">
+            {navGroups.map((group, groupIndex) => (
+              <div key={group.title} className="mb-2">
+                {!sidebarCollapsed ? (
+                  <>
                     <button
-                      onClick={() => {
-                        setShowSuccessModal(false)
-                        setCreatedTokenInfo(null)
-                      }}
-                      className="inline-flex items-center px-4 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                      onClick={() => toggleGroup(['analytics', 'ai', 'jurisdiction', 'access'][groupIndex])}
+                      className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wider hover:text-slate-300 transition-colors"
                     >
-                      Close
+                      <span className="flex items-center gap-2">
+                        <span>{group.icon}</span>
+                        <span>{group.title}</span>
+                      </span>
+                      <svg className={`w-4 h-4 transition-transform ${expandedGroups[['analytics', 'ai', 'jurisdiction', 'access'][groupIndex]] ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
                     </button>
+                    {expandedGroups[['analytics', 'ai', 'jurisdiction', 'access'][groupIndex]] && (
+                      <div className="mt-1 space-y-0.5">
+                        {group.items.map((item) => (
+                          <button
+                            key={item.label}
+                            onClick={() => item.href ? router.push(item.href) : item.action?.()}
+                            className="w-full flex items-center justify-between px-3 py-2 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800/70 transition-all group"
+                          >
+                            <span className="flex items-center gap-3">
+                              <span className="text-base">{item.icon}</span>
+                              <span className="text-sm">{item.label}</span>
+                            </span>
+                            {item.badge && (
+                              <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white">
+                                {item.badge}
+                              </span>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="space-y-1">
+                    {group.items.map((item) => (
+                      <button
+                        key={item.label}
+                        onClick={() => item.href ? router.push(item.href) : item.action?.()}
+                        className="w-full flex items-center justify-center p-2.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-all"
+                        title={item.label}
+                      >
+                        <span className="text-lg">{item.icon}</span>
+                      </button>
+                    ))}
                   </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </nav>
+
+        {/* User Profile */}
+        <div className="border-t border-slate-700/50 p-3" ref={userMenuRef}>
+          <div className="relative">
+            <button
+              onClick={() => setShowUserMenu(!showUserMenu)}
+              className={`w-full flex items-center gap-3 px-2 py-2 rounded-lg hover:bg-slate-800 transition-colors ${sidebarCollapsed ? 'justify-center' : ''}`}
+            >
+              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-white font-semibold">
+                {user?.email?.charAt(0)?.toUpperCase() || 'S'}
+              </div>
+              {!sidebarCollapsed && (
+                <div className="flex-1 text-left">
+                  <div className="text-sm font-medium text-white truncate max-w-[140px]">{user?.email}</div>
+                  <div className="text-xs text-slate-400">Super Admin</div>
                 </div>
+              )}
+            </button>
+
+            {/* User Dropdown */}
+            {showUserMenu && (
+              <div className={`absolute bottom-full mb-2 ${sidebarCollapsed ? 'left-full ml-2' : 'left-0 right-0'} bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden min-w-[200px]`}>
+                <div className="px-4 py-3 border-b border-slate-700 bg-slate-800/50">
+                  <div className="text-sm font-medium text-white truncate">{user?.email}</div>
+                  <div className="text-xs text-slate-400 mt-0.5">Platform Administrator</div>
+                </div>
+                <div className="py-1">
+                  <button
+                    onClick={() => { router.push('/dashboard'); setShowUserMenu(false); }}
+                    className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-slate-300 hover:text-white hover:bg-slate-700/50 transition-colors"
+                  >
+                    <span>🏠</span>
+                    <span>Main Dashboard</span>
+                  </button>
+                  <button
+                    onClick={() => { logout(); setShowUserMenu(false); }}
+                    className="w-full flex items-center gap-3 px-4 py-2.5 text-sm text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-colors"
+                  >
+                    <span>🚪</span>
+                    <span>Sign Out</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className={`transition-all duration-300 ${sidebarCollapsed ? 'ml-16' : 'ml-64'}`}>
+        {/* Top Bar */}
+        <header className="sticky top-0 z-40 bg-slate-900/80 backdrop-blur-xl border-b border-slate-700/50">
+          <div className="flex items-center justify-between h-16 px-6">
+            <div>
+              <h1 className="text-xl font-bold text-white">Platform Overview</h1>
+              <p className="text-sm text-slate-400">Monitor and manage your entire platform</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={checkExpiryNotifications}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800 text-slate-300 hover:text-white hover:bg-slate-700 border border-slate-700 transition-colors"
+              >
+                <span>🔔</span>
+                <span className="text-sm">Check Notifications</span>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <div className="p-6 space-y-6">
+          {/* Stats Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {/* Total Tenants */}
+            <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-blue-500/10 to-blue-600/5 border border-blue-500/20 p-5">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500/10 rounded-full -translate-y-1/2 translate-x-1/2 blur-2xl"></div>
+              <div className="relative">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center">
+                    <span className="text-xl">🏢</span>
+                  </div>
+                  <span className="text-sm font-medium text-blue-300">Total Tenants</span>
+                </div>
+                <div className="text-3xl font-bold text-white">{tenants.length}</div>
+                <div className="text-sm text-slate-400 mt-1">Organizations registered</div>
+              </div>
+            </div>
+
+            {/* Total Users */}
+            <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-emerald-500/10 to-emerald-600/5 border border-emerald-500/20 p-5">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 rounded-full -translate-y-1/2 translate-x-1/2 blur-2xl"></div>
+              <div className="relative">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-500/20 flex items-center justify-center">
+                    <span className="text-xl">👥</span>
+                  </div>
+                  <span className="text-sm font-medium text-emerald-300">Total Users</span>
+                </div>
+                <div className="text-3xl font-bold text-white">{totalUsers}</div>
+                <div className="text-sm text-slate-400 mt-1">Active platform users</div>
+              </div>
+            </div>
+
+            {/* ATI Tokens */}
+            <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-violet-500/10 to-violet-600/5 border border-violet-500/20 p-5">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-violet-500/10 rounded-full -translate-y-1/2 translate-x-1/2 blur-2xl"></div>
+              <div className="relative">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-violet-500/20 flex items-center justify-center">
+                    <span className="text-xl">🎟️</span>
+                  </div>
+                  <span className="text-sm font-medium text-violet-300">ATI Tokens</span>
+                </div>
+                <div className="text-3xl font-bold text-white">{totalTokens}</div>
+                <div className="text-sm text-slate-400 mt-1">Access tokens issued</div>
+              </div>
+            </div>
+
+            {/* Active Tenants */}
+            <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-amber-500/10 to-amber-600/5 border border-amber-500/20 p-5">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/10 rounded-full -translate-y-1/2 translate-x-1/2 blur-2xl"></div>
+              <div className="relative">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-xl bg-amber-500/20 flex items-center justify-center">
+                    <span className="text-xl">✅</span>
+                  </div>
+                  <span className="text-sm font-medium text-amber-300">Active Tenants</span>
+                </div>
+                <div className="text-3xl font-bold text-white">{tenants.filter(t => t.status === 'ACTIVE').length}</div>
+                <div className="text-sm text-slate-400 mt-1">Currently active</div>
               </div>
             </div>
           </div>
-        )}
 
-        {/* Expiry Notifications */}
-        <div className="bg-white shadow overflow-hidden sm:rounded-md mb-8">
-          <div className="px-4 py-5 sm:px-6 border-b border-gray-200">
-            <div className="flex justify-between items-center">
-              <div>
-                <h3 className="text-lg leading-6 font-medium text-gray-900">Expiry Notifications</h3>
-                <p className="mt-1 max-w-2xl text-sm text-gray-500">
-                  Monitor and send notifications for tokens expiring within 7 days
-                </p>
-              </div>
-              <div className="flex space-x-3">
-                <button
-                  onClick={checkExpiryNotifications}
-                  className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
-                >
-                  Check Status
-                </button>
+          {/* Expiry Notifications */}
+          {notificationStatus && (
+            <div className="rounded-2xl bg-slate-800/50 border border-slate-700/50 overflow-hidden">
+              <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700/50">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-orange-500/20 flex items-center justify-center">
+                    <span className="text-xl">⏰</span>
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-white">Expiring Tokens</h3>
+                    <p className="text-sm text-slate-400">
+                      {notificationStatus.expiringTokensCount} token{notificationStatus.expiringTokensCount !== 1 ? 's' : ''} expiring within 7 days
+                    </p>
+                  </div>
+                </div>
                 <button
                   onClick={triggerExpiryNotifications}
                   disabled={isCheckingNotifications}
-                  className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  className="px-4 py-2 rounded-lg bg-orange-500 text-white font-medium hover:bg-orange-600 disabled:opacity-50 transition-colors"
                 >
                   {isCheckingNotifications ? 'Sending...' : 'Send Notifications'}
                 </button>
               </div>
-            </div>
-          </div>
-
-          {notificationStatus && (
-            <div className="px-4 py-5 sm:p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="text-sm font-medium text-gray-900">
-                    Tokens Expiring Soon
-                  </h4>
-                  <p className="text-sm text-gray-500">
-                    {notificationStatus.expiringTokensCount} token{notificationStatus.expiringTokensCount !== 1 ? 's' : ''} expiring within 7 days
-                  </p>
-                </div>
-                {notificationStatus.expiringTokensCount > 0 && (
-                  <div className="flex items-center text-sm text-orange-600">
-                    <svg className="w-5 h-5 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                    </svg>
-                    Action Required
-                  </div>
-                )}
-              </div>
 
               {notificationStatus.tokens.length > 0 && (
-                <div className="mt-4">
-                  <h5 className="text-sm font-medium text-gray-900 mb-3">Expiring Tokens:</h5>
-                  <div className="space-y-2">
-                    {notificationStatus.tokens.slice(0, 5).map((token: any) => (
-                      <div key={token.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-md">
-                        <div className="flex items-center space-x-3">
-                          <div className="flex-shrink-0">
-                            <div className={`w-3 h-3 rounded-full ${
-                              token.daysUntilExpiry <= 3 ? 'bg-red-500' :
-                              token.daysUntilExpiry <= 7 ? 'bg-yellow-500' : 'bg-gray-500'
-                            }`} />
-                          </div>
-                          <div>
-                            <p className="text-sm font-medium text-gray-900">
-                              {token.fingerprint}
-                            </p>
-                            <p className="text-sm text-gray-500">
-                              {token.tenantName} • Expires in {token.daysUntilExpiry} days
-                            </p>
-                          </div>
-                        </div>
-                        <div className="text-sm text-gray-500">
-                          {new Date(token.expiresAt).toLocaleDateString()}
+                <div className="p-4 space-y-2">
+                  {notificationStatus.tokens.slice(0, 5).map((token: any) => (
+                    <div key={token.id} className="flex items-center justify-between p-3 rounded-xl bg-slate-900/50 border border-slate-700/50">
+                      <div className="flex items-center gap-3">
+                        <div className={`w-2.5 h-2.5 rounded-full ${
+                          token.daysUntilExpiry <= 3 ? 'bg-red-500' :
+                          token.daysUntilExpiry <= 7 ? 'bg-amber-500' : 'bg-slate-500'
+                        }`} />
+                        <div>
+                          <div className="text-sm font-medium text-white">{token.fingerprint}</div>
+                          <div className="text-xs text-slate-400">{token.tenantName} • Expires in {token.daysUntilExpiry} days</div>
                         </div>
                       </div>
-                    ))}
-                    {notificationStatus.tokens.length > 5 && (
-                      <p className="text-sm text-gray-500 text-center py-2">
-                        ...and {notificationStatus.tokens.length - 5} more
-                      </p>
-                    )}
-                  </div>
+                      <div className="text-sm text-slate-400">
+                        {new Date(token.expiresAt).toLocaleDateString()}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
           )}
-        </div>
 
-        {/* Tenants List */}
-        <div className="bg-white shadow overflow-hidden sm:rounded-md">
-          <div className="px-4 py-5 sm:px-6 border-b border-gray-200">
-            <h3 className="text-lg leading-6 font-medium text-gray-900">Tenant Management</h3>
-            <p className="mt-1 max-w-2xl text-sm text-gray-500">
-              Overview of all tenants and their activity
-            </p>
-          </div>
-
-          {isLoading ? (
-            <div className="text-center py-12">
-              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600 mx-auto"></div>
-              <p className="mt-2 text-sm text-gray-500">Loading tenants...</p>
-            </div>
-          ) : tenants.length === 0 ? (
-            <div className="text-center py-12">
-              <div className="text-gray-500">
-                <svg className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                </svg>
+          {/* Tenants List */}
+          <div className="rounded-2xl bg-slate-800/50 border border-slate-700/50 overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700/50">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center">
+                  <span className="text-xl">🏢</span>
+                </div>
+                <div>
+                  <h3 className="font-semibold text-white">Tenant Management</h3>
+                  <p className="text-sm text-slate-400">Overview of all tenants and their activity</p>
+                </div>
               </div>
-              <h3 className="mt-2 text-sm font-medium text-gray-900">No tenants yet</h3>
-              <p className="mt-1 text-sm text-gray-500">Create your first tenant to get started.</p>
+              <button
+                onClick={() => setShowCreateTenant(true)}
+                className="px-4 py-2 rounded-lg bg-emerald-500 text-white font-medium hover:bg-emerald-600 transition-colors flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                Add Tenant
+              </button>
             </div>
-          ) : (
-            <ul className="divide-y divide-gray-200">
-              {tenants.map((tenant) => (
-                <li key={tenant.id} className="px-4 py-4 sm:px-6 hover:bg-gray-50">
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center">
-                        <div className="flex-1">
-                          <h4 className="text-sm font-medium text-gray-900">{tenant.name}</h4>
-                          <p className="text-sm text-gray-500">ATI ID: {tenant.ati_id}</p>
-                        </div>
-                        <div className="ml-4 flex flex-col items-end space-y-1">
-                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                            tenant.status === 'ACTIVE'
-                              ? 'bg-green-100 text-green-800'
-                              : 'bg-red-100 text-red-800'
-                          }`}>
-                            {tenant.status}
-                          </span>
-                          <div className="text-xs text-gray-500">
-                            {tenant.user_count} users • {tenant.ati_token_count} tokens
-                          </div>
+
+            {isLoading ? (
+              <div className="flex items-center justify-center py-16">
+                <div className="animate-spin rounded-full h-10 w-10 border-2 border-violet-500 border-t-transparent"></div>
+              </div>
+            ) : tenants.length === 0 ? (
+              <div className="text-center py-16">
+                <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-slate-700/50 flex items-center justify-center">
+                  <span className="text-3xl">🏢</span>
+                </div>
+                <h4 className="text-lg font-medium text-white mb-2">No tenants yet</h4>
+                <p className="text-slate-400 mb-4">Create your first tenant to get started</p>
+                <button
+                  onClick={() => setShowCreateTenant(true)}
+                  className="px-6 py-2.5 rounded-lg bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white font-medium hover:from-violet-600 hover:to-fuchsia-600 transition-all"
+                >
+                  Create First Tenant
+                </button>
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-700/50">
+                {tenants.map((tenant) => (
+                  <div key={tenant.id} className="flex items-center justify-between px-6 py-4 hover:bg-slate-800/30 transition-colors">
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500/20 to-violet-500/20 border border-slate-700 flex items-center justify-center">
+                        <span className="text-lg font-bold text-white">{tenant.name.charAt(0).toUpperCase()}</span>
+                      </div>
+                      <div>
+                        <h4 className="font-medium text-white">{tenant.name}</h4>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-xs text-slate-400">ATI: {tenant.ati_id}</span>
+                          <span className="text-xs text-slate-500">•</span>
+                          <span className="text-xs text-slate-400">{tenant.user_count} users</span>
+                          <span className="text-xs text-slate-500">•</span>
+                          <span className="text-xs text-slate-400">{tenant.ati_token_count} tokens</span>
                         </div>
                       </div>
-                      <div className="mt-2 text-xs text-gray-500">
-                        Created {new Date(tenant.created_at).toLocaleDateString()}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
+                        tenant.status === 'ACTIVE'
+                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                          : 'bg-red-500/20 text-red-400 border border-red-500/30'
+                      }`}>
+                        {tenant.status}
+                      </span>
+                      <span className="text-xs text-slate-500">
+                        {new Date(tenant.created_at).toLocaleDateString()}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </main>
+
+      {/* Create Tenant Modal */}
+      {showCreateTenant && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-start justify-center z-50 overflow-y-auto py-8">
+          <div className="relative w-full max-w-2xl mx-4 bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700">
+              <div>
+                <h2 className="text-xl font-semibold text-white">Create New Tenant</h2>
+                <p className="text-sm text-slate-400 mt-1">Set up a new organization with optional ATI token</p>
+              </div>
+              <button
+                onClick={() => setShowCreateTenant(false)}
+                className="p-2 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateTenant} className="p-6 space-y-6">
+              {/* Basic Information */}
+              <div className="space-y-4">
+                <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Basic Information</h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="sm:col-span-2">
+                    <label className="block text-sm font-medium text-slate-300 mb-2">Tenant Name</label>
+                    <input
+                      type="text"
+                      value={newTenant.name}
+                      onChange={(e) => setNewTenant(prev => ({ ...prev, name: e.target.value }))}
+                      className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-colors"
+                      placeholder="e.g., Acme Corporation"
+                      required
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-sm font-medium text-slate-300 mb-2">ATI ID</label>
+                    <input
+                      type="text"
+                      value={newTenant.atiId}
+                      onChange={(e) => setNewTenant(prev => ({ ...prev, atiId: e.target.value.toUpperCase() }))}
+                      className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-colors uppercase"
+                      placeholder="e.g., ACME"
+                      required
+                    />
+                    <p className="text-xs text-slate-500 mt-1">Unique identifier for ATI tokens and routing</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Token Configuration */}
+              <div className="space-y-4 pt-4 border-t border-slate-700">
+                <div className="flex items-center gap-3">
+                  <input
+                    id="generate_token"
+                    type="checkbox"
+                    checked={newTenant.generateInitialToken}
+                    onChange={(e) => setNewTenant(prev => ({ ...prev, generateInitialToken: e.target.checked }))}
+                    className="w-4 h-4 rounded border-slate-600 bg-slate-900 text-violet-500 focus:ring-violet-500 focus:ring-offset-slate-800"
+                  />
+                  <label htmlFor="generate_token" className="text-sm font-medium text-white">Generate Initial ATI Token</label>
+                </div>
+
+                {newTenant.generateInitialToken && (
+                  <div className="ml-7 pl-4 border-l-2 border-violet-500/30 space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-300 mb-2">Expiration Date</label>
+                        <input
+                          type="datetime-local"
+                          value={newTenant.expires_at}
+                          onChange={(e) => setNewTenant(prev => ({ ...prev, expires_at: e.target.value }))}
+                          className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-colors"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-300 mb-2">Max Uses</label>
+                        <input
+                          type="number"
+                          value={newTenant.max_uses}
+                          onChange={(e) => setNewTenant(prev => ({ ...prev, max_uses: e.target.value }))}
+                          className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-colors"
+                          placeholder="Unlimited"
+                          min="1"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-300 mb-2">Plan Tier</label>
+                        <select
+                          value={newTenant.plan_tier}
+                          onChange={(e) => setNewTenant(prev => ({ ...prev, plan_tier: e.target.value }))}
+                          className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-colors"
+                        >
+                          <option value="BASIC">Basic</option>
+                          <option value="PRO">Pro</option>
+                          <option value="ENTERPRISE">Enterprise</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-300 mb-2">Notes</label>
+                        <input
+                          type="text"
+                          value={newTenant.notes}
+                          onChange={(e) => setNewTenant(prev => ({ ...prev, notes: e.target.value }))}
+                          className="w-full px-4 py-2.5 rounded-xl bg-slate-900 border border-slate-700 text-white placeholder-slate-500 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 transition-colors"
+                          placeholder="Optional notes"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Security Warning */}
+                    <div className="flex items-start gap-3 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                      <span className="text-xl">⚠️</span>
+                      <div>
+                        <h4 className="font-medium text-amber-400">Security Notice</h4>
+                        <p className="text-sm text-amber-300/80 mt-1">
+                          The generated token will only be displayed once. Copy and share it securely.
+                        </p>
                       </div>
                     </div>
                   </div>
-                </li>
-              ))}
-            </ul>
-          )}
+                )}
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-700">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateTenant(false)}
+                  className="px-5 py-2.5 rounded-xl border border-slate-600 text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreating}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white font-medium hover:from-violet-600 hover:to-fuchsia-600 disabled:opacity-50 transition-all flex items-center gap-2"
+                >
+                  {isCreating ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
+                      Creating...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                      Create Tenant
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
-      </main>
+      )}
+
+      {/* Success Modal */}
+      {showSuccessModal && createdTokenInfo && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="w-full max-w-md mx-4 bg-slate-800 border border-slate-700 rounded-2xl shadow-2xl">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-700">
+              <h3 className="text-lg font-semibold text-white flex items-center gap-2">
+                <span className="text-emerald-400">✅</span>
+                Tenant Created
+              </h3>
+              <button
+                onClick={() => { setShowSuccessModal(false); setCreatedTokenInfo(null); }}
+                className="p-2 rounded-lg hover:bg-slate-700 text-slate-400 hover:text-white transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+                <p className="text-sm text-emerald-300">
+                  Tenant "{createdTokenInfo.tenantName}" has been created successfully!
+                </p>
+              </div>
+
+              <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 space-y-3">
+                <div className="flex items-start gap-2">
+                  <span className="text-amber-400">⚠️</span>
+                  <h4 className="font-medium text-amber-400">Initial ATI Token</h4>
+                </div>
+                <div className="font-mono text-sm bg-slate-900 p-3 rounded-lg text-amber-300 break-all">
+                  {createdTokenInfo.token}
+                </div>
+                <p className="text-xs text-slate-400">
+                  <strong>Fingerprint:</strong> <code className="bg-slate-900 px-1.5 py-0.5 rounded text-amber-300">{createdTokenInfo.fingerprint}</code>
+                </p>
+                <p className="text-sm text-amber-300/80">
+                  Copy this token now! It will not be shown again.
+                </p>
+                <button
+                  onClick={() => copyToClipboard(createdTokenInfo.token)}
+                  className="w-full px-4 py-2.5 rounded-xl bg-amber-500/20 border border-amber-500/30 text-amber-300 hover:bg-amber-500/30 transition-colors flex items-center justify-center gap-2"
+                >
+                  <span>📋</span>
+                  Copy Token to Clipboard
+                </button>
+              </div>
+
+              <button
+                onClick={() => { setShowSuccessModal(false); setCreatedTokenInfo(null); }}
+                className="w-full px-4 py-2.5 rounded-xl bg-slate-700 text-white hover:bg-slate-600 transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

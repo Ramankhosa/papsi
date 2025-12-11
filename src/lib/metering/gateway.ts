@@ -3,8 +3,15 @@
 //
 // LLM MODEL ACCESS CONTROL:
 // - Which plans can use which LLM models is controlled ONLY by Super Admin
-// - Via PlanLLMAccess table (plan -> model class mapping)
+// - Via PlanLLMAccess table (backward compatible) OR
+// - Via PlanStageModelConfig/PlanTaskModelConfig (new flexible system)
 // - Tenants have NO control over LLM model routing
+//
+// MODEL RESOLUTION PRIORITY:
+// 1. Stage-specific config (if stage is provided)
+// 2. Task-specific config
+// 3. Plan defaults (PlanLLMAccess)
+// 4. System default model
 //
 // ORGANIZATIONAL SERVICE ACCESS (teams/users):
 // - Handled separately at API route level, NOT in LLM gateway
@@ -24,15 +31,29 @@ import { MeteringError } from './errors'
 import { createMeteringSystem } from './system'
 import { extractTenantContextFromRequest } from './auth-bridge'
 import { llmProviderRouter } from './providers/provider-router'
+import { resolveModel, type ModelResolutionResult } from './model-resolver'
 
 // === CENTRAL GATEWAY SERVICE ===
 
 export class LLMGateway {
   private system = createMeteringSystem()
 
+  /**
+   * Execute LLM operation with automatic model resolution
+   * 
+   * @param request - Request with headers or tenant context
+   * @param llmRequest - LLM request with taskCode and optional stageCode
+   * @returns Response with success status and LLM output
+   * 
+   * Model Resolution Priority:
+   * 1. If stageCode is provided: Look up PlanStageModelConfig
+   * 2. If taskCode only: Look up PlanTaskModelConfig  
+   * 3. Fall back to PlanLLMAccess (backward compatible)
+   * 4. Fall back to system default model
+   */
   async executeLLMOperation(
     request: { headers: Record<string, string> } | { tenantContext: TenantContext },
-    llmRequest: LLMRequest
+    llmRequest: LLMRequest & { stageCode?: string }
   ): Promise<{ success: boolean; response?: LLMResponse; error?: MeteringError }> {
     try {
       // 1. Extract tenant context from request (existing metering hierarchy)
@@ -70,17 +91,112 @@ export class LLMGateway {
         }
       }
 
-      // 5. Route to LLM provider with enforcement limits (model access per plan)
-      const response = await llmProviderRouter.routeAndExecute(llmRequest, decision)
+      // 5. Resolve the model to use based on plan, task, and optional stage
+      let modelResolution: ModelResolutionResult | null = null
+      if (tenantContext.planId) {
+        try {
+          modelResolution = await resolveModel(
+            tenantContext.planId,
+            llmRequest.taskCode,
+            llmRequest.stageCode
+          )
+          
+          // Apply stage-specific limits if configured (both input and output)
+          if (modelResolution.maxTokensOut && decision.maxTokensOut) {
+            decision.maxTokensOut = Math.min(decision.maxTokensOut, modelResolution.maxTokensOut)
+          } else if (modelResolution.maxTokensOut) {
+            decision.maxTokensOut = modelResolution.maxTokensOut
+          }
+          
+          // Apply maxTokensIn from stage config (NEW: enforce input limits)
+          if (modelResolution.maxTokensIn && decision.maxTokensIn) {
+            decision.maxTokensIn = Math.min(decision.maxTokensIn, modelResolution.maxTokensIn)
+          } else if (modelResolution.maxTokensIn) {
+            decision.maxTokensIn = modelResolution.maxTokensIn
+          }
+          
+          console.log(`✓ Model resolved: ${modelResolution.modelCode} (source: ${modelResolution.source}, provider: ${modelResolution.provider})`)
+          if (modelResolution.fallbacks.length > 0) {
+            console.log(`  Fallbacks: ${modelResolution.fallbacks.map(f => f.modelCode).join(' → ')}`)
+          }
+        } catch (resolveError) {
+          // Log error details for debugging but continue with fallback
+          console.error('✗ Model resolution failed:', {
+            error: resolveError instanceof Error ? resolveError.message : resolveError,
+            planId: tenantContext.planId,
+            taskCode: llmRequest.taskCode,
+            stageCode: llmRequest.stageCode
+          })
+          console.warn('  Falling back to default provider routing')
+        }
+      } else {
+        console.log('No planId in tenant context, using default provider routing')
+      }
 
-      // 6. Record usage (metering for billing/quotas)
+      // 6. Validate model capabilities (vision, streaming, etc.)
+      const selectedModel = modelResolution?.modelCode || 'gemini-2.5-pro' // Default model
+      const capabilityCheck = this.validateModelCapabilities(selectedModel, llmRequest)
+      if (!capabilityCheck.valid) {
+        console.error(`✗ Model capability validation failed: ${capabilityCheck.error}`)
+        return {
+          success: false,
+          error: new MeteringError('INVALID_MODEL', capabilityCheck.error || 'Model does not support required capabilities')
+        }
+      }
+
+      // 7. Preflight check: validate input size against provider limits
+      const preflightResult = this.preflightCheck(
+        selectedModel,
+        llmRequest.inputTokens || 0,
+        decision.maxTokensIn,
+        decision.maxTokensOut
+      )
+      
+      if (!preflightResult.valid) {
+        console.error(`✗ Preflight check failed: ${preflightResult.error}`)
+        return {
+          success: false,
+          error: new MeteringError('INPUT_TOO_LARGE', preflightResult.error || 'Input exceeds limits')
+        }
+      }
+      
+      // Apply clamped maxTokensOut if it exceeded provider limits
+      if (preflightResult.clampedMaxTokensOut !== undefined) {
+        decision.maxTokensOut = preflightResult.clampedMaxTokensOut
+      }
+      
+      if (preflightResult.warnings.length > 0) {
+        console.warn(`⚠ Preflight warnings: ${preflightResult.warnings.join('; ')}`)
+      }
+
+      // 8. Route to LLM provider with resolved model or default routing
+      let response: LLMResponse
+      
+      if (modelResolution) {
+        // Use the resolved model with fallbacks
+        response = await llmProviderRouter.routeWithModel(
+          llmRequest,
+          decision,
+          modelResolution.modelCode,
+          modelResolution.fallbacks.map(f => f.modelCode)
+        )
+      } else {
+        // Fall back to default priority-based routing
+        response = await llmProviderRouter.routeAndExecute(llmRequest, decision)
+      }
+
+      // 7. Record usage (metering for billing/quotas)
       if (decision.reservationId) {
         const usageStats: UsageStats = {
           inputTokens: llmRequest.inputTokens || 0,
           outputTokens: response.outputTokens,
           modelClass: response.modelClass as any,
           apiCalls: 1,
-          metadata: llmRequest.metadata
+          metadata: {
+            ...llmRequest.metadata,
+            stageCode: llmRequest.stageCode,
+            modelSource: modelResolution?.source
+          }
         }
 
         await this.system.metering.recordUsage(decision.reservationId, usageStats, tenantContext.userId)
@@ -93,33 +209,270 @@ export class LLMGateway {
         return { success: false, error }
       }
 
+      console.error('LLM Gateway error:', error)
       const wrappedError = new MeteringError('SERVICE_UNAVAILABLE', 'LLM gateway error')
       return { success: false, error: wrappedError }
     }
   }
 
   /**
-   * Lightweight heuristic to estimate input tokens when callers don't provide them.
-   * This keeps metering accurate enough for billing without burdening every call site.
+   * Execute LLM operation with explicit stage code
+   * Convenience method for stage-aware calls
+   */
+  async executeLLMOperationForStage(
+    request: { headers: Record<string, string> } | { tenantContext: TenantContext },
+    taskCode: TaskCode,
+    stageCode: string,
+    prompt: string,
+    options?: {
+      parameters?: Record<string, any>
+      idempotencyKey?: string
+      content?: any
+    }
+  ): Promise<{ success: boolean; response?: LLMResponse; error?: MeteringError }> {
+    const llmRequest: LLMRequest & { stageCode: string } = {
+      taskCode,
+      stageCode,
+      prompt,
+      parameters: options?.parameters,
+      idempotencyKey: options?.idempotencyKey || crypto.randomUUID(),
+      content: options?.content
+    }
+
+    return this.executeLLMOperation(request, llmRequest)
+  }
+
+  /**
+   * Improved token estimation that accounts for text, images, and JSON payloads.
+   * More accurate for quota management and billing.
    */
   private estimateInputTokens(llmRequest: LLMRequest): number {
-    let text = ''
+    let textTokens = 0
+    let imageTokens = 0
 
+    // Estimate text tokens
     if (llmRequest.prompt) {
-      text += llmRequest.prompt
+      textTokens += this.estimateTextTokens(llmRequest.prompt)
     }
 
     if (llmRequest.content?.parts?.length) {
       for (const part of llmRequest.content.parts) {
         if (part.type === 'text') {
-          text += ' ' + part.text
+          textTokens += this.estimateTextTokens(part.text)
+        } else if (part.type === 'image') {
+          // Image token estimation based on provider conventions:
+          // - OpenAI: ~85 tokens for low detail, 85 + 170*tiles for high detail
+          // - Gemini: Similar approach
+          // - We'll use a conservative estimate of ~1000 tokens per image for high detail
+          const imageData = part.image?.data || ''
+          const imageSizeKB = Math.ceil((imageData.length * 3) / 4 / 1024) // Base64 to bytes
+          
+          if (imageSizeKB > 512) {
+            // Large image - high detail processing
+            imageTokens += 1500
+          } else if (imageSizeKB > 128) {
+            // Medium image
+            imageTokens += 800
+          } else {
+            // Small image - low detail
+            imageTokens += 300
+          }
         }
       }
     }
 
-    // Very rough heuristic: ~4 characters per token
-    const approx = text ? Math.ceil(text.length / 4) : 0
-    return approx
+    return textTokens + imageTokens
+  }
+
+  /**
+   * Estimate tokens for text content using improved heuristics
+   */
+  private estimateTextTokens(text: string): number {
+    if (!text) return 0
+    
+    // More accurate tokenization heuristic:
+    // - English text: ~4 chars/token
+    // - Code: ~3 chars/token (more symbols)
+    // - JSON: ~2.5 chars/token (lots of structure)
+    
+    const hasJson = text.includes('{') && text.includes('}')
+    const hasCode = text.includes('function') || text.includes('const ') || text.includes('import ')
+    
+    let charsPerToken = 4
+    if (hasJson) charsPerToken = 2.5
+    else if (hasCode) charsPerToken = 3
+    
+    return Math.ceil(text.length / charsPerToken)
+  }
+
+  /**
+   * Check if the request requires vision capabilities
+   */
+  private requiresVision(llmRequest: LLMRequest): boolean {
+    return !!(llmRequest.content?.parts?.some(part => part.type === 'image'))
+  }
+
+  /**
+   * Models that support vision/multimodal input
+   */
+  private readonly VISION_CAPABLE_MODELS = new Set([
+    // OpenAI
+    'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-5', 'gpt-5.1', 'gpt-5-mini', 'gpt-5-nano',
+    // Anthropic
+    'claude-3.5-sonnet', 'claude-3.5-haiku', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku',
+    'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229',
+    // Google Gemini
+    'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash',
+    'gemini-3.0-nano-banana', 'gemini-3-pro-image-preview'
+  ])
+
+  /**
+   * Validate that the model supports required capabilities
+   */
+  private validateModelCapabilities(modelCode: string, llmRequest: LLMRequest): { valid: boolean; error?: string } {
+    // Check vision requirement
+    if (this.requiresVision(llmRequest)) {
+      if (!this.VISION_CAPABLE_MODELS.has(modelCode)) {
+        return {
+          valid: false,
+          error: `Model ${modelCode} does not support vision/image inputs. Vision-capable models: GPT-4o, Claude 3.x, Gemini`
+        }
+      }
+    }
+    
+    return { valid: true }
+  }
+
+  /**
+   * Get provider context limits for preflight checks
+   * Includes both friendly names and canonical API model IDs
+   */
+  private getProviderContextLimits(modelCode: string): { maxInput: number; maxOutput: number } {
+    // Context limits by model - includes both friendly names and canonical API IDs
+    const limits: Record<string, { maxInput: number; maxOutput: number }> = {
+      // OpenAI - GPT-4 Series
+      'gpt-4o': { maxInput: 128000, maxOutput: 16384 },
+      'gpt-4o-mini': { maxInput: 128000, maxOutput: 16384 },
+      'gpt-4-turbo': { maxInput: 128000, maxOutput: 4096 },
+      'gpt-4': { maxInput: 8192, maxOutput: 4096 },
+      // OpenAI - GPT-5 Series
+      'gpt-5': { maxInput: 400000, maxOutput: 128000 },
+      'gpt-5.1': { maxInput: 400000, maxOutput: 128000 },
+      'gpt-5-mini': { maxInput: 200000, maxOutput: 64000 },
+      'gpt-5-nano': { maxInput: 128000, maxOutput: 32000 },
+      // OpenAI - GPT-3.5 Series
+      'gpt-3.5-turbo': { maxInput: 16385, maxOutput: 4096 },
+      // OpenAI - o1 Reasoning Models
+      'o1': { maxInput: 200000, maxOutput: 100000 },
+      'o1-mini': { maxInput: 128000, maxOutput: 65536 },
+      'o1-preview': { maxInput: 128000, maxOutput: 32768 },
+      
+      // Anthropic - Friendly names
+      'claude-3.5-sonnet': { maxInput: 200000, maxOutput: 8192 },
+      'claude-3.5-haiku': { maxInput: 200000, maxOutput: 8192 },
+      'claude-3-opus': { maxInput: 200000, maxOutput: 4096 },
+      'claude-3-sonnet': { maxInput: 200000, maxOutput: 4096 },
+      'claude-3-haiku': { maxInput: 200000, maxOutput: 4096 },
+      // Anthropic - Canonical API model IDs (with dates)
+      'claude-3-5-sonnet-20241022': { maxInput: 200000, maxOutput: 8192 },
+      'claude-3-5-haiku-20241022': { maxInput: 200000, maxOutput: 8192 },
+      'claude-3-opus-20240229': { maxInput: 200000, maxOutput: 4096 },
+      'claude-3-sonnet-20240229': { maxInput: 200000, maxOutput: 4096 },
+      'claude-3-haiku-20240307': { maxInput: 200000, maxOutput: 4096 },
+      
+      // Gemini
+      'gemini-2.5-pro': { maxInput: 1000000, maxOutput: 8192 },
+      'gemini-2.0-flash': { maxInput: 1000000, maxOutput: 8192 },
+      'gemini-2.0-flash-lite': { maxInput: 1000000, maxOutput: 8192 },
+      'gemini-1.5-pro': { maxInput: 2000000, maxOutput: 8192 },
+      'gemini-1.5-flash': { maxInput: 1000000, maxOutput: 8192 },
+      'gemini-3.0-nano-banana': { maxInput: 1000000, maxOutput: 8192 },
+      'gemini-3-pro-image-preview': { maxInput: 1000000, maxOutput: 8192 },
+      
+      // DeepSeek
+      'deepseek-chat': { maxInput: 128000, maxOutput: 8192 },
+      'deepseek-reasoner': { maxInput: 128000, maxOutput: 8192 },
+      
+      // Groq - Friendly names (prefixed)
+      'groq-llama-3.3-70b': { maxInput: 128000, maxOutput: 8192 },
+      'groq-llama-3.1-70b': { maxInput: 128000, maxOutput: 8192 },
+      'groq-llama-3.1-8b': { maxInput: 128000, maxOutput: 8192 },
+      'groq-mixtral-8x7b': { maxInput: 32768, maxOutput: 8192 },
+      'groq-gemma2-9b': { maxInput: 8192, maxOutput: 8192 },
+      // Groq - Canonical API model IDs
+      'llama-3.3-70b-versatile': { maxInput: 128000, maxOutput: 8192 },
+      'llama-3.1-70b-versatile': { maxInput: 128000, maxOutput: 8192 },
+      'llama-3.1-8b-instant': { maxInput: 128000, maxOutput: 8192 },
+      'mixtral-8x7b-32768': { maxInput: 32768, maxOutput: 8192 },
+      'gemma2-9b-it': { maxInput: 8192, maxOutput: 8192 }
+    }
+    
+    // First try exact match
+    if (limits[modelCode]) {
+      return limits[modelCode]
+    }
+    
+    // Fallback: try to match by prefix for unknown model variants
+    const lowerCode = modelCode.toLowerCase()
+    if (lowerCode.startsWith('gpt-4')) return { maxInput: 128000, maxOutput: 16384 }
+    if (lowerCode.startsWith('gpt-5')) return { maxInput: 200000, maxOutput: 64000 }
+    if (lowerCode.startsWith('gpt-3')) return { maxInput: 16385, maxOutput: 4096 }
+    if (lowerCode.startsWith('o1')) return { maxInput: 128000, maxOutput: 65536 }
+    if (lowerCode.startsWith('claude')) return { maxInput: 200000, maxOutput: 8192 }
+    if (lowerCode.startsWith('gemini')) return { maxInput: 1000000, maxOutput: 8192 }
+    if (lowerCode.startsWith('llama') || lowerCode.startsWith('groq-llama')) return { maxInput: 128000, maxOutput: 8192 }
+    if (lowerCode.startsWith('mixtral') || lowerCode.startsWith('groq-mixtral')) return { maxInput: 32768, maxOutput: 8192 }
+    if (lowerCode.startsWith('deepseek')) return { maxInput: 128000, maxOutput: 8192 }
+    
+    // Safe defaults for truly unknown models
+    console.warn(`[getProviderContextLimits] Unknown model: ${modelCode}, using safe defaults`)
+    return { maxInput: 32768, maxOutput: 4096 }
+  }
+
+  /**
+   * Preflight check: validate input size against provider limits
+   * Returns clamped maxTokensOut if it exceeds provider limits
+   */
+  private preflightCheck(
+    modelCode: string,
+    estimatedInputTokens: number,
+    maxTokensIn?: number,
+    maxTokensOut?: number
+  ): { valid: boolean; error?: string; warnings: string[]; clampedMaxTokensOut?: number } {
+    const warnings: string[] = []
+    const providerLimits = this.getProviderContextLimits(modelCode)
+    
+    // Check against provider context limits
+    if (estimatedInputTokens > providerLimits.maxInput) {
+      return {
+        valid: false,
+        error: `Input too large: estimated ${estimatedInputTokens} tokens exceeds ${modelCode} limit of ${providerLimits.maxInput}`,
+        warnings
+      }
+    }
+    
+    // Check against admin-configured maxTokensIn
+    if (maxTokensIn && estimatedInputTokens > maxTokensIn) {
+      return {
+        valid: false,
+        error: `Input exceeds stage limit: ${estimatedInputTokens} tokens > configured limit of ${maxTokensIn}`,
+        warnings
+      }
+    }
+    
+    // Clamp output tokens to provider limits (FIX: actually clamp, not just warn)
+    let clampedMaxTokensOut: number | undefined
+    if (maxTokensOut && maxTokensOut > providerLimits.maxOutput) {
+      clampedMaxTokensOut = providerLimits.maxOutput
+      warnings.push(`Clamped output tokens from ${maxTokensOut} to provider limit of ${providerLimits.maxOutput}`)
+    }
+    
+    // Warn if approaching limits
+    if (estimatedInputTokens > providerLimits.maxInput * 0.8) {
+      warnings.push(`Input is ${Math.round(estimatedInputTokens / providerLimits.maxInput * 100)}% of ${modelCode} context limit`)
+    }
+    
+    return { valid: true, warnings, clampedMaxTokensOut }
   }
 
   private getFeatureForTask(taskCode: TaskCode): FeatureCode {
@@ -144,12 +497,26 @@ export class LLMGateway {
     return llmProviderRouter.getAvailableProviders()
   }
 
-  getProviderHealth(): Record<string, boolean> {
+  getProviderHealth(): Record<string, { healthy: boolean; failureCount: number; lastError?: string }> {
     return llmProviderRouter.getProviderHealth()
   }
 
   async refreshProviders(): Promise<void> {
     await llmProviderRouter.refreshProviders()
+  }
+
+  /**
+   * Check if a model supports vision (exposed for router fallback validation)
+   */
+  isModelVisionCapable(modelCode: string): boolean {
+    return this.VISION_CAPABLE_MODELS.has(modelCode)
+  }
+
+  /**
+   * Get context limits for a model (exposed for router fallback validation)
+   */
+  getModelContextLimits(modelCode: string): { maxInput: number; maxOutput: number } {
+    return this.getProviderContextLimits(modelCode)
   }
 
   // Admin methods for monitoring and control

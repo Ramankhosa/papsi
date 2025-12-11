@@ -69,7 +69,7 @@ export interface SketchGenerationResult {
 // Constants
 const SKETCH_UPLOAD_DIR = 'public/uploads/sketches'
 const MAX_MODIFY_ATTEMPTS = 10
-const GEMINI_IMAGE_MODEL = 'gemini-3-pro-image-preview' // Gemini 3 Pro with image generation
+const GEMINI_IMAGE_MODEL = 'gemini-3.0-nano-banana' // Gemini 3.0 Nano Banana for sketch generation
 
 // === CONTEXT BUNDLE BUILDER ===
 

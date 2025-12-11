@@ -1,10 +1,11 @@
 // LLM Provider Router
 // Routes requests to appropriate providers with failover and metering integration
+// Now supports flexible model configuration via super admin
 
 import type { LLMRequest, LLMResponse, EnforcementDecision } from '../types'
 import { MeteringError } from '../index'
 import type { LLMProvider } from './llm-provider'
-import { createLLMProvider, type ProviderConfig } from './llm-provider'
+import { createLLMProvider, getProviderFromModelCode, type ProviderConfig, type ProviderType } from './llm-provider'
 
 export interface ProviderPriority {
   provider: string
@@ -16,6 +17,61 @@ export interface RoutingDecision {
   provider: LLMProvider
   reason: string
   costEstimate?: number
+  modelCode?: string
+}
+
+/**
+ * Models that support vision/multimodal input
+ * Used for validating fallback models when request contains images
+ */
+const VISION_CAPABLE_MODELS = new Set([
+  // OpenAI
+  'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-5', 'gpt-5.1', 'gpt-5-mini', 'gpt-5-nano',
+  // Anthropic
+  'claude-3.5-sonnet', 'claude-3.5-haiku', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku',
+  'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229',
+  'claude-3-sonnet-20240229', 'claude-3-haiku-20240307',
+  // Google Gemini
+  'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash',
+  'gemini-3.0-nano-banana', 'gemini-3-pro-image-preview'
+])
+
+/**
+ * Context limits for preflight validation of fallback models
+ */
+const MODEL_CONTEXT_LIMITS: Record<string, { maxInput: number; maxOutput: number }> = {
+  // OpenAI
+  'gpt-4o': { maxInput: 128000, maxOutput: 16384 },
+  'gpt-4o-mini': { maxInput: 128000, maxOutput: 16384 },
+  'gpt-4-turbo': { maxInput: 128000, maxOutput: 4096 },
+  'gpt-3.5-turbo': { maxInput: 16385, maxOutput: 4096 },
+  'o1': { maxInput: 200000, maxOutput: 100000 },
+  'o1-mini': { maxInput: 128000, maxOutput: 65536 },
+  // Anthropic
+  'claude-3.5-sonnet': { maxInput: 200000, maxOutput: 8192 },
+  'claude-3-5-sonnet-20241022': { maxInput: 200000, maxOutput: 8192 },
+  'claude-3.5-haiku': { maxInput: 200000, maxOutput: 8192 },
+  'claude-3-5-haiku-20241022': { maxInput: 200000, maxOutput: 8192 },
+  'claude-3-opus': { maxInput: 200000, maxOutput: 4096 },
+  // Gemini
+  'gemini-2.5-pro': { maxInput: 1000000, maxOutput: 8192 },
+  'gemini-2.0-flash': { maxInput: 1000000, maxOutput: 8192 },
+  'gemini-2.0-flash-lite': { maxInput: 1000000, maxOutput: 8192 },
+  // Groq
+  'llama-3.3-70b-versatile': { maxInput: 128000, maxOutput: 8192 },
+  'groq-llama-3.3-70b': { maxInput: 128000, maxOutput: 8192 },
+  'mixtral-8x7b-32768': { maxInput: 32768, maxOutput: 8192 },
+  // DeepSeek
+  'deepseek-chat': { maxInput: 128000, maxOutput: 8192 }
+}
+
+// All supported provider configurations
+interface ProviderConfigs {
+  [key: string]: {
+    apiKey: string | undefined
+    model: string
+    baseURL: string
+  }
 }
 
 export class LLMProviderRouter {
@@ -27,45 +83,89 @@ export class LLMProviderRouter {
   }
 
   private initializeProviders() {
-    // Initialize providers from environment variables
+    // Initialize all providers from environment variables
     console.log('Initializing LLM providers...')
     console.log('GOOGLE_AI_API_KEY present:', !!process.env.GOOGLE_AI_API_KEY)
     console.log('OPENAI_API_KEY present:', !!process.env.OPENAI_API_KEY)
+    console.log('ANTHROPIC_API_KEY present:', !!process.env.ANTHROPIC_API_KEY)
+    console.log('DEEPSEEK_API_KEY present:', !!process.env.DEEPSEEK_API_KEY)
+    console.log('GROQ_API_KEY present:', !!process.env.GROQ_API_KEY)
 
-    const configs = {
+    const configs: ProviderConfigs = {
+      // Google Gemini providers
       gemini: {
         apiKey: process.env.GOOGLE_AI_API_KEY,
-        model: 'gemini-2.5-pro', // Gemini 2.5 Pro (multimodal capabilities, 2M context)
+        model: 'gemini-2.5-pro',
         baseURL: 'https://generativelanguage.googleapis.com/v1beta'
       },
       'gemini-flash-lite': {
         apiKey: process.env.GOOGLE_AI_API_KEY,
-        model: 'gemini-2.5-flash-lite', // Gemini 2.5 Flash-Lite (faster, cost-effective)
+        model: 'gemini-2.0-flash-lite',
         baseURL: 'https://generativelanguage.googleapis.com/v1beta'
       },
+      
+      // OpenAI provider
       openai: {
         apiKey: process.env.OPENAI_API_KEY,
-        model: 'gpt-4o', // GPT-4o (multimodal capabilities)
+        model: 'gpt-4o',
         baseURL: 'https://api.openai.com/v1'
+      },
+      
+      // Anthropic Claude provider
+      anthropic: {
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        model: 'claude-3-5-sonnet-20241022',
+        baseURL: 'https://api.anthropic.com/v1'
+      },
+      
+      // DeepSeek provider (cost-effective)
+      deepseek: {
+        apiKey: process.env.DEEPSEEK_API_KEY,
+        model: 'deepseek-chat',
+        baseURL: 'https://api.deepseek.com/v1'
+      },
+      
+      // Groq provider (ultra-fast)
+      groq: {
+        apiKey: process.env.GROQ_API_KEY,
+        model: 'llama-3.3-70b-versatile',
+        baseURL: 'https://api.groq.com/openai/v1'
       }
-      // Grok removed due to invalid API key
     }
 
     // Only initialize providers that have API keys
     Object.entries(configs).forEach(([type, config]) => {
       if (config.apiKey) {
         try {
-          const provider = createLLMProvider(type as any, config as ProviderConfig)
+          const provider = createLLMProvider(type as ProviderType, config as ProviderConfig)
           this.providers.set(type, provider)
           this.providerConfigs[type] = config as ProviderConfig
-          console.log(`Initialized ${type} provider`)
+          console.log(`✓ Initialized ${type} provider`)
         } catch (error) {
-          console.warn(`Failed to initialize ${type} provider:`, error)
+          console.warn(`✗ Failed to initialize ${type} provider:`, error)
         }
       } else {
-        console.warn(`No API key found for ${type} provider`)
+        console.log(`- Skipping ${type} provider (no API key)`)
       }
     })
+    
+    console.log(`Total providers initialized: ${this.providers.size}`)
+  }
+
+  /**
+   * Get provider for a specific model code
+   * Used when model is specified by the model resolver
+   * Returns null if model code is unknown or provider is not available
+   */
+  getProviderForModel(modelCode: string): LLMProvider | null {
+    try {
+      const providerType = getProviderFromModelCode(modelCode)
+      return this.providers.get(providerType) || null
+    } catch (error) {
+      // getProviderFromModelCode now throws for unknown models (fail-fast)
+      console.error(`[getProviderForModel] ${error instanceof Error ? error.message : error}`)
+      return null
+    }
   }
 
   async routeAndExecute(
@@ -79,13 +179,21 @@ export class LLMProviderRouter {
       throw new Error('No suitable provider found for the request')
     }
 
-    const { provider, reason } = routingDecision
+    const { provider, reason, modelCode } = routingDecision
 
-    console.log(`Routing to ${provider.name}: ${reason}`)
+    console.log(`Routing to ${provider.name}: ${reason}${modelCode ? ` (model: ${modelCode})` : ''}`)
+
+    // If a specific model was resolved, set it in the request
+    if (modelCode) {
+      request.modelClass = modelCode
+    }
 
     // Execute with the selected provider
     try {
       const response = await provider.execute(request, limits)
+
+      // Mark provider as successful for health tracking
+      this.markProviderSuccess(provider.name)
 
       // Add provider metadata to response
       return {
@@ -93,11 +201,15 @@ export class LLMProviderRouter {
         metadata: {
           ...response.metadata,
           routingReason: reason,
-          selectedProvider: provider.name
+          selectedProvider: provider.name,
+          modelUsed: modelCode || request.modelClass
         }
       }
     } catch (error) {
       console.error(`Provider ${provider.name} failed:`, error)
+
+      // Mark provider failure for health tracking (FIX: was missing)
+      this.markProviderFailure(provider.name, error instanceof Error ? error : new Error(String(error)))
 
       // Try fallback if enabled
       const fallbackResponse = await this.tryFallback(request, limits, provider.name)
@@ -105,6 +217,163 @@ export class LLMProviderRouter {
         return fallbackResponse
       }
 
+      throw error
+    }
+  }
+
+  /**
+   * Route with a specific model code (from model resolver)
+   * This is the preferred method when using the flexible model configuration
+   */
+  async routeWithModel(
+    request: LLMRequest,
+    limits: EnforcementDecision,
+    modelCode: string,
+    fallbackModelCodes?: string[]
+  ): Promise<LLMResponse> {
+    // Get the provider for this model
+    const provider = this.getProviderForModel(modelCode)
+    
+    if (!provider) {
+      console.warn(`No provider available for model ${modelCode}, trying fallbacks...`)
+      return this.tryFallbackModels(request, limits, fallbackModelCodes)
+    }
+    
+    // Try primary model first
+    request.modelClass = modelCode
+    try {
+      return await this.executeWithProvider(request, limits, provider, modelCode, false)
+    } catch (error) {
+      // Primary model failed - try fallbacks
+      console.error(`Primary model ${modelCode} failed:`, error)
+      
+      if (fallbackModelCodes && fallbackModelCodes.length > 0) {
+        console.log(`Attempting fallback models: ${fallbackModelCodes.join(' → ')}`)
+        return this.tryFallbackModels(request, limits, fallbackModelCodes)
+      }
+      
+      // No fallbacks configured - rethrow
+      throw error
+    }
+  }
+
+  /**
+   * Try fallback models in order until one succeeds
+   * Validates vision capability and context limits for each fallback before attempting
+   */
+  private async tryFallbackModels(
+    request: LLMRequest,
+    limits: EnforcementDecision,
+    fallbackModelCodes?: string[]
+  ): Promise<LLMResponse> {
+    if (fallbackModelCodes && fallbackModelCodes.length > 0) {
+      const errors: Error[] = []
+      const requiresVision = this.requestRequiresVision(request)
+      const estimatedInputTokens = request.inputTokens || 0
+      
+      for (const fallbackModel of fallbackModelCodes) {
+        // Validate fallback model capabilities BEFORE attempting
+        const validationResult = this.validateFallbackModel(
+          fallbackModel, 
+          requiresVision, 
+          estimatedInputTokens
+        )
+        
+        if (!validationResult.valid) {
+          console.warn(`⚠ Skipping fallback ${fallbackModel}: ${validationResult.reason}`)
+          errors.push(new Error(`${fallbackModel}: ${validationResult.reason}`))
+          continue
+        }
+        
+        const fallbackProvider = this.getProviderForModel(fallbackModel)
+        if (fallbackProvider && this.isProviderHealthy(fallbackProvider)) {
+          try {
+            request.modelClass = fallbackModel
+            console.log(`Trying fallback model: ${fallbackModel}`)
+            return await this.executeWithProvider(request, limits, fallbackProvider, fallbackModel, true)
+          } catch (fallbackError) {
+            console.error(`Fallback model ${fallbackModel} failed:`, fallbackError)
+            errors.push(fallbackError instanceof Error ? fallbackError : new Error(String(fallbackError)))
+          }
+        } else {
+          console.warn(`⚠ Skipping fallback ${fallbackModel}: provider unavailable or unhealthy`)
+        }
+      }
+      
+      // All fallbacks failed
+      throw new Error(`All fallback models failed: ${errors.map(e => e.message).join('; ')}`)
+    }
+    
+    // No fallbacks - use default routing as last resort
+    console.warn('No fallback models configured, using default routing')
+    return this.routeAndExecute(request, limits)
+  }
+
+  /**
+   * Check if request contains images requiring vision capability
+   */
+  private requestRequiresVision(request: LLMRequest): boolean {
+    return !!(request.content?.parts?.some(part => part.type === 'image'))
+  }
+
+  /**
+   * Validate that a fallback model supports the request requirements
+   */
+  private validateFallbackModel(
+    modelCode: string,
+    requiresVision: boolean,
+    estimatedInputTokens: number
+  ): { valid: boolean; reason?: string } {
+    // Check vision capability
+    if (requiresVision && !VISION_CAPABLE_MODELS.has(modelCode)) {
+      return { 
+        valid: false, 
+        reason: `Model does not support vision/image inputs` 
+      }
+    }
+    
+    // Check context limits
+    const limits = MODEL_CONTEXT_LIMITS[modelCode]
+    if (limits && estimatedInputTokens > limits.maxInput) {
+      return {
+        valid: false,
+        reason: `Input (${estimatedInputTokens} tokens) exceeds model limit (${limits.maxInput})`
+      }
+    }
+    
+    return { valid: true }
+  }
+
+  private async executeWithProvider(
+    request: LLMRequest,
+    limits: EnforcementDecision,
+    provider: LLMProvider,
+    modelCode: string,
+    isFallback: boolean
+  ): Promise<LLMResponse> {
+    console.log(`Executing with ${provider.name} (model: ${modelCode})${isFallback ? ' [FALLBACK]' : ''}`)
+    
+    try {
+      const response = await provider.execute(request, limits)
+      
+      // Mark provider as successful
+      this.markProviderSuccess(provider.name)
+      
+      return {
+        ...response,
+        metadata: {
+          ...response.metadata,
+          selectedProvider: provider.name,
+          modelUsed: modelCode,
+          wasFallback: isFallback
+        }
+      }
+    } catch (error) {
+      console.error(`Provider ${provider.name} failed with model ${modelCode}:`, error)
+      
+      // Track provider failure for health monitoring
+      this.markProviderFailure(provider.name, error instanceof Error ? error : new Error(String(error)))
+      
       throw error
     }
   }
@@ -121,6 +390,19 @@ export class LLMProviderRouter {
       throw new Error('No healthy providers available')
     }
 
+    // If request specifies a model, try to use it directly
+    if (request.modelClass) {
+      const specifiedProvider = this.getProviderForModel(request.modelClass)
+      if (specifiedProvider && this.isProviderHealthy(specifiedProvider)) {
+        return {
+          provider: specifiedProvider,
+          reason: `Using specified model: ${request.modelClass}`,
+          modelCode: request.modelClass,
+          costEstimate: this.estimateCost(specifiedProvider, request, limits)
+        }
+      }
+    }
+
     // Special handling for multimodal requests (text + images)
     const isMultimodal = request.content && request.content.parts.some(part => part.type === 'image')
 
@@ -133,28 +415,35 @@ export class LLMProviderRouter {
     let activePriorities: ProviderPriority[]
 
     if (isMultimodal) {
-      // For multimodal: Gemini 2.5 Pro primary, GPT-4o fallback
+      // For multimodal: prioritize vision-capable models
       activePriorities = [
         { provider: 'gemini', priority: 1, fallback: true },
-        { provider: 'openai', priority: 2, fallback: true }
+        { provider: 'openai', priority: 2, fallback: true },
+        { provider: 'anthropic', priority: 3, fallback: true }
       ]
     } else if (isDiagramGeneration) {
-      // For diagram generation: GPT-4o primary (better PlantUML code), Gemini fallback
+      // For diagram generation: GPT-4o primary (better PlantUML code)
       activePriorities = [
         { provider: 'openai', priority: 1, fallback: true },
-        { provider: 'gemini', priority: 2, fallback: true }
+        { provider: 'gemini', priority: 2, fallback: true },
+        { provider: 'anthropic', priority: 3, fallback: true }
       ]
     } else if (isRelevanceAnalysis) {
-      // For relevance analysis: Gemini 2.5 Flash-Lite primary, GPT-4o fallback
+      // For relevance analysis: fast, cost-effective models
       activePriorities = [
         { provider: 'gemini-flash-lite', priority: 1, fallback: true },
-        { provider: 'openai', priority: 2, fallback: true }
+        { provider: 'groq', priority: 2, fallback: true },
+        { provider: 'deepseek', priority: 3, fallback: true },
+        { provider: 'openai', priority: 4, fallback: true }
       ]
     } else {
-      // Default priority order: Gemini primary, OpenAI fallback
+      // Default priority order
       activePriorities = priorities || [
         { provider: 'gemini', priority: 1, fallback: true },
-        { provider: 'openai', priority: 2, fallback: true }
+        { provider: 'openai', priority: 2, fallback: true },
+        { provider: 'anthropic', priority: 3, fallback: true },
+        { provider: 'deepseek', priority: 4, fallback: true },
+        { provider: 'groq', priority: 5, fallback: true }
       ]
     }
 
@@ -208,10 +497,105 @@ export class LLMProviderRouter {
     return null
   }
 
+  // Track provider health status and recent failures
+  private providerHealth: Map<string, { 
+    healthy: boolean
+    lastCheck: number
+    failureCount: number
+    lastError?: string
+  }> = new Map()
+  
+  private readonly HEALTH_CHECK_INTERVAL = 60000 // 1 minute
+  private readonly FAILURE_THRESHOLD = 3 // Mark unhealthy after 3 consecutive failures
+  private readonly RECOVERY_INTERVAL = 300000 // 5 minutes to retry unhealthy provider
+
   private isProviderHealthy(provider: LLMProvider): boolean {
-    // For now, assume providers are healthy if they exist
-    // In production, implement actual health checks
-    return true
+    const health = this.providerHealth.get(provider.name)
+    
+    // No health data yet - assume healthy but check API key
+    if (!health) {
+      const hasKey = this.hasValidApiKey(provider.name)
+      this.providerHealth.set(provider.name, {
+        healthy: hasKey,
+        lastCheck: Date.now(),
+        failureCount: 0,
+        lastError: hasKey ? undefined : 'Missing API key'
+      })
+      return hasKey
+    }
+    
+    // If marked unhealthy, check if recovery interval has passed
+    if (!health.healthy) {
+      const timeSinceLastCheck = Date.now() - health.lastCheck
+      if (timeSinceLastCheck >= this.RECOVERY_INTERVAL) {
+        // Allow retry - reset health status
+        console.log(`[ProviderRouter] Retrying unhealthy provider ${provider.name} after recovery interval`)
+        health.healthy = true
+        health.failureCount = 0
+        health.lastCheck = Date.now()
+        return true
+      }
+      return false
+    }
+    
+    return health.healthy
+  }
+
+  /**
+   * Check if provider has a valid API key configured
+   */
+  private hasValidApiKey(providerName: string): boolean {
+    const keyMap: Record<string, string | undefined> = {
+      'openai': process.env.OPENAI_API_KEY,
+      'anthropic': process.env.ANTHROPIC_API_KEY,
+      'gemini': process.env.GOOGLE_AI_API_KEY || process.env.GOOGLE_API_KEY,
+      'gemini-flash-lite': process.env.GOOGLE_AI_API_KEY || process.env.GOOGLE_API_KEY,
+      'deepseek': process.env.DEEPSEEK_API_KEY,
+      'groq': process.env.GROQ_API_KEY
+    }
+    
+    const key = keyMap[providerName]
+    return !!key && key.length > 10 // Basic validation - key exists and has reasonable length
+  }
+
+  /**
+   * Mark a provider as failed (called after provider throws)
+   */
+  markProviderFailure(providerName: string, error: Error): void {
+    const health = this.providerHealth.get(providerName) || {
+      healthy: true,
+      lastCheck: Date.now(),
+      failureCount: 0
+    }
+    
+    health.failureCount++
+    health.lastError = error.message
+    health.lastCheck = Date.now()
+    
+    if (health.failureCount >= this.FAILURE_THRESHOLD) {
+      health.healthy = false
+      console.error(`[ProviderRouter] Provider ${providerName} marked unhealthy after ${health.failureCount} failures: ${error.message}`)
+    }
+    
+    this.providerHealth.set(providerName, health)
+  }
+
+  /**
+   * Mark a provider as successful (reset failure count)
+   */
+  markProviderSuccess(providerName: string): void {
+    const health = this.providerHealth.get(providerName) || {
+      healthy: true,
+      lastCheck: Date.now(),
+      failureCount: 0
+    }
+    
+    health.healthy = true
+    health.failureCount = 0
+    health.lastCheck = Date.now()
+    delete health.lastError
+    
+    this.providerHealth.set(providerName, health)
   }
 
   private estimateCost(
@@ -231,10 +615,15 @@ export class LLMProviderRouter {
     return Array.from(this.providers.keys())
   }
 
-  getProviderHealth(): Record<string, boolean> {
-    const health: Record<string, boolean> = {}
+  getProviderHealth(): Record<string, { healthy: boolean; failureCount: number; lastError?: string }> {
+    const health: Record<string, { healthy: boolean; failureCount: number; lastError?: string }> = {}
     this.providers.forEach((provider, name) => {
-      health[name] = this.isProviderHealthy(provider)
+      const providerHealth = this.providerHealth.get(name)
+      health[name] = {
+        healthy: this.isProviderHealthy(provider),
+        failureCount: providerHealth?.failureCount || 0,
+        lastError: providerHealth?.lastError
+      }
     })
     return health
   }
