@@ -652,10 +652,10 @@ async function seedCountryNames() {
 
   if (countryNames.length === 0) {
     console.log('  ⚠️  No country names found in backup, using defaults');
+    // Production countries only (6 jurisdictions with fully configured mappings)
     countryNames = [
       { code: 'AU', name: 'Australia', continent: 'Oceania' },
       { code: 'CA', name: 'Canada', continent: 'North America' },
-      { code: 'EP', name: 'European Patent Office', continent: 'Europe' },
       { code: 'IN', name: 'India', continent: 'Asia' },
       { code: 'JP', name: 'Japan', continent: 'Asia' },
       { code: 'PCT', name: 'PCT International', continent: 'International' },

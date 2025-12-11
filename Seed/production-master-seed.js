@@ -28,6 +28,19 @@
 const { execSync, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { PrismaClient } = require('@prisma/client');
+
+// ============================================================================
+// PRODUCTION COUNTRY DATA (6 jurisdictions with fully configured mappings)
+// ============================================================================
+const PRODUCTION_COUNTRIES = [
+  { code: 'AU', name: 'Australia', continent: 'Oceania' },
+  { code: 'CA', name: 'Canada', continent: 'North America' },
+  { code: 'IN', name: 'India', continent: 'Asia' },
+  { code: 'JP', name: 'Japan', continent: 'Asia' },
+  { code: 'PCT', name: 'PCT International', continent: 'International' },
+  { code: 'US', name: 'United States of America', continent: 'North America' }
+];
 
 // Parse command line arguments
 const args = process.argv.slice(2);
@@ -58,10 +71,11 @@ Options:
   --help, -h         Show this help message
 
 Seed Order:
-  1. Plans & Features    (scripts/seed-production-plans.js)
-  2. Country Config      (Countries/MasterSeed.js)
-  3. LLM Models          (Seed/seed-llm-models.js)
-  4. Admin Users         (scripts/setup-full-hierarchy.js)
+  1. Plans & Features      (scripts/seed-production-plans.js)
+  2. Production Countries  (Direct: AU, CA, IN, JP, PCT, US)
+  3. Country Config        (Countries/MasterSeed.js)
+  4. LLM Models            (Seed/seed-llm-models.js)
+  5. Admin Users           (scripts/setup-full-hierarchy.js)
 
 All scripts are idempotent - safe to run multiple times.
 `);
@@ -78,6 +92,13 @@ const SEED_SCRIPTS = [
     script: 'scripts/seed-production-plans.js',
     skip: options.skipPlans || options.usersOnly,
     description: 'Seeds Features, Tasks, LLMModelClass, Plans (BASIC, PRO, ENTERPRISE)',
+  },
+  {
+    name: 'Production Country Names',
+    script: null, // Direct function call
+    directFn: seedProductionCountries,
+    skip: options.skipCountries || options.usersOnly,
+    description: 'Seeds 6 production countries (AU, CA, IN, JP, PCT, US) to country_names table',
   },
   {
     name: 'Country Configurations',
@@ -98,6 +119,40 @@ const SEED_SCRIPTS = [
     description: 'Creates super admin, sample tenants, ATI tokens',
   },
 ];
+
+// ============================================================================
+// SEED PRODUCTION COUNTRY NAMES (Direct DB insert - failsafe)
+// ============================================================================
+async function seedProductionCountries() {
+  const prisma = new PrismaClient();
+  
+  try {
+    console.log('   ⏳ Ensuring production countries exist...');
+    let created = 0, existing = 0;
+    
+    for (const country of PRODUCTION_COUNTRIES) {
+      const exists = await prisma.countryName.findUnique({
+        where: { code: country.code }
+      });
+      
+      if (exists) {
+        existing++;
+      } else {
+        await prisma.countryName.create({ data: country });
+        console.log(`      ✅ Created: ${country.code} - ${country.name}`);
+        created++;
+      }
+    }
+    
+    console.log(`   📊 Countries: ${created} created, ${existing} already exist`);
+    return true;
+  } catch (error) {
+    console.error(`   ❌ Error seeding countries: ${error.message}`);
+    return false;
+  } finally {
+    await prisma.$disconnect();
+  }
+}
 
 // Run a script and return success/failure
 function runScript(scriptPath, name) {
@@ -157,7 +212,15 @@ async function main() {
       continue;
     }
     
-    const success = runScript(seed.script, seed.name);
+    let success;
+    if (seed.directFn) {
+      // Direct function call (async)
+      success = await seed.directFn();
+    } else {
+      // Script execution
+      success = runScript(seed.script, seed.name);
+    }
+    
     results.push({ 
       name: seed.name, 
       status: success ? 'success' : 'failed',
@@ -203,5 +266,6 @@ main().catch(error => {
   console.error('❌ Master seed failed:', error);
   process.exit(1);
 });
+
 
 

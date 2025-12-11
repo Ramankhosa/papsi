@@ -18,9 +18,6 @@
     "import:local-patents": "node scripts/import-local-patents-from-csv.js patients11.csv",
     "seed:adminplans": "node scripts/adminplans-seed.js"
   },
-  "prisma": {
-    "seed": "node scripts/setup-full-hierarchy.js"
-  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
     "@dnd-kit/core": "^6.3.1",
