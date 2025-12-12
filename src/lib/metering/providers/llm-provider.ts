@@ -66,9 +66,13 @@ export function getProviderFromModelCode(modelCode: string): ProviderType {
     // Google - Text Models (friendly names)
     'gemini-2.5-pro': 'gemini',
     'gemini-2.0-flash': 'gemini',
+    'gemini-2.0-flash-001': 'gemini',
     'gemini-2.0-flash-lite': 'gemini-flash-lite',
+    'gemini-2.0-flash-lite-001': 'gemini-flash-lite',
     'gemini-1.5-pro': 'gemini',
+    'gemini-1.5-pro-002': 'gemini',
     'gemini-1.5-flash': 'gemini',
+    'gemini-1.5-flash-002': 'gemini',
     // Google - Image Generation Models (for Sketch Generation)
     'gemini-3.0-nano-banana': 'gemini',
     'gemini-3-pro-image-preview': 'gemini',

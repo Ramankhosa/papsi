@@ -89,8 +89,8 @@ async function main() {
     },
     // Google - Image Generation Models (for Sketch Generation)
     {
-      code: 'gemini-3.0-nano-banana',
-      displayName: 'Gemini 3.0 Nano Banana (Sketch)',
+      code: 'gemini-3-pro-image-preview',
+      displayName: 'Gemini 3 Pro Image Preview (Sketch)',
       provider: 'google',
       contextWindow: 128000,
       supportsVision: true,
@@ -341,7 +341,7 @@ async function main() {
     { code: 'DRAFT_CLAIM_REFINEMENT', displayName: 'Claim Refinement', featureCode: 'PATENT_DRAFTING', sortOrder: 4, description: 'Refine claims based on prior art' },
     // DRAFT_COMPONENT_PLANNER removed - Manual UI, no LLM needed
     { code: 'DRAFT_FIGURE_PLANNER', displayName: 'Figure Planning', featureCode: 'PATENT_DRAFTING', sortOrder: 5, description: 'AI-powered figure planning and diagram suggestions' },
-    { code: 'DRAFT_SKETCH_GENERATION', displayName: 'Sketch Generation', featureCode: 'PATENT_DRAFTING', sortOrder: 6, description: 'Generate patent sketches using Gemini 3.0 nano banana' },
+    { code: 'DRAFT_SKETCH_GENERATION', displayName: 'Sketch Generation', featureCode: 'PATENT_DRAFTING', sortOrder: 6, description: 'Generate patent sketches using Gemini 3 Pro Image Preview' },
     { code: 'DRAFT_DIAGRAM_GENERATION', displayName: 'Diagram Generation', featureCode: 'PATENT_DRAFTING', sortOrder: 7, description: 'Generate PlantUML/technical diagrams' },
     
     // === ANNEXURE/SECTION DRAFTING STAGES ===
@@ -440,7 +440,7 @@ async function main() {
       'DRAFT_PRIOR_ART_ANALYSIS': 'gemini-2.0-flash-lite',
       'DRAFT_CLAIM_REFINEMENT': 'gemini-2.0-flash-lite',
       'DRAFT_FIGURE_PLANNER': 'gemini-2.0-flash-lite',
-      'DRAFT_SKETCH_GENERATION': 'gemini-3.0-nano-banana',
+      'DRAFT_SKETCH_GENERATION': 'gemini-3-pro-image-preview',
       'DRAFT_DIAGRAM_GENERATION': 'gpt-4o-mini',
       // Annexure/Section stages (maps to superset sections)
       'DRAFT_ANNEXURE_TITLE': 'gemini-2.0-flash-lite',
@@ -478,7 +478,7 @@ async function main() {
       'DRAFT_PRIOR_ART_ANALYSIS': 'gemini-2.5-pro',
       'DRAFT_CLAIM_REFINEMENT': 'gpt-4o-mini',
       'DRAFT_FIGURE_PLANNER': 'gemini-2.5-pro',
-      'DRAFT_SKETCH_GENERATION': 'gemini-3.0-nano-banana',
+      'DRAFT_SKETCH_GENERATION': 'gemini-3-pro-image-preview',
       'DRAFT_DIAGRAM_GENERATION': 'gpt-4o',
       // Annexure/Section stages (maps to superset sections)
       'DRAFT_ANNEXURE_TITLE': 'gpt-4o-mini',
@@ -518,7 +518,7 @@ async function main() {
       'DRAFT_PRIOR_ART_ANALYSIS': 'gemini-2.5-pro',
       'DRAFT_CLAIM_REFINEMENT': 'gpt-5',
       'DRAFT_FIGURE_PLANNER': 'gemini-2.5-pro',
-      'DRAFT_SKETCH_GENERATION': 'gemini-3.0-nano-banana',
+      'DRAFT_SKETCH_GENERATION': 'gemini-3-pro-image-preview',
       'DRAFT_DIAGRAM_GENERATION': 'gpt-4o',
       // Annexure/Section stages (maps to superset sections)
       'DRAFT_ANNEXURE_TITLE': 'gpt-5-mini',
@@ -619,4 +619,3 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
-

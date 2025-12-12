@@ -45,51 +45,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return null
     }
   }, [])
-
-  // Refresh access token using refresh token cookie
-  const refreshAccessToken = useCallback(async (): Promise<string | null> => {
-    // If already refreshing, wait for that to complete
-    if (isRefreshing && refreshPromise) {
-      return refreshPromise
-    }
-
-    isRefreshing = true
-    refreshPromise = (async () => {
-      try {
-        const response = await fetch('/api/v1/auth/refresh', {
-          method: 'POST',
-          credentials: 'include' // Include cookies
-        })
-
-        if (response.ok) {
-          const data = await response.json()
-          const newToken = data.token
-          setToken(newToken)
-          localStorage.setItem('auth_token', newToken)
-          tokenExpiryRef.current = getTokenExpiry(newToken)
-          scheduleTokenRefresh(newToken)
-          return newToken
-        } else {
-          // Refresh failed - session expired
-          console.log('Token refresh failed - session expired')
-          await performLogout(false)
-          return null
-        }
-      } catch (error) {
-        console.error('Token refresh error:', error)
-        await performLogout(false)
-        return null
-      } finally {
-        isRefreshing = false
-        refreshPromise = null
-      }
-    })()
-
-    return refreshPromise
-  }, [getTokenExpiry])
-
   // Schedule proactive token refresh (before expiry)
-  const scheduleTokenRefresh = useCallback((currentToken: string) => {
+  const scheduleTokenRefresh = useCallback((currentToken: string, refreshFn: () => Promise<string | null>) => {
     // Clear any existing timer
     if (refreshTimerRef.current) {
       clearTimeout(refreshTimerRef.current)
@@ -106,10 +63,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (timeUntilExpiry > 0) {
       refreshTimerRef.current = setTimeout(async () => {
         console.log('Proactively refreshing token before expiry')
-        await refreshAccessToken()
+        await refreshFn()
       }, refreshIn)
     }
-  }, [getTokenExpiry, refreshAccessToken])
+  }, [getTokenExpiry])
 
   // Perform logout (clear state and optionally call server)
   const performLogout = useCallback(async (callServer: boolean = true, logoutAll: boolean = false) => {
@@ -137,6 +94,48 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     tokenExpiryRef.current = null
     localStorage.removeItem('auth_token')
   }, [token])
+
+  // Refresh access token using refresh token cookie
+  const refreshAccessToken = useCallback(async (): Promise<string | null> => {
+    // If already refreshing, wait for that to complete
+    if (isRefreshing && refreshPromise) {
+      return refreshPromise
+    }
+
+    isRefreshing = true
+    refreshPromise = (async () => {
+      try {
+        const response = await fetch('/api/v1/auth/refresh', {
+          method: 'POST',
+          credentials: 'include' // Include cookies
+        })
+
+        if (response.ok) {
+          const data = await response.json()
+          const newToken = data.token
+          setToken(newToken)
+          localStorage.setItem('auth_token', newToken)
+          tokenExpiryRef.current = getTokenExpiry(newToken)
+          scheduleTokenRefresh(newToken, refreshAccessToken)
+          return newToken
+        } else {
+          // Refresh failed - session expired
+          console.log('Token refresh failed - session expired')
+          await performLogout(false)
+          return null
+        }
+      } catch (error) {
+        console.error('Token refresh error:', error)
+        await performLogout(false)
+        return null
+      } finally {
+        isRefreshing = false
+        refreshPromise = null
+      }
+    })()
+
+    return refreshPromise
+  }, [getTokenExpiry, performLogout, scheduleTokenRefresh])
 
   // Authenticated fetch with automatic token refresh
   const authFetch = useCallback(async (url: string, options: RequestInit = {}): Promise<Response> => {
@@ -185,51 +184,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return response
   }, [token, refreshAccessToken])
 
-  // Load token and user from localStorage on mount
-  useEffect(() => {
-    const initializeAuth = async () => {
-      const storedToken = localStorage.getItem('auth_token')
-      if (storedToken) {
-        const expiry = getTokenExpiry(storedToken)
-        
-        // Check if token is expired
-        if (expiry && Date.now() > expiry) {
-          // Token expired - try to refresh
-          const newToken = await refreshAccessToken()
-          if (newToken) {
-            await refreshUser(newToken)
-          } else {
-            setIsLoading(false)
-          }
-        } else {
-          // Token still valid
-          setToken(storedToken)
-          tokenExpiryRef.current = expiry
-          scheduleTokenRefresh(storedToken)
-          await refreshUser(storedToken)
-        }
-      } else {
-        // No token - try to refresh (might have valid refresh token cookie)
-        const newToken = await refreshAccessToken()
-        if (newToken) {
-          await refreshUser(newToken)
-        } else {
-          setIsLoading(false)
-        }
-      }
-    }
-
-    initializeAuth()
-
-    // Cleanup timer on unmount
-    return () => {
-      if (refreshTimerRef.current) {
-        clearTimeout(refreshTimerRef.current)
-      }
-    }
-  }, [])
-
-  const refreshUser = async (authToken?: string) => {
+  const refreshUser = useCallback(async (authToken?: string) => {
     const tokenToUse = authToken || token
     if (!tokenToUse) {
       setIsLoading(false)
@@ -274,7 +229,51 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [token, refreshAccessToken, performLogout])
+
+  // Load token and user from localStorage on mount
+  useEffect(() => {
+    const initializeAuth = async () => {
+      const storedToken = localStorage.getItem('auth_token')
+      if (storedToken) {
+        const expiry = getTokenExpiry(storedToken)
+        
+        // Check if token is expired
+        if (expiry && Date.now() > expiry) {
+          // Token expired - try to refresh
+          const newToken = await refreshAccessToken()
+          if (newToken) {
+            await refreshUser(newToken)
+          } else {
+            setIsLoading(false)
+          }
+        } else {
+          // Token still valid
+          setToken(storedToken)
+          tokenExpiryRef.current = expiry
+          scheduleTokenRefresh(storedToken, refreshAccessToken)
+          await refreshUser(storedToken)
+        }
+      } else {
+        // No token - try to refresh (might have valid refresh token cookie)
+        const newToken = await refreshAccessToken()
+        if (newToken) {
+          await refreshUser(newToken)
+        } else {
+          setIsLoading(false)
+        }
+      }
+    }
+
+    initializeAuth()
+
+    // Cleanup timer on unmount
+    return () => {
+      if (refreshTimerRef.current) {
+        clearTimeout(refreshTimerRef.current)
+      }
+    }
+  }, [getTokenExpiry, refreshAccessToken, scheduleTokenRefresh, refreshUser])
 
   const login = async (email: string, password: string) => {
     try {
@@ -294,7 +293,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setToken(newToken)
         localStorage.setItem('auth_token', newToken)
         tokenExpiryRef.current = getTokenExpiry(newToken)
-        scheduleTokenRefresh(newToken)
+        scheduleTokenRefresh(newToken, refreshAccessToken)
 
         // Get user info
         await refreshUser(newToken)

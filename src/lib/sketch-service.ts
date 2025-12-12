@@ -16,6 +16,8 @@ import { prisma } from './prisma'
 import crypto from 'crypto'
 import fs from 'fs/promises'
 import path from 'path'
+import { resolveModel } from '@/lib/metering/model-resolver'
+import type { TaskCode } from '@prisma/client'
 
 // Types
 export type SketchMode = 'AUTO' | 'GUIDED' | 'REFINE'
@@ -69,7 +71,73 @@ export interface SketchGenerationResult {
 // Constants
 const SKETCH_UPLOAD_DIR = 'public/uploads/sketches'
 const MAX_MODIFY_ATTEMPTS = 10
-const GEMINI_IMAGE_MODEL = 'gemini-3.0-nano-banana' // Gemini 3.0 Nano Banana for sketch generation
+const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-3-pro-image-preview' // Default Gemini 3 image model for sketch generation
+const SKETCH_STAGE_CODE = 'DRAFT_SKETCH_GENERATION'
+const SKETCH_TASK_CODE: TaskCode = 'LLM3_DIAGRAM' // Closest task for vision + drafting limits
+const SKETCH_MODEL_FALLBACKS = [
+  'gemini-3.0-nano-banana', // Legacy nano model as fallback
+  'gemini-3-pro-image-preview',
+  'gemini-2.5-flash-lite',
+  'gemini-2.0-flash-lite',
+  'gemini-1.5-flash',
+  'gemini-1.5-pro'
+]
+
+/**
+ * Resolve the active plan for a tenant (latest active, non-expired)
+ */
+async function getActivePlanIdForTenant(tenantId?: string | null): Promise<string | null> {
+  if (!tenantId) return null
+  const now = new Date()
+  const plan = await prisma.tenantPlan.findFirst({
+    where: {
+      tenantId,
+      status: 'ACTIVE',
+      effectiveFrom: { lte: now },
+      OR: [{ expiresAt: null }, { expiresAt: { gt: now } }]
+    },
+    orderBy: { effectiveFrom: 'desc' },
+    select: { planId: true }
+  })
+  return plan?.planId || null
+}
+
+/**
+ * Build an ordered list of sketch model candidates:
+ * 1) Plan-specific stage model (if configured)
+ * 2) Env override (GEMINI_SKETCH_MODEL)
+ * 3) Legacy default + hardcoded fallbacks
+ */
+async function resolveSketchModelCandidates(tenantId?: string | null): Promise<string[]> {
+  const candidates: string[] = []
+
+  try {
+    const planId = await getActivePlanIdForTenant(tenantId)
+    if (planId) {
+      const resolved = await resolveModel(planId, SKETCH_TASK_CODE, SKETCH_STAGE_CODE)
+      if (resolved?.supportsVision && resolved.modelCode) {
+        candidates.push(resolved.modelCode)
+        // Add plan-configured fallbacks that also support vision
+        resolved.fallbacks
+          ?.filter(fb => fb?.modelCode && fb.modelCode.toLowerCase().startsWith('gemini'))
+          .forEach(fb => candidates.push(fb.modelCode))
+      } else if (resolved?.modelCode) {
+        console.warn(`[SketchService] Resolved sketch model ${resolved.modelCode} does not support vision. Falling back to defaults.`)
+      }
+    }
+  } catch (e) {
+    console.warn('[SketchService] Model resolution failed, falling back to defaults:', e instanceof Error ? e.message : e)
+  }
+
+  if (process.env.GEMINI_SKETCH_MODEL) {
+    candidates.push(process.env.GEMINI_SKETCH_MODEL)
+  }
+
+  candidates.push(DEFAULT_GEMINI_IMAGE_MODEL, ...SKETCH_MODEL_FALLBACKS)
+
+  // Deduplicate while preserving order
+  return Array.from(new Set(candidates.filter(Boolean)))
+}
 
 // === CONTEXT BUNDLE BUILDER ===
 
@@ -572,6 +640,7 @@ export interface SketchGenerationResponse {
   imageBase64?: string
   error?: string
   tokensUsed?: number
+  modelUsed?: string
 }
 
 /**
@@ -582,6 +651,7 @@ export interface SketchGenerationResponse {
 export async function generateSketchWithGemini(
   systemPrompt: string,
   userPrompt: string,
+  modelCandidates: string[],
   inputImage?: { base64: string; mimeType: string }
 ): Promise<SketchGenerationResponse> {
   // Dynamic import to avoid client-side issues
@@ -594,98 +664,107 @@ export async function generateSketchWithGemini(
 
   const genAI = new GoogleGenerativeAI(apiKey)
   
-  // Retry logic with exponential backoff
+  // Retry logic with exponential backoff per model candidate
   const maxRetries = 3
   let lastError: string = ''
   
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const model = genAI.getGenerativeModel({
-        model: GEMINI_IMAGE_MODEL,
-        generationConfig: {
-          // IMPORTANT: Only request Image output for maximum quality
-          // Text metadata is provided upfront, not extracted from response
-          responseModalities: ['Image'],
-        },
-      })
-
-      // Build content parts - focused prompt for image generation only
-      const fullPrompt = systemPrompt + '\n\n' + userPrompt
-      const parts: any[] = [
-        { text: fullPrompt }
-      ]
-
-      // Add input image for REFINE/MODIFY modes
-      if (inputImage) {
-        console.log(`[SketchService] Including source image for modification (${inputImage.mimeType})`)
-        parts.push({
-          inlineData: {
-            mimeType: inputImage.mimeType,
-            data: inputImage.base64
-          }
+  for (const modelCode of modelCandidates) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const model = genAI.getGenerativeModel({
+          model: modelCode,
+          generationConfig: {
+            // IMPORTANT: Only request Image output for maximum quality
+            // Text metadata is provided upfront, not extracted from response
+            responseModalities: ['Image'],
+          },
         })
-      }
 
-      console.log(`[SketchService] Calling ${GEMINI_IMAGE_MODEL} (attempt ${attempt}/${maxRetries})${inputImage ? ' with source image' : ''}...`)
-      
-      const result = await model.generateContent(parts)
-      const response = result.response
+        // Build content parts - focused prompt for image generation only
+        const fullPrompt = systemPrompt + '\n\n' + userPrompt
+        const parts: any[] = [
+          { text: fullPrompt }
+        ]
 
-      // Extract image from response
-      const candidates = response.candidates
-      if (!candidates || candidates.length === 0) {
-        lastError = 'No response candidates from Gemini'
-        if (attempt < maxRetries) {
-          const delay = Math.min(2000 * attempt, 10000)
-          console.log(`[SketchService] No candidates, waiting ${delay}ms before retry...`)
-          await new Promise(resolve => setTimeout(resolve, delay))
+        // Add input image for REFINE/MODIFY modes
+        if (inputImage) {
+          console.log(`[SketchService] Including source image for modification (${inputImage.mimeType})`)
+          parts.push({
+            inlineData: {
+              mimeType: inputImage.mimeType,
+              data: inputImage.base64
+            }
+          })
         }
-        continue
-      }
 
-      // Look for image in response
-      for (const candidate of candidates) {
-        if (candidate.content?.parts) {
-          for (const part of candidate.content.parts) {
-            if (part.inlineData) {
-              console.log(`[SketchService] Successfully generated image with ${GEMINI_IMAGE_MODEL}`)
-              return {
-                success: true,
-                imageBase64: part.inlineData.data,
-                tokensUsed: response.usageMetadata?.totalTokenCount || 0
+        console.log(`[SketchService] Calling ${modelCode} (attempt ${attempt}/${maxRetries})${inputImage ? ' with source image' : ''}...`)
+        
+        const result = await model.generateContent(parts)
+        const response = result.response
+
+        // Extract image from response
+        const candidates = response.candidates
+        if (!candidates || candidates.length === 0) {
+          lastError = 'No response candidates from Gemini'
+          if (attempt < maxRetries) {
+            const delay = Math.min(2000 * attempt, 10000)
+            console.log(`[SketchService] No candidates, waiting ${delay}ms before retry...`)
+            await new Promise(resolve => setTimeout(resolve, delay))
+          }
+          continue
+        }
+
+        // Look for image in response
+        for (const candidate of candidates) {
+          if (candidate.content?.parts) {
+            for (const part of candidate.content.parts) {
+              if (part.inlineData) {
+                console.log(`[SketchService] Successfully generated image with ${modelCode}`)
+                return {
+                  success: true,
+                  imageBase64: part.inlineData.data,
+                  tokensUsed: response.usageMetadata?.totalTokenCount || 0,
+                  modelUsed: modelCode
+                }
               }
             }
           }
         }
-      }
 
-      // Check for text response (might be an error or explanation)
-      const textResponse = response.text?.()
-      if (textResponse) {
-        console.log('[SketchService] Model returned text instead of image:', textResponse.substring(0, 300))
-        lastError = `Model returned text instead of image: ${textResponse.substring(0, 150)}...`
-        break
-      }
-      
-      lastError = 'Model returned empty response'
-      
-    } catch (error) {
-      const errorMsg = error instanceof Error ? error.message : String(error)
-      console.error(`[SketchService] Attempt ${attempt} failed:`, errorMsg)
-      lastError = errorMsg
-      
-      // Check for quota/rate limit - wait longer
-      if (errorMsg.includes('quota') || errorMsg.includes('rate limit')) {
-        console.log(`[SketchService] Rate limited, waiting ${5000 * attempt}ms before retry...`)
-        await new Promise(resolve => setTimeout(resolve, 5000 * attempt))
-        continue
-      }
-      
-      // For network errors, retry with exponential backoff
-      if (attempt < maxRetries) {
-        const delay = Math.min(2000 * Math.pow(2, attempt - 1), 15000)
-        console.log(`[SketchService] Network error, waiting ${delay}ms before retry...`)
-        await new Promise(resolve => setTimeout(resolve, delay))
+        // Check for text response (might be an error or explanation)
+        const textResponse = response.text?.()
+        if (textResponse) {
+          console.log('[SketchService] Model returned text instead of image:', textResponse.substring(0, 300))
+          lastError = `Model returned text instead of image: ${textResponse.substring(0, 150)}...`
+          break
+        }
+        
+        lastError = 'Model returned empty response'
+        
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error)
+        console.error(`[SketchService] Attempt ${attempt} failed for ${modelCode}:`, errorMsg)
+        lastError = errorMsg
+        
+        // If the model is not found/unsupported, break and try the next candidate
+        if (/not found|unsupported/i.test(errorMsg) || /404/.test(errorMsg)) {
+          console.warn(`[SketchService] Model ${modelCode} unavailable, trying next fallback...`)
+          break
+        }
+
+        // Check for quota/rate limit - wait longer
+        if (errorMsg.includes('quota') || errorMsg.includes('rate limit')) {
+          console.log(`[SketchService] Rate limited, waiting ${5000 * attempt}ms before retry...`)
+          await new Promise(resolve => setTimeout(resolve, 5000 * attempt))
+          continue
+        }
+        
+        // For network errors, retry with exponential backoff
+        if (attempt < maxRetries) {
+          const delay = Math.min(2000 * Math.pow(2, attempt - 1), 15000)
+          console.log(`[SketchService] Network error, waiting ${delay}ms before retry...`)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        }
       }
     }
   }
@@ -732,6 +811,10 @@ export async function generateSketch(
     contextFlags || { useIdeaSummary: true, useClaims: true, useDiagrams: true, useComponents: true }
   )
 
+  // 3.1 Resolve model candidates (plan-configured -> env -> defaults)
+  const modelCandidates = await resolveSketchModelCandidates(tenantId)
+  const preferredModel = modelCandidates[0] || DEFAULT_GEMINI_IMAGE_MODEL
+
   // 4. Check for minimum context
   if (!contextBundle.ideaSummary && contextBundle.keyComponents.length === 0) {
     return { success: false, error: 'Insufficient invention context. Please complete the Idea Entry stage first.' }
@@ -750,7 +833,7 @@ export async function generateSketch(
       viewsRequested: viewsRequested as any,
       sourceSketchId,
       attemptCount: 0,
-      aiModel: GEMINI_IMAGE_MODEL
+      aiModel: preferredModel
     }
   })
 
@@ -826,7 +909,7 @@ export async function generateSketch(
 
     // 8. Generate sketch - focused only on image generation for quality
     // Title and description are already set from suggestion or user input
-    const result = await generateSketchWithGemini(systemPrompt, userPromptFinal, inputImage)
+    const result = await generateSketchWithGemini(systemPrompt, userPromptFinal, modelCandidates, inputImage)
 
     // 9. Update record based on result
     if (result.success && result.imageBase64) {
@@ -860,14 +943,15 @@ export async function generateSketch(
         data: {
           status: 'SUCCESS',
           imagePath: `/uploads/sketches/${filename}`,
-          imageFilename: filename,
-          imageWidth: width,
-          imageHeight: height,
-          imageChecksum: checksum,
-          tokensUsed: result.tokensUsed,
-          attemptCount: { increment: 1 }
-        }
-      })
+        imageFilename: filename,
+        imageWidth: width,
+        imageHeight: height,
+        imageChecksum: checksum,
+        tokensUsed: result.tokensUsed,
+        attemptCount: { increment: 1 },
+        aiModel: result.modelUsed || preferredModel
+      }
+    })
 
       return {
         success: true,
@@ -1145,6 +1229,8 @@ export async function generateFromSuggestion(
       sketch.sessionId || undefined,
       { useIdeaSummary: true, useClaims: true, useDiagrams: true, useComponents: true }
     )
+    const modelCandidates = await resolveSketchModelCandidates(tenantId)
+    const preferredModel = modelCandidates[0] || DEFAULT_GEMINI_IMAGE_MODEL
 
     // Build focused prompt using the suggestion's title and description
     const systemPrompt = buildSystemPrompt()
@@ -1157,7 +1243,7 @@ export async function generateFromSuggestion(
     })
 
     // Generate image - focused only on image quality
-    const result = await generateSketchWithGemini(systemPrompt, userPrompt)
+    const result = await generateSketchWithGemini(systemPrompt, userPrompt, modelCandidates)
 
     if (result.success && result.imageBase64) {
       // Save generated image
@@ -1192,7 +1278,8 @@ export async function generateFromSuggestion(
           imageHeight: height,
           imageChecksum: checksum,
           tokensUsed: result.tokensUsed,
-          attemptCount: { increment: 1 }
+          attemptCount: { increment: 1 },
+          aiModel: result.modelUsed || preferredModel
         }
       })
 
@@ -1330,4 +1417,3 @@ export async function clearSketchSuggestions(sessionId: string): Promise<{ delet
   console.log(`[SketchService] Cleared ${result.count} sketch suggestions for session ${sessionId}`)
   return { deleted: result.count }
 }
-

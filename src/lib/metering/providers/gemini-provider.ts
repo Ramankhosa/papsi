@@ -20,6 +20,20 @@ export class GeminiProvider implements LLMProvider {
     'gemini-3-pro-image-preview'
   ]
 
+  // Map legacy model codes (as saved in plan config) to current Google model IDs
+  // This keeps old config working after Google renames/versions.
+  private modelAliasMap: Record<string, string> = {
+    // Gemini 1.5 stable variants
+    'gemini-1.5-pro': 'gemini-1.5-pro-002',
+    'gemini-1.5-flash': 'gemini-1.5-flash-002',
+    // Gemini 2.x variants (align to current GA/preview IDs)
+    'gemini-2.0-flash': 'gemini-2.0-flash-001',
+    'gemini-2.0-flash-lite': 'gemini-2.0-flash-lite-001',
+    // Keep nano/image models as-is (current names work with v1beta)
+    'gemini-3.0-nano-banana': 'gemini-3.0-nano-banana',
+    'gemini-3-pro-image-preview': 'gemini-3-pro-image-preview'
+  }
+
   private config: ProviderConfig
   private client: any // Google Generative AI client
 
@@ -54,11 +68,16 @@ export class GeminiProvider implements LLMProvider {
     }
 
     // Use modelClass from request, or fallback to configured model, or first supported model
-    const modelClass = request.modelClass || this.config.model || this.supportedModels[0]
+    const requestedModel = request.modelClass || this.config.model || this.supportedModels[0]
+    const modelClass = this.modelAliasMap[requestedModel] || requestedModel
 
     // Note: Model validation is now handled by the model resolver
     // We allow any model code to be passed through since new models can be added via admin UI
-    console.log(`[GeminiProvider] Using model: ${modelClass}`)
+    if (modelClass !== requestedModel) {
+      console.log(`[GeminiProvider] Using model alias: requested=${requestedModel} -> api=${modelClass}`)
+    } else {
+      console.log(`[GeminiProvider] Using model: ${modelClass}`)
+    }
 
     // Use enforcement limits, with provider limits as fallback
     const providerLimits = this.getTokenLimits(modelClass)
@@ -181,13 +200,17 @@ export class GeminiProvider implements LLMProvider {
     const limits: Record<string, { input: number, output: number }> = {
       // Flash Lite models
       'gemini-2.0-flash-lite': { input: 1048576, output: 8192 },
+      'gemini-2.0-flash-lite-001': { input: 1048576, output: 8192 },
       'gemini-2.5-flash-lite': { input: 1048576, output: 8192 },
       // Flash models
       'gemini-2.0-flash': { input: 1048576, output: 8192 },
+      'gemini-2.0-flash-001': { input: 1048576, output: 8192 },
       // Pro models
       'gemini-2.5-pro': { input: 2097152, output: 16384 },
-      'gemini-1.5-pro': { input: 2097152, output: 16384 },
-      'gemini-1.5-flash': { input: 1048576, output: 8192 },
+      'gemini-1.5-pro': { input: 2097152, output: 16384 }, // legacy config
+      'gemini-1.5-pro-002': { input: 2097152, output: 16384 },
+      'gemini-1.5-flash': { input: 1048576, output: 8192 }, // legacy config
+      'gemini-1.5-flash-002': { input: 1048576, output: 8192 },
       // Image generation models
       'gemini-3.0-nano-banana': { input: 128000, output: 8192 },
       'gemini-3-pro-image-preview': { input: 128000, output: 8192 }
@@ -201,13 +224,17 @@ export class GeminiProvider implements LLMProvider {
     const costs: Record<string, { input: number, output: number }> = {
       // Flash Lite models
       'gemini-2.0-flash-lite': { input: 0.00000008, output: 0.0000003 },    // $0.08/$0.30 per M
+      'gemini-2.0-flash-lite-001': { input: 0.00000008, output: 0.0000003 },
       'gemini-2.5-flash-lite': { input: 0.00000035, output: 0.0000007 },    // $0.35/$0.70 per M
       // Flash models
       'gemini-2.0-flash': { input: 0.0000001, output: 0.0000004 },          // $0.10/$0.40 per M
+      'gemini-2.0-flash-001': { input: 0.0000001, output: 0.0000004 },
       // Pro models
       'gemini-2.5-pro': { input: 0.00000125, output: 0.000005 },            // $1.25/$5.00 per M
-      'gemini-1.5-pro': { input: 0.00000125, output: 0.000005 },            // $1.25/$5.00 per M
-      'gemini-1.5-flash': { input: 0.0000001, output: 0.0000004 },          // $0.10/$0.40 per M
+      'gemini-1.5-pro': { input: 0.00000125, output: 0.000005 },            // $1.25/$5.00 per M (legacy)
+      'gemini-1.5-pro-002': { input: 0.00000125, output: 0.000005 },
+      'gemini-1.5-flash': { input: 0.0000001, output: 0.0000004 },          // $0.10/$0.40 per M (legacy)
+      'gemini-1.5-flash-002': { input: 0.0000001, output: 0.0000004 },
       // Image generation models
       'gemini-3.0-nano-banana': { input: 0.000001, output: 0.000004 },      // $1.00/$4.00 per M
       'gemini-3-pro-image-preview': { input: 0.000001, output: 0.000004 }   // $1.00/$4.00 per M

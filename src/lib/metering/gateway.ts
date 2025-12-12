@@ -319,7 +319,11 @@ export class LLMGateway {
     'claude-3.5-sonnet', 'claude-3.5-haiku', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku',
     'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229',
     // Google Gemini
-    'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash',
+    'gemini-2.5-pro',
+    'gemini-2.0-flash', 'gemini-2.0-flash-001',
+    'gemini-2.0-flash-lite', 'gemini-2.0-flash-lite-001',
+    'gemini-1.5-pro', 'gemini-1.5-pro-002',
+    'gemini-1.5-flash', 'gemini-1.5-flash-002',
     'gemini-3.0-nano-banana', 'gemini-3-pro-image-preview'
   ])
 
@@ -380,9 +384,13 @@ export class LLMGateway {
       // Gemini
       'gemini-2.5-pro': { maxInput: 1000000, maxOutput: 8192 },
       'gemini-2.0-flash': { maxInput: 1000000, maxOutput: 8192 },
+      'gemini-2.0-flash-001': { maxInput: 1000000, maxOutput: 8192 },
       'gemini-2.0-flash-lite': { maxInput: 1000000, maxOutput: 8192 },
+      'gemini-2.0-flash-lite-001': { maxInput: 1000000, maxOutput: 8192 },
       'gemini-1.5-pro': { maxInput: 2000000, maxOutput: 8192 },
+      'gemini-1.5-pro-002': { maxInput: 2000000, maxOutput: 8192 },
       'gemini-1.5-flash': { maxInput: 1000000, maxOutput: 8192 },
+      'gemini-1.5-flash-002': { maxInput: 1000000, maxOutput: 8192 },
       'gemini-3.0-nano-banana': { maxInput: 1000000, maxOutput: 8192 },
       'gemini-3-pro-image-preview': { maxInput: 1000000, maxOutput: 8192 },
       

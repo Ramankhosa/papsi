@@ -3023,7 +3023,7 @@ Return ONLY corrected diagram code between @startuml and @enduml. Do not add exp
     const request = { headers: opts.requestHeaders || {} }
     const result = await llmGateway.executeLLMOperation(request, {
       taskCode: 'LLM3_DIAGRAM',
-      stageCode: 'DIAGRAM_PLANTUML', // Use admin-configured model/limits
+      stageCode: 'DRAFT_DIAGRAM_GENERATION', // Reuse diagram generation model configured via central LLM control
       prompt,
       idempotencyKey: crypto.randomUUID(),
       inputTokens: Math.ceil(prompt.length / 4),
@@ -6384,7 +6384,7 @@ Return ONLY the translated PlantUML code. No explanations, no markdown formattin
     const request = { headers: requestHeaders || {} }
     const llmResult = await llmGateway.executeLLMOperation(request, {
       taskCode: 'LLM3_DIAGRAM',
-      stageCode: 'DIAGRAM_PLANTUML', // Use admin-configured model/limits
+      stageCode: 'DRAFT_DIAGRAM_GENERATION', // Reuse diagram generation model configured via central LLM control
       prompt,
       idempotencyKey: crypto.randomUUID(),
       inputTokens: Math.ceil(prompt.length / 4),
