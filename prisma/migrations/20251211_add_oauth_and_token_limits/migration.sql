@@ -13,3 +13,5 @@ ALTER TABLE "users" ADD COLUMN "oauthProfile" JSONB;
 ALTER TABLE "plan_features" ADD COLUMN "monthlyTokenLimit" INTEGER;
 ALTER TABLE "plan_features" ADD COLUMN "dailyTokenLimit" INTEGER;
 
+
+

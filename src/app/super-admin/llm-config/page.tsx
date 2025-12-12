@@ -157,6 +157,7 @@ export default function LLMConfigPage() {
     stageId: string
     modelId: string
     fallbacks: string[]
+    maxTokensIn?: number
     maxTokensOut?: number
   } | null>(null)
 
@@ -206,7 +207,7 @@ export default function LLMConfigPage() {
     }
   }
 
-  const handleSetStageModel = async (stageId: string, modelId: string, fallbacks: string[] = [], maxTokensOut?: number) => {
+  const handleSetStageModel = async (stageId: string, modelId: string, fallbacks: string[] = [], maxTokensIn?: number, maxTokensOut?: number) => {
     if (!selectedPlan) return
 
     try {
@@ -225,6 +226,7 @@ export default function LLMConfigPage() {
           stageId,
           modelId,
           fallbackModelIds: fallbacks.length > 0 ? fallbacks : undefined,
+          maxTokensIn,
           maxTokensOut
         })
       })
@@ -681,37 +683,50 @@ export default function LLMConfigPage() {
                         </div>
 
                         {isEditing ? (
-                          <div className="flex flex-col gap-3">
-                            <div className="flex items-center gap-4">
-                              <div className="flex-1">
-                                <label className="block text-xs text-slate-400 mb-1">Primary Model</label>
-                                <select
-                                  value={editingConfig.modelId}
-                                  onChange={(e) => setEditingConfig({ ...editingConfig, modelId: e.target.value })}
-                                  className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm"
-                                >
-                                  <option value="">Select model...</option>
-                                  {models.filter(m => m.isActive).map(model => (
-                                    <option key={model.id} value={model.id}>
-                                      {model.displayName} ({model.provider})
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-                              <div className="w-32">
-                                <label className="block text-xs text-slate-400 mb-1">Max Tokens</label>
-                                <input
-                                  type="number"
-                                  placeholder="e.g. 4096"
-                                  value={editingConfig.maxTokensOut || ''}
-                                  onChange={(e) => setEditingConfig({ 
-                                    ...editingConfig, 
-                                    maxTokensOut: e.target.value ? parseInt(e.target.value) : undefined 
-                                  })}
-                                  className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm"
-                                />
-                              </div>
-                            </div>
+                            <div className="flex flex-col gap-3">
+                                            <div className="flex items-center gap-4">
+                                              <div className="flex-1">
+                                                <label className="block text-xs text-slate-400 mb-1">Primary Model</label>
+                                                <select
+                                                  value={editingConfig.modelId}
+                                                  onChange={(e) => setEditingConfig({ ...editingConfig, modelId: e.target.value })}
+                                                  className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm"
+                                                >
+                                                  <option value="">Select model...</option>
+                                                  {models.filter(m => m.isActive).map(model => (
+                                                    <option key={model.id} value={model.id}>
+                                                      {model.displayName} ({model.provider})
+                                                    </option>
+                                                  ))}
+                                                </select>
+                                              </div>
+                                              <div className="w-36">
+                                                <label className="block text-xs text-slate-400 mb-1">Max Input Tokens</label>
+                                                <input
+                                                  type="number"
+                                                  placeholder="e.g. 4000"
+                                                  value={editingConfig.maxTokensIn || ''}
+                                                  onChange={(e) => setEditingConfig({ 
+                                                    ...editingConfig, 
+                                                    maxTokensIn: e.target.value ? parseInt(e.target.value) : undefined 
+                                                  })}
+                                                  className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm"
+                                                />
+                                              </div>
+                                              <div className="w-36">
+                                                <label className="block text-xs text-slate-400 mb-1">Max Output Tokens</label>
+                                                <input
+                                                  type="number"
+                                                  placeholder="e.g. 4096"
+                                                  value={editingConfig.maxTokensOut || ''}
+                                                  onChange={(e) => setEditingConfig({ 
+                                                    ...editingConfig, 
+                                                    maxTokensOut: e.target.value ? parseInt(e.target.value) : undefined 
+                                                  })}
+                                                  className="w-full bg-slate-700 border border-slate-600 rounded px-3 py-2 text-sm"
+                                                />
+                                              </div>
+                                            </div>
                             <div>
                               <label className="block text-xs text-slate-400 mb-1">Fallback Models (up to 3)</label>
                               <div className="flex flex-wrap gap-2">
@@ -765,34 +780,37 @@ export default function LLMConfigPage() {
                                 Cancel
                               </button>
                               <button
-                                onClick={() => handleSetStageModel(
-                                  stage.id,
-                                  editingConfig.modelId,
-                                  editingConfig.fallbacks,
-                                  editingConfig.maxTokensOut
-                                )}
-                                disabled={saving || !editingConfig.modelId}
-                                className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 rounded text-sm font-medium disabled:opacity-50"
-                              >
-                                {saving ? 'Saving...' : 'Save'}
-                              </button>
+                                                onClick={() => handleSetStageModel(
+                                                  stage.id,
+                                                  editingConfig.modelId,
+                                                  editingConfig.fallbacks,
+                                                  editingConfig.maxTokensIn,
+                                                  editingConfig.maxTokensOut
+                                                )}
+                                                disabled={saving || !editingConfig.modelId}
+                                                className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 rounded text-sm font-medium disabled:opacity-50"
+                                              >
+                                                {saving ? 'Saving...' : 'Save'}
+                                              </button>
                             </div>
                           </div>
                         ) : (
                           <div className="flex items-center gap-4">
                             {config ? (
-                              <div className="flex flex-col gap-1">
-                                <div className="flex items-center gap-3">
-                                  <span className={`px-2 py-1 rounded-full text-xs font-medium border ${PROVIDER_COLORS[config.model.provider] || 'bg-slate-600'}`}>
-                                    {config.model.provider}
-                                  </span>
-                                  <span className="font-medium">{config.model.displayName}</span>
-                                  {config.maxTokensOut && (
-                                    <span className="text-xs text-slate-400">
-                                      max: {config.maxTokensOut.toLocaleString()}
-                                    </span>
-                                  )}
-                                </div>
+                                              <div className="flex flex-col gap-1">
+                                                <div className="flex items-center gap-3">
+                                                  <span className={`px-2 py-1 rounded-full text-xs font-medium border ${PROVIDER_COLORS[config.model.provider] || 'bg-slate-600'}`}>
+                                                    {config.model.provider}
+                                                  </span>
+                                                  <span className="font-medium">{config.model.displayName}</span>
+                                                  {(config.maxTokensIn || config.maxTokensOut) && (
+                                                    <span className="text-xs text-slate-400">
+                                                      {config.maxTokensIn && `in: ${config.maxTokensIn.toLocaleString()}`}
+                                                      {config.maxTokensIn && config.maxTokensOut && ' / '}
+                                                      {config.maxTokensOut && `out: ${config.maxTokensOut.toLocaleString()}`}
+                                                    </span>
+                                                  )}
+                                                </div>
                                 {config.fallbackModelIds && (() => {
                                   try {
                                     const fallbackIds = JSON.parse(config.fallbackModelIds)
@@ -816,16 +834,17 @@ export default function LLMConfigPage() {
                               <span className="text-slate-500 italic">Not configured</span>
                             )}
                             <button
-                              onClick={() => setEditingConfig({
-                                stageId: stage.id,
-                                modelId: config?.model.id || '',
-                                fallbacks: config?.fallbackModelIds ? JSON.parse(config.fallbackModelIds) : [],
-                                maxTokensOut: config?.maxTokensOut || undefined
-                              })}
-                              className="px-3 py-1 bg-slate-600 hover:bg-slate-500 rounded text-sm transition"
-                            >
-                              {config ? 'Edit' : 'Configure'}
-                            </button>
+                                              onClick={() => setEditingConfig({
+                                                stageId: stage.id,
+                                                modelId: config?.model.id || '',
+                                                fallbacks: config?.fallbackModelIds ? JSON.parse(config.fallbackModelIds) : [],
+                                                maxTokensIn: config?.maxTokensIn || undefined,
+                                                maxTokensOut: config?.maxTokensOut || undefined
+                                              })}
+                                              className="px-3 py-1 bg-slate-600 hover:bg-slate-500 rounded text-sm transition"
+                                            >
+                                              {config ? 'Edit' : 'Configure'}
+                                            </button>
                           </div>
                         )}
                       </div>
