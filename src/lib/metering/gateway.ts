@@ -102,16 +102,13 @@ export class LLMGateway {
           )
           
           // Apply stage-specific limits if configured (both input and output)
-          if (modelResolution.maxTokensOut && decision.maxTokensOut) {
-            decision.maxTokensOut = Math.min(decision.maxTokensOut, modelResolution.maxTokensOut)
-          } else if (modelResolution.maxTokensOut) {
+          // Stage limits should override plan defaults, not be capped by them
+          if (modelResolution.maxTokensOut) {
             decision.maxTokensOut = modelResolution.maxTokensOut
           }
-          
+
           // Apply maxTokensIn from stage config (NEW: enforce input limits)
-          if (modelResolution.maxTokensIn && decision.maxTokensIn) {
-            decision.maxTokensIn = Math.min(decision.maxTokensIn, modelResolution.maxTokensIn)
-          } else if (modelResolution.maxTokensIn) {
+          if (modelResolution.maxTokensIn) {
             decision.maxTokensIn = modelResolution.maxTokensIn
           }
           
