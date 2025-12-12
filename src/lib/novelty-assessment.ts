@@ -352,9 +352,10 @@ Abstract: ${patent.abstract}`)
         .replace('{solution}', request.inventionSummary.solution)
         .replace('{patent_list}', patentList);
 
-      // Execute LLM call
+      // Execute LLM call with admin-configured model via stage
       const llmRequest = {
         taskCode: TaskCode.LLM4_NOVELTY_SCREEN,
+        stageCode: 'NOVELTY_RELEVANCE_SCORING', // Use admin-configured model/limits
         prompt,
         inputTokens: Math.ceil(prompt.length / 4),
       };
@@ -441,9 +442,10 @@ Abstract: ${patent.abstract}`)
           .replace('{patent_abstract}', detailedData.abstract || patent!.abstract)
           .replace('{patent_claims}', JSON.stringify(detailedData.claims || {}, null, 2));
 
-        // Execute LLM call
+        // Execute LLM call with admin-configured model via stage
         const llmRequest = {
           taskCode: TaskCode.LLM5_NOVELTY_ASSESS,
+          stageCode: 'NOVELTY_COMPARISON', // Use admin-configured model/limits
           prompt,
           inputTokens: Math.ceil(prompt.length / 4),
         };
@@ -700,11 +702,12 @@ Relevance: ${patent.relevance}%`;
 
       console.log('📤 Sending Level 1 analysis to LLM...');
 
-      // Call LLM for Level 1 analysis
+      // Call LLM for Level 1 analysis with admin-configured model
       const llmResult = await llmGateway.executeLLMOperation(
         { headers: { authorization: `Bearer ${request.jwtToken}` } },
         {
           taskCode: TaskCode.LLM4_NOVELTY_SCREEN,
+          stageCode: 'NOVELTY_RELEVANCE_SCORING', // Use admin-configured model/limits
           prompt: level1Prompt,
         }
       );
@@ -960,11 +963,12 @@ Relevance: ${patent.relevance}%`;
           .replace(/{patent_abstract}/g, patentDetails.abstract || 'Abstract not available')
           .replace(/{patent_claims}/g, patentDetails.claims || 'Claims not available');
 
-        // Call LLM for detailed analysis
+        // Call LLM for detailed analysis with admin-configured model
         const llmResult = await llmGateway.executeLLMOperation(
           { headers: { authorization: `Bearer ${request.jwtToken}` } },
           {
             taskCode: TaskCode.LLM5_NOVELTY_ASSESS,
+            stageCode: 'NOVELTY_COMPARISON', // Use admin-configured model/limits
             prompt: detailedPrompt,
           }
         );

@@ -1733,6 +1733,7 @@ OUTPUT FORMAT
 
     const result = await llmGateway.executeLLMOperation({ headers: requestHeaders || {} }, {
       taskCode: 'LLM2_DRAFT',
+      stageCode: 'DRAFT_ANNEXURE_DESCRIPTION', // Use admin-configured model/limits for reference draft
       prompt,
       parameters: { tenantId, purpose: 'reference_draft' },
       idempotencyKey: crypto.randomUUID(),
@@ -2655,8 +2656,9 @@ Example: {"${sectionsToTranslate[0]?.countryKey || 'sectionKey'}": "translated c
 
 Return ONLY the JSON object, no markdown code fences or explanations.`
 
-    const llmRequest: LLMRequest = {
+    const llmRequest: LLMRequest & { stageCode?: string } = {
       taskCode: 'LLM2_DRAFT',
+      stageCode: 'DRAFT_ANNEXURE_DESCRIPTION', // Use admin-configured model/limits for batch translation
       prompt,
       parameters: { tenantId, purpose: 'translate_sections_batch', temperature: 0 },
       idempotencyKey: crypto.randomUUID(),

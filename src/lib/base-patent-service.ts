@@ -109,11 +109,14 @@ export abstract class BasePatentService {
 
   /**
    * Execute LLM operation through the gateway
+   * @param requestHeaders - HTTP headers for authentication
+   * @param params - LLM request parameters including optional stageCode for admin-configured model/limits
    */
   protected async callLLMGateway(
     requestHeaders: Record<string, string>,
     params: {
       taskCode: TaskCode;
+      stageCode?: string; // Optional stage code for admin-configured model/token limits
       prompt: string;
       parameters?: any;
       maxOutputTokens?: number;
@@ -125,6 +128,7 @@ export abstract class BasePatentService {
         { headers: requestHeaders },
         {
           taskCode: params.taskCode,
+          stageCode: params.stageCode, // Pass stage code for admin-configured model resolution
           prompt: params.prompt,
           parameters: {
             ...params.parameters,

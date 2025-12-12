@@ -47,6 +47,7 @@ export class PriorArtLLMService {
 
       const llmRequest = {
         taskCode: 'LLM1_PRIOR_ART' as const,
+        stageCode: 'NOVELTY_QUERY_GENERATION', // Use admin-configured model/limits
         prompt,
         inputTokens: Math.ceil(prompt.length / 4), // Rough estimate
         idempotencyKey: `prior-art-${request.patentId}-${Date.now()}`

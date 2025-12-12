@@ -534,14 +534,16 @@ export class LLMGateway {
 export const llmGateway = new LLMGateway()
 
 // === HELPER FUNCTIONS FOR INTEGRATION ===
+// Note: These helper functions support optional stageCode for admin-configured model/limits
 
 export async function executePriorArtSearch(
   request: { headers: Record<string, string> },
   query: string,
-  options?: { maxResults?: number; sources?: string[] }
+  options?: { maxResults?: number; sources?: string[]; stageCode?: string }
 ): Promise<{ success: boolean; results?: any[]; error?: MeteringError }> {
-  const llmRequest: LLMRequest = {
+  const llmRequest: LLMRequest & { stageCode?: string } = {
     taskCode: 'LLM1_PRIOR_ART',
+    stageCode: options?.stageCode || 'NOVELTY_QUERY_GENERATION', // Default stage for prior art search
     prompt: `Search for prior art related to: ${query}`,
     parameters: options,
     idempotencyKey: crypto.randomUUID()
@@ -564,10 +566,11 @@ export async function executePriorArtSearch(
 export async function executePatentDrafting(
   request: { headers: Record<string, string> },
   specification: string,
-  options?: { jurisdiction?: string; type?: string }
+  options?: { jurisdiction?: string; type?: string; stageCode?: string }
 ): Promise<{ success: boolean; draft?: string; error?: MeteringError }> {
-  const llmRequest: LLMRequest = {
+  const llmRequest: LLMRequest & { stageCode?: string } = {
     taskCode: 'LLM2_DRAFT',
+    stageCode: options?.stageCode || 'DRAFT_ANNEXURE_DESCRIPTION', // Default stage for patent drafting
     prompt: `Draft patent specification for: ${specification}`,
     parameters: options,
     idempotencyKey: crypto.randomUUID()
@@ -585,10 +588,12 @@ export async function executePatentDrafting(
 export async function executeDiagramGeneration(
   request: { headers: Record<string, string> },
   description: string,
-  format: 'plantuml' | 'mermaid' = 'plantuml'
+  format: 'plantuml' | 'mermaid' = 'plantuml',
+  options?: { stageCode?: string }
 ): Promise<{ success: boolean; diagram?: string; error?: MeteringError }> {
-  const llmRequest: LLMRequest = {
+  const llmRequest: LLMRequest & { stageCode?: string } = {
     taskCode: 'LLM3_DIAGRAM',
+    stageCode: options?.stageCode || 'DRAFT_DIAGRAM_GENERATION', // Default stage for diagram generation
     prompt: `Generate ${format} diagram for: ${description}`,
     parameters: { format },
     idempotencyKey: crypto.randomUUID()

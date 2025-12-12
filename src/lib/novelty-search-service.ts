@@ -1281,7 +1281,7 @@ export class NoveltySearchService extends BasePatentService {
 
           const llmBatch = await llmGateway.executeLLMOperation(
             { headers: requestHeaders || {} },
-            { taskCode: TaskCode.LLM5_NOVELTY_ASSESS, prompt: batchPrompt, modelClass: (config.stage35c?.modelPreference || 'gemini-2.5-flash-lite') as any }
+            { taskCode: TaskCode.LLM5_NOVELTY_ASSESS, stageCode: 'NOVELTY_COMPARISON', prompt: batchPrompt }
           );
 
           let parsedArr: any[] | null = null;
@@ -1389,8 +1389,8 @@ export class NoveltySearchService extends BasePatentService {
             { headers: requestHeaders || {} },
             {
               taskCode: TaskCode.LLM5_NOVELTY_ASSESS,
-              prompt,
-              modelClass: (config.stage35c?.modelPreference || 'gemini-2.5-flash-lite') as any
+              stageCode: 'NOVELTY_COMPARISON',
+              prompt
             }
           );
           if (llmResult.success && llmResult.response?.output) {
@@ -1889,13 +1889,13 @@ Respond with ONLY a JSON object:
 RESPONSE:`;
 
     try {
-      // Use Gemini 2.5 Flash-Lite model directly for relevance assessment
+      // Use admin-configured model via NOVELTY_RELEVANCE_SCORING stage
       const llmResult = await llmGateway.executeLLMOperation(
         { headers: requestHeaders || {} },
         {
-          taskCode: TaskCode.LLM5_NOVELTY_ASSESS, // Reuse existing task code
-          prompt: relevancePrompt,
-          modelClass: 'gemini-2.0-flash-lite'
+          taskCode: TaskCode.LLM5_NOVELTY_ASSESS,
+          stageCode: 'NOVELTY_RELEVANCE_SCORING',
+          prompt: relevancePrompt
         }
       );
 
@@ -1955,13 +1955,13 @@ RESPONSE:`;
 
       console.log('ðŸ“ Stage 0 Final Prompt:', prompt);
 
-      // Execute LLM call for feature extraction
+      // Execute LLM call for feature extraction using admin-configured model
       const llmResult = await llmGateway.executeLLMOperation(
         { headers: requestHeaders || {} },
         {
           taskCode: TaskCode.LLM5_NOVELTY_ASSESS,
-          prompt,
-          modelClass: 'gemini-2.0-flash-lite'
+          stageCode: 'NOVELTY_FEATURE_ANALYSIS',
+          prompt
         }
       );
 
@@ -2088,7 +2088,7 @@ RESPONSE:`;
           const prompt = buildBatchPrompt(batch);
           const res = await llmGateway.executeLLMOperation(
             { headers: requestHeaders || {} },
-            { taskCode: TaskCode.LLM5_NOVELTY_ASSESS, prompt, modelClass: modelPreference as any }
+            { taskCode: TaskCode.LLM5_NOVELTY_ASSESS, stageCode: 'NOVELTY_COMPARISON', prompt }
           );
           if (res.success && res.response?.output) {
             const obj = this.parseLLMResponse(res.response.output);
@@ -3734,21 +3734,16 @@ OUTPUT JSON:
         }
       } catch {}
 
-      const primaryModel = (config.stage4?.modelPreference || 'gemini-2.5-pro') as any;
-      console.log(` [Stage4] Attempting report generation with model: ${primaryModel}`);
+      // Use admin-configured model via NOVELTY_REPORT_GENERATION stage
+      console.log(` [Stage4] Attempting report generation with admin-configured model`);
       let llmResult = await llmGateway.executeLLMOperation(
         { headers: requestHeaders || {} },
-        { taskCode: TaskCode.LLM6_REPORT_GENERATION, prompt: basePrompt, modelClass: primaryModel }
+        { taskCode: TaskCode.LLM6_REPORT_GENERATION, stageCode: 'NOVELTY_REPORT_GENERATION', prompt: basePrompt }
       );
 
-      // Fallback to GPT-4o if primary fails
+      // The gateway handles fallbacks via admin configuration, but log if first attempt fails
       if (!llmResult.success || !llmResult.response) {
-        const fallbackModel: any = 'gpt-4o';
-        console.warn(`[Stage4] Primary model failed. Falling back to: ${fallbackModel}`);
-        llmResult = await llmGateway.executeLLMOperation(
-          { headers: requestHeaders || {} },
-          { taskCode: TaskCode.LLM6_REPORT_GENERATION, prompt: basePrompt, modelClass: fallbackModel }
-        );
+        console.warn(`[Stage4] Report generation failed: ${llmResult.error?.message || 'Unknown error'}`);
       }
 
       if (!llmResult.success || !llmResult.response) {
@@ -4014,13 +4009,13 @@ Abstract: ${patent.abstract}
         .replace('{invention_features}', JSON.stringify(inventionFeatures))
         .replace('{patent_batch}', patentBatchText);
 
-      // Call LLM
+      // Call LLM with admin-configured model via stage
       const llmResult = await llmGateway.executeLLMOperation(
         { headers: requestHeaders || {} },
         {
           taskCode: TaskCode.LLM5_NOVELTY_ASSESS,
-          prompt,
-          modelClass: config.stage35a.modelPreference as any
+          stageCode: 'NOVELTY_FEATURE_ANALYSIS',
+          prompt
         }
       );
 
@@ -4565,39 +4560,20 @@ Abstract: ${patent.abstract}
     preference: 'gpt-4o' | 'gpt-4o-mini' | 'claude-2.5' | 'gemini-2.0-flash-lite' | 'gemini-2.5-pro',
     requestHeaders?: Record<string, string>
   ): Promise<LLMResult> {
-    // Implement model preference logic
-    // Priority: Gemini 2.5 Pro > Gemini 2.0 Flash-Lite > GPT-4o > Claude 2.5 > GPT-4o mini
+    // Model and fallbacks are now configured via admin console (NOVELTY_REPORT_GENERATION stage)
+    // The gateway handles model resolution and fallbacks automatically
+    console.log(`🤖 Using admin-configured model via NOVELTY_REPORT_GENERATION stage`);
 
-    const modelPriority = ['gemini-2.5-pro', 'gemini-2.0-flash-lite', 'gpt-4o', 'claude-2.5', 'gpt-4o-mini'];
-    const preferredIndex = modelPriority.indexOf(preference);
-
-    // Try preferred model first, then fallbacks
-    for (let i = preferredIndex; i < modelPriority.length; i++) {
-      try {
-        const model = modelPriority[i];
-        console.log(`ðŸ¤– Trying model: ${model}`);
-
-        // Use the gateway with model specification
-        const result = await llmGateway.executeLLMOperation(
-          { headers: requestHeaders || {} },
-          {
-            taskCode: TaskCode.LLM6_REPORT_GENERATION,
-            prompt,
-            modelClass: model
-          }
-        );
-
-        if (result.success) {
-          return result;
-        }
-
-        console.warn(`Model ${model} failed, trying next...`);
-      } catch (error) {
-        console.warn(`Model attempt failed:`, error);
+    const result = await llmGateway.executeLLMOperation(
+      { headers: requestHeaders || {} },
+      {
+        taskCode: TaskCode.LLM6_REPORT_GENERATION,
+        stageCode: 'NOVELTY_REPORT_GENERATION',
+        prompt
       }
-    }
+    );
 
-    return { success: false, error: 'All preferred models failed' };
+    return result;
   }
 }
 

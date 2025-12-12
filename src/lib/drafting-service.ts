@@ -3061,10 +3061,11 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       // Build comprehensive prompt
       const prompt = await this.buildAnnexurePrompt(session, jurisdiction, filingType, sectionDefs, referenceDraft, preferredLanguage, sourceJurisdiction);
 
-      // Execute through LLM gateway
+      // Execute through LLM gateway with admin-configured model via stage
       const request = { headers: requestHeaders || {} };
       const result = await llmGateway.executeLLMOperation(request, {
         taskCode: 'LLM2_DRAFT',
+        stageCode: 'DRAFT_ANNEXURE_DESCRIPTION', // Use stage config for comprehensive annexure draft
         prompt,
         parameters: { tenantId, jurisdiction, filingType },
         idempotencyKey: crypto.randomUUID(),

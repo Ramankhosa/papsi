@@ -136,14 +136,14 @@ export async function runAIReview(
       crossValidations
     )
     
-    // Use LLM for review - explicitly use Gemini 2.5 Pro for complex analysis
+    // Use LLM for review - uses admin-configured model via DRAFT_REVIEW stage
     // The review task requires strong reasoning and structured JSON output
     const result = await llmGateway.executeLLMOperation(
       { headers: requestHeaders || {} },
       {
-        taskCode: 'LLM2_DRAFT', // Using drafting task code for review operations
+        taskCode: 'LLM2_DRAFT',
+        stageCode: 'DRAFT_REVIEW', // Use stage config for admin-configured model/limits
         prompt,
-        modelClass: 'gemini-2.5-pro', // Use Pro model for complex review analysis
         parameters: {
           tenantId,
           purpose: 'ai_draft_review',

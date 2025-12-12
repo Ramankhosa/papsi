@@ -999,8 +999,8 @@ ${batchText}`
 
     const relevanceResult = await llmGateway.executeLLMOperation(request, {
       taskCode: 'LLM1_PRIOR_ART',
+      stageCode: 'NOVELTY_RELEVANCE_SCORING', // Use stage config for admin-configured model/limits
       prompt: batchRelevancePrompt,
-      modelClass: 'gemini-2.5-flash-lite',
       idempotencyKey: crypto.randomUUID(),
       inputTokens: Math.ceil(batchRelevancePrompt.length / 4),
       parameters: { maxOutputTokens: 3000 },
@@ -1134,8 +1134,8 @@ ${candidatesText}`
 
   const ideaResult = await llmGateway.executeLLMOperation(request, {
     taskCode: 'LLM1_PRIOR_ART',
+    stageCode: 'NOVELTY_FEATURE_ANALYSIS', // Use stage config for admin-configured model/limits
     prompt: ideaPrompt,
-    modelClass: 'gemini-2.5-flash-lite',
     idempotencyKey: crypto.randomUUID(),
     inputTokens: Math.ceil(ideaPrompt.length / 4),
     parameters: { 
@@ -3023,6 +3023,7 @@ Return ONLY corrected diagram code between @startuml and @enduml. Do not add exp
     const request = { headers: opts.requestHeaders || {} }
     const result = await llmGateway.executeLLMOperation(request, {
       taskCode: 'LLM3_DIAGRAM',
+      stageCode: 'DIAGRAM_PLANTUML', // Use admin-configured model/limits
       prompt,
       idempotencyKey: crypto.randomUUID(),
       inputTokens: Math.ceil(prompt.length / 4),
@@ -3473,6 +3474,7 @@ Return ONLY the JSON object, no markdown fencing or explanation.`
     const request = { headers: requestHeaders || {} }
     const llmResult = await llmGateway.executeLLMOperation(request, {
       taskCode: 'LLM2_DRAFT',
+      stageCode: 'DRAFT_CLAIM_GENERATION', // Use admin-configured model/limits
       prompt,
       idempotencyKey: crypto.randomUUID(),
       inputTokens: Math.ceil(prompt.length / 4),
@@ -3865,8 +3867,8 @@ Return ONLY valid JSON:
   const request = { headers: requestHeaders || {} }
   const llmResult = await llmGateway.executeLLMOperation(request, {
     taskCode: 'LLM1_CLAIM_REFINEMENT',
+    stageCode: 'DRAFT_CLAIM_REFINEMENT', // Use stage config for admin-configured model/limits
     prompt,
-    modelClass: 'gemini-2.5-flash-lite',
     idempotencyKey: crypto.randomUUID(),
     inputTokens: Math.ceil(prompt.length / 4),
     metadata: {
@@ -5792,6 +5794,7 @@ If in doubt, prefer a SIMPLE, VALID diagram over a complex one.
   const request = { headers: requestHeaders || {} }
   const result = await llmGateway.executeLLMOperation(request, {
     taskCode: 'LLM3_DIAGRAM',
+    stageCode: 'DRAFT_DIAGRAM_GENERATION', // Use admin-configured model/limits
     prompt: finalPrompt,
     idempotencyKey: crypto.randomUUID(),
     inputTokens: Math.ceil(finalPrompt.length / 4),
@@ -5950,7 +5953,8 @@ If in doubt, prefer a SIMPLE, VALID diagram over a complex one.
       const sketchSuggestPrompt = buildSketchSuggestionsPrompt(session)
       
       const sketchResult = await llmGateway.executeLLMOperation(request, {
-        taskCode: 'LLM3_DIAGRAM', // Reuse diagram task for now
+        taskCode: 'LLM3_DIAGRAM',
+        stageCode: 'DRAFT_SKETCH_GENERATION', // Use admin-configured model/limits
         prompt: sketchSuggestPrompt,
         idempotencyKey: crypto.randomUUID(),
         inputTokens: Math.ceil(sketchSuggestPrompt.length / 4),
@@ -6380,6 +6384,7 @@ Return ONLY the translated PlantUML code. No explanations, no markdown formattin
     const request = { headers: requestHeaders || {} }
     const llmResult = await llmGateway.executeLLMOperation(request, {
       taskCode: 'LLM3_DIAGRAM',
+      stageCode: 'DIAGRAM_PLANTUML', // Use admin-configured model/limits
       prompt,
       idempotencyKey: crypto.randomUUID(),
       inputTokens: Math.ceil(prompt.length / 4),
@@ -6808,6 +6813,7 @@ Output ONLY the diagram code (@startuml..@enduml).`
   const request = { headers: requestHeaders || {} }
   const result = await llmGateway.executeLLMOperation(request, {
     taskCode: 'LLM3_DIAGRAM',
+    stageCode: 'DRAFT_DIAGRAM_GENERATION', // Use admin-configured model/limits
     prompt,
     idempotencyKey: crypto.randomUUID(),
     inputTokens: Math.ceil(prompt.length / 4),
@@ -6969,6 +6975,7 @@ Return ONLY diagram code.`
   const request = { headers: requestHeaders || {} }
   const result = await llmGateway.executeLLMOperation(request, {
     taskCode: 'LLM3_DIAGRAM',
+    stageCode: 'DRAFT_DIAGRAM_GENERATION', // Use admin-configured model/limits
     prompt,
     idempotencyKey: crypto.randomUUID(),
     inputTokens: Math.ceil(prompt.length / 4),
@@ -7114,6 +7121,7 @@ Items:\n- ${instructionsList.join('\n- ')}`
   const request = { headers: requestHeaders || {} }
   const result = await llmGateway.executeLLMOperation(request, {
     taskCode: 'LLM3_DIAGRAM',
+    stageCode: 'DRAFT_DIAGRAM_GENERATION', // Use admin-configured model/limits
     prompt: aggregatePrompt,
     idempotencyKey: crypto.randomUUID(),
     inputTokens: Math.ceil(aggregatePrompt.length / 4),
@@ -8103,6 +8111,7 @@ Return ONLY the JSON object.`
       { headers: requestHeaders || {} },
       {
         taskCode: 'LLM3_DIAGRAM',
+        stageCode: 'DRAFT_FIGURE_PLANNER', // Use admin-configured model/limits
         prompt,
         idempotencyKey: crypto.randomUUID(),
         parameters: { tenantId: session.tenantId || undefined },
@@ -10493,11 +10502,12 @@ async function handleApplyAIFix(
     components
   })
 
-  // Use LLM to regenerate the section with the fix
+  // Use LLM to regenerate the section with the fix via admin-configured stage
   const result = await llmGateway.executeLLMOperation(
     { headers: requestHeaders || {} },
     {
       taskCode: 'LLM2_DRAFT',
+      stageCode: 'DRAFT_REVIEW', // Use admin-configured model/limits for AI fixes
       prompt: fixPrompt,
       parameters: {
         tenantId: user.tenantId,
