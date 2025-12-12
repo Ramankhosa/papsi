@@ -69,7 +69,46 @@ export async function extractTenantContextFromRequest(
       }
     }
 
-    // In development mode, provide a fallback tenant context if resolution fails
+    // Fallback: If we have tenant_id but ATI resolution failed, query tenant directly
+    // This handles cases where ati_id is null or ATI-based resolution fails
+    if (payload.tenant_id && payload.sub) {
+      try {
+        const { prisma } = await import('@/lib/prisma')
+        
+        // Find tenant and their active plan directly
+        const tenant = await prisma.tenant.findUnique({
+          where: { id: payload.tenant_id },
+          include: {
+            tenantPlans: {
+              where: {
+                status: 'ACTIVE',
+                effectiveFrom: { lte: new Date() },
+                OR: [
+                  { expiresAt: null },
+                  { expiresAt: { gt: new Date() } }
+                ]
+              },
+              orderBy: { effectiveFrom: 'desc' },
+              take: 1,
+            }
+          }
+        })
+
+        if (tenant && tenant.status === 'ACTIVE' && tenant.tenantPlans[0]) {
+          console.log('Resolved tenant context via direct tenant query (fallback)')
+          return {
+            tenantId: tenant.id,
+            planId: tenant.tenantPlans[0].planId,
+            tenantStatus: tenant.status,
+            userId: payload.sub
+          }
+        }
+      } catch (directQueryError) {
+        console.error('Direct tenant query fallback failed:', directQueryError)
+      }
+    }
+
+    // In development mode, provide a fallback tenant context if all resolution fails
     if (process.env.NODE_ENV === 'development' && payload.sub && payload.email) {
       console.log('Development mode: Providing fallback tenant context')
       return {

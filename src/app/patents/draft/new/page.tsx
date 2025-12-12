@@ -406,7 +406,8 @@ function NewPatentDraftPageContent() {
       })
 
       if (!patentResponse.ok) {
-        throw new Error('Failed to create patent')
+        const errorData = await patentResponse.json().catch(() => ({}))
+        throw new Error(errorData.error || 'Failed to create patent')
       }
 
       const patentData = await patentResponse.json()
@@ -425,7 +426,8 @@ function NewPatentDraftPageContent() {
       })
 
       if (!draftingResponse.ok) {
-        throw new Error('Failed to start drafting session')
+        const errorData = await draftingResponse.json().catch(() => ({}))
+        throw new Error(errorData.error || 'Failed to start drafting session')
       }
 
       const draftSessionData = await draftingResponse.json()
@@ -454,7 +456,8 @@ function NewPatentDraftPageContent() {
       })
 
       if (!setStageResponse.ok) {
-        throw new Error('Failed to persist jurisdiction selection')
+        const errorData = await setStageResponse.json().catch(() => ({}))
+        throw new Error(errorData.error || 'Failed to persist jurisdiction selection')
       }
 
       // Normalize the idea
@@ -474,7 +477,10 @@ function NewPatentDraftPageContent() {
         })
 
       if (!normalizeResponse.ok) {
-        throw new Error('Failed to normalize idea')
+        // Parse the actual error from the API response
+        const errorData = await normalizeResponse.json().catch(() => ({}))
+        const errorMessage = errorData.error || 'Failed to normalize idea'
+        throw new Error(errorMessage)
       }
 
       // Redirect to the drafting page (already on component planner stage)

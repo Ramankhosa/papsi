@@ -143,7 +143,8 @@ export default function PatentDraftingPage() {
       })
 
       if (!response.ok) {
-        throw new Error('Failed to resume drafting')
+        const errorData = await response.json().catch(() => ({}))
+        throw new Error(errorData.error || 'Failed to resume drafting')
       }
 
       const data = await response.json()
@@ -168,7 +169,8 @@ export default function PatentDraftingPage() {
       })
 
       if (!patentResponse.ok) {
-        throw new Error('Failed to load patent')
+        const errorData = await patentResponse.json().catch(() => ({}))
+        throw new Error(errorData.error || 'Failed to load patent')
       }
 
       const patentData = await patentResponse.json()
