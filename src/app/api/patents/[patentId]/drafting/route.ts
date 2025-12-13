@@ -701,10 +701,7 @@ export async function POST(
       case 'resume':
         return await handleResume(authResult.user, patentId);
 
-      // Review & Export
-      case 'run_review_checks':
-        return await handleRunReview(authResult.user, patentId, data);
-
+      // Review (AI) & Validation
       case 'validate_draft':
         return await handleValidateDraft(authResult.user, patentId, data);
 
@@ -725,15 +722,6 @@ export async function POST(
 
       case 'export_docx':
         return await handleExportDOCX(authResult.user, patentId, data, request);
-
-      case 'export_pdf':
-        return await handleExportPDF(authResult.user, patentId, data, request);
-
-      case 'preview_export':
-        return await handlePreviewExport(authResult.user, patentId, data);
-
-      case 'get_export_preview':
-        return await handleGetExportPreview(authResult.user, patentId, data);
 
       case 'get_draft_versions':
         return await handleGetDraftVersions(authResult.user, patentId, data);
@@ -4042,8 +4030,6 @@ async function handleSetStage(user: any, patentId: string, data: any) {
     'FIGURE_PLANNER',
     'COUNTRY_WISE_DRAFTING', // Legacy - jurisdiction now selected in Stage 0
     'ANNEXURE_DRAFT',
-    'REVIEW_FIX',
-    'EXPORT_READY',
     'COMPLETED'
   ]
 
@@ -4078,8 +4064,12 @@ async function handleSetStage(user: any, patentId: string, data: any) {
   // Prepare update data
   const updateData: any = { status: stage }
 
-  const stageFlow = ['IDEA_ENTRY', 'RELATED_ART', 'CLAIM_REFINEMENT', 'COMPONENT_PLANNER', 'FIGURE_PLANNER', 'ANNEXURE_DRAFT', 'REVIEW_FIX', 'EXPORT_READY', 'COMPLETED']
-  const currentStage = session.status
+  const stageFlow = ['IDEA_ENTRY', 'RELATED_ART', 'CLAIM_REFINEMENT', 'COMPONENT_PLANNER', 'FIGURE_PLANNER', 'ANNEXURE_DRAFT', 'COMPLETED']
+  const legacyStageMap: Record<string, (typeof stageFlow)[number]> = {
+    REVIEW_FIX: 'ANNEXURE_DRAFT',
+    EXPORT_READY: 'ANNEXURE_DRAFT'
+  }
+  const currentStage = legacyStageMap[session.status] || session.status
   let allowed = true
   const sessionPriorArtConfig = (session.priorArtConfig as any) || {}
   const priorArtSkipped = !!sessionPriorArtConfig.skipped
@@ -4436,6 +4426,16 @@ async function handleResume(user: any, patentId: string) {
   })
 
   if (existing) {
+    // Normalize legacy stages (REVIEW_FIX/EXPORT_READY) to ANNEXURE_DRAFT now that review/export are merged
+    const legacyStatuses = ['REVIEW_FIX', 'EXPORT_READY']
+    if (legacyStatuses.includes(existing.status)) {
+      const normalized = await prisma.draftingSession.update({
+        where: { id: existing.id },
+        data: { status: 'ANNEXURE_DRAFT' }
+      })
+      return NextResponse.json({ session: normalized })
+    }
+
     // Backfill jurisdiction defaults for legacy sessions
     if (!existing.draftingJurisdictions || existing.draftingJurisdictions.length === 0 || !existing.activeJurisdiction) {
       const updated = await prisma.draftingSession.update({
@@ -8766,7 +8766,7 @@ async function handleGenerateDraft(user: any, patentId: string, data: any, reque
   await prisma.draftingSession.update({
     where: { id: sessionId },
     data: {
-      status: 'REVIEW_FIX',
+      status: 'ANNEXURE_DRAFT',
       jurisdictionDraftStatus: {
         ...(session!.jurisdictionDraftStatus as any || {}),
         [effectiveJurisdiction]: {

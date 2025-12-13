@@ -1018,7 +1018,8 @@ Respond in this exact JSON shape:
       const crossSectionChecks = countryProfile?.profileData?.validation?.crossSectionChecks || []
       const claimsRules = countryProfile?.profileData?.rules?.claims || null
 
-      const sectionResources: Record<string, { prompt: any; rules: any; meta: any; altKeys: string[]; checks?: any[]; cross?: any[]; claimsRules?: any; importFiguresDirectly?: boolean }> = {}
+      // Note: Legacy importFiguresDirectly bypass was removed; figures now always flow through LLM prompts.
+      const sectionResources: Record<string, { prompt: any; rules: any; meta: any; altKeys: string[]; checks?: any[]; cross?: any[]; claimsRules?: any }> = {}
       const sessionId = session?.id || session?._id || null // Get session ID for user instructions
       for (const s of sections) {
         const sectionMeta = this.resolveSectionMeta(countryProfile, s)
@@ -1029,18 +1030,6 @@ Respond in this exact JSON shape:
         const checks = countryProfile?.profileData?.validation?.sectionChecks?.[sectionKey] || countryProfile?.profileData?.validation?.sectionChecks?.[s]
         const cross = Array.isArray(crossSectionChecks) ? crossSectionChecks.filter((c: any) => (c?.from === sectionKey) || (c?.from === s)) : []
         
-        // Check if this section should import figures directly without LLM
-        // Priority: 1. Database CountrySectionPrompt, 2. JSON country profile
-        const sectionPromptCfg = countryProfile?.profileData?.prompts?.sections?.[s] || 
-                                 countryProfile?.profileData?.prompts?.sections?.[sectionKey] ||
-                                 countryProfile?.profileData?.prompts?.sections?.['briefDescriptionOfDrawings']
-        // Check database first (via promptCfg which comes from getDraftingPrompts)
-        const dbImportFigures = (promptCfg as any)?.importFiguresDirectly === true
-        const jsonImportFigures = sectionPromptCfg?.importFiguresDirectly === true
-        // Force importFiguresDirectly=true for briefDescriptionOfDrawings to ensure all figures (including sketches) are included
-        const isBriefDescriptionSection = s === 'briefDescriptionOfDrawings' || s === 'brief_drawings' || sectionKey === 'briefDescriptionOfDrawings'
-        const importFiguresDirectly = isBriefDescriptionSection || dbImportFigures || jsonImportFigures
-        
         sectionResources[s] = {
           prompt: promptCfg,
           rules: sectionRules,
@@ -1048,8 +1037,7 @@ Respond in this exact JSON shape:
           altKeys: Array.isArray(sectionMeta?.canonicalKeys) ? sectionMeta.canonicalKeys.map((k: string) => k.toLowerCase()) : [],
           checks: Array.isArray(checks) ? checks : undefined,
           cross: cross.length ? cross : undefined,
-          claimsRules: s === 'claims' ? claimsRules : undefined,
-          importFiguresDirectly
+          claimsRules: s === 'claims' ? claimsRules : undefined
         }
         if (!sectionMeta) {
           debugSteps.push({ step: `section_unmapped_${s}`, status: 'fail', meta: { jurisdiction: jurisdictionCode } })
@@ -1306,8 +1294,26 @@ Respond in this exact JSON shape:
         meta: { jurisdiction: jurisdictionCode, hasCountryProfile: !!countryProfile }
       })
 
+      // Build a concise invention-basics bundle (no claims) for sections that need context
+      const componentsList = Array.isArray(referenceMap?.components)
+        ? referenceMap.components
+            .map((c: any) => {
+              const name = c?.name || c?.label || ''
+              const num = c?.numeral ? ` (${c.numeral})` : ''
+              return name ? `${name}${num}` : ''
+            })
+            .filter(Boolean)
+            .join('; ')
+        : ''
+      const inventionBasicsParts: string[] = []
+      if (idea?.title) inventionBasicsParts.push(`Title: ${idea.title}`)
+      if (idea?.problem || idea?.problemStatement) inventionBasicsParts.push(`Problem: ${idea.problem || idea.problemStatement}`)
+      if (idea?.solution || idea?.description) inventionBasicsParts.push(`Solution: ${idea.solution || idea.description}`)
+      if (componentsList) inventionBasicsParts.push(`Key components: ${componentsList}`)
+      const inventionBasics = inventionBasicsParts.join('\n')
+
       // Build payload available across sections
-      const payload = { idea, referenceMap, figures, approved: session.annexureDrafts?.[0] || {}, instructions: instructions || {}, manualPriorArt, selectedPriorArtPatents }
+      const payload = { idea, referenceMap, figures, approved: session.annexureDrafts?.[0] || {}, instructions: instructions || {}, manualPriorArt, selectedPriorArtPatents, inventionBasics }
 
       // Step: call LLM per section with single-section schema
       const request = { headers: requestHeaders || {} }
@@ -1315,44 +1321,6 @@ Respond in this exact JSON shape:
       let llmMeta: any = undefined
 
       for (const s of sections) {
-        // Check if this section should import figures directly without LLM
-        if (sectionResources[s]?.importFiguresDirectly && figures.length > 0) {
-          // Direct import: Format figures as Brief Description of Drawings
-          // This preserves the exact titles from figure planning stage
-          console.log(`[DraftingService] Direct import for ${s}: ${figures.length} figures including ${figures.filter((f:any)=>f.type==='sketch').length} sketches`)
-          const figureLines = figures.map((f: any) => {
-            const figNo = f.figureNo
-            let title = f.title || `a view of Figure ${figNo}`
-            
-            // Clean up title: remove any existing "FIG. X is" prefix if present
-            title = title.replace(/^(FIG\.?\s*\d+\s*(is\s*)?|Figure\s*\d+\s*(is\s*)?)/i, '').trim()
-            
-            // Ensure title starts with an article if it doesn't already
-            if (!/^(a|an|the)\s/i.test(title)) {
-              // Check if first word suggests it needs 'a' or 'an'
-              const firstWord = title.split(/\s+/)[0]?.toLowerCase() || ''
-              const needsAn = /^[aeiou]/i.test(firstWord)
-              title = `${needsAn ? 'an' : 'a'} ${title}`
-            }
-            
-            // Ensure proper punctuation
-            const line = `FIG. ${figNo} is ${title}`
-            return line.endsWith('.') ? line : `${line}.`
-          }).join('\n\n')
-          
-          generated[s] = figureLines
-          debugSteps.push({ 
-            step: `direct_import_${s}`, 
-            status: 'ok', 
-            meta: { 
-              figuresCount: figures.length, 
-              method: 'importFiguresDirectly',
-              preview: figureLines.substring(0, 200) 
-            } 
-          })
-          continue // Skip LLM call for this section
-        }
-
         // Fetch writing sample for example-based style mimicry (if persona style is enabled)
         const usePersonaStyle = (session as any).usePersonaStyle !== false // Default to true unless explicitly disabled
         let writingSample: WritingSampleContext | null = null
@@ -2083,6 +2051,7 @@ Return ONLY a valid JSON object exactly matching the schema above.`
         
         let priorArtRefs = ''
         let priorArtCount = 0
+        const basics = payload?.inventionBasics?.trim() || ''
         
         if (shouldIncludePriorArt) {
           if (manualPriorArt) {
@@ -2129,7 +2098,8 @@ Rules:
 - No claim-like language or self-praise.
 ${priorArtSection}
 Context:
-problem=${idea?.problem || ''}; objectives=${idea?.objectives || ''}.
+problem=${idea?.problem || ''}; objectives=${idea?.objectives || ''};
+inventionBasics=${basics || 'Not provided (no claims included in this bundle).'}.
 Instructions(background): ${instr}.
 ${targetDisplay || 'Target length: 250-400 words.'}
 Output JSON: { "background": "..." }

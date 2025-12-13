@@ -6,8 +6,7 @@
  * 
  * Hierarchy:
  * 1. Database (CountrySectionPrompt) - Primary source, hot-updatable
- * 2. JSON files (IN.json, US.json) - Fallback and seed source
- * 3. SUPERSET_PROMPTS - Base prompts (always merged)
+ * 2. SUPERSET_PROMPTS - Base prompts (always merged)
  */
 
 import { Prisma } from '@prisma/client'
@@ -147,44 +146,6 @@ export async function getSectionPrompt(
     }
   } catch (error) {
     console.warn(`[SectionPromptService] DB lookup failed for ${jurisdiction}/${sectionKey}:`, error)
-  }
-
-  // Fallback to JSON file
-  try {
-    const profile = await getCountryProfile(jurisdiction)
-    if (profile) {
-      const sectionConfig = profile.profileData?.prompts?.sections?.[sectionKey]
-      if (sectionConfig?.topUp) {
-        return {
-          instruction: sectionConfig.topUp.instruction || '',
-          constraints: sectionConfig.topUp.constraints || [],
-          additions: sectionConfig.topUp.additions || [],
-          // CRITICAL: Include importFiguresDirectly from JSON config
-          importFiguresDirectly: sectionConfig.importFiguresDirectly === true
-        }
-      }
-      // Legacy format (direct instruction/constraints without topUp wrapper)
-      if (sectionConfig?.instruction) {
-        return {
-          instruction: sectionConfig.instruction,
-          constraints: sectionConfig.constraints || [],
-          additions: [],
-          // CRITICAL: Include importFiguresDirectly from JSON config
-          importFiguresDirectly: sectionConfig.importFiguresDirectly === true
-        }
-      }
-      // CRITICAL: Handle case where only importFiguresDirectly is set (no topUp or instruction)
-      if (sectionConfig?.importFiguresDirectly === true) {
-        return {
-          instruction: '',
-          constraints: [],
-          additions: [],
-          importFiguresDirectly: true
-        }
-      }
-    }
-  } catch (error) {
-    console.warn(`[SectionPromptService] JSON fallback failed for ${jurisdiction}/${sectionKey}:`, error)
   }
 
   return null
@@ -608,4 +569,3 @@ export async function exportPromptsToJson(
 
   return result
 }
-

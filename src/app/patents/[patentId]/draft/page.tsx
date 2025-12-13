@@ -18,8 +18,6 @@ import AnnexureDraftStage from '@/components/drafting/AnnexureDraftStage'
 // @ts-ignore - file added dynamically during session; type generation will catch up
 import RelatedArtStage from '@/components/drafting/RelatedArtStage'
 import CountryWiseDraftStage from '@/components/drafting/CountryWiseDraftStage'
-import ReviewFixStage from '@/components/drafting/ReviewFixStage'
-import ExportCenterStage from '@/components/drafting/ExportCenterStage'
 import FloatingStageNavigation from '@/components/drafting/FloatingStageNavigation'
 
 interface DraftingSession {
@@ -67,9 +65,7 @@ const STAGE_COMPONENTS = {
   FIGURE_PLANNER: FigurePlannerStage,
   COUNTRY_WISE_DRAFTING: CountryWiseDraftStage, // Kept for backward compatibility
   ANNEXURE_DRAFT: AnnexureDraftStage,
-  REVIEW_FIX: ReviewFixStage,
-  EXPORT_READY: ExportCenterStage,
-  COMPLETED: ExportCenterStage
+  COMPLETED: AnnexureDraftStage
 }
 
 const STAGE_LABELS = {
@@ -80,8 +76,6 @@ const STAGE_LABELS = {
   FIGURE_PLANNER: 'Figure Planner',
   COUNTRY_WISE_DRAFTING: 'Jurisdiction Setup', // Legacy - jurisdiction now selected in Stage 0
   ANNEXURE_DRAFT: 'Draft Sections',  // Updated: More descriptive
-  REVIEW_FIX: 'Review & Fix',
-  EXPORT_READY: 'Export Center',
   COMPLETED: 'Completed'
 }
 
@@ -93,8 +87,6 @@ const STAGE_PROGRESS = {
   FIGURE_PLANNER: 70,
   COUNTRY_WISE_DRAFTING: 55, // Same as RELATED_ART since it's skipped in normal flow
   ANNEXURE_DRAFT: 80,
-  REVIEW_FIX: 90,
-  EXPORT_READY: 97,
   COMPLETED: 100
 }
 
@@ -107,10 +99,15 @@ const STAGE_ORDER: Array<keyof typeof STAGE_COMPONENTS> = [
   'FIGURE_PLANNER',
   // 'COUNTRY_WISE_DRAFTING' - Removed: Jurisdiction is now selected before drafting starts
   'ANNEXURE_DRAFT',
-  'REVIEW_FIX',
-  'EXPORT_READY',
   'COMPLETED'
 ]
+
+// Normalize legacy statuses (REVIEW_FIX / EXPORT_READY) to the unified drafting stage
+const normalizeStage = (status?: string): keyof typeof STAGE_COMPONENTS => {
+  if (status === 'REVIEW_FIX' || status === 'EXPORT_READY') return 'ANNEXURE_DRAFT'
+  if (status && status in STAGE_COMPONENTS) return status as keyof typeof STAGE_COMPONENTS
+  return 'ANNEXURE_DRAFT'
+}
 
 export default function PatentDraftingPage() {
   const { user, isLoading: authLoading, refreshUser, logout } = useAuth() as any
@@ -373,8 +370,6 @@ export default function PatentDraftingPage() {
         'generate_diagrams_llm', 
         'generate_sections', 
         'autosave_sections', 
-        'run_review_checks', 
-        'preview_export',
         'clear_related_art_selections',
         'related_art_select',
         'save_manual_prior_art',
@@ -397,7 +392,7 @@ export default function PatentDraftingPage() {
 
   const getCurrentStage = useCallback(() => {
     if (!session) return 'IDEA_ENTRY'
-    return session.status
+    return normalizeStage(session.status)
   }, [session?.status])
 
   const StageComponent = useMemo(() => {

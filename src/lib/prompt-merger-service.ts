@@ -7,7 +7,7 @@
  * Architecture:
  * 1. SUPERSET_PROMPTS - Base generic prompts (country-neutral)
  * 2. CountrySectionMapping (DB) - Maps superset codes to country section keys
- * 3. Country JSON (IN.json, US.json) - Top-up prompts, rules, validation
+ * 3. Country JSON (IN.json, US.json) - Seed source only; not used as runtime fallback
  * 
  * Flow: sectionId → resolve canonical key → get base prompt → merge with top-up
  */
@@ -298,7 +298,7 @@ export async function getMergedPrompt(
   const mergeStrategy: MergeStrategy = 
     profile?.profileData?.meta?.promptMergeStrategy || 'append'
   
-  // Step 5: Get country-specific section prompt (top-up) from DB first, then JSON fallback
+  // Step 5: Get country-specific section prompt (top-up) from DB only (no JSON fallback)
   let topUp: { instruction?: string; constraints?: string[]; additions?: string[]; importFiguresDirectly?: boolean } | null = null
   let topUpSource: 'db' | 'json' | null = null
   let importFiguresDirectly = false
@@ -309,15 +309,6 @@ export async function getMergedPrompt(
     topUp = dbTopUp
     topUpSource = 'db'
     importFiguresDirectly = dbTopUp.importFiguresDirectly || false
-  } else {
-    // Fallback to JSON file
-    const countrySection = profile?.profileData?.prompts?.sections?.[canonicalKey]
-    topUp = countrySection?.topUp || countrySection || null
-    if (topUp?.instruction) {
-      topUpSource = 'json'
-    }
-    // Check JSON for importFiguresDirectly flag
-    importFiguresDirectly = countrySection?.importFiguresDirectly === true
   }
   
   // Step 6: Get localized heading from DB mapping
@@ -721,4 +712,3 @@ export async function getAllMergedPromptsForCountry(
   const applicableSections = await getApplicableSectionsForCountry(countryCode)
   return getMergedPromptsForSections(countryCode, applicableSections, sessionId)
 }
-
