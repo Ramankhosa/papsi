@@ -220,6 +220,18 @@ export default function LoginPage() {
             <span className="relative z-10">Sign in</span>
             <div className="absolute inset-0 -translate-x-full group-hover:translate-x-0 bg-gradient-to-r from-transparent via-white/10 to-transparent transition-transform duration-500" />
           </button>
+
+          <p className="mt-4 text-xs text-ai-graphite-500 text-center">
+            By signing in, you agree to our{' '}
+            <Link href="/terms" className="text-ai-blue-400 hover:text-ai-blue-300 underline-offset-2 hover:underline">
+              Terms of Service
+            </Link>{' '}
+            and{' '}
+            <Link href="/privacy" className="text-ai-blue-400 hover:text-ai-blue-300 underline-offset-2 hover:underline">
+              Privacy Policy
+            </Link>
+            .
+          </p>
         </form>
       </motion.div>
     </div>

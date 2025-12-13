@@ -285,6 +285,18 @@ export default function RegisterPage() {
             <div className="absolute inset-0 -translate-x-full group-hover:translate-x-0 bg-gradient-to-r from-transparent via-white/10 to-transparent transition-transform duration-500" />
           </button>
 
+          <p className="mt-4 text-xs text-ai-graphite-500 text-center">
+            By creating an account, you agree to our{' '}
+            <Link href="/terms" className="text-ai-blue-400 hover:text-ai-blue-300 underline-offset-2 hover:underline">
+              Terms of Service
+            </Link>{' '}
+            and{' '}
+            <Link href="/privacy" className="text-ai-blue-400 hover:text-ai-blue-300 underline-offset-2 hover:underline">
+              Privacy Policy
+            </Link>
+            .
+          </p>
+
           <div className="text-center">
             <span className="text-sm text-ai-graphite-400">
               Already have an account?{' '}
@@ -298,4 +310,3 @@ export default function RegisterPage() {
     </div>
   )
 }
-

@@ -240,13 +240,17 @@ export class LLMProviderRouter {
     modelCode: string,
     fallbackModelCodes?: string[]
   ): Promise<LLMResponse> {
+    console.log(`[ProviderRouter] routeWithModel called with modelCode=${modelCode}, fallbacks=${fallbackModelCodes?.join(', ') || 'none'}`)
+    
     // Get the provider for this model
     const provider = this.getProviderForModel(modelCode)
     
     if (!provider) {
-      console.warn(`No provider available for model ${modelCode}, trying fallbacks...`)
+      console.warn(`[ProviderRouter] No provider available for model ${modelCode}, trying fallbacks...`)
       return this.tryFallbackModels(request, limits, fallbackModelCodes)
     }
+    
+    console.log(`[ProviderRouter] Using provider ${provider.name} for model ${modelCode}`)
     
     // Try primary model first
     request.modelClass = modelCode
@@ -254,10 +258,10 @@ export class LLMProviderRouter {
       return await this.executeWithProvider(request, limits, provider, modelCode, false)
     } catch (error) {
       // Primary model failed - try fallbacks
-      console.error(`Primary model ${modelCode} failed:`, error)
+      console.error(`[ProviderRouter] Primary model ${modelCode} failed:`, error)
       
       if (fallbackModelCodes && fallbackModelCodes.length > 0) {
-        console.log(`Attempting fallback models: ${fallbackModelCodes.join(' → ')}`)
+        console.log(`[ProviderRouter] Attempting fallback models: ${fallbackModelCodes.join(' → ')}`)
         return this.tryFallbackModels(request, limits, fallbackModelCodes)
       }
       
@@ -314,7 +318,8 @@ export class LLMProviderRouter {
     }
     
     // No fallbacks - use default routing as last resort
-    console.warn('No fallback models configured, using default routing')
+    console.warn('[ProviderRouter] ⚠️ No fallback models configured, falling back to DEFAULT PROVIDER ROUTING (hardcoded priorities)')
+    console.warn('[ProviderRouter] This may not honor your plan-specific LLM configuration!')
     return this.routeAndExecute(request, limits)
   }
 

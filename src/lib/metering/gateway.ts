@@ -93,6 +93,8 @@ export class LLMGateway {
 
       // 5. Resolve the model to use based on plan, task, and optional stage
       let modelResolution: ModelResolutionResult | null = null
+      console.log(`[Gateway] Resolving model for tenant=${tenantContext.tenantId}, planId=${tenantContext.planId || 'NONE'}, taskCode=${llmRequest.taskCode}, stageCode=${llmRequest.stageCode || 'none'}`)
+      
       if (tenantContext.planId) {
         try {
           modelResolution = await resolveModel(
@@ -112,22 +114,28 @@ export class LLMGateway {
             decision.maxTokensIn = modelResolution.maxTokensIn
           }
           
-          console.log(`✓ Model resolved: ${modelResolution.modelCode} (source: ${modelResolution.source}, provider: ${modelResolution.provider})`)
+          console.log(`[Gateway] ✓ Model resolved: ${modelResolution.modelCode} (source: ${modelResolution.source}, provider: ${modelResolution.provider})`)
+          if (modelResolution.source === 'system-default') {
+            console.warn(`[Gateway] ⚠️ Using SYSTEM DEFAULT model - no specific config found for plan=${tenantContext.planId}, task=${llmRequest.taskCode}`)
+          }
           if (modelResolution.fallbacks.length > 0) {
-            console.log(`  Fallbacks: ${modelResolution.fallbacks.map(f => f.modelCode).join(' → ')}`)
+            console.log(`[Gateway]   Fallbacks: ${modelResolution.fallbacks.map(f => f.modelCode).join(' → ')}`)
+          } else {
+            console.log(`[Gateway]   No fallback models configured`)
           }
         } catch (resolveError) {
           // Log error details for debugging but continue with fallback
-          console.error('✗ Model resolution failed:', {
+          console.error('[Gateway] ✗ Model resolution FAILED:', {
             error: resolveError instanceof Error ? resolveError.message : resolveError,
             planId: tenantContext.planId,
             taskCode: llmRequest.taskCode,
             stageCode: llmRequest.stageCode
           })
-          console.warn('  Falling back to default provider routing')
+          console.warn('[Gateway] ⚠️ Falling back to DEFAULT PROVIDER ROUTING (model resolution error)')
         }
       } else {
-        console.log('No planId in tenant context, using default provider routing')
+        console.warn('[Gateway] ⚠️ No planId in tenant context - using DEFAULT PROVIDER ROUTING')
+        console.warn('[Gateway]   This will NOT honor plan-specific LLM configurations!')
       }
 
       // 6. Validate model capabilities (vision, streaming, etc.)

@@ -17,6 +17,7 @@ import {
 import {
   getSectionContextRequirements,
   getFiguresForJurisdiction,
+  isNonApplicableHeading,
   type SectionContextRequirements
 } from '@/lib/multi-jurisdiction-service';
 import { getSectionStageCode } from '@/lib/metering/section-stage-mapping';
@@ -1322,11 +1323,13 @@ Respond in this exact JSON shape:
 
       for (const s of sections) {
         // Fetch writing sample for example-based style mimicry (if persona style is enabled)
-        const usePersonaStyle = (session as any).usePersonaStyle !== false // Default to true unless explicitly disabled
+        const usePersonaStyle = (session as any).usePersonaStyle === true // Only ON if explicitly true
+        const personaSelection = (session as any).personaSelection || undefined
         let writingSample: WritingSampleContext | null = null
         if (usePersonaStyle && session?.userId) {
           try {
-            writingSample = await getWritingSample(session.userId, s, jurisdictionCode)
+            // Pass personaSelection for multi-persona support (primary style + secondary terminology)
+            writingSample = await getWritingSample(session.userId, s, jurisdictionCode, personaSelection)
             if (writingSample) {
               debugSteps.push({ 
                 step: `writing_sample_${s}`, 
@@ -1334,7 +1337,9 @@ Respond in this exact JSON shape:
                 meta: { 
                   jurisdiction: writingSample.jurisdiction,
                   isUniversal: writingSample.isUniversal,
-                  wordCount: writingSample.sampleText.split(/\s+/).length
+                  wordCount: writingSample.sampleText.split(/\s+/).length,
+                  personaName: writingSample.personaName,
+                  hasPersonaSelection: !!personaSelection?.primaryPersonaId
                 } 
               })
             }
@@ -3168,9 +3173,13 @@ Return ONLY a valid JSON object exactly matching the schema above.`
     const profile = await getCountryProfile(jurisdiction)
     const defs: Array<{ key: string; label: string; required: boolean; constraints?: string[]; altKeys: string[] }> = []
 
-    // Get all sections mapped for this country from database
+    // Get all ENABLED sections mapped for this country from database
+    // Critical: Filter by isEnabled to exclude disabled sections from drafting flow
     const countryMappings = await prisma.countrySectionMapping.findMany({
-      where: { countryCode: jurisdiction }
+      where: { 
+        countryCode: jurisdiction,
+        isEnabled: true // Only include enabled sections
+      }
     })
 
     // Use database mappings to determine available sections
@@ -3182,66 +3191,30 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       }
 
       if (!sectionKey) continue
+      
+      // Skip N/A, Implicit, and other non-applicable headings (use centralized check)
+      const heading = mapping.heading || ''
+      if (isNonApplicableHeading(heading)) continue
 
       // Get constraints from our hard-coded superset prompts
       const supersetPrompt = SUPERSET_PROMPTS[sectionKey as keyof typeof SUPERSET_PROMPTS]
 
       defs.push({
         key: sectionKey,
-        label: mapping.heading && mapping.heading !== '(N/A)' && mapping.heading !== '(Implicit)' && mapping.heading !== '(Recommended/NA)' && mapping.heading !== '(Include in Detailed Desc)' ? mapping.heading : this.getDefaultLabel(sectionKey),
+        label: heading || this.getDefaultLabel(sectionKey),
         required: this.isSectionRequired(sectionKey, jurisdiction),
         constraints: supersetPrompt?.constraints || [],
         altKeys: [mapping.supersetCode.toLowerCase()]
       })
     }
 
-    // Fallback if no database mappings found
+    // DATABASE IS THE ONLY SOURCE OF TRUTH - No fallbacks
+    // If no mappings exist, the jurisdiction is not configured - fail explicitly
     if (defs.length === 0) {
-      const promptSections = profile?.profileData?.prompts?.sections || {}
-      const variant = profile?.profileData?.structure?.variants?.find((v: any) => v.id === profile?.profileData?.structure?.defaultVariant) || profile?.profileData?.structure?.variants?.[0]
-      if (variant?.sections?.length) {
-        for (const sec of variant.sections) {
-          const keys = (sec.canonicalKeys || []).map((k: string) => k.toLowerCase())
-          let mapped: string | undefined
-          for (const k of keys) {
-            mapped = this.mapToInternalKey(k)
-            if (mapped) break
-          }
-          if (!mapped) mapped = this.mapToInternalKey(sec.id)
-          if (!mapped) continue
-          const altKeys = Array.from(new Set([sec.id, ...(sec.canonicalKeys || [])].map((k: string) => k.toLowerCase())))
-          defs.push({
-            key: mapped,
-            label: sec.label || sec.id,
-            required: !!sec.required,
-            constraints: promptSections?.[sec.id]?.constraints || [],
-            altKeys
-          })
-        }
-      }
+      console.error(`[buildSectionDefinitions] CRITICAL: No CountrySectionMapping entries found for jurisdiction "${jurisdiction}". Database must be configured first.`)
+      throw new Error(`Jurisdiction "${jurisdiction}" is not configured in the database. Please add section mappings in CountrySectionMapping table.`)
     }
-    if (defs.length === 0) {
-      return [
-        { key: 'title', label: 'Title', required: true, altKeys: [] },
-        { key: 'abstract', label: 'Abstract', required: true, altKeys: [] },
-        { key: 'preamble', label: 'Preamble', required: false, altKeys: [] },
-        { key: 'fieldOfInvention', label: 'Technical Field', required: true, altKeys: ['technical_field'] },
-        { key: 'background', label: 'Background', required: true, altKeys: [] },
-        { key: 'objectsOfInvention', label: 'Objects of the Invention', required: false, altKeys: ['objects'] },
-        { key: 'crossReference', label: 'Cross-Reference', required: false, altKeys: ['cross_reference'] },
-        { key: 'summary', label: 'Summary', required: true, altKeys: [] },
-        { key: 'technicalProblem', label: 'Technical Problem', required: false, altKeys: ['technical_problem'] },
-        { key: 'technicalSolution', label: 'Technical Solution', required: false, altKeys: ['technical_solution'] },
-        { key: 'advantageousEffects', label: 'Advantageous Effects', required: false, altKeys: ['advantageous_effects'] },
-        { key: 'briefDescriptionOfDrawings', label: 'Brief Description of Drawings', required: false, altKeys: [] },
-        { key: 'detailedDescription', label: 'Detailed Description', required: true, altKeys: [] },
-        { key: 'modeOfCarryingOut', label: 'Mode of Carrying Out the Invention', required: false, altKeys: ['modes_for_carrying_out'] },
-        { key: 'bestMethod', label: 'Best Mode', required: false, altKeys: ['best_mode'] },
-        { key: 'industrialApplicability', label: 'Industrial Applicability', required: false, altKeys: ['utility'] },
-        { key: 'claims', label: 'Claims', required: true, altKeys: [] },
-        { key: 'listOfNumerals', label: 'List of Reference Numerals', required: false, altKeys: ['reference_numerals'] }
-      ]
-    }
+    
     return defs
   }
 

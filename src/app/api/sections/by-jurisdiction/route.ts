@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { authenticateUser } from '@/lib/auth-middleware'
 import { prisma } from '@/lib/prisma'
+import { NA_HEADINGS, isNonApplicableHeading } from '@/lib/multi-jurisdiction-service'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -28,6 +29,8 @@ export async function GET(request: NextRequest) {
     const url = new URL(request.url)
     const jurisdiction = url.searchParams.get('jurisdiction')?.toUpperCase() || '*'
 
+    // Use centralized NA_HEADINGS from multi-jurisdiction-service for consistency
+    
     // For universal jurisdiction, return superset sections that have at least one valid country mapping
     if (jurisdiction === '*') {
       // Get all country section mappings (excluding NA/N/A headings)
@@ -35,7 +38,7 @@ export async function GET(request: NextRequest) {
         where: {
           isEnabled: true,
           NOT: {
-            heading: { in: ['NA', 'N/A', 'na', 'n/a'] }
+            heading: { in: NA_HEADINGS }
           }
         },
         select: {
@@ -81,13 +84,13 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    // For specific jurisdiction, get mapped sections (excluding NA/N/A)
+    // For specific jurisdiction, get mapped sections (excluding NA/N/A and other non-applicable headings)
     const mappings = await prisma.countrySectionMapping.findMany({
       where: {
         countryCode: jurisdiction,
         isEnabled: true,
         NOT: {
-          heading: { in: ['NA', 'N/A', 'na', 'n/a'] }
+          heading: { in: NA_HEADINGS }
         }
       },
       orderBy: { displayOrder: 'asc' },
@@ -114,7 +117,8 @@ export async function GET(request: NextRequest) {
           select: {
             sectionKey: true,
             label: true,
-            displayOrder: true
+            displayOrder: true,
+            isRequired: true
           }
         })
 
@@ -125,7 +129,8 @@ export async function GET(request: NextRequest) {
           sections: supersetSections.map(s => ({
             key: s.sectionKey,
             label: s.label,
-            displayOrder: s.displayOrder
+            displayOrder: s.displayOrder,
+            isRequired: s.isRequired
           }))
         })
       }

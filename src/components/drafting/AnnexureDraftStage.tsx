@@ -2636,6 +2636,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           sessionId: session?.id,
           sections,
           usePersonaStyle,
+          personaSelection, // Pass selected personas for multi-persona style support
           jurisdiction: activeJurisdiction
         })
         const incoming = res?.generated || {}
@@ -2707,6 +2708,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           sessionId: session?.id,
           sections: [sectionKey],
           usePersonaStyle,
+          personaSelection, // Pass selected personas for multi-persona style support
           jurisdiction: activeJurisdiction
         })
         const incoming = res?.generated || {}
@@ -2919,6 +2921,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           sections: [key],
           instructions,
           usePersonaStyle,
+          personaSelection, // Pass selected personas for multi-persona style support
           jurisdiction: activeJurisdiction
         })
         const incoming = res?.generated || {}

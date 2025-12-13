@@ -10,6 +10,11 @@
  * - Multi-view support (combined or separate sketches)
  * - Modification chains with version tracking
  * - Anti-hallucination prompting
+ * 
+ * LLM Gateway Integration:
+ * - Uses gateway for policy/quota enforcement (DIAGRAM_GENERATION feature)
+ * - Uses gateway for model resolution (plan-configured models)
+ * - Records usage through gateway metering system
  */
 
 import { prisma } from './prisma'
@@ -17,7 +22,10 @@ import crypto from 'crypto'
 import fs from 'fs/promises'
 import path from 'path'
 import { resolveModel } from '@/lib/metering/model-resolver'
-import type { TaskCode } from '@prisma/client'
+import { llmGateway } from '@/lib/metering/gateway'
+import { createMeteringSystem } from '@/lib/metering/system'
+import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge'
+import type { TaskCode, FeatureCode } from '@prisma/client'
 
 // Types
 export type SketchMode = 'AUTO' | 'GUIDED' | 'REFINE'
@@ -71,17 +79,26 @@ export interface SketchGenerationResult {
 // Constants
 const SKETCH_UPLOAD_DIR = 'public/uploads/sketches'
 const MAX_MODIFY_ATTEMPTS = 10
-const DEFAULT_GEMINI_IMAGE_MODEL = 'gemini-3-pro-image-preview' // Default Gemini 3 image model for sketch generation
+
+// ============================================================================
+// IMAGE GENERATION MODEL CONFIGURATION
+// ============================================================================
+// Model selection is controlled ENTIRELY through the Super Admin LLM Config panel.
+// No hardcoded fallbacks - if model resolution fails, we fail with a clear error.
+//
+// Configure the sketch generation model in Super Admin → LLM Config:
+// - Select your Plan
+// - Find "Sketch Generation" stage under PATENT_DRAFTING feature
+// - Assign a model that supports image OUTPUT (e.g., gemini-3-pro-image-preview)
+//
+// IMPORTANT: Only specific models support image generation:
+// ✓ gemini-3-pro-image-preview (recommended)
+// ✓ imagen-3.0-generate-002 (Imagen 3)
+// ✗ gemini-2.0-flash, gemini-2.0-flash-exp (text/vision only - NO image output)
+// ✗ gemini-2.0-flash-lite (text/vision only - NO image output)
+// ============================================================================
 const SKETCH_STAGE_CODE = 'DRAFT_SKETCH_GENERATION'
 const SKETCH_TASK_CODE: TaskCode = 'LLM3_DIAGRAM' // Closest task for vision + drafting limits
-const SKETCH_MODEL_FALLBACKS = [
-  'gemini-3.0-nano-banana', // Legacy nano model as fallback
-  'gemini-3-pro-image-preview',
-  'gemini-2.5-flash-lite',
-  'gemini-2.0-flash-lite',
-  'gemini-1.5-flash',
-  'gemini-1.5-pro'
-]
 
 /**
  * Resolve the active plan for a tenant (latest active, non-expired)
@@ -103,10 +120,15 @@ async function getActivePlanIdForTenant(tenantId?: string | null): Promise<strin
 }
 
 /**
- * Build an ordered list of sketch model candidates:
- * 1) Plan-specific stage model (if configured)
- * 2) Env override (GEMINI_SKETCH_MODEL)
- * 3) Legacy default + hardcoded fallbacks
+ * Resolve sketch model from database configuration ONLY.
+ * No hardcoded fallbacks - model must be configured in Super Admin LLM Config.
+ * 
+ * Returns ordered list:
+ * 1) Plan-specific stage model (from PlanStageModelConfig)
+ * 2) Plan-configured fallbacks (from the same config)
+ * 3) Environment override (GEMINI_SKETCH_MODEL) - for development/testing only
+ * 
+ * If no model is configured, returns empty array - caller should handle gracefully.
  */
 async function resolveSketchModelCandidates(tenantId?: string | null): Promise<string[]> {
   const candidates: string[] = []
@@ -114,28 +136,38 @@ async function resolveSketchModelCandidates(tenantId?: string | null): Promise<s
   try {
     const planId = await getActivePlanIdForTenant(tenantId)
     if (planId) {
+      console.log(`[SketchService] Resolving model for planId=${planId}, stage=${SKETCH_STAGE_CODE}`)
       const resolved = await resolveModel(planId, SKETCH_TASK_CODE, SKETCH_STAGE_CODE)
-      if (resolved?.supportsVision && resolved.modelCode) {
+      
+      if (resolved?.modelCode) {
+        console.log(`[SketchService] Model resolved from DB: ${resolved.modelCode} (source: ${resolved.source})`)
         candidates.push(resolved.modelCode)
-        // Add plan-configured fallbacks that also support vision
-        resolved.fallbacks
-          ?.filter(fb => fb?.modelCode && fb.modelCode.toLowerCase().startsWith('gemini'))
-          .forEach(fb => candidates.push(fb.modelCode))
-      } else if (resolved?.modelCode) {
-        console.warn(`[SketchService] Resolved sketch model ${resolved.modelCode} does not support vision. Falling back to defaults.`)
+        
+        // Add plan-configured fallbacks (if any)
+        if (resolved.fallbacks && resolved.fallbacks.length > 0) {
+          console.log(`[SketchService] Fallbacks from DB: ${resolved.fallbacks.map(f => f.modelCode).join(', ')}`)
+          resolved.fallbacks.forEach(fb => {
+            if (fb?.modelCode) candidates.push(fb.modelCode)
+          })
+        }
+      } else {
+        console.warn(`[SketchService] No model configured for sketch generation in plan ${planId}`)
       }
+    } else {
+      console.warn(`[SketchService] No active plan found for tenant ${tenantId || 'unknown'}`)
     }
   } catch (e) {
-    console.warn('[SketchService] Model resolution failed, falling back to defaults:', e instanceof Error ? e.message : e)
+    console.error('[SketchService] Model resolution failed:', e instanceof Error ? e.message : e)
   }
 
-  if (process.env.GEMINI_SKETCH_MODEL) {
+  // Environment override for development/testing (NOT for production)
+  if (process.env.GEMINI_SKETCH_MODEL && candidates.length === 0) {
+    console.log(`[SketchService] Using env override: ${process.env.GEMINI_SKETCH_MODEL}`)
     candidates.push(process.env.GEMINI_SKETCH_MODEL)
   }
 
-  candidates.push(DEFAULT_GEMINI_IMAGE_MODEL, ...SKETCH_MODEL_FALLBACKS)
-
-  // Deduplicate while preserving order
+  // NO hardcoded fallbacks - return only what's configured in the database
+  // If empty, the caller should fail with a clear error message
   return Array.from(new Set(candidates.filter(Boolean)))
 }
 
@@ -632,7 +664,7 @@ If the requested modification would violate patent drawing rules:
   return prompt
 }
 
-// === GEMINI IMAGE GENERATION ===
+// === GEMINI IMAGE GENERATION WITH GATEWAY INTEGRATION ===
 
 // Response type for sketch generation - simplified, no metadata extraction
 export interface SketchGenerationResponse {
@@ -641,19 +673,131 @@ export interface SketchGenerationResponse {
   error?: string
   tokensUsed?: number
   modelUsed?: string
+  reservationId?: string
+}
+
+/**
+ * Enforce sketch generation access through LLM Gateway.
+ * This checks DIAGRAM_GENERATION feature access, quota, and creates a reservation.
+ * 
+ * @returns Enforcement decision with reservation ID if allowed, or error if denied
+ */
+async function enforceSketchAccess(
+  tenantId: string | undefined,
+  userId: string | undefined
+): Promise<{ allowed: true; reservationId: string; modelCode?: string } | { allowed: false; error: string }> {
+  if (!tenantId) {
+    // No tenant context - allow but warn (for backwards compatibility)
+    console.warn('[SketchService] No tenant context - skipping gateway enforcement')
+    return { allowed: true, reservationId: '' }
+  }
+
+  try {
+    const meteringSystem = createMeteringSystem()
+    
+    // Create feature request for DIAGRAM_GENERATION
+    const featureRequest = {
+      tenantId,
+      featureCode: 'DIAGRAM_GENERATION' as FeatureCode,
+      taskCode: SKETCH_TASK_CODE,
+      userId,
+      metadata: {
+        idempotencyKey: `sketch-${Date.now()}-${crypto.randomUUID()}`
+      }
+    }
+
+    // Evaluate access through policy service
+    const decision = await meteringSystem.policy.evaluateAccess(featureRequest)
+
+    if (!decision.allowed) {
+      console.warn(`[SketchService] Access denied: ${decision.reason}`)
+      return { 
+        allowed: false, 
+        error: decision.reason || 'Sketch generation not available for your plan'
+      }
+    }
+
+    console.log(`[SketchService] Access granted - reservation: ${decision.reservationId}`)
+    return { 
+      allowed: true, 
+      reservationId: decision.reservationId || '',
+      modelCode: decision.modelClass as string | undefined
+    }
+  } catch (error) {
+    console.error('[SketchService] Gateway enforcement error:', error)
+    // On error, allow access (fail open) - the actual API call may still fail
+    return { allowed: true, reservationId: '' }
+  }
+}
+
+/**
+ * Record sketch generation usage through the metering system.
+ */
+async function recordSketchUsage(
+  reservationId: string,
+  tokensUsed: number,
+  modelCode: string,
+  userId?: string
+): Promise<void> {
+  if (!reservationId) return // No reservation to record against
+
+  try {
+    const meteringSystem = createMeteringSystem()
+    await meteringSystem.metering.recordUsage(reservationId, {
+      inputTokens: Math.ceil(tokensUsed * 0.3), // Estimate: 30% input
+      outputTokens: Math.ceil(tokensUsed * 0.7), // Estimate: 70% output (image)
+      modelClass: modelCode as any,
+      apiCalls: 1,
+      metadata: {
+        service: 'sketch-generation',
+        stageCode: SKETCH_STAGE_CODE
+      }
+    }, userId)
+    console.log(`[SketchService] Usage recorded: ${tokensUsed} tokens for reservation ${reservationId}`)
+  } catch (error) {
+    console.error('[SketchService] Failed to record usage:', error)
+    // Don't fail the sketch generation if usage recording fails
+  }
 }
 
 /**
  * Generates a sketch using Gemini image generation with retry logic.
- * SIMPLIFIED: Focuses only on image generation for maximum quality.
- * Title and description should be provided upfront (from suggestions).
+ * 
+ * GATEWAY INTEGRATION:
+ * - Enforces DIAGRAM_GENERATION feature access before API call
+ * - Uses plan-configured model from model resolver
+ * - Records usage through metering system after successful generation
+ * 
+ * IMAGE GENERATION APPROACH:
+ * - Primary: Use Gemini models with native image generation (responseModalities: ['Image', 'Text'])
+ * - The model must support image OUTPUT (not just vision input)
+ * - Currently supported: gemini-2.0-flash-exp-image-generation, imagen-3.0-generate-*
+ * 
+ * @param systemPrompt - System instructions for the model
+ * @param userPrompt - User-provided prompt/instructions
+ * @param modelCandidates - Ordered list of models to try (from model resolver)
+ * @param inputImage - Optional input image for REFINE/MODIFY modes
+ * @param gatewayContext - Tenant and user IDs for gateway enforcement
  */
 export async function generateSketchWithGemini(
   systemPrompt: string,
   userPrompt: string,
   modelCandidates: string[],
-  inputImage?: { base64: string; mimeType: string }
+  inputImage?: { base64: string; mimeType: string },
+  gatewayContext?: { tenantId?: string; userId?: string }
 ): Promise<SketchGenerationResponse> {
+  // 1. Enforce access through LLM Gateway
+  const accessCheck = await enforceSketchAccess(
+    gatewayContext?.tenantId,
+    gatewayContext?.userId
+  )
+  
+  if (!accessCheck.allowed) {
+    return { success: false, error: accessCheck.error }
+  }
+  
+  const reservationId = accessCheck.reservationId
+
   // Dynamic import to avoid client-side issues
   const { GoogleGenerativeAI } = require('@google/generative-ai')
   
@@ -671,12 +815,19 @@ export async function generateSketchWithGemini(
   for (const modelCode of modelCandidates) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
+        // Determine generation config based on model type
+        // Imagen models use different config than Gemini models
+        const isImagenModel = modelCode.toLowerCase().includes('imagen')
+        
         const model = genAI.getGenerativeModel({
           model: modelCode,
-          generationConfig: {
-            // IMPORTANT: Only request Image output for maximum quality
-            // Text metadata is provided upfront, not extracted from response
-            responseModalities: ['Image'],
+          generationConfig: isImagenModel ? {
+            // Imagen models don't use responseModalities
+          } : {
+            // Gemini native image generation requires both Text and Image modalities
+            // Note: Some models only support ['Text'], others support ['Image', 'Text']
+            responseModalities: ['Image', 'Text'],
+            responseMimeType: 'image/png',
           },
         })
 
@@ -719,12 +870,23 @@ export async function generateSketchWithGemini(
           if (candidate.content?.parts) {
             for (const part of candidate.content.parts) {
               if (part.inlineData) {
+                const tokensUsed = response.usageMetadata?.totalTokenCount || 0
                 console.log(`[SketchService] Successfully generated image with ${modelCode}`)
+                
+                // 2. Record usage through gateway metering
+                await recordSketchUsage(
+                  reservationId,
+                  tokensUsed,
+                  modelCode,
+                  gatewayContext?.userId
+                )
+                
                 return {
                   success: true,
                   imageBase64: part.inlineData.data,
-                  tokensUsed: response.usageMetadata?.totalTokenCount || 0,
-                  modelUsed: modelCode
+                  tokensUsed,
+                  modelUsed: modelCode,
+                  reservationId
                 }
               }
             }
@@ -746,6 +908,12 @@ export async function generateSketchWithGemini(
         console.error(`[SketchService] Attempt ${attempt} failed for ${modelCode}:`, errorMsg)
         lastError = errorMsg
         
+        // If the model doesn't support image generation, try next candidate
+        if (/does not support.*image|response modalities/i.test(errorMsg)) {
+          console.warn(`[SketchService] Model ${modelCode} doesn't support image generation, trying next...`)
+          break
+        }
+        
         // If the model is not found/unsupported, break and try the next candidate
         if (/not found|unsupported/i.test(errorMsg) || /404/.test(errorMsg)) {
           console.warn(`[SketchService] Model ${modelCode} unavailable, trying next fallback...`)
@@ -753,7 +921,7 @@ export async function generateSketchWithGemini(
         }
 
         // Check for quota/rate limit - wait longer
-        if (errorMsg.includes('quota') || errorMsg.includes('rate limit')) {
+        if (errorMsg.includes('quota') || errorMsg.includes('rate limit') || /429/.test(errorMsg)) {
           console.log(`[SketchService] Rate limited, waiting ${5000 * attempt}ms before retry...`)
           await new Promise(resolve => setTimeout(resolve, 5000 * attempt))
           continue
@@ -769,10 +937,17 @@ export async function generateSketchWithGemini(
     }
   }
   
-  // All retries failed
+  // All retries failed - provide helpful error message
+  const triedModels = modelCandidates.join(', ')
   return { 
     success: false, 
-    error: `Generation failed after ${maxRetries} attempts. Error: ${lastError}`
+    error: `Image generation failed after trying: ${triedModels}. Error: ${lastError}. 
+
+TROUBLESHOOTING:
+1. Ensure the configured model supports image OUTPUT (not just vision input)
+2. Recommended model: gemini-3-pro-image-preview
+3. Models that do NOT work: gemini-2.0-flash, gemini-2.0-flash-exp, gemini-2.0-flash-lite (these are text-only)
+4. Configure the model in Super Admin → LLM Config → PATENT_DRAFTING → Sketch Generation`
   }
 }
 
@@ -811,9 +986,18 @@ export async function generateSketch(
     contextFlags || { useIdeaSummary: true, useClaims: true, useDiagrams: true, useComponents: true }
   )
 
-  // 3.1 Resolve model candidates (plan-configured -> env -> defaults)
+  // 3.1 Resolve model candidates from database (no hardcoded fallbacks)
   const modelCandidates = await resolveSketchModelCandidates(tenantId)
-  const preferredModel = modelCandidates[0] || DEFAULT_GEMINI_IMAGE_MODEL
+  
+  if (modelCandidates.length === 0) {
+    return {
+      success: false,
+      error: 'No sketch generation model configured. Please configure a model for "Sketch Generation" stage in Super Admin → LLM Config. Recommended model: gemini-3-pro-image-preview'
+    }
+  }
+  
+  const preferredModel = modelCandidates[0]
+  console.log(`[SketchService] Using model: ${preferredModel} (${modelCandidates.length} candidates total)`)
 
   // 4. Check for minimum context
   if (!contextBundle.ideaSummary && contextBundle.keyComponents.length === 0) {
@@ -907,9 +1091,15 @@ export async function generateSketch(
       data: { aiPromptUsed: userPromptFinal }
     })
 
-    // 8. Generate sketch - focused only on image generation for quality
+    // 8. Generate sketch with gateway enforcement for policy/quota/metering
     // Title and description are already set from suggestion or user input
-    const result = await generateSketchWithGemini(systemPrompt, userPromptFinal, modelCandidates, inputImage)
+    const result = await generateSketchWithGemini(
+      systemPrompt, 
+      userPromptFinal, 
+      modelCandidates, 
+      inputImage,
+      { tenantId, userId } // Gateway context for DIAGRAM_GENERATION feature access
+    )
 
     // 9. Update record based on result
     if (result.success && result.imageBase64) {
@@ -1229,8 +1419,27 @@ export async function generateFromSuggestion(
       sketch.sessionId || undefined,
       { useIdeaSummary: true, useClaims: true, useDiagrams: true, useComponents: true }
     )
+    
+    // Resolve model from database (no hardcoded fallbacks)
     const modelCandidates = await resolveSketchModelCandidates(tenantId)
-    const preferredModel = modelCandidates[0] || DEFAULT_GEMINI_IMAGE_MODEL
+    
+    if (modelCandidates.length === 0) {
+      await prisma.sketchRecord.update({
+        where: { id: sketchId },
+        data: {
+          status: 'FAILED',
+          errorMessage: 'No sketch generation model configured'
+        }
+      })
+      return {
+        success: false,
+        sketchId,
+        error: 'No sketch generation model configured. Please configure a model for "Sketch Generation" stage in Super Admin → LLM Config.'
+      }
+    }
+    
+    const preferredModel = modelCandidates[0]
+    console.log(`[SketchService] Using model for suggestion: ${preferredModel}`)
 
     // Build focused prompt using the suggestion's title and description
     const systemPrompt = buildSystemPrompt()
@@ -1242,8 +1451,14 @@ export async function generateFromSuggestion(
       data: { aiPromptUsed: userPrompt }
     })
 
-    // Generate image - focused only on image quality
-    const result = await generateSketchWithGemini(systemPrompt, userPrompt, modelCandidates)
+    // Generate image with gateway enforcement for policy/quota/metering
+    const result = await generateSketchWithGemini(
+      systemPrompt, 
+      userPrompt, 
+      modelCandidates,
+      undefined, // No input image for suggestions
+      { tenantId, userId } // Gateway context for DIAGRAM_GENERATION feature access
+    )
 
     if (result.success && result.imageBase64) {
       // Save generated image

@@ -16,18 +16,27 @@ import { getDiagramConfig, generateDiagramPromptInstructions } from '@/lib/juris
 import { trackSectionDrafted } from '@/lib/patent-drafting-tracker';
 import { resolveSourceOfTruth, computeJurisdictionStateOnDelete } from '@/lib/jurisdiction-state-service';
 import { cloneInstructionsBetweenSessions } from '@/lib/user-instruction-service';
-import { 
-  generateSketch, 
-  listSketches, 
-  getSketch, 
-  deleteSketch, 
-  toggleSketchFavorite, 
+import {
+  generateSketch,
+  listSketches,
+  getSketch,
+  deleteSketch,
+  toggleSketchFavorite,
   updateSketchMetadata,
   retrySketchGeneration,
   type SketchMode,
   type SketchContextFlags,
   type SketchViewConfig
 } from '@/lib/sketch-service';
+
+// Interface for sketch records as stored in session
+interface SessionSketchRecord {
+  id: string;
+  title: string;
+  description?: string;
+  status: string;
+  isDeleted?: boolean;
+}
 import crypto from 'crypto';
 import plantumlEncoder from 'plantuml-encoder';
 import path from 'path';
@@ -400,7 +409,12 @@ export async function GET(
             ideaBankSuggestions: true
           }
         },
-        relatedArtSelections: true
+        relatedArtSelections: true,
+        // Include AI reviews for sidebar completion tracking
+        aiReviews: {
+          orderBy: { reviewedAt: 'desc' },
+          take: 5 // Keep last 5 reviews per session
+        }
       } as any,
       orderBy: { createdAt: 'desc' }
     });
@@ -648,6 +662,9 @@ export async function POST(
 
       case 'generate_from_suggestion':
         return await handleGenerateFromSuggestion(authResult.user, patentId, data);
+
+      case 'generate_sketch_suggestions':
+        return await handleGenerateSketchSuggestions(authResult.user, patentId, data, requestHeaders);
 
       // === FIGURE SEQUENCE ARRANGEMENT ===
       case 'get_combined_figures':
@@ -1120,9 +1137,12 @@ GENERATE 5 RADICAL IDEAS.
 REFERENCE SNAPSHOTS (Analyze these to find what to AVOID or DISRUPT):
 ${candidatesText}`
 
+  // Use dedicated IDEA_BANK_GENERATION stage for idea generation
+  // This stage is shared between drafting pipeline and novelty search
+  // Admin can configure the model for idea generation from one place
   const ideaResult = await llmGateway.executeLLMOperation(request, {
-    taskCode: 'LLM1_PRIOR_ART',
-    stageCode: 'NOVELTY_FEATURE_ANALYSIS', // Use stage config for admin-configured model/limits
+    taskCode: 'LLM1_PRIOR_ART',  // Task code for metering (prior art analysis feature)
+    stageCode: 'IDEA_BANK_GENERATION', // Stage code for model selection - unified idea bank generation
     prompt: ideaPrompt,
     idempotencyKey: crypto.randomUUID(),
     inputTokens: Math.ceil(ideaPrompt.length / 4),
@@ -1135,7 +1155,7 @@ ${candidatesText}`
       patentId,
       sessionId,
       runId: useRunId,
-      purpose: 'related_art_idea_generation'
+      purpose: 'idea_bank_generation'  // Updated purpose to reflect unified idea bank
     }
   })
 
@@ -3308,11 +3328,13 @@ async function handleGenerateClaims(user: any, patentId: string, data: any, requ
     const claimRules = claimRulesRaw || {}
     
     // Get writing sample for persona-style consistency (same as drafting stage)
-    const usePersonaStyle = (session as any).usePersonaStyle !== false // Default to true
+    // OFF by default, user must explicitly enable in UI
+    const usePersonaStyle = (session as any).usePersonaStyle === true
+    const personaSelection = (session as any).personaSelection || undefined
     let writingSampleBlock = ''
     if (usePersonaStyle && user?.id) {
       try {
-        const writingSample = await getWritingSample(user.id, 'claims', activeJurisdiction)
+        const writingSample = await getWritingSample(user.id, 'claims', activeJurisdiction, personaSelection)
         if (writingSample) {
           writingSampleBlock = buildWritingSampleBlock(writingSample, 'claims')
         }
@@ -4110,23 +4132,38 @@ async function handleSetStage(user: any, patentId: string, data: any) {
       allowed = false
     }
   } else if (currentStage === 'COMPONENT_PLANNER') {
-    // Allow controlled backward navigation depending on which stages were skipped
+    // Allow backward navigation depending on which stages were skipped
     if (stage === 'CLAIM_REFINEMENT' && !claimRefinementSkipped && !priorArtSkipped) {
       allowed = true
     } else if (stage === 'RELATED_ART' && !priorArtSkipped) {
-      // Allow going back to Related Art if claim refinement was skipped OR if going back through the flow
       allowed = true
-    } else if (stage === 'IDEA_ENTRY' && priorArtSkipped) {
+    } else if (stage === 'IDEA_ENTRY') {
+      // Always allow going back to IDEA_ENTRY (first stage)
+      allowed = true
+    } else if (stage === 'FIGURE_PLANNER' || stage === 'ANNEXURE_DRAFT') {
+      // Always allow forward progression
       allowed = true
     } else {
       const currentIdx = stageFlow.indexOf(currentStage)
       const targetIdx = stageFlow.indexOf(stage)
-      allowed = currentIdx !== -1 && targetIdx !== -1 && targetIdx >= currentIdx
+      allowed = currentIdx !== -1 && targetIdx !== -1
     }
+  } else if (currentStage === 'FIGURE_PLANNER') {
+    // From FIGURE_PLANNER: allow back to any previous stage or forward to ANNEXURE_DRAFT
+    const currentIdx = stageFlow.indexOf(currentStage)
+    const targetIdx = stageFlow.indexOf(stage)
+    // Allow any valid stage transition (forward or backward)
+    allowed = currentIdx !== -1 && targetIdx !== -1
+  } else if (currentStage === 'ANNEXURE_DRAFT') {
+    // From ANNEXURE_DRAFT: allow back to any previous stage or forward to COMPLETED
+    const currentIdx = stageFlow.indexOf(currentStage)
+    const targetIdx = stageFlow.indexOf(stage)
+    // Allow any valid stage transition (forward or backward)
+    allowed = currentIdx !== -1 && targetIdx !== -1
   } else {
     const currentIdx = stageFlow.indexOf(currentStage)
     const targetIdx = stageFlow.indexOf(stage)
-    // Allow backward navigation for any stage
+    // Allow any valid stage transition
     allowed = currentIdx !== -1 && targetIdx !== -1
   }
 
@@ -5954,7 +5991,7 @@ If in doubt, prefer a SIMPLE, VALID diagram over a complex one.
       
       const sketchResult = await llmGateway.executeLLMOperation(request, {
         taskCode: 'LLM3_DIAGRAM',
-        stageCode: 'DRAFT_SKETCH_GENERATION', // Use admin-configured model/limits
+        stageCode: 'DRAFT_FIGURE_PLANNER', // Use Figure Planning tag
         prompt: sketchSuggestPrompt,
         idempotencyKey: crypto.randomUUID(),
         inputTokens: Math.ceil(sketchSuggestPrompt.length / 4),
@@ -7278,10 +7315,32 @@ async function handleCreateManualFigure(user: any, patentId: string, data: any) 
 // === SKETCH GENERATION HANDLERS ===
 
 /**
+ * Helper to check DIAGRAM_GENERATION feature access for sketch operations
+ * Sketches are part of the DIAGRAM_GENERATION feature for plan tier control
+ */
+async function checkSketchAccess(user: any): Promise<NextResponse | null> {
+  if (user.tenantId) {
+    const diagramCheck = await enforceServiceAccess(
+      user.id,
+      user.tenantId,
+      'DIAGRAM_GENERATION'
+    )
+    if (!diagramCheck.allowed) {
+      return diagramCheck.response
+    }
+  }
+  return null // Access allowed
+}
+
+/**
  * Generate sketch in AUTO mode - uses invention context only
  */
 async function handleGenerateSketch(user: any, patentId: string, data: any) {
   const { sessionId, title, viewsRequested, contextFlags } = data
+
+  // Check DIAGRAM_GENERATION feature access (plan tier control)
+  const accessDenied = await checkSketchAccess(user)
+  if (accessDenied) return accessDenied
 
   if (!sessionId) {
     return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
@@ -7332,6 +7391,10 @@ async function handleGenerateSketch(user: any, patentId: string, data: any) {
  */
 async function handleGenerateSketchGuided(user: any, patentId: string, data: any) {
   const { sessionId, title, userPrompt, viewsRequested, contextFlags } = data
+
+  // Check DIAGRAM_GENERATION feature access (plan tier control)
+  const accessDenied = await checkSketchAccess(user)
+  if (accessDenied) return accessDenied
 
   if (!sessionId) {
     return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
@@ -7387,6 +7450,10 @@ async function handleGenerateSketchGuided(user: any, patentId: string, data: any
  */
 async function handleRefineSketch(user: any, patentId: string, data: any) {
   const { sessionId, title, userPrompt, uploadedImageBase64, uploadedImageMimeType, contextFlags } = data
+
+  // Check DIAGRAM_GENERATION feature access (plan tier control)
+  const accessDenied = await checkSketchAccess(user)
+  if (accessDenied) return accessDenied
 
   if (!sessionId) {
     return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
@@ -7451,6 +7518,10 @@ async function handleRefineSketch(user: any, patentId: string, data: any) {
  */
 async function handleModifySketch(user: any, patentId: string, data: any) {
   const { sessionId, sourceSketchId, userPrompt, title } = data
+
+  // Check DIAGRAM_GENERATION feature access (plan tier control)
+  const accessDenied = await checkSketchAccess(user)
+  if (accessDenied) return accessDenied
 
   if (!sessionId) {
     return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
@@ -7660,6 +7731,10 @@ async function handleUpdateSketchMetadata(user: any, patentId: string, data: any
 async function handleRetrySketch(user: any, patentId: string, data: any) {
   const { sketchId } = data
 
+  // Check DIAGRAM_GENERATION feature access (plan tier control)
+  const accessDenied = await checkSketchAccess(user)
+  if (accessDenied) return accessDenied
+
   if (!sketchId) {
     return NextResponse.json({ error: 'Sketch ID is required' }, { status: 400 })
   }
@@ -7710,6 +7785,10 @@ async function handleRetrySketch(user: any, patentId: string, data: any) {
  */
 async function handleGenerateFromSuggestion(user: any, patentId: string, data: any) {
   const { sketchId } = data
+
+  // Check DIAGRAM_GENERATION feature access (plan tier control)
+  const accessDenied = await checkSketchAccess(user)
+  if (accessDenied) return accessDenied
 
   if (!sketchId) {
     return NextResponse.json({ error: 'Sketch ID is required' }, { status: 400 })
@@ -7768,6 +7847,98 @@ async function handleGenerateFromSuggestion(user: any, patentId: string, data: a
     console.error('[Sketch] Generate from suggestion error:', error)
     return NextResponse.json({
       error: error instanceof Error ? error.message : 'Failed to generate sketch'
+    }, { status: 500 })
+  }
+}
+
+/**
+ * Generate sketch suggestions using AI for the Sketch tab.
+ * Uses the DRAFT_FIGURE_PLANNER LLM tag for proper routing.
+ */
+async function handleGenerateSketchSuggestions(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
+  const { sessionId } = data
+
+  if (!sessionId) {
+    return NextResponse.json({ error: 'Session ID is required' }, { status: 400 })
+  }
+
+  try {
+    const session = await prisma.draftingSession.findFirst({
+      where: { id: sessionId, patentId, userId: user.id },
+      include: {
+        ideaRecord: true,
+        referenceMap: true
+      }
+    })
+
+    if (!session) {
+      return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+    }
+
+    // Build the sketch suggestions prompt
+    const prompt = buildSketchSuggestionsPrompt(session)
+
+    // Use LLM gateway with the correct tag for Figure Planning
+    const { llmGateway } = await import('@/lib/metering/gateway')
+    const result = await llmGateway.executeLLMOperation(
+      { headers: requestHeaders || {} },
+      {
+        taskCode: 'LLM3_DIAGRAM',
+        stageCode: 'DRAFT_FIGURE_PLANNER', // Updated to use Figure Planning tag
+        prompt,
+        idempotencyKey: crypto.randomUUID(),
+        parameters: { tenantId: session.tenantId || undefined },
+        metadata: {
+          patentId,
+          sessionId,
+          purpose: 'generate_sketch_suggestions'
+        }
+      }
+    )
+
+    if (!result.success || !result.response?.output) {
+      return NextResponse.json({
+        error: 'Failed to generate sketch suggestions'
+      }, { status: 500 })
+    }
+
+    // Parse AI response
+    const suggestionText = result.response.output.trim()
+    let suggestions: any[] = []
+
+    try {
+      // Try to parse as JSON array
+      const start = suggestionText.indexOf('[')
+      const end = suggestionText.lastIndexOf(']')
+      if (start !== -1 && end !== -1) {
+        const jsonStr = suggestionText.substring(start, end + 1)
+        const parsed = JSON.parse(jsonStr)
+        if (Array.isArray(parsed)) {
+          suggestions = parsed.filter(s => s.title && s.description)
+        }
+      }
+    } catch {
+      // Fallback: try to extract from structured text
+      const regex = /(?:TITLE|Title):\s*(.+?)(?:\n|$)[\s\S]*?(?:DESCRIPTION|Description):\s*([\s\S]+?)(?=(?:TITLE|Title):|$)/gi
+      let match: RegExpExecArray | null
+      while ((match = regex.exec(suggestionText)) !== null) {
+        if (match[1] && match[2]) {
+          suggestions.push({
+            title: match[1].trim(),
+            description: match[2].trim().split('\n')[0] // Take first paragraph
+          })
+        }
+      }
+    }
+
+    return NextResponse.json({
+      suggestions: suggestions.length > 0 ? suggestions : []
+    })
+
+  } catch (error) {
+    console.error('[Sketch Suggestions] Error:', error)
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : 'Failed to generate sketch suggestions'
     }, { status: 500 })
   }
 }
@@ -8978,6 +9149,9 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
   // When enabled, DraftingService fetches user's writing samples and injects them into prompts
   const usePersonaStyle = (data && typeof data.usePersonaStyle === 'boolean') ? Boolean(data.usePersonaStyle) : false
   
+  // Extract persona selection for multi-persona support (primary + secondary styles)
+  const personaSelection = data?.personaSelection || undefined
+  
   // Use provided instructions directly (no legacy style injection)
   const mergedInstructions: Record<string, string> = { ...(instructions || {}) }
 
@@ -9012,6 +9186,7 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
     ...session, 
     annexureDrafts: lastDraftForJurisdiction ? [lastDraftForJurisdiction] : [],
     usePersonaStyle, // Pass to DraftingService for writing sample injection
+    personaSelection, // Pass persona selection for multi-persona support (primary + secondary)
     userId: user.id  // Required for fetching user's writing samples
   }
 
@@ -10008,10 +10183,13 @@ async function handleTranslateToJurisdiction(
     industrialApplicability: referenceDraft.industrialApplicability,
     // Extended superset sections from extraSections
     preamble: extraSections.preamble || '',
+    crossReference: extraSections.crossReference || '', // Cross-reference to related applications
     objectsOfInvention: extraSections.objectsOfInvention || '',
     technicalProblem: extraSections.technicalProblem || '',
     technicalSolution: extraSections.technicalSolution || '',
-    advantageousEffects: extraSections.advantageousEffects || ''
+    advantageousEffects: extraSections.advantageousEffects || '',
+    // Additional optional superset sections (EP/DE)
+    listOfNumerals: extraSections.listOfNumerals || referenceDraft.listOfNumerals || ''
   }
 
   // Translate to target jurisdiction with language support
@@ -10259,26 +10437,81 @@ async function handleRunAIReview(
     return NextResponse.json({ error: 'No draft content available for review' }, { status: 400 })
   }
 
-  // Get figures with PlantUML code from diagram sources
-  const figures = (session!.figurePlans || []).map((plan: any) => {
-    const source = (session!.diagramSources || []).find((d: any) => d.figureNo === plan.figureNo)
-    return {
-      figureNo: plan.figureNo,
-      title: plan.title || `Figure ${plan.figureNo}`,
-      plantuml: source?.plantumlCode || '' // Use plantumlCode field from DB
-    }
-  }).filter((f: any) => f.plantuml) // Only include figures with PlantUML
-
-  // Get sketches with descriptions to prevent false "missing figure" errors
+  // ============================================================================
+  // BUILD FIGURES IN USER-ARRANGED SEQUENCE ORDER
+  // The figureSequence contains the user's preferred order of diagrams + sketches
+  // ============================================================================
   const figureSequence = session.figureSequence as any[] || []
-  const sketches = ((session as any).sketchRecords || [])
-    .filter((s: any) => s.status === 'SUCCESS')
-    .map((s: any) => ({
-      figureNo: s.figureNo || 0,
-      title: s.title || 'Untitled Sketch',
-      description: s.instructions || s.title || '', // Use instructions as description
-      isIncluded: figureSequence.some((f: any) => f.type === 'sketch' && f.sourceId === s.id)
-    }))
+  const figurePlans = session!.figurePlans || []
+  const diagramSources = session!.diagramSources || []
+  const sketchRecords: SessionSketchRecord[] = ((session as any).sketchRecords || []).filter((s: any) => s.status === 'SUCCESS' && !s.isDeleted)
+
+  // Build maps for quick lookup
+  const figurePlanMap = new Map(figurePlans.map((fp: any) => [fp.id, fp]))
+  const diagramSourceMap = new Map(diagramSources.map((ds: any) => [ds.figureNo, ds]))
+  const sketchMap = new Map<string, SessionSketchRecord>(sketchRecords.map((sr) => [sr.id, sr]))
+  
+  // Build figures array in user-arranged sequence order
+  const figures: Array<{ figureNo: number; title: string; plantuml: string }> = []
+  const sketches: Array<{ figureNo: number; title: string; description: string; isIncluded: boolean }> = []
+  
+  if (figureSequence.length > 0) {
+    // Use user-arranged sequence
+    figureSequence.forEach((seqItem: any) => {
+      const finalFigNo = seqItem.finalFigNo || seqItem.figureNo || 0
+      
+      if (seqItem.type === 'diagram') {
+        // Find the diagram source by sourceId (which is the figurePlan id)
+        const figurePlan = figurePlanMap.get(seqItem.sourceId)
+        if (figurePlan) {
+          const diagramSource = diagramSourceMap.get(figurePlan.figureNo)
+          if (diagramSource?.plantumlCode) {
+            figures.push({
+              figureNo: finalFigNo,
+              title: figurePlan.title || `Figure ${finalFigNo}`,
+              plantuml: diagramSource.plantumlCode
+            })
+          }
+        }
+      } else if (seqItem.type === 'sketch') {
+        // Find the sketch by sourceId
+        const sketch = sketchMap.get(seqItem.sourceId)
+        if (sketch) {
+          // Sketches don't have PlantUML - include as sketch context for AI
+          sketches.push({
+            figureNo: finalFigNo,
+            title: sketch.title || `Sketch ${finalFigNo}`,
+            description: sketch.description || sketch.title || '',
+            isIncluded: true // It's in the sequence, so it's included
+          })
+        }
+      }
+    })
+  } else {
+    // Fallback: No sequence set - use diagrams in their original order
+    figurePlans.forEach((plan: any) => {
+      const source = diagramSourceMap.get(plan.figureNo)
+      if (source?.plantumlCode) {
+        figures.push({
+          figureNo: plan.figureNo,
+          title: plan.title || `Figure ${plan.figureNo}`,
+          plantuml: source.plantumlCode
+        })
+      }
+    })
+    
+    // Include sketches without sequence info
+    sketchRecords.forEach((sr: any, idx: number) => {
+      sketches.push({
+        figureNo: figurePlans.length + idx + 1, // After diagrams
+        title: sr.title || `Sketch ${idx + 1}`,
+        description: sr.description || sr.instructions || sr.title || '',
+        isIncluded: true
+      })
+    })
+  }
+  
+  console.log(`[AI Review] Figures: ${figures.length} diagrams (with PlantUML), ${sketches.length} sketches (metadata only)`)
 
   // Get components from reference map
   const components = Array.isArray((session.referenceMap as any)?.components)
@@ -10398,6 +10631,63 @@ async function handleRunAIReview(
     reviewId: savedReview.id,
     ...reviewResult
   })
+}
+
+// ============================================================================
+// Post-Fix Validation
+// ============================================================================
+
+interface FixValidationResult {
+  hasProblems: boolean
+  problems: Array<{
+    type: 'error' | 'warning'
+    code: string
+    message: string
+  }>
+  metrics: {
+    originalWordCount: number
+    fixedWordCount: number
+    changeRatio: number
+  }
+}
+
+/**
+ * Lightweight validation - only catches critical issues that would break the draft
+ * Keeps checks minimal to avoid overwhelming users with warnings
+ */
+async function validateFixedContent(
+  originalContent: string,
+  fixedContent: string,
+  sectionKey: string,
+  jurisdiction: string,
+  issue: any
+): Promise<FixValidationResult> {
+  const problems: FixValidationResult['problems'] = []
+  
+  const originalWords = originalContent.trim().split(/\s+/).filter(w => w.length > 0).length
+  const fixedWords = fixedContent.trim().split(/\s+/).filter(w => w.length > 0).length
+  const changeRatio = originalWords > 0 ? Math.abs(fixedWords - originalWords) / originalWords : 0
+  
+  // Only check for critical issues that would truly break the draft
+  
+  // 1. Empty content - this is a real problem that needs attention
+  if (!fixedContent || fixedContent.trim().length < 10) {
+    problems.push({
+      type: 'error',
+      code: 'EMPTY_CONTENT',
+      message: 'Fix resulted in empty content. Please try again.'
+    })
+  }
+  
+  return {
+    hasProblems: problems.length > 0,
+    problems,
+    metrics: {
+      originalWordCount: originalWords,
+      fixedWordCount: fixedWords,
+      changeRatio
+    }
+  }
 }
 
 /**
@@ -10535,6 +10825,22 @@ async function handleApplyAIFix(
   // Clean up response
   let fixedContent = (result.response.output || '').trim()
   fixedContent = fixedContent.replace(/^```[\s\S]*?\n/, '').replace(/\n```$/, '')
+  
+  // ============================================================================
+  // POST-FIX VALIDATION - Verify the fix didn't break anything
+  // ============================================================================
+  const fixValidation = await validateFixedContent(
+    content, 
+    fixedContent, 
+    sectionKey, 
+    code,
+    normalizedIssue
+  )
+  
+  // If fix validation found critical issues, warn the user
+  if (fixValidation.hasProblems) {
+    console.warn(`[ApplyAIFix] Fix validation found problems for ${sectionKey}:`, fixValidation.problems)
+  }
 
   // Compute diff data for micro-versioning
   const diffData = computeTextDiff(content, fixedContent)
@@ -10588,7 +10894,9 @@ async function handleApplyAIFix(
     diffData,
     fixHistoryEntry,
     issue: { ...issue, status: 'fixed' },
-    tokensUsed: result.response.outputTokens
+    tokensUsed: result.response.outputTokens,
+    // Include validation only if there's a critical problem
+    validation: fixValidation.hasProblems ? fixValidation : undefined
   })
 }
 

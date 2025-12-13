@@ -326,6 +326,11 @@ You MUST closely mimic their style, including:
 • **Punctuation and connectors** - Use similar punctuation and transition words
 • **Opening patterns** - Start sections/paragraphs similarly`
 
+  // Build visual box without truncating content - preserve full sample for style learning
+  const lines = sample.sampleText.split('\n')
+  // Don't truncate lines - long lines are important for capturing writing style patterns
+  const formattedLines = lines.map(line => `│ ${line}`).join('\n')
+
   return `
 
 ╔═══════════════════════════════════════════════════════════════════════════╗
@@ -336,9 +341,9 @@ ${personaNote ? `║  ${personaNote.padEnd(69)}║\n` : ''}╚══════
 ${styleExplanation}
 
 USER'S STYLE EXAMPLE:
-┌─────────────────────────────────────────────────────────────────────────────┐
-${sample.sampleText.split('\n').map(line => `│ ${line.substring(0, 75).padEnd(75)}│`).join('\n')}
-└─────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────
+${formattedLines}
+└─────────────────────────────────────────────────────────────────────────────
 
 ⚠️ CRITICAL: Generate content that reads as if written by the SAME AUTHOR as the example above.
    Do NOT use generic patent language. Instead, mirror the specific style shown.

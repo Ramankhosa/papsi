@@ -3787,7 +3787,33 @@ OUTPUT JSON:
           non_obvious_extension: String(ib.non_obvious_extension || '').slice(0, 1000)
         })).filter((x: any) => x.title);
       };
-      const ideaBank = extractIdeas(reportData);
+      // Extract ideas from report (fallback if dedicated call fails)
+      const reportIdeas = extractIdeas(reportData);
+
+      // === DEDICATED IDEA BANK GENERATION ===
+      // Use IDEA_BANK_GENERATION stage for unified management with drafting pipeline
+      // This allows admins to configure idea generation model from one place
+      let ideaBank = reportIdeas; // Default to ideas from report
+      
+      try {
+        console.log('[Stage4] Generating ideas via dedicated IDEA_BANK_GENERATION stage...');
+        const ideaGenResult = await this.generateIdeaBankSuggestions(
+          searchRun,
+          stage0Data,
+          enhancedReportInputs.patent_details || [],
+          requestHeaders
+        );
+        
+        if (ideaGenResult && ideaGenResult.length > 0) {
+          console.log(`[Stage4] Dedicated idea generation produced ${ideaGenResult.length} ideas`);
+          ideaBank = ideaGenResult;
+        } else if (reportIdeas.length > 0) {
+          console.log(`[Stage4] Using ${reportIdeas.length} ideas from report (fallback)`);
+        }
+      } catch (ideaGenError) {
+        console.warn('[Stage4] Dedicated idea generation failed, using report ideas:', ideaGenError);
+        // Fall back to ideas extracted from report
+      }
 
       const finalReportData = {
         ...this.enhanceReportWithDeterministicData(reportData, aggRes, reportInputs),
@@ -3863,6 +3889,137 @@ OUTPUT JSON:
         success: false,
         error: error instanceof Error ? error.message : 'Stage 4 failed'
       };
+    }
+  }
+
+  // === DEDICATED IDEA BANK GENERATION ===
+  /**
+   * Generate idea bank suggestions using the unified IDEA_BANK_GENERATION stage
+   * This allows admins to configure the idea generation model from one place
+   * Same model configuration is used by both drafting pipeline and novelty search
+   */
+  private async generateIdeaBankSuggestions(
+    searchRun: any,
+    stage0Data: NormalizedIdea,
+    patentDetails: any[],
+    requestHeaders?: Record<string, string>
+  ): Promise<Array<{
+    title: string;
+    core_principle: string;
+    expected_advantage: string;
+    tags: string[];
+    non_obvious_extension: string;
+  }>> {
+    const title = String(searchRun.title || '');
+    const query = String((stage0Data as any)?.searchQuery || '');
+    
+    // Build reference snapshots for idea generation
+    const candidatesText = patentDetails
+      .slice(0, 10)
+      .map((p: any) => `PN: ${p.patent_number}\nTitle: ${p.title}\nAbstract: ${String(p.abstract || '').slice(0, 400)}`)
+      .join('\n\n');
+
+    if (!candidatesText.trim()) {
+      console.log('[IdeaBankGeneration] No patent references available, skipping idea generation');
+      return [];
+    }
+
+    const ideaPrompt = `You are a dual-headed entity:
+- Left brain: ruthless patent examiner who kills any idea that is obvious under 35 U.S.C. §103 or abstract under §101.
+- Right brain: visionary CTO who invents only "white-space" solutions that make the cited references obsolete.
+
+Both brains must co-sign every concept or it is rejected.
+
+INVENTION CONTEXT:
+Title: ${title}
+Search Query: ${query}
+
+CORE OBJECTIVE:
+The user is looking for "White Space" inventions—areas where no patent currently exists.
+Do not just improve the references. Make them obsolete.
+Think from First Principles: What is the fundamental physics/logic limit here, and how do we bypass it?
+
+INVENTION BRIEFING:
+Generate exactly 5 patent-grade concepts that:
+1. Are **orthogonal** to every mechanism disclosed in REFERENCES.
+2. Contain at least one **physical structure** or **chemical composition** (no pure algorithms, no "AI to optimize").
+3. Can be **enabled** by a PHOSITA with only routine experimentation (no perpetual motion, no room-temperature superconductors unless you supply the formula).
+4. Pass the **"cold shower" test**: if you woke up tomorrow and read the claim on the front page of TechCrunch, you would think "wow, that's clever—and nobody did that before."
+
+CREATIVITY FILTERS (apply ≥1 per idea):
+A. **Anti-Solution**: Invert the primary physical state (e.g., if it's rigid, make it fluid; if it's centralized, make it swarm-based).
+B. **Resource Starvation**: Design for zero electricity, zero RF bandwidth, or zero rare-earth materials.
+C. **Biomimicry**: Copy a biological mechanism that has **no** existing engineering analog in the field.
+D. **Dimensional Shift**: Replace spatial hardware with temporal encoding, or vice-versa.
+E. **Cross-Pollination**: Import a physical phenomenon from an unrelated domain (e.g., high-frequency trading latency-arbitrage → ultrasonic acoustic arbitrage in concrete sensing).
+
+OUTPUT SPECIFICATION:
+Return ONLY valid JSON with exactly this schema.
+{
+  "idea_bank_suggestions": [
+    {
+      "title": "≤12 words, technical, no fluff",
+      "core_principle": "One sentence problem statement anchored in white space, followed by: Unlike standard approaches that use X, this embodiment uses Y (2-3 sentences, physical detail)",
+      "expected_advantage": "Concrete commercial scenario with $-size if possible",
+      "tags": ["technical-domain", "application", "disruption-type", "cross-discipline"],
+      "non_obvious_extension": "Exact sentence from REFERENCES that this idea avoids (Cross-ref Killshot)"
+    }
+  ]
+}
+
+GENERATE 5 RADICAL IDEAS.
+
+REFERENCE SNAPSHOTS (Analyze these to find what to AVOID or DISRUPT):
+${candidatesText}`;
+
+    // Use dedicated IDEA_BANK_GENERATION stage - unified with drafting pipeline
+    // Admin can configure this model from Super Admin LLM Config panel
+    const ideaResult = await llmGateway.executeLLMOperation(
+      { headers: requestHeaders || {} },
+      {
+        taskCode: TaskCode.LLM6_REPORT_GENERATION,  // Task code for metering
+        stageCode: 'IDEA_BANK_GENERATION',          // Unified stage for idea generation
+        prompt: ideaPrompt,
+        idempotencyKey: crypto.randomUUID(),
+        inputTokens: Math.ceil(ideaPrompt.length / 4),
+        parameters: {
+          maxOutputTokens: 5000,
+          temperature: 0.9,  // High creativity for idea generation
+          topP: 0.95
+        },
+        metadata: {
+          searchRunId: searchRun.id,
+          purpose: 'idea_bank_generation'
+        }
+      }
+    );
+
+    console.log('[IdeaBankGeneration] Model used:', ideaResult?.response?.modelClass || 'unknown');
+
+    if (!ideaResult.success || !ideaResult.response) {
+      console.warn('[IdeaBankGeneration] LLM call failed:', ideaResult.error?.message);
+      return [];
+    }
+
+    try {
+      const txt = (ideaResult.response.output || '').trim();
+      const start = txt.indexOf('{');
+      const end = txt.lastIndexOf('}');
+      const json = start !== -1 && end !== -1 ? txt.substring(start, end + 1) : txt;
+      const parsed = JSON.parse(json);
+      const ideas = Array.isArray(parsed?.idea_bank_suggestions) ? parsed.idea_bank_suggestions : [];
+      
+      // Normalize and validate ideas
+      return ideas.map((ib: any) => ({
+        title: String(ib.title || '').slice(0, 200),
+        core_principle: String(ib.core_principle || '').slice(0, 2000),
+        expected_advantage: String(ib.expected_advantage || '').slice(0, 500),
+        tags: Array.isArray(ib.tags) ? ib.tags.map((t: any) => String(t).slice(0, 60)) : [],
+        non_obvious_extension: String(ib.non_obvious_extension || '').slice(0, 1000)
+      })).filter((x: any) => x.title);
+    } catch (e) {
+      console.warn('[IdeaBankGeneration] JSON parse failed:', e);
+      return [];
     }
   }
 

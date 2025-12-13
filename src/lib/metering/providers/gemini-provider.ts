@@ -7,15 +7,21 @@ import type { LLMProvider, ProviderConfig } from './llm-provider'
 export class GeminiProvider implements LLMProvider {
   name = 'gemini'
   supportedModels = [
-    // Gemini 2.x Series (Text)
+    // Gemini 2.x Series (Text + Image Output)
     'gemini-2.5-pro',
     'gemini-2.0-flash',
+    'gemini-2.0-flash-001',
+    'gemini-2.0-flash-exp',           // Experimental - best image output quality
+    'gemini-2.0-flash-thinking-exp',  // Thinking model - higher quality but slower
     'gemini-2.0-flash-lite',
     'gemini-2.5-flash-lite',
+    'gemini-exp-1206',                // Experimental model with good image capability
     // Gemini 1.5 Series
     'gemini-1.5-pro',
+    'gemini-1.5-pro-002',
     'gemini-1.5-flash',
-    // Gemini 3.x Image Generation Models (for Sketch Generation)
+    'gemini-1.5-flash-002',
+    // Legacy Image Generation Models (for backwards compatibility)
     'gemini-3.0-nano-banana',
     'gemini-3-pro-image-preview'
   ]
@@ -29,7 +35,11 @@ export class GeminiProvider implements LLMProvider {
     // Gemini 2.x variants (align to current GA/preview IDs)
     'gemini-2.0-flash': 'gemini-2.0-flash-001',
     'gemini-2.0-flash-lite': 'gemini-2.0-flash-lite-001',
-    // Keep nano/image models as-is (current names work with v1beta)
+    // Experimental models (pass through as-is)
+    'gemini-2.0-flash-exp': 'gemini-2.0-flash-exp',
+    'gemini-2.0-flash-thinking-exp': 'gemini-2.0-flash-thinking-exp',
+    'gemini-exp-1206': 'gemini-exp-1206',
+    // Legacy image models (pass through as-is)
     'gemini-3.0-nano-banana': 'gemini-3.0-nano-banana',
     'gemini-3-pro-image-preview': 'gemini-3-pro-image-preview'
   }
@@ -202,16 +212,19 @@ export class GeminiProvider implements LLMProvider {
       'gemini-2.0-flash-lite': { input: 1048576, output: 8192 },
       'gemini-2.0-flash-lite-001': { input: 1048576, output: 8192 },
       'gemini-2.5-flash-lite': { input: 1048576, output: 8192 },
-      // Flash models
+      // Flash models (including experimental with image output)
       'gemini-2.0-flash': { input: 1048576, output: 8192 },
       'gemini-2.0-flash-001': { input: 1048576, output: 8192 },
+      'gemini-2.0-flash-exp': { input: 1048576, output: 8192 },            // Experimental - best image output
+      'gemini-2.0-flash-thinking-exp': { input: 1048576, output: 16384 },  // Thinking model - higher output
+      'gemini-exp-1206': { input: 2097152, output: 8192 },                 // Experimental model
       // Pro models
       'gemini-2.5-pro': { input: 2097152, output: 16384 },
       'gemini-1.5-pro': { input: 2097152, output: 16384 }, // legacy config
       'gemini-1.5-pro-002': { input: 2097152, output: 16384 },
       'gemini-1.5-flash': { input: 1048576, output: 8192 }, // legacy config
       'gemini-1.5-flash-002': { input: 1048576, output: 8192 },
-      // Image generation models
+      // Legacy image generation models (backwards compatibility)
       'gemini-3.0-nano-banana': { input: 128000, output: 8192 },
       'gemini-3-pro-image-preview': { input: 128000, output: 8192 }
     }
@@ -226,16 +239,19 @@ export class GeminiProvider implements LLMProvider {
       'gemini-2.0-flash-lite': { input: 0.00000008, output: 0.0000003 },    // $0.08/$0.30 per M
       'gemini-2.0-flash-lite-001': { input: 0.00000008, output: 0.0000003 },
       'gemini-2.5-flash-lite': { input: 0.00000035, output: 0.0000007 },    // $0.35/$0.70 per M
-      // Flash models
+      // Flash models (including experimental with image output)
       'gemini-2.0-flash': { input: 0.0000001, output: 0.0000004 },          // $0.10/$0.40 per M
       'gemini-2.0-flash-001': { input: 0.0000001, output: 0.0000004 },
+      'gemini-2.0-flash-exp': { input: 0.0000001, output: 0.0000004 },      // Experimental - same pricing
+      'gemini-2.0-flash-thinking-exp': { input: 0.0000003, output: 0.0000012 }, // Thinking model - higher cost
+      'gemini-exp-1206': { input: 0.0000001, output: 0.0000004 },           // Experimental model
       // Pro models
       'gemini-2.5-pro': { input: 0.00000125, output: 0.000005 },            // $1.25/$5.00 per M
       'gemini-1.5-pro': { input: 0.00000125, output: 0.000005 },            // $1.25/$5.00 per M (legacy)
       'gemini-1.5-pro-002': { input: 0.00000125, output: 0.000005 },
       'gemini-1.5-flash': { input: 0.0000001, output: 0.0000004 },          // $0.10/$0.40 per M (legacy)
       'gemini-1.5-flash-002': { input: 0.0000001, output: 0.0000004 },
-      // Image generation models
+      // Legacy image generation models (backwards compatibility)
       'gemini-3.0-nano-banana': { input: 0.000001, output: 0.000004 },      // $1.00/$4.00 per M
       'gemini-3-pro-image-preview': { input: 0.000001, output: 0.000004 }   // $1.00/$4.00 per M
     }

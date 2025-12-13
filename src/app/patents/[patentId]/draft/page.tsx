@@ -18,7 +18,10 @@ import AnnexureDraftStage from '@/components/drafting/AnnexureDraftStage'
 // @ts-ignore - file added dynamically during session; type generation will catch up
 import RelatedArtStage from '@/components/drafting/RelatedArtStage'
 import CountryWiseDraftStage from '@/components/drafting/CountryWiseDraftStage'
-import FloatingStageNavigation from '@/components/drafting/FloatingStageNavigation'
+// Vertical Stage Navigation (replaces FloatingStageNavigation)
+import VerticalStageNav from '@/components/drafting/VerticalStageNav'
+// Floating forward/backward navigation buttons
+import FloatingStageButtons from '@/components/drafting/FloatingStageButtons'
 
 interface DraftingSession {
   id: string
@@ -366,21 +369,50 @@ export default function PatentDraftingPage() {
       // For read-only actions, avoid refreshing to preserve local UI state
       // IMPORTANT: Session refresh can cause component remounts which lose async context
       const action = stageData?.action
+      
+      // Actions that skip refresh entirely (local state only, no sidebar impact)
       const skipRefreshActions = [
         'generate_diagrams_llm', 
-        'generate_sections', 
-        'autosave_sections', 
         'clear_related_art_selections',
-        'related_art_select',
         'save_manual_prior_art',
-        'save_ai_analysis', // Preserve AI review results in local state
-        'related_art_llm_review', // Component handles state locally, refresh would lose in-progress data
-        'related_art_search' // Results are handled in component state, refresh causes them to disappear
+        'related_art_llm_review' // Component handles state locally, refresh would lose in-progress data
       ]
+      
+      // Actions that skip immediate refresh but should trigger delayed background refresh
+      // This updates the sidebar without interrupting the component's local state management
+      const delayedRefreshActions = [
+        'related_art_search', // Results need time to settle in component state
+        'save_ai_analysis', // AI analysis saved, sidebar should show completion
+        'related_art_select', // Selections saved, sidebar should show completion
+        'generate_sections', // Section generated, sidebar should show completion
+        'autosave_sections', // Section saved, sidebar should show completion
+        'save_sections' // Explicit save, sidebar should show completion
+      ]
+      
       const skipRefresh = skipRefreshActions.includes(action)
+      const needsDelayedRefresh = delayedRefreshActions.includes(action)
 
-      if (!skipRefresh) {
+      if (!skipRefresh && !needsDelayedRefresh) {
         await refreshSessionData()
+      } else if (needsDelayedRefresh) {
+        // SUBTLE BACKGROUND REFRESH for sidebar completion tracking
+        // - 2.5s delay: ensures local component state has fully settled
+        // - Uses requestIdleCallback when available for minimal UI impact
+        // - Fails silently - user never sees errors from this
+        const doSubtleRefresh = () => {
+          refreshSessionData().catch(() => {
+            // Intentionally silent - this is a background optimization
+          })
+        }
+        
+        setTimeout(() => {
+          if (typeof requestIdleCallback !== 'undefined') {
+            // Run during browser idle time for zero UI impact
+            requestIdleCallback(doSubtleRefresh, { timeout: 3000 })
+          } else {
+            doSubtleRefresh()
+          }
+        }, 2500)
       }
 
       return result
@@ -486,228 +518,188 @@ export default function PatentDraftingPage() {
   const currentStage = getCurrentStage()
   // StageComponent is now memoized above
 
+  // Handler for stage navigation from sidebar
+  const handleNavigateToStage = async (stageKey: string) => {
+    if (!session) return
+    await handleStageComplete({ action: 'set_stage', sessionId: session.id, stage: stageKey })
+  }
+
+  // Get prev/next stage info for floating buttons
+  const { prev, next } = getPrevNextStages()
+  
+  // Stage labels for floating buttons
+  const stageLabels: Record<string, string> = {
+    IDEA_ENTRY: 'Idea & Claims',
+    RELATED_ART: 'Prior Art',
+    CLAIM_REFINEMENT: 'Claim Refinement',
+    COMPONENT_PLANNER: 'Components',
+    FIGURE_PLANNER: 'Figures',
+    ANNEXURE_DRAFT: 'Drafting'
+  }
+
   return (
     <div className="min-h-screen bg-[#F5F6F7]">
-      {/* Quota Error Banner */}
-      {quotaError && (
-        <div className="bg-amber-50 border-b border-amber-200 px-4 py-3">
-          <div className="max-w-[98%] mx-auto flex items-center justify-between">
-            <div className="flex items-center">
-              <div className="flex-shrink-0">
-                <svg className="h-5 w-5 text-amber-400" viewBox="0 0 20 20" fill="currentColor">
-                  <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                </svg>
-              </div>
-              <div className="ml-3">
-                <p className="text-sm font-medium text-amber-800">
-                  {quotaError.message}
-                </p>
-                {quotaError.quotaInfo && (
-                  <p className="text-xs text-amber-700 mt-1">
-                    {quotaError.quotaInfo.remainingMonthly !== null && quotaError.quotaInfo.remainingMonthly > 0 &&
-                      `Monthly operations remaining: ${quotaError.quotaInfo.remainingMonthly}`
-                    }
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="flex-shrink-0">
-              <button
-                onClick={() => setQuotaError(null)}
-                className="text-amber-600 hover:text-amber-800 p-1 rounded-full hover:bg-amber-100 transition-colors"
-              >
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* Vertical Stage Navigation Sidebar */}
+      {session && (
+        <VerticalStageNav
+          session={session}
+          currentStage={currentStage}
+          patentId={patentId}
+          onNavigateToStage={handleNavigateToStage}
+        />
       )}
 
-      {/* Header - Compact & Clean */}
-      <header className="bg-white/90 backdrop-blur-md border-b border-gray-200 sticky top-0 z-50">
-        <div className="w-full max-w-[98%] mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center h-14">
-            <div className="flex items-center space-x-4 min-w-0 flex-1">
-              <Link
-                href={`/projects/${patent.project.id}`}
-                className="text-gray-400 hover:text-gray-700 transition-colors duration-200 p-1 rounded-full hover:bg-gray-100"
-                title="Back to Project"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                </svg>
-              </Link>
-              
-              <div className="h-4 w-px bg-gray-200 mx-2 hidden sm:block"></div>
-              
-              <div className="flex flex-col justify-center min-w-0">
-                <div className="flex items-center gap-2">
-                  <h1 className="text-sm font-semibold text-gray-900 truncate max-w-md cursor-default" title={patent.title}>
-                    {patent.title}
-                  </h1>
-                  {styleStatus && (
-                    <Badge variant={styleStatus.enabled ? "default" : "secondary"} className="text-[10px] h-4 px-1.5">
-                      {styleStatus.enabled ? 'Style Active' : 'No Style'}
-                    </Badge>
+      {/* Floating Forward/Backward Navigation Buttons */}
+      {session && (
+        <FloatingStageButtons
+          onPrevious={prev ? () => handleNavigateToStage(prev) : null}
+          onNext={next ? () => handleNavigateToStage(next) : null}
+          previousLabel={prev ? stageLabels[prev] || prev : undefined}
+          nextLabel={next ? stageLabels[next] || next : undefined}
+        />
+      )}
+
+      {/* Main Content Area - Shifted right for sidebar */}
+      <div className={`${session ? 'pl-72' : ''} transition-all duration-300`}>
+        {/* Quota Error Banner */}
+        {quotaError && (
+          <div className="bg-amber-50 border-b border-amber-200 px-4 py-3">
+            <div className="max-w-[98%] mx-auto flex items-center justify-between">
+              <div className="flex items-center">
+                <div className="flex-shrink-0">
+                  <svg className="h-5 w-5 text-amber-400" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                </div>
+                <div className="ml-3">
+                  <p className="text-sm font-medium text-amber-800">
+                    {quotaError.message}
+                  </p>
+                  {quotaError.quotaInfo && (
+                    <p className="text-xs text-amber-700 mt-1">
+                      {quotaError.quotaInfo.remainingMonthly !== null && quotaError.quotaInfo.remainingMonthly > 0 &&
+                        `Monthly operations remaining: ${quotaError.quotaInfo.remainingMonthly}`
+                      }
+                    </p>
                   )}
                 </div>
-                <p className="text-[11px] text-gray-500 font-medium flex items-center gap-1">
-                  <span className="uppercase tracking-wider">{STAGE_LABELS[currentStage as keyof typeof STAGE_LABELS]}</span>
-                  <span className="text-gray-300">•</span>
-                  <span>{STAGE_PROGRESS[currentStage as keyof typeof STAGE_PROGRESS]}% Complete</span>
-                </p>
               </div>
-            </div>
-
-            <div className="flex items-center space-x-3 flex-shrink-0">
-              {usage && (
-                <div className="hidden lg:flex flex-col items-end text-[10px] text-gray-400 mr-4">
-                   <span>{usage.total_input_tokens.toLocaleString()} in / {usage.total_output_tokens.toLocaleString()} out</span>
-                   <span className="opacity-70">Session Usage</span>
-                </div>
-              )}
-
-              {/* Stage Navigation Buttons */}
-              {session && (
-                <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-                  <button
-                    onClick={async () => {
-                      const { prev } = getPrevNextStages()
-                      if (!prev || !session) return
-                      console.log('Navigating to previous stage:', { prev, sessionId: session.id, currentPatentId: patentId })
-                      await goToPrevStage()
-                    }}
-                    className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 hover:bg-white shadow-sm transition-all disabled:opacity-30 disabled:hover:bg-transparent disabled:shadow-none"
-                    disabled={!getPrevNextStages().prev}
-                    title="Previous Stage"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                    </svg>
-                  </button>
-
-                  <div className="w-px h-4 bg-gray-200 mx-1"></div>
-
-                  <button
-                    onClick={async () => {
-                      const { next } = getPrevNextStages()
-                      if (!next || !session) return
-                      console.log('Navigating to next stage:', { next, sessionId: session.id, currentPatentId: patentId })
-                      await goToNextStage()
-                    }}
-                    className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 hover:bg-white shadow-sm transition-all disabled:opacity-30 disabled:hover:bg-transparent disabled:shadow-none"
-                    disabled={!getPrevNextStages().next}
-                    title="Next Stage"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-
-              <button
-                onClick={resumeSession}
-                className="ml-2 inline-flex items-center px-3 py-1.5 border border-indigo-600/20 text-xs font-medium rounded-md text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-colors"
-                title="Resume the latest drafting session"
-              >
-                <svg className="w-3 h-3 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-                Resume
-              </button>
-            </div>
-          </div>
-        </div>
-        
-        {/* Integrated Slim Progress Bar */}
-        <div className="w-full h-0.5 bg-gray-100">
-          <div
-            className="bg-indigo-500 h-0.5 transition-all duration-500 ease-out"
-            style={{ width: `${STAGE_PROGRESS[currentStage as keyof typeof STAGE_PROGRESS]}%` }}
-          ></div>
-        </div>
-      </header>
-
-      {/* Main Content - Maximized Writing Space */}
-      <main className="w-full max-w-[1800px] mx-auto py-6 px-4 sm:px-6 lg:px-8">
-        {navNotice && (
-          <div className="max-w-[98%] mx-auto mb-3">
-            <div className="flex items-start gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
-              <svg className="w-4 h-4 mt-0.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm0-9a1 1 0 01.894.553l2.5 5A1 1 0 0112.5 16h-5a1 1 0 01-.894-1.447l2.5-5A1 1 0 0110 9zm0-4a1 1 0 100 2 1 1 0 000-2z" clipRule="evenodd" />
-              </svg>
-              <div className="flex-1 leading-relaxed">{navNotice}</div>
-              <button
-                onClick={() => setNavNotice(null)}
-                className="text-blue-600 hover:text-blue-800 transition-colors"
-                aria-label="Dismiss notice"
-              >
-                ×
-              </button>
+              <div className="flex-shrink-0">
+                <button
+                  onClick={() => setQuotaError(null)}
+                  className="text-amber-600 hover:text-amber-800 p-1 rounded-full hover:bg-amber-100 transition-colors"
+                >
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
             </div>
           </div>
         )}
 
-        <div className="bg-white rounded-xl border border-gray-200/60 shadow-[0_2px_15px_-3px_rgba(0,0,0,0.07),0_10px_20px_-2px_rgba(0,0,0,0.04)] min-h-[calc(100vh-140px)] overflow-hidden">
-          {session ? (
-            <div className="h-full">
-              <StageComponent
-                session={session}
-                patent={patent}
-                onComplete={handleStageComplete}
-                onRefresh={refreshSessionData}
-              />
-            </div>
-          ) : (
-            <div className="p-12 text-center flex flex-col items-center justify-center h-64">
-              <div className="animate-pulse flex space-x-2 mb-4">
-                 <div className="h-2 w-2 bg-indigo-400 rounded-full"></div>
-                 <div className="h-2 w-2 bg-indigo-400 rounded-full animation-delay-200"></div>
-                 <div className="h-2 w-2 bg-indigo-400 rounded-full animation-delay-400"></div>
+        {/* Header - Simplified (navigation moved to sidebar) */}
+        <header className="bg-white/90 backdrop-blur-md border-b border-gray-200 sticky top-0 z-30">
+          <div className="w-full max-w-[98%] mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex justify-between items-center h-14">
+              <div className="flex items-center space-x-4 min-w-0 flex-1">
+                <Link
+                  href={`/projects/${patent.project.id}`}
+                  className="text-gray-400 hover:text-gray-700 transition-colors duration-200 p-1 rounded-full hover:bg-gray-100"
+                  title="Back to Project"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                  </svg>
+                </Link>
+                
+                <div className="h-4 w-px bg-gray-200 mx-2 hidden sm:block"></div>
+                
+                <div className="flex flex-col justify-center min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h1 className="text-sm font-semibold text-gray-900 truncate max-w-lg cursor-default" title={patent.title}>
+                      {patent.title}
+                    </h1>
+                    {styleStatus && (
+                      <Badge variant={styleStatus.enabled ? "default" : "secondary"} className="text-[10px] h-4 px-1.5">
+                        {styleStatus.enabled ? 'Style Active' : 'No Style'}
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-500 font-medium flex items-center gap-1">
+                    <span className="uppercase tracking-wider">{STAGE_LABELS[currentStage as keyof typeof STAGE_LABELS]}</span>
+                    <span className="text-gray-300">•</span>
+                    <span>{STAGE_PROGRESS[currentStage as keyof typeof STAGE_PROGRESS]}% Complete</span>
+                  </p>
+                </div>
               </div>
-              <div className="text-sm font-medium text-gray-500">Loading drafting workspace...</div>
+
+              <div className="flex items-center space-x-3 flex-shrink-0">
+                {usage && (
+                  <div className="hidden lg:flex flex-col items-end text-[10px] text-gray-400 mr-4">
+                     <span>{usage.total_input_tokens.toLocaleString()} in / {usage.total_output_tokens.toLocaleString()} out</span>
+                     <span className="opacity-70">Session Usage</span>
+                  </div>
+                )}
+
+                <button
+                  onClick={resumeSession}
+                  className="inline-flex items-center px-3 py-1.5 border border-indigo-600/20 text-xs font-medium rounded-md text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition-colors"
+                  title="Resume the latest drafting session"
+                >
+                  <svg className="w-3 h-3 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  Resume
+                </button>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {/* Main Content - Maximized Writing Space */}
+        <main className="w-full max-w-[1600px] mx-auto py-6 px-4 sm:px-6 lg:px-8">
+          {navNotice && (
+            <div className="max-w-[98%] mx-auto mb-3">
+              <div className="flex items-start gap-2 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-800">
+                <svg className="w-4 h-4 mt-0.5 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm0-9a1 1 0 01.894.553l2.5 5A1 1 0 0112.5 16h-5a1 1 0 01-.894-1.447l2.5-5A1 1 0 0110 9zm0-4a1 1 0 100 2 1 1 0 000-2z" clipRule="evenodd" />
+                </svg>
+                <div className="flex-1 leading-relaxed">{navNotice}</div>
+                <button
+                  onClick={() => setNavNotice(null)}
+                  className="text-blue-600 hover:text-blue-800 transition-colors"
+                  aria-label="Dismiss notice"
+                >
+                  ×
+                </button>
+              </div>
             </div>
           )}
-        </div>
 
-        {/* Floating Stage Navigation */}
-        {session && (
-          <FloatingStageNavigation
-            onNavigatePrev={goToPrevStage}
-            onNavigateNext={goToNextStage}
-            canGoPrev={!!getPrevNextStages().prev}
-            canGoNext={!!getPrevNextStages().next}
-          />
-        )}
-
-        {/* Bottom Navigation (Contextual) */}
-        <div className="mt-8 mb-12 flex items-center justify-between px-2 opacity-60 hover:opacity-100 transition-opacity duration-300">
-          <button
-            onClick={goToPrevStage}
-            className="text-gray-400 hover:text-gray-700 flex items-center text-sm font-medium disabled:opacity-0 transition-all"
-            disabled={!getPrevNextStages().prev}
-          >
-            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-            Back to {STAGE_LABELS[getPrevNextStages().prev as keyof typeof STAGE_LABELS] || 'Previous'}
-          </button>
-
-          <button
-            onClick={goToNextStage}
-            className="text-gray-400 hover:text-indigo-600 flex items-center text-sm font-medium disabled:opacity-0 transition-all"
-            disabled={!getPrevNextStages().next}
-          >
-            Continue to {STAGE_LABELS[getPrevNextStages().next as keyof typeof STAGE_LABELS] || 'Next'}
-            <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-            </svg>
-          </button>
-        </div>
-      </main>
+          <div className="bg-white rounded-xl border border-gray-200/60 shadow-[0_2px_15px_-3px_rgba(0,0,0,0.07),0_10px_20px_-2px_rgba(0,0,0,0.04)] min-h-[calc(100vh-140px)] overflow-hidden">
+            {session ? (
+              <div className="h-full">
+                <StageComponent
+                  session={session}
+                  patent={patent}
+                  onComplete={handleStageComplete}
+                  onRefresh={refreshSessionData}
+                />
+              </div>
+            ) : (
+              <div className="p-12 text-center flex flex-col items-center justify-center h-64">
+                <div className="animate-pulse flex space-x-2 mb-4">
+                   <div className="h-2 w-2 bg-indigo-400 rounded-full"></div>
+                   <div className="h-2 w-2 bg-indigo-400 rounded-full animation-delay-200"></div>
+                   <div className="h-2 w-2 bg-indigo-400 rounded-full animation-delay-400"></div>
+                </div>
+                <div className="text-sm font-medium text-gray-500">Loading drafting workspace...</div>
+              </div>
+            )}
+          </div>
+        </main>
+      </div>
     </div>
   )
 }

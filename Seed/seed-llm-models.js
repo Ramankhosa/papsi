@@ -8,7 +8,10 @@
  * Seeds the database with:
  * 1. All available LLM models (Google, OpenAI, Anthropic, DeepSeek, Groq)
  * 2. All workflow stages (Patent Drafting, Novelty Search, etc.)
- * 3. Default model configurations per plan
+ * 3. Default model configurations per plan WITH TOKEN LIMITS
+ * 
+ * Token limits are standardized across all plans (from Enterprise config).
+ * Model selection varies by plan tier.
  * 
  * Safe to run multiple times (idempotent - uses upsert).
  */
@@ -40,8 +43,8 @@ async function main() {
       isDefault: false
     },
     {
-      code: 'gemini-2.0-flash',
-      displayName: 'Gemini 2.0 Flash',
+      code: 'gemini-2.5-flash-lite',
+      displayName: 'Gemini 2.5 Flash Lite',
       provider: 'google',
       contextWindow: 1000000,
       supportsVision: true,
@@ -52,26 +55,26 @@ async function main() {
       isDefault: true  // System default - cost effective
     },
     {
-      code: 'gemini-2.0-flash-lite',
-      displayName: 'Gemini 2.0 Flash Lite',
-      provider: 'google',
-      contextWindow: 1000000,
-      supportsVision: true,
-      supportsStreaming: true,
-      inputCostPer1M: 8,      // $0.075 (keeping legacy pricing for backward compatibility)
-      outputCostPer1M: 30,    // $0.30 (keeping legacy pricing for backward compatibility)
-      isActive: true,
-      isDefault: false
-    },
-    {
-      code: 'gemini-2.5-flash-lite',
-      displayName: 'Gemini 2.5 Flash Lite',
+      code: 'gemini-2.0-flash',
+      displayName: 'Gemini 2.0 Flash',
       provider: 'google',
       contextWindow: 1000000,
       supportsVision: true,
       supportsStreaming: true,
       inputCostPer1M: 10,     // $0.10
       outputCostPer1M: 40,    // $0.40
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'gemini-2.0-flash-lite',
+      displayName: 'Gemini 2.0 Flash Lite',
+      provider: 'google',
+      contextWindow: 1000000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 8,      // $0.08
+      outputCostPer1M: 30,    // $0.30
       isActive: true,
       isDefault: false
     },
@@ -147,8 +150,8 @@ async function main() {
       contextWindow: 256000,
       supportsVision: true,
       supportsStreaming: true,
-      inputCostPer1M: 125,    // $1.25
-      outputCostPer1M: 1000,  // $10.00
+      inputCostPer1M: 150,    // $1.50
+      outputCostPer1M: 1200,  // $12.00
       isActive: true,
       isDefault: false
     },
@@ -159,8 +162,8 @@ async function main() {
       contextWindow: 128000,
       supportsVision: true,
       supportsStreaming: true,
-      inputCostPer1M: 300,    // $3.00
-      outputCostPer1M: 1200,  // $12.00
+      inputCostPer1M: 50,     // $0.50
+      outputCostPer1M: 200,   // $2.00
       isActive: true,
       isDefault: false
     },
@@ -171,8 +174,8 @@ async function main() {
       contextWindow: 64000,
       supportsVision: true,
       supportsStreaming: true,
-      inputCostPer1M: 50,     // $0.50
-      outputCostPer1M: 200,   // $2.00
+      inputCostPer1M: 25,     // $0.25
+      outputCostPer1M: 100,   // $1.00
       isActive: true,
       isDefault: false
     },
@@ -333,20 +336,15 @@ async function main() {
 
   const stages = [
     // === PATENT DRAFTING STAGES (LLM-Powered) ===
-    // Note: DRAFT_COMPONENT_PLANNER and DRAFT_EXPORT are NOT included here
-    // because they don't use LLMs (manual UI and document generation respectively)
     { code: 'DRAFT_IDEA_ENTRY', displayName: 'Idea Entry & Normalization', featureCode: 'PATENT_DRAFTING', sortOrder: 1, description: 'Initial idea input and AI-based normalization' },
     { code: 'DRAFT_CLAIM_GENERATION', displayName: 'Initial Claims Generation', featureCode: 'PATENT_DRAFTING', sortOrder: 2, description: 'Generate initial patent claims from idea' },
     { code: 'DRAFT_PRIOR_ART_ANALYSIS', displayName: 'Prior Art Analysis', featureCode: 'PATENT_DRAFTING', sortOrder: 3, description: 'Analyze prior art relevance' },
     { code: 'DRAFT_CLAIM_REFINEMENT', displayName: 'Claim Refinement', featureCode: 'PATENT_DRAFTING', sortOrder: 4, description: 'Refine claims based on prior art' },
-    // DRAFT_COMPONENT_PLANNER removed - Manual UI, no LLM needed
     { code: 'DRAFT_FIGURE_PLANNER', displayName: 'Figure Planning', featureCode: 'PATENT_DRAFTING', sortOrder: 5, description: 'AI-powered figure planning and diagram suggestions' },
     { code: 'DRAFT_SKETCH_GENERATION', displayName: 'Sketch Generation', featureCode: 'PATENT_DRAFTING', sortOrder: 6, description: 'Generate patent sketches using Gemini 3 Pro Image Preview' },
     { code: 'DRAFT_DIAGRAM_GENERATION', displayName: 'Diagram Generation', featureCode: 'PATENT_DRAFTING', sortOrder: 7, description: 'Generate PlantUML/technical diagrams' },
     
     // === ANNEXURE/SECTION DRAFTING STAGES ===
-    // These map to superset sections for LLM model assignment
-    // Order follows the superset section displayOrder from MasterSeed.js
     { code: 'DRAFT_ANNEXURE_TITLE', displayName: 'Title Drafting', featureCode: 'PATENT_DRAFTING', sortOrder: 8, description: 'Draft patent title (superset: title)' },
     { code: 'DRAFT_ANNEXURE_PREAMBLE', displayName: 'Preamble Drafting', featureCode: 'PATENT_DRAFTING', sortOrder: 9, description: 'Draft legal preamble (superset: preamble)' },
     { code: 'DRAFT_ANNEXURE_FIELD', displayName: 'Field of Invention', featureCode: 'PATENT_DRAFTING', sortOrder: 10, description: 'Draft field of invention section (superset: fieldOfInvention)' },
@@ -364,9 +362,7 @@ async function main() {
     { code: 'DRAFT_ANNEXURE_ABSTRACT', displayName: 'Abstract Drafting', featureCode: 'PATENT_DRAFTING', sortOrder: 22, description: 'Draft patent abstract (superset: abstract)' },
     { code: 'DRAFT_ANNEXURE_NUMERALS', displayName: 'List of Reference Numerals', featureCode: 'PATENT_DRAFTING', sortOrder: 23, description: 'Draft list of reference numerals (superset: listOfNumerals)' },
     { code: 'DRAFT_ANNEXURE_CROSS_REFERENCE', displayName: 'Cross-Reference to Related Applications', featureCode: 'PATENT_DRAFTING', sortOrder: 24, description: 'Draft cross-reference section (superset: crossReference)' },
-    
     { code: 'DRAFT_REVIEW', displayName: 'AI Review & Fix', featureCode: 'PATENT_DRAFTING', sortOrder: 25, description: 'AI-powered patent review' },
-    // DRAFT_EXPORT removed - Document generation, no LLM needed
     
     // === NOVELTY SEARCH STAGES ===
     { code: 'NOVELTY_QUERY_GENERATION', displayName: 'Query Generation', featureCode: 'PRIOR_ART_SEARCH', sortOrder: 1, description: 'Generate search queries from idea' },
@@ -377,8 +373,9 @@ async function main() {
     { code: 'NOVELTY_REPORT_GENERATION', displayName: 'Report Generation', featureCode: 'PRIOR_ART_SEARCH', sortOrder: 6, description: 'Generate novelty report' },
     
     // === IDEA BANK STAGES ===
-    { code: 'IDEA_BANK_NORMALIZE', displayName: 'Idea Normalization', featureCode: 'IDEA_BANK', sortOrder: 1, description: 'Normalize and structure idea' },
-    { code: 'IDEA_BANK_SEARCH', displayName: 'Similar Ideas Search', featureCode: 'IDEA_BANK', sortOrder: 2, description: 'Search for similar ideas' },
+    { code: 'IDEA_BANK_GENERATION', displayName: 'Idea Generation', featureCode: 'IDEA_BANK', sortOrder: 1, description: 'Generate white-space patent ideas from prior art analysis' },
+    { code: 'IDEA_BANK_NORMALIZE', displayName: 'Idea Normalization', featureCode: 'IDEA_BANK', sortOrder: 2, description: 'Normalize and structure idea' },
+    { code: 'IDEA_BANK_SEARCH', displayName: 'Similar Ideas Search', featureCode: 'IDEA_BANK', sortOrder: 3, description: 'Search for similar ideas' },
     
     // === DIAGRAM GENERATION STAGES ===
     { code: 'DIAGRAM_PLANTUML', displayName: 'PlantUML Generation', featureCode: 'DIAGRAM_GENERATION', sortOrder: 1, description: 'Generate PlantUML code' },
@@ -406,9 +403,9 @@ async function main() {
   }
 
   // ============================================================================
-  // STEP 3: Seed default model configurations for each plan
+  // STEP 3: Seed default model configurations for each plan WITH TOKEN LIMITS
   // ============================================================================
-  console.log('\n⚙️ Step 3: Seeding Default Plan Model Configurations...\n');
+  console.log('\n⚙️ Step 3: Seeding Plan Model Configurations with Token Limits...\n');
 
   // Get all plans
   const plans = await prisma.plan.findMany();
@@ -429,130 +426,199 @@ async function main() {
   const allStages = await prisma.workflowStage.findMany();
   allStages.forEach(s => { stagesByCode[s.code] = s.id; });
 
-  // Define default configurations per plan type
-  // Note: DRAFT_COMPONENT_PLANNER and DRAFT_EXPORT are excluded because they don't use LLMs
-  // Stage codes map to superset sections - model assigned here determines which LLM generates that section
+  // ============================================================================
+  // STANDARDIZED TOKEN LIMITS (from Enterprise config - same for all plans)
+  // ============================================================================
+  const tokenLimits = {
+    'DRAFT_IDEA_ENTRY':                   { maxTokensIn: 5000,  maxTokensOut: 6000 },
+    'DRAFT_CLAIM_GENERATION':             { maxTokensIn: 5000,  maxTokensOut: 6000 },
+    'DRAFT_PRIOR_ART_ANALYSIS':           { maxTokensIn: 10000, maxTokensOut: 12000 },
+    'DRAFT_CLAIM_REFINEMENT':             { maxTokensIn: 8000,  maxTokensOut: 6000 },
+    'DRAFT_FIGURE_PLANNER':               { maxTokensIn: 6000,  maxTokensOut: 6000 },
+    'DRAFT_SKETCH_GENERATION':            { maxTokensIn: 8000,  maxTokensOut: 10000 },
+    'DRAFT_DIAGRAM_GENERATION':           { maxTokensIn: 10000, maxTokensOut: 10000 },
+    'DRAFT_ANNEXURE_TITLE':               { maxTokensIn: 2000,  maxTokensOut: 500 },
+    'DRAFT_ANNEXURE_PREAMBLE':            { maxTokensIn: 2000,  maxTokensOut: 1000 },
+    'DRAFT_ANNEXURE_FIELD':               { maxTokensIn: 2000,  maxTokensOut: 1000 },
+    'DRAFT_ANNEXURE_BACKGROUND':          { maxTokensIn: 10000, maxTokensOut: 5500 },
+    'DRAFT_ANNEXURE_OBJECTS':             { maxTokensIn: 2500,  maxTokensOut: 1500 },
+    'DRAFT_ANNEXURE_SUMMARY':             { maxTokensIn: 8000,  maxTokensOut: 2000 },
+    'DRAFT_ANNEXURE_TECHNICAL_PROBLEM':   { maxTokensIn: 8000,  maxTokensOut: 1500 },
+    'DRAFT_ANNEXURE_TECHNICAL_SOLUTION':  { maxTokensIn: 8000,  maxTokensOut: 2000 },
+    'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS':{ maxTokensIn: 8000,  maxTokensOut: 1500 },
+    'DRAFT_ANNEXURE_DRAWINGS':            { maxTokensIn: 8000,  maxTokensOut: 2000 },
+    'DRAFT_ANNEXURE_DESCRIPTION':         { maxTokensIn: 10000, maxTokensOut: 10000 },
+    'DRAFT_ANNEXURE_BEST_MODE':           { maxTokensIn: 5000,  maxTokensOut: 3000 },
+    'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': { maxTokensIn: 2000, maxTokensOut: 1000 },
+    'DRAFT_ANNEXURE_CLAIMS':              { maxTokensIn: 5000,  maxTokensOut: 5000 },
+    'DRAFT_ANNEXURE_ABSTRACT':            { maxTokensIn: 5000,  maxTokensOut: 500 },
+    'DRAFT_ANNEXURE_NUMERALS':            { maxTokensIn: 3000,  maxTokensOut: 1500 },
+    'DRAFT_ANNEXURE_CROSS_REFERENCE':     { maxTokensIn: 10000, maxTokensOut: 2000 },
+    'DRAFT_REVIEW':                       { maxTokensIn: 20000, maxTokensOut: 10000 },
+    // Novelty search stages
+    'NOVELTY_QUERY_GENERATION':           { maxTokensIn: 5000,  maxTokensOut: 3000 },
+    'NOVELTY_RELEVANCE_SCORING':          { maxTokensIn: 8000,  maxTokensOut: 2000 },
+    'NOVELTY_FEATURE_ANALYSIS':           { maxTokensIn: 10000, maxTokensOut: 8000 },
+    'NOVELTY_COMPARISON':                 { maxTokensIn: 15000, maxTokensOut: 10000 },
+    'NOVELTY_REPORT_GENERATION':          { maxTokensIn: 20000, maxTokensOut: 15000 },
+    // Idea bank stages
+    'IDEA_BANK_GENERATION':               { maxTokensIn: 10000, maxTokensOut: 8000 },
+    'IDEA_BANK_NORMALIZE':                { maxTokensIn: 5000,  maxTokensOut: 4000 },
+    'IDEA_BANK_SEARCH':                   { maxTokensIn: 3000,  maxTokensOut: 2000 },
+    // Diagram stages
+    'DIAGRAM_PLANTUML':                   { maxTokensIn: 8000,  maxTokensOut: 4000 },
+    'DIAGRAM_FLOWCHART':                  { maxTokensIn: 8000,  maxTokensOut: 4000 },
+    'DIAGRAM_SEQUENCE':                   { maxTokensIn: 8000,  maxTokensOut: 4000 },
+    'DIAGRAM_BLOCK':                      { maxTokensIn: 8000,  maxTokensOut: 4000 },
+  };
+
+  // ============================================================================
+  // MODEL ASSIGNMENTS PER PLAN
+  // Token limits are the same, but models vary by tier
+  // ============================================================================
   const planConfigs = {
-    // FREE_PLAN - Cost-effective models
+    // =========================================================================
+    // FREE_PLAN - Cost-effective: Gemini 2.5 Flash Lite, 2.5 Pro for major sections
+    // =========================================================================
     'FREE_PLAN': {
-      'DRAFT_IDEA_ENTRY': 'gemini-2.0-flash-lite',
-      'DRAFT_CLAIM_GENERATION': 'gemini-2.0-flash-lite',
-      'DRAFT_PRIOR_ART_ANALYSIS': 'gemini-2.0-flash-lite',
-      'DRAFT_CLAIM_REFINEMENT': 'gemini-2.0-flash-lite',
-      'DRAFT_FIGURE_PLANNER': 'gemini-2.0-flash-lite',
-      'DRAFT_SKETCH_GENERATION': 'gemini-3-pro-image-preview',
-      'DRAFT_DIAGRAM_GENERATION': 'gpt-4o-mini',
-      // Annexure/Section stages (maps to superset sections)
-      'DRAFT_ANNEXURE_TITLE': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_PREAMBLE': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_FIELD': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_BACKGROUND': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_OBJECTS': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_SUMMARY': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_TECHNICAL_PROBLEM': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_TECHNICAL_SOLUTION': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_DRAWINGS': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_DESCRIPTION': 'gemini-2.0-flash',
-      'DRAFT_ANNEXURE_BEST_MODE': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_CLAIMS': 'gemini-2.0-flash',
-      'DRAFT_ANNEXURE_ABSTRACT': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_NUMERALS': 'gemini-2.0-flash-lite',
-      'DRAFT_ANNEXURE_CROSS_REFERENCE': 'gemini-2.0-flash-lite',
-      'DRAFT_REVIEW': 'gemini-2.0-flash',
+      // Core drafting stages
+      'DRAFT_IDEA_ENTRY':                   'gemini-2.5-flash-lite',
+      'DRAFT_CLAIM_GENERATION':             'gemini-2.5-flash-lite',
+      'DRAFT_PRIOR_ART_ANALYSIS':           'gemini-2.5-pro',         // Major: use Pro
+      'DRAFT_CLAIM_REFINEMENT':             'gemini-2.5-flash-lite',
+      'DRAFT_FIGURE_PLANNER':               'gemini-2.5-flash-lite',
+      'DRAFT_SKETCH_GENERATION':            'gemini-3-pro-image-preview',
+      'DRAFT_DIAGRAM_GENERATION':           'gemini-2.5-flash-lite',
+      // Annexure/Section stages
+      'DRAFT_ANNEXURE_TITLE':               'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_PREAMBLE':            'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_FIELD':               'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_BACKGROUND':          'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_OBJECTS':             'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_SUMMARY':             'gemini-2.5-pro',         // Major: use Pro
+      'DRAFT_ANNEXURE_TECHNICAL_PROBLEM':   'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_TECHNICAL_SOLUTION':  'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS':'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_DRAWINGS':            'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_DESCRIPTION':         'gemini-2.5-pro',         // Major: use Pro
+      'DRAFT_ANNEXURE_BEST_MODE':           'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': 'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_CLAIMS':              'gemini-2.5-pro',         // Major: use Pro
+      'DRAFT_ANNEXURE_ABSTRACT':            'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_NUMERALS':            'gemini-2.5-flash-lite',
+      'DRAFT_ANNEXURE_CROSS_REFERENCE':     'gemini-2.5-flash-lite',
+      'DRAFT_REVIEW':                       'gemini-2.5-pro',         // Major: use Pro
       // Novelty search stages
-      'NOVELTY_QUERY_GENERATION': 'gemini-2.0-flash-lite',
-      'NOVELTY_RELEVANCE_SCORING': 'gemini-2.0-flash-lite',
-      'NOVELTY_REPORT_GENERATION': 'gemini-2.0-flash-lite',
+      'NOVELTY_QUERY_GENERATION':           'gemini-2.5-flash-lite',
+      'NOVELTY_RELEVANCE_SCORING':          'gemini-2.5-flash-lite',
+      'NOVELTY_FEATURE_ANALYSIS':           'gemini-2.5-flash-lite',
+      'NOVELTY_COMPARISON':                 'gemini-2.5-flash-lite',
+      'NOVELTY_REPORT_GENERATION':          'gemini-2.5-pro',         // Major: use Pro
       // Idea bank stages
-      'IDEA_BANK_NORMALIZE': 'gemini-2.0-flash-lite',
-      'IDEA_BANK_SEARCH': 'gemini-2.0-flash-lite',
+      'IDEA_BANK_GENERATION':               'gemini-2.5-pro',         // Creative: use Pro
+      'IDEA_BANK_NORMALIZE':                'gemini-2.5-flash-lite',
+      'IDEA_BANK_SEARCH':                   'gemini-2.5-flash-lite',
       // Diagram stages
-      'DIAGRAM_PLANTUML': 'gpt-4o-mini',
+      'DIAGRAM_PLANTUML':                   'gemini-2.5-flash-lite',
+      'DIAGRAM_FLOWCHART':                  'gemini-2.5-flash-lite',
+      'DIAGRAM_SEQUENCE':                   'gemini-2.5-flash-lite',
+      'DIAGRAM_BLOCK':                      'gemini-2.5-flash-lite',
     },
-    // PRO_PLAN - Balanced quality/cost
+
+    // =========================================================================
+    // PRO_PLAN - Balanced: Mix of Gemini 2.5 Pro and GPT-5 models
+    // =========================================================================
     'PRO_PLAN': {
-      'DRAFT_IDEA_ENTRY': 'gemini-2.0-flash',
-      'DRAFT_CLAIM_GENERATION': 'gpt-4o-mini',
-      'DRAFT_PRIOR_ART_ANALYSIS': 'gemini-2.5-pro',
-      'DRAFT_CLAIM_REFINEMENT': 'gpt-4o-mini',
-      'DRAFT_FIGURE_PLANNER': 'gemini-2.5-pro',
-      'DRAFT_SKETCH_GENERATION': 'gemini-3-pro-image-preview',
-      'DRAFT_DIAGRAM_GENERATION': 'gpt-4o',
-      // Annexure/Section stages (maps to superset sections)
-      'DRAFT_ANNEXURE_TITLE': 'gpt-4o-mini',
-      'DRAFT_ANNEXURE_PREAMBLE': 'gemini-2.0-flash',
-      'DRAFT_ANNEXURE_FIELD': 'gemini-2.0-flash',
-      'DRAFT_ANNEXURE_BACKGROUND': 'gemini-2.0-flash',
-      'DRAFT_ANNEXURE_OBJECTS': 'gpt-4o-mini',
-      'DRAFT_ANNEXURE_SUMMARY': 'gpt-4o-mini',
-      'DRAFT_ANNEXURE_TECHNICAL_PROBLEM': 'gpt-4o-mini',
-      'DRAFT_ANNEXURE_TECHNICAL_SOLUTION': 'gpt-4o-mini',
-      'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS': 'gemini-2.0-flash',
-      'DRAFT_ANNEXURE_DRAWINGS': 'gemini-2.0-flash',
-      'DRAFT_ANNEXURE_DESCRIPTION': 'gpt-4o',
-      'DRAFT_ANNEXURE_BEST_MODE': 'gpt-4o-mini',
-      'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': 'gemini-2.0-flash',
-      'DRAFT_ANNEXURE_CLAIMS': 'gpt-4o',
-      'DRAFT_ANNEXURE_ABSTRACT': 'gpt-4o-mini',
-      'DRAFT_ANNEXURE_NUMERALS': 'gemini-2.0-flash',
-      'DRAFT_ANNEXURE_CROSS_REFERENCE': 'gemini-2.0-flash',
-      'DRAFT_REVIEW': 'gpt-4o',
+      // Core drafting stages
+      'DRAFT_IDEA_ENTRY':                   'gemini-2.5-pro',
+      'DRAFT_CLAIM_GENERATION':             'gpt-5-mini',
+      'DRAFT_PRIOR_ART_ANALYSIS':           'gemini-2.5-pro',
+      'DRAFT_CLAIM_REFINEMENT':             'gpt-5-mini',
+      'DRAFT_FIGURE_PLANNER':               'gemini-2.5-pro',
+      'DRAFT_SKETCH_GENERATION':            'gemini-3-pro-image-preview',
+      'DRAFT_DIAGRAM_GENERATION':           'gpt-4o',
+      // Annexure/Section stages
+      'DRAFT_ANNEXURE_TITLE':               'gpt-5-mini',
+      'DRAFT_ANNEXURE_PREAMBLE':            'gemini-2.5-pro',
+      'DRAFT_ANNEXURE_FIELD':               'gemini-2.5-pro',
+      'DRAFT_ANNEXURE_BACKGROUND':          'gemini-2.5-pro',
+      'DRAFT_ANNEXURE_OBJECTS':             'gpt-5-mini',
+      'DRAFT_ANNEXURE_SUMMARY':             'gpt-5',
+      'DRAFT_ANNEXURE_TECHNICAL_PROBLEM':   'gpt-5-mini',
+      'DRAFT_ANNEXURE_TECHNICAL_SOLUTION':  'gpt-5-mini',
+      'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS':'gemini-2.5-pro',
+      'DRAFT_ANNEXURE_DRAWINGS':            'gemini-2.5-pro',
+      'DRAFT_ANNEXURE_DESCRIPTION':         'gpt-5',
+      'DRAFT_ANNEXURE_BEST_MODE':           'gpt-5-mini',
+      'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': 'gemini-2.5-pro',
+      'DRAFT_ANNEXURE_CLAIMS':              'gpt-5',
+      'DRAFT_ANNEXURE_ABSTRACT':            'gpt-5-mini',
+      'DRAFT_ANNEXURE_NUMERALS':            'gemini-2.5-pro',
+      'DRAFT_ANNEXURE_CROSS_REFERENCE':     'gemini-2.5-pro',
+      'DRAFT_REVIEW':                       'gpt-5',
       // Novelty search stages
-      'NOVELTY_QUERY_GENERATION': 'gpt-4o-mini',
-      'NOVELTY_RELEVANCE_SCORING': 'gemini-2.0-flash-lite',
-      'NOVELTY_FEATURE_ANALYSIS': 'gemini-2.5-pro',
-      'NOVELTY_REPORT_GENERATION': 'gpt-4o',
+      'NOVELTY_QUERY_GENERATION':           'gpt-5-mini',
+      'NOVELTY_RELEVANCE_SCORING':          'gemini-2.5-flash-lite',
+      'NOVELTY_FEATURE_ANALYSIS':           'gemini-2.5-pro',
+      'NOVELTY_COMPARISON':                 'gpt-5-mini',
+      'NOVELTY_REPORT_GENERATION':          'gpt-5',
       // Idea bank stages
-      'IDEA_BANK_NORMALIZE': 'gpt-4o-mini',
-      'IDEA_BANK_SEARCH': 'gemini-2.0-flash',
+      'IDEA_BANK_GENERATION':               'gpt-5',
+      'IDEA_BANK_NORMALIZE':                'gpt-5-mini',
+      'IDEA_BANK_SEARCH':                   'gemini-2.5-pro',
       // Diagram stages
-      'DIAGRAM_PLANTUML': 'gpt-4o',
-      'DIAGRAM_FLOWCHART': 'gpt-4o',
+      'DIAGRAM_PLANTUML':                   'gpt-4o',
+      'DIAGRAM_FLOWCHART':                  'gpt-4o',
+      'DIAGRAM_SEQUENCE':                   'gpt-4o',
+      'DIAGRAM_BLOCK':                      'gpt-4o',
     },
-    // ENTERPRISE_PLAN - Premium models (includes GPT-5 options)
+
+    // =========================================================================
+    // ENTERPRISE_PLAN - Premium: GPT-5 series (as provided by user)
+    // =========================================================================
     'ENTERPRISE_PLAN': {
-      'DRAFT_IDEA_ENTRY': 'gpt-5-mini',
-      'DRAFT_CLAIM_GENERATION': 'gpt-5',
-      'DRAFT_PRIOR_ART_ANALYSIS': 'gemini-2.5-pro',
-      'DRAFT_CLAIM_REFINEMENT': 'gpt-5',
-      'DRAFT_FIGURE_PLANNER': 'gemini-2.5-pro',
-      'DRAFT_SKETCH_GENERATION': 'gemini-3-pro-image-preview',
-      'DRAFT_DIAGRAM_GENERATION': 'gpt-4o',
-      // Annexure/Section stages (maps to superset sections)
-      'DRAFT_ANNEXURE_TITLE': 'gpt-5-mini',
-      'DRAFT_ANNEXURE_PREAMBLE': 'gpt-5-mini',
-      'DRAFT_ANNEXURE_FIELD': 'gpt-5-mini',
-      'DRAFT_ANNEXURE_BACKGROUND': 'gpt-5-mini',
-      'DRAFT_ANNEXURE_OBJECTS': 'gpt-5-mini',
-      'DRAFT_ANNEXURE_SUMMARY': 'gpt-5',
-      'DRAFT_ANNEXURE_TECHNICAL_PROBLEM': 'gpt-5',
-      'DRAFT_ANNEXURE_TECHNICAL_SOLUTION': 'gpt-5',
-      'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS': 'gpt-5-mini',
-      'DRAFT_ANNEXURE_DRAWINGS': 'gpt-5-mini',
-      'DRAFT_ANNEXURE_DESCRIPTION': 'gpt-5',
-      'DRAFT_ANNEXURE_BEST_MODE': 'gpt-5-mini',
+      // Core drafting stages
+      'DRAFT_IDEA_ENTRY':                   'gpt-5-mini',
+      'DRAFT_CLAIM_GENERATION':             'gpt-5',
+      'DRAFT_PRIOR_ART_ANALYSIS':           'gemini-2.5-pro',
+      'DRAFT_CLAIM_REFINEMENT':             'gpt-5',
+      'DRAFT_FIGURE_PLANNER':               'gemini-2.5-pro',
+      'DRAFT_SKETCH_GENERATION':            'gemini-3-pro-image-preview',
+      'DRAFT_DIAGRAM_GENERATION':           'gpt-4o',
+      // Annexure/Section stages
+      'DRAFT_ANNEXURE_TITLE':               'gpt-5-mini',
+      'DRAFT_ANNEXURE_PREAMBLE':            'gpt-5-mini',
+      'DRAFT_ANNEXURE_FIELD':               'gpt-5-mini',
+      'DRAFT_ANNEXURE_BACKGROUND':          'gpt-5-mini',
+      'DRAFT_ANNEXURE_OBJECTS':             'gpt-5-mini',
+      'DRAFT_ANNEXURE_SUMMARY':             'gpt-5',
+      'DRAFT_ANNEXURE_TECHNICAL_PROBLEM':   'gpt-5',
+      'DRAFT_ANNEXURE_TECHNICAL_SOLUTION':  'gpt-5',
+      'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS':'gpt-5-mini',
+      'DRAFT_ANNEXURE_DRAWINGS':            'gpt-5-mini',
+      'DRAFT_ANNEXURE_DESCRIPTION':         'gpt-5',
+      'DRAFT_ANNEXURE_BEST_MODE':           'gpt-5-mini',
       'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': 'gpt-5-mini',
-      'DRAFT_ANNEXURE_CLAIMS': 'gpt-5',
-      'DRAFT_ANNEXURE_ABSTRACT': 'gpt-5-mini',
-      'DRAFT_ANNEXURE_NUMERALS': 'gpt-5-nano',
-      'DRAFT_ANNEXURE_CROSS_REFERENCE': 'gpt-5-nano',
-      'DRAFT_REVIEW': 'gpt-5.1',
+      'DRAFT_ANNEXURE_CLAIMS':              'gpt-5',
+      'DRAFT_ANNEXURE_ABSTRACT':            'gpt-5-mini',
+      'DRAFT_ANNEXURE_NUMERALS':            'gpt-5-nano',
+      'DRAFT_ANNEXURE_CROSS_REFERENCE':     'gpt-5-nano',
+      'DRAFT_REVIEW':                       'gpt-5.1',
       // Novelty search stages
-      'NOVELTY_QUERY_GENERATION': 'gpt-5-mini',
-      'NOVELTY_RELEVANCE_SCORING': 'gpt-5-nano',
-      'NOVELTY_FEATURE_ANALYSIS': 'gpt-5',
-      'NOVELTY_COMPARISON': 'gpt-5',
-      'NOVELTY_REPORT_GENERATION': 'gpt-5',
+      'NOVELTY_QUERY_GENERATION':           'gpt-5-mini',
+      'NOVELTY_RELEVANCE_SCORING':          'gpt-5-nano',
+      'NOVELTY_FEATURE_ANALYSIS':           'gpt-5',
+      'NOVELTY_COMPARISON':                 'gpt-5',
+      'NOVELTY_REPORT_GENERATION':          'gpt-5',
       // Idea bank stages
-      'IDEA_BANK_NORMALIZE': 'gpt-5-mini',
-      'IDEA_BANK_SEARCH': 'gpt-5-nano',
+      'IDEA_BANK_GENERATION':               'gpt-5',
+      'IDEA_BANK_NORMALIZE':                'gpt-5-mini',
+      'IDEA_BANK_SEARCH':                   'gpt-5-nano',
       // Diagram stages
-      'DIAGRAM_PLANTUML': 'gpt-4o',
-      'DIAGRAM_FLOWCHART': 'gpt-4o',
-      'DIAGRAM_SEQUENCE': 'gpt-4o',
-      'DIAGRAM_BLOCK': 'gpt-4o',
+      'DIAGRAM_PLANTUML':                   'gpt-4o',
+      'DIAGRAM_FLOWCHART':                  'gpt-4o',
+      'DIAGRAM_SEQUENCE':                   'gpt-4o',
+      'DIAGRAM_BLOCK':                      'gpt-4o',
     }
   };
 
@@ -565,13 +631,19 @@ async function main() {
       }
 
       console.log(`  📝 Configuring ${plan.code}...`);
+      let configuredCount = 0;
       
       for (const [stageCode, modelCode] of Object.entries(config)) {
         const stageId = stagesByCode[stageCode];
         const modelId = modelsByCode[modelCode];
+        const limits = tokenLimits[stageCode] || {};
         
-        if (!stageId || !modelId) {
-          // Skip silently - not all stages need to be configured
+        if (!stageId) {
+          console.log(`    ⚠️ Stage ${stageCode} not found, skipping`);
+          continue;
+        }
+        if (!modelId) {
+          console.log(`    ⚠️ Model ${modelCode} not found, skipping`);
           continue;
         }
 
@@ -584,17 +656,22 @@ async function main() {
           },
           update: {
             modelId: modelId,
+            maxTokensIn: limits.maxTokensIn || null,
+            maxTokensOut: limits.maxTokensOut || null,
             isActive: true
           },
           create: {
             planId: plan.id,
             stageId: stageId,
             modelId: modelId,
+            maxTokensIn: limits.maxTokensIn || null,
+            maxTokensOut: limits.maxTokensOut || null,
             isActive: true
           }
         });
+        configuredCount++;
       }
-      console.log(`  ✅ ${plan.code} configured`);
+      console.log(`  ✅ ${plan.code} configured (${configuredCount} stages)`);
     }
   } catch (error) {
     if (error.code === 'P2021' || error.message.includes('does not exist')) {
@@ -608,7 +685,7 @@ async function main() {
   console.log('\n✨ LLM Models & Workflow Stages seeding complete!');
   console.log(`   - ${models.length} LLM models`);
   console.log(`   - ${stages.length} workflow stages`);
-  console.log(`   - ${plans.length} plans configured`);
+  console.log(`   - ${plans.length} plans configured with token limits`);
 }
 
 main()

@@ -36,7 +36,8 @@ import {
   UploadCloud,
   HelpCircle,
   Paintbrush,
-  Languages
+  Languages,
+  Lightbulb
 } from 'lucide-react'
 
 // DnD Kit imports
@@ -198,6 +199,9 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   // === SKETCH TAB STATE ===
   const [sketches, setSketches] = useState<any[]>([])
   const [sketchesLoading, setSketchesLoading] = useState(false)
+  const [sketchSuggestions, setSketchSuggestions] = useState<any[]>([])
+  const [suggestionsLoading, setSuggestionsLoading] = useState(false)
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null)
   const [sketchError, setSketchError] = useState<string | null>(null)
   const [sketchGenerating, setSketchGenerating] = useState(false)
   const [sketchMode, setSketchMode] = useState<'auto' | 'guided' | 'refine'>('auto')
@@ -1094,6 +1098,38 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
       setSketchError(err instanceof Error ? err.message : 'Sketch generation failed')
     } finally {
       setSketchGenerating(false)
+    }
+  }
+
+  const handleGenerateSketchSuggestions = async () => {
+    if (!session?.id) return
+
+    try {
+      setSuggestionsLoading(true)
+      setSuggestionsError(null)
+
+      const res = await fetch(`/api/patents/${patent.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'generate_sketch_suggestions',
+          sessionId: session.id
+        })
+      })
+
+      if (!res.ok) throw new Error('Failed to generate sketch suggestions')
+
+      const data = await res.json()
+      if (data.suggestions && Array.isArray(data.suggestions)) {
+        setSketchSuggestions(data.suggestions)
+      }
+    } catch (err) {
+      setSuggestionsError(err instanceof Error ? err.message : 'Failed to generate sketch suggestions')
+    } finally {
+      setSuggestionsLoading(false)
     }
   }
 
@@ -2683,6 +2719,30 @@ Output: JSON array only, no markdown fences, no explanations.`
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* Generate Suggestions Button */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Button
+                    onClick={handleGenerateSketchSuggestions}
+                    disabled={suggestionsLoading}
+                    variant="outline"
+                    className="gap-2"
+                  >
+                    {suggestionsLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Sparkles className="w-4 h-4" />
+                    )}
+                    Generate Suggestions
+                  </Button>
+                  {sketchSuggestions.length > 0 && (
+                    <Badge variant="secondary" className="ml-2">
+                      {sketchSuggestions.length} suggestions
+                    </Badge>
+                  )}
+                </div>
+              </div>
+
               {/* Mode Selector */}
               <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-lg w-fit">
                 <button
@@ -2719,6 +2779,41 @@ Output: JSON array only, no markdown fences, no explanations.`
                   Refine Upload
                 </button>
               </div>
+
+              {/* Suggestions Error */}
+              {suggestionsError && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>{suggestionsError}</AlertDescription>
+                </Alert>
+              )}
+
+              {/* Sketch Suggestions */}
+              {sketchSuggestions.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Lightbulb className="w-4 h-4 text-amber-600" />
+                    <Label className="text-sm font-medium text-gray-700">Sketch Suggestions</Label>
+                  </div>
+                  <div className="grid gap-3">
+                    {sketchSuggestions.map((suggestion, index) => (
+                      <Card key={index} className="border-amber-200 bg-amber-50/50">
+                        <CardContent className="p-4">
+                          <div className="flex items-start gap-3">
+                            <div className="w-6 h-6 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                              <span className="text-xs font-semibold text-amber-700">{index + 1}</span>
+                            </div>
+                            <div className="flex-1">
+                              <h4 className="font-medium text-gray-900 mb-1">{suggestion.title}</h4>
+                              <p className="text-sm text-gray-600 leading-relaxed">{suggestion.description}</p>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* Mode-specific inputs */}
               <div className="space-y-4">

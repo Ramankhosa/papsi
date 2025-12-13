@@ -26,9 +26,9 @@ export const SECTION_WORD_LIMITS: Record<string, {
   },
   background: { 
     min: 10, 
-    max: 1000, 
-    recommended: { min: 50, max: 300 },
-    description: 'Prior art and technical background'
+    max: 1500, 
+    recommended: { min: 80, max: 400 },
+    description: 'Prior art and technical background - include prior art discussion patterns'
   },
   objectsOfInvention: { 
     min: 5, 
@@ -38,9 +38,9 @@ export const SECTION_WORD_LIMITS: Record<string, {
   },
   summary: { 
     min: 10, 
-    max: 1000, 
-    recommended: { min: 50, max: 300 },
-    description: 'Summary of the invention'
+    max: 1500, 
+    recommended: { min: 80, max: 400 },
+    description: 'Summary of the invention - include structural patterns'
   },
   briefDescriptionOfDrawings: { 
     min: 5, 
@@ -50,15 +50,15 @@ export const SECTION_WORD_LIMITS: Record<string, {
   },
   detailedDescription: { 
     min: 20, 
-    max: 2000, 
-    recommended: { min: 100, max: 500 },
-    description: 'Detailed embodiment descriptions'
+    max: 3000, 
+    recommended: { min: 150, max: 800 },
+    description: 'Detailed embodiment descriptions - longer samples capture more writing patterns'
   },
   claims: { 
     min: 10, 
-    max: 1500, 
-    recommended: { min: 50, max: 400 },
-    description: 'Claim structure and phrasing'
+    max: 2000, 
+    recommended: { min: 100, max: 600 },
+    description: 'Claim structure and phrasing - include multiple claim types for better learning'
   },
   abstract: { 
     min: 10, 

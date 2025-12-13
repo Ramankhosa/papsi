@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
@@ -213,6 +213,30 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
     }
   }, [editableClaims, baseClaims, isEditMode])
 
+  // Automatically unfreeze claims when entering claim refinement stage
+  const hasAutoUnfrozenRef = useRef(false)
+  useEffect(() => {
+    const autoUnfreezeClaims = async () => {
+      // Only auto-unfreeze once, and only if claims are frozen
+      if (!hasAutoUnfrozenRef.current && isFrozen && session?.id && normalized) {
+        hasAutoUnfrozenRef.current = true
+        try {
+          await onComplete({
+            action: 'unfreeze_claims',
+            sessionId: session.id
+          })
+          await onRefresh()
+          // Don't show success message for automatic unfreeze to avoid confusion
+        } catch (e) {
+          console.error('Auto-unfreeze failed:', e)
+          hasAutoUnfrozenRef.current = false // Reset on failure so user can try manually
+        }
+      }
+    }
+
+    autoUnfreezeClaims()
+  }, [isFrozen, session?.id, normalized, onComplete, onRefresh])
+
   // Enter edit mode
   const handleStartEditing = () => {
     setEditableClaims([...baseClaims])
@@ -316,13 +340,35 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
     try {
       setApplying(true)
       setError(null)
+      setSuccessMessage(null)
       const accepted = Object.entries(acceptMap).filter(([, v]) => v).map(([k]) => Number(k))
+
+      // Store original claims for comparison feedback
+      const originalClaims = baseClaims
+
       await onComplete({
         action: 'claim_refinement_apply',
         sessionId: session.id,
         acceptedClaimNumbers: accepted
       })
       await onRefresh()
+
+      // Enhanced feedback: Show what was changed
+      const claimCount = accepted.length
+      if (claimCount === 0) {
+        setSuccessMessage('✓ No changes applied - all refinements were rejected.')
+      } else {
+        // Count how many claims were actually modified
+        const refinedClaims = preview?.refinedClaims || []
+        const modifiedCount = accepted.filter(claimNum =>
+          refinedClaims.find((r: any) => Number(r.number) === claimNum)?.refined_text
+        ).length
+
+        const message = `✓ Applied ${claimCount} claim refinement${claimCount !== 1 ? 's' : ''}${modifiedCount > 0 ? ` (${modifiedCount} claim${modifiedCount !== 1 ? 's' : ''} modified)` : ''}. Claims have been updated and are ready for final approval.`
+        setSuccessMessage(message)
+      }
+
+      setTimeout(() => setSuccessMessage(null), 8000) // Extended duration for better visibility
     } catch (e) {
       console.error('Apply failed', e)
       setError('Failed to apply refinements.')

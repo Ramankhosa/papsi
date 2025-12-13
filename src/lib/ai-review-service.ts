@@ -114,7 +114,7 @@ const SECTION_LABELS: Record<string, string> = {
 
 /**
  * Run comprehensive AI review on a patent draft
- * Uses Gemini 3 for critical analysis
+ * Uses AI for holistic analysis - trusts the AI to catch all relevant issues
  */
 export async function runAIReview(
   context: ReviewContext,
@@ -253,28 +253,40 @@ ${f.plantuml}
 - Reference Numerals: ${numeralMatches.length > 0 ? Array.from(new Set(numeralMatches)).join(', ') : 'None detected'}`
     }).join('\n\n')
 
-    figuresText = `**IMPORTANT:** These diagrams are provided as PlantUML source code, NOT as rendered images.
+    figuresText = `**DIAGRAM FIGURES (PlantUML Code):**
+These ${figures.length} diagram(s) are provided as PlantUML source code.
 The PlantUML code defines the structure, components, and relationships in each figure.
 Analyze the code to understand what each diagram depicts.
 
 ${figureDetails}`
   }
 
-  // Build sketches text - these are conceptual drawings, not missing figures
+  // Build sketches text - these are REAL figures but without PlantUML (images)
   let sketchesText = ''
   if (sketches && sketches.length > 0) {
     const sketchDetails = sketches.map(s => 
-      `- Figure ${s.figureNo}: "${s.title}" - ${s.description}${s.isIncluded ? ' [INCLUDED IN FINAL]' : ' [SKETCH ONLY - not in final figures]'}`
+      `- **FIG. ${s.figureNo}**: "${s.title}" — ${s.description || 'Hand-drawn sketch/illustration'}`
     ).join('\n')
     sketchesText = `
 
 ═══════════════════════════════════════════════════════════════════════════════
-SKETCHES (Conceptual Drawings - Reference Only)
+SKETCH FIGURES (Image-based - No Code Provided)
 ═══════════════════════════════════════════════════════════════════════════════
-**NOTE:** These are conceptual sketches planned for the patent. They may not all be in the final figure set.
-Do NOT flag these as "missing figures" - they are additional visual aids, not gaps in the specification.
+⚠️ **CRITICAL:** The following figures are REAL figures included in the patent specification.
+They are hand-drawn sketches or uploaded images, NOT PlantUML diagrams.
 
-${sketchDetails}`
+**Why no code is provided:** These are raster images (JPG/PNG), not text-based diagrams.
+To save tokens, we provide only their metadata (title, description, position).
+
+**DO NOT FLAG THESE AS MISSING FIGURES.** They exist in the patent and will be rendered properly.
+When the draft references these figure numbers, they ARE valid references.
+
+${sketchDetails}
+
+**Summary of ALL Figures in Patent:**
+${figures.length > 0 ? `- Diagrams (with PlantUML): FIG. ${figures.map(f => f.figureNo).join(', FIG. ')}` : '- No PlantUML diagrams'}
+${sketches.length > 0 ? `- Sketches (image-based): FIG. ${sketches.map(s => s.figureNo).join(', FIG. ')}` : '- No sketches'}
+- Total figures in patent: ${figures.length + sketches.length}`
   }
 
   // Build section limits text for jurisdiction-specific validation
@@ -360,10 +372,14 @@ DRAFT SECTIONS
 ${sectionsText}
 
 ═══════════════════════════════════════════════════════════════════════════════
-FIGURES & DIAGRAMS (PlantUML Source Code - Not Images)
+PATENT FIGURES (Diagrams + Sketches)
 ═══════════════════════════════════════════════════════════════════════════════
 ${figuresText}
 ${sketchesText}
+
+**FIGURE VALIDATION NOTE:** When reviewing figure references in the draft, check against
+BOTH the PlantUML diagrams above AND the sketch figures listed. A reference to "FIG. X"
+is valid if X appears in either the diagrams section OR the sketches section.
 ${sectionLimitsText}
 ${crossValidationsText}
 

@@ -36,8 +36,26 @@ const JURISDICTIONS = [
   { code: 'PCT', label: '🌍 PCT', description: 'International filing style' },
 ]
 
-const MIN_WORDS = 10
-const MAX_WORDS = 200
+// Section-specific word limits - MUST match backend (src/app/api/writing-samples/limits/route.ts)
+// Higher limits for key sections to capture more writing patterns for effective style mimicry
+const SECTION_WORD_LIMITS: Record<string, { min: number; max: number; recommended: { min: number; max: number } }> = {
+  title: { min: 3, max: 50, recommended: { min: 5, max: 30 } },
+  fieldOfInvention: { min: 5, max: 200, recommended: { min: 10, max: 100 } },
+  background: { min: 10, max: 1500, recommended: { min: 80, max: 400 } },
+  objectsOfInvention: { min: 5, max: 500, recommended: { min: 20, max: 200 } },
+  summary: { min: 10, max: 1500, recommended: { min: 80, max: 400 } },
+  briefDescriptionOfDrawings: { min: 5, max: 500, recommended: { min: 20, max: 150 } },
+  detailedDescription: { min: 20, max: 3000, recommended: { min: 150, max: 800 } },
+  claims: { min: 10, max: 2000, recommended: { min: 100, max: 600 } },
+  abstract: { min: 10, max: 500, recommended: { min: 50, max: 200 } },
+}
+
+// Default for unknown sections
+const DEFAULT_LIMITS = { min: 5, max: 1000, recommended: { min: 10, max: 300 } }
+
+function getSectionLimits(sectionKey: string) {
+  return SECTION_WORD_LIMITS[sectionKey] || DEFAULT_LIMITS
+}
 
 function countWords(text: string): number {
   return text.trim().split(/\s+/).filter(w => w.length > 0).length
@@ -77,13 +95,14 @@ export default function WritingSamplesModal({ onClose, onUpdate }: WritingSample
     const text = editingText[sectionKey]
     if (!text?.trim()) return
 
+    const limits = getSectionLimits(sectionKey)
     const wordCount = countWords(text)
-    if (wordCount < MIN_WORDS) {
-      setError(`Sample too short. Minimum ${MIN_WORDS} words required.`)
+    if (wordCount < limits.min) {
+      setError(`Sample too short for ${sectionKey}. Minimum ${limits.min} words required.`)
       return
     }
-    if (wordCount > MAX_WORDS) {
-      setError(`Sample too long. Maximum ${MAX_WORDS} words allowed.`)
+    if (wordCount > limits.max) {
+      setError(`Sample too long for ${sectionKey}. Maximum ${limits.max} words allowed.`)
       return
     }
 
@@ -266,8 +285,10 @@ export default function WritingSamplesModal({ onClose, onUpdate }: WritingSample
                 const isExpanded = expandedSection === section.key
                 const currentText = editingText[section.key] ?? sample?.sampleText ?? ''
                 const wordCount = countWords(currentText)
-                const isOverLimit = wordCount > MAX_WORDS
-                const isUnderLimit = wordCount > 0 && wordCount < MIN_WORDS
+                const limits = getSectionLimits(section.key)
+                const isOverLimit = wordCount > limits.max
+                const isUnderLimit = wordCount > 0 && wordCount < limits.min
+                const isInRecommendedRange = wordCount >= limits.recommended.min && wordCount <= limits.recommended.max
 
                 return (
                   <div 
@@ -348,12 +369,15 @@ export default function WritingSamplesModal({ onClose, onUpdate }: WritingSample
                         <div className="mt-3">
                           <div className="flex items-center justify-between mb-2">
                             <label className="text-xs text-slate-400">
-                              Your writing sample (3-4 lines showing your style)
+                              Your writing sample ({limits.recommended.min}-{limits.recommended.max} words recommended)
                             </label>
                             <span className={`text-xs ${
-                              isOverLimit ? 'text-red-400' : isUnderLimit ? 'text-amber-400' : 'text-slate-500'
+                              isOverLimit ? 'text-red-400' : isUnderLimit ? 'text-amber-400' : isInRecommendedRange ? 'text-emerald-400' : 'text-slate-500'
                             }`}>
-                              {wordCount}/{MAX_WORDS} words {wordCount < MIN_WORDS && `(min ${MIN_WORDS})`}
+                              {wordCount} words 
+                              {isOverLimit && ` (max ${limits.max})`}
+                              {isUnderLimit && ` (min ${limits.min})`}
+                              {isInRecommendedRange && ' ✓'}
                             </span>
                           </div>
                           <textarea
@@ -373,9 +397,14 @@ export default function WritingSamplesModal({ onClose, onUpdate }: WritingSample
                             }`}
                             rows={5}
                           />
-                          <p className="text-xs text-slate-500 mt-2">
-                            💡 The AI will mimic your word choices, sentence structure, and tone from this example.
-                          </p>
+                          <div className="flex items-center justify-between mt-2">
+                            <p className="text-xs text-slate-500">
+                              💡 The AI will mimic your word choices, sentence structure, and tone from this example.
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              Range: {limits.min}-{limits.max} words
+                            </p>
+                          </div>
                         </div>
 
                         <div className="flex items-center justify-between mt-4">
@@ -397,7 +426,7 @@ export default function WritingSamplesModal({ onClose, onUpdate }: WritingSample
                             </button>
                             <button
                               onClick={() => handleSave(section.key)}
-                              disabled={saving === section.key || isOverLimit || wordCount < MIN_WORDS}
+                              disabled={saving === section.key || isOverLimit || isUnderLimit}
                               className="px-4 py-1.5 bg-violet-600 hover:bg-violet-500 text-white text-sm rounded-lg font-medium disabled:opacity-50"
                             >
                               {saving === section.key ? 'Saving...' : 'Save Sample'}

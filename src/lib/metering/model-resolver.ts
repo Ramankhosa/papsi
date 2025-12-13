@@ -72,29 +72,46 @@ export async function resolveModel(
   // Check cache
   const cached = resolutionCache.get(cacheKey)
   if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    console.log(`[ModelResolver] Cache hit for ${cacheKey}: ${cached.result.modelCode} (source: ${cached.result.source})`)
     return cached.result
   }
+
+  console.log(`[ModelResolver] Resolving model for planId=${planId}, taskCode=${taskCode}, stageCode=${stageCode || 'none'}`)
 
   let result: ModelResolutionResult | null = null
 
   // 1. Try stage-specific config (most specific)
   if (stageCode) {
     result = await getStageConfig(planId, stageCode)
+    if (result) {
+      console.log(`[ModelResolver] Found stage config: ${result.modelCode}`)
+    }
   }
 
   // 2. Try task-specific config (new flexible system)
   if (!result) {
     result = await getTaskConfig(planId, taskCode)
+    if (result) {
+      console.log(`[ModelResolver] Found task config: ${result.modelCode}`)
+    } else {
+      console.log(`[ModelResolver] No task config found for planId=${planId}, taskCode=${taskCode}`)
+    }
   }
 
   // 3. Try plan's default model (existing PlanLLMAccess for backward compatibility)
   if (!result) {
     result = await getPlanDefault(planId, taskCode)
+    if (result) {
+      console.log(`[ModelResolver] Found plan default (PlanLLMAccess): ${result.modelCode}`)
+    } else {
+      console.log(`[ModelResolver] No PlanLLMAccess found for planId=${planId}, taskCode=${taskCode}`)
+    }
   }
 
   // 4. Fall back to system default
   if (!result) {
     result = await getSystemDefault()
+    console.log(`[ModelResolver] Using system default: ${result.modelCode}`)
   }
 
   // Cache the result

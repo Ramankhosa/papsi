@@ -62,35 +62,16 @@ export interface SectionContextRequirements {
 // Section Context Requirements (Database-Driven)
 // ============================================================================
 
-// Fallback defaults when database doesn't have the section (safe defaults based on section purpose)
-// These match the user's injection analysis table - updated 2024-12
-const FALLBACK_CONTEXT_REQUIREMENTS: Record<string, SectionContextRequirements> = {
-  // Sections that need PRIOR ART only
-  background: { requiresPriorArt: true, requiresFigures: false, requiresClaims: false, requiresComponents: false },
-  technicalProblem: { requiresPriorArt: true, requiresFigures: false, requiresClaims: false, requiresComponents: false },
-  
-  // Sections that need CLAIMS only
-  summary: { requiresPriorArt: false, requiresFigures: false, requiresClaims: true, requiresComponents: false },
-  technicalSolution: { requiresPriorArt: false, requiresFigures: false, requiresClaims: true, requiresComponents: false },
-  
-  // Sections that need FIGURES + COMPONENTS
-  briefDescriptionOfDrawings: { requiresPriorArt: false, requiresFigures: true, requiresClaims: false, requiresComponents: true },
-  detailedDescription: { requiresPriorArt: false, requiresFigures: true, requiresClaims: false, requiresComponents: true },
-  bestMode: { requiresPriorArt: false, requiresFigures: true, requiresClaims: false, requiresComponents: true },
-  
-  // Sections that need COMPONENTS only
-  claims: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: true },
-  listOfNumerals: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: true },
-  
-  // Sections that need NOTHING (standalone or procedural)
-  title: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
-  preamble: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
-  fieldOfInvention: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
-  objectsOfInvention: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
-  advantageousEffects: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
-  industrialApplicability: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
-  abstract: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
-  crossReference: { requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false }
+// NOTE: Context requirements MUST come from database (SupersetSection + CountrySectionMapping)
+// If database doesn't have the data, we use SAFE DEFAULTS (all false) and log a warning
+// This is different from section mapping which throws an error - context requirements are 
+// optimization hints, not structural requirements
+
+const SAFE_DEFAULT_CONTEXT: SectionContextRequirements = {
+  requiresPriorArt: false,
+  requiresFigures: false,
+  requiresClaims: false,
+  requiresComponents: false
 }
 
 // ============================================================================
@@ -421,13 +402,9 @@ export async function getSectionContextRequirements(
     console.warn(`[getSectionContextRequirements] Error checking SupersetSection for ${sectionKey}:`, err)
   }
 
-  // 3. Fallback to hardcoded defaults
-  const fallback = FALLBACK_CONTEXT_REQUIREMENTS[sectionKey]
-  if (fallback) {
-    return fallback
-  }
-
-  return result
+  // 3. DATABASE IS THE ONLY SOURCE OF TRUTH - Use safe defaults and log warning
+  console.warn(`[getSectionContextRequirements] Section "${sectionKey}" not found in database (SupersetSection). Using safe defaults (all false). Please configure SupersetSection table.`)
+  return { ...SAFE_DEFAULT_CONTEXT }
 }
 
 /**
@@ -461,36 +438,29 @@ export async function getBatchSectionContextRequirements(
       mappingsMap = new Map(mappings.map(m => [m.sectionKey, m]))
     }
     
-    // Build result for each section
+    // Build result for each section - DATABASE IS THE ONLY SOURCE OF TRUTH
+    const missingSections: string[] = []
+    
     for (const key of sectionKeys) {
       const mapping = mappingsMap.get(key)
       const superset = supersetMap.get(key)
-      const fallback = FALLBACK_CONTEXT_REQUIREMENTS[key]
       
-      // Start with defaults
-      let requirements: SectionContextRequirements = {
-        requiresPriorArt: false,
-        requiresFigures: false,
-        requiresClaims: false,
-        requiresComponents: false
-      }
+      // Start with safe defaults (all false)
+      let requirements: SectionContextRequirements = { ...SAFE_DEFAULT_CONTEXT }
       
-      // Apply fallback
-      if (fallback) {
-        requirements = { ...fallback }
-      }
-      
-      // Apply SupersetSection defaults
+      // Apply SupersetSection defaults from database
       if (superset) {
         requirements = {
-          requiresPriorArt: (superset as any).requiresPriorArt ?? requirements.requiresPriorArt,
-          requiresFigures: (superset as any).requiresFigures ?? requirements.requiresFigures,
-          requiresClaims: (superset as any).requiresClaims ?? requirements.requiresClaims,
-          requiresComponents: (superset as any).requiresComponents ?? requirements.requiresComponents
+          requiresPriorArt: (superset as any).requiresPriorArt ?? false,
+          requiresFigures: (superset as any).requiresFigures ?? false,
+          requiresClaims: (superset as any).requiresClaims ?? false,
+          requiresComponents: (superset as any).requiresComponents ?? false
         }
+      } else {
+        missingSections.push(key)
       }
       
-      // Apply jurisdiction-specific overrides
+      // Apply jurisdiction-specific overrides from database
       if (mapping) {
         if ((mapping as any).requiresPriorArtOverride !== null && (mapping as any).requiresPriorArtOverride !== undefined) {
           requirements.requiresPriorArt = (mapping as any).requiresPriorArtOverride
@@ -508,17 +478,17 @@ export async function getBatchSectionContextRequirements(
       
       result[key] = requirements
     }
-  } catch (err) {
-    console.warn('[getBatchSectionContextRequirements] Error fetching context requirements:', err)
     
-    // Fallback to hardcoded defaults for all sections
+    // Log warning for sections not found in database
+    if (missingSections.length > 0) {
+      console.warn(`[getBatchSectionContextRequirements] Sections not found in SupersetSection table (using safe defaults): ${missingSections.join(', ')}`)
+    }
+  } catch (err) {
+    console.error('[getBatchSectionContextRequirements] Database error:', err)
+    
+    // Use safe defaults for all sections on error
     for (const key of sectionKeys) {
-      result[key] = FALLBACK_CONTEXT_REQUIREMENTS[key] || {
-        requiresPriorArt: false,
-        requiresFigures: false,
-        requiresClaims: false,
-        requiresComponents: false
-      }
+      result[key] = { ...SAFE_DEFAULT_CONTEXT }
     }
   }
   
@@ -557,6 +527,40 @@ export const OPTIONAL_SUPERSET_SECTIONS = [
 
 // Combined full superset (for comprehensive reference drafts)
 export const FULL_SUPERSET_SECTIONS = [...SUPERSET_SECTIONS, ...OPTIONAL_SUPERSET_SECTIONS]
+
+// ============================================================================
+// N/A Heading Detection - CENTRALIZED for consistency across all functions
+// ============================================================================
+
+/**
+ * Headings that indicate a section is NOT applicable for a jurisdiction.
+ * Used consistently across:
+ * - getSectionMapping()
+ * - computeDynamicSuperset()
+ * - buildSectionDefinitions() in drafting-service.ts
+ * - by-jurisdiction API route
+ */
+export const NA_HEADINGS = [
+  '(N/A)', '(n/a)', 'N/A', 'n/a', 'NA', 'na',
+  '(Implicit)', '(implicit)', 'Implicit', 'implicit',
+  '(Recommended/NA)', '(recommended/na)', 'Recommended/NA',
+  '(Include in Detailed Desc)', '(include in detailed desc)',
+  'Include in Detailed Desc', 'Include in Detailed Description'
+]
+
+/**
+ * Check if a heading indicates the section is NOT applicable.
+ * Case-insensitive comparison for robustness.
+ */
+export function isNonApplicableHeading(heading: string | null | undefined): boolean {
+  if (!heading || typeof heading !== 'string') return false
+  const trimmed = heading.trim()
+  if (trimmed === '') return true // Empty heading = not applicable
+  
+  // Case-insensitive check against known N/A patterns
+  const lowerHeading = trimmed.toLowerCase()
+  return NA_HEADINGS.some(na => na.toLowerCase() === lowerHeading)
+}
 
 // Alias mapping for backward compatibility and flexible key resolution
 // Includes country-specific keys (JP, IN, CN, etc.) that map to superset keys
@@ -876,25 +880,35 @@ export async function computeDynamicSuperset(
   })
 
   console.log(`[computeDynamicSuperset] Found ${dbMappings.length} mappings from CountrySectionMapping table for: ${validJurisdictions.join(', ')}`)
+  
+  // DATABASE IS THE ONLY SOURCE OF TRUTH - No fallbacks
+  if (dbMappings.length === 0) {
+    console.error(`[computeDynamicSuperset] CRITICAL: No CountrySectionMapping entries found for jurisdictions: ${validJurisdictions.join(', ')}. Database must be configured.`)
+    throw new Error(`None of the selected jurisdictions (${validJurisdictions.join(', ')}) are configured in the database. Please add section mappings in CountrySectionMapping table.`)
+  }
 
-  // Process database mappings - sectionKey IS the canonical superset key
+  // Track invalid section keys for debugging
+  const invalidSectionKeys: Array<{ countryCode: string; sectionKey: string }> = []
+  
+  // Process database mappings - sectionKey SHOULD be a canonical superset key
   for (const mapping of dbMappings) {
     const countryCode = mapping.countryCode
-    const sectionKey = mapping.sectionKey // This IS the canonical superset key from database
+    const sectionKey = mapping.sectionKey // This SHOULD be a canonical superset key from database
     const heading = mapping.heading || ''
     
-    // Skip N/A, Implicit, or other non-applicable sections
-    const isApplicable = heading !== '(N/A)' && 
-                         heading !== '(Implicit)' && 
-                         heading !== '(Recommended/NA)' && 
-                         heading !== '(Include in Detailed Desc)' &&
-                         heading.trim() !== ''
-
-    if (!isApplicable) {
+    // Skip N/A, Implicit, or other non-applicable sections (use centralized check)
+    if (isNonApplicableHeading(heading)) {
       continue
     }
 
-    // Add to unique sections set - use sectionKey directly from database
+    // VALIDATE: Check if sectionKey is a valid superset key
+    if (!FULL_SUPERSET_SECTIONS.includes(sectionKey)) {
+      invalidSectionKeys.push({ countryCode, sectionKey })
+      console.warn(`[computeDynamicSuperset] Invalid sectionKey "${sectionKey}" for ${countryCode} - not in SUPERSET_SECTIONS. Skipping.`)
+      continue // Skip invalid keys
+    }
+
+    // Add to unique sections set - only valid superset keys
     uniqueSections.add(sectionKey)
 
     // Track which jurisdictions need this section
@@ -938,6 +952,18 @@ export async function computeDynamicSuperset(
   }
 
   console.log(`[computeDynamicSuperset] Result: ${orderedSections.length} sections from database for ${validJurisdictions.length} jurisdictions:`, orderedSections)
+  
+  // Warn about any invalid sectionKeys found in database
+  if (invalidSectionKeys.length > 0) {
+    console.warn(`[computeDynamicSuperset] Found ${invalidSectionKeys.length} invalid sectionKey(s) in CountrySectionMapping that don't match SUPERSET_SECTIONS:`, 
+      invalidSectionKeys.map(k => `${k.countryCode}:${k.sectionKey}`).join(', '))
+  }
+
+  // DATABASE IS THE ONLY SOURCE OF TRUTH - Fail if no valid sections found
+  if (orderedSections.length === 0) {
+    console.error(`[computeDynamicSuperset] CRITICAL: No valid superset sections found after filtering. All sectionKeys in database may be invalid.`)
+    throw new Error(`No valid sections found for jurisdictions (${validJurisdictions.join(', ')}). Check that CountrySectionMapping.sectionKey values match SUPERSET_SECTIONS.`)
+  }
 
   return {
     sections: orderedSections,
@@ -979,9 +1005,10 @@ export async function getSectionMapping(
     orderBy: { displayOrder: 'asc' }
   })
 
+  // DATABASE IS THE ONLY SOURCE OF TRUTH - No fallbacks
   if (dbMappings.length === 0) {
-    console.warn(`[getSectionMapping] No mappings found in database for ${code}`)
-    return []
+    console.error(`[getSectionMapping] CRITICAL: No CountrySectionMapping entries found for jurisdiction "${code}". Database must be configured.`)
+    throw new Error(`Jurisdiction "${code}" is not configured in the database. Please add section mappings in CountrySectionMapping table.`)
   }
 
   // Map database records to SectionMapping interface
@@ -990,11 +1017,8 @@ export async function getSectionMapping(
     supersetKey: m.sectionKey,
     countryKey: m.sectionKey,
     countryHeading: m.heading || m.sectionKey,
-    isApplicable: m.heading !== '(N/A)' && 
-                  m.heading !== '(Implicit)' && 
-                  m.heading !== '(Recommended/NA)' && 
-                  m.heading !== '(Include in Detailed Desc)' &&
-                  (m.heading || '').trim() !== ''
+    // Use centralized N/A check for consistency across all functions
+    isApplicable: !isNonApplicableHeading(m.heading)
   }))
 }
 
@@ -1083,26 +1107,8 @@ function getDefaultHeading(key: string): string {
 // Reference Draft Generation
 // ============================================================================
 
-// Fallback quality guidelines (used only when DB prompts not available)
-const FALLBACK_SECTION_GUIDELINES: Record<string, string> = {
-  title: 'Concise, descriptive, max 15 words, no marketing language or banned words (Novel, Improved, Smart, etc.)',
-  preamble: 'Jurisdiction-specific preamble - generate only if required by target jurisdictions',
-  fieldOfInvention: '1-3 sentences identifying the technical domain, start with "The present invention relates to..."',
-  background: 'Prior art context and limitations (3-5 paragraphs), objective language, no mention of present solution',
-  objectsOfInvention: '3-7 specific technical objectives using "It is an object of..." format',
-  summary: 'Complete technical overview (2-4 paragraphs), align with broadest claim, use flexible language',
-  technicalProblem: 'Clear statement of the objective technical problem solved (1-2 paragraphs) - EP/JP style',
-  technicalSolution: 'How the invention solves the technical problem (2-4 paragraphs) - EP/JP style',
-  advantageousEffects: 'Specific, measurable technical advantages (3-6 bullet points) - JP/CN style',
-  briefDescriptionOfDrawings: 'One sentence per figure in format "FIG. X is a [view type] showing [description]"',
-  detailedDescription: 'Comprehensive technical disclosure with reference numerals, multiple embodiments',
-  bestMode: 'Preferred embodiment details with specific parameters - US requirement',
-  industrialApplicability: 'How the invention can be made/used in industry (1-2 paragraphs) - PCT requirement',
-  claims: 'Complete claim set with independent claims (apparatus + method) and dependent claims (10-20 total)',
-  abstract: '150-word summary of the invention, single paragraph, reference key figure',
-  listOfNumerals: 'List of all reference numerals with their component names in numerical order',
-  crossReference: 'References to related applications, priority claims if applicable'
-}
+// NOTE: Prompts MUST come from SUPERSET_PROMPTS (drafting-service.ts) or SupersetSection table
+// No fallback guidelines - if prompts are missing, the section will be skipped with a warning
 
 /**
  * Fetch BASE PROMPTS (country-neutral) from SUPERSET_PROMPTS in drafting-service.ts
@@ -1212,17 +1218,11 @@ async function getSupersetSectionPrompts(sectionKeys: string[]): Promise<Record<
     }
   }
 
-  // Fill in any still-missing sections with fallback guidelines
-  for (const key of sectionKeys) {
-    if (!prompts[key]) {
-      console.warn(`[getSupersetSectionPrompts] Using fallback for section: ${key}`)
-      prompts[key] = {
-        instruction: FALLBACK_SECTION_GUIDELINES[key] || 'Generate appropriate content for this section.',
-        constraints: [],
-        label: getDefaultHeading(key),
-        description: undefined
-      }
-    }
+  // DATABASE IS THE ONLY SOURCE OF TRUTH - No fallbacks
+  // Log missing sections but don't create fake prompts
+  const missingSections = sectionKeys.filter(key => !prompts[key])
+  if (missingSections.length > 0) {
+    console.warn(`[getSupersetSectionPrompts] Sections missing from SUPERSET_PROMPTS and database: ${missingSections.join(', ')}. These sections will be skipped.`)
   }
 
   return prompts
@@ -2340,11 +2340,15 @@ export async function translateReferenceDraft(
   // Collect sections that need translation
   const sectionsToTranslate: SectionToTranslate[] = []
   
+  // Track skipped sections for debugging
+  const skippedSections: Array<{ key: string; reason: string }> = []
+  
   for (const mapping of mappings) {
     if (!mapping.isApplicable) {
-      // Section not applicable for this jurisdiction - skip silently
+      // Section not applicable for this jurisdiction (N/A, Implicit, etc.)
       translatedDraft[mapping.countryKey] = ''
       skippedCount++
+      skippedSections.push({ key: mapping.supersetKey, reason: 'Not applicable (N/A heading)' })
       continue
     }
 
@@ -2359,9 +2363,9 @@ export async function translateReferenceDraft(
     
     if (!referenceContent || !referenceContent.trim()) {
       // Section exists in mapping but not in reference draft (dynamic superset optimization)
-      console.log(`[translateReferenceDraft] Section ${mapping.supersetKey} -> ${mapping.countryKey}: Not in reference draft (skipped)`)
       translatedDraft[mapping.countryKey] = ''
       skippedCount++
+      skippedSections.push({ key: mapping.supersetKey, reason: 'Not in reference draft (dynamic optimization)' })
       continue
     }
 
@@ -2373,7 +2377,10 @@ export async function translateReferenceDraft(
     })
   }
 
-  console.log(`[translateReferenceDraft] ${sectionsToTranslate.length} sections to translate, Batch Mode: ${useBatchMode}`)
+  console.log(`[translateReferenceDraft] ${sectionsToTranslate.length} sections to translate, ${skippedSections.length} skipped, Batch Mode: ${useBatchMode}`)
+  if (skippedSections.length > 0) {
+    console.log(`[translateReferenceDraft] Skipped sections:`, skippedSections.map(s => `${s.key} (${s.reason})`).join(', '))
+  }
 
   // Early return if no sections need translation
   if (sectionsToTranslate.length === 0) {
@@ -2956,3 +2963,4 @@ export function canGenerateJurisdictionDraft(session: any, jurisdiction: string)
   
   return session?.referenceDraftComplete === true
 }
+

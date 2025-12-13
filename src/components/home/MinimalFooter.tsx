@@ -32,6 +32,7 @@ export default function MinimalFooter() {
               <li><Link href="/security" className="hover:text-ai-blue-400 transition-colors">Security</Link></li>
               <li><Link href="/legal" className="hover:text-ai-blue-400 transition-colors">Compliance</Link></li>
               <li><Link href="/terms" className="hover:text-ai-blue-400 transition-colors">Terms of Use</Link></li>
+              <li><Link href="/privacy" className="hover:text-ai-blue-400 transition-colors">Privacy Policy</Link></li>
             </ul>
           </div>
 

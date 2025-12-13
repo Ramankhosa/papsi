@@ -1319,6 +1319,9 @@ function MappingDetailsModal({
   const [newAddition, setNewAddition] = useState('')
   const [changeReason, setChangeReason] = useState('')
   const [savingPrompt, setSavingPrompt] = useState(false)
+  const [archivingPrompt, setArchivingPrompt] = useState(false)
+  const [archiveReason, setArchiveReason] = useState('')
+  const [showArchiveConfirm, setShowArchiveConfirm] = useState(false)
 
   const isNew = !existingMapping
   const hasPromptChanges = existingPrompt 
@@ -1468,6 +1471,40 @@ function MappingDetailsModal({
       setError(err instanceof Error ? err.message : 'Failed to save prompt')
     } finally {
       setSavingPrompt(false)
+    }
+  }
+
+  const handleArchivePrompt = async () => {
+    if (!existingPrompt) return
+    
+    setArchivingPrompt(true)
+    setError('')
+    setSuccess('')
+    
+    try {
+      const response = await fetch(
+        `/api/super-admin/section-prompts?id=${existingPrompt.id}&reason=${encodeURIComponent(archiveReason || 'Archived to allow mapping removal')}`,
+        {
+          method: 'DELETE',
+          headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
+        }
+      )
+      
+      if (!response.ok) {
+        const err = await response.json()
+        throw new Error(err.error || 'Failed to archive prompt')
+      }
+      
+      setSuccess(`✓ Prompt archived successfully. You can now remove the mapping.`)
+      setShowArchiveConfirm(false)
+      setArchiveReason('')
+      
+      // Refresh to update the UI state
+      setTimeout(() => onSuccess(), 1500)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to archive prompt')
+    } finally {
+      setArchivingPrompt(false)
     }
   }
   
@@ -1828,13 +1865,76 @@ function MappingDetailsModal({
               </div>
             </div>
 
+            {/* Warning: Cannot delete mapping with active prompt */}
+            {!isNew && existingPrompt && !showArchiveConfirm && (
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4">
+                <div className="flex items-start gap-3">
+                  <span className="text-2xl">⚠️</span>
+                  <div className="flex-1">
+                    <h4 className="font-medium text-amber-400">Cannot Remove Mapping</h4>
+                    <p className="text-sm text-slate-300 mt-1">
+                      This mapping has an active top-up prompt (v{existingPrompt.version}). 
+                      You must archive the prompt first before removing the mapping.
+                    </p>
+                    <button
+                      onClick={() => setShowArchiveConfirm(true)}
+                      className="mt-3 px-4 py-2 bg-amber-500/20 text-amber-400 rounded-lg hover:bg-amber-500/30 border border-amber-500/40 text-sm font-medium"
+                    >
+                      📦 Archive Prompt First
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Archive Confirmation */}
+            {!isNew && existingPrompt && showArchiveConfirm && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4">
+                <div className="flex items-start gap-3">
+                  <span className="text-2xl">🗃️</span>
+                  <div className="flex-1">
+                    <h4 className="font-medium text-red-400">Archive Top-Up Prompt</h4>
+                    <p className="text-sm text-slate-300 mt-1">
+                      Archiving will soft-delete the prompt for {country?.name || countryCode} → {section?.label}. 
+                      The section will then use only the base superset prompt.
+                    </p>
+                    <div className="mt-3">
+                      <label className="block text-sm text-slate-400 mb-1">Reason (optional):</label>
+                      <input
+                        type="text"
+                        value={archiveReason}
+                        onChange={(e) => setArchiveReason(e.target.value)}
+                        placeholder="e.g., No longer needed, outdated guidance..."
+                        className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-white text-sm placeholder-slate-500"
+                      />
+                    </div>
+                    <div className="flex gap-2 mt-3">
+                      <button
+                        onClick={handleArchivePrompt}
+                        disabled={archivingPrompt}
+                        className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 text-sm font-medium disabled:opacity-50"
+                      >
+                        {archivingPrompt ? 'Archiving...' : '🗃️ Confirm Archive'}
+                      </button>
+                      <button
+                        onClick={() => { setShowArchiveConfirm(false); setArchiveReason('') }}
+                        className="px-4 py-2 text-slate-300 hover:text-white text-sm"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div className="flex justify-between pt-4 border-t border-slate-700">
-              {!isNew ? (
+              {!isNew && !existingPrompt ? (
                 <button
                   onClick={handleDelete}
-                  disabled={deleting || !!existingPrompt}
+                  disabled={deleting}
                   className="px-4 py-2 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
-                  title={existingPrompt ? 'Archive prompt first' : 'Remove mapping'}
+                  title="Remove mapping"
                 >
                   {deleting ? 'Removing...' : '🗑️ Remove Mapping'}
                 </button>
@@ -1996,10 +2096,26 @@ function MappingDetailsModal({
             )}
 
             <div className="flex justify-between pt-4 border-t border-slate-700">
-              <div className="text-xs text-slate-500">
-                {existingPrompt 
-                  ? `Created: ${new Date(existingPrompt.createdAt).toLocaleDateString()}`
-                  : 'No prompt yet - create one below'}
+              <div className="flex items-center gap-4">
+                {existingPrompt && (
+                  <button
+                    onClick={() => {
+                      if (confirm(`Archive this prompt?\n\nThis will soft-delete the top-up prompt for ${country?.name || countryCode} → ${section?.label}.\n\nThe section will then use only the base superset prompt.`)) {
+                        handleArchivePrompt()
+                      }
+                    }}
+                    disabled={archivingPrompt}
+                    className="px-3 py-1.5 bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30 text-sm disabled:opacity-50"
+                    title="Archive this prompt (soft delete)"
+                  >
+                    {archivingPrompt ? 'Archiving...' : '🗃️ Archive Prompt'}
+                  </button>
+                )}
+                <span className="text-xs text-slate-500">
+                  {existingPrompt 
+                    ? `Created: ${new Date(existingPrompt.createdAt).toLocaleDateString()}`
+                    : 'No prompt yet - create one below'}
+                </span>
               </div>
               <div className="flex gap-3">
                 <button onClick={onClose} className="px-4 py-2 text-slate-300 hover:text-white">

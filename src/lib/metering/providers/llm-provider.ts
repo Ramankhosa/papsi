@@ -63,17 +63,22 @@ export function createLLMProvider(type: ProviderType, config: ProviderConfig): L
  */
 export function getProviderFromModelCode(modelCode: string): ProviderType {
   const providerMap: Record<string, ProviderType> = {
-    // Google - Text Models (friendly names)
+    // Google - Gemini 2.x Models (Text + Image Output)
     'gemini-2.5-pro': 'gemini',
     'gemini-2.0-flash': 'gemini',
     'gemini-2.0-flash-001': 'gemini',
+    'gemini-2.0-flash-exp': 'gemini',              // Experimental - best image output
+    'gemini-2.0-flash-thinking-exp': 'gemini',     // Thinking model
     'gemini-2.0-flash-lite': 'gemini-flash-lite',
     'gemini-2.0-flash-lite-001': 'gemini-flash-lite',
+    'gemini-2.5-flash-lite': 'gemini-flash-lite',
+    'gemini-exp-1206': 'gemini',                   // Experimental model
+    // Google - Gemini 1.5 Models
     'gemini-1.5-pro': 'gemini',
     'gemini-1.5-pro-002': 'gemini',
     'gemini-1.5-flash': 'gemini',
     'gemini-1.5-flash-002': 'gemini',
-    // Google - Image Generation Models (for Sketch Generation)
+    // Google - Legacy Image Generation Models (backwards compatibility)
     'gemini-3.0-nano-banana': 'gemini',
     'gemini-3-pro-image-preview': 'gemini',
     

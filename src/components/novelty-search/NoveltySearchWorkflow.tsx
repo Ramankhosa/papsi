@@ -1668,6 +1668,12 @@ export default function NoveltySearchWorkflow({
                             const cpcCodes = r.cpcCodes || r.cpc_codes || []
                             const ipcCodes = r.ipcCodes || r.ipc_codes || []
 
+                            // Check if patent has additional details
+                            const hasDetails = abstract || (Array.isArray(inventors) && inventors.length) ||
+                                              (Array.isArray(assignees) && assignees.length) ||
+                                              (Array.isArray(cpcCodes) && cpcCodes.length) ||
+                                              (Array.isArray(ipcCodes) && ipcCodes.length)
+
                             return (
                               <div key={i} className="py-4 px-3 border rounded-lg mb-3 bg-gray-50">
                                 <div className="flex items-start gap-3">
@@ -1689,48 +1695,75 @@ export default function NoveltySearchWorkflow({
                                           {relevanceScore !== null && ` Ãƒâ€šÃ‚Â· Relevance: ${(relevanceScore * 100).toFixed(1)}%`}
                                         </div>
                                       </div>
+                                      {/* Expand/Collapse button for details */}
+                                      {hasDetails && (
+                                        <button
+                                          onClick={() => {
+                                            const detailsEl = document.getElementById(`patent-details-${i}`)
+                                            if (detailsEl) {
+                                              detailsEl.classList.toggle('hidden')
+                                              const button = event?.target as HTMLElement
+                                              if (button) {
+                                                button.textContent = detailsEl.classList.contains('hidden') ? 'Show Details' : 'Hide Details'
+                                              }
+                                            }
+                                          }}
+                                          className="text-xs text-indigo-600 hover:text-indigo-800 underline ml-2 flex-shrink-0"
+                                        >
+                                          Show Details
+                                        </button>
+                                      )}
                                     </div>
 
-                                    {/* Snippet/Abstract */}
-                                    {abstract && (
-                                      <div className="mt-3">
-                                        <div className="text-xs font-medium text-gray-700 mb-1">Abstract/Summary:</div>
-                                        <div className="text-sm text-gray-700 whitespace-pre-wrap bg-white p-3 rounded border leading-relaxed">
-                                          {abstract}
-                                        </div>
-                                      </div>
-                                    )}
-
-                                    {/* Additional metadata */}
-                                    {((Array.isArray(inventors) && inventors.length) ||
-                                      (Array.isArray(assignees) && assignees.length) ||
-                                      (Array.isArray(cpcCodes) && cpcCodes.length) ||
-                                      (Array.isArray(ipcCodes) && ipcCodes.length)) && (
-                                      <div className="mt-3 text-xs text-gray-600">
-                                        {Array.isArray(inventors) && inventors.length > 0 && <div><strong>Inventors:</strong> {inventors.join(', ')}</div>}
-                                        {Array.isArray(assignees) && assignees.length > 0 && <div><strong>Assignees:</strong> {assignees.join(', ')}</div>}
-                                        {Array.isArray(cpcCodes) && cpcCodes.length > 0 && (
+                                    {/* Expandable Patent Details */}
+                                    {hasDetails && (
+                                      <div id={`patent-details-${i}`} className="hidden mt-3 space-y-3">
+                                        {/* Snippet/Abstract */}
+                                        {abstract && (
                                           <div>
-                                            <strong>CPC Codes:</strong>
-                                            <div className="flex flex-wrap gap-1 mt-1">
-                                              {cpcCodes.map((code: string, idx: number) => (
-                                                <span key={idx} className="bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs">
-                                                  {code}
-                                                </span>
-                                              ))}
+                                            <div className="text-xs font-medium text-gray-700 mb-1">Abstract/Summary:</div>
+                                            <div className="text-sm text-gray-700 whitespace-pre-wrap bg-white p-3 rounded border leading-relaxed max-h-32 overflow-y-auto">
+                                              {abstract}
                                             </div>
                                           </div>
                                         )}
-                                        {Array.isArray(ipcCodes) && ipcCodes.length > 0 && (
-                                          <div>
-                                            <strong>IPC Codes:</strong>
-                                            <div className="flex flex-wrap gap-1 mt-1">
-                                              {ipcCodes.map((code: string, idx: number) => (
-                                                <span key={idx} className="bg-purple-50 text-purple-700 px-2 py-1 rounded text-xs">
-                                                  {code}
-                                                </span>
-                                              ))}
-                                            </div>
+
+                                        {/* Additional metadata */}
+                                        {((Array.isArray(inventors) && inventors.length) ||
+                                          (Array.isArray(assignees) && assignees.length) ||
+                                          (Array.isArray(cpcCodes) && cpcCodes.length) ||
+                                          (Array.isArray(ipcCodes) && ipcCodes.length)) && (
+                                          <div className="text-xs text-gray-600 space-y-2">
+                                            {Array.isArray(inventors) && inventors.length > 0 && (
+                                              <div><strong>Inventors:</strong> {inventors.join(', ')}</div>
+                                            )}
+                                            {Array.isArray(assignees) && assignees.length > 0 && (
+                                              <div><strong>Assignees:</strong> {assignees.join(', ')}</div>
+                                            )}
+                                            {Array.isArray(cpcCodes) && cpcCodes.length > 0 && (
+                                              <div>
+                                                <strong>CPC Codes:</strong>
+                                                <div className="flex flex-wrap gap-1 mt-1">
+                                                  {cpcCodes.map((code: string, idx: number) => (
+                                                    <span key={idx} className="bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs">
+                                                      {code}
+                                                    </span>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            )}
+                                            {Array.isArray(ipcCodes) && ipcCodes.length > 0 && (
+                                              <div>
+                                                <strong>IPC Codes:</strong>
+                                                <div className="flex flex-wrap gap-1 mt-1">
+                                                  {ipcCodes.map((code: string, idx: number) => (
+                                                    <span key={idx} className="bg-purple-50 text-purple-700 px-2 py-1 rounded text-xs">
+                                                      {code}
+                                                    </span>
+                                                  ))}
+                                                </div>
+                                              </div>
+                                            )}
                                           </div>
                                         )}
                                       </div>
