@@ -9,7 +9,7 @@ import SectionInstructionPopover from './SectionInstructionPopover'
 import AllInstructionsModal from './AllInstructionsModal'
 import WritingSamplesModal from './WritingSamplesModal'
 import PersonaManager, { type PersonaSelection } from './PersonaManager'
-import InlineSectionValidator from './InlineSectionValidator'
+// REMOVED: InlineSectionValidator - validation now handled by AI Review only
 import type { ValidationIssue as UnifiedValidationIssue } from '@/types/validation'
 
 // ============================================================================
@@ -571,14 +571,8 @@ function ValidationPanel({
     }
   }, [sessionId, jurisdiction, patentId, currentReviewId])
 
-  // Auto-run numeric validation when draft changes (light debounce to avoid excessive calls)
-  useEffect(() => {
-    if (Object.keys(draft).length === 0) return
-    const timer = setTimeout(() => {
-      runNumericValidation()
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [draft, jurisdiction, runNumericValidation])
+  // REMOVED: Auto-run numeric validation - now handled by AI Review only
+  // Deterministic validation was causing delays and excessive refreshes
 
   // Sync AI issues to parent when they change (avoids render-phase setState)
   // This handles cases like approveFix where issues are filtered
@@ -1663,9 +1657,8 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     inputValue: string
   }>({ isOpen: false, type: 'clear', jurisdiction: '', inputValue: '' })
 
-  // Inline Section Validation (Post-generation feedback)
+  // Inline Section Validation - AI Review issues only (deterministic validation removed)
   const [inlineValidationIssues, setInlineValidationIssues] = useState<Record<string, UnifiedValidationIssue[]>>({})
-  const [validationLoading, setValidationLoading] = useState<Record<string, boolean>>({})
 
   // Handle AI Review issues sync to inline validators
   const handleAIIssuesChange = useCallback((aiIssues: AIReviewIssue[]) => {
@@ -1755,52 +1748,8 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     })
   }, [])
 
-  // Fetch validation for a section (debounced/on-demand)
-  const validateSection = useCallback(async (sectionKey: string, content: string) => {
-    if (!content || content.trim().length === 0 || !session?.id || !patent?.id) return
-    
-    setValidationLoading(prev => ({ ...prev, [sectionKey]: true }))
-    try {
-      const res = await fetch(`/api/patents/${patent.id}/validation`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
-        },
-        body: JSON.stringify({
-          action: 'validate_section',
-          sessionId: session.id,
-          jurisdiction: activeJurisdiction,
-          sectionKey,
-          content
-        })
-      })
-      const data = await res.json()
-      if (data.success && data.issues) {
-        setInlineValidationIssues(prev => ({
-          ...prev,
-          [sectionKey]: data.issues
-        }))
-      }
-    } catch (err) {
-      console.error('Section validation error:', err)
-    } finally {
-      setValidationLoading(prev => ({ ...prev, [sectionKey]: false }))
-    }
-  }, [session?.id, patent?.id, activeJurisdiction])
-
-  // Validate section on content change (debounced)
-  useEffect(() => {
-    const debouncedValidate = setTimeout(() => {
-      Object.entries(generated).forEach(([key, content]) => {
-        if (content && content.trim().length > 0) {
-          validateSection(key, content)
-        }
-      })
-    }, 1500) // 1.5s debounce
-
-    return () => clearTimeout(debouncedValidate)
-  }, [generated, activeJurisdiction])
+  // REMOVED: validateSection function - deterministic validation now handled by AI Review only
+  // This reduces delays and prevents excessive API calls
 
   // Data for figures - use frozen sequence if available (includes both diagrams and sketches)
   const figurePlans = useMemo(() => Array.isArray(session?.figurePlans) ? session.figurePlans : [], [session?.figurePlans])
@@ -2625,10 +2574,8 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
         setGenerated(prev => ({ ...prev, ...generatedContent }))
         setDebugSteps(debugStepsCollected)
         
-        // Refresh to get updated session with persisted draft
-        if (!skipRefresh) {
-          await onRefresh()
-        }
+        // REMOVED: onRefresh() - content is already persisted by API, local state is updated
+        // Avoiding refresh reduces delay and prevents UI flicker
       } else {
         // Standard generation for non-REFERENCE jurisdictions
         const res = await onComplete({
@@ -2660,10 +2607,8 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           setPromptInjectionInfo(prev => ({ ...prev, ...injectionInfo }))
         }
         
-        // Refresh to persist changes
-        if (!skipRefresh) {
-          await onRefresh()
-        }
+        // REMOVED: onRefresh() - content is already persisted via onComplete, local state is updated
+        // Avoiding refresh reduces delay and prevents UI flicker
       }
     } catch (error) {
       console.error('Generation failed:', error)
@@ -2869,7 +2814,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     for (const k of keys) if (generated?.[k]) patch[k] = generated[k]
     if (Object.keys(patch).length === 0) return
     await onComplete({ action: 'save_sections', sessionId: session?.id, patch })
-    await onRefresh()
+    // REMOVED: onRefresh() - content is already persisted via onComplete
   }
 
   const handleAutosaveSection = async (key: string) => {
@@ -2909,8 +2854,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           setGenerated(prev => ({ ...prev, [key]: data.content }))
         }
         setDebugSteps([{ step: `regenerate_${key}`, status: 'done' }])
-        // Refresh to persist changes
-        await onRefresh()
+        // REMOVED: onRefresh() - content is already persisted by API, local state is updated
       } else {
         // Standard regeneration for non-REFERENCE jurisdictions
         const instructions: Record<string, string> = {}
@@ -2942,8 +2886,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           setPromptInjectionInfo(prev => ({ ...prev, ...injectionInfo }))
         }
         
-        // Refresh to persist changes
-        await onRefresh()
+        // REMOVED: onRefresh() - content is already persisted via onComplete, local state is updated
       }
       
       setRegenOpen(prev => ({ ...prev, [key]: false }))
@@ -3581,10 +3524,10 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                    <div className="flex flex-col gap-1 bg-white border border-gray-200 shadow-sm rounded-md p-1">
                       {!hasContent ? (
                          <button
-                           disabled={loading}
-                           onClick={() => handleGenerate(section.keys)}
+                           disabled={loading || autoModeRunning}
+                           onClick={() => autoMode && !autoModeRunning ? handleAutoGenerateAll() : handleGenerate(section.keys)}
                            className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-md"
-                           title="Generate"
+                           title={autoMode ? "Generate all pending sections" : "Generate"}
                          >
                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>
                          </button>
@@ -3769,11 +3712,23 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                 <div className="text-gray-800 text-justify">
                   {!hasContent && !isWorking ? (
                     <div 
-                      onClick={() => handleGenerate(section.keys)}
-                      className="border-2 border-dashed border-gray-100 rounded-lg p-8 text-center hover:border-indigo-100 hover:bg-indigo-50/30 transition-all cursor-pointer group/empty"
+                      onClick={() => {
+                        if (autoModeRunning) return // Don't allow clicks during auto-mode
+                        // When auto-mode is ON, clicking ANY section triggers full auto-generation from the first pending section
+                        if (autoMode) {
+                          handleAutoGenerateAll()
+                        } else {
+                          handleGenerate(section.keys)
+                        }
+                      }}
+                      className={`border-2 border-dashed border-gray-100 rounded-lg p-8 text-center hover:border-indigo-100 hover:bg-indigo-50/30 transition-all cursor-pointer group/empty ${autoModeRunning ? 'opacity-50 cursor-not-allowed' : ''}`}
                     >
-                       <div className="text-gray-400 group-hover/empty:text-indigo-400 font-medium mb-1">Section not generated</div>
-                       <div className="text-xs text-gray-300 group-hover/empty:text-indigo-300">Click to draft with AI</div>
+                       <div className="text-gray-400 group-hover/empty:text-indigo-400 font-medium mb-1">
+                         {autoMode ? 'Auto-generate pending sections' : 'Section not generated'}
+                       </div>
+                       <div className="text-xs text-gray-300 group-hover/empty:text-indigo-300">
+                         {autoMode ? 'Click to start from first pending section' : 'Click to draft with AI'}
+                       </div>
                     </div>
                   ) : (
                     <div>
@@ -3872,28 +3827,8 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
                                 </div>
                               )}
 
-                              {/* Inline Section Validation */}
-                              {generated[keyName] && (
-                                <InlineSectionValidator
-                                  sectionKey={keyName}
-                                  content={generated[keyName] || ''}
-                                  jurisdiction={activeJurisdiction}
-                                  patentId={patent?.id || ''}
-                                  sessionId={session?.id || ''}
-                                  issues={inlineValidationIssues[keyName] || []}
-                                  onFix={(fixedContent) => {
-                                    setGenerated(prev => ({ ...prev, [keyName]: fixedContent }))
-                                    setEditDrafts(prev => ({ ...prev, [keyName]: fixedContent }))
-                                  }}
-                                  onIssuesChange={(issues) => {
-                                    setInlineValidationIssues(prev => ({
-                                      ...prev,
-                                      [keyName]: issues
-                                    }))
-                                  }}
-                                  isLoading={validationLoading[keyName]}
-                                />
-                              )}
+                              {/* REMOVED: InlineSectionValidator - validation now handled by AI Review only */}
+                              {/* Deterministic validation was causing delays and excessive refreshes */}
                             </div>
                           )}
                         </div>

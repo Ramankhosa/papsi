@@ -43,6 +43,18 @@ async function main() {
       isDefault: false
     },
     {
+      code: 'gemini-2.5-flash',
+      displayName: 'Gemini 2.5 Flash (Nano Banana)',
+      provider: 'google',
+      contextWindow: 1000000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 15,     // $0.15
+      outputCostPer1M: 60,    // $0.60
+      isActive: true,
+      isDefault: false
+    },
+    {
       code: 'gemini-2.5-flash-lite',
       displayName: 'Gemini 2.5 Flash Lite',
       provider: 'google',
@@ -90,10 +102,12 @@ async function main() {
       isActive: true,
       isDefault: false
     },
-    // Google - Image Generation Models (for Sketch Generation)
+    // Google - Image Generation Model (Nano Banana Pro for Sketch Generation)
+    // Reference: https://ai.google.dev/gemini-api/docs/image-generation
+    // gemini-3-pro-image-preview = "Nano Banana Pro" - advanced image generation
     {
       code: 'gemini-3-pro-image-preview',
-      displayName: 'Gemini 3 Pro Image Preview (Sketch)',
+      displayName: 'Gemini 3 Pro Image Preview (Nano Banana Pro)',
       provider: 'google',
       contextWindow: 128000,
       supportsVision: true,
@@ -487,7 +501,7 @@ async function main() {
       'DRAFT_PRIOR_ART_ANALYSIS':           'gemini-2.5-pro',         // Major: use Pro
       'DRAFT_CLAIM_REFINEMENT':             'gemini-2.5-flash-lite',
       'DRAFT_FIGURE_PLANNER':               'gemini-2.5-flash-lite',
-      'DRAFT_SKETCH_GENERATION':            'gemini-3-pro-image-preview',
+      'DRAFT_SKETCH_GENERATION':            'gemini-3-pro-image-preview',  // Nano Banana Pro
       'DRAFT_DIAGRAM_GENERATION':           'gemini-2.5-flash-lite',
       // Annexure/Section stages
       'DRAFT_ANNEXURE_TITLE':               'gemini-2.5-flash-lite',
@@ -535,7 +549,7 @@ async function main() {
       'DRAFT_PRIOR_ART_ANALYSIS':           'gemini-2.5-pro',
       'DRAFT_CLAIM_REFINEMENT':             'gpt-5-mini',
       'DRAFT_FIGURE_PLANNER':               'gemini-2.5-pro',
-      'DRAFT_SKETCH_GENERATION':            'gemini-3-pro-image-preview',
+      'DRAFT_SKETCH_GENERATION':            'gemini-3-pro-image-preview',  // Nano Banana Pro
       'DRAFT_DIAGRAM_GENERATION':           'gpt-4o',
       // Annexure/Section stages
       'DRAFT_ANNEXURE_TITLE':               'gpt-5-mini',
@@ -583,7 +597,7 @@ async function main() {
       'DRAFT_PRIOR_ART_ANALYSIS':           'gemini-2.5-pro',
       'DRAFT_CLAIM_REFINEMENT':             'gpt-5',
       'DRAFT_FIGURE_PLANNER':               'gemini-2.5-pro',
-      'DRAFT_SKETCH_GENERATION':            'gemini-3-pro-image-preview',
+      'DRAFT_SKETCH_GENERATION':            'gemini-3-pro-image-preview',  // Nano Banana Pro
       'DRAFT_DIAGRAM_GENERATION':           'gpt-4o',
       // Annexure/Section stages
       'DRAFT_ANNEXURE_TITLE':               'gpt-5-mini',

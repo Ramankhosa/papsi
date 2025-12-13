@@ -819,16 +819,16 @@ export async function generateSketchWithGemini(
         // Imagen models use different config than Gemini models
         const isImagenModel = modelCode.toLowerCase().includes('imagen')
         
+        // For Gemini Nano Banana Pro image generation
+        // Reference: https://ai.google.dev/gemini-api/docs/image-generation
+        // Use responseModalities: ["TEXT", "IMAGE"] for native image generation
+        const generationConfig: any = isImagenModel ? {} : {
+          responseModalities: ["TEXT", "IMAGE"],  // Uppercase per Google API docs
+        }
+        
         const model = genAI.getGenerativeModel({
           model: modelCode,
-          generationConfig: isImagenModel ? {
-            // Imagen models don't use responseModalities
-          } : {
-            // Gemini native image generation requires both Text and Image modalities
-            // Note: Some models only support ['Text'], others support ['Image', 'Text']
-            responseModalities: ['Image', 'Text'],
-            responseMimeType: 'image/png',
-          },
+          generationConfig,
         })
 
         // Build content parts - focused prompt for image generation only
