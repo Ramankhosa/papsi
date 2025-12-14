@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import Link from 'next/link'
 import { Badge } from '@/components/ui/badge'
+import KishoNormalizationLoader from '@/components/ui/kisho-normalization-loader'
 
 type CountryOption = {
   code: string
@@ -939,6 +940,11 @@ function NewPatentDraftPageContent() {
                   Keep exactly what I provided
                 </label>
               </div>
+
+              {isCreating && (
+                <KishoNormalizationLoader mode={allowRefine ? 'enhance' : 'preserve'} className="mb-0" />
+              )}
+
               <div className="flex justify-end space-x-4">
                 <Link
                   href="/dashboard"

@@ -51,7 +51,7 @@ export default function DiagramGeneratorStage({ session, patent, onComplete, onR
   return (
     <div className="p-8">
       <div className="mb-8">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Stage 4: Diagram Generator</h2>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Diagram Generator</h2>
         <p className="text-gray-600">Review saved PlantUML, copy the code, and upload rendered images.</p>
       </div>
 
@@ -61,7 +61,7 @@ export default function DiagramGeneratorStage({ session, patent, onComplete, onR
 
       {diagramSources.length === 0 ? (
         <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 text-yellow-800 text-sm">
-          No diagrams saved yet. Go back to Stage 3 to generate PlantUML, then save each figure.
+          No diagrams saved yet. Go back to the previous step to generate PlantUML, then save each figure.
         </div>
       ) : (
         <div className="space-y-6">

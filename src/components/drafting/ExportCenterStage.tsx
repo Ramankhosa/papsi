@@ -316,7 +316,7 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
 
       <div className="mb-8">
         <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Stage 7: Export Center</h2>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Export Center</h2>
           <div className="flex items-center gap-2">
             {availableJurisdictions.length > 1 && (
               <select

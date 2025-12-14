@@ -33,7 +33,7 @@ export default function NoveltySearchCard({ onClick }: NoveltySearchCardProps) {
             </div>
             <div className="flex items-center gap-2">
               <Zap className="h-4 w-4 text-yellow-600" />
-              <span>4-Stage Process</span>
+              <span>Guided Workflow</span>
             </div>
             <div className="flex items-center gap-2">
               <Search className="h-4 w-4 text-purple-600" />
@@ -42,10 +42,10 @@ export default function NoveltySearchCard({ onClick }: NoveltySearchCardProps) {
           </div>
 
           <div className="text-xs text-gray-600 space-y-1">
-            <p>• Stage 0: Idea normalization and analysis</p>
-            <p>• Stage 1: Initial patent screening</p>
-            <p>• Stage 3.5: Detailed novelty assessment</p>
-            <p>• Stage 4: Professional PDF report generation</p>
+            <p>• Idea normalization and analysis</p>
+            <p>• Initial patent screening</p>
+            <p>• Detailed novelty assessment</p>
+            <p>• Professional PDF report generation</p>
           </div>
 
           <Button className="w-full" size="sm">

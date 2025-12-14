@@ -1,5 +1,6 @@
 // OpenAI Provider Implementation
-// Supports GPT-4o model with multimodal capabilities
+// Supports GPT-3.5, GPT-4, GPT-5, and o1 series models with multimodal capabilities
+// Note: GPT-5 and o1 models use max_completion_tokens instead of max_tokens
 
 import type { LLMRequest, LLMResponse, EnforcementDecision, MultimodalContent } from '../types'
 import type { LLMProvider, ProviderConfig } from './llm-provider'
@@ -35,8 +36,12 @@ export class OpenAIProvider implements LLMProvider {
     // Use the model specified in the request (from model resolver) or fall back to config default
     const modelToUse = request.modelClass || this.config.model
     
-    // Check if this model requires max_completion_tokens (o1 + latest gpt-5 family)
+    // Check if this model requires max_completion_tokens instead of max_tokens
+    // OpenAI's newer models (o1, o1-mini, o1-preview, gpt-5, gpt-5.1, etc.) use max_completion_tokens
     const isO1Model = modelToUse.startsWith('o1')
+    const isGPT5Model = modelToUse.startsWith('gpt-5')
+    const usesMaxCompletionTokens = isO1Model || isGPT5Model
+    const supportsTemperatureTuning = !(isO1Model || isGPT5Model)
     
     // Apply enforcement limits - some models use max_completion_tokens instead of max_tokens
     const maxTokens = limits.maxTokensOut || 4096
@@ -77,15 +82,23 @@ export class OpenAIProvider implements LLMProvider {
         ]
       }
       
-      if (isO1Model) {
-        // o1 models expect max_completion_tokens
+      if (usesMaxCompletionTokens) {
+        // o1 models and GPT-5 models expect max_completion_tokens (NOT max_tokens)
+        // See: https://help.openai.com/en/articles/5072518
         requestBody.max_completion_tokens = maxTokens
-        // GPT-5 variants currently require default temperature (omit to use server default)
-        console.log(`[OpenAIProvider] Using o1-specific params for ${modelToUse} (max_completion_tokens: ${maxTokens})`)
+        
+        // o1 models don't support temperature parameter
+        // GPT-5 models expect default temperature (omit to avoid API error)
+        if (supportsTemperatureTuning) {
+          requestBody.temperature = request.parameters?.temperature ?? 0.7
+        }
+        console.log(`[OpenAIProvider] Using max_completion_tokens for ${modelToUse} (${maxTokens} tokens)`)
       } else {
-        // Chat models (GPT-3.5/4/5 families) use max_tokens
+        // Legacy chat models (GPT-3.5/4 families) use max_tokens
         requestBody.max_tokens = maxTokens
-        requestBody.temperature = request.parameters?.temperature ?? 0.7
+        if (supportsTemperatureTuning) {
+          requestBody.temperature = request.parameters?.temperature ?? 0.7
+        }
       }
       
       const response = await fetch(`${this.config.baseURL}/chat/completions`, {

@@ -21,6 +21,7 @@ import RichTextEditor, { ClaimsEditor, RichTextEditorRef } from '@/components/ui
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import KishoNormalizationLoader from '@/components/ui/kisho-normalization-loader'
 
 interface IdeaEntryStageProps {
   session: any
@@ -390,10 +391,7 @@ export default function IdeaEntryStage({ session, patent, onComplete, onRefresh 
       )}
 
       {(!showNormalized || !normalizedData) && (
-        <div className="mb-8 bg-indigo-50/50 border border-indigo-100 rounded-lg p-4 flex items-center justify-center text-sm text-indigo-700 animate-pulse">
-          <RefreshCw className="animate-spin mr-3 h-4 w-4 text-indigo-600" />
-          Structuring your idea into a patent-ready outline...
-        </div>
+        <KishoNormalizationLoader mode={allowRefine ? 'enhance' : 'preserve'} />
       )}
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">

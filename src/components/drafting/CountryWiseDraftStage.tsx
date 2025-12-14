@@ -204,7 +204,7 @@ export default function CountryWiseDraftStage({ session, patent, onComplete, onR
   return (
     <div className="p-8">
       <div className="mb-8">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Stage 3.7: Jurisdiction & Language</h2>
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Jurisdiction & Language</h2>
         <p className="text-gray-600">
           Choose the country/countries and preferred language before drafting so downstream prompts, figures, and exports follow the correct rules.
         </p>
@@ -323,7 +323,7 @@ export default function CountryWiseDraftStage({ session, patent, onComplete, onR
           </div>
 
           <div className="border rounded-lg bg-white p-6">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Context from Stage 3.5</h3>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Context from feature analysis</h3>
             <p className="text-sm text-gray-600 mb-3">
               You have {relatedCount} prior-art references associated with this drafting session.
               These will continue to inform the background and comparative sections for each selected jurisdiction.

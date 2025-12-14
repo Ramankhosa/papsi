@@ -1030,7 +1030,7 @@ export default function NoveltySearchWorkflow({
                 </div>
               </div>
               <div className="flex-1">
-                <div className="text-sm font-medium text-purple-900 mb-1">Feature Mapping (Stage 3.5)</div>
+                <div className="text-sm font-medium text-purple-900 mb-1">Feature Mapping</div>
                 <div className="text-sm text-purple-800">{stage35aMessage}</div>
                 <div className="mt-2 bg-purple-200 rounded-full h-2">
                   <div className="bg-purple-600 h-2 rounded-full animate-pulse" style={{ width: '100%' }}></div>
@@ -1209,7 +1209,7 @@ export default function NoveltySearchWorkflow({
 
         {/* Current Stage Results Only */}
         <div className="mt-8 space-y-6">
-          {/* Stage 3.5c Ã¢â‚¬â€ Patent-by-Patent Remarks (light fallback card) */}
+          {/* Patent-by-Patent Remarks (light fallback card) */}
           {selectedStageTab === '3.5c' && (() => {
             const root: any = (searchState.results as any) || {};
             const stage4 = root.stage4;
@@ -1225,21 +1225,21 @@ export default function NoveltySearchWorkflow({
                         <CheckCircle className="h-4 w-4 text-white" />
                       </div>
                       <div>
-                        <CardTitle className="text-lg">Stage 3.5c: Patent-by-Patent Remarks</CardTitle>
+                        <CardTitle className="text-lg">Patent-by-Patent Remarks</CardTitle>
                         <CardDescription>Concise remarks per reference to feed the final report</CardDescription>
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
                       <Button size="sm" variant="outline" onClick={() => executeStage('3.5c')} disabled={searchState.isLoading}>
                         {searchState.isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                        Generate Remarks (3.5c)
+                        Generate Remarks
                       </Button>
                     </div>
                   </div>
                 </CardHeader>
                 <CardContent>
                   {remarks.length === 0 ? (
-                    <div className="text-sm text-gray-600">No remarks available yet. Click "Generate Remarks (3.5c)" to create perÃ¢â‚¬â€˜patent remarks.</div>
+                    <div className="text-sm text-gray-600">No remarks available yet. Click "Generate Remarks" to create per-patent remarks.</div>
                   ) : (
                     <div className="space-y-3">
                       {remarks.map((it: any, idx: number) => (
@@ -1547,7 +1547,7 @@ export default function NoveltySearchWorkflow({
                       onClick={() => setStage0Approved(true)}
                     >
                       <CheckCircle className="w-4 h-4 mr-2" />
-                      {stage0Approved ? 'Stage 0 Approved' : 'Approve Search Terms'}
+                      {stage0Approved ? 'Search terms approved' : 'Approve Search Terms'}
                     </Button>
                   </div>
                 )}
@@ -1638,17 +1638,17 @@ export default function NoveltySearchWorkflow({
 
                       <div className="flex items-center justify-between mb-4">
                         <div className="text-sm text-gray-600">
-                          {aiRel ? 'AI Relevance (Stage 1.5) computed.' : 'Run AI Relevance (Stage 1.5) to filter candidates before feature mapping.'}
+                          {aiRel ? 'AI Relevance computed.' : 'Run AI Relevance to filter candidates before feature mapping.'}
                         </div>
                         <div className="flex gap-2">
                           {!aiRel && (
                             <Button size="sm" variant="outline" onClick={async () => { await executeStage('1.5'); }}>
-                              Run AI Relevance (Stage 1.5)
+                              Run AI Relevance
                             </Button>
                           )}
                           {aiRel && (
                             <Button size="sm" variant="outline" onClick={async () => { await executeStage('3.5'); }}>
-                              Run Feature Mapping + Aggregation (3.5)
+                              Run Feature Mapping + Aggregation
                             </Button>
                           )}
                         </div>
@@ -1863,7 +1863,7 @@ export default function NoveltySearchWorkflow({
                     <CheckCircle className="h-4 w-4 text-white" />
                   </div>
                   <div>
-                    <CardTitle className="text-lg">Stage 3.5: Feature Analysis</CardTitle>
+                    <CardTitle className="text-lg">Feature Analysis</CardTitle>
                     <CardDescription>AI-powered feature-to-patent mapping with evidence extraction</CardDescription>
                   </div>
                 </div>
@@ -2089,7 +2089,7 @@ export default function NoveltySearchWorkflow({
                         <CheckCircle className="h-4 w-4 text-white" />
                       </div>
                       <div>
-                        <CardTitle className="text-lg">Stage 3.5c: Patent-by-Patent Remarks</CardTitle>
+                        <CardTitle className="text-lg">Patent-by-Patent Remarks</CardTitle>
                         <CardDescription>Concise remarks per reference to feed the final report</CardDescription>
                       </div>
                     </div>
@@ -2097,12 +2097,12 @@ export default function NoveltySearchWorkflow({
                       {hasAgg ? (
                         <Button size="sm" variant="outline" onClick={() => executeStage('3.5c')} disabled={!canRun35c || searchState.isLoading}>
                           {searchState.isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                          {canRun35c ? 'Generate Remarks (3.5c)' : 'Remarks Ready'}
+                          {canRun35c ? 'Generate Remarks' : 'Remarks Ready'}
                         </Button>
                       ) : (
                         <Button size="sm" variant="outline" onClick={() => executeStage('3.5')} disabled={searchState.isLoading}>
                           {searchState.isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                          Run 3.5 (Map + Aggregate)
+                          Run feature analysis (Map + Aggregate)
                         </Button>
                       )}
                     </div>
@@ -2110,9 +2110,9 @@ export default function NoveltySearchWorkflow({
                 </CardHeader>
                 <CardContent>
                   {!hasAgg ? (
-                    <div className="text-sm text-gray-600">Aggregation not available. Run Stage 3.5 to compute metrics, then generate remarks.</div>
+                    <div className="text-sm text-gray-600">Aggregation not available. Run feature analysis to compute metrics, then generate remarks.</div>
                   ) : remarks.length === 0 ? (
-                    <div className="text-sm text-gray-600">No remarks generated yet. Click "Generate Remarks (3.5c)" to create perÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Ëœpatent remarks.</div>
+                    <div className="text-sm text-gray-600">No remarks generated yet. Click "Generate Remarks" to create per-patent remarks.</div>
                   ) : (
                     <div className="space-y-3">
                       {remarks.map((it: any, idx: number) => (
@@ -2157,14 +2157,4 @@ export default function NoveltySearchWorkflow({
     </div>
   );
 }
-
-
-
-
-
-
-
-
-
-
 

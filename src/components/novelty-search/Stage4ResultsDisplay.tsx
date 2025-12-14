@@ -61,7 +61,7 @@ export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun,
             onClick={() => onRerun()}
             className="inline-flex items-center px-3 py-2 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-sm"
           >
-            Re-run Stage 4
+            Re-run Report Generation
           </button>
         )}
       </div>

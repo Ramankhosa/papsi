@@ -4,8 +4,29 @@ import { useState, useEffect } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { useRouter, useParams } from 'next/navigation'
 import Link from 'next/link'
+import { motion } from 'framer-motion'
 import NoveltySearchHistory from '@/components/novelty-search/NoveltySearchHistory'
 import { PageLoadingBird } from '@/components/ui/loading-bird'
+import {
+  FileText,
+  Settings,
+  UserPlus,
+  Plus,
+  ChevronRight,
+  Search,
+  PenTool,
+  Eye,
+  Trash2,
+  AlertTriangle,
+  X,
+  Sparkles,
+  Zap,
+  ArrowLeft,
+  Building2,
+  Clock,
+  Layers,
+  BrainCircuit
+} from 'lucide-react'
 
 interface Collaborator {
   id: string
@@ -28,7 +49,7 @@ interface ApplicantProfile {
 interface Patent {
   id: string
   title: string
-  status: string
+  status?: string
   createdAt: string
 }
 
@@ -159,6 +180,24 @@ export default function ProjectDashboardPage() {
     }
   }
 
+  const getStatusStyle = (status?: string) => {
+    switch (status) {
+      case 'DRAFT':
+        return 'bg-amber-500/10 text-amber-600 border-amber-500/20'
+      case 'IN_PROGRESS':
+        return 'bg-blue-500/10 text-blue-600 border-blue-500/20'
+      case 'COMPLETED':
+        return 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20'
+      default:
+        return 'bg-slate-500/10 text-slate-600 border-slate-500/20'
+    }
+  }
+
+  const formatStatus = (status?: string) => {
+    if (!status) return 'Unknown'
+    return status.replace(/_/g, ' ')
+  }
+
   if (authLoading || isLoading) {
     return <PageLoadingBird message="Loading project..." />
   }
@@ -168,357 +207,337 @@ export default function ProjectDashboardPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gpt-gray-50">
-      <div className="max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-        {/* Header */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-gpt-gray-900">{project.name}</h1>
-              <p className="text-gpt-gray-600 mt-2">
-                Created {new Date(project.createdAt).toLocaleDateString()}
-              </p>
+    <div className="min-h-screen bg-slate-50 relative overflow-hidden">
+      {/* Subtle Background Grid */}
+      <div 
+        className="absolute inset-0 pointer-events-none opacity-30" 
+        style={{ 
+          backgroundImage: 'radial-gradient(#cbd5e1 1px, transparent 1px)', 
+          backgroundSize: '30px 30px' 
+        }}
+      />
+
+      {/* Header */}
+      <header className="relative z-10 bg-white/80 backdrop-blur-md border-b border-slate-200/60">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <Link 
+                href="/projects" 
+                className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 transition-all duration-200"
+              >
+                <ArrowLeft className="w-5 h-5" />
+              </Link>
+              <div>
+                <div className="flex items-center gap-2 text-sm font-mono text-ai-blue-600 mb-1">
+                  <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                  PROJECT WORKSPACE
+                </div>
+                <h1 className="text-2xl font-bold text-slate-900 tracking-tight">{project.name}</h1>
+                <p className="text-sm text-slate-500 flex items-center gap-1.5 mt-1">
+                  <Clock className="w-3.5 h-3.5" />
+                  Created {new Date(project.createdAt).toLocaleDateString('en-US', {
+                    year: 'numeric',
+                    month: 'long',
+                    day: 'numeric'
+                  })}
+                </p>
+              </div>
             </div>
-            <div className="flex space-x-3">
+            <div className="flex items-center gap-3">
               <Link
                 href={`/projects/${projectId}/setup`}
-                className="inline-flex items-center px-4 py-2 border border-gpt-gray-300 text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all duration-200"
               >
-                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-                Manage Project
+                <Settings className="w-4 h-4" />
+                <span className="hidden sm:inline">Manage</span>
               </Link>
               {!project.applicantProfile && (
                 <Link
                   href={`/projects/${projectId}/applicant`}
-                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-gpt-blue-600 hover:bg-gpt-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-ai-blue-600 rounded-lg hover:bg-ai-blue-700 transition-all duration-200 shadow-sm"
                   title="Set up organization details for patent filings"
                 >
-                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                  </svg>
-                  Add Profile
+                  <UserPlus className="w-4 h-4" />
+                  <span className="hidden sm:inline">Add Profile</span>
                 </Link>
               )}
             </div>
           </div>
         </div>
+      </header>
 
-        {/* Quick Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div className="bg-white rounded-lg shadow-sm p-6">
-            <div className="flex items-center">
-              <div className="w-10 h-10 bg-gpt-blue-100 rounded-full flex items-center justify-center">
-                <svg className="w-5 h-5 text-gpt-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-              </div>
-              <div className="ml-4">
-                <p className="text-sm font-medium text-gpt-gray-600">Patents</p>
-                <p className="text-2xl font-semibold text-gpt-gray-900">{patents.length}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-lg shadow-sm p-6">
-            <div className="flex items-center">
-              <div className="w-10 h-10 bg-gpt-green-100 rounded-full flex items-center justify-center">
-                <svg className="w-5 h-5 text-gpt-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                </svg>
-              </div>
-              <div className="ml-4">
-                <p className="text-sm font-medium text-gpt-gray-600">Collaborators</p>
-                <p className="text-2xl font-semibold text-gpt-gray-900">{project.collaborators?.length || 0}</p>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white rounded-lg shadow-sm p-6">
-            <div className="flex items-center">
-              <div className="w-10 h-10 bg-gpt-purple-100 rounded-full flex items-center justify-center">
-                <svg className="w-5 h-5 text-gpt-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                </svg>
-              </div>
-              <div className="ml-4">
-                <p className="text-sm font-medium text-gpt-gray-600">Applicant Profile</p>
-                <p className="text-2xl font-semibold text-gpt-gray-900">{project.applicantProfile ? 'Set' : 'Not Set'}</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
+      <main className="relative z-10 max-w-7xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
+        
         {/* Primary Actions */}
-        <div className="bg-white rounded-lg shadow-sm p-6">
-          <h2 className="text-lg font-semibold text-gpt-gray-900 mb-4">Project Actions</h2>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1, duration: 0.4 }}
+          className="mb-8"
+        >
+          <div className="flex items-center gap-2 mb-4">
+            <Zap className="w-5 h-5 text-ai-blue-500" />
+            <h2 className="text-lg font-semibold text-slate-800">Quick Actions</h2>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <Link
               href={`/patents/draft/new?projectId=${projectId}`}
-              className="flex items-center p-4 border-2 border-gpt-blue-200 rounded-lg hover:border-gpt-blue-300 hover:bg-gpt-blue-50 transition-all duration-200 group"
+              className="group flex items-center p-5 bg-white border-2 border-slate-200 rounded-xl hover:border-ai-blue-500/50 hover:shadow-lg hover:shadow-ai-blue-500/10 transition-all duration-300"
             >
-              <div className="w-12 h-12 bg-gpt-blue-100 rounded-full flex items-center justify-center mr-4 group-hover:bg-gpt-blue-200 transition-colors">
-                <svg className="w-6 h-6 text-gpt-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                </svg>
+              <div className="p-3 bg-ai-blue-50 rounded-xl mr-4 group-hover:bg-ai-blue-600 group-hover:text-white transition-colors">
+                <PenTool className="w-6 h-6 text-ai-blue-600 group-hover:text-white" />
               </div>
-              <div>
-                <h3 className="text-lg font-medium text-gpt-gray-900">Draft New Patent</h3>
-                <p className="text-sm text-gpt-gray-600">Start AI-powered patent drafting workflow</p>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-slate-900 group-hover:text-ai-blue-600 transition-colors">Draft New Patent</h3>
+                <p className="text-sm text-slate-500">Start AI-powered patent drafting workflow</p>
               </div>
-              <svg className="w-5 h-5 text-gpt-gray-400 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
+              <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-ai-blue-500 group-hover:translate-x-1 transition-all" />
             </Link>
 
             <Link
               href={`/novelty-search?projectId=${projectId}`}
-              className="flex items-center p-4 border-2 border-gpt-purple-200 rounded-lg hover:border-gpt-purple-300 hover:bg-gpt-purple-50 transition-all duration-200 group"
+              className="group flex items-center p-5 bg-white border-2 border-slate-200 rounded-xl hover:border-purple-500/50 hover:shadow-lg hover:shadow-purple-500/10 transition-all duration-300"
             >
-              <div className="w-12 h-12 bg-gpt-purple-100 rounded-full flex items-center justify-center mr-4 group-hover:bg-gpt-purple-200 transition-colors">
-                <svg className="w-6 h-6 text-gpt-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                </svg>
+              <div className="p-3 bg-purple-50 rounded-xl mr-4 group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                <Search className="w-6 h-6 text-purple-600 group-hover:text-white" />
               </div>
-              <div>
-                <h3 className="text-lg font-medium text-gpt-gray-900">Novelty Search</h3>
-                <p className="text-sm text-gpt-gray-600">Comprehensive patent novelty assessment</p>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-slate-900 group-hover:text-purple-600 transition-colors">Novelty Search</h3>
+                <p className="text-sm text-slate-500">Comprehensive patent novelty assessment</p>
               </div>
-              <svg className="w-5 h-5 text-gpt-gray-400 ml-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-              </svg>
+              <ChevronRight className="w-5 h-5 text-slate-300 group-hover:text-purple-500 group-hover:translate-x-1 transition-all" />
             </Link>
           </div>
-        </div>
+        </motion.div>
 
-        {/* Main Content */}
-        <div className="space-y-8">
-          {/* Patents Section */}
-          <div className="bg-white rounded-lg shadow-sm">
-            <div className="px-6 py-4 border-b border-gpt-gray-200">
+        {/* Patents Section */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.2, duration: 0.4 }}
+          className="mb-8"
+        >
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/50">
               <div className="flex items-center justify-between">
-                <h2 className="text-xl font-semibold text-gpt-gray-900">Patents</h2>
-                  <Link
-                    href={`/patents/draft/new?projectId=${projectId}`}
-                    className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded-md text-white bg-gpt-blue-600 hover:bg-gpt-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500"
-                  >
-                    <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                    </svg>
-                    New Patent
-                  </Link>
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-5 h-5 text-ai-blue-500" />
+                  <h2 className="text-lg font-semibold text-slate-900">Patents</h2>
+                  <span className="ml-2 px-2 py-0.5 text-xs font-mono bg-slate-100 text-slate-600 rounded-full">
+                    {patents.length} total
+                  </span>
+                </div>
+                <Link
+                  href={`/patents/draft/new?projectId=${projectId}`}
+                  className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-ai-blue-600 rounded-lg hover:bg-ai-blue-700 transition-all duration-200 shadow-sm"
+                >
+                  <Plus className="w-4 h-4" />
+                  New Patent
+                </Link>
               </div>
             </div>
 
             <div className="p-6">
               {patents.length === 0 ? (
-                <div className="text-center py-8">
-                  <div className="text-gpt-gray-400 mb-4">
-                    <svg className="mx-auto h-12 w-12" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
+                <div className="text-center py-12">
+                  <div className="relative inline-block mb-4">
+                    <div className="absolute inset-0 bg-ai-blue-500/20 blur-2xl rounded-full" />
+                    <div className="relative p-5 bg-slate-50 rounded-2xl border border-slate-200">
+                      <Layers className="w-12 h-12 text-slate-300" />
+                    </div>
                   </div>
-                  <h3 className="text-lg font-medium text-gpt-gray-900 mb-2">No patents yet</h3>
-                  <p className="text-gpt-gray-600 mb-4">
-                    Start by creating your first patent application.
+                  <h3 className="text-lg font-semibold text-slate-800 mb-2">No patents yet</h3>
+                  <p className="text-slate-500 mb-6 max-w-sm mx-auto">
+                    Start by creating your first patent application using our AI-powered drafting system.
                   </p>
-              <Link
-                href={`/patents/draft/new?projectId=${projectId}`}
-                className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-gpt-blue-600 hover:bg-gpt-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500"
-              >
-                Create First Patent
-              </Link>
+                  <Link
+                    href={`/patents/draft/new?projectId=${projectId}`}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-ai-blue-600 rounded-lg hover:bg-ai-blue-700 transition-all shadow-sm"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Create First Patent
+                  </Link>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  {patents.slice(0, 5).map((patent) => (
-                    <div key={patent.id} className="flex items-center justify-between p-4 border border-gpt-gray-200 rounded-lg hover:bg-gpt-gray-50 transition-colors">
-                      <div className="flex-1">
-                        <h4 className="text-sm font-medium text-gpt-gray-900">{patent.title}</h4>
-                        <p className="text-xs text-gpt-gray-500">
-                          Status: {patent.status} • Created {new Date(patent.createdAt).toLocaleDateString()}
-                        </p>
-                      </div>
-                      <div className="flex items-center space-x-2">
-                        <Link
-                          href={`/projects/${projectId}/patents/${patent.id}`}
-                          className="inline-flex items-center px-3 py-1 border border-gpt-gray-300 text-sm font-medium rounded text-gpt-gray-700 bg-white hover:bg-gpt-gray-50"
-                        >
-                          View
-                        </Link>
-                        <Link
-                          href={`/patents/${patent.id}/draft`}
-                          className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded text-white bg-gpt-blue-600 hover:bg-gpt-blue-700"
-                        >
-                          Resume Draft
-                        </Link>
-                        <button
-                          onClick={() => setDeleteDialog({
-                            patentId: patent.id,
-                            patentTitle: patent.title,
-                            hasDrafts: hasDraftSessions[patent.id] || false
-                          })}
-                          className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded text-white bg-red-600 hover:bg-red-700"
-                          title="Delete this patent"
-                        >
-                          <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                  {patents.length > 5 && (
-                    <div className="text-center pt-4">
-                      <button
-                        onClick={() => {
-                          // Scroll to show all patents (they're already displayed)
-                          const patentsSection = document.querySelector('.space-y-4');
-                          patentsSection?.scrollIntoView({ behavior: 'smooth' });
-                        }}
-                        className="text-gpt-blue-600 hover:text-gpt-blue-800 text-sm font-medium"
+                <div className="max-h-[1200px] overflow-y-auto pr-1">
+                  <div className="space-y-3">
+                    {patents.map((patent, index) => (
+                      <motion.div
+                        key={patent.id}
+                        initial={{ opacity: 0, x: -10 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        transition={{ delay: index * 0.03 }}
+                        className="group flex items-center justify-between p-4 bg-slate-50 hover:bg-white border border-slate-200 hover:border-ai-blue-500/30 rounded-xl transition-all duration-200 hover:shadow-md"
                       >
-                        Showing {patents.length} patents
-                      </button>
-                    </div>
-                  )}
+                        <div className="flex-1 min-w-0 mr-4">
+                          <h4 className="text-sm font-semibold text-slate-900 truncate group-hover:text-ai-blue-600 transition-colors">
+                            {patent.title}
+                          </h4>
+                          <div className="flex items-center gap-3 mt-1.5">
+                            <span className={`px-2 py-0.5 text-[10px] font-medium rounded-full border ${getStatusStyle(patent.status)}`}>
+                              {formatStatus(patent.status)}
+                            </span>
+                            <span className="text-xs text-slate-400 flex items-center gap-1">
+                              <Clock className="w-3 h-3" />
+                              {new Date(patent.createdAt).toLocaleDateString()}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Link
+                            href={`/projects/${projectId}/patents/${patent.id}`}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 hover:border-slate-300 transition-all"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            View
+                          </Link>
+                          <Link
+                            href={`/patents/${patent.id}/draft`}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-ai-blue-600 rounded-lg hover:bg-ai-blue-700 transition-all"
+                          >
+                            <PenTool className="w-3.5 h-3.5" />
+                            Resume
+                          </Link>
+                          <button
+                            onClick={() => setDeleteDialog({
+                              patentId: patent.id,
+                              patentTitle: patent.title,
+                              hasDrafts: hasDraftSessions[patent.id] || false
+                            })}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-600 bg-red-50 border border-red-200 rounded-lg hover:bg-red-100 hover:border-red-300 transition-all"
+                            title="Delete this patent"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </motion.div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
           </div>
-        </div>
-
-        {/* Collaborators Section */}
-        {project.collaborators && project.collaborators.length > 0 && (
-          <div className="mt-8 bg-white rounded-lg shadow-sm">
-            <div className="px-6 py-4 border-b border-gpt-gray-200">
-              <div className="flex items-center justify-between">
-                <h2 className="text-xl font-semibold text-gpt-gray-900">
-                  Collaborators ({project.collaborators.length})
-                </h2>
-                <Link
-                  href={`/projects/${projectId}/setup`}
-                  className="inline-flex items-center px-3 py-1 border border-transparent text-sm font-medium rounded text-gpt-blue-600 hover:text-gpt-blue-800"
-                >
-                  Manage
-                </Link>
-              </div>
-            </div>
-
-            <div className="p-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {project.collaborators.map((collaborator) => (
-                  <div key={collaborator.id} className="flex items-center p-3 bg-gpt-gray-50 rounded-lg">
-                    <div className="w-8 h-8 bg-gpt-blue-600 rounded-full flex items-center justify-center text-white text-sm font-medium">
-                      {collaborator.user.name?.charAt(0) || collaborator.user.email.charAt(0) || 'U'}
-                    </div>
-                    <div className="ml-3">
-                      <p className="text-sm font-medium text-gpt-gray-900">
-                        {collaborator.user.name || collaborator.user.email}
-                      </p>
-                      <p className="text-xs text-gpt-gray-500">{collaborator.role}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Back to Dashboard */}
-        <div className="mt-8 text-center">
-          <Link
-            href="/dashboard"
-            className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-gpt-blue-600 hover:bg-gpt-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
-          >
-            Back to Dashboard
-          </Link>
-        </div>
-
-        {/* Delete Confirmation Dialog */}
-        {deleteDialog && (
-          <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
-            <div className="relative top-20 mx-auto p-5 border w-96 shadow-lg rounded-md bg-white">
-              <div className="mt-3">
-                <div className="flex items-center mb-4">
-                  <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center mr-3">
-                    <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L4.082 16.5c-.77.833.192 2.5 1.732 2.5z" />
-                    </svg>
-                  </div>
-                  <h3 className="text-lg font-medium text-gray-900">Delete Patent</h3>
-                </div>
-
-                <div className="mb-4">
-                  <p className="text-sm text-gray-600 mb-3">
-                    Are you sure you want to delete the patent <strong>&quot;{deleteDialog.patentTitle}&quot;</strong>?
-                  </p>
-                  <p className="text-sm text-gray-600 mb-3">
-                    This action cannot be undone. All patent data, including drafting sessions and generated content, will be permanently removed.
-                  </p>
-
-                  {deleteDialog.hasDrafts && (
-                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
-                      <p className="text-sm text-red-800 mb-2">
-                        <strong>Warning:</strong> This patent has existing draft sessions. To confirm deletion, please type <strong>&quot;delete&quot;</strong> below:
-                      </p>
-                      <input
-                        type="text"
-                        value={deleteConfirmText}
-                        onChange={(e) => setDeleteConfirmText(e.target.value)}
-                        placeholder="Type 'delete' to confirm"
-                        className="w-full px-3 py-2 border border-red-300 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent"
-                      />
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex justify-end space-x-3">
-                  <button
-                    onClick={() => {
-                      setDeleteDialog(null)
-                      setDeleteConfirmText('')
-                    }}
-                    className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
-                    disabled={isDeleting}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={handleDeletePatent}
-                    disabled={isDeleting || (deleteDialog.hasDrafts && deleteConfirmText.toLowerCase() !== 'delete')}
-                    className="px-4 py-2 text-sm font-medium text-white bg-red-600 border border-transparent rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isDeleting ? (
-                      <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                        Deleting...
-                      </>
-                    ) : (
-                      'Delete Patent'
-                    )}
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        </motion.div>
 
         {/* Novelty Search History Section */}
-        <div className="mt-8" id="novelty-search-history">
-          <div className="bg-white rounded-lg shadow-sm p-6">
-            <div className="mb-4">
-              <h2 className="text-xl font-semibold text-gray-900">Novelty Search History</h2>
-              <p className="text-sm text-gray-600 mt-1">View and access reports from previous novelty searches in this project</p>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.3, duration: 0.4 }}
+          id="novelty-search-history"
+        >
+          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+            <div className="px-6 py-5 border-b border-slate-100 bg-slate-50/50">
+              <div className="flex items-center gap-2">
+                <BrainCircuit className="w-5 h-5 text-purple-500" />
+                <h2 className="text-lg font-semibold text-slate-900">Novelty Search History</h2>
+              </div>
+              <p className="text-sm text-slate-500 mt-1">View and access reports from previous novelty searches</p>
+            </div>
+            <div className="p-6">
+              <NoveltySearchHistory projectId={projectId} showStats={false} />
+            </div>
+          </div>
+        </motion.div>
+
+        {/* Back to Projects */}
+        <div className="mt-8 text-center">
+          <Link
+            href="/projects"
+            className="inline-flex items-center gap-2 px-6 py-3 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-xl hover:bg-slate-50 hover:border-slate-300 transition-all duration-200"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Back to Projects
+          </Link>
+        </div>
+      </main>
+
+      {/* Delete Confirmation Dialog */}
+      {deleteDialog && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="w-full max-w-md bg-white rounded-2xl shadow-2xl overflow-hidden"
+          >
+            <div className="p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-2.5 bg-red-100 rounded-xl">
+                  <AlertTriangle className="w-6 h-6 text-red-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-900">Delete Patent</h3>
+                  <p className="text-sm text-slate-500">This action cannot be undone</p>
+                </div>
+                <button
+                  onClick={() => {
+                    setDeleteDialog(null)
+                    setDeleteConfirmText('')
+                  }}
+                  className="ml-auto p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="space-y-4">
+                <p className="text-sm text-slate-600">
+                  Are you sure you want to delete <strong className="text-slate-900">&quot;{deleteDialog.patentTitle}&quot;</strong>?
+                </p>
+                <p className="text-sm text-slate-500">
+                  All patent data, including drafting sessions and generated content, will be permanently removed.
+                </p>
+
+                {deleteDialog.hasDrafts && (
+                  <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                    <p className="text-sm text-red-800 mb-3">
+                      <strong>Warning:</strong> This patent has existing draft sessions. Type <strong>&quot;delete&quot;</strong> to confirm:
+                    </p>
+                    <input
+                      type="text"
+                      value={deleteConfirmText}
+                      onChange={(e) => setDeleteConfirmText(e.target.value)}
+                      placeholder="Type 'delete' to confirm"
+                      className="w-full px-4 py-2.5 text-sm border border-red-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-400 transition-all"
+                    />
+                  </div>
+                )}
+              </div>
             </div>
 
-            <NoveltySearchHistory projectId={projectId} showStats={false} />
-          </div>
+            <div className="px-6 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-3">
+              <button
+                onClick={() => {
+                  setDeleteDialog(null)
+                  setDeleteConfirmText('')
+                }}
+                className="px-4 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-all"
+                disabled={isDeleting}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeletePatent}
+                disabled={isDeleting || (deleteDialog.hasDrafts && deleteConfirmText.toLowerCase() !== 'delete')}
+                className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                {isDeleting ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    Deleting...
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    Delete Patent
+                  </>
+                )}
+              </button>
+            </div>
+          </motion.div>
         </div>
-      </div>
+      )}
     </div>
   )
 }

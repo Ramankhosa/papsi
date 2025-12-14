@@ -639,6 +639,24 @@ function ValidationPanel({
     return acc
   }, {} as Record<string, typeof activeAiIssues>)
 
+  const figureIssueGuidance = useMemo(() => {
+    const figureCodePattern = /\bfig(?:\.|ure)?\.?\s*(\d{1,3})\b/i
+    const plantumlPattern = /plantuml|@startuml|@enduml/i
+
+    const flagged = allActiveAiIssues.find(issue => {
+      if (issue.category !== 'diagram') return false
+      const combined = `${issue.title} ${issue.description} ${issue.suggestion} ${issue.fixPrompt}`
+      return figureCodePattern.test(combined) || plantumlPattern.test(combined)
+    })
+
+    if (!flagged) return null
+
+    const match = figureCodePattern.exec(`${flagged.title} ${flagged.description} ${flagged.suggestion} ${flagged.fixPrompt}`)
+    return {
+      figureLabel: match ? match[0].replace(/\s+/g, ' ').toUpperCase() : null
+    }
+  }, [allActiveAiIssues])
+
   // Category icons and colors
   const getCategoryStyle = (category: string) => {
     switch (category) {
@@ -997,6 +1015,20 @@ function ValidationPanel({
                 <span>✓</span> Apply Changes
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {figureIssueGuidance && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-start gap-3 text-sm text-blue-900 mb-4">
+          <span className="text-lg">🎨</span>
+          <div className="space-y-1">
+            <div className="font-semibold text-blue-900">
+              Figure flagged{figureIssueGuidance.figureLabel ? ` (${figureIssueGuidance.figureLabel})` : ''}
+            </div>
+            <p className="text-blue-800">
+              Go to the Figures section and ask Kisho to update the diagram, using these review remarks as the input so the figure aligns with the draft.
+            </p>
           </div>
         </div>
       )}
