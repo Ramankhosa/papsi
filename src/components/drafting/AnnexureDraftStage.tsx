@@ -1840,6 +1840,37 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   // Returns { figures, hasAppended, missingCount } for warning computation
   // Now uses language-aware diagram selection based on active jurisdiction
   const figuresData = useMemo(() => {
+    const buildSketchImageUrl = (sketch: any): string | null => {
+      const raw = typeof sketch?.imagePath === 'string'
+        ? sketch.imagePath
+        : typeof sketch?.imageUrl === 'string'
+          ? sketch.imageUrl
+          : null
+
+      if (raw && (raw.startsWith('/api/') || raw.startsWith('http://') || raw.startsWith('https://'))) {
+        return raw
+      }
+
+      const projectId = patent?.project?.id
+      const patentId = patent?.id
+
+      const filename = (typeof sketch?.imageFilename === 'string' && sketch.imageFilename.trim())
+        ? sketch.imageFilename.trim()
+        : (() => {
+            const candidate = typeof raw === 'string' ? raw : ''
+            const noQuery = candidate.split('?')[0]?.split('#')[0] || ''
+            const normalized = noQuery.replace(/\\/g, '/')
+            const last = normalized.split('/').pop()
+            return last && last.trim() ? last.trim() : null
+          })()
+
+      if (filename && projectId && patentId) {
+        return `/api/projects/${projectId}/patents/${patentId}/upload?filename=${encodeURIComponent(filename)}`
+      }
+
+      return raw
+    }
+
     const figures: Array<{
       figureNo: number
       title: string
@@ -1900,7 +1931,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
               figureNo: seqItem.finalFigNo,
               title: sketch.title || `Figure ${seqItem.finalFigNo}`,
               type: 'sketch',
-              imageUrl: sketch.imagePath || null,
+              imageUrl: buildSketchImageUrl(sketch),
               sourceId: seqItem.sourceId
             })
           } else {
@@ -1953,7 +1984,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             figureNo: figures.length + 1,
             title: sketch.title || `Figure ${figures.length + 1}`,
             type: 'sketch',
-            imageUrl: sketch.imagePath || null,
+            imageUrl: buildSketchImageUrl(sketch),
             sourceId: sketch.id,
             isNew: true
           })
@@ -1993,7 +2024,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           figureNo: maxFigNo + index + 1,
           title: sketch.title || `Figure ${maxFigNo + index + 1}`,
           type: 'sketch',
-          imageUrl: sketch.imagePath || null,
+          imageUrl: buildSketchImageUrl(sketch),
           sourceId: sketch.id
         })
       })

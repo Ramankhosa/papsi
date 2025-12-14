@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { authenticateUser } from '@/lib/auth-middleware'
 import { prisma } from '@/lib/prisma'
-import { computeDynamicSuperset } from '@/lib/multi-jurisdiction-service'
+import { computeDynamicSuperset, isNonApplicableHeading } from '@/lib/multi-jurisdiction-service'
 
 // ============================================================================
 // REFERENCE Pseudo-Country Profile
@@ -214,8 +214,14 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
       return NextResponse.json({ error: 'Country profile not found' }, { status: 404 })
     }
 
+    // Normalize mappings: drop non-applicable headings
+    const resolvedMappings = sectionMappings.filter(m => !isNonApplicableHeading(m.heading))
+    if (resolvedMappings.length === 0) {
+      return NextResponse.json({ error: `No section mappings configured for ${code}. Please configure via /super-admin/jurisdiction-config.` }, { status: 400 })
+    }
+
     // Create a map of sectionKey -> mapping for quick lookup
-    const mappingByKey = new Map(sectionMappings.map(m => [m.sectionKey, m]))
+    const mappingByKey = new Map(resolvedMappings.map(m => [m.sectionKey, m]))
 
     // Return only the data needed for drafting UI (structure/prompts/rules/meta)
     const profileData = profile.profileData as any
@@ -255,7 +261,7 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
             return {
               ...sec,
               // Use mapping's displayOrder if available, otherwise keep original order
-              order: mapping?.displayOrder ?? sec.order,
+              order: mapping?.displayOrder ?? sec.order ?? 999,
               // Include mapping metadata
               _mapping: mapping ? {
                 heading: mapping.heading,
@@ -268,17 +274,9 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
           
           // Add sections from CountrySectionMapping that are missing from the profile
           // but are applicable (heading is not N/A)
-          for (const mapping of sectionMappings) {
+          for (const mapping of resolvedMappings) {
             // Skip if this section is already in the profile
             if (existingSectionKeys.has(mapping.sectionKey)) continue
-            
-            // Skip N/A and implicit sections (not applicable for this jurisdiction)
-            if (
-              mapping.heading === '(N/A)' || 
-              mapping.heading === '(Implicit)' ||
-              mapping.heading === '(Recommended/NA)' ||
-              mapping.heading === '(Include in Detailed Desc)'
-            ) continue
             
             // Skip disabled sections
             if (!mapping.isEnabled) continue
@@ -320,7 +318,7 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
       rules: profileData?.rules || null,
       export: profileData?.export || null,
       // Include mappings for reference
-      sectionMappings: sectionMappings.map(m => ({
+      sectionMappings: resolvedMappings.map(m => ({
         sectionKey: m.sectionKey,
         heading: m.heading,
         displayOrder: m.displayOrder,

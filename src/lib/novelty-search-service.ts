@@ -1,4 +1,4 @@
-﻿import { BasePatentService, LLMResult, User } from './base-patent-service';
+import { BasePatentService, LLMResult, User } from './base-patent-service';
 import { llmGateway } from './metering/gateway';
 import { prisma } from './prisma';
 import { TaskCode, NoveltySearchStatus, NoveltySearchStage } from '@prisma/client';
@@ -793,8 +793,8 @@ export class NoveltySearchService extends BasePatentService {
       modelPreference: 'gemini-2.5-flash-lite',
       thresholds: { high: 0.6, medium: 0.4 },
       borderlineQuota: 5,
-      maxCandidates: 80,
-      batchSize: 8
+      maxCandidates: 40,  // Reduced from 80 to 40 to prevent timeouts
+      batchSize: 12        // Increased from 8 to 12 to reduce number of LLM calls
     },
     stage0: {},
     stage1: {
@@ -2082,20 +2082,26 @@ RESPONSE:`;
       for (let i = 0; i < candidates.length; i += batchSize) {
         const batch = candidates.slice(i, i + batchSize);
 
-        // Run a single LLM call for the whole batch
+        // Run a single LLM call for the whole batch with timeout
         let parsed: any[] | null = null;
         try {
           const prompt = buildBatchPrompt(batch);
-          const res = await llmGateway.executeLLMOperation(
-            { headers: requestHeaders || {} },
-            { taskCode: TaskCode.LLM5_NOVELTY_ASSESS, stageCode: 'NOVELTY_COMPARISON', prompt }
-          );
+          const res = await Promise.race([
+            llmGateway.executeLLMOperation(
+              { headers: requestHeaders || {} },
+              { taskCode: TaskCode.LLM5_NOVELTY_ASSESS, stageCode: 'NOVELTY_COMPARISON', prompt }
+            ),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('LLM call timeout')), 30000) // 30 second timeout per batch
+            )
+          ]) as { success: boolean; response?: any; error?: any };
           if (res.success && res.response?.output) {
             const obj = this.parseLLMResponse(res.response.output);
             if (Array.isArray(obj)) parsed = obj;
           }
-        } catch {
-          // If batching fails, will fall back per-item below
+        } catch (error) {
+          console.warn(`Stage 1.5 batch LLM call failed for batch of ${batch.length} items:`, error);
+          // If batching fails, will fall back to PQAI scores below
         }
 
         // Index parsed results by pn for quick lookup

@@ -575,9 +575,10 @@ export async function getSectionLookup(
   const jurisdiction = countryCode.toUpperCase()
   
   try {
+    // IMPORTANT: Order by displayOrder - this is the ONLY source of truth for section sequence
     const mappings = await prisma.countrySectionMapping.findMany({
       where: { countryCode: jurisdiction },
-      orderBy: { supersetCode: 'asc' }
+      orderBy: { displayOrder: 'asc' }
     })
     
     return mappings.map(m => ({

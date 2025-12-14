@@ -3175,11 +3175,13 @@ Return ONLY a valid JSON object exactly matching the schema above.`
 
     // Get all ENABLED sections mapped for this country from database
     // Critical: Filter by isEnabled to exclude disabled sections from drafting flow
+    // IMPORTANT: Order by displayOrder - this is the ONLY source of truth for section sequence
     const countryMappings = await prisma.countrySectionMapping.findMany({
       where: { 
         countryCode: jurisdiction,
         isEnabled: true // Only include enabled sections
-      }
+      },
+      orderBy: { displayOrder: 'asc' }
     })
 
     // Use database mappings to determine available sections

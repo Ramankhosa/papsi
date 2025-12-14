@@ -4,6 +4,9 @@ import { verifyJWT } from '@/lib/auth';
 import { NoveltySearchStage } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 
+// Allow longer-running LLM gating without platform timeouts (defaults are often too low)
+export const maxDuration = 300;
+
 const noveltySearchService = new NoveltySearchService();
 
 /**
@@ -148,4 +151,3 @@ export async function POST(
     );
   }
 }
-

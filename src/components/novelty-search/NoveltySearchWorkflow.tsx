@@ -522,16 +522,26 @@ export default function NoveltySearchWorkflow({
 
       const response = await fetch(`/api/novelty-search/${searchState.searchId}/stage/${stageNumber}`, fetchOptions);
 
-      const data = await response.json();
+      const rawBody = await response.text();
+      let data: any = null;
+      try {
+        data = rawBody ? JSON.parse(rawBody) : null;
+      } catch (parseError) {
+        console.warn(
+          `[Execution] Non-JSON response for stage ${stageNumber} (status ${response.status}):`,
+          rawBody?.slice(0, 500)
+        );
+      }
 
       console.log(`[Execution] Response from stage ${stageNumber}:`, data);
       if (stageNumber === '3.5a') {
+        const safeData = data || {};
         console.log('[Stage3.5a][Client] Detailed response:', {
-          success: data.success,
-          status: data.status,
-          resultsKeys: data.results ? Object.keys(data.results) : [],
-          stage35: data.results?.stage35 ? 'present' : 'missing',
-          stage35Keys: data.results?.stage35 ? Object.keys(data.results.stage35) : []
+          success: safeData.success,
+          status: safeData.status,
+          resultsKeys: safeData.results ? Object.keys(safeData.results) : [],
+          stage35: safeData.results?.stage35 ? 'present' : 'missing',
+          stage35Keys: safeData.results?.stage35 ? Object.keys(safeData.results.stage35) : []
         });
       }
       if (stageNumber === '1') {
@@ -539,8 +549,12 @@ export default function NoveltySearchWorkflow({
         console.log('[Stage1][Client] PQAI results count:', Array.isArray(data?.results?.pqaiResults) ? data.results.pqaiResults.length : 'n/a');
       }
 
-      if (!response.ok) {
-        throw new Error(data.error || `Failed to execute stage ${stageNumber}`);
+      if (!response.ok || !data) {
+        const timeoutHint = response.status === 504
+          ? 'Stage timed out before the server could respond. Please retry in a moment.'
+          : undefined;
+        const baseError = data?.error || data?.message || timeoutHint || `Failed to execute stage ${stageNumber}`;
+        throw new Error(`${baseError}${response.status ? ` (status ${response.status})` : ''}`);
       }
 
       // If Stage 1, show the final count message before updating UI
@@ -565,7 +579,16 @@ export default function NoveltySearchWorkflow({
           headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
           cache: 'no-store'
         });
-        const fullJson = await fullRes.json();
+        const fullRaw = await fullRes.text();
+        let fullJson: any = null;
+        try {
+          fullJson = fullRaw ? JSON.parse(fullRaw) : null;
+        } catch {
+          console.warn(
+            '[Execution] Non-JSON response while refreshing search results:',
+            fullRaw?.slice(0, 500)
+          );
+        }
         if (fullRes.ok && fullJson?.success !== false && fullJson?.search) {
           effectiveStatus = fullJson.search.status;
           effectiveCurrentStage = fullJson.search.currentStage;
@@ -2157,4 +2180,3 @@ export default function NoveltySearchWorkflow({
     </div>
   );
 }
-

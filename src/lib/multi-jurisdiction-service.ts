@@ -426,6 +426,7 @@ export async function getBatchSectionContextRequirements(
     const supersetMap = new Map(supersetSections.map(s => [s.sectionKey, s]))
     
     // Fetch CountrySectionMappings if jurisdiction provided
+    // IMPORTANT: Order by displayOrder - this is the ONLY source of truth for section sequence
     let mappingsMap = new Map<string, any>()
     if (jurisdiction) {
       const mappings = await prisma.countrySectionMapping.findMany({
@@ -433,7 +434,8 @@ export async function getBatchSectionContextRequirements(
           countryCode: jurisdiction.toUpperCase(),
           sectionKey: { in: sectionKeys },
           isEnabled: true
-        }
+        },
+        orderBy: { displayOrder: 'asc' }
       })
       mappingsMap = new Map(mappings.map(m => [m.sectionKey, m]))
     }

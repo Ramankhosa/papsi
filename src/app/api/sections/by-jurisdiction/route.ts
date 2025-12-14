@@ -102,50 +102,19 @@ export async function GET(request: NextRequest) {
       }
     })
 
+    // Filter out any lingering non-applicable headings; order is defined by DB
+    const resolvedMappings = mappings.filter(m => !isNonApplicableHeading(m.heading))
+
     // If no mappings found, fall back to superset sections
-    if (mappings.length === 0) {
-      // Check if the country exists in mappings at all
-      const anyMapping = await prisma.countrySectionMapping.findFirst({
-        where: { countryCode: jurisdiction }
-      })
-
-      if (!anyMapping) {
-        // Country not configured - return superset sections with a warning
-        const supersetSections = await prisma.supersetSection.findMany({
-          where: { isActive: true },
-          orderBy: { displayOrder: 'asc' },
-          select: {
-            sectionKey: true,
-            label: true,
-            displayOrder: true,
-            isRequired: true
-          }
-        })
-
-        return NextResponse.json({
-          jurisdiction,
-          fallback: true,
-          note: 'This jurisdiction is not configured. Showing all superset sections.',
-          sections: supersetSections.map(s => ({
-            key: s.sectionKey,
-            label: s.label,
-            displayOrder: s.displayOrder,
-            isRequired: s.isRequired
-          }))
-        })
-      }
-
-      // Country exists but all sections are NA - return empty
+    if (resolvedMappings.length === 0) {
       return NextResponse.json({
-        jurisdiction,
-        note: 'No applicable sections for this jurisdiction',
-        sections: []
-      })
+        error: `No section mappings configured for ${jurisdiction}. Please configure via /super-admin/jurisdiction-config.`
+      }, { status: 400 })
     }
 
     return NextResponse.json({
       jurisdiction,
-      sections: mappings.map(m => ({
+      sections: resolvedMappings.map(m => ({
         key: m.sectionKey,
         label: m.heading,
         displayOrder: m.displayOrder,

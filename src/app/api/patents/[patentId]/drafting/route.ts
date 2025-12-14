@@ -1,4 +1,4 @@
-﻿import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 import { authenticateUser } from '@/lib/auth-middleware';
@@ -61,6 +61,54 @@ const updateFigureTitleNumber = (title: string, actualFigureNo: number): string 
   return title
     .replace(/\bFig\.?\s*\d+/gi, `Fig.${actualFigureNo}`)
     .replace(/\bFigure\s*\d+/gi, `Figure ${actualFigureNo}`)
+}
+
+function extractFilenameFromPathLike(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  if (!trimmed) return null
+
+  // Support URLs like /api/projects/.../upload?filename=...
+  try {
+    const url = new URL(trimmed, 'http://local')
+    const filename = url.searchParams.get('filename')
+    if (filename) return filename
+  } catch {}
+
+  const withoutQuery = trimmed.split('?')[0]?.split('#')[0] || trimmed
+  const normalized = withoutQuery.replace(/\\/g, '/')
+  const base = path.posix.basename(normalized)
+  return base && base !== '.' && base !== '/' ? base : null
+}
+
+function buildProjectUploadImageUrl(projectId: string, patentId: string, filename: string): string {
+  return `/api/projects/${projectId}/patents/${patentId}/upload?filename=${encodeURIComponent(filename)}`
+}
+
+function resolveSketchPublicImageUrl(
+  sketchRecord: any,
+  projectId: string | null | undefined,
+  patentId: string
+): string | null {
+  const raw = typeof sketchRecord?.imagePath === 'string'
+    ? sketchRecord.imagePath
+    : typeof sketchRecord?.imageUrl === 'string'
+      ? sketchRecord.imageUrl
+      : null
+
+  // If already an absolute URL or an API-served URL, keep it as-is.
+  if (raw && (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('/api/'))) {
+    return raw
+  }
+
+  const filename = extractFilenameFromPathLike(sketchRecord?.imageFilename)
+    || extractFilenameFromPathLike(raw)
+
+  if (filename && projectId) {
+    return buildProjectUploadImageUrl(projectId, patentId, filename)
+  }
+
+  return raw
 }
 
 function getPreferredLanguageForJurisdiction(session: any, jurisdictionCode: string): string | undefined {
@@ -222,18 +270,16 @@ const defaultExportSections: ExportSectionDef[] = [
 async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<ExportSectionDef[]> {
   try {
     // Fetch section mappings from database - this is the ONLY source of truth for ordering
+    // NO FALLBACKS - displayOrder from database is the sole source of truth
     const sectionMappings = await prisma.countrySectionMapping.findMany({
       where: { countryCode: jurisdiction.toUpperCase(), isEnabled: true },
       orderBy: { displayOrder: 'asc' }
     })
     
     // DATABASE IS THE SOURCE OF TRUTH - use section mappings directly for sections and ordering
+    // NO FALLBACK LOGIC - the order returned from Prisma (by displayOrder) is authoritative
     if (sectionMappings.length > 0) {
-      // Build canonical order map from SUPERSET_SECTIONS for fallback when displayOrder is NULL
-      const FULL_SUPERSET = [...SUPERSET_SECTIONS, ...OPTIONAL_SUPERSET_SECTIONS]
-      const canonicalOrderMap = new Map(FULL_SUPERSET.map((key, index) => [key, index]))
-      
-      const sections: (ExportSectionDef & { order: number })[] = []
+      const sections: ExportSectionDef[] = []
       
       for (const mapping of sectionMappings) {
         const sectionKey = mapping.sectionKey
@@ -244,72 +290,32 @@ async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<E
           continue
         }
         
-        // Determine order: use displayOrder from DB if set, otherwise use canonical order
-        // This ensures consistent ordering even when displayOrder is NULL
-        const order = mapping.displayOrder ?? canonicalOrderMap.get(sectionKey) ?? 999
-        
         sections.push({
           key: sectionKey,
           label: heading || sectionKey,
-          required: mapping.isRequired ?? true,
-          order
+          required: mapping.isRequired ?? true
         })
       }
       
-      // Sort by displayOrder (from database or canonical fallback)
-      sections.sort((a, b) => a.order - b.order)
+      // Sections are ALREADY in correct order from database (orderBy: displayOrder: 'asc')
+      // NO re-sorting needed - trust the database order completely
       
       // Ensure title/abstract appear even if database omits them
       const keys = new Set(sections.map(s => s.key))
-      if (!keys.has('title')) sections.unshift({ key: 'title', label: 'Title', required: true, order: 0 })
-      if (!keys.has('abstract')) sections.push({ key: 'abstract', label: 'Abstract', required: true, order: 999 })
+      if (!keys.has('title')) sections.unshift({ key: 'title', label: 'Title', required: true })
+      if (!keys.has('abstract')) sections.push({ key: 'abstract', label: 'Abstract', required: true })
       
-      // Remove the order property from final result (not needed outside this function)
-      return sections.map(({ order, ...rest }) => rest)
+      return sections
     }
     
-    // FALLBACK: If no database mappings exist, try country profile (backward compatibility)
-    const profile = await getCountryProfile(jurisdiction)
-    const variant = profile?.profileData?.structure?.variants?.find((v: any) => v.id === profile?.profileData?.structure?.defaultVariant) || profile?.profileData?.structure?.variants?.[0]
-    const promptSections = profile?.profileData?.prompts?.sections || {}
-    
-    if (variant?.sections?.length) {
-      const sections: (ExportSectionDef & { order: number })[] = []
-      for (const sec of variant.sections) {
-        const keys = (sec.canonicalKeys || []).map((k: string) => k.toLowerCase())
-        let mapped: string | undefined
-        for (const k of keys) {
-          if (canonicalSectionMap[k]) { mapped = canonicalSectionMap[k]; break }
-        }
-        if (!mapped && canonicalSectionMap[sec.id]) mapped = canonicalSectionMap[sec.id]
-        if (!mapped) continue
-        
-        // Use section order from variant when no database mappings exist
-        const order = sec.order ?? 999
-        
-        sections.push({
-          key: mapped,
-          label: sec.label || sec.id,
-          required: sec.required ?? promptSections?.[sec.id]?.required ?? true,
-          order
-        })
-      }
-      
-      // Sort by section order from variant
-      sections.sort((a, b) => a.order - b.order)
-      
-      // Ensure title/abstract appear even if profile omits them
-      const keys = new Set(sections.map(s => s.key))
-      if (!keys.has('title')) sections.unshift({ key: 'title', label: 'Title', required: true, order: 0 })
-      if (!keys.has('abstract')) sections.push({ key: 'abstract', label: 'Abstract', required: true, order: 999 })
-      
-      // Remove the order property from final result (not needed outside this function)
-      return sections.map(({ order, ...rest }) => rest)
-    }
+    // NO FALLBACK - Database is the ONLY source of truth
+    // If no database mappings exist, throw an error - jurisdiction must be configured by super admin
+    console.error(`[getExportSectionsForJurisdiction] CRITICAL: No CountrySectionMapping entries found for jurisdiction "${jurisdiction}". Database must be configured via /super-admin/jurisdiction-config.`)
+    throw new Error(`Jurisdiction "${jurisdiction}" is not configured in the database. Please add section mappings via /super-admin/jurisdiction-config.`)
   } catch (err) {
-    console.warn('Failed to load export sections for jurisdiction', jurisdiction, err)
+    console.error('[getExportSectionsForJurisdiction] Failed to load sections for jurisdiction', jurisdiction, err)
+    throw err // Re-throw - no fallbacks allowed
   }
-  return defaultExportSections
 }
 
 function getSectionHeadingDynamic(sectionName: string, sections?: ExportSectionDef[]): string {
@@ -395,7 +401,7 @@ export async function GET(
 
     const { patentId } = params;
 
-    // Verify patent access
+    // Verify patent access and get projectId for building image URLs
     const patent = await prisma.patent.findFirst({
       where: {
         id: patentId,
@@ -410,6 +416,10 @@ export async function GET(
             }
           }
         ]
+      },
+      select: {
+        id: true,
+        projectId: true
       }
     });
 
@@ -419,6 +429,8 @@ export async function GET(
         { status: 404 }
       );
     }
+    
+    const projectIdForSketchUrls = patent.projectId
 
     // Get drafting sessions for this patent
     const rawSessions = await prisma.draftingSession.findMany({
@@ -472,18 +484,13 @@ export async function GET(
             }
           }
           const normalizedSketches = sketches.map((sr: any) => {
-            const rawPath = sr?.imagePath || ''
-            let imagePath = sr?.imageUrl || null
-            if (rawPath) {
-              if (rawPath.startsWith('/uploads/')) {
-                imagePath = rawPath
-              } else if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
-                imagePath = rawPath
-              } else {
-                imagePath = `/uploads/sketches/${path.basename(rawPath)}`
-              }
+            // Use resolveSketchPublicImageUrl to get proper API-based URL for production
+            const resolvedUrl = resolveSketchPublicImageUrl(sr, projectIdForSketchUrls, patentId)
+            return { 
+              ...sr, 
+              imagePath: resolvedUrl,
+              imageUrl: resolvedUrl
             }
-            return { ...sr, imagePath, imageUrl: sr?.imageUrl || imagePath }
           })
           return { ...s, sketchRecords: normalizedSketches }
         })
@@ -8086,10 +8093,8 @@ async function handleGetCombinedFigures(user: any, patentId: string, data: any) 
     figureNo: index + 1, // Will be reassigned
     title: sr.title || `Sketch ${index + 1}`,
     description: sr.description || '',
-    // Normalize image path so frontend gets a usable URL
-    imagePath: sr.imagePath
-      ? (sr.imagePath.startsWith('/uploads/') ? sr.imagePath : `/uploads/sketches/${sr.imagePath}`)
-      : (sr.imageUrl || null),
+    imagePath: resolveSketchPublicImageUrl(sr, projectId, patentId),
+    imageFilename: sr.imageFilename || extractFilenameFromPathLike(sr.imagePath) || null,
     createdAt: sr.createdAt
   }))
 
@@ -8283,7 +8288,7 @@ async function handleAIArrangeFigures(user: any, patentId: string, data: any, re
       figureNo: idx + 1,
       title: sr.title || `Sketch ${idx + 1}`,
       description: sr.description || '',
-      imagePath: sr.imagePath || null
+      imagePath: resolveSketchPublicImageUrl(sr, projectId, patentId)
     }))
 
     const allFigures = [...diagrams, ...sketches]
@@ -8445,7 +8450,16 @@ Return ONLY the JSON object.`
 }
 
 /**
- * Finalize the figure sequence - locks it for drafting.
+ * Finalize the figure sequence - locks it for drafting and updates source record figureNo values.
+ * 
+ * This function pushes the arranged sequence back to the source records:
+ * - Updates FigurePlan.figureNo to match the finalFigNo in the sequence
+ * - Updates DiagramSource.figureNo to match the finalFigNo in the sequence
+ * - Updates SketchRecord.figureNo for sketches in the sequence
+ * - Updates FigurePlan.title to reflect the new figure number
+ * 
+ * This ensures that when the patent draft is generated, the figure numbers in the
+ * PlantUML code and image references match the arranged sequence.
  */
 async function handleFinalizeFigureSequence(user: any, patentId: string, data: any) {
   const { sessionId } = data
@@ -8456,24 +8470,213 @@ async function handleFinalizeFigureSequence(user: any, patentId: string, data: a
 
   try {
     const session = await prisma.draftingSession.findFirst({
-      where: { id: sessionId, patentId, userId: user.id }
+      where: { id: sessionId, patentId, userId: user.id },
+      include: {
+        figurePlans: true,
+        diagramSources: true,
+        sketchRecords: {
+          where: { isDeleted: false, status: 'SUCCESS' }
+        }
+      }
     })
 
     if (!session) {
       return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
     }
 
-    const sequence = session.figureSequence as any[]
+    const sequence = session.figureSequence as Array<{ id: string; type: string; sourceId: string; finalFigNo: number }>
     if (!sequence || sequence.length === 0) {
       return NextResponse.json({ error: 'No figure sequence to finalize' }, { status: 400 })
     }
 
-    await prisma.draftingSession.update({
-      where: { id: sessionId },
-      data: { figureSequenceFinalized: true }
+    // Guard: Check if already finalized
+    if (session.figureSequenceFinalized) {
+      console.log(`[FigureSequence] Sequence already finalized for session ${sessionId}, skipping re-finalization`)
+      return NextResponse.json({ 
+        success: true, 
+        message: 'Figure sequence is already finalized',
+        alreadyFinalized: true
+      })
+    }
+
+    // Validate that all figures in the sequence exist in the session
+    const sequenceDiagramSourceIds = new Set(
+      sequence.filter(s => s.type === 'diagram').map(s => s.sourceId)
+    )
+    const sequenceSketchSourceIds = new Set(
+      sequence.filter(s => s.type === 'sketch').map(s => s.sourceId)
+    )
+    const existingPlanIds = new Set(session.figurePlans.map(p => p.id))
+    const existingSketchIds = new Set(session.sketchRecords.map(s => s.id))
+
+    // Warn about orphaned sequence entries (entries that reference non-existent figures)
+    const orphanedDiagrams = Array.from(sequenceDiagramSourceIds).filter(id => !existingPlanIds.has(id))
+    const orphanedSketches = Array.from(sequenceSketchSourceIds).filter(id => !existingSketchIds.has(id))
+    if (orphanedDiagrams.length > 0 || orphanedSketches.length > 0) {
+      console.warn(`[FigureSequence] Orphaned entries in sequence: diagrams=${orphanedDiagrams.length}, sketches=${orphanedSketches.length}`)
+    }
+
+    // Check for potential figureNo conflicts from figures NOT in the sequence
+    // These figures will keep their original figureNo values
+    const figuresInSequence = new Set(sequence.map(s => s.sourceId))
+    const excludedPlans = session.figurePlans.filter(p => !figuresInSequence.has(p.id))
+    const excludedFigureNos = new Set(excludedPlans.map(p => p.figureNo))
+    const finalFigNos = new Set(sequence.map(s => s.finalFigNo))
+    const conflictingNos = Array.from(finalFigNos).filter(no => excludedFigureNos.has(no))
+    
+    if (conflictingNos.length > 0) {
+      console.warn(`[FigureSequence] Potential figureNo conflicts with excluded figures: ${conflictingNos.join(', ')}. Excluded figures will be renumbered to avoid conflicts.`)
+      
+      // Reassign excluded figures to numbers beyond the sequence range
+      let nextAvailableNo = sequence.length + 1
+      for (const plan of excludedPlans) {
+        if (conflictingNos.includes(plan.figureNo)) {
+          // We'll handle this in the transaction
+        }
+      }
+    }
+
+    // Build mapping: sourceId -> finalFigNo for quick lookup
+    const sourceIdToFinalFigNo = new Map<string, number>()
+    for (const item of sequence) {
+      sourceIdToFinalFigNo.set(item.sourceId, item.finalFigNo)
+    }
+
+    // Build mapping: original figureNo -> plan.id (for linking DiagramSources to FigurePlans)
+    // This uses snapshot values which remain constant throughout the transaction
+    const originalFigNoToPlanId = new Map<number, string>()
+    for (const plan of session.figurePlans) {
+      originalFigNoToPlanId.set(plan.figureNo, plan.id)
+    }
+
+    // Handle excluded figures that would conflict with the new numbering
+    // These will be assigned numbers beyond the sequence range
+    const excludedPlanReassignments = new Map<string, number>()
+    if (excludedPlans.length > 0 && conflictingNos.length > 0) {
+      let nextAvailableNo = sequence.length + 1
+      for (const plan of excludedPlans) {
+        if (finalFigNos.has(plan.figureNo)) {
+          excludedPlanReassignments.set(plan.id, nextAvailableNo)
+          nextAvailableNo++
+        }
+      }
+    }
+
+    // Use a transaction to update all records atomically
+    // We use a two-phase approach to avoid unique constraint violations:
+    // Phase 1: Set all figureNo to negative (temporary) values
+    // Phase 2: Set all figureNo to their final values
+    await prisma.$transaction(async (tx) => {
+      // ============================================
+      // PHASE 1: Set figureNo to negative temporary values
+      // This clears the way for reassigning final numbers without constraint violations
+      // ============================================
+      
+      // Update ALL FigurePlans to temporary negative numbers (including excluded ones with conflicts)
+      for (const plan of session.figurePlans) {
+        const inSequence = sourceIdToFinalFigNo.has(plan.id)
+        const needsReassignment = excludedPlanReassignments.has(plan.id)
+        
+        if (inSequence || needsReassignment) {
+          await tx.figurePlan.update({
+            where: { id: plan.id },
+            data: { figureNo: -plan.figureNo - 1000 } // Use offset to ensure unique negative values
+          })
+        }
+      }
+
+      // Update DiagramSources to temporary negative numbers
+      // DiagramSources are linked to FigurePlans by matching figureNo
+      for (const source of session.diagramSources) {
+        const planId = originalFigNoToPlanId.get(source.figureNo)
+        if (planId) {
+          const inSequence = sourceIdToFinalFigNo.has(planId)
+          const needsReassignment = excludedPlanReassignments.has(planId)
+          
+          if (inSequence || needsReassignment) {
+            await tx.diagramSource.update({
+              where: { id: source.id },
+              data: { figureNo: -source.figureNo - 1000 }
+            })
+          }
+        }
+      }
+
+      // ============================================
+      // PHASE 2: Set figureNo to final values and update titles
+      // ============================================
+      
+      // Update FigurePlans with final figure numbers and updated titles
+      for (const plan of session.figurePlans) {
+        // Check if in sequence (priority) or needs reassignment due to conflict
+        const finalNo = sourceIdToFinalFigNo.get(plan.id) ?? excludedPlanReassignments.get(plan.id)
+        
+        if (finalNo !== undefined) {
+          // Update title to reflect new figure number
+          const updatedTitle = updateFigureTitleNumber(plan.title, finalNo)
+          
+          await tx.figurePlan.update({
+            where: { id: plan.id },
+            data: { 
+              figureNo: finalNo,
+              title: updatedTitle
+            }
+          })
+        }
+      }
+
+      // Update DiagramSources with final figure numbers
+      // Use the pre-built mapping to find the corresponding plan
+      for (const source of session.diagramSources) {
+        const planId = originalFigNoToPlanId.get(source.figureNo)
+        if (planId) {
+          const finalNo = sourceIdToFinalFigNo.get(planId) ?? excludedPlanReassignments.get(planId)
+          if (finalNo !== undefined) {
+            await tx.diagramSource.update({
+              where: { id: source.id },
+              data: { figureNo: finalNo }
+            })
+          }
+        }
+      }
+
+      // Update SketchRecords with final figure numbers
+      // For sketches, the sourceId in the sequence IS the sketch.id
+      for (const sketch of session.sketchRecords) {
+        const finalNo = sourceIdToFinalFigNo.get(sketch.id)
+        if (finalNo !== undefined) {
+          // Update sketch title to reflect new figure number if it contains a figure reference
+          const updatedTitle = updateFigureTitleNumber(sketch.title, finalNo)
+          
+          await tx.sketchRecord.update({
+            where: { id: sketch.id },
+            data: { 
+              figureNo: finalNo,
+              title: updatedTitle
+            }
+          })
+        }
+      }
+
+      // Mark sequence as finalized
+      await tx.draftingSession.update({
+        where: { id: sessionId },
+        data: { figureSequenceFinalized: true }
+      })
     })
 
-    return NextResponse.json({ success: true, message: 'Figure sequence finalized' })
+    const reassignedCount = excludedPlanReassignments.size
+    console.log(`[FigureSequence] Finalized sequence for session ${sessionId} with ${sequence.length} figures. Figure numbers updated in source records.${reassignedCount > 0 ? ` ${reassignedCount} excluded figures reassigned to avoid conflicts.` : ''}`)
+
+    return NextResponse.json({ 
+      success: true, 
+      message: 'Figure sequence finalized and source records updated',
+      updatedCount: sequence.length,
+      ...(reassignedCount > 0 && { 
+        reassignedExcludedCount: reassignedCount,
+        note: `${reassignedCount} figure(s) not in sequence were reassigned to avoid number conflicts`
+      })
+    })
   } catch (error) {
     console.error('[FigureSequence] Finalize error:', error)
     return NextResponse.json({
