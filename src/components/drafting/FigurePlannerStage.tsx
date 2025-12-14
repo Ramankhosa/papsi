@@ -142,6 +142,7 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   const [modifyText, setModifyText] = useState('')
   const [modifyFigNo, setModifyFigNo] = useState<number | null>(null)
   const [modifyTextSaved, setModifyTextSaved] = useState('')
+  const [regeneratingFigure, setRegeneratingFigure] = useState<Record<number, boolean>>({})
   const [isViewing, setIsViewing] = useState<Record<number, boolean>>({})
   const [rendering, setRendering] = useState<Record<string, boolean>>({})
   const [renderPreview, setRenderPreview] = useState<Record<string, string | null>>({})
@@ -2359,24 +2360,36 @@ Output: JSON array only, no markdown fences, no explanations.`
                         value={modifyTextSaved}
                         onChange={(e) => setModifyTextSaved(e.target.value)}
                       />
-                      <div className="flex gap-2">
-                        <Button size="sm" className="flex-1" onClick={async () => {
-                          try {
-                            const resp = await onComplete({ action: 'regenerate_diagram_llm', sessionId: session?.id, figureNo: figNo, instructions: modifyTextSaved })
-                            if (resp?.diagramSource?.plantumlCode) {
-                              await onRefresh()
-                              setModifyFigNo(null)
-                              setModifyTextSaved('')
+                        <div className="flex gap-2">
+                          <Button size="sm" className="flex-1" onClick={async () => {
+                            setRegeneratingFigure(prev => ({ ...prev, [figNo]: true }))
+                            try {
+                             const resp = await onComplete({ action: 'regenerate_diagram_llm', sessionId: session?.id, figureNo: figNo, instructions: modifyTextSaved })
+                              if (resp?.diagramSource?.plantumlCode) {
+                                await onRefresh()
+                                setModifyFigNo(null)
+                                setModifyTextSaved('')
+                              }
+                            } catch (e) { setError('Failed to modify') } finally {
+                              setRegeneratingFigure(prev => ({ ...prev, [figNo]: false }))
                             }
-                           } catch (e) { setError('Failed to modify') }
-                        }}>Apply</Button>
-                        <Button size="sm" variant="outline" onClick={() => setModifyFigNo(null)}>Cancel</Button>
+                          }} disabled={!!regeneratingFigure[figNo]}>
+                            {regeneratingFigure[figNo] ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+                            Apply
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setModifyFigNo(null)}>Cancel</Button>
+                      </div>
+                      {regeneratingFigure[figNo] && (
+                        <div className="mt-2 flex items-center text-xs text-indigo-600">
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Regenerating diagram with AI...
+                        </div>
+                      )}
                     </div>
+                  )}
                   </div>
-                )}
-                </div>
-              </Card>
-              )})}
+                </Card>
+                )})}
                       </div>
                     )}
                       </div>

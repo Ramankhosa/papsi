@@ -380,14 +380,15 @@ export default function PatentDraftingPage() {
       
       // Actions that skip immediate refresh but should trigger delayed background refresh
       // This updates the sidebar without interrupting the component's local state management
-      const delayedRefreshActions = [
-        'related_art_search', // Results need time to settle in component state
-        'save_ai_analysis', // AI analysis saved, sidebar should show completion
-        'related_art_select', // Selections saved, sidebar should show completion
-        'generate_sections', // Section generated, sidebar should show completion
-        'autosave_sections', // Section saved, sidebar should show completion
-        'save_sections' // Explicit save, sidebar should show completion
-      ]
+        const delayedRefreshActions = [
+          'related_art_search', // Results need time to settle in component state
+          'save_ai_analysis', // AI analysis saved, sidebar should show completion
+          'related_art_select', // Selections saved, sidebar should show completion
+          'generate_sections', // Section generated, sidebar should show completion
+          'autosave_sections', // Section saved, sidebar should show completion
+          'save_sections', // Explicit save, sidebar should show completion
+          'run_ai_review' // Avoid aggressive refresh; keep UI smooth while review completes
+        ]
       
       const skipRefresh = skipRefreshActions.includes(action)
       const needsDelayedRefresh = delayedRefreshActions.includes(action)

@@ -16,6 +16,7 @@ import { getDiagramConfig, generateDiagramPromptInstructions } from '@/lib/juris
 import { trackSectionDrafted } from '@/lib/patent-drafting-tracker';
 import { resolveSourceOfTruth, computeJurisdictionStateOnDelete } from '@/lib/jurisdiction-state-service';
 import { cloneInstructionsBetweenSessions } from '@/lib/user-instruction-service';
+import { SUPERSET_SECTIONS, OPTIONAL_SUPERSET_SECTIONS, isNonApplicableHeading } from '@/lib/multi-jurisdiction-service';
 import {
   generateSketch,
   listSketches,
@@ -220,20 +221,58 @@ const defaultExportSections: ExportSectionDef[] = [
 
 async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<ExportSectionDef[]> {
   try {
-    // Fetch country profile and section mappings in parallel
-    const [profile, sectionMappings] = await Promise.all([
-      getCountryProfile(jurisdiction),
-      prisma.countrySectionMapping.findMany({
-        where: { countryCode: jurisdiction.toUpperCase(), isEnabled: true },
-        orderBy: { displayOrder: 'asc' }
-      })
-    ])
+    // Fetch section mappings from database - this is the ONLY source of truth for ordering
+    const sectionMappings = await prisma.countrySectionMapping.findMany({
+      where: { countryCode: jurisdiction.toUpperCase(), isEnabled: true },
+      orderBy: { displayOrder: 'asc' }
+    })
     
-    // Create a map of sectionKey -> mapping for quick lookup
-    const mappingByKey = new Map(sectionMappings.map(m => [m.sectionKey, m]))
+    // DATABASE IS THE SOURCE OF TRUTH - use section mappings directly for sections and ordering
+    if (sectionMappings.length > 0) {
+      // Build canonical order map from SUPERSET_SECTIONS for fallback when displayOrder is NULL
+      const FULL_SUPERSET = [...SUPERSET_SECTIONS, ...OPTIONAL_SUPERSET_SECTIONS]
+      const canonicalOrderMap = new Map(FULL_SUPERSET.map((key, index) => [key, index]))
+      
+      const sections: (ExportSectionDef & { order: number })[] = []
+      
+      for (const mapping of sectionMappings) {
+        const sectionKey = mapping.sectionKey
+        const heading = mapping.heading || ''
+        
+        // Skip N/A, Implicit, or other non-applicable sections
+        if (isNonApplicableHeading(heading)) {
+          continue
+        }
+        
+        // Determine order: use displayOrder from DB if set, otherwise use canonical order
+        // This ensures consistent ordering even when displayOrder is NULL
+        const order = mapping.displayOrder ?? canonicalOrderMap.get(sectionKey) ?? 999
+        
+        sections.push({
+          key: sectionKey,
+          label: heading || sectionKey,
+          required: mapping.isRequired ?? true,
+          order
+        })
+      }
+      
+      // Sort by displayOrder (from database or canonical fallback)
+      sections.sort((a, b) => a.order - b.order)
+      
+      // Ensure title/abstract appear even if database omits them
+      const keys = new Set(sections.map(s => s.key))
+      if (!keys.has('title')) sections.unshift({ key: 'title', label: 'Title', required: true, order: 0 })
+      if (!keys.has('abstract')) sections.push({ key: 'abstract', label: 'Abstract', required: true, order: 999 })
+      
+      // Remove the order property from final result (not needed outside this function)
+      return sections.map(({ order, ...rest }) => rest)
+    }
     
+    // FALLBACK: If no database mappings exist, try country profile (backward compatibility)
+    const profile = await getCountryProfile(jurisdiction)
     const variant = profile?.profileData?.structure?.variants?.find((v: any) => v.id === profile?.profileData?.structure?.defaultVariant) || profile?.profileData?.structure?.variants?.[0]
     const promptSections = profile?.profileData?.prompts?.sections || {}
+    
     if (variant?.sections?.length) {
       const sections: (ExportSectionDef & { order: number })[] = []
       for (const sec of variant.sections) {
@@ -245,19 +284,18 @@ async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<E
         if (!mapped && canonicalSectionMap[sec.id]) mapped = canonicalSectionMap[sec.id]
         if (!mapped) continue
         
-        // Get country-specific displayOrder from mapping, fallback to section order
-        const mapping = mappingByKey.get(mapped)
-        const order = mapping?.displayOrder ?? sec.order ?? 999
+        // Use section order from variant when no database mappings exist
+        const order = sec.order ?? 999
         
         sections.push({
           key: mapped,
-          label: mapping?.heading || sec.label || sec.id,
-          required: mapping?.isRequired ?? sec.required ?? promptSections?.[sec.id]?.required ?? true,
+          label: sec.label || sec.id,
+          required: sec.required ?? promptSections?.[sec.id]?.required ?? true,
           order
         })
       }
       
-      // Sort by country-specific displayOrder
+      // Sort by section order from variant
       sections.sort((a, b) => a.order - b.order)
       
       // Ensure title/abstract appear even if profile omits them
@@ -419,23 +457,37 @@ export async function GET(
       orderBy: { createdAt: 'desc' }
     });
 
-    // Ensure sketch records are present; if relation is empty, fallback to patent-level sketches
-    const sessions = await Promise.all(
-      rawSessions.map(async (s: any) => {
-        let sketches = Array.isArray(s.sketchRecords) ? s.sketchRecords : []
-        if (sketches.length === 0) {
-          const patentSketches = await prisma.sketchRecord.findMany({
-            where: { patentId, isDeleted: false, status: 'SUCCESS' },
-            orderBy: { createdAt: 'asc' }
-          })
-          if (patentSketches.length > 0) {
-            console.log(`[GET sessions] Loaded ${patentSketches.length} sketches from patent for session ${s.id} (relation was empty)`)
-            sketches = patentSketches
+      // Normalize sketch paths and ensure sketch records are present; if relation is empty, fallback to patent-level sketches
+      const sessions = await Promise.all(
+        rawSessions.map(async (s: any) => {
+          let sketches = Array.isArray(s.sketchRecords) ? s.sketchRecords : []
+          if (sketches.length === 0) {
+            const patentSketches = await prisma.sketchRecord.findMany({
+              where: { patentId, isDeleted: false, status: 'SUCCESS' },
+              orderBy: { createdAt: 'asc' }
+            })
+            if (patentSketches.length > 0) {
+              console.log(`[GET sessions] Loaded ${patentSketches.length} sketches from patent for session ${s.id} (relation was empty)`)
+              sketches = patentSketches
+            }
           }
-        }
-        return { ...s, sketchRecords: sketches }
-      })
-    )
+          const normalizedSketches = sketches.map((sr: any) => {
+            const rawPath = sr?.imagePath || ''
+            let imagePath = sr?.imageUrl || null
+            if (rawPath) {
+              if (rawPath.startsWith('/uploads/')) {
+                imagePath = rawPath
+              } else if (rawPath.startsWith('http://') || rawPath.startsWith('https://')) {
+                imagePath = rawPath
+              } else {
+                imagePath = `/uploads/sketches/${path.basename(rawPath)}`
+              }
+            }
+            return { ...sr, imagePath, imageUrl: sr?.imageUrl || imagePath }
+          })
+          return { ...s, sketchRecords: normalizedSketches }
+        })
+      )
 
     // Log priorArtConfig for debugging
     if (sessions.length > 0) {
@@ -3803,14 +3855,16 @@ async function handleClaimRefinementPreview(user: any, patentId: string, data: a
   const userDirectives = typeof additionalInstructions === 'string' ? additionalInstructions.trim() : ''
 
   const autoRefBlocks = autoRefs.map((r, idx) => {
-    const notes = (() => {
-      try {
-        const parsed = typeof r.userNotes === 'string' ? JSON.parse(r.userNotes) : r.userNotes
-        return parsed?.summary || r.userNotes || ''
-      } catch {
-        return r.userNotes || ''
-      }
-    })()
+      const notes = (() => {
+        try {
+          const isJsonish = typeof r.userNotes === 'string' && /^[\s]*[{\[]/.test(r.userNotes)
+          const parsed = isJsonish ? JSON.parse(r.userNotes as string) : r.userNotes
+          return parsed?.summary || r.userNotes || ''
+        } catch {
+          // If parsing fails, fall back to the raw notes to avoid breaking the pipeline
+          return r.userNotes || ''
+        }
+      })()
     return `AUTO#${idx + 1} :: ${r.patentNumber || 'UNKNOWN'} :: ${r.title || ''}\nTHREAT: ${threatFor(r) || 'unknown'}\nSUMMARY: ${notes || r.snippet || ''}`
   }).join('\n\n')
 
@@ -8025,16 +8079,19 @@ async function handleGetCombinedFigures(user: any, patentId: string, data: any) 
       }
     })
 
-    const sketches = loadedSketches.map((sr: any, index: number) => ({
-      id: `sketch-${sr.id}`,
-      type: 'sketch' as const,
-      sourceId: sr.id,
-      figureNo: index + 1, // Will be reassigned
-      title: sr.title || `Sketch ${index + 1}`,
-      description: sr.description || '',
-      imagePath: sr.imagePath || null,
-      createdAt: sr.createdAt
-    }))
+  const sketches = loadedSketches.map((sr: any, index: number) => ({
+    id: `sketch-${sr.id}`,
+    type: 'sketch' as const,
+    sourceId: sr.id,
+    figureNo: index + 1, // Will be reassigned
+    title: sr.title || `Sketch ${index + 1}`,
+    description: sr.description || '',
+    // Normalize image path so frontend gets a usable URL
+    imagePath: sr.imagePath
+      ? (sr.imagePath.startsWith('/uploads/') ? sr.imagePath : `/uploads/sketches/${sr.imagePath}`)
+      : (sr.imageUrl || null),
+    createdAt: sr.createdAt
+  }))
 
     // If sequence exists, use it; otherwise generate initial sequence
     let sequence: any[] = session.figureSequence as any[] || []
@@ -9598,8 +9655,8 @@ import {
   generateReferenceDraft, 
   translateReferenceDraft, 
   getSectionMapping,
-  validateDraft,
-  SUPERSET_SECTIONS
+  validateDraft
+  // Note: SUPERSET_SECTIONS, OPTIONAL_SUPERSET_SECTIONS, isNonApplicableHeading imported at top of file
 } from '@/lib/multi-jurisdiction-service'
 
 /**
@@ -10522,7 +10579,8 @@ async function handleRunAIReview(
     : []
 
   // Get invention title
-  const inventionTitle = (session.ideaRecord as any)?.title || draftContent.title || ''
+  // Prefer the AI-generated draft title; fall back to the original idea title
+  const inventionTitle = draftContent.title || (session.ideaRecord as any)?.title || ''
 
   // Fetch section validation limits from database (skip for REFERENCE which has no country-specific limits)
   let sectionLimits: any[] = []

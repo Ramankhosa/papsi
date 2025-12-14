@@ -223,8 +223,13 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
         getStatus: (session) => {
           const config = session?.priorArtConfig || {}
           if (config.skipped) return 'skipped'
-          const hasSelections = (session?.relatedArtSelections || []).length > 0
-          const hasManual = !!session?.manualPriorArt?.manualPriorArtText
+          const draftConfig = config.priorArtForDrafting || {}
+          const hasSelections =
+            (session?.relatedArtSelections || []).length > 0 ||
+            (Array.isArray(draftConfig.selectedPatents) && draftConfig.selectedPatents.length > 0)
+          const hasManual =
+            !!session?.manualPriorArt?.manualPriorArtText ||
+            (!!draftConfig.manualText && draftConfig.manualText.trim().length > 0)
           if (hasSelections || hasManual) return 'completed'
           return 'pending'
         }
@@ -667,4 +672,3 @@ export function calculateOverallProgress(session: any, currentStage: string): nu
 
   return totalWeight > 0 ? Math.round((completedWeight / totalWeight) * 100) : 0
 }
-

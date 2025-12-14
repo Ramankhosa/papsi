@@ -37,8 +37,6 @@ export class OpenAIProvider implements LLMProvider {
     
     // Check if this model requires max_completion_tokens (o1 + latest gpt-5 family)
     const isO1Model = modelToUse.startsWith('o1')
-    const isGPT5Family = modelToUse.startsWith('gpt-5')
-    const usesCompletionTokens = isO1Model || isGPT5Family
     
     // Apply enforcement limits - some models use max_completion_tokens instead of max_tokens
     const maxTokens = limits.maxTokensOut || 4096
@@ -79,17 +77,13 @@ export class OpenAIProvider implements LLMProvider {
         ]
       }
       
-      if (usesCompletionTokens) {
-        // o1 and gpt-5 family expect max_completion_tokens
+      if (isO1Model) {
+        // o1 models expect max_completion_tokens
         requestBody.max_completion_tokens = maxTokens
         // GPT-5 variants currently require default temperature (omit to use server default)
-        if (isO1Model) {
-          console.log(`[OpenAIProvider] Using o1-specific params for ${modelToUse} (max_completion_tokens: ${maxTokens})`)
-        } else if (!isGPT5Family) {
-          requestBody.temperature = request.parameters?.temperature ?? 0.7
-        }
+        console.log(`[OpenAIProvider] Using o1-specific params for ${modelToUse} (max_completion_tokens: ${maxTokens})`)
       } else {
-        // Legacy / current chat models
+        // Chat models (GPT-3.5/4/5 families) use max_tokens
         requestBody.max_tokens = maxTokens
         requestBody.temperature = request.parameters?.temperature ?? 0.7
       }
