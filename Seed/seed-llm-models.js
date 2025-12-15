@@ -117,6 +117,33 @@ async function main() {
       isActive: true,
       isDefault: false
     },
+    // Google - Gemini 3 Pro (Preview) + Thinking Alias
+    // Note: "thinking" is enabled via a request parameter (thinking_level) and
+    // represented in our system as a model-code alias for easy selection.
+    {
+      code: 'gemini-3-pro-preview',
+      displayName: 'Gemini 3 Pro Preview',
+      provider: 'google',
+      contextWindow: 2000000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 125,    // $1.25 (placeholder)
+      outputCostPer1M: 1000,  // $10.00 (placeholder)
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'gemini-3-pro-preview-thinking',
+      displayName: 'Gemini 3 Pro Preview (Thinking)',
+      provider: 'google',
+      contextWindow: 2000000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 125,    // $1.25 (placeholder)
+      outputCostPer1M: 1000,  // $10.00 (placeholder)
+      isActive: true,
+      isDefault: false
+    },
 
     // === OPENAI MODELS ===
     // GPT-4 Series
@@ -166,6 +193,43 @@ async function main() {
       supportsStreaming: true,
       inputCostPer1M: 150,    // $1.50
       outputCostPer1M: 1200,  // $12.00
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'gpt-5.2',
+      displayName: 'GPT-5.2',
+      provider: 'openai',
+      contextWindow: 256000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 150,    // $1.50 (placeholder)
+      outputCostPer1M: 1200,  // $12.00 (placeholder)
+      isActive: true,
+      isDefault: false
+    },
+    // OpenAI - "Thinking" aliases (translated to reasoning controls in provider request)
+    {
+      code: 'gpt-5.1-thinking',
+      displayName: 'GPT-5.1 (Thinking)',
+      provider: 'openai',
+      contextWindow: 256000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 150,    // $1.50 (placeholder)
+      outputCostPer1M: 1200,  // $12.00 (placeholder)
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'gpt-5.2-thinking',
+      displayName: 'GPT-5.2 (Thinking)',
+      provider: 'openai',
+      contextWindow: 256000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 150,    // $1.50 (placeholder)
+      outputCostPer1M: 1200,  // $12.00 (placeholder)
       isActive: true,
       isDefault: false
     },

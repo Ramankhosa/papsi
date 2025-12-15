@@ -26,7 +26,8 @@ export interface RoutingDecision {
  */
 const VISION_CAPABLE_MODELS = new Set([
   // OpenAI
-  'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-5', 'gpt-5.1', 'gpt-5-mini', 'gpt-5-nano',
+  'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-5', 'gpt-5.1', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano',
+  'gpt-5.1-thinking', 'gpt-5.2-thinking',
   // Anthropic
   'claude-3.5-sonnet', 'claude-3.5-haiku', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku',
   'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229',
@@ -36,7 +37,7 @@ const VISION_CAPABLE_MODELS = new Set([
   'gemini-2.0-flash', 'gemini-2.0-flash-001',
   'gemini-1.5-pro', 'gemini-1.5-pro-002',
   'gemini-1.5-flash', 'gemini-1.5-flash-002',
-  'gemini-3.0-nano-banana', 'gemini-3-pro-image-preview'
+  'gemini-3.0-nano-banana', 'gemini-3-pro-preview', 'gemini-3-pro-preview-thinking', 'gemini-3-pro-image-preview'
 ])
 
 /**
@@ -50,6 +51,10 @@ const MODEL_CONTEXT_LIMITS: Record<string, { maxInput: number; maxOutput: number
   'gpt-3.5-turbo': { maxInput: 16385, maxOutput: 4096 },
   'o1': { maxInput: 200000, maxOutput: 100000 },
   'o1-mini': { maxInput: 128000, maxOutput: 65536 },
+  // GPT-5 additions (for fallback validation)
+  'gpt-5.2': { maxInput: 400000, maxOutput: 128000 },
+  'gpt-5.1-thinking': { maxInput: 400000, maxOutput: 128000 },
+  'gpt-5.2-thinking': { maxInput: 400000, maxOutput: 128000 },
   // Anthropic
   'claude-3.5-sonnet': { maxInput: 200000, maxOutput: 8192 },
   'claude-3-5-sonnet-20241022': { maxInput: 200000, maxOutput: 8192 },
@@ -66,6 +71,8 @@ const MODEL_CONTEXT_LIMITS: Record<string, { maxInput: number; maxOutput: number
   'gemini-1.5-pro-002': { maxInput: 2000000, maxOutput: 8192 },
   'gemini-1.5-flash': { maxInput: 1000000, maxOutput: 8192 },
   'gemini-1.5-flash-002': { maxInput: 1000000, maxOutput: 8192 },
+  'gemini-3-pro-preview': { maxInput: 2000000, maxOutput: 16384 },
+  'gemini-3-pro-preview-thinking': { maxInput: 2000000, maxOutput: 16384 },
   // Groq
   'llama-3.3-70b-versatile': { maxInput: 128000, maxOutput: 8192 },
   'groq-llama-3.3-70b': { maxInput: 128000, maxOutput: 8192 },

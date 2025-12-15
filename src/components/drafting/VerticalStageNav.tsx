@@ -124,6 +124,7 @@ async function fetchJurisdictionSections(
     if (!response.ok) return null
 
     const data = await response.json()
+    const { ensureDisplayOrder, formatNumberedHeading } = await import('@/lib/section-display-order')
     
     // Get country name from cached map
     const countryName = countryNameMap.get(jurisdictionCode.toUpperCase()) || jurisdictionCode
@@ -131,12 +132,16 @@ async function fetchJurisdictionSections(
     return {
       code: jurisdictionCode,
       name: countryName,
-      sections: (data.sections || []).map((s: any) => ({
-        key: s.key,
-        label: s.label,
-        displayOrder: s.displayOrder || 0,
-        isRequired: s.isRequired || false
-      })).sort((a: any, b: any) => a.displayOrder - b.displayOrder)
+      // API already returns DB-ordered mappings (orderBy: displayOrder asc). Preserve it.
+      sections: (data.sections || []).map((s: any) => {
+        const displayOrder = ensureDisplayOrder(s.displayOrder, `${jurisdictionCode}:${String(s.key)}`)
+        return {
+          key: s.key,
+          label: formatNumberedHeading(displayOrder, s.label),
+          displayOrder,
+          isRequired: s.isRequired || false
+        }
+      })
     }
   } catch (error) {
     console.error(`Failed to fetch sections for ${jurisdictionCode}:`, error)

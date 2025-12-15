@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { authenticateUser } from '@/lib/auth-middleware'
 import { prisma } from '@/lib/prisma'
 import { computeDynamicSuperset, isNonApplicableHeading } from '@/lib/multi-jurisdiction-service'
+import { ensureDisplayOrder } from '@/lib/section-display-order'
 
 // ============================================================================
 // REFERENCE Pseudo-Country Profile
@@ -219,6 +220,15 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
     if (resolvedMappings.length === 0) {
       return NextResponse.json({ error: `No section mappings configured for ${code}. Please configure via /super-admin/jurisdiction-config.` }, { status: 400 })
     }
+    
+    // Validate displayOrder - DB is the only source of truth for ordering
+    try {
+      for (const m of resolvedMappings) {
+        ensureDisplayOrder(m.displayOrder, `${code}:${String(m.sectionKey)}`)
+      }
+    } catch (err: any) {
+      return NextResponse.json({ error: err?.message || 'Invalid displayOrder in jurisdiction config' }, { status: 400 })
+    }
 
     // Create a map of sectionKey -> mapping for quick lookup
     const mappingByKey = new Map(resolvedMappings.map(m => [m.sectionKey, m]))
@@ -249,6 +259,11 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
               }
             }
             
+            // DB mapping is authoritative: if no mapping exists, this section should not appear
+            if (!mapping) {
+              return null
+            }
+            
             // Track this section's key
             existingSectionKeys.add(sec.id)
             if (sec.canonicalKeys) {
@@ -260,8 +275,10 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
             
             return {
               ...sec,
-              // Use mapping's displayOrder if available, otherwise keep original order
-              order: mapping?.displayOrder ?? sec.order ?? 999,
+              // Use mapping's displayOrder ONLY (database is source of truth)
+              order: ensureDisplayOrder(mapping.displayOrder, `${code}:${String(mapping.sectionKey)}`),
+              // Use mapping heading for display (jurisdiction-config)
+              label: mapping.heading,
               // Include mapping metadata
               _mapping: mapping ? {
                 heading: mapping.heading,
@@ -271,6 +288,7 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
               } : null
             }
           })
+          .filter(Boolean)
           
           // Add sections from CountrySectionMapping that are missing from the profile
           // but are applicable (heading is not N/A)
@@ -285,7 +303,7 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
             sectionsWithOrder.push({
               id: mapping.sectionKey,
               label: mapping.heading,
-              order: mapping.displayOrder ?? 999,
+              order: ensureDisplayOrder(mapping.displayOrder, `${code}:${String(mapping.sectionKey)}`),
               required: mapping.isRequired,
               canonicalKeys: [mapping.sectionKey],
               _mapping: {
@@ -299,7 +317,7 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
           }
           
           // Sort sections by the resolved order
-          sectionsWithOrder.sort((a: any, b: any) => (a.order || 999) - (b.order || 999))
+          sectionsWithOrder.sort((a: any, b: any) => a.order - b.order)
           
           return {
             ...variant,

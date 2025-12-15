@@ -43,6 +43,7 @@ import plantumlEncoder from 'plantuml-encoder';
 import path from 'path';
 import fs from 'fs/promises';
 import { imageSize } from 'image-size';
+import { normalizeFigureSequence } from '@/lib/figure-sequence'
 
 const sanitizeFigureTitleInput = (title?: string | null): string => {
   const raw = typeof title === 'string' ? title : ''
@@ -269,6 +270,7 @@ const defaultExportSections: ExportSectionDef[] = [
 
 async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<ExportSectionDef[]> {
   try {
+    const { ensureDisplayOrder, formatNumberedHeading } = await import('@/lib/section-display-order')
     // Fetch section mappings from database - this is the ONLY source of truth for ordering
     // NO FALLBACKS - displayOrder from database is the sole source of truth
     const sectionMappings = await prisma.countrySectionMapping.findMany({
@@ -284,6 +286,7 @@ async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<E
       for (const mapping of sectionMappings) {
         const sectionKey = mapping.sectionKey
         const heading = mapping.heading || ''
+        const displayOrder = ensureDisplayOrder(mapping.displayOrder, `${jurisdiction}:${String(sectionKey)}`)
         
         // Skip N/A, Implicit, or other non-applicable sections
         if (isNonApplicableHeading(heading)) {
@@ -292,7 +295,7 @@ async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<E
         
         sections.push({
           key: sectionKey,
-          label: heading || sectionKey,
+          label: formatNumberedHeading(displayOrder, heading || sectionKey),
           required: mapping.isRequired ?? true
         })
       }
@@ -300,10 +303,10 @@ async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<E
       // Sections are ALREADY in correct order from database (orderBy: displayOrder: 'asc')
       // NO re-sorting needed - trust the database order completely
       
-      // Ensure title/abstract appear even if database omits them
       const keys = new Set(sections.map(s => s.key))
-      if (!keys.has('title')) sections.unshift({ key: 'title', label: 'Title', required: true })
-      if (!keys.has('abstract')) sections.push({ key: 'abstract', label: 'Abstract', required: true })
+      if (!keys.has('title') || !keys.has('abstract')) {
+        throw new Error(`Jurisdiction "${jurisdiction}" is missing required export sections (title/abstract). Configure them via /super-admin/jurisdiction-config.`)
+      }
       
       return sections
     }
@@ -8158,7 +8161,14 @@ async function handleSaveFigureSequence(user: any, patentId: string, data: any) 
 
   try {
     const session = await prisma.draftingSession.findFirst({
-      where: { id: sessionId, patentId, userId: user.id }
+      where: { id: sessionId, patentId, userId: user.id },
+      include: {
+        figurePlans: { select: { id: true, figureNo: true } },
+        sketchRecords: {
+          where: { isDeleted: false, status: 'SUCCESS' },
+          select: { id: true }
+        }
+      } as any
     })
 
     if (!session) {
@@ -8169,40 +8179,52 @@ async function handleSaveFigureSequence(user: any, patentId: string, data: any) 
       return NextResponse.json({ error: 'Sequence is finalized. Unlock to make changes.' }, { status: 400 })
     }
 
-    // Validate sequence structure - ensure each item has required fields
-    const validTypes = ['diagram', 'sketch']
-    for (const item of sequence) {
-      if (!item.id || typeof item.id !== 'string') {
-        return NextResponse.json({ error: 'Invalid sequence: each item must have a valid id' }, { status: 400 })
-      }
-      if (!item.type || !validTypes.includes(item.type)) {
-        return NextResponse.json({ error: 'Invalid sequence: each item must have type "diagram" or "sketch"' }, { status: 400 })
-      }
-      if (!item.sourceId || typeof item.sourceId !== 'string') {
-        return NextResponse.json({ error: 'Invalid sequence: each item must have a valid sourceId' }, { status: 400 })
-      }
+    // Fallback: If session relation does not include sketches (legacy), allow patent-level sketches
+    let allowedSketchIds = new Set<string>(((session as any).sketchRecords || []).map((s: any) => s.id))
+    if (allowedSketchIds.size === 0) {
+      const patentSketches = await prisma.sketchRecord.findMany({
+        where: {
+          patentId,
+          isDeleted: false,
+          status: 'SUCCESS'
+        },
+        select: { id: true },
+        orderBy: { createdAt: 'asc' }
+      })
+      allowedSketchIds = new Set<string>(patentSketches.map(s => s.id))
     }
 
-    // Check for duplicate IDs
-    const uniqueIds = new Set(sequence.map((item: any) => item.id))
-    if (uniqueIds.size !== sequence.length) {
-      return NextResponse.json({ error: 'Invalid sequence: duplicate figure IDs detected' }, { status: 400 })
-    }
+    const availableFigures = [
+      ...(((session as any).figurePlans || []) as any[]).map((fp: any) => ({
+        id: `diagram-${fp.figureNo}`,
+        type: 'diagram' as const,
+        sourceId: fp.id
+      })),
+      ...Array.from(allowedSketchIds).map((sketchId) => ({
+        id: `sketch-${sketchId}`,
+        type: 'sketch' as const,
+        sourceId: sketchId
+      }))
+    ]
 
-    // Build validated sequence with proper numbering
-    const validatedSequence = sequence.map((item: any, index: number) => ({
-      id: item.id,
-      type: item.type,
-      sourceId: item.sourceId,
-      finalFigNo: index + 1
-    }))
+    const { normalized: validatedSequence, meta } = normalizeFigureSequence(sequence, availableFigures)
 
     await prisma.draftingSession.update({
       where: { id: sessionId },
       data: { figureSequence: validatedSequence }
     })
 
-    return NextResponse.json({ success: true, sequence: validatedSequence })
+    if (
+      meta.droppedUnknownCount ||
+      meta.droppedTypeMismatchCount ||
+      meta.droppedSourceMismatchCount ||
+      meta.dedupedCount ||
+      meta.appendedMissingCount
+    ) {
+      console.log('[FigureSequence] Normalized input sequence', { sessionId, ...meta })
+    }
+
+    return NextResponse.json({ success: true, sequence: validatedSequence, normalized: meta })
   } catch (error) {
     console.error('[FigureSequence] Save sequence error:', error)
     return NextResponse.json({
@@ -8507,7 +8529,20 @@ async function handleFinalizeFigureSequence(user: any, patentId: string, data: a
       sequence.filter(s => s.type === 'sketch').map(s => s.sourceId)
     )
     const existingPlanIds = new Set(session.figurePlans.map(p => p.id))
-    const existingSketchIds = new Set(session.sketchRecords.map(s => s.id))
+    // Validate sketches against the exact IDs referenced in the sequence.
+    // This covers legacy sessions where sketchRecords relation may be empty even though sketches exist on the patent.
+    const sketchIdsInSequence = Array.from(sequenceSketchSourceIds)
+    const sketchesBySequence = sketchIdsInSequence.length > 0
+      ? await prisma.sketchRecord.findMany({
+          where: {
+            id: { in: sketchIdsInSequence },
+            patentId,
+            isDeleted: false,
+            status: 'SUCCESS'
+          }
+        })
+      : []
+    const existingSketchIds = new Set(sketchesBySequence.map(s => s.id))
 
     // Warn about orphaned sequence entries (entries that reference non-existent figures)
     const orphanedDiagrams = Array.from(sequenceDiagramSourceIds).filter(id => !existingPlanIds.has(id))
@@ -8642,20 +8677,18 @@ async function handleFinalizeFigureSequence(user: any, patentId: string, data: a
 
       // Update SketchRecords with final figure numbers
       // For sketches, the sourceId in the sequence IS the sketch.id
-      for (const sketch of session.sketchRecords) {
-        const finalNo = sourceIdToFinalFigNo.get(sketch.id)
-        if (finalNo !== undefined) {
-          // Update sketch title to reflect new figure number if it contains a figure reference
-          const updatedTitle = updateFigureTitleNumber(sketch.title, finalNo)
-          
-          await tx.sketchRecord.update({
-            where: { id: sketch.id },
-            data: { 
-              figureNo: finalNo,
-              title: updatedTitle
-            }
-          })
-        }
+      for (const sketchId of sketchIdsInSequence) {
+        const finalNo = sourceIdToFinalFigNo.get(sketchId)
+        if (finalNo === undefined) continue
+        const sketch = sketchesBySequence.find(s => s.id === sketchId)
+        const updatedTitle = updateFigureTitleNumber(sketch?.title || '', finalNo)
+        await tx.sketchRecord.update({
+          where: { id: sketchId },
+          data: {
+            figureNo: finalNo,
+            ...(sketch?.title ? { title: updatedTitle } : {})
+          }
+        })
       }
 
       // Mark sequence as finalized

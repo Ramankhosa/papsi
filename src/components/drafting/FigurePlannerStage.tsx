@@ -542,6 +542,9 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
 
   // Track which figures have been queued for rendering to prevent duplicate calls (language-aware)
   const queuedForRenderRef = useRef<Set<string>>(new Set())
+  const renderAbortControllersRef = useRef<Record<string, AbortController | null>>({})
+  const uploadQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const [uploadingByKey, setUploadingByKey] = useState<Record<string, boolean>>({})
 
   // Automatically process diagrams when PlantUML code is available
   // This effect runs after state initialization and when diagramSources change
@@ -1646,6 +1649,23 @@ Output: JSON array only, no markdown fences, no explanations.`
     }
   }
 
+  const queueUpload = useCallback((key: string, figureNo: number, blob: Blob, language: string) => {
+    uploadQueueRef.current = uploadQueueRef.current.then(async () => {
+      try {
+        setUploadingByKey(prev => ({ ...prev, [key]: true }))
+        setIsUploading(true)
+        const filename = `figure_${figureNo}_${language}_${Date.now()}.png`
+        const file = new File([blob], filename, { type: 'image/png' })
+        await handleUploadImage(figureNo, file, filename, language)
+      } finally {
+        setUploadingByKey(prev => ({ ...prev, [key]: false }))
+        setIsUploading(false)
+      }
+    }).catch((e) => {
+      console.warn('Queued upload failed:', e instanceof Error ? e.message : e)
+    })
+  }, [])
+
   const runSingleRender = async (figureNo: number, plantumlCode: string, language = 'en') => {
     const key = getDiagramKey(figureNo, language)
     setProcessingStatus(prev => ({ ...prev, [key]: intelligentMessages[0] }))
@@ -1653,16 +1673,25 @@ Output: JSON array only, no markdown fences, no explanations.`
 
     try {
       // Minimal delay for UI feedback
-      await new Promise(resolve => setTimeout(resolve, 100))
+      await new Promise(resolve => setTimeout(resolve, 50))
       setProcessingStatus(prev => ({ ...prev, [key]: intelligentMessages[1] }))
       setProcessingStep(prev => ({ ...prev, [key]: 1 }))
 
       setRendering((prev) => ({ ...prev, [key]: true }))
       setError(null)
 
+      // Abort any in-flight render for this figure/language to keep UI responsive
+      try {
+        const prev = renderAbortControllersRef.current[key]
+        prev?.abort()
+      } catch {}
+      const controller = new AbortController()
+      renderAbortControllersRef.current[key] = controller
+
       const resp = await fetch('/api/test/plantuml-proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           code: plantumlCode,
           format: 'png',
@@ -1682,15 +1711,19 @@ Output: JSON array only, no markdown fences, no explanations.`
 
       const blob = await resp.blob()
       const url = URL.createObjectURL(blob)
-      setRenderPreview((prev) => ({ ...prev, [key]: url }))
+      setRenderPreview((prev) => {
+        const prevUrl = prev?.[key]
+        if (prevUrl && typeof prevUrl === 'string') {
+          try { URL.revokeObjectURL(prevUrl) } catch {}
+        }
+        return ({ ...prev, [key]: url })
+      })
 
       setProcessingStatus(prev => ({ ...prev, [key]: intelligentMessages[3] }))
       setProcessingStep(prev => ({ ...prev, [key]: 3 }))
 
-      setIsUploading(true)
-      const filename = `figure_${figureNo}_${language}_${Date.now()}.png`
-      const file = new File([blob], filename, { type: 'image/png' })
-      await handleUploadImage(figureNo, file, filename, language)
+      // Upload in the background so the next render can start quickly
+      queueUpload(key, figureNo, blob, language)
 
       // Clear processing status
       setProcessingStatus(prev => ({ ...prev, [key]: '' }))
@@ -1706,7 +1739,6 @@ Output: JSON array only, no markdown fences, no explanations.`
       queuedForRenderRef.current.delete(key)
     } finally {
       setRendering((prev) => ({ ...prev, [key]: false }))
-      setIsUploading(false)
     }
   }
 
@@ -1714,7 +1746,7 @@ Output: JSON array only, no markdown fences, no explanations.`
   const autoProcessDiagram = (figureNo: number, plantumlCode: string, language = 'en') => {
     renderQueueRef.current = renderQueueRef.current.then(async () => {
       // Reduced gap between render requests for better responsiveness
-      await new Promise(resolve => setTimeout(resolve, 500))
+      await new Promise(resolve => setTimeout(resolve, 150))
       await runSingleRender(figureNo, plantumlCode, language)
     })
     return renderQueueRef.current
@@ -3541,6 +3573,13 @@ Output: JSON array only, no markdown fences, no explanations.`
                             src={selectedArrangeFigure.imagePath}
                             alt={selectedArrangeFigure.title}
                             className="max-w-full max-h-full object-contain"
+                            onError={(e) => {
+                              // Sketches may be stored in /public/uploads/sketches; provide a direct fallback if the API URL fails.
+                              if (selectedArrangeFigure?.type === 'sketch' && selectedArrangeFigure?.imageFilename) {
+                                const fallback = `/uploads/sketches/${encodeURIComponent(selectedArrangeFigure.imageFilename)}`
+                                if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback
+                              }
+                            }}
                           />
                         ) : (
                           <div className="text-gray-400 text-sm">No preview available</div>
@@ -3765,6 +3804,12 @@ function SortableFigureItem({ figure, isSelected, isFinalized, onSelect, onAttem
             src={figure.imagePath}
             alt=""
             className="w-full h-full object-cover"
+            onError={(e) => {
+              if (figure?.type === 'sketch' && figure?.imageFilename) {
+                const fallback = `/uploads/sketches/${encodeURIComponent(figure.imageFilename)}`
+                if (e.currentTarget.src !== fallback) e.currentTarget.src = fallback
+              }
+            }}
           />
         ) : (
           <div className="w-full h-full flex items-center justify-center">

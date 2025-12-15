@@ -16,7 +16,9 @@
     "db:seed:comprehensive": "node scripts/comprehensive-seed.js",
     "db:export": "node scripts/comprehensive-seed.js --export-only",
     "import:local-patents": "node scripts/import-local-patents-from-csv.js patients11.csv",
-    "seed:adminplans": "node scripts/adminplans-seed.js"
+    "seed:adminplans": "node scripts/adminplans-seed.js",
+    "llm:add-thinking-models": "tsx scripts/add-thinking-models.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",
@@ -104,6 +106,8 @@
     "postcss": "^8.4.32",
     "prisma": "^5.9.1",
     "tailwindcss": "^3.4.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "tsx": "^4.20.0",
+    "vitest": "^2.1.9"
   }
 }

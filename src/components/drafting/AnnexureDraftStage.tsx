@@ -2412,12 +2412,11 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             mapping.heading !== '(Include in Detailed Desc)' &&
             mapping.isEnabled !== false
           )
-          
-          // Sort by displayOrder
-          applicableMappings.sort((a: any, b: any) => (a.displayOrder ?? 999) - (b.displayOrder ?? 999))
+          const { ensureDisplayOrder, formatNumberedHeading } = await import('@/lib/section-display-order')
           
           for (const mapping of applicableMappings) {
             const sectionKey = mapping.sectionKey
+            const displayOrder = ensureDisplayOrder(mapping.displayOrder, `${activeJurisdiction}:${String(sectionKey)}`)
             
             // Resolve to canonical internal key using the mapping
             const canonicalKey = canonicalMap[sectionKey] || canonicalMap[sectionKey.toLowerCase()] || sectionKey
@@ -2430,7 +2429,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             
             sections.push({
               keys: [canonicalKey],
-              label: mapping.heading, // Use exact heading from CountrySectionMapping table
+              label: formatNumberedHeading(displayOrder, mapping.heading), // DB-driven numbering + heading
               description: promptSections?.[canonicalKey]?.description || promptSections?.[sectionKey]?.description || '',
               constraints: promptSections?.[canonicalKey]?.constraints || promptSections?.[sectionKey]?.constraints || [],
               required: mapping.isRequired ?? true
@@ -2456,8 +2455,9 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
         }
       } catch (err) {
         console.error('Failed to load jurisdiction profile', err)
-        setProfileError('Failed to load country-specific sections; using default layout.')
-        setSectionConfigs(fallbackSections)
+        // Database is the only source of truth for section ordering; do not fall back.
+        setProfileError('Failed to load country-specific sections. Please try again or contact support.')
+        setSectionConfigs([])
         setUsingFallback(true)
       } finally {
         setProfileLoading(false)

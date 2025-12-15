@@ -16,8 +16,12 @@ export class OpenAIProvider implements LLMProvider {
     // GPT-5 Series
     'gpt-5',
     'gpt-5.1',
+    'gpt-5.2',
     'gpt-5-mini',
     'gpt-5-nano',
+    // GPT-5 Thinking Variants (alias to base model + reasoning controls)
+    'gpt-5.1-thinking',
+    'gpt-5.2-thinking',
     // GPT-3.5 Series
     'gpt-3.5-turbo',
     // o1 Reasoning Models
@@ -32,9 +36,25 @@ export class OpenAIProvider implements LLMProvider {
     this.config = config
   }
 
+  private normalizeModelCode(modelCode: string): {
+    apiModel: string
+    isThinkingVariant: boolean
+  } {
+    if (!modelCode) return { apiModel: modelCode, isThinkingVariant: false }
+
+    // "thinking" is represented as a model-code variant in our system
+    // and translated into OpenAI request fields (reasoning.effort).
+    if (modelCode.endsWith('-thinking')) {
+      return { apiModel: modelCode.replace(/-thinking$/, ''), isThinkingVariant: true }
+    }
+
+    return { apiModel: modelCode, isThinkingVariant: false }
+  }
+
   async execute(request: LLMRequest, limits: EnforcementDecision): Promise<LLMResponse> {
     // Use the model specified in the request (from model resolver) or fall back to config default
-    const modelToUse = request.modelClass || this.config.model
+    const requestedModel = request.modelClass || this.config.model
+    const { apiModel: modelToUse, isThinkingVariant } = this.normalizeModelCode(requestedModel)
     
     // Check if this model requires max_completion_tokens instead of max_tokens
     // OpenAI's newer models (o1, o1-mini, o1-preview, gpt-5, gpt-5.1, etc.) use max_completion_tokens
@@ -81,6 +101,25 @@ export class OpenAIProvider implements LLMProvider {
           }
         ]
       }
+
+      // Reasoning / "thinking" controls:
+      // - Thinking variants (e.g., gpt-5.2-thinking) default to higher reasoning effort.
+      // - Request can override via request.parameters.reasoning or request.parameters.reasoning_effort.
+      // Note: We only apply this to GPT-5 family in this gateway to avoid surprising behavior on other models.
+      if (isGPT5Model) {
+        const configuredReasoning = request.parameters?.reasoning
+        const configuredReasoningEffort = request.parameters?.reasoning_effort
+
+        const defaultEffort = isThinkingVariant ? 'high' : undefined
+        const effort = configuredReasoning?.effort ?? configuredReasoningEffort ?? defaultEffort
+
+        if (effort) {
+          requestBody.reasoning = {
+            ...(typeof configuredReasoning === 'object' ? configuredReasoning : {}),
+            effort
+          }
+        }
+      }
       
       if (usesMaxCompletionTokens) {
         // o1 models and GPT-5 models expect max_completion_tokens (NOT max_tokens)
@@ -123,7 +162,7 @@ export class OpenAIProvider implements LLMProvider {
       return {
         output: choice.message.content,
         outputTokens: usage?.completion_tokens || 0,
-        modelClass: modelToUse, // Use the actual model that was called
+        modelClass: requestedModel, // Preserve the configured model code (may be a thinking alias)
         metadata: {
           provider: 'openai',
           inputTokens: usage?.prompt_tokens || 0,
@@ -139,6 +178,7 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   getTokenLimits(modelName: string): { input: number, output: number } {
+    const normalized = this.normalizeModelCode(modelName).apiModel
     // Token limits per model family
     const limits: Record<string, { input: number, output: number }> = {
       // GPT-4 Series
@@ -149,6 +189,7 @@ export class OpenAIProvider implements LLMProvider {
       // GPT-5 Series (estimated based on typical patterns)
       'gpt-5': { input: 256000, output: 32768 },
       'gpt-5.1': { input: 256000, output: 32768 },
+      'gpt-5.2': { input: 256000, output: 32768 },
       'gpt-5-mini': { input: 128000, output: 16384 },
       'gpt-5-nano': { input: 64000, output: 8192 },
       // GPT-3.5 Series
@@ -159,10 +200,11 @@ export class OpenAIProvider implements LLMProvider {
       'o1-preview': { input: 128000, output: 32768 }
     }
     
-    return limits[modelName] || { input: 128000, output: 16384 }
+    return limits[normalized] || { input: 128000, output: 16384 }
   }
 
   getCostPerToken(modelName: string): { input: number, output: number } {
+    const normalized = this.normalizeModelCode(modelName).apiModel
     // Pricing per token (converted from per-million pricing)
     const costs: Record<string, { input: number, output: number }> = {
       // GPT-4 Series
@@ -173,6 +215,7 @@ export class OpenAIProvider implements LLMProvider {
       // GPT-5 Series (estimated pricing)
       'gpt-5': { input: 0.00001, output: 0.00003 },               // $10/$30 per M
       'gpt-5.1': { input: 0.000012, output: 0.000036 },           // $12/$36 per M
+      'gpt-5.2': { input: 0.000012, output: 0.000036 },           // $12/$36 per M (placeholder - update if pricing differs)
       'gpt-5-mini': { input: 0.000003, output: 0.000012 },        // $3/$12 per M
       'gpt-5-nano': { input: 0.0000005, output: 0.000002 },       // $0.50/$2.00 per M
       // GPT-3.5 Series
@@ -183,7 +226,7 @@ export class OpenAIProvider implements LLMProvider {
       'o1-preview': { input: 0.000015, output: 0.00006 }          // $15/$60 per M
     }
     
-    return costs[modelName] || { input: 0.000005, output: 0.000015 }
+    return costs[normalized] || { input: 0.000005, output: 0.000015 }
   }
 
   async isHealthy(): Promise<boolean> {

@@ -80,6 +80,8 @@ export function getProviderFromModelCode(modelCode: string): ProviderType {
     'gemini-1.5-flash-002': 'gemini',
     // Google - Legacy Image Generation Models (backwards compatibility)
     'gemini-3.0-nano-banana': 'gemini',
+    'gemini-3-pro-preview': 'gemini',
+    'gemini-3-pro-preview-thinking': 'gemini',
     'gemini-3-pro-image-preview': 'gemini',
     
     // OpenAI - GPT-4 Series
@@ -90,8 +92,12 @@ export function getProviderFromModelCode(modelCode: string): ProviderType {
     // OpenAI - GPT-5 Series
     'gpt-5': 'openai',
     'gpt-5.1': 'openai',
+    'gpt-5.2': 'openai',
     'gpt-5-mini': 'openai',
     'gpt-5-nano': 'openai',
+    // OpenAI - GPT-5 Thinking Variants
+    'gpt-5.1-thinking': 'openai',
+    'gpt-5.2-thinking': 'openai',
     // OpenAI - GPT-3.5 Series
     'gpt-3.5-turbo': 'openai',
     // OpenAI - o1 Reasoning Models
