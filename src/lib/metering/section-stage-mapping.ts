@@ -177,7 +177,7 @@ export function getSupportedSectionKeys(): string[] {
     'advantageousEffects',
     'briefDescriptionOfDrawings',
     'detailedDescription',
-    'bestMode',
+    'bestMethod',
     'industrialApplicability',
     'claims',
     'abstract',
@@ -207,4 +207,3 @@ export function getCanonicalSectionKey(sectionKeyOrAlias: string): string {
   
   return sectionKeyOrAlias
 }
-

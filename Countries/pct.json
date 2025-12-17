@@ -393,7 +393,7 @@
             ]
           }
         },
-        "detailed_description": {
+        "detailedDescription": {
           "instruction": "Draft the section describing the mode(s) for carrying out the invention.",
           "constraints": [
             "Describe embodiments in sufficient detail that a skilled person can carry out the invention without undue experimentation.",
@@ -401,22 +401,6 @@
             "Ensure that each independent claim has at least one fully supporting embodiment.",
             "Reference the drawings and reference numerals where applicable."
           ],
-          "topUp": {
-            "instruction": "Per PCT Rule 5.1(a)(v), draft Mode(s) for Carrying Out the Invention setting out at least the best mode contemplated by the applicant.",
-            "constraints": [
-              "Best mode contemplated by applicant must be disclosed",
-              "Sufficient detail for enablement by skilled person",
-              "Each independent claim needs supporting embodiment",
-              "Reference drawings with consistent numerals"
-            ],
-            "additions": [
-              "Required section under PCT Rule 5.1(a)(v)",
-              "Best mode disclosure required for many national phases",
-              "Use examples where they add clarity"
-            ]
-          }
-        },
-        "detailedDescription": {
           "topUp": {
             "instruction": "Per PCT Rule 5.1(a)(v), draft Mode(s) for Carrying Out the Invention setting out at least the best mode contemplated by the applicant.",
             "constraints": [

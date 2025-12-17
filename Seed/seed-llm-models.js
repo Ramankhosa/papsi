@@ -2,17 +2,18 @@
 
 /**
  * ============================================================================
- * SEED: LLM Models and Workflow Stages
+ * SEED: LLM Models and Workflow Stages - PRODUCTION CONFIG
  * ============================================================================
- * 
+ *
  * Seeds the database with:
  * 1. All available LLM models (Google, OpenAI, Anthropic, DeepSeek, Groq)
  * 2. All workflow stages (Patent Drafting, Novelty Search, etc.)
- * 3. Default model configurations per plan WITH TOKEN LIMITS
- * 
- * Token limits are standardized across all plans (from Enterprise config).
- * Model selection varies by plan tier.
- * 
+ * 3. PRODUCTION TOKEN LIMITS for all plans (same limits, different models per tier)
+ *
+ * PRODUCTION TOKEN LIMITS are standardized across all plans from Enterprise config.
+ * Model selection varies by plan tier (Free/Pro/Enterprise).
+ * Newly added models are seeded but not assigned to any work.
+ *
  * Safe to run multiple times (idempotent - uses upsert).
  */
 
@@ -21,7 +22,7 @@ const { PrismaClient } = require('@prisma/client');
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('🚀 Seeding LLM Models and Workflow Stages...\n');
+  console.log('🚀 Seeding LLM Models and Workflow Stages (PRODUCTION CONFIG)...\n');
 
   // ============================================================================
   // STEP 1: Seed all available LLM models
@@ -421,7 +422,7 @@ async function main() {
     { code: 'DRAFT_FIGURE_PLANNER', displayName: 'Figure Planning', featureCode: 'PATENT_DRAFTING', sortOrder: 5, description: 'AI-powered figure planning and diagram suggestions' },
     { code: 'DRAFT_SKETCH_GENERATION', displayName: 'Sketch Generation', featureCode: 'PATENT_DRAFTING', sortOrder: 6, description: 'Generate patent sketches using Gemini 3 Pro Image Preview' },
     { code: 'DRAFT_DIAGRAM_GENERATION', displayName: 'Diagram Generation', featureCode: 'PATENT_DRAFTING', sortOrder: 7, description: 'Generate PlantUML/technical diagrams' },
-    
+
     // === ANNEXURE/SECTION DRAFTING STAGES ===
     { code: 'DRAFT_ANNEXURE_TITLE', displayName: 'Title Drafting', featureCode: 'PATENT_DRAFTING', sortOrder: 8, description: 'Draft patent title (superset: title)' },
     { code: 'DRAFT_ANNEXURE_PREAMBLE', displayName: 'Preamble Drafting', featureCode: 'PATENT_DRAFTING', sortOrder: 9, description: 'Draft legal preamble (superset: preamble)' },
@@ -434,14 +435,14 @@ async function main() {
     { code: 'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS', displayName: 'Advantageous Effects', featureCode: 'PATENT_DRAFTING', sortOrder: 16, description: 'Draft advantageous effects (superset: advantageousEffects)' },
     { code: 'DRAFT_ANNEXURE_DRAWINGS', displayName: 'Brief Description of Drawings', featureCode: 'PATENT_DRAFTING', sortOrder: 17, description: 'Draft brief description of drawings (superset: briefDescriptionOfDrawings)' },
     { code: 'DRAFT_ANNEXURE_DESCRIPTION', displayName: 'Detailed Description', featureCode: 'PATENT_DRAFTING', sortOrder: 18, description: 'Draft detailed description (superset: detailedDescription)' },
-    { code: 'DRAFT_ANNEXURE_BEST_MODE', displayName: 'Best Mode', featureCode: 'PATENT_DRAFTING', sortOrder: 19, description: 'Draft best mode description (superset: bestMode)' },
+    { code: 'DRAFT_ANNEXURE_BEST_MODE', displayName: 'Best Mode', featureCode: 'PATENT_DRAFTING', sortOrder: 19, description: 'Draft best mode description (superset: bestMethod)' },
     { code: 'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY', displayName: 'Industrial Applicability', featureCode: 'PATENT_DRAFTING', sortOrder: 20, description: 'Draft industrial applicability (superset: industrialApplicability)' },
     { code: 'DRAFT_ANNEXURE_CLAIMS', displayName: 'Claims Drafting', featureCode: 'PATENT_DRAFTING', sortOrder: 21, description: 'Draft final patent claims (superset: claims)' },
     { code: 'DRAFT_ANNEXURE_ABSTRACT', displayName: 'Abstract Drafting', featureCode: 'PATENT_DRAFTING', sortOrder: 22, description: 'Draft patent abstract (superset: abstract)' },
     { code: 'DRAFT_ANNEXURE_NUMERALS', displayName: 'List of Reference Numerals', featureCode: 'PATENT_DRAFTING', sortOrder: 23, description: 'Draft list of reference numerals (superset: listOfNumerals)' },
     { code: 'DRAFT_ANNEXURE_CROSS_REFERENCE', displayName: 'Cross-Reference to Related Applications', featureCode: 'PATENT_DRAFTING', sortOrder: 24, description: 'Draft cross-reference section (superset: crossReference)' },
     { code: 'DRAFT_REVIEW', displayName: 'AI Review & Fix', featureCode: 'PATENT_DRAFTING', sortOrder: 25, description: 'AI-powered patent review' },
-    
+
     // === NOVELTY SEARCH STAGES ===
     { code: 'NOVELTY_QUERY_GENERATION', displayName: 'Query Generation', featureCode: 'PRIOR_ART_SEARCH', sortOrder: 1, description: 'Generate search queries from idea' },
     { code: 'NOVELTY_PATENT_SEARCH', displayName: 'Patent Search', featureCode: 'PRIOR_ART_SEARCH', sortOrder: 2, description: 'Search patent databases' },
@@ -449,12 +450,12 @@ async function main() {
     { code: 'NOVELTY_FEATURE_ANALYSIS', displayName: 'Feature Analysis', featureCode: 'PRIOR_ART_SEARCH', sortOrder: 4, description: 'Analyze feature overlap' },
     { code: 'NOVELTY_COMPARISON', displayName: 'Detailed Comparison', featureCode: 'PRIOR_ART_SEARCH', sortOrder: 5, description: 'Compare with prior art' },
     { code: 'NOVELTY_REPORT_GENERATION', displayName: 'Report Generation', featureCode: 'PRIOR_ART_SEARCH', sortOrder: 6, description: 'Generate novelty report' },
-    
+
     // === IDEA BANK STAGES ===
     { code: 'IDEA_BANK_GENERATION', displayName: 'Idea Generation', featureCode: 'IDEA_BANK', sortOrder: 1, description: 'Generate white-space patent ideas from prior art analysis' },
     { code: 'IDEA_BANK_NORMALIZE', displayName: 'Idea Normalization', featureCode: 'IDEA_BANK', sortOrder: 2, description: 'Normalize and structure idea' },
     { code: 'IDEA_BANK_SEARCH', displayName: 'Similar Ideas Search', featureCode: 'IDEA_BANK', sortOrder: 3, description: 'Search for similar ideas' },
-    
+
     // === DIAGRAM GENERATION STAGES ===
     { code: 'DIAGRAM_PLANTUML', displayName: 'PlantUML Generation', featureCode: 'DIAGRAM_GENERATION', sortOrder: 1, description: 'Generate PlantUML code' },
     { code: 'DIAGRAM_FLOWCHART', displayName: 'Flowchart Generation', featureCode: 'DIAGRAM_GENERATION', sortOrder: 2, description: 'Generate flowcharts' },
@@ -481,13 +482,13 @@ async function main() {
   }
 
   // ============================================================================
-  // STEP 3: Seed default model configurations for each plan WITH TOKEN LIMITS
+  // STEP 3: Seed PRODUCTION TOKEN LIMITS for all plans
   // ============================================================================
-  console.log('\n⚙️ Step 3: Seeding Plan Model Configurations with Token Limits...\n');
+  console.log('\n⚙️ Step 3: Seeding Production Token Limits for All Plans...\n');
 
   // Get all plans
   const plans = await prisma.plan.findMany();
-  
+
   if (plans.length === 0) {
     console.log('  ⚠️  No plans found. Run seed-production-plans.js first.');
     await prisma.$disconnect();
@@ -505,33 +506,33 @@ async function main() {
   allStages.forEach(s => { stagesByCode[s.code] = s.id; });
 
   // ============================================================================
-  // STANDARDIZED TOKEN LIMITS (from Enterprise config - same for all plans)
+  // PRODUCTION TOKEN LIMITS (from Enterprise Plan - same for ALL plans)
   // ============================================================================
   const tokenLimits = {
     'DRAFT_IDEA_ENTRY':                   { maxTokensIn: 5000,  maxTokensOut: 6000 },
-    'DRAFT_CLAIM_GENERATION':             { maxTokensIn: 5000,  maxTokensOut: 6000 },
+    'DRAFT_CLAIM_GENERATION':             { maxTokensIn: 10000, maxTokensOut: 10000 },
     'DRAFT_PRIOR_ART_ANALYSIS':           { maxTokensIn: 10000, maxTokensOut: 12000 },
     'DRAFT_CLAIM_REFINEMENT':             { maxTokensIn: 8000,  maxTokensOut: 6000 },
-    'DRAFT_FIGURE_PLANNER':               { maxTokensIn: 6000,  maxTokensOut: 6000 },
+    'DRAFT_FIGURE_PLANNER':               { maxTokensIn: 10000, maxTokensOut: 10000 },
     'DRAFT_SKETCH_GENERATION':            { maxTokensIn: 8000,  maxTokensOut: 10000 },
     'DRAFT_DIAGRAM_GENERATION':           { maxTokensIn: 10000, maxTokensOut: 10000 },
-    'DRAFT_ANNEXURE_TITLE':               { maxTokensIn: 2000,  maxTokensOut: 500 },
-    'DRAFT_ANNEXURE_PREAMBLE':            { maxTokensIn: 2000,  maxTokensOut: 1000 },
-    'DRAFT_ANNEXURE_FIELD':               { maxTokensIn: 2000,  maxTokensOut: 1000 },
-    'DRAFT_ANNEXURE_BACKGROUND':          { maxTokensIn: 10000, maxTokensOut: 5500 },
-    'DRAFT_ANNEXURE_OBJECTS':             { maxTokensIn: 2500,  maxTokensOut: 1500 },
-    'DRAFT_ANNEXURE_SUMMARY':             { maxTokensIn: 8000,  maxTokensOut: 2000 },
-    'DRAFT_ANNEXURE_TECHNICAL_PROBLEM':   { maxTokensIn: 8000,  maxTokensOut: 1500 },
+    'DRAFT_ANNEXURE_TITLE':               { maxTokensIn: 8000,  maxTokensOut: 500 },
+    'DRAFT_ANNEXURE_PREAMBLE':            { maxTokensIn: 8000,  maxTokensOut: 1000 },
+    'DRAFT_ANNEXURE_FIELD':               { maxTokensIn: 8000,  maxTokensOut: 1000 },
+    'DRAFT_ANNEXURE_BACKGROUND':          { maxTokensIn: 10000, maxTokensOut: 10000 },
+    'DRAFT_ANNEXURE_OBJECTS':             { maxTokensIn: 5000,  maxTokensOut: 5000 },
+    'DRAFT_ANNEXURE_SUMMARY':             { maxTokensIn: 8000,  maxTokensOut: 5000 },
+    'DRAFT_ANNEXURE_TECHNICAL_PROBLEM':   { maxTokensIn: 10000, maxTokensOut: 5000 },
     'DRAFT_ANNEXURE_TECHNICAL_SOLUTION':  { maxTokensIn: 8000,  maxTokensOut: 2000 },
-    'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS':{ maxTokensIn: 8000,  maxTokensOut: 1500 },
-    'DRAFT_ANNEXURE_DRAWINGS':            { maxTokensIn: 8000,  maxTokensOut: 2000 },
+    'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS':{ maxTokensIn: 10000, maxTokensOut: 5000 },
+    'DRAFT_ANNEXURE_DRAWINGS':            { maxTokensIn: 8000,  maxTokensOut: 5000 },
     'DRAFT_ANNEXURE_DESCRIPTION':         { maxTokensIn: 10000, maxTokensOut: 10000 },
     'DRAFT_ANNEXURE_BEST_MODE':           { maxTokensIn: 5000,  maxTokensOut: 3000 },
-    'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': { maxTokensIn: 2000, maxTokensOut: 1000 },
-    'DRAFT_ANNEXURE_CLAIMS':              { maxTokensIn: 5000,  maxTokensOut: 5000 },
-    'DRAFT_ANNEXURE_ABSTRACT':            { maxTokensIn: 5000,  maxTokensOut: 500 },
+    'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': { maxTokensIn: 5000, maxTokensOut: 3000 },
+    'DRAFT_ANNEXURE_CLAIMS':              { maxTokensIn: 8000,  maxTokensOut: 7000 },
+    'DRAFT_ANNEXURE_ABSTRACT':            { maxTokensIn: 8000,  maxTokensOut: 5000 },
     'DRAFT_ANNEXURE_NUMERALS':            { maxTokensIn: 3000,  maxTokensOut: 1500 },
-    'DRAFT_ANNEXURE_CROSS_REFERENCE':     { maxTokensIn: 10000, maxTokensOut: 2000 },
+    'DRAFT_ANNEXURE_CROSS_REFERENCE':     { maxTokensIn: 10000, maxTokensOut: 8000 },
     'DRAFT_REVIEW':                       { maxTokensIn: 20000, maxTokensOut: 10000 },
     // Novelty search stages
     'NOVELTY_QUERY_GENERATION':           { maxTokensIn: 5000,  maxTokensOut: 3000 },
@@ -551,8 +552,8 @@ async function main() {
   };
 
   // ============================================================================
-  // MODEL ASSIGNMENTS PER PLAN
-  // Token limits are the same, but models vary by tier
+  // MODEL ASSIGNMENTS PER PLAN (KEEP EXISTING - DO NOT COPY FROM ENTERPRISE)
+  // Token limits are now PRODUCTION values, but models remain per-tier
   // ============================================================================
   const planConfigs = {
     // =========================================================================
@@ -760,10 +761,10 @@ async function main() {
     throw error;
   }
 
-  console.log('\n✨ LLM Models & Workflow Stages seeding complete!');
-  console.log(`   - ${models.length} LLM models`);
+  console.log('\n✨ PRODUCTION LLM Models & Workflow Stages seeding complete!');
+  console.log(`   - ${models.length} LLM models (new models unassigned)`);
   console.log(`   - ${stages.length} workflow stages`);
-  console.log(`   - ${plans.length} plans configured with token limits`);
+  console.log(`   - ${plans.length} plans configured with PRODUCTION token limits`);
 }
 
 main()

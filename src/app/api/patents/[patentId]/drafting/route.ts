@@ -16,7 +16,8 @@ import { getDiagramConfig, generateDiagramPromptInstructions } from '@/lib/juris
 import { trackSectionDrafted } from '@/lib/patent-drafting-tracker';
 import { resolveSourceOfTruth, computeJurisdictionStateOnDelete } from '@/lib/jurisdiction-state-service';
 import { cloneInstructionsBetweenSessions } from '@/lib/user-instruction-service';
-import { SUPERSET_SECTIONS, OPTIONAL_SUPERSET_SECTIONS, isNonApplicableHeading } from '@/lib/multi-jurisdiction-service';
+import { getSupersetSectionKeys, isNonApplicableHeading } from '@/lib/multi-jurisdiction-service';
+import { ANNEXURE_LEGACY_COLUMNS } from '@/lib/annexure-schema';
 import {
   generateSketch,
   listSketches,
@@ -9276,19 +9277,8 @@ async function handleAutosaveSections(user: any, patentId: string, data: any) {
   // Normalize patch keys to canonical keys (DB-driven aliases)
   const normalizedPatch = await normalizeSectionKeys(patch as Record<string, any>)
 
-  const legacyFields = [
-    'title',
-    'fieldOfInvention',
-    'background',
-    'summary',
-    'briefDescriptionOfDrawings',
-    'detailedDescription',
-    'bestMethod',
-    'claims',
-    'abstract',
-    'industrialApplicability',
-    'listOfNumerals'
-  ]
+  // Use shared constant for legacy columns
+  const legacyFields = ANNEXURE_LEGACY_COLUMNS as readonly string[]
 
   const parseObject = (value: unknown): Record<string, string> => {
     if (!value) return {}
@@ -9592,7 +9582,8 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
     const last = lastDraftForJurisdiction
     
     // Legacy columns (backward compatible) - these are dedicated DB columns
-    const legacyFields = ['title', 'fieldOfInvention', 'background', 'summary', 'briefDescriptionOfDrawings', 'detailedDescription', 'bestMethod', 'claims', 'abstract', 'industrialApplicability', 'listOfNumerals']
+    // Use shared constant from annexure-schema.ts
+    const legacyFields = ANNEXURE_LEGACY_COLUMNS as readonly string[]
     
     // Normalize all generated keys using database-driven alias resolution
     const normalizedGenerated = result.generated ? await normalizeSectionKeys(result.generated as Record<string, any>) : {}
@@ -9681,8 +9672,8 @@ async function handleSaveSections(user: any, patentId: string, data: any) {
   const last = drafts.find((d: any) => (d.jurisdiction || 'US').toUpperCase() === effectiveJurisdiction)
   const nextVersion = (last?.version || 0) + 1
 
-  // Legacy columns (backward compatible)
-  const legacyFields = ['title', 'fieldOfInvention', 'background', 'summary', 'briefDescriptionOfDrawings', 'detailedDescription', 'bestMethod', 'claims', 'abstract', 'industrialApplicability', 'listOfNumerals']
+  // Legacy columns (backward compatible) - use shared constant
+  const legacyFields = ANNEXURE_LEGACY_COLUMNS as readonly string[]
   
   // Normalize patch keys using database-driven alias resolution
   const normalizedPatch = await normalizeSectionKeys(patch as Record<string, any>)
@@ -9941,7 +9932,7 @@ import {
   translateReferenceDraft, 
   getSectionMapping,
   validateDraft
-  // Note: SUPERSET_SECTIONS, OPTIONAL_SUPERSET_SECTIONS, isNonApplicableHeading imported at top of file
+  // Note: getSupersetSectionKeys, isNonApplicableHeading imported at top of file
 } from '@/lib/multi-jurisdiction-service'
 
 /**
@@ -10073,7 +10064,7 @@ async function handleGenerateReferenceDraft(
       summary: result.draft.summary || '',
       briefDescriptionOfDrawings: result.draft.briefDescriptionOfDrawings || '',
       detailedDescription: result.draft.detailedDescription || '',
-      bestMethod: result.draft.bestMode || '',
+      bestMethod: result.draft.bestMethod || result.draft.bestMode || '',
       claims: result.draft.claims || '',
       abstract: result.draft.abstract || '',
       industrialApplicability: result.draft.industrialApplicability || '',
@@ -10115,6 +10106,11 @@ async function handleGenerateReferenceDraft(
     }
   })
 
+  // Get full superset size from database for optimization metrics
+  const allSupersetKeys = await getSupersetSectionKeys()
+  const fullSupersetSize = allSupersetKeys.length
+  const sectionsGenerated = result.dynamicSections?.length || 0
+
   return NextResponse.json({
     success: true,
     draft: result.draft,
@@ -10123,9 +10119,9 @@ async function handleGenerateReferenceDraft(
     tokensUsed: result.tokensUsed,
     // Include metadata about optimization
     optimization: {
-      sectionsGenerated: result.dynamicSections?.length || 0,
-      fullSupersetSize: SUPERSET_SECTIONS.length,
-      sectionsSaved: SUPERSET_SECTIONS.length - (result.dynamicSections?.length || SUPERSET_SECTIONS.length),
+      sectionsGenerated,
+      fullSupersetSize,
+      sectionsSaved: fullSupersetSize - sectionsGenerated,
       selectedJurisdictions: jurisdictionsToUse,
       dynamicSections: result.dynamicSections
     }
@@ -10186,7 +10182,7 @@ async function handleGetReferenceSections(
       content = rawDraft[sectionKey]
     }
     // Then check standard fields
-    else if (existingDraft) {
+      else if (existingDraft) {
       const fieldMap: Record<string, keyof typeof existingDraft> = {
         title: 'title',
         fieldOfInvention: 'fieldOfInvention',
@@ -10194,7 +10190,7 @@ async function handleGetReferenceSections(
         summary: 'summary',
         briefDescriptionOfDrawings: 'briefDescriptionOfDrawings',
         detailedDescription: 'detailedDescription',
-        bestMode: 'bestMethod',
+        bestMethod: 'bestMethod',
         claims: 'claims',
         abstract: 'abstract',
         industrialApplicability: 'industrialApplicability',
@@ -10288,7 +10284,7 @@ async function handleGenerateReferenceSection(
       ...(existingDraft.summary ? { summary: existingDraft.summary } : {}),
       ...(existingDraft.briefDescriptionOfDrawings ? { briefDescriptionOfDrawings: existingDraft.briefDescriptionOfDrawings } : {}),
       ...(existingDraft.detailedDescription ? { detailedDescription: existingDraft.detailedDescription } : {}),
-      ...(existingDraft.bestMethod ? { bestMode: existingDraft.bestMethod } : {}),
+      ...(existingDraft.bestMethod ? { bestMethod: existingDraft.bestMethod, bestMode: existingDraft.bestMethod } : {}),
       ...(existingDraft.claims ? { claims: existingDraft.claims } : {}),
       ...(existingDraft.abstract ? { abstract: existingDraft.abstract } : {}),
       ...(existingDraft.industrialApplicability ? { industrialApplicability: existingDraft.industrialApplicability } : {}),
@@ -10332,7 +10328,7 @@ async function handleGenerateReferenceSection(
     summary: 'summary',
     briefDescriptionOfDrawings: 'briefDescriptionOfDrawings',
     detailedDescription: 'detailedDescription',
-    bestMode: 'bestMethod',
+    bestMethod: 'bestMethod',
     claims: 'claims',
     abstract: 'abstract',
     industrialApplicability: 'industrialApplicability',
@@ -10519,7 +10515,8 @@ async function handleTranslateToJurisdiction(
     summary: referenceDraft.summary,
     briefDescriptionOfDrawings: referenceDraft.briefDescriptionOfDrawings,
     detailedDescription: referenceDraft.detailedDescription,
-    bestMode: referenceDraft.bestMethod, // Map to canonical superset key
+    bestMethod: referenceDraft.bestMethod, // Canonical key
+    bestMode: referenceDraft.bestMethod, // Backward-compatible alias for older reference drafts/prompts
     claims: finalClaimsText,
     abstract: referenceDraft.abstract,
     industrialApplicability: referenceDraft.industrialApplicability,

@@ -351,13 +351,6 @@
             ]
           }
         },
-        "field": {
-          "instruction": "Draft the Technical Field section.",
-          "constraints": [
-            "Limit to 1\u20133 sentences.",
-            "State the technical field without describing advantages or embodiments."
-          ]
-        },
         "background": {
           "instruction": "Draft the Background Art section.",
           "constraints": [
@@ -409,7 +402,7 @@
             ]
           }
         },
-        "detailed_description": {
+        "detailedDescription": {
           "instruction": "Draft the Description of Embodiments section.",
           "constraints": [
             "Describe embodiments in sufficient detail that a skilled person could perform the invention.",

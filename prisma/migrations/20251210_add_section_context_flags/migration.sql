@@ -21,4 +21,3 @@ UPDATE "superset_sections" SET "requires_prior_art" = true WHERE "section_key" I
 UPDATE "superset_sections" SET "requires_figures" = true WHERE "section_key" IN ('briefDescriptionOfDrawings', 'detailedDescription', 'bestMode', 'abstract');
 UPDATE "superset_sections" SET "requires_claims" = true WHERE "section_key" IN ('summary', 'technicalSolution', 'detailedDescription', 'abstract');
 UPDATE "superset_sections" SET "requires_components" = true WHERE "section_key" IN ('summary', 'technicalSolution', 'detailedDescription', 'bestMode', 'claims', 'listOfNumerals');
-

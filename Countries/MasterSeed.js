@@ -304,8 +304,10 @@ Use the format: "It is an object of the present invention to..."
     constraints: ['Enable skilled person to practice', 'Reference figures with numerals', 'Include multiple embodiments', 'Describe best mode']
   },
   {
-    sectionKey: 'bestMode',
-    aliases: ['best_mode', 'bestMethod', 'best_method'],
+    // IMPORTANT: canonical key is 'bestMethod' to match the legacy DB column in AnnexureDraft
+    // 'bestMode' is an alias for backward compatibility
+    sectionKey: 'bestMethod',
+    aliases: ['best_mode', 'bestMode', 'best_method'],
     displayOrder: 12,
     label: 'Best Mode',
     description: 'Description of the best mode contemplated by the inventor (required in some jurisdictions).',
@@ -496,6 +498,7 @@ const COUNTRY_MAPPINGS = {
     { supersetCode: '03. Background', sectionKey: 'background', heading: 'Background Art', displayOrder: 3, isRequired: true },
     { supersetCode: '04. Summary', sectionKey: 'summary', heading: 'Summary of Invention', displayOrder: 4, isRequired: true },
     { supersetCode: '05. Brief Description of Drawings', sectionKey: 'briefDescriptionOfDrawings', heading: 'Brief Description of Drawings', displayOrder: 5, isRequired: false },
+    // 'bestMethod' is the canonical key (matches SupersetSection and legacy DB column)
     { supersetCode: '06. Best Method', sectionKey: 'bestMethod', heading: 'Best Method of Performing the Invention', displayOrder: 6, isRequired: true },
     { supersetCode: '07. Claims', sectionKey: 'claims', heading: 'Claims', displayOrder: 7, isRequired: true },
     { supersetCode: '08. Abstract', sectionKey: 'abstract', heading: 'Abstract', displayOrder: 8, isRequired: true }

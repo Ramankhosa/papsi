@@ -499,36 +499,64 @@ export async function getBatchSectionContextRequirements(
 
 // ============================================================================
 // Superset Section Keys (Reference Draft uses these)
-// All 15 core sections that form the universal superset for multi-jurisdiction filing
-// Country-specific sections are mapped FROM these via CountrySectionMapping
+// 
+// DATABASE IS THE ONLY SOURCE OF TRUTH
+// All section keys and ordering come from SupersetSection table
+// See /super-admin/superset-sections for configuration
 // ============================================================================
 
-export const SUPERSET_SECTIONS = [
-  'title',              // 1. Title of the Invention
-  'preamble',           // 2. Preamble (IN, PK, BD, ZA, NZ - country specific)
-  'fieldOfInvention',   // 3. Field of the Invention / Technical Field
-  'background',         // 4. Background of the Invention / Prior Art
-  'objectsOfInvention', // 5. Objects of the Invention (some jurisdictions)
-  'summary',            // 6. Summary of the Invention
-  'technicalProblem',   // 7. Technical Problem Solved (EP, JP style)
-  'technicalSolution',  // 8. Technical Solution (EP, JP style)
-  'advantageousEffects',// 9. Advantageous Effects (JP, CN style)
-  'briefDescriptionOfDrawings', // 10. Brief Description of Drawings
-  'detailedDescription',// 11. Detailed Description of the Invention
-  'bestMode',           // 12. Best Mode / Best Method (US requirement)
-  'industrialApplicability', // 13. Industrial Applicability (PCT, non-US)
-  'claims',             // 14. Claims
-  'abstract'            // 15. Abstract
-]
+// Cache for superset section keys from database
+let supersetSectionsCache: string[] | null = null
+let supersetSectionsCacheTimestamp = 0
+const SUPERSET_CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
 
-// Additional optional sections that may be included in some drafts
-export const OPTIONAL_SUPERSET_SECTIONS = [
-  'listOfNumerals',     // List of Reference Numerals (EP, DE)
-  'crossReference'      // Cross-Reference to Related Applications
-]
+/**
+ * Get all superset section keys from database, ordered by displayOrder
+ * DATABASE IS THE ONLY SOURCE OF TRUTH - No hardcoded fallbacks
+ */
+export async function getSupersetSectionKeys(): Promise<string[]> {
+  const now = Date.now()
+  
+  if (supersetSectionsCache && (now - supersetSectionsCacheTimestamp) < SUPERSET_CACHE_DURATION) {
+    return supersetSectionsCache
+  }
+  
+  const sections = await prisma.supersetSection.findMany({
+    where: { isActive: true },
+    select: { sectionKey: true },
+    orderBy: { displayOrder: 'asc' }
+  })
+  
+  if (sections.length === 0) {
+    throw new Error(
+      '[MultiJurisdictionService] CRITICAL: No SupersetSection entries found in database. ' +
+      'Please seed the superset_sections table via /super-admin/superset-sections.'
+    )
+  }
+  
+  supersetSectionsCache = sections.map(s => s.sectionKey)
+  supersetSectionsCacheTimestamp = now
+  
+  return supersetSectionsCache
+}
 
-// Combined full superset (for comprehensive reference drafts)
-export const FULL_SUPERSET_SECTIONS = [...SUPERSET_SECTIONS, ...OPTIONAL_SUPERSET_SECTIONS]
+/**
+ * Check if a section key is a valid superset key
+ * Queries database to validate
+ */
+export async function isValidSupersetKey(sectionKey: string): Promise<boolean> {
+  const keys = await getSupersetSectionKeys()
+  return keys.includes(sectionKey)
+}
+
+/**
+ * Invalidate the superset sections cache
+ * Call after database updates
+ */
+export function invalidateSupersetSectionsCache(): void {
+  supersetSectionsCache = null
+  supersetSectionsCacheTimestamp = 0
+}
 
 // ============================================================================
 // N/A Heading Detection - CENTRALIZED for consistency across all functions
@@ -564,156 +592,46 @@ export function isNonApplicableHeading(heading: string | null | undefined): bool
   return NA_HEADINGS.some(na => na.toLowerCase() === lowerHeading)
 }
 
-// Alias mapping for backward compatibility and flexible key resolution
-// Includes country-specific keys (JP, IN, CN, etc.) that map to superset keys
-export const SUPERSET_KEY_ALIASES: Record<string, string> = {
-  // Field of Invention aliases
-  'field': 'fieldOfInvention',
-  'technicalField': 'fieldOfInvention',
-  'technical_field': 'fieldOfInvention',
-  'field_of_invention': 'fieldOfInvention',
-  'techfield': 'fieldOfInvention',           // JP-specific
-  'technicalfield': 'fieldOfInvention',
-  
-  // Background aliases
-  'backgroundOfInvention': 'background',
-  'background_of_invention': 'background',
-  'priorArt': 'background',
-  'prior_art': 'background',
-  'backgroundart': 'background',             // PCT/JP
-  'background_art': 'background',
-  
-  // Objects of Invention aliases
-  'objects': 'objectsOfInvention',
-  'objects_of_invention': 'objectsOfInvention',
-  
-  // Summary aliases
-  'summaryOfInvention': 'summary',
-  'summary_of_invention': 'summary',
-  'disclosureOfInvention': 'summary',
-  'summary(gen)': 'summary',                 // JP-specific
-  'summaryoftheinvention': 'summary',
-  
-  // Technical Problem aliases
-  'technical_problem': 'technicalProblem',
-  '07a.techproblem': 'technicalProblem',     // JP-specific
-  'techproblem': 'technicalProblem',
-  'problemtobesolved': 'technicalProblem',
-  'problem_to_be_solved': 'technicalProblem',
-  
-  // Technical Solution aliases
-  'technical_solution': 'technicalSolution',
-  '07b.techsolution': 'technicalSolution',   // JP-specific
-  'techsolution': 'technicalSolution',
-  'solutiontoproblem': 'technicalSolution',
-  'solution_to_problem': 'technicalSolution',
-  'meansforsolving': 'technicalSolution',
-  
-  // Advantageous Effects aliases
-  'advantageous_effects': 'advantageousEffects',
-  '07c.effects': 'advantageousEffects',      // JP-specific
-  'effects': 'advantageousEffects',
-  'beneficialeffects': 'advantageousEffects',
-  'beneficial_effects': 'advantageousEffects',
-  
-  // Brief Description of Drawings aliases
-  'brief_description_of_drawings': 'briefDescriptionOfDrawings',
-  'brief_drawings': 'briefDescriptionOfDrawings',
-  'drawings': 'briefDescriptionOfDrawings',
-  'briefdescriptionofdrawings': 'briefDescriptionOfDrawings',
-  'figuredescription': 'briefDescriptionOfDrawings',
-  
-  // Detailed Description aliases
-  'detailed_description': 'detailedDescription',
-  'detailedDescriptionOfInvention': 'detailedDescription',
-  'detaileddesc': 'detailedDescription',     // JP-specific
-  'detaileddescription': 'detailedDescription',
-  'descriptionofembodiments': 'detailedDescription',
-  'description_of_embodiments': 'detailedDescription',
-  'embodiments': 'detailedDescription',
-  
-  // Best Mode aliases
-  'bestMethod': 'bestMode',
-  'best_method': 'bestMode',
-  'best_mode': 'bestMode',
-  'bestmodeofcarryingout': 'bestMode',
-  
-  // Industrial Applicability aliases
-  'industrial_applicability': 'industrialApplicability',
-  'utility': 'industrialApplicability',
-  'ind.applicability': 'industrialApplicability',  // IN/JP-specific
-  'industrialapplicability': 'industrialApplicability',
-  'industryapplicability': 'industrialApplicability',
-  
-  // List of Numerals aliases
-  'list_of_numerals': 'listOfNumerals',
-  'referenceNumerals': 'listOfNumerals',
-  'reference_numerals': 'listOfNumerals',
-  'listofreferencenumerals': 'listOfNumerals',
-  'referencesigns': 'listOfNumerals',
-  
-  // Cross Reference aliases
-  'cross_reference': 'crossReference',
-  'relatedApplications': 'crossReference',
-  'crossreferencetorealtedapplications': 'crossReference',
-  'priorityclaims': 'crossReference',
-  
-  // Title aliases
-  'titleofinvention': 'title',
-  'title_of_invention': 'title',
-  
-  // Abstract aliases
-  'abstractofinvention': 'abstract',
-  'abstract_of_invention': 'abstract',
-  
-  // Claims aliases
-  'patentclaims': 'claims',
-  'patent_claims': 'claims'
-}
+// NOTE: Section aliases are now ONLY resolved via database (SupersetSection.aliases)
+// No hardcoded alias maps - see section-alias-service.ts for database-driven resolution
 
 /**
  * Normalize a section key to its canonical superset key
- * Handles various formats: camelCase, snake_case, lowercase, with dots, etc.
+ * Uses database-driven alias resolution via section-alias-service
+ * 
+ * DATABASE IS THE ONLY SOURCE OF TRUTH - No hardcoded fallbacks
  */
-export function normalizeToSupersetKey(key: string): string {
+export async function normalizeToSupersetKey(key: string): Promise<string> {
   if (!key) return key
   const trimmed = key.trim()
   
+  // Import the database-driven alias resolver
+  const { resolveCanonicalKey } = await import('./section-alias-service')
+  
+  // Get valid superset keys from database
+  const validKeys = await getSupersetSectionKeys()
+  const validKeySet = new Set(validKeys)
+  
   // Check if it's already a valid superset key (exact match)
-  if (FULL_SUPERSET_SECTIONS.includes(trimmed)) {
+  if (validKeySet.has(trimmed)) {
     return trimmed
   }
   
-  // Check aliases (exact match)
-  if (SUPERSET_KEY_ALIASES[trimmed]) {
-    return SUPERSET_KEY_ALIASES[trimmed]
-  }
-  
-  // Try lowercase version
+  // Try database-driven alias resolution
   const lowercased = trimmed.toLowerCase()
-  if (SUPERSET_KEY_ALIASES[lowercased]) {
-    return SUPERSET_KEY_ALIASES[lowercased]
-  }
-  
-  // Try removing dots, spaces, and underscores for matching
   const cleaned = lowercased.replace(/[.\s_-]/g, '')
-  if (SUPERSET_KEY_ALIASES[cleaned]) {
-    return SUPERSET_KEY_ALIASES[cleaned]
-  }
   
-  // Try to match against superset sections (case-insensitive)
-  for (const section of FULL_SUPERSET_SECTIONS) {
-    if (section.toLowerCase() === lowercased || section.toLowerCase() === cleaned) {
-      return section
+  for (const candidate of [trimmed, lowercased, cleaned]) {
+    const resolved = await resolveCanonicalKey(candidate)
+    if (validKeySet.has(resolved)) {
+      return resolved
     }
   }
   
-  // Try partial matching for common patterns
-  // e.g., "07a.techproblem" should match "technicalProblem"
-  for (const [alias, canonical] of Object.entries(SUPERSET_KEY_ALIASES)) {
-    const aliasClean = alias.toLowerCase().replace(/[.\s_-]/g, '')
-    if (cleaned === aliasClean || cleaned.includes(aliasClean) || aliasClean.includes(cleaned)) {
-      return canonical
+  // Try to match against superset sections (case-insensitive)
+  for (const section of validKeys) {
+    if (section.toLowerCase() === lowercased || section.toLowerCase() === cleaned) {
+      return section
     }
   }
   
@@ -889,6 +807,10 @@ export async function computeDynamicSuperset(
     throw new Error(`None of the selected jurisdictions (${validJurisdictions.join(', ')}) are configured in the database. Please add section mappings in CountrySectionMapping table.`)
   }
 
+  // Get valid superset keys from database (with ordering)
+  const validSupersetKeys = await getSupersetSectionKeys()
+  const validSupersetKeySet = new Set(validSupersetKeys)
+  
   // Track invalid section keys for debugging
   const invalidSectionKeys: Array<{ countryCode: string; sectionKey: string }> = []
   
@@ -903,10 +825,10 @@ export async function computeDynamicSuperset(
       continue
     }
 
-    // VALIDATE: Check if sectionKey is a valid superset key
-    if (!FULL_SUPERSET_SECTIONS.includes(sectionKey)) {
+    // VALIDATE: Check if sectionKey is a valid superset key (database-driven)
+    if (!validSupersetKeySet.has(sectionKey)) {
       invalidSectionKeys.push({ countryCode, sectionKey })
-      console.warn(`[computeDynamicSuperset] Invalid sectionKey "${sectionKey}" for ${countryCode} - not in SUPERSET_SECTIONS. Skipping.`)
+      console.warn(`[computeDynamicSuperset] Invalid sectionKey "${sectionKey}" for ${countryCode} - not in SupersetSection table. Skipping.`)
       continue // Skip invalid keys
     }
 
@@ -936,19 +858,12 @@ export async function computeDynamicSuperset(
     })
   }
 
-  // Sort sections by the canonical order defined in SUPERSET_SECTIONS
-  // Only include sections that exist in our superset definitions
+  // Sort sections by database displayOrder (validSupersetKeys is already ordered)
+  // Only include sections that are needed by at least one jurisdiction
   const orderedSections: string[] = []
   
-  for (const key of SUPERSET_SECTIONS) {
+  for (const key of validSupersetKeys) {
     if (uniqueSections.has(key)) {
-      orderedSections.push(key)
-    }
-  }
-  
-  // Add optional sections that were found
-  for (const key of OPTIONAL_SUPERSET_SECTIONS) {
-    if (uniqueSections.has(key) && !orderedSections.includes(key)) {
       orderedSections.push(key)
     }
   }
@@ -957,14 +872,14 @@ export async function computeDynamicSuperset(
   
   // Warn about any invalid sectionKeys found in database
   if (invalidSectionKeys.length > 0) {
-    console.warn(`[computeDynamicSuperset] Found ${invalidSectionKeys.length} invalid sectionKey(s) in CountrySectionMapping that don't match SUPERSET_SECTIONS:`, 
+    console.warn(`[computeDynamicSuperset] Found ${invalidSectionKeys.length} invalid sectionKey(s) in CountrySectionMapping that don't match SupersetSection table:`, 
       invalidSectionKeys.map(k => `${k.countryCode}:${k.sectionKey}`).join(', '))
   }
 
   // DATABASE IS THE ONLY SOURCE OF TRUTH - Fail if no valid sections found
   if (orderedSections.length === 0) {
     console.error(`[computeDynamicSuperset] CRITICAL: No valid superset sections found after filtering. All sectionKeys in database may be invalid.`)
-    throw new Error(`No valid sections found for jurisdictions (${validJurisdictions.join(', ')}). Check that CountrySectionMapping.sectionKey values match SUPERSET_SECTIONS.`)
+    throw new Error(`No valid sections found for jurisdictions (${validJurisdictions.join(', ')}). Check that CountrySectionMapping.sectionKey values match SupersetSection.sectionKey.`)
   }
 
   return {
@@ -1060,9 +975,9 @@ function labelToKey(label: string): string {
     'Brief Description of the Drawings': 'briefDescriptionOfDrawings',
     'Detailed Description': 'detailedDescription',
     'Detailed Description of the Invention': 'detailedDescription',
-    'Best Mode': 'bestMode',
-    'Best Method': 'bestMode',
-    'Best Method of Performing the Invention': 'bestMode',
+    'Best Mode': 'bestMethod',
+    'Best Method': 'bestMethod',
+    'Best Method of Performing the Invention': 'bestMethod',
     'Industrial Applicability': 'industrialApplicability',
     'Industrial Application': 'industrialApplicability',
     'Utility': 'industrialApplicability',
@@ -1073,15 +988,17 @@ function labelToKey(label: string): string {
     'Cross-Reference': 'crossReference',
     'Cross-Reference to Related Applications': 'crossReference'
   }
-  return mapping[label] || normalizeToSupersetKey(label.toLowerCase().replace(/\s+/g, ''))
+  if (mapping[label]) return mapping[label]
+  // Fallback to async normalization
+  return label.toLowerCase().replace(/\s+/g, '')
 }
 
-function normalizeToSuperset(key: string): string {
-  // Use the canonical normalization function
-  return normalizeToSupersetKey(key)
+async function normalizeToSuperset(key: string): Promise<string> {
+  // Use the canonical normalization function (async - uses database)
+  return await normalizeToSupersetKey(key)
 }
 
-function getDefaultHeading(key: string): string {
+async function getDefaultHeading(key: string): Promise<string> {
   // Map canonical superset keys to display headings
   const headings: Record<string, string> = {
     'title': 'Title of the Invention',
@@ -1095,14 +1012,16 @@ function getDefaultHeading(key: string): string {
     'advantageousEffects': 'Advantageous Effects',
     'briefDescriptionOfDrawings': 'Brief Description of the Drawings',
     'detailedDescription': 'Detailed Description of the Invention',
-    'bestMode': 'Best Mode',
+    'bestMethod': 'Best Mode',
     'industrialApplicability': 'Industrial Applicability',
     'claims': 'Claims',
     'abstract': 'Abstract',
     'listOfNumerals': 'List of Reference Numerals',
     'crossReference': 'Cross-Reference to Related Applications'
   }
-  return headings[key] || headings[normalizeToSupersetKey(key)] || key
+  if (headings[key]) return headings[key]
+  const normalized = await normalizeToSupersetKey(key)
+  return headings[normalized] || key
 }
 
 // ============================================================================
@@ -1146,7 +1065,7 @@ async function getSupersetSectionPrompts(sectionKeys: string[]): Promise<Record<
     'advantageousEffects': 'advantageous_effects',// May not exist in SUPERSET_PROMPTS
     'briefDescriptionOfDrawings': 'brief_drawings',
     'detailedDescription': 'detailed_description',
-    'bestMode': 'best_mode',
+    'bestMethod': 'best_mode',
     'industrialApplicability': 'industrial_applicability',
     'claims': 'claims',
     'abstract': 'abstract',
@@ -1177,7 +1096,7 @@ async function getSupersetSectionPrompts(sectionKeys: string[]): Promise<Record<
       prompts[key] = {
         instruction: basePrompt.instruction,
         constraints: basePrompt.constraints || [],
-        label: getDefaultHeading(key),
+        label: await getDefaultHeading(key),
         description: undefined
       }
     }
@@ -1230,7 +1149,7 @@ async function getSupersetSectionPrompts(sectionKeys: string[]): Promise<Record<
   return prompts
 }
 
-function parseReferenceDraftResponse(output: string, sectionKeys: string[]): Record<string, string> | null {
+async function parseReferenceDraftResponse(output: string, sectionKeys: string[]): Promise<Record<string, string> | null> {
   if (!output) return null
 
   const text = output.trim()
@@ -1278,7 +1197,7 @@ function parseReferenceDraftResponse(output: string, sectionKeys: string[]): Rec
   const normalized: Record<string, string> = {}
   if (parsed && typeof parsed === 'object') {
     for (const [key, value] of Object.entries(parsed)) {
-      const normalizedKey = normalizeToSupersetKey(key)
+      const normalizedKey = await normalizeToSupersetKey(key)
       if (typeof value === 'string' && !normalized[normalizedKey]) {
         normalized[normalizedKey] = value.trim()
       }
@@ -1756,7 +1675,7 @@ OUTPUT FORMAT
     }
 
     // Parse response using dynamic sections
-    const draft = parseReferenceDraftResponse(result.response.output, dynamicSections)
+    const draft = await parseReferenceDraftResponse(result.response.output, dynamicSections)
     
     if (!draft) {
       return {
@@ -2358,8 +2277,8 @@ export async function translateReferenceDraft(
     // Also check for aliased keys for backward compatibility
     let referenceContent = referenceDraft[mapping.supersetKey]
     if (!referenceContent) {
-      // Try to find content using aliases
-      const normalizedKey = normalizeToSupersetKey(mapping.supersetKey)
+      // Try to find content using aliases (database-driven)
+      const normalizedKey = await normalizeToSupersetKey(mapping.supersetKey)
       referenceContent = referenceDraft[normalizedKey] || ''
     }
     
@@ -2965,4 +2884,3 @@ export function canGenerateJurisdictionDraft(session: any, jurisdiction: string)
   
   return session?.referenceDraftComplete === true
 }
-

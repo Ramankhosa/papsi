@@ -2,7 +2,10 @@
  * Section Alias Resolution Service
  * 
  * Resolves alternative section keys (aliases) to their canonical sectionKey.
- * Uses database-driven aliasing stored in SupersetSection.aliases for scalability.
+ * Uses database-driven aliasing stored in SupersetSection.aliases.
+ * 
+ * IMPORTANT: Database is the ONLY source of truth. No hardcoded fallbacks.
+ * If database is unavailable, operations will fail with clear error messages.
  * 
  * Example:
  *   - "objects" → "objectsOfInvention" (canonical)
@@ -20,6 +23,8 @@ const CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
 /**
  * Get the alias-to-canonical key mapping from database
  * Uses caching to minimize DB queries
+ * 
+ * DATABASE IS THE ONLY SOURCE OF TRUTH - No hardcoded fallbacks
  */
 async function getAliasMap(): Promise<Map<string, string>> {
   const now = Date.now()
@@ -28,70 +33,33 @@ async function getAliasMap(): Promise<Map<string, string>> {
     return aliasCache
   }
   
-  try {
-    const sections = await prisma.supersetSection.findMany({
-      where: { isActive: true },
-      select: { sectionKey: true, aliases: true }
-    })
-    
-    aliasCache = new Map()
-    
-    for (const section of sections) {
-      // The canonical key maps to itself
-      aliasCache.set(section.sectionKey, section.sectionKey)
-      
-      // Each alias maps to the canonical key
-      for (const alias of section.aliases) {
-        aliasCache.set(alias, section.sectionKey)
-      }
-    }
-    
-    aliasCacheTimestamp = now
-    return aliasCache
-  } catch (error) {
-    console.error('Failed to load section aliases from database:', error)
-    // Return fallback hardcoded map if DB fails
-    return getFallbackAliasMap()
-  }
-}
-
-/**
- * Fallback alias map in case database is unavailable
- * This ensures the system doesn't break if DB has issues
- */
-function getFallbackAliasMap(): Map<string, string> {
-  const fallback = new Map<string, string>()
+  // Database is the ONLY source of truth - no fallbacks
+  const sections = await prisma.supersetSection.findMany({
+    where: { isActive: true },
+    select: { sectionKey: true, aliases: true }
+  })
   
-  // Known aliases - these should match what's seeded in DB
-  const aliases: Record<string, string[]> = {
-    'title': [],
-    'fieldOfInvention': ['field_of_invention', 'technicalField', 'technical_field'],
-    'background': ['backgroundOfInvention', 'background_of_invention', 'priorArt', 'prior_art'],
-    'summary': ['summaryOfInvention', 'summary_of_invention'],
-    'briefDescriptionOfDrawings': ['brief_description_of_drawings', 'drawings', 'figures'],
-    'detailedDescription': ['detailed_description', 'detailedDescriptionOfInvention', 'detailed_description_of_invention'],
-    'claims': [],
-    'abstract': [],
-    'objectsOfInvention': ['objects', 'objects_of_invention', 'objectOfInvention'],
-    'preamble': [],
-    'technicalProblem': ['technical_problem'],
-    'technicalSolution': ['technical_solution'],
-    'advantageousEffects': ['advantageous_effects'],
-    'crossReference': ['cross_reference', 'crossReferences'],
-    'listOfNumerals': ['list_of_numerals', 'numeralList', 'numeral_list'],
-    'industrialApplicability': ['industrial_applicability'],
-    'bestMethod': ['best_method', 'bestMode', 'best_mode'],
-    'modeOfCarryingOut': ['mode_of_carrying_out']
+  if (sections.length === 0) {
+    throw new Error(
+      '[SectionAliasService] CRITICAL: No SupersetSection entries found in database. ' +
+      'Please seed the superset_sections table via /super-admin/superset-sections.'
+    )
   }
   
-  for (const [canonical, aliasList] of Object.entries(aliases)) {
-    fallback.set(canonical, canonical)
-    for (const alias of aliasList) {
-      fallback.set(alias, canonical)
+  aliasCache = new Map()
+  
+  for (const section of sections) {
+    // The canonical key maps to itself
+    aliasCache.set(section.sectionKey, section.sectionKey)
+    
+    // Each alias maps to the canonical key
+    for (const alias of section.aliases) {
+      aliasCache.set(alias, section.sectionKey)
     }
   }
   
-  return fallback
+  aliasCacheTimestamp = now
+  return aliasCache
 }
 
 /**
@@ -216,20 +184,25 @@ export function invalidateAliasCache(): void {
 }
 
 /**
- * Get all canonical section keys
+ * Get all canonical section keys from database
+ * 
+ * DATABASE IS THE ONLY SOURCE OF TRUTH - No hardcoded fallbacks
  */
 export async function getCanonicalKeys(): Promise<string[]> {
-  try {
-    const sections = await prisma.supersetSection.findMany({
-      where: { isActive: true },
-      select: { sectionKey: true },
-      orderBy: { displayOrder: 'asc' }
-    })
-    return sections.map(s => s.sectionKey)
-  } catch (error) {
-    console.error('Failed to get canonical keys:', error)
-    return Object.keys(getFallbackAliasMap())
+  const sections = await prisma.supersetSection.findMany({
+    where: { isActive: true },
+    select: { sectionKey: true },
+    orderBy: { displayOrder: 'asc' }
+  })
+  
+  if (sections.length === 0) {
+    throw new Error(
+      '[SectionAliasService] CRITICAL: No SupersetSection entries found in database. ' +
+      'Please seed the superset_sections table via /super-admin/superset-sections.'
+    )
   }
+  
+  return sections.map(s => s.sectionKey)
 }
 
 /**
@@ -249,4 +222,3 @@ export async function normalizeSectionKeys<T>(data: Record<string, T>): Promise<
   
   return normalized
 }
-

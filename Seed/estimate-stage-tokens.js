@@ -564,7 +564,7 @@ const CONTEXT_INJECTION_MATRIX = {
   requiresClaims: ['summary', 'technicalSolution'],
   
   // Sections that need FIGURES + COMPONENTS
-  requiresFiguresAndComponents: ['briefDescriptionOfDrawings', 'detailedDescription', 'bestMode'],
+  requiresFiguresAndComponents: ['briefDescriptionOfDrawings', 'detailedDescription', 'bestMethod'],
   
   // Sections that need COMPONENTS only
   requiresComponents: ['claims', 'listOfNumerals'],
@@ -811,7 +811,6 @@ estimateTokens()
     prisma.$disconnect();
     process.exit(1);
   });
-
 
 
 

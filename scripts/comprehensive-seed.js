@@ -548,6 +548,67 @@ async function seedPlansAndFeatures() {
 async function seedCountryData() {
   console.log('🌍 PHASE 3: Seeding Country Data');
 
+  // Seed superset sections (canonical section keys used throughout drafting)
+  // These keys must match:
+  // - CountrySectionMapping.sectionKey
+  // - AnnexureDraft legacy columns + extraSections keys
+  // - src/lib/multi-jurisdiction-service.ts (SUPERSET_SECTIONS)
+  const supersetSections = [
+    { sectionKey: 'title', displayOrder: 1, label: 'Title of the Invention', isRequired: true, aliases: ['title_of_invention', 'titleofinvention'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'preamble', displayOrder: 2, label: 'Preamble', isRequired: false, aliases: ['opening_statement'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'crossReference', displayOrder: 3, label: 'Cross-Reference to Related Applications', isRequired: false, aliases: ['cross_reference', 'cross-reference', 'cross reference', 'crossReferences', 'cross_references'], requiresPriorArt: true, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'fieldOfInvention', displayOrder: 4, label: 'Field of the Invention', isRequired: true, aliases: ['field', 'technicalField', 'technical_field', 'field_of_invention', 'technicalfield', 'techfield'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'background', displayOrder: 5, label: 'Background of the Invention', isRequired: true, aliases: ['background_art', 'backgroundOfInvention', 'background_of_invention', 'priorArt', 'prior_art', 'backgroundart'], requiresPriorArt: true, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'objectsOfInvention', displayOrder: 6, label: 'Objects of the Invention', isRequired: false, aliases: ['objects', 'objects_of_invention', 'objectOfInvention', 'object_of_the_invention'], requiresPriorArt: true, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'summary', displayOrder: 7, label: 'Summary of the Invention', isRequired: true, aliases: ['summary_of_invention', 'summaryOfInvention', 'disclosureOfInvention', 'disclosure_of_invention', 'summaryoftheinvention'], requiresPriorArt: false, requiresFigures: false, requiresClaims: true, requiresComponents: true },
+    { sectionKey: 'technicalProblem', displayOrder: 8, label: 'Technical Problem', isRequired: false, aliases: ['technical_problem', 'problem_to_be_solved', 'techproblem', 'problemtobesolved'], requiresPriorArt: true, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'technicalSolution', displayOrder: 9, label: 'Technical Solution', isRequired: false, aliases: ['technical_solution', 'solution_to_problem', 'techsolution', 'meansforsolving'], requiresPriorArt: false, requiresFigures: false, requiresClaims: true, requiresComponents: true },
+    { sectionKey: 'advantageousEffects', displayOrder: 10, label: 'Advantageous Effects', isRequired: false, aliases: ['advantageous_effects', 'effects', 'beneficialeffects', 'beneficial_effects'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'briefDescriptionOfDrawings', displayOrder: 11, label: 'Brief Description of the Drawings', isRequired: true, aliases: ['brief_drawings', 'brief_description_of_drawings', 'drawings', 'figures', 'briefdescriptionofdrawings'], requiresPriorArt: false, requiresFigures: true, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'detailedDescription', displayOrder: 12, label: 'Detailed Description of the Invention', isRequired: true, aliases: ['detailed_description', 'description', 'detailedDescriptionOfInvention', 'detaileddescription'], requiresPriorArt: false, requiresFigures: true, requiresClaims: true, requiresComponents: true },
+    { sectionKey: 'bestMethod', displayOrder: 13, label: 'Best Mode', isRequired: false, aliases: ['bestMode', 'best_mode', 'best_method', 'bestmodeofcarryingout'], requiresPriorArt: false, requiresFigures: true, requiresClaims: false, requiresComponents: true },
+    { sectionKey: 'industrialApplicability', displayOrder: 14, label: 'Industrial Applicability', isRequired: false, aliases: ['industrial_applicability', 'utility', 'industrialapplicability'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'claims', displayOrder: 15, label: 'Claims', isRequired: true, aliases: ['patentclaims', 'patent_claims'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: true },
+    { sectionKey: 'abstract', displayOrder: 16, label: 'Abstract', isRequired: true, aliases: ['abstract_of_invention', 'abstractofinvention'], requiresPriorArt: false, requiresFigures: true, requiresClaims: true, requiresComponents: false },
+    { sectionKey: 'listOfNumerals', displayOrder: 17, label: 'List of Reference Numerals', isRequired: false, aliases: ['list_of_numerals', 'reference_numerals', 'reference_signs', 'numeral_list', 'numeralList'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: true }
+  ];
+
+  for (const sec of supersetSections) {
+    await prisma.supersetSection.upsert({
+      where: { sectionKey: sec.sectionKey },
+      update: {
+        aliases: sec.aliases,
+        displayOrder: sec.displayOrder,
+        label: sec.label,
+        description: null,
+        instruction: `Seeded placeholder for ${sec.sectionKey}. Base prompts live in src/lib/drafting-service.ts (SUPERSET_PROMPTS).`,
+        constraints: [],
+        isRequired: sec.isRequired,
+        isActive: true,
+        requiresPriorArt: sec.requiresPriorArt,
+        requiresFigures: sec.requiresFigures,
+        requiresClaims: sec.requiresClaims,
+        requiresComponents: sec.requiresComponents
+      },
+      create: {
+        sectionKey: sec.sectionKey,
+        aliases: sec.aliases,
+        displayOrder: sec.displayOrder,
+        label: sec.label,
+        description: null,
+        instruction: `Seeded placeholder for ${sec.sectionKey}. Base prompts live in src/lib/drafting-service.ts (SUPERSET_PROMPTS).`,
+        constraints: [],
+        isRequired: sec.isRequired,
+        isActive: true,
+        requiresPriorArt: sec.requiresPriorArt,
+        requiresFigures: sec.requiresFigures,
+        requiresClaims: sec.requiresClaims,
+        requiresComponents: sec.requiresComponents
+      }
+    });
+  }
+  console.log(`ƒo. Seeded/updated ${supersetSections.length} superset sections`);
+
   // Seed country names
   const countryNamesPath = path.join(COUNTRIES_DIR, 'countryname.csv');
   if (fs.existsSync(countryNamesPath)) {
@@ -664,6 +725,198 @@ async function seedCountryData() {
   console.log(`✅ Seeded ${profileCount} country profiles\n`);
 }
 
+async function seedCountryDataV2() {
+  console.log('PHASE 3 (v2): Seeding Country Data');
+
+  const readCsvRows = async (filePath) => {
+    const rows = [];
+    await new Promise((resolve, reject) => {
+      fs.createReadStream(filePath)
+        .pipe(csv())
+        .on('data', (row) => rows.push(row))
+        .on('end', resolve)
+        .on('error', reject);
+    });
+    return rows;
+  };
+
+  const supersetSections = [
+    { sectionKey: 'title', displayOrder: 1, label: 'Title of the Invention', isRequired: true, aliases: ['title_of_invention', 'titleofinvention'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'preamble', displayOrder: 2, label: 'Preamble', isRequired: false, aliases: ['opening_statement'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'crossReference', displayOrder: 3, label: 'Cross-Reference to Related Applications', isRequired: false, aliases: ['cross_reference', 'cross-reference', 'cross reference', 'crossReferences', 'cross_references'], requiresPriorArt: true, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'fieldOfInvention', displayOrder: 4, label: 'Field of the Invention', isRequired: true, aliases: ['field', 'technicalField', 'technical_field', 'field_of_invention', 'technicalfield', 'techfield'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'background', displayOrder: 5, label: 'Background of the Invention', isRequired: true, aliases: ['background_art', 'backgroundOfInvention', 'background_of_invention', 'priorArt', 'prior_art', 'backgroundart'], requiresPriorArt: true, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'objectsOfInvention', displayOrder: 6, label: 'Objects of the Invention', isRequired: false, aliases: ['objects', 'objects_of_invention', 'objectOfInvention', 'object_of_the_invention'], requiresPriorArt: true, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'summary', displayOrder: 7, label: 'Summary of the Invention', isRequired: true, aliases: ['summary_of_invention', 'summaryOfInvention', 'disclosureOfInvention', 'disclosure_of_invention', 'summaryoftheinvention'], requiresPriorArt: false, requiresFigures: false, requiresClaims: true, requiresComponents: true },
+    { sectionKey: 'technicalProblem', displayOrder: 8, label: 'Technical Problem', isRequired: false, aliases: ['technical_problem', 'problem_to_be_solved', 'techproblem', 'problemtobesolved'], requiresPriorArt: true, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'technicalSolution', displayOrder: 9, label: 'Technical Solution', isRequired: false, aliases: ['technical_solution', 'solution_to_problem', 'techsolution', 'meansforsolving'], requiresPriorArt: false, requiresFigures: false, requiresClaims: true, requiresComponents: true },
+    { sectionKey: 'advantageousEffects', displayOrder: 10, label: 'Advantageous Effects', isRequired: false, aliases: ['advantageous_effects', 'effects', 'beneficialeffects', 'beneficial_effects'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'briefDescriptionOfDrawings', displayOrder: 11, label: 'Brief Description of the Drawings', isRequired: true, aliases: ['brief_drawings', 'brief_description_of_drawings', 'drawings', 'figures', 'briefdescriptionofdrawings'], requiresPriorArt: false, requiresFigures: true, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'detailedDescription', displayOrder: 12, label: 'Detailed Description of the Invention', isRequired: true, aliases: ['detailed_description', 'description', 'detailedDescriptionOfInvention', 'detaileddescription'], requiresPriorArt: false, requiresFigures: true, requiresClaims: true, requiresComponents: true },
+    { sectionKey: 'bestMethod', displayOrder: 13, label: 'Best Mode', isRequired: false, aliases: ['bestMode', 'best_mode', 'best_method', 'bestmodeofcarryingout'], requiresPriorArt: false, requiresFigures: true, requiresClaims: false, requiresComponents: true },
+    { sectionKey: 'industrialApplicability', displayOrder: 14, label: 'Industrial Applicability', isRequired: false, aliases: ['industrial_applicability', 'utility', 'industrialapplicability'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: false },
+    { sectionKey: 'claims', displayOrder: 15, label: 'Claims', isRequired: true, aliases: ['patentclaims', 'patent_claims'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: true },
+    { sectionKey: 'abstract', displayOrder: 16, label: 'Abstract', isRequired: true, aliases: ['abstract_of_invention', 'abstractofinvention'], requiresPriorArt: false, requiresFigures: true, requiresClaims: true, requiresComponents: false },
+    { sectionKey: 'listOfNumerals', displayOrder: 17, label: 'List of Reference Numerals', isRequired: false, aliases: ['list_of_numerals', 'reference_numerals', 'reference_signs', 'numeral_list', 'numeralList'], requiresPriorArt: false, requiresFigures: false, requiresClaims: false, requiresComponents: true }
+  ];
+
+  for (const sec of supersetSections) {
+    await prisma.supersetSection.upsert({
+      where: { sectionKey: sec.sectionKey },
+      update: {
+        aliases: sec.aliases,
+        displayOrder: sec.displayOrder,
+        label: sec.label,
+        description: null,
+        instruction: `Seeded placeholder for ${sec.sectionKey}. Base prompts live in src/lib/drafting-service.ts (SUPERSET_PROMPTS).`,
+        constraints: [],
+        isRequired: sec.isRequired,
+        isActive: true,
+        requiresPriorArt: sec.requiresPriorArt,
+        requiresFigures: sec.requiresFigures,
+        requiresClaims: sec.requiresClaims,
+        requiresComponents: sec.requiresComponents
+      },
+      create: {
+        sectionKey: sec.sectionKey,
+        aliases: sec.aliases,
+        displayOrder: sec.displayOrder,
+        label: sec.label,
+        description: null,
+        instruction: `Seeded placeholder for ${sec.sectionKey}. Base prompts live in src/lib/drafting-service.ts (SUPERSET_PROMPTS).`,
+        constraints: [],
+        isRequired: sec.isRequired,
+        isActive: true,
+        requiresPriorArt: sec.requiresPriorArt,
+        requiresFigures: sec.requiresFigures,
+        requiresClaims: sec.requiresClaims,
+        requiresComponents: sec.requiresComponents
+      }
+    });
+  }
+
+  const countryNamesPath = path.join(COUNTRIES_DIR, 'countryname.csv');
+  if (fs.existsSync(countryNamesPath)) {
+    const rows = await readCsvRows(countryNamesPath);
+    for (const row of rows) {
+      const [code, name] = Object.values(row);
+      if (!code || !name) continue;
+      await prisma.countryName.upsert({
+        where: { code },
+        update: { name, continent: 'Unknown' },
+        create: { code, name, continent: 'Unknown' }
+      });
+    }
+  }
+
+  const finalMappingPath = path.join(COUNTRIES_DIR, 'Finalmapping.csv');
+  if (fs.existsSync(finalMappingPath)) {
+    const supersetOrderByKey = new Map(supersetSections.map(s => [s.sectionKey, s.displayOrder]));
+    const supersetRequiredByKey = new Map(supersetSections.map(s => [s.sectionKey, s.isRequired]));
+    const supersetCodeToSectionKey = {
+      '01. Title': 'title',
+      '02. Preamble': 'preamble',
+      '03. Cross-Ref/Fed': 'crossReference',
+      '04. Tech Field': 'fieldOfInvention',
+      '05. Background': 'background',
+      '06. Objects': 'objectsOfInvention',
+      '07. Summary (Gen)': 'summary',
+      '07a. Tech Problem': 'technicalProblem',
+      '07b. Tech Solution': 'technicalSolution',
+      '07c. Effects': 'advantageousEffects',
+      '08. Drawings': 'briefDescriptionOfDrawings',
+      '09. Detailed Desc': 'detailedDescription',
+      '10. Best Mode': 'bestMethod',
+      '11. Ind. Applicability': 'industrialApplicability',
+      '12. Claims': 'claims',
+      '13. Abstract': 'abstract'
+    };
+
+    const rows = await readCsvRows(finalMappingPath);
+    let mappingsCount = 0;
+
+    for (const row of rows) {
+      const supersetCode = String(row['Superset Section'] || '').trim();
+      const sectionKey = supersetCodeToSectionKey[supersetCode];
+      if (!sectionKey) continue;
+
+      const displayOrder = supersetOrderByKey.get(sectionKey) || null;
+      const isRequired = supersetRequiredByKey.get(sectionKey);
+
+      for (const [countryCode, rawHeading] of Object.entries(row)) {
+        if (countryCode === 'Superset Section') continue;
+        let heading = typeof rawHeading === 'string' ? rawHeading.trim() : '';
+        if (!heading) continue;
+        heading = heading.replace(/^\"|\"$/g, '').replace(/\"\"/g, '\"').trim();
+
+        await prisma.countrySectionMapping.upsert({
+          where: {
+            countryCode_supersetCode: {
+              countryCode,
+              supersetCode
+            }
+          },
+          update: {
+            sectionKey,
+            heading,
+            isEnabled: true,
+            isRequired: typeof isRequired === 'boolean' ? isRequired : true,
+            displayOrder
+          },
+          create: {
+            countryCode,
+            supersetCode,
+            sectionKey,
+            heading,
+            isEnabled: true,
+            isRequired: typeof isRequired === 'boolean' ? isRequired : true,
+            displayOrder
+          }
+        });
+        mappingsCount++;
+      }
+    }
+
+    console.log(`Seeded/updated ${mappingsCount} country section mappings (v2)`);
+  }
+
+  const countryFiles = fs.readdirSync(COUNTRIES_DIR).filter(file => file.endsWith('.json'));
+  const analystUser = await prisma.user.findFirst({ where: { roles: { has: 'ANALYST' } } });
+  let profileCount = 0;
+
+  for (const file of countryFiles) {
+    const countryCode = file.replace('.json', '');
+    const filePath = path.join(COUNTRIES_DIR, file);
+    try {
+      const profileData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      if (!analystUser) continue;
+      await prisma.countryProfile.upsert({
+        where: { countryCode },
+        update: {
+          name: profileData.country_name || countryCode,
+          profileData,
+          status: 'ACTIVE',
+          updatedBy: analystUser.id
+        },
+        create: {
+          countryCode,
+          name: profileData.country_name || countryCode,
+          profileData,
+          version: 1,
+          status: 'ACTIVE',
+          createdBy: analystUser.id,
+          updatedBy: analystUser.id
+        }
+      });
+      profileCount++;
+    } catch (error) {
+      console.warn(`Failed to seed country profile ${countryCode}:`, error.message);
+    }
+  }
+
+  console.log(`Seeded/updated ${profileCount} country profiles (v2)`);
+}
+
 async function seedSampleData() {
   console.log('🎯 PHASE 4: Creating Sample Data');
 
@@ -773,7 +1026,7 @@ async function runComprehensiveSeed(options = {}) {
     await seedPlansAndFeatures();
 
     // Seed country data
-    await seedCountryData();
+    await seedCountryDataV2();
 
     // Seed sample data
     await seedSampleData();

@@ -16,6 +16,8 @@ import { prisma } from './prisma'
 import { getCountryProfile, getSectionRules, getBaseStyle } from './country-profile-service'
 import { getSectionPrompt as getDbSectionPrompt } from './section-prompt-service'
 import { getUserInstruction, buildUserInstructionBlock, type UserInstructionContext } from './user-instruction-service'
+import { resolveCanonicalKey } from './section-alias-service'
+import { getSupportedSectionKeys } from './metering/section-stage-mapping'
 
 // Import superset prompts dynamically to avoid circular imports
 let SUPERSET_PROMPTS: Record<string, { instruction: string; constraints: string[] }> | null = null
@@ -90,162 +92,103 @@ export type MergeStrategy = 'append' | 'prepend' | 'replace'
 // Section Key Resolution
 // ============================================================================
 
+// NOTE: Section aliases are now ONLY resolved via database (SupersetSection.aliases)
+// No hardcoded alias maps - see section-alias-service.ts for database-driven resolution
+
 /**
- * Mapping from common aliases to canonical superset keys
+ * Map canonical drafting section keys (camelCase) to the base prompt IDs used by SUPERSET_PROMPTS.
+ * SUPERSET_PROMPTS is prompt-ID keyed (e.g. "field", "best_mode"), while the app stores/queries
+ * sections using canonical camelCase keys (e.g. "fieldOfInvention", "bestMethod").
  */
-const SECTION_KEY_ALIASES: Record<string, string> = {
-  // Title variants
-  'title': 'title',
-  'title_of_invention': 'title',
-  
-  // Field variants
-  'field': 'fieldOfInvention',
-  'field_of_invention': 'fieldOfInvention',
-  'technical_field': 'fieldOfInvention',
-  'fieldofinvention': 'fieldOfInvention',
-  
-  // Background variants
-  'background': 'background',
-  'background_art': 'background',
-  'background_of_invention': 'background',
-  
-  // Summary variants
-  'summary': 'summary',
-  'summary_of_invention': 'summary',
-  'brief_summary': 'summary',
-  
-  // Detailed description variants
-  'detailed_description': 'detailedDescription',
-  'detaileddescription': 'detailedDescription',
-  'description': 'detailedDescription',
-  'detailed_desc': 'detailedDescription',
-  
-  // Claims variants
-  'claims': 'claims',
-  
-  // Abstract variants
-  'abstract': 'abstract',
-  'abstract_of_disclosure': 'abstract',
-  
-  // Drawings variants
-  'brief_drawings': 'briefDescriptionOfDrawings',
-  'brief_description_of_drawings': 'briefDescriptionOfDrawings',
-  'briefdescriptionofdrawings': 'briefDescriptionOfDrawings',
-  'drawings': 'briefDescriptionOfDrawings',
-  
-  // Preamble
-  'preamble': 'preamble',
-  
-  // Cross-reference
-  'cross_reference': 'crossReference',
-  'crossreference': 'crossReference',
-  'cross_ref': 'crossReference',
-  
-  // Objects - maps to 'objectsOfInvention' which is the internal key used by sectionKeyMap
-  'objects': 'objectsOfInvention',
-  'objects_of_invention': 'objectsOfInvention',
-  'objectsofinvention': 'objectsOfInvention',
-  'objectsOfInvention': 'objectsOfInvention',
-  'object_of_the_invention': 'objectsOfInvention',
-  
-  // Technical problem/solution (Asian jurisdictions)
-  'technical_problem': 'technicalProblem',
-  'technicalproblem': 'technicalProblem',
-  'technical_solution': 'technicalSolution',
-  'technicalsolution': 'technicalSolution',
-  'advantageous_effects': 'advantageousEffects',
-  'advantageouseffects': 'advantageousEffects',
-  
-  // Best mode
-  'best_mode': 'bestMethod',
-  'best_method': 'bestMethod',
-  'bestmethod': 'bestMethod',
-  
-  // Industrial applicability
-  'industrial_applicability': 'industrialApplicability',
-  'industrialapplicability': 'industrialApplicability',
-  'utility': 'industrialApplicability'
+const SECTION_KEY_TO_PROMPT_KEY: Record<string, string> = {
+  title: 'title',
+  preamble: 'preamble',
+  crossReference: 'cross_reference',
+  fieldOfInvention: 'field',
+  background: 'background',
+  objectsOfInvention: 'objects',
+  summary: 'summary',
+  technicalProblem: 'technical_problem',
+  technicalSolution: 'technical_solution',
+  advantageousEffects: 'advantageous_effects',
+  briefDescriptionOfDrawings: 'brief_drawings',
+  detailedDescription: 'detailed_description',
+  bestMethod: 'best_mode',
+  industrialApplicability: 'industrial_applicability',
+  claims: 'claims',
+  abstract: 'abstract',
+  listOfNumerals: 'reference_numerals'
+}
+
+const PROMPT_KEY_TO_SECTION_KEY: Record<string, string> = Object.fromEntries(
+  Object.entries(SECTION_KEY_TO_PROMPT_KEY).map(([sectionKey, promptKey]) => [promptKey, sectionKey])
+)
+
+function isSupportedCanonicalSectionKey(sectionKey: string): boolean {
+  return getSupportedSectionKeys().includes(sectionKey)
+}
+
+function getSupersetPromptKeyForCanonicalSectionKey(sectionKey: string): string {
+  return SECTION_KEY_TO_PROMPT_KEY[sectionKey] || sectionKey
 }
 
 /**
  * Resolves any section identifier to its canonical superset key
  * 
+ * DATABASE IS THE ONLY SOURCE OF TRUTH - No hardcoded fallbacks
+ * 
  * Resolution order:
- * 1. Direct match in SUPERSET_PROMPTS
- * 2. Alias lookup
+ * 1. Prompt-ID to canonical mapping (SUPERSET_PROMPTS IDs like "field", "best_mode")
+ * 2. Alias-to-canonical (SupersetSection.aliases; cached; DB-driven)
  * 3. Database mapping (CountrySectionMapping)
- * 4. Country profile canonicalKeys
  */
 export async function resolveSectionKey(
   countryCode: string,
   inputSectionId: string
 ): Promise<string | null> {
-  const supersetPrompts = await getSupersetPrompts()
-  const normalizedInput = inputSectionId.toLowerCase().replace(/[^a-z0-9]/g, '')
-  
-  // 1. Direct match in SUPERSET_PROMPTS
-  if (supersetPrompts[inputSectionId]) {
-    return inputSectionId
-  }
-  
-  // 2. Try alias lookup
-  const aliasKey = SECTION_KEY_ALIASES[normalizedInput] || SECTION_KEY_ALIASES[inputSectionId.toLowerCase()]
-  if (aliasKey && supersetPrompts[aliasKey]) {
-    return aliasKey
-  }
-  
-  // 3. Try database mapping
-  try {
-    const mapping = await prisma.countrySectionMapping.findFirst({
-      where: {
-        countryCode: countryCode.toUpperCase(),
-        OR: [
-          { sectionKey: inputSectionId },
-          { sectionKey: { equals: normalizedInput, mode: 'insensitive' } },
-          { supersetCode: { contains: inputSectionId, mode: 'insensitive' } }
-        ]
-      }
-    })
-    
-    if (mapping?.sectionKey && supersetPrompts[mapping.sectionKey]) {
-      return mapping.sectionKey
+  const raw = (inputSectionId || '').trim()
+  if (!raw) return null
+
+  const lower = raw.toLowerCase()
+  const normalizedNoPunct = lower.replace(/[^a-z0-9]/g, '')
+  const normalizedUnderscore = lower
+    .replace(/[^a-z0-9]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
+
+  // 1. Direct mapping from SUPERSET_PROMPTS prompt IDs to canonical section keys
+  // This maps legacy prompt keys like "field" to canonical keys like "fieldOfInvention"
+  for (const candidate of [lower, normalizedUnderscore]) {
+    const mapped = PROMPT_KEY_TO_SECTION_KEY[candidate]
+    if (mapped && isSupportedCanonicalSectionKey(mapped)) {
+      return mapped
     }
-  } catch (error) {
-    console.warn('Error looking up section mapping:', error)
   }
-  
-  // 4. Try country profile canonicalKeys
-  try {
-    const profile = await getCountryProfile(countryCode)
-    if (profile) {
-      const variant = profile.profileData?.structure?.variants?.find(
-        (v: any) => v.id === profile.profileData?.structure?.defaultVariant
-      ) || profile.profileData?.structure?.variants?.[0]
-      
-      if (variant?.sections) {
-        for (const section of variant.sections) {
-          // Check if input matches section id or any canonical key
-          if (section.id === inputSectionId || 
-              section.id?.toLowerCase() === normalizedInput ||
-              section.canonicalKeys?.some((k: string) => 
-                k.toLowerCase() === normalizedInput || k === inputSectionId
-              )) {
-            // Return first canonicalKey that maps to superset
-            for (const key of section.canonicalKeys || []) {
-              const normalized = SECTION_KEY_ALIASES[key.toLowerCase().replace(/[^a-z0-9]/g, '')]
-              if (normalized && supersetPrompts[normalized]) {
-                return normalized
-              }
-              if (supersetPrompts[key]) {
-                return key
-              }
-            }
-          }
-        }
-      }
+
+  // 2. Alias-to-canonical resolution (DB-driven via SupersetSection.aliases; cached)
+  // This is the primary resolution path - uses database as source of truth
+  for (const candidate of [raw, lower, normalizedUnderscore, normalizedNoPunct]) {
+    const canonical = await resolveCanonicalKey(candidate)
+    if (isSupportedCanonicalSectionKey(canonical)) {
+      return canonical
     }
-  } catch (error) {
-    console.warn('Error looking up country profile:', error)
+  }
+
+  // 3. Database mapping (CountrySectionMapping) - final attempt
+  const mapping = await prisma.countrySectionMapping.findFirst({
+    where: {
+      countryCode: countryCode.toUpperCase(),
+      OR: [
+        { sectionKey: raw },
+        { sectionKey: { equals: lower, mode: 'insensitive' } },
+        { sectionKey: { equals: normalizedNoPunct, mode: 'insensitive' } },
+        { supersetCode: { contains: raw, mode: 'insensitive' } }
+      ]
+    }
+  })
+  
+  if (mapping?.sectionKey && isSupportedCanonicalSectionKey(mapping.sectionKey)) {
+    return mapping.sectionKey
   }
   
   return null
@@ -285,9 +228,22 @@ export async function getMergedPrompt(
   }
   
   // Step 2: Get base superset prompt
-  const basePrompt = supersetPrompts[canonicalKey]
+  const promptKeyCandidates = Array.from(new Set([
+    canonicalKey,
+    getSupersetPromptKeyForCanonicalSectionKey(canonicalKey),
+    canonicalKey.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '')
+  ])).filter(Boolean)
+
+  let basePrompt: { instruction: string; constraints: string[] } | undefined
+  for (const candidate of promptKeyCandidates) {
+    if (supersetPrompts[candidate]) {
+      basePrompt = supersetPrompts[candidate]
+      break
+    }
+  }
+
   if (!basePrompt) {
-    console.warn(`[PromptMerger] No superset prompt for key: ${canonicalKey}`)
+    console.warn(`[PromptMerger] No superset prompt found for canonicalKey="${canonicalKey}". Tried keys: ${promptKeyCandidates.join(', ')}`)
     return null
   }
   
@@ -664,7 +620,8 @@ function getDefaultLabel(sectionKey: string): string {
     bestMethod: 'Best Mode',
     industrialApplicability: 'Industrial Applicability',
     claims: 'Claims',
-    abstract: 'Abstract'
+    abstract: 'Abstract',
+    listOfNumerals: 'List of Reference Numerals'
   }
   return labels[sectionKey] || sectionKey
 }

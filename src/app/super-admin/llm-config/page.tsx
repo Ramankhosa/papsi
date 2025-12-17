@@ -101,7 +101,7 @@ const SUPERSET_SECTION_STAGES = [
   'advantageousEffects',        // Advantageous Effects (JP)
   'briefDescriptionOfDrawings', // Brief Description of Drawings
   'detailedDescription',        // Detailed Description
-  'bestMode',                   // Best Mode (AU)
+  'bestMethod',                 // Best Mode (AU)
   'industrialApplicability',    // Industrial Applicability (PCT/JP)
   'claims',                     // Claims
   'abstract',                   // Abstract
@@ -123,7 +123,7 @@ const SECTION_TO_STAGE_MAP: Record<string, string> = {
   'advantageousEffects': 'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS',
   'briefDescriptionOfDrawings': 'DRAFT_ANNEXURE_DRAWINGS',
   'detailedDescription': 'DRAFT_ANNEXURE_DESCRIPTION',
-  'bestMode': 'DRAFT_ANNEXURE_BEST_MODE',
+  'bestMethod': 'DRAFT_ANNEXURE_BEST_MODE',
   'industrialApplicability': 'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY',
   'claims': 'DRAFT_ANNEXURE_CLAIMS',
   'abstract': 'DRAFT_ANNEXURE_ABSTRACT',
@@ -859,4 +859,3 @@ export default function LLMConfigPage() {
     </div>
   )
 }
-

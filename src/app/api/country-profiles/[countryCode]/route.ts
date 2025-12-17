@@ -11,47 +11,46 @@ import { resolveDisplayOrder } from '@/lib/section-display-order'
 // 
 // DYNAMIC MODE: When ?jurisdictions=IN,US,PCT is provided, returns only
 // the sections required by those jurisdictions (optimized)
+// 
+// DATABASE IS THE ONLY SOURCE OF TRUTH
+// All section definitions come from SupersetSection table
 // ============================================================================
 
-// Full superset - used as fallback when no jurisdictions specified
-const FULL_SUPERSET_SECTIONS = [
-  { id: 'title', label: 'Title of the Invention', order: 1, required: true },
-  { id: 'preamble', label: 'Preamble', order: 2, required: false },
-  { id: 'crossReference', label: 'Cross-Reference to Related Applications', order: 3, required: false },
-  { id: 'fieldOfInvention', label: 'Field of the Invention', order: 4, required: true },
-  { id: 'background', label: 'Background of the Invention', order: 5, required: true },
-  { id: 'objectsOfInvention', label: 'Objects of the Invention', order: 6, required: false },
-  { id: 'summary', label: 'Summary of the Invention', order: 7, required: true },
-  { id: 'technicalProblem', label: 'Technical Problem', order: 8, required: false },
-  { id: 'technicalSolution', label: 'Technical Solution', order: 9, required: false },
-  { id: 'advantageousEffects', label: 'Advantageous Effects', order: 10, required: false },
-  { id: 'briefDescriptionOfDrawings', label: 'Brief Description of the Drawings', order: 11, required: true },
-  { id: 'detailedDescription', label: 'Detailed Description of the Invention', order: 12, required: true },
-  { id: 'bestMode', label: 'Best Mode', order: 13, required: false },
-  { id: 'industrialApplicability', label: 'Industrial Applicability', order: 14, required: false },
-  { id: 'claims', label: 'Claims', order: 15, required: true },
-  { id: 'abstract', label: 'Abstract', order: 16, required: true }
-]
+/**
+ * Get full superset sections from database
+ * DATABASE IS THE ONLY SOURCE OF TRUTH - No hardcoded fallbacks
+ */
+async function getFullSupersetSections(): Promise<Array<{ id: string; label: string; order: number; required: boolean }>> {
+  const sections = await prisma.supersetSection.findMany({
+    where: { isActive: true },
+    orderBy: { displayOrder: 'asc' }
+  })
+  
+  if (sections.length === 0) {
+    throw new Error(
+      '[CountryProfile:REFERENCE] CRITICAL: No SupersetSection entries found in database. ' +
+      'Please seed the superset_sections table via /super-admin/superset-sections.'
+    )
+  }
+  
+  return sections.map(s => ({
+    id: s.sectionKey,
+    label: s.label,
+    order: s.displayOrder,
+    required: s.isRequired
+  }))
+}
 
-// Section ID to label map for dynamic sections
-const SECTION_LABELS: Record<string, string> = {
-  title: 'Title of the Invention',
-  preamble: 'Preamble',
-  crossReference: 'Cross-Reference to Related Applications',
-  fieldOfInvention: 'Field of the Invention',
-  background: 'Background of the Invention',
-  objectsOfInvention: 'Objects of the Invention',
-  summary: 'Summary of the Invention',
-  technicalProblem: 'Technical Problem',
-  technicalSolution: 'Technical Solution',
-  advantageousEffects: 'Advantageous Effects',
-  briefDescriptionOfDrawings: 'Brief Description of the Drawings',
-  detailedDescription: 'Detailed Description of the Invention',
-  bestMode: 'Best Mode',
-  industrialApplicability: 'Industrial Applicability',
-  claims: 'Claims',
-  abstract: 'Abstract',
-  listOfNumerals: 'List of Reference Numerals'
+/**
+ * Get section label from database
+ * Falls back to sectionKey if not found
+ */
+async function getSectionLabel(sectionKey: string): Promise<string> {
+  const section = await prisma.supersetSection.findUnique({
+    where: { sectionKey },
+    select: { label: true }
+  })
+  return section?.label || sectionKey
 }
 
 // Build profile from section list
@@ -122,8 +121,10 @@ function buildReferenceProfile(
 }
 
 // Get static full profile (no optimization)
-function getFullReferenceProfile() {
-  const sections = FULL_SUPERSET_SECTIONS.map(s => ({
+// DATABASE IS THE ONLY SOURCE OF TRUTH
+async function getFullReferenceProfile() {
+  const fullSections = await getFullSupersetSections()
+  const sections = fullSections.map(s => ({
     ...s,
     requiredBy: ['ALL'] as string[]
   }))
@@ -131,16 +132,24 @@ function getFullReferenceProfile() {
 }
 
 // Get dynamic optimized profile based on jurisdictions
+// DATABASE IS THE ONLY SOURCE OF TRUTH
 async function getDynamicReferenceProfile(jurisdictions: string[]) {
   try {
     const result = await computeDynamicSuperset(jurisdictions)
+    
+    // Get labels from database for all section keys
+    const supersetSections = await prisma.supersetSection.findMany({
+      where: { sectionKey: { in: result.sections } },
+      select: { sectionKey: true, label: true }
+    })
+    const labelMap = new Map(supersetSections.map(s => [s.sectionKey, s.label]))
     
     // Build sections from dynamic computation
     const sections = result.sections.map((sectionKey, index) => {
       const details = result.sectionDetails[sectionKey]
       return {
         id: sectionKey,
-        label: details?.label || SECTION_LABELS[sectionKey] || sectionKey,
+        label: details?.label || labelMap.get(sectionKey) || sectionKey,
         order: index + 1,
         required: true, // If it's in the dynamic superset, it's required by at least one jurisdiction
         requiredBy: details?.requiredBy || []
@@ -151,8 +160,9 @@ async function getDynamicReferenceProfile(jurisdictions: string[]) {
     
     return buildReferenceProfile(sections, true, jurisdictions)
   } catch (error) {
-    console.error('[CountryProfile:REFERENCE] Failed to compute dynamic superset, falling back to full:', error)
-    return getFullReferenceProfile()
+    console.error('[CountryProfile:REFERENCE] Failed to compute dynamic superset:', error)
+    // Re-throw - database is the only source of truth, no fallbacks
+    throw error
   }
 }
 
