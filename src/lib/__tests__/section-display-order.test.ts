@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest'
-import { ensureDisplayOrder, formatNumberedHeading, isNumberedHeading } from '@/lib/section-display-order'
+import { ensureDisplayOrder, formatNumberedHeading, isNumberedHeading, resolveDisplayOrder } from '@/lib/section-display-order'
 
 describe('section-display-order', () => {
   test('isNumberedHeading detects existing numeric prefixes', () => {
@@ -23,6 +23,24 @@ describe('section-display-order', () => {
     expect(formatNumberedHeading(3, 'Background of the Invention')).toBe('03. Background of the Invention')
     expect(formatNumberedHeading(12, 'Detailed Description')).toBe('12. Detailed Description')
     expect(formatNumberedHeading(7, '07. Summary')).toBe('07. Summary')
+  })
+
+  test('resolveDisplayOrder inherits superset order when country order is null', () => {
+    expect(resolveDisplayOrder({
+      countryDisplayOrder: null,
+      supersetDisplayOrder: 7,
+      supersetCode: '07. Summary',
+      context: 'IN:summary'
+    })).toBe(7)
+  })
+
+  test('resolveDisplayOrder parses supersetCode when both orders are null', () => {
+    expect(resolveDisplayOrder({
+      countryDisplayOrder: null,
+      supersetDisplayOrder: null,
+      supersetCode: '10. Best Mode',
+      context: 'IN:bestMethod'
+    })).toBe(10)
   })
 })
 

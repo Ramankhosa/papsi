@@ -270,7 +270,7 @@ const defaultExportSections: ExportSectionDef[] = [
 
 async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<ExportSectionDef[]> {
   try {
-    const { ensureDisplayOrder, formatNumberedHeading } = await import('@/lib/section-display-order')
+    const { resolveDisplayOrder } = await import('@/lib/section-display-order')
     // Fetch section mappings from database - this is the ONLY source of truth for ordering
     // NO FALLBACKS - displayOrder from database is the sole source of truth
     const sectionMappings = await prisma.countrySectionMapping.findMany({
@@ -282,11 +282,22 @@ async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<E
     // NO FALLBACK LOGIC - the order returned from Prisma (by displayOrder) is authoritative
     if (sectionMappings.length > 0) {
       const sections: ExportSectionDef[] = []
+
+      const supersetSections = await prisma.supersetSection.findMany({
+        where: { sectionKey: { in: sectionMappings.map(m => m.sectionKey) } },
+        select: { sectionKey: true, displayOrder: true }
+      })
+      const supersetOrderByKey = new Map(supersetSections.map(s => [s.sectionKey, s.displayOrder]))
       
       for (const mapping of sectionMappings) {
         const sectionKey = mapping.sectionKey
         const heading = mapping.heading || ''
-        const displayOrder = ensureDisplayOrder(mapping.displayOrder, `${jurisdiction}:${String(sectionKey)}`)
+        const displayOrder = resolveDisplayOrder({
+          countryDisplayOrder: mapping.displayOrder,
+          supersetDisplayOrder: supersetOrderByKey.get(sectionKey),
+          supersetCode: (mapping as any).supersetCode,
+          context: `${jurisdiction}:${String(sectionKey)}`
+        })
         
         // Skip N/A, Implicit, or other non-applicable sections
         if (isNonApplicableHeading(heading)) {
@@ -295,7 +306,7 @@ async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<E
         
         sections.push({
           key: sectionKey,
-          label: formatNumberedHeading(displayOrder, heading || sectionKey),
+          label: heading || sectionKey,
           required: mapping.isRequired ?? true
         })
       }
@@ -9261,21 +9272,53 @@ async function handleAutosaveSections(user: any, patentId: string, data: any) {
   const effectiveJurisdiction = (session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'US').toUpperCase()
   const drafts = Array.isArray(session.annexureDrafts) ? session.annexureDrafts : []
   const last = drafts.find((d: any) => (d.jurisdiction || 'US').toUpperCase() === effectiveJurisdiction)
-  const merge: any = {
-    title: last?.title || '',
-    fieldOfInvention: last?.fieldOfInvention || null,
-    background: last?.background || null,
-    summary: last?.summary || null,
-    briefDescriptionOfDrawings: last?.briefDescriptionOfDrawings || null,
-    detailedDescription: last?.detailedDescription || null,
-    bestMethod: last?.bestMethod || null,
-    claims: last?.claims || null,
-    abstract: last?.abstract || null,
-    industrialApplicability: last?.industrialApplicability || null,
-    listOfNumerals: last?.listOfNumerals || null,
-    ...patch
+
+  // Normalize patch keys to canonical keys (DB-driven aliases)
+  const normalizedPatch = await normalizeSectionKeys(patch as Record<string, any>)
+
+  const legacyFields = [
+    'title',
+    'fieldOfInvention',
+    'background',
+    'summary',
+    'briefDescriptionOfDrawings',
+    'detailedDescription',
+    'bestMethod',
+    'claims',
+    'abstract',
+    'industrialApplicability',
+    'listOfNumerals'
+  ]
+
+  const parseObject = (value: unknown): Record<string, string> => {
+    if (!value) return {}
+    if (typeof value === 'object') return value as Record<string, string>
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value)
+        return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {}
+      } catch {
+        return {}
+      }
+    }
+    return {}
   }
-  const crossReferenceText = typeof patch?.crossReference === 'string' ? patch.crossReference.trim() : ''
+
+  const prevExtraSections = parseObject((last as any)?.extraSections)
+  const extraSections: Record<string, string> = { ...prevExtraSections }
+  const updateData: Record<string, any> = {}
+
+  for (const [canonicalKey, raw] of Object.entries(normalizedPatch)) {
+    if (typeof raw !== 'string') continue
+    const value = raw.trim()
+    if (!value) continue
+
+    if (legacyFields.includes(canonicalKey)) {
+      updateData[canonicalKey] = value
+    } else {
+      extraSections[canonicalKey] = value
+    }
+  }
 
   // Create or update a working draft in place: if last exists, update it; else create version 1
   let draft
@@ -9283,42 +9326,44 @@ async function handleAutosaveSections(user: any, patentId: string, data: any) {
     draft = await prisma.annexureDraft.update({
       where: { id: last.id },
       data: {
-        title: merge.title || last.title,
-        fieldOfInvention: merge.fieldOfInvention || last.fieldOfInvention,
-        background: merge.background || last.background,
-        summary: merge.summary || last.summary,
-        briefDescriptionOfDrawings: merge.briefDescriptionOfDrawings || last.briefDescriptionOfDrawings,
-        detailedDescription: merge.detailedDescription || last.detailedDescription,
-        bestMethod: merge.bestMethod || last.bestMethod,
-        claims: merge.claims || last.claims,
-        abstract: merge.abstract || last.abstract,
-        industrialApplicability: merge.industrialApplicability || last.industrialApplicability,
-        listOfNumerals: merge.listOfNumerals || last.listOfNumerals
+        ...(Object.keys(updateData).length ? updateData : {}),
+        ...(Object.keys(extraSections).length ? { extraSections } : {})
       }
     })
   } else {
-    draft = await prisma.annexureDraft.create({
-      data: {
-        session: { connect: { id: sessionId } },
-        version: 1,
-        jurisdiction: effectiveJurisdiction,
-        title: merge.title || 'Untitled',
-        fullDraftText: '',
-        isValid: false
-      }
-    })
-  }
+    const title = typeof updateData.title === 'string' && updateData.title.trim()
+      ? updateData.title.trim()
+      : (session as any)?.ideaRecord?.title || 'Untitled'
 
-  if (crossReferenceText) {
-    const existingVR = (draft.validationReport as any) || {}
-    const nextVR = { ...existingVR, extraSections: { ...(existingVR.extraSections || {}), crossReference: crossReferenceText } }
-    draft = await prisma.annexureDraft.update({ where: { id: draft.id }, data: { validationReport: nextVR } })
+    const createData: any = {
+      session: { connect: { id: sessionId } },
+      version: 1,
+      jurisdiction: effectiveJurisdiction,
+      title,
+      fullDraftText: '',
+      isValid: false
+    }
+
+    for (const field of legacyFields) {
+      if (field === 'title') continue
+      if (typeof updateData[field] === 'string' && updateData[field].trim()) {
+        createData[field] = updateData[field].trim()
+      }
+    }
+
+    if (Object.keys(extraSections).length > 0) {
+      createData.extraSections = extraSections
+    }
+
+    draft = await prisma.annexureDraft.create({
+      data: createData
+    })
   }
 
   // Track essential sections for patent-based quota counting
   // A patent counts toward quota when both detailedDescription AND claims are drafted
   if (session.tenantId) {
-    const savedSectionKeys = Object.keys(patch).filter(k => patch[k] && typeof patch[k] === 'string' && patch[k].trim())
+    const savedSectionKeys = Object.keys(normalizedPatch).filter(k => normalizedPatch[k] && typeof normalizedPatch[k] === 'string' && (normalizedPatch[k] as string).trim())
     for (const sectionKey of savedSectionKeys) {
       if (sectionKey === 'detailedDescription' || sectionKey === 'description' || sectionKey === 'claims') {
         await trackSectionDrafted(
@@ -9499,7 +9544,11 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
       effectiveJurisdiction,
       preferredLanguage
     )
-    if (!result.success) return NextResponse.json({ error: result.error, debugSteps: result.debugSteps }, { status: 400 })
+    if (!result.success) {
+      const statusCode = result.retryAfter ? 429 : 400
+      const headers = result.retryAfter ? { 'Retry-After': result.retryAfter.toString() } : {}
+      return NextResponse.json({ error: result.error, debugSteps: result.debugSteps }, { status: statusCode, headers })
+    }
   }
   
   // Add frozen claims to the result if they were used

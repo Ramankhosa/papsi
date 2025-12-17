@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { authenticateUser } from '@/lib/auth-middleware'
 import { prisma } from '@/lib/prisma'
 import { computeDynamicSuperset, isNonApplicableHeading } from '@/lib/multi-jurisdiction-service'
-import { ensureDisplayOrder } from '@/lib/section-display-order'
+import { resolveDisplayOrder } from '@/lib/section-display-order'
 
 // ============================================================================
 // REFERENCE Pseudo-Country Profile
@@ -221,14 +221,14 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
       return NextResponse.json({ error: `No section mappings configured for ${code}. Please configure via /super-admin/jurisdiction-config.` }, { status: 400 })
     }
     
-    // Validate displayOrder - DB is the only source of truth for ordering
-    try {
-      for (const m of resolvedMappings) {
-        ensureDisplayOrder(m.displayOrder, `${code}:${String(m.sectionKey)}`)
-      }
-    } catch (err: any) {
-      return NextResponse.json({ error: err?.message || 'Invalid displayOrder in jurisdiction config' }, { status: 400 })
-    }
+    // Resolve displayOrder for each mapping:
+    // - If country mapping displayOrder is null, inherit from SupersetSection.displayOrder (still DB-driven)
+    // - As a last resort, parse from supersetCode like "07. Summary"
+    const supersetSections = await prisma.supersetSection.findMany({
+      where: { sectionKey: { in: resolvedMappings.map(m => m.sectionKey) } },
+      select: { sectionKey: true, displayOrder: true }
+    })
+    const supersetOrderByKey = new Map(supersetSections.map(s => [s.sectionKey, s.displayOrder]))
 
     // Create a map of sectionKey -> mapping for quick lookup
     const mappingByKey = new Map(resolvedMappings.map(m => [m.sectionKey, m]))
@@ -263,6 +263,13 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
             if (!mapping) {
               return null
             }
+
+            const order = resolveDisplayOrder({
+              countryDisplayOrder: mapping.displayOrder,
+              supersetDisplayOrder: supersetOrderByKey.get(mapping.sectionKey),
+              supersetCode: mapping.supersetCode,
+              context: `${code}:${String(mapping.sectionKey)}`
+            })
             
             // Track this section's key
             existingSectionKeys.add(sec.id)
@@ -276,7 +283,7 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
             return {
               ...sec,
               // Use mapping's displayOrder ONLY (database is source of truth)
-              order: ensureDisplayOrder(mapping.displayOrder, `${code}:${String(mapping.sectionKey)}`),
+              order,
               // Use mapping heading for display (jurisdiction-config)
               label: mapping.heading,
               // Include mapping metadata
@@ -284,7 +291,7 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
                 heading: mapping.heading,
                 isRequired: mapping.isRequired,
                 isEnabled: mapping.isEnabled,
-                displayOrder: mapping.displayOrder
+                displayOrder: order
               } : null
             }
           })
@@ -300,17 +307,23 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
             if (!mapping.isEnabled) continue
             
             // Add the section from the mapping
+            const order = resolveDisplayOrder({
+              countryDisplayOrder: mapping.displayOrder,
+              supersetDisplayOrder: supersetOrderByKey.get(mapping.sectionKey),
+              supersetCode: mapping.supersetCode,
+              context: `${code}:${String(mapping.sectionKey)}`
+            })
             sectionsWithOrder.push({
               id: mapping.sectionKey,
               label: mapping.heading,
-              order: ensureDisplayOrder(mapping.displayOrder, `${code}:${String(mapping.sectionKey)}`),
+              order,
               required: mapping.isRequired,
               canonicalKeys: [mapping.sectionKey],
               _mapping: {
                 heading: mapping.heading,
                 isRequired: mapping.isRequired,
                 isEnabled: mapping.isEnabled,
-                displayOrder: mapping.displayOrder
+                displayOrder: order
               },
               _fromMapping: true // Flag to indicate this was added from CountrySectionMapping
             })
@@ -336,13 +349,23 @@ export async function GET(request: NextRequest, { params }: { params: { countryC
       rules: profileData?.rules || null,
       export: profileData?.export || null,
       // Include mappings for reference
-      sectionMappings: resolvedMappings.map(m => ({
-        sectionKey: m.sectionKey,
-        heading: m.heading,
-        displayOrder: m.displayOrder,
-        isRequired: m.isRequired,
-        isEnabled: m.isEnabled
-      }))
+      sectionMappings: resolvedMappings
+        .map(m => {
+          const order = resolveDisplayOrder({
+            countryDisplayOrder: m.displayOrder,
+            supersetDisplayOrder: supersetOrderByKey.get(m.sectionKey),
+            supersetCode: m.supersetCode,
+            context: `${code}:${String(m.sectionKey)}`
+          })
+          return {
+            sectionKey: m.sectionKey,
+            heading: m.heading,
+            displayOrder: order,
+            isRequired: m.isRequired,
+            isEnabled: m.isEnabled
+          }
+        })
+        .sort((a, b) => a.displayOrder - b.displayOrder)
     }
 
     return NextResponse.json({ profile: payload })

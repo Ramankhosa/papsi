@@ -126,10 +126,13 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
 
       } catch (error) {
         console.error('Policy evaluation error:', error)
-        return {
-          allowed: false,
-          reason: 'Policy evaluation failed'
+
+        // If it's a MeteringError, re-throw it to preserve error type and details
+        if (error instanceof MeteringError) {
+          throw error
         }
+
+        throw MeteringErrorUtils.wrap(error, 'DATABASE_ERROR')
       }
     },
 

@@ -651,6 +651,19 @@ export async function PUT(request: NextRequest) {
           )
         }
 
+        // If displayOrder is explicitly set to null, treat that as "reset to superset default"
+        // (We never want persisted NULL display_order because DB is the source of truth for ordering.)
+        let resolvedDisplayOrder: number | undefined = undefined
+        if (displayOrder === null) {
+          const superset = await prisma.supersetSection.findUnique({ where: { sectionKey } })
+          if (!superset) {
+            return NextResponse.json({ error: `Superset section '${sectionKey}' not found` }, { status: 404 })
+          }
+          resolvedDisplayOrder = superset.displayOrder
+        } else if (displayOrder !== undefined) {
+          resolvedDisplayOrder = displayOrder
+        }
+
         const mapping = await prisma.countrySectionMapping.update({
           where: {
             countryCode_sectionKey: {
@@ -662,7 +675,7 @@ export async function PUT(request: NextRequest) {
             ...(heading !== undefined && { heading }),
             ...(isRequired !== undefined && { isRequired }),
             ...(isEnabled !== undefined && { isEnabled }),
-            ...(displayOrder !== undefined && { displayOrder }),
+            ...(resolvedDisplayOrder !== undefined && { displayOrder: resolvedDisplayOrder }),
             // Context override flags (explicit null allowed to reset to default)
             ...(requiresPriorArtOverride !== undefined && { requiresPriorArtOverride }),
             ...(requiresFiguresOverride !== undefined && { requiresFiguresOverride }),
@@ -705,13 +718,23 @@ export async function PUT(request: NextRequest) {
 
         for (const [sectionKey, update] of Object.entries(updates as Record<string, any>)) {
           try {
+            // Treat null displayOrder as "reset to superset default" (do not persist NULL)
+            let resolvedDisplayOrder: number | undefined = undefined
+            if (update.displayOrder === null) {
+              const superset = await prisma.supersetSection.findUnique({ where: { sectionKey } })
+              if (!superset) throw new Error(`Superset section '${sectionKey}' not found`)
+              resolvedDisplayOrder = superset.displayOrder
+            } else if (update.displayOrder !== undefined) {
+              resolvedDisplayOrder = update.displayOrder
+            }
+
             const mapping = await prisma.countrySectionMapping.update({
               where: { countryCode_sectionKey: { countryCode: code, sectionKey } },
               data: {
                 ...(update.heading !== undefined && { heading: update.heading }),
                 ...(update.isRequired !== undefined && { isRequired: update.isRequired }),
                 ...(update.isEnabled !== undefined && { isEnabled: update.isEnabled }),
-                ...(update.displayOrder !== undefined && { displayOrder: update.displayOrder }),
+                ...(resolvedDisplayOrder !== undefined && { displayOrder: resolvedDisplayOrder }),
                 // Context override flags support in bulk updates
                 ...(update.requiresPriorArtOverride !== undefined && { requiresPriorArtOverride: update.requiresPriorArtOverride }),
                 ...(update.requiresFiguresOverride !== undefined && { requiresFiguresOverride: update.requiresFiguresOverride }),

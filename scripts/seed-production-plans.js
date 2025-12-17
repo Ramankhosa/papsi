@@ -253,6 +253,52 @@ async function seedProductionPlans() {
     }
     console.log('   �o. Plan LLM access ensured:', llmAccessDefs.length, 'rows')
 
+    // 7. Plan-specific concurrency limits for production
+    console.log('\n7. Setting plan-specific concurrency limits...')
+    const concurrencyRules = [
+      // FREE_PLAN - Very limited concurrency for basic users
+      { planCode: 'FREE_PLAN', taskCode: 'LLM2_DRAFT', concurrencyLimit: 1 },
+      { planCode: 'FREE_PLAN', taskCode: 'LLM1_PRIOR_ART', concurrencyLimit: 1 },
+
+      // PRO_PLAN - Moderate concurrency for professional users
+      { planCode: 'PRO_PLAN', taskCode: 'LLM2_DRAFT', concurrencyLimit: 3 },
+      { planCode: 'PRO_PLAN', taskCode: 'LLM1_PRIOR_ART', concurrencyLimit: 2 },
+      { planCode: 'PRO_PLAN', taskCode: 'LLM3_DIAGRAM', concurrencyLimit: 2 },
+
+      // ENTERPRISE_PLAN - High concurrency for enterprise users
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'LLM2_DRAFT', concurrencyLimit: 5 },
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'LLM1_PRIOR_ART', concurrencyLimit: 3 },
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'LLM3_DIAGRAM', concurrencyLimit: 3 },
+    ]
+
+    for (const rule of concurrencyRules) {
+      const plan = plansByCode[rule.planCode]
+      if (!plan) {
+        console.warn(`⚠️ Plan ${rule.planCode} not found, skipping concurrency rule`)
+        continue
+      }
+
+      await prisma.policyRule.upsert({
+        where: {
+          scope_scopeId_taskCode_key: {
+            scope: 'plan',
+            scopeId: plan.id,
+            taskCode: rule.taskCode,
+            key: 'concurrency_limit'
+          }
+        },
+        update: { value: rule.concurrencyLimit },
+        create: {
+          scope: 'plan',
+          scopeId: plan.id,
+          taskCode: rule.taskCode,
+          key: 'concurrency_limit',
+          value: rule.concurrencyLimit
+        }
+      })
+    }
+    console.log('   �o. Concurrency limits set for all plans')
+
     console.log('\n dY"S Production plan seeding complete.')
   } catch (error) {
     console.error('\n �?O Production plan seeding failed:', error)

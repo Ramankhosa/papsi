@@ -124,7 +124,7 @@ async function fetchJurisdictionSections(
     if (!response.ok) return null
 
     const data = await response.json()
-    const { ensureDisplayOrder, formatNumberedHeading } = await import('@/lib/section-display-order')
+    const { ensureDisplayOrder } = await import('@/lib/section-display-order')
     
     // Get country name from cached map
     const countryName = countryNameMap.get(jurisdictionCode.toUpperCase()) || jurisdictionCode
@@ -137,7 +137,7 @@ async function fetchJurisdictionSections(
         const displayOrder = ensureDisplayOrder(s.displayOrder, `${jurisdictionCode}:${String(s.key)}`)
         return {
           key: s.key,
-          label: formatNumberedHeading(displayOrder, s.label),
+          label: s.label,
           displayOrder,
           isRequired: s.isRequired || false
         }

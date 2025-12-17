@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { authenticateUser } from '@/lib/auth-middleware'
 import { prisma } from '@/lib/prisma'
 import { NA_HEADINGS, isNonApplicableHeading } from '@/lib/multi-jurisdiction-service'
+import { resolveDisplayOrder } from '@/lib/section-display-order'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -98,14 +99,20 @@ export async function GET(request: NextRequest) {
         sectionKey: true,
         heading: true,
         displayOrder: true,
-        isRequired: true
+        isRequired: true,
+        supersetCode: true
       }
     })
 
     // Filter out any lingering non-applicable headings; order is defined by DB
     const resolvedMappings = mappings.filter(m => !isNonApplicableHeading(m.heading))
+    const supersetSections = await prisma.supersetSection.findMany({
+      where: { sectionKey: { in: resolvedMappings.map(m => m.sectionKey) } },
+      select: { sectionKey: true, displayOrder: true }
+    })
+    const supersetOrderByKey = new Map(supersetSections.map(s => [s.sectionKey, s.displayOrder]))
 
-    // If no mappings found, fall back to superset sections
+    // If no mappings found, return explicit error (no fallback)
     if (resolvedMappings.length === 0) {
       return NextResponse.json({
         error: `No section mappings configured for ${jurisdiction}. Please configure via /super-admin/jurisdiction-config.`
@@ -114,12 +121,20 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       jurisdiction,
-      sections: resolvedMappings.map(m => ({
-        key: m.sectionKey,
-        label: m.heading,
-        displayOrder: m.displayOrder,
-        isRequired: m.isRequired
-      }))
+      sections: resolvedMappings
+        .map(m => ({
+          key: m.sectionKey,
+          label: m.heading,
+          displayOrder: resolveDisplayOrder({
+            countryDisplayOrder: m.displayOrder,
+            supersetDisplayOrder: supersetOrderByKey.get(m.sectionKey),
+            supersetCode: m.supersetCode,
+            context: `${jurisdiction}:${String(m.sectionKey)}`
+          }),
+          isRequired: m.isRequired
+        }))
+        // Sort by resolved order so clients can preserve array order without fallbacks
+        .sort((a, b) => a.displayOrder - b.displayOrder)
     })
   } catch (error) {
     console.error('[Sections:GET] error:', error)

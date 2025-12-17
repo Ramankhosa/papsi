@@ -84,6 +84,7 @@ export interface EnforcementDecision {
   concurrencyLimit?: number
   reservationId?: string
   reason?: string
+  retryAfter?: number
   remainingQuota?: {
     daily?: number
     monthly?: number

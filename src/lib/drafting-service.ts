@@ -1,5 +1,6 @@
 import { llmGateway, executePatentDrafting } from './metering/gateway';
 import { prisma } from './prisma';
+import { MeteringError } from './metering/errors';
 import { verifyJWT } from './auth';
 import {
   getCountryProfile,
@@ -490,6 +491,7 @@ export interface SectionGenerationResult {
   debugSteps?: Array<{ step: string; status: 'ok'|'fail'|'warning'; meta?: any }>;
   llmMeta?: { model?: string; promptHash?: string; params?: any };
   error?: string;
+  retryAfter?: number;
 }
 
 export class DraftingService {
@@ -1413,8 +1415,13 @@ Respond in this exact JSON shape:
           }
         })
         if (!result.success || !result.response) {
-          debugSteps.push({ step: `llm_call_${s}`, status: 'fail', meta: { error: result.error?.message } })
-          return { success: false, error: result.error?.message || `LLM failed for ${s}`, debugSteps }
+          // Use user-friendly error message for MeteringError, fallback to generic message
+          const errorMessage = result.error?.getUserMessage
+            ? result.error.getUserMessage()
+            : result.error?.message || `LLM failed for ${s}`
+
+          debugSteps.push({ step: `llm_call_${s}`, status: 'fail', meta: { error: result.error?.message, userMessage: errorMessage } })
+          return { success: false, error: errorMessage, debugSteps, retryAfter: result.error?.getRetryAfter?.() }
         }
         debugSteps.push({ step: `llm_call_${s}`, status: 'ok', meta: { outputTokens: result.response.outputTokens } })
 
@@ -3198,15 +3205,38 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       const heading = mapping.heading || ''
       if (isNonApplicableHeading(heading)) continue
 
-      // Get constraints from our hard-coded superset prompts
-      const supersetPrompt = SUPERSET_PROMPTS[sectionKey as keyof typeof SUPERSET_PROMPTS]
+      // Get constraints from our hard-coded superset prompts (fallback lookup via aliases/supersetCode)
+      const internalKey = this.mapToInternalKey(sectionKey) || sectionKey
+      const promptKeyFromSupersetCode = typeof (mapping as any).supersetCode === 'string'
+        ? this.supersetCodeToSectionKey((mapping as any).supersetCode)
+        : ''
+
+      const aliasCandidates = this.sectionKeyMap[internalKey] || []
+      const promptCandidates = Array.from(new Set([
+        sectionKey,
+        internalKey,
+        promptKeyFromSupersetCode,
+        ...aliasCandidates,
+        ...aliasCandidates.map(a => a.replace(/\s+/g, '_'))
+      ].map(s => String(s || '').trim()).filter(Boolean)))
+
+      const matchedPromptKey = promptCandidates.find(k => Object.prototype.hasOwnProperty.call(SUPERSET_PROMPTS, k))
+      const supersetPrompt = matchedPromptKey ? SUPERSET_PROMPTS[matchedPromptKey] : undefined
+
+      const altKeys = Array.from(new Set(
+        [promptKeyFromSupersetCode, ...aliasCandidates]
+          .map((k) => String(k || '').trim())
+          .filter(Boolean)
+          .flatMap((k) => [k, k.replace(/\s+/g, '_')])
+          .map((k) => k.toLowerCase())
+      ))
 
       defs.push({
         key: sectionKey,
         label: heading || this.getDefaultLabel(sectionKey),
-        required: this.isSectionRequired(sectionKey, jurisdiction),
+        required: (mapping as any).isRequired ?? true,
         constraints: supersetPrompt?.constraints || [],
-        altKeys: [mapping.supersetCode.toLowerCase()]
+        altKeys
       })
     }
 

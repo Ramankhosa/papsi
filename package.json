@@ -8,6 +8,8 @@
     "start": "next start -p 3005",
     "lint": "next lint",
     "seed:plans:prod": "node scripts/seed-production-plans.js",
+    "seed:llm-models": "node Seed/seed-llm-models.js",
+    "seed:llm-models:prod": "node Seed/seed-llm-models-modified.js",
     "create-admin": "node scripts/create-super-admin.js",
     "superadminbirth": "node scripts/create-super-admin.js ramankhosa@gmail.com",
     "superadminviewerbirth": "node scripts/create-super-admin-viewer.js ramandeep.singh@lpu.co.in",

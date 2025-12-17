@@ -2334,7 +2334,16 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
           }
         })
-        if (!res.ok) throw new Error(`Failed to load country profile (${res.status})`)
+        if (!res.ok) {
+          let msg = `Failed to load country profile (${res.status})`
+          try {
+            const body = await res.json()
+            if (body?.error) msg = String(body.error)
+          } catch {
+            // ignore parse errors; keep generic message
+          }
+          throw new Error(msg)
+        }
         const data = await res.json()
         const profile = data?.profile
         const variant = profile?.structure?.variants?.find((v: any) => v.id === profile?.structure?.defaultVariant) || profile?.structure?.variants?.[0]
@@ -2412,11 +2421,18 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             mapping.heading !== '(Include in Detailed Desc)' &&
             mapping.isEnabled !== false
           )
-          const { ensureDisplayOrder, formatNumberedHeading } = await import('@/lib/section-display-order')
+          const { ensureDisplayOrder } = await import('@/lib/section-display-order')
           
-          for (const mapping of applicableMappings) {
+          // Sort by resolved displayOrder (DB source of truth; country override or superset-inherited)
+          // This ensures the visible numbering matches the rendered order.
+          const mappingsWithOrder = applicableMappings.map((m: any) => ({
+            mapping: m,
+            order: ensureDisplayOrder(m.displayOrder, `${activeJurisdiction}:${String(m.sectionKey)}`)
+          }))
+          mappingsWithOrder.sort((a: any, b: any) => a.order - b.order)
+          
+          for (const { mapping, order: displayOrder } of mappingsWithOrder) {
             const sectionKey = mapping.sectionKey
-            const displayOrder = ensureDisplayOrder(mapping.displayOrder, `${activeJurisdiction}:${String(sectionKey)}`)
             
             // Resolve to canonical internal key using the mapping
             const canonicalKey = canonicalMap[sectionKey] || canonicalMap[sectionKey.toLowerCase()] || sectionKey
@@ -2429,7 +2445,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             
             sections.push({
               keys: [canonicalKey],
-              label: formatNumberedHeading(displayOrder, mapping.heading), // DB-driven numbering + heading
+              label: mapping.heading, // Patent section headings should be titles only (no numeric prefixes)
               description: promptSections?.[canonicalKey]?.description || promptSections?.[sectionKey]?.description || '',
               constraints: promptSections?.[canonicalKey]?.constraints || promptSections?.[sectionKey]?.constraints || [],
               required: mapping.isRequired ?? true
@@ -2456,7 +2472,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       } catch (err) {
         console.error('Failed to load jurisdiction profile', err)
         // Database is the only source of truth for section ordering; do not fall back.
-        setProfileError('Failed to load country-specific sections. Please try again or contact support.')
+        setProfileError(err instanceof Error ? err.message : 'Failed to load country-specific sections. Please try again or contact support.')
         setSectionConfigs([])
         setUsingFallback(true)
       } finally {
@@ -3569,6 +3585,18 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             <div className="flex items-center gap-2 text-gray-500">
                <span className="animate-spin h-4 w-4 border-2 border-indigo-500 border-t-transparent rounded-full"></span>
                Loading template...
+            </div>
+          </div>
+        )}
+
+        {profileError && (
+          <div className="mb-6 rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-rose-800">
+            <div className="font-semibold">Jurisdiction configuration error</div>
+            <div className="text-sm mt-1">
+              {profileError}
+            </div>
+            <div className="text-sm mt-2">
+              Fix this in <a className="underline" href="/super-admin/jurisdiction-config">/super-admin/jurisdiction-config</a> (ensure every mapped section has a positive, unique display order).
             </div>
           </div>
         )}

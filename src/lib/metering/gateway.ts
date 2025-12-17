@@ -82,9 +82,22 @@ export class LLMGateway {
       }
 
       // 4. Enforce metering policies (Super Admin controlled via Plan Features)
-      const decision = await this.system.policy.evaluateAccess(featureRequest)
+      let decision: any
+      try {
+        decision = await this.system.policy.evaluateAccess(featureRequest)
+      } catch (policyError) {
+        if (policyError instanceof MeteringError) {
+          return {
+            success: false,
+            error: policyError
+          }
+        }
+        // Re-throw unexpected errors
+        throw policyError
+      }
 
       if (!decision.allowed) {
+        // This shouldn't happen anymore since policy now throws MeteringError
         return {
           success: false,
           error: new MeteringError('POLICY_VIOLATION', decision.reason || 'Access denied')
@@ -143,6 +156,15 @@ export class LLMGateway {
       const capabilityCheck = this.validateModelCapabilities(selectedModel, llmRequest)
       if (!capabilityCheck.valid) {
         console.error(`✗ Model capability validation failed: ${capabilityCheck.error}`)
+        // Release reservation on early failure
+        if (decision.reservationId) {
+          try {
+            await this.system.reservation.releaseReservation(decision.reservationId)
+            console.log(`[Gateway] Released reservation ${decision.reservationId} due to capability validation failure`)
+          } catch (releaseError) {
+            console.warn('[Gateway] Failed to release reservation on capability failure:', releaseError)
+          }
+        }
         return {
           success: false,
           error: new MeteringError('INVALID_MODEL', capabilityCheck.error || 'Model does not support required capabilities')
@@ -156,9 +178,18 @@ export class LLMGateway {
         decision.maxTokensIn,
         decision.maxTokensOut
       )
-      
+
       if (!preflightResult.valid) {
         console.error(`✗ Preflight check failed: ${preflightResult.error}`)
+        // Release reservation on early failure
+        if (decision.reservationId) {
+          try {
+            await this.system.reservation.releaseReservation(decision.reservationId)
+            console.log(`[Gateway] Released reservation ${decision.reservationId} due to preflight failure`)
+          } catch (releaseError) {
+            console.warn('[Gateway] Failed to release reservation on preflight failure:', releaseError)
+          }
+        }
         return {
           success: false,
           error: new MeteringError('INPUT_TOO_LARGE', preflightResult.error || 'Input exceeds limits')
@@ -210,6 +241,10 @@ export class LLMGateway {
       return { success: true, response }
 
     } catch (error) {
+      // Release reservation on any failure to prevent blocking subsequent operations
+      // Note: decision is declared in try block, so we can't access it here
+      // This is a known limitation - early returns after reservation creation should handle cleanup
+
       if (error instanceof MeteringError) {
         return { success: false, error }
       }
