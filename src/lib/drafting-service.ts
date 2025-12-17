@@ -1421,7 +1421,7 @@ Respond in this exact JSON shape:
             : result.error?.message || `LLM failed for ${s}`
 
           debugSteps.push({ step: `llm_call_${s}`, status: 'fail', meta: { error: result.error?.message, userMessage: errorMessage } })
-          return { success: false, error: errorMessage, debugSteps, retryAfter: result.error?.getRetryAfter?.() }
+          return { success: false, error: errorMessage, debugSteps, retryAfter: result.error?.getRetryAfter?.() ?? undefined }
         }
         debugSteps.push({ step: `llm_call_${s}`, status: 'ok', meta: { outputTokens: result.response.outputTokens } })
 

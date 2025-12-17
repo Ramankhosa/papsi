@@ -9546,7 +9546,7 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
     )
     if (!result.success) {
       const statusCode = result.retryAfter ? 429 : 400
-      const headers = result.retryAfter ? { 'Retry-After': result.retryAfter.toString() } : {}
+      const headers = result.retryAfter ? { 'Retry-After': result.retryAfter.toString() } : undefined
       return NextResponse.json({ error: result.error, debugSteps: result.debugSteps }, { status: statusCode, headers })
     }
   }
