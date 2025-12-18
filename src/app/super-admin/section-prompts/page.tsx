@@ -56,6 +56,7 @@ export default function SuperAdminSectionPromptsPage() {
   const [supersetSections, setSupersetSections] = useState<SupersetSection[]>([])
   const [countryHeadings, setCountryHeadings] = useState<Record<string, Record<string, string>>>({})
 
+
   const fetchData = useCallback(async () => {
     try {
       setLoading(true)
@@ -156,8 +157,8 @@ export default function SuperAdminSectionPromptsPage() {
             <button
               onClick={() => setShowHierarchy(!showHierarchy)}
               className={`px-4 py-2 rounded-lg text-sm font-medium transition ${
-                showHierarchy 
-                  ? 'bg-indigo-100 text-indigo-700' 
+                showHierarchy
+                  ? 'bg-indigo-100 text-indigo-700'
                   : 'bg-gray-100 text-gray-600'
               }`}
             >

@@ -98,6 +98,7 @@ export default function JurisdictionConfigPage() {
   const [showEditSection, setShowEditSection] = useState<SupersetSection | null>(null)
   const [showMappingDetails, setShowMappingDetails] = useState<{ country: string; section: string } | null>(null)
   const [viewMode, setViewMode] = useState<'matrix' | 'list'>('matrix')
+  const [clearingCache, setClearingCache] = useState(false)
 
   // Fetch data
   useEffect(() => {
@@ -122,6 +123,33 @@ export default function JurisdictionConfigPage() {
       console.error('Failed to fetch:', err)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleClearCache = async () => {
+    try {
+      setClearingCache(true)
+      const response = await fetch('/api/super-admin/section-prompts', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ action: 'clear-cache' })
+      })
+
+      if (response.ok) {
+        // Refresh data after cache clear
+        await fetchData()
+      } else {
+        const data = await response.json()
+        alert(`Failed to clear cache: ${data.error || 'Unknown error'}`)
+      }
+    } catch (err) {
+      console.error('Clear cache error:', err)
+      alert('An unexpected error occurred while clearing cache')
+    } finally {
+      setClearingCache(false)
     }
   }
 
@@ -179,6 +207,27 @@ export default function JurisdictionConfigPage() {
                   📋 List
                 </button>
               </div>
+              <button
+                onClick={handleClearCache}
+                disabled={clearingCache}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition flex items-center gap-2 ${
+                  clearingCache
+                    ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
+                    : 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30 border border-amber-500/30'
+                }`}
+                title="Invalidate server-side prompt and country profile caches"
+              >
+                {clearingCache ? (
+                  <>
+                    <div className="animate-spin h-4 w-4 border-2 border-amber-400 border-t-transparent rounded-full"></div>
+                    Rebuilding...
+                  </>
+                ) : (
+                  <>
+                    <span>🔄</span> Rebuild Cache
+                  </>
+                )}
+              </button>
               <button
                 onClick={() => setShowAddSection(true)}
                 className="px-4 py-2 bg-slate-700 text-slate-200 rounded-lg hover:bg-slate-600 flex items-center gap-2"

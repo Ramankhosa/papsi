@@ -8,8 +8,11 @@ import {
   updateSectionPrompt,
   archiveSectionPrompt,
   getSectionPromptHistory,
-  seedPromptsFromJson
+  seedPromptsFromJson,
+  invalidateSectionPromptCache
 } from '@/lib/section-prompt-service'
+import { invalidateCountryProfileCache } from '@/lib/country-profile-service'
+import { invalidateSupersetSectionsCache } from '@/lib/multi-jurisdiction-service'
 
 // Verify super admin access
 async function verifySuperAdmin(request: NextRequest): Promise<{ userId: string; email: string } | null> {
@@ -225,6 +228,19 @@ export async function POST(request: NextRequest) {
       }
       const result = await seedPromptsFromJson(countryCode, admin.email)
       return NextResponse.json({ result })
+    }
+
+    if (action === 'clear-cache') {
+      // Invalidate all prompt-related caches
+      invalidateSectionPromptCache()       // CountrySectionPrompt cache (top-up prompts)
+      invalidateCountryProfileCache()      // CountryProfile cache (merge strategies)
+      invalidateSupersetSectionsCache()    // SupersetSection cache (base prompts)
+      
+      console.log('[SuperAdmin] ✅ All prompt caches invalidated by', admin.email)
+      return NextResponse.json({ 
+        success: true, 
+        message: 'All caches cleared: Section Prompts, Country Profiles, Superset Sections' 
+      })
     }
 
     // Create new prompt

@@ -4,12 +4,21 @@
  * Merges base superset prompts with country-specific top-up prompts
  * to create jurisdiction-compliant patent drafting instructions.
  * 
- * Architecture:
- * 1. SUPERSET_PROMPTS - Base generic prompts (country-neutral)
- * 2. CountrySectionMapping (DB) - Maps superset codes to country section keys
- * 3. Country JSON (IN.json, US.json) - Seed source only; not used as runtime fallback
+ * ============================================================================
+ * DATABASE IS THE ONLY SOURCE OF TRUTH - NO HARDCODED FALLBACKS
+ * ============================================================================
  * 
- * Flow: sectionId → resolve canonical key → get base prompt → merge with top-up
+ * Architecture:
+ * 1. SupersetSection (DB) - Base generic prompts (country-neutral)
+ * 2. CountrySectionPrompt (DB) - Top-up prompts (jurisdiction-specific)
+ * 3. UserInstruction (DB) - User session-specific overrides (highest priority)
+ * 
+ * B+T+U Priority (lowest to highest):
+ * - [B] BASE: SupersetSection table - universal patent drafting guidelines
+ * - [T] TOP-UP: CountrySectionPrompt table - jurisdiction-specific rules
+ * - [U] USER: UserInstruction table - session-specific customizations
+ * 
+ * If prompts are missing from database, an ERROR is thrown (no silent fallbacks).
  */
 
 import { prisma } from './prisma'
@@ -19,16 +28,7 @@ import { getUserInstruction, buildUserInstructionBlock, type UserInstructionCont
 import { resolveCanonicalKey } from './section-alias-service'
 import { getSupportedSectionKeys } from './metering/section-stage-mapping'
 
-// Import superset prompts dynamically to avoid circular imports
-let SUPERSET_PROMPTS: Record<string, { instruction: string; constraints: string[] }> | null = null
-
-async function getSupersetPrompts() {
-  if (!SUPERSET_PROMPTS) {
-    const { SUPERSET_PROMPTS: prompts } = await import('./drafting-service')
-    SUPERSET_PROMPTS = prompts
-  }
-  return SUPERSET_PROMPTS
-}
+// NOTE: Hardcoded SUPERSET_PROMPTS removed - all prompts must come from database
 
 // ============================================================================
 // Types
@@ -218,54 +218,86 @@ export async function getMergedPrompt(
   sessionId?: string
 ): Promise<MergedPrompt | null> {
   const jurisdiction = countryCode.toUpperCase()
-  const supersetPrompts = await getSupersetPrompts()
+  
+  console.log(`\n${'═'.repeat(80)}`)
+  console.log(`🔍 [PromptMerger] LOADING PROMPTS FOR: ${jurisdiction}/${sectionId}`)
+  console.log(`${'═'.repeat(80)}`)
   
   // Step 1: Resolve to canonical section key
   const canonicalKey = await resolveSectionKey(jurisdiction, sectionId)
   if (!canonicalKey) {
-    console.warn(`[PromptMerger] No canonical key found for "${sectionId}" in ${jurisdiction}`)
+    console.error(`[PromptMerger] ✗ FAILED: No canonical key found for "${sectionId}" in ${jurisdiction}`)
+    console.log(`${'═'.repeat(80)}\n`)
     return null
   }
+  console.log(`[PromptMerger] Canonical key resolved: ${sectionId} → ${canonicalKey}`)
   
-  // Step 2: Get base superset prompt
-  const promptKeyCandidates = Array.from(new Set([
-    canonicalKey,
-    getSupersetPromptKeyForCanonicalSectionKey(canonicalKey),
-    canonicalKey.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, '')
-  ])).filter(Boolean)
-
-  let basePrompt: { instruction: string; constraints: string[] } | undefined
-  for (const candidate of promptKeyCandidates) {
-    if (supersetPrompts[candidate]) {
-      basePrompt = supersetPrompts[candidate]
-      break
-    }
-  }
-
-  if (!basePrompt) {
-    console.warn(`[PromptMerger] No superset prompt found for canonicalKey="${canonicalKey}". Tried keys: ${promptKeyCandidates.join(', ')}`)
-    return null
-  }
-  
-  // Step 3: Get country profile
-  const profile = await getCountryProfile(jurisdiction)
-  
-  // Step 4: Determine merge strategy
-  const mergeStrategy: MergeStrategy = 
-    profile?.profileData?.meta?.promptMergeStrategy || 'append'
-  
-  // Step 5: Get country-specific section prompt (top-up) from DB only (no JSON fallback)
-  let topUp: { instruction?: string; constraints?: string[]; additions?: string[]; importFiguresDirectly?: boolean } | null = null
-  let topUpSource: 'db' | 'json' | null = null
+  // Step 2: Get TOP-UP prompt from CountrySectionPrompt table (JURISDICTION-SPECIFIC)
+  let topUpPrompt: { instruction?: string; constraints?: string[]; additions?: string[]; importFiguresDirectly?: boolean } | null = null
   let importFiguresDirectly = false
   
-  // Try database first
-  const dbTopUp = await getDbSectionPrompt(jurisdiction, canonicalKey)
-  if (dbTopUp) {
-    topUp = dbTopUp
-    topUpSource = 'db'
-    importFiguresDirectly = dbTopUp.importFiguresDirectly || false
+  topUpPrompt = await getDbSectionPrompt(jurisdiction, canonicalKey)
+  if (topUpPrompt && topUpPrompt.instruction) {
+    importFiguresDirectly = topUpPrompt.importFiguresDirectly || false
+    console.log(`[PromptMerger] [T] TOP-UP: ✓ LOADED from CountrySectionPrompt (${topUpPrompt.instruction.length} chars)`)
+    console.log(`[PromptMerger]     Preview: "${topUpPrompt.instruction.substring(0, 100)}..."`)
+  } else {
+    console.log(`[PromptMerger] [T] TOP-UP: ✗ NOT FOUND in CountrySectionPrompt for ${jurisdiction}/${canonicalKey}`)
   }
+  
+  // Step 3: Get BASE prompt - TRY DATABASE FIRST (SupersetSection), NO HARDCODED FALLBACK
+  let basePrompt: { instruction: string; constraints: string[] } | undefined
+  
+  // Try to load from SupersetSection table (database)
+  try {
+    const dbBaseSection = await prisma.supersetSection.findFirst({
+      where: {
+        sectionKey: { equals: canonicalKey, mode: 'insensitive' },
+        isActive: true
+      },
+      select: {
+        instruction: true,
+        constraints: true
+      }
+    })
+    
+    if (dbBaseSection && dbBaseSection.instruction) {
+      basePrompt = {
+        instruction: dbBaseSection.instruction,
+        constraints: Array.isArray(dbBaseSection.constraints) ? dbBaseSection.constraints as string[] : []
+      }
+      console.log(`[PromptMerger] [B] BASE: ✓ LOADED from SupersetSection database (${dbBaseSection.instruction.length} chars)`)
+      console.log(`[PromptMerger]     Preview: "${dbBaseSection.instruction.substring(0, 100)}..."`)
+    } else {
+      console.log(`[PromptMerger] [B] BASE: ✗ NOT FOUND in SupersetSection for ${canonicalKey}`)
+    }
+  } catch (err) {
+    console.error(`[PromptMerger] [B] BASE: ✗ DATABASE ERROR:`, err)
+  }
+
+  // CRITICAL: At least one prompt (base OR top-up) must exist - NO HARDCODED FALLBACKS
+  if (!topUpPrompt?.instruction && !basePrompt?.instruction) {
+    const errorMsg = `NO PROMPTS FOUND IN DATABASE for ${jurisdiction}/${canonicalKey}. Add prompts to SupersetSection (base) or CountrySectionPrompt (top-up) tables.`
+    console.error(`[PromptMerger] ✗ ERROR: ${errorMsg}`)
+    console.log(`${'═'.repeat(80)}\n`)
+    throw new Error(errorMsg)
+  }
+  
+  // Step 4: Get country profile
+  const profile = await getCountryProfile(jurisdiction)
+  
+  // Step 5: Determine merge strategy
+  // 'replace' = use only top-up prompt (ignore base)
+  // 'append' = base first, then top-up additions - SAFE DEFAULT
+  // 'prepend' = top-up first, then base
+  const profileStrategy = profile?.profileData?.meta?.promptMergeStrategy
+  const mergeStrategy: MergeStrategy = profileStrategy || 'append'
+  
+  console.log(`[PromptMerger] Merge Strategy: ${mergeStrategy} (profile: ${profileStrategy || 'default'})`)
+  
+  // Set topUp for backward compatibility with merge logic
+  let topUp = topUpPrompt
+  let topUpSource: 'db' | 'json' | null = topUpPrompt?.instruction ? 'db' : null
   
   // Step 6: Get localized heading from DB mapping
   let sectionLabel = getDefaultLabel(canonicalKey)
@@ -302,38 +334,79 @@ export async function getMergedPrompt(
       userInstr = await getUserInstruction(sessionId, canonicalKey, jurisdiction)
       if (userInstr) {
         userInstructionBlock = buildUserInstructionBlock(userInstr)
+        console.log(`[PromptMerger] [U] USER: ✓ LOADED user instruction for session ${sessionId}`)
+        console.log(`[PromptMerger]     Preview: "${userInstr.instruction?.substring(0, 100)}..."`)
+      } else {
+        console.log(`[PromptMerger] [U] USER: ✗ No user instruction for session ${sessionId}`)
       }
     } catch (error) {
-      console.warn('Error getting user instruction:', error)
+      console.warn(`[PromptMerger] [U] USER: ✗ Error loading:`, error)
     }
+  } else {
+    console.log(`[PromptMerger] [U] USER: ✗ No session ID provided`)
   }
   
   // Step 10: MERGE prompts based on strategy
   const hasUser = !!userInstr
-  let mergedInstruction = mergeInstructions(
-    basePrompt.instruction,
-    topUp?.instruction,
-    mergeStrategy,
-    jurisdiction,
-    sectionLabel,
-    hasUser
-  )
+  const hasBase = !!basePrompt?.instruction
+  const hasTopUp = !!topUp?.instruction
+  
+  // Log final B+T+U summary
+  console.log(`[PromptMerger] ─────────────────────────────────────────`)
+  console.log(`[PromptMerger] FINAL B+T+U STATUS:`)
+  console.log(`[PromptMerger]   [B] BASE:   ${hasBase ? '✓' : '✗'}`)
+  console.log(`[PromptMerger]   [T] TOP-UP: ${hasTopUp ? '✓' : '✗'} ${topUpSource ? `(${topUpSource})` : ''}`)
+  console.log(`[PromptMerger]   [U] USER:   ${hasUser ? '✓' : '✗'}`)
+  console.log(`[PromptMerger]   Strategy:   ${mergeStrategy}`)
+  console.log(`[PromptMerger] ─────────────────────────────────────────`)
+  
+  let mergedInstruction: string
+  let mergedConstraints: string[]
+  
+  if (hasTopUp && !hasBase) {
+    // TOP-UP ONLY - use top-up prompt as primary (jurisdiction-specific)
+    console.log(`[PromptMerger] → Using TOP-UP only (no base)`)
+    const priorityHeader = buildPriorityHierarchyHeader(jurisdiction, false, true, hasUser)
+    mergedInstruction = priorityHeader + `**[TOP-UP PROMPT - ${jurisdiction}]:**\n${topUp!.instruction}`
+    mergedConstraints = [
+      ...(topUp?.constraints || []),
+      ...(topUp?.additions || []).map(a => `[${jurisdiction}] ${a}`)
+    ]
+  } else if (hasBase && !hasTopUp) {
+    // BASE ONLY - use base prompt (country-neutral)
+    console.log(`[PromptMerger] → Using BASE only (no top-up)`)
+    const priorityHeader = buildPriorityHierarchyHeader(jurisdiction, true, false, hasUser)
+    mergedInstruction = priorityHeader + `**[BASE PROMPT]:**\n${basePrompt!.instruction}`
+    mergedConstraints = basePrompt?.constraints || []
+  } else {
+    // BOTH exist - merge based on strategy
+    console.log(`[PromptMerger] → Merging BASE + TOP-UP with strategy: ${mergeStrategy}`)
+    mergedInstruction = mergeInstructions(
+      basePrompt?.instruction || '',
+      topUp?.instruction,
+      mergeStrategy,
+      jurisdiction,
+      sectionLabel,
+      hasUser
+    )
+    mergedConstraints = mergeConstraints(
+      basePrompt?.constraints || [],
+      topUp?.constraints || [],
+      topUp?.additions || [],
+      jurisdiction
+    )
+  }
   
   // Append user instructions at the end (highest priority)
   if (userInstructionBlock) {
     mergedInstruction += userInstructionBlock
+    console.log(`[PromptMerger] → User instruction appended to final prompt`)
   }
   
-  const mergedConstraints = mergeConstraints(
-    basePrompt.constraints || [],
-    topUp?.constraints || [],
-    topUp?.additions || [],
-    jurisdiction
-  )
-  
-  // Build debug info
-  const hasBase = !!basePrompt?.instruction
-  const hasTopUp = !!topUp?.instruction
+  console.log(`[PromptMerger] ✓ PROMPT MERGE COMPLETE for ${jurisdiction}/${canonicalKey}`)
+  console.log(`[PromptMerger]   Final instruction length: ${mergedInstruction.length} chars`)
+  console.log(`[PromptMerger]   Constraints count: ${mergedConstraints.length}`)
+  console.log(`${'═'.repeat(80)}\n`)
   
   return {
     instruction: mergedInstruction,
@@ -356,7 +429,7 @@ export async function getMergedPrompt(
     hasTopUp,
     hasUser,
     topUpSource,
-    basePreview: basePrompt?.instruction?.substring(0, 100) + (basePrompt?.instruction?.length > 100 ? '...' : ''),
+    basePreview: basePrompt?.instruction?.substring(0, 100) + (basePrompt?.instruction && basePrompt.instruction.length > 100 ? '...' : ''),
     topUpPreview: topUp?.instruction?.substring(0, 100) + (topUp?.instruction && topUp.instruction.length > 100 ? '...' : '')
   }
 }

@@ -1028,17 +1028,20 @@ async function getDefaultHeading(key: string): Promise<string> {
 // Reference Draft Generation
 // ============================================================================
 
-// NOTE: Prompts MUST come from SUPERSET_PROMPTS (drafting-service.ts) or SupersetSection table
-// No fallback guidelines - if prompts are missing, the section will be skipped with a warning
+// ============================================================================
+// PROMPTS MUST COME FROM DATABASE ONLY - NO HARDCODED FALLBACKS
+// ============================================================================
+// SupersetSection table = Base prompts for reference draft generation
+// CountrySectionPrompt table = Top-up prompts for jurisdiction-specific drafting
+// If prompts are missing from database, an ERROR is thrown (no silent fallbacks)
 
 /**
- * Fetch BASE PROMPTS (country-neutral) from SUPERSET_PROMPTS in drafting-service.ts
- * These are the authoritative source for country-neutral patent section generation.
+ * Fetch BASE PROMPTS (country-neutral) for reference draft generation.
  * 
- * Priority order:
- * 1. SUPERSET_PROMPTS from drafting-service.ts (the canonical base prompts)
- * 2. SupersetSection database table (for customizations)
- * 3. Fallback guidelines
+ * DATABASE IS THE ONLY SOURCE OF TRUTH - NO HARDCODED FALLBACKS
+ * 
+ * Source: SupersetSection table (admin-configurable via Super Admin panel)
+ * If prompts are missing, throws an error instead of silently falling back.
  */
 async function getSupersetSectionPrompts(sectionKeys: string[]): Promise<Record<string, {
   instruction: string
@@ -1048,103 +1051,58 @@ async function getSupersetSectionPrompts(sectionKeys: string[]): Promise<Record<
 }>> {
   const prompts: Record<string, any> = {}
   
-  // Import the canonical SUPERSET_PROMPTS (Country-Neutral Base Prompts)
-  const { SUPERSET_PROMPTS } = await import('./drafting-service')
+  console.log(`\n${'='.repeat(80)}`)
+  console.log(`[getSupersetSectionPrompts] LOADING BASE PROMPTS FROM DATABASE`)
+  console.log(`[getSupersetSectionPrompts] Requested sections: ${sectionKeys.join(', ')}`)
+  console.log(`${'='.repeat(80)}`)
   
-  // Map our canonical superset keys to SUPERSET_PROMPTS keys
-  // SUPERSET_PROMPTS uses underscore_case: 'field', 'objects', 'brief_drawings', etc.
-  const supersetKeyToPromptKey: Record<string, string> = {
-    'title': 'title',
-    'preamble': 'preamble',
-    'fieldOfInvention': 'field',
-    'background': 'background',
-    'objectsOfInvention': 'objects',
-    'summary': 'summary',
-    'technicalProblem': 'technical_problem',      // May not exist in SUPERSET_PROMPTS
-    'technicalSolution': 'technical_solution',    // May not exist in SUPERSET_PROMPTS
-    'advantageousEffects': 'advantageous_effects',// May not exist in SUPERSET_PROMPTS
-    'briefDescriptionOfDrawings': 'brief_drawings',
-    'detailedDescription': 'detailed_description',
-    'bestMethod': 'best_mode',
-    'industrialApplicability': 'industrial_applicability',
-    'claims': 'claims',
-    'abstract': 'abstract',
-    'listOfNumerals': 'reference_numerals',       // May not exist in SUPERSET_PROMPTS
-    'crossReference': 'cross_reference'
-  }
-
-  // First, load from the authoritative SUPERSET_PROMPTS (Country-Neutral Base Prompts)
-  for (const key of sectionKeys) {
-    // Map our canonical key to SUPERSET_PROMPTS key
-    const promptKey = supersetKeyToPromptKey[key] || key
-    
-    // Try mapped key
-    let basePrompt = SUPERSET_PROMPTS[promptKey]
-    
-    // Try direct key if mapped didn't work
-    if (!basePrompt) {
-      basePrompt = SUPERSET_PROMPTS[key]
-    }
-    
-    // Try underscore version
-    if (!basePrompt) {
-      const underscoreKey = key.replace(/([A-Z])/g, '_$1').toLowerCase()
-      basePrompt = SUPERSET_PROMPTS[underscoreKey]
-    }
-    
-    if (basePrompt) {
-      prompts[key] = {
-        instruction: basePrompt.instruction,
-        constraints: basePrompt.constraints || [],
-        label: await getDefaultHeading(key),
-        description: undefined
+  // Load from DATABASE ONLY (SupersetSection table)
+  try {
+    const dbSections = await prisma.supersetSection.findMany({
+      where: {
+        sectionKey: { in: sectionKeys, mode: 'insensitive' },
+        isActive: true
+      },
+      select: {
+        sectionKey: true,
+        instruction: true,
+        constraints: true,
+        label: true,
+        description: true
       }
-    }
-  }
+    })
 
-  console.log(`[getSupersetSectionPrompts] Loaded ${Object.keys(prompts).length}/${sectionKeys.length} prompts from SUPERSET_PROMPTS (Base Prompts)`)
-
-  // For any missing sections, try to fetch from database as backup
-  const missingKeys = sectionKeys.filter(k => !prompts[k])
-  if (missingKeys.length > 0) {
-    try {
-      const dbSections = await prisma.supersetSection.findMany({
-        where: {
-          sectionKey: { in: missingKeys },
-          isActive: true
-        },
-        select: {
-          sectionKey: true,
-          instruction: true,
-          constraints: true,
-          label: true,
-          description: true
-        }
-      })
-
-      for (const section of dbSections) {
+    for (const section of dbSections) {
+      if (section.instruction && section.instruction.trim()) {
         prompts[section.sectionKey] = {
           instruction: section.instruction,
           constraints: Array.isArray(section.constraints) ? section.constraints : [],
           label: section.label,
           description: section.description || undefined
         }
+        console.log(`[getSupersetSectionPrompts] ✓ LOADED: ${section.sectionKey} (${section.instruction.length} chars)`)
+      } else {
+        console.warn(`[getSupersetSectionPrompts] ✗ EMPTY: ${section.sectionKey} exists but has no instruction`)
       }
-
-      if (dbSections.length > 0) {
-        console.log(`[getSupersetSectionPrompts] Loaded ${dbSections.length} additional prompts from DB`)
-      }
-    } catch (err) {
-      console.warn('[getSupersetSectionPrompts] Failed to fetch from DB:', err)
     }
+
+    console.log(`[getSupersetSectionPrompts] Database result: ${Object.keys(prompts).length}/${sectionKeys.length} prompts loaded`)
+  } catch (err) {
+    console.error('[getSupersetSectionPrompts] DATABASE ERROR:', err)
+    throw new Error(`Failed to load base prompts from SupersetSection database: ${err instanceof Error ? err.message : String(err)}`)
   }
 
-  // DATABASE IS THE ONLY SOURCE OF TRUTH - No fallbacks
-  // Log missing sections but don't create fake prompts
+  // Check for missing sections - THROW ERROR instead of falling back
   const missingSections = sectionKeys.filter(key => !prompts[key])
   if (missingSections.length > 0) {
-    console.warn(`[getSupersetSectionPrompts] Sections missing from SUPERSET_PROMPTS and database: ${missingSections.join(', ')}. These sections will be skipped.`)
+    const errorMsg = `MISSING BASE PROMPTS IN DATABASE (SupersetSection table): ${missingSections.join(', ')}. Please add these prompts via the Super Admin panel.`
+    console.error(`[getSupersetSectionPrompts] ✗ ERROR: ${errorMsg}`)
+    console.log(`${'='.repeat(80)}\n`)
+    throw new Error(errorMsg)
   }
+
+  console.log(`[getSupersetSectionPrompts] ✓ All ${sectionKeys.length} base prompts loaded successfully from database`)
+  console.log(`${'='.repeat(80)}\n`)
 
   return prompts
 }
@@ -1409,7 +1367,16 @@ export async function generateReferenceDraft(
     console.log(`[generateReferenceDraft] Generating ${dynamicSections.length} sections for jurisdictions: ${selectedJurisdictions.join(', ')}`)
 
     // Fetch database-based prompts for the dynamic sections
-    const sectionPrompts = await getSupersetSectionPrompts(dynamicSections)
+    let sectionPrompts: Record<string, any>
+    try {
+      sectionPrompts = await getSupersetSectionPrompts(dynamicSections)
+    } catch (err) {
+      console.error('[generateReferenceDraft] Failed to load prompts:', err)
+      return {
+        success: false,
+        error: err instanceof Error ? err.message : 'Database configuration error: missing base prompts'
+      }
+    }
     console.log(`[generateReferenceDraft] Loaded ${Object.keys(sectionPrompts).length} section prompts from database`)
 
     // Fetch context requirements for all sections from database (batch query for efficiency)
@@ -2535,15 +2502,16 @@ async function translateSectionsBatch(
     // Fetch top-up prompts for this jurisdiction from CountrySectionPrompt table
     const topUpPrompts = await prisma.countrySectionPrompt.findMany({
       where: {
-        countryCode: code,
+        countryCode: { equals: code, mode: 'insensitive' },
         status: 'ACTIVE'
       }
     })
     
-    // Create a map of sectionKey -> topUp instruction
+    // Create a map of sectionKey -> topUp instruction (lowercase keys for case-insensitive lookup)
     const topUpMap: Record<string, { instruction: string; constraints: string[] }> = {}
     for (const prompt of topUpPrompts) {
-      topUpMap[prompt.sectionKey] = {
+      // Store with lowercase key for case-insensitive matching
+      topUpMap[prompt.sectionKey.toLowerCase()] = {
         instruction: prompt.instruction || '',
         constraints: Array.isArray(prompt.constraints) ? prompt.constraints as string[] : []
       }
@@ -2553,7 +2521,8 @@ async function translateSectionsBatch(
     
     // Build the batch prompt with all sections
     const sectionInstructions = sectionsToTranslate.map((section, idx) => {
-      const topUp = topUpMap[section.countryKey] || topUpMap[section.supersetKey]
+      // Use lowercase for case-insensitive lookup
+      const topUp = topUpMap[section.countryKey.toLowerCase()] || topUpMap[section.supersetKey.toLowerCase()]
       const topUpInstruction = topUp?.instruction ? `\nJURISDICTION-SPECIFIC REQUIREMENTS:\n${topUp.instruction}` : ''
       const topUpConstraints = topUp?.constraints?.length ? `\nCONSTRAINTS: ${topUp.constraints.join('; ')}` : ''
       
@@ -2666,20 +2635,20 @@ async function translateSection(
   try {
     const code = targetJurisdiction.toUpperCase()
     
-    // Fetch top-up prompt for this section from CountrySectionPrompt table
+    // Fetch top-up prompt for this section from CountrySectionPrompt table (case-insensitive)
     const topUpPrompt = await prisma.countrySectionPrompt.findFirst({
       where: {
-        countryCode: code,
-        sectionKey: countryKey,
+        countryCode: { equals: code, mode: 'insensitive' },
+        sectionKey: { equals: countryKey, mode: 'insensitive' },
         status: 'ACTIVE'
       }
     })
     
-    // If no prompt found for countryKey, try supersetKey
+    // If no prompt found for countryKey, try supersetKey (case-insensitive)
     const fallbackPrompt = !topUpPrompt ? await prisma.countrySectionPrompt.findFirst({
       where: {
-        countryCode: code,
-        sectionKey: supersetKey,
+        countryCode: { equals: code, mode: 'insensitive' },
+        sectionKey: { equals: supersetKey, mode: 'insensitive' },
         status: 'ACTIVE'
       }
     }) : null

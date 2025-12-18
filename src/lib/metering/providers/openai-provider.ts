@@ -104,6 +104,7 @@ export class OpenAIProvider implements LLMProvider {
 
       // Reasoning / "thinking" controls:
       // - Thinking variants (e.g., gpt-5.2-thinking) default to higher reasoning effort.
+      // - Non-thinking variants (gpt-5, gpt-5.1, gpt-5.2) default to 'low' for faster responses.
       // - Request can override via request.parameters.reasoning_effort (string) or request.parameters.reasoning?.effort.
       // IMPORTANT: This gateway calls OpenAI via /v1/chat/completions and that endpoint rejects an object parameter
       // named "reasoning" (400: Unknown parameter: 'reasoning'). Use reasoning_effort instead.
@@ -112,12 +113,14 @@ export class OpenAIProvider implements LLMProvider {
         const configuredReasoning = request.parameters?.reasoning
         const configuredReasoningEffort = request.parameters?.reasoning_effort
 
-        const defaultEffort = isThinkingVariant ? 'high' : undefined
+        // Default effort: 'high' for thinking variants, 'low' for regular GPT-5 models (faster responses)
+        // Set to 'medium' or 'high' explicitly if you need more thorough reasoning
+        const defaultEffort = isThinkingVariant ? 'high' : 'low'
         const effort = configuredReasoning?.effort ?? configuredReasoningEffort ?? defaultEffort
 
-        if (effort) {
-          requestBody.reasoning_effort = effort
-        }
+        // Always set reasoning_effort for GPT-5 models to control response time
+        requestBody.reasoning_effort = effort
+        console.log(`[OpenAIProvider] Using reasoning_effort=${effort} for ${modelToUse}`)
       }
       
       if (usesMaxCompletionTokens) {

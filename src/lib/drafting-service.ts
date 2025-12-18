@@ -1377,6 +1377,30 @@ Respond in this exact JSON shape:
         })
         // Add debug info about prompt injection (B+T+U)
         const promptDebug = sectionResources[s]?.prompt?.debug
+        
+        // COMPREHENSIVE B+T+U LOGGING
+        console.log(`\n${'─'.repeat(80)}`)
+        console.log(`📋 PROMPT INJECTION STATUS: ${s.toUpperCase()} (${jurisdictionCode})`)
+        console.log(`${'─'.repeat(80)}`)
+        if (promptDebug) {
+          console.log(`  [B] BASE PROMPT:     ${promptDebug.hasBase ? '✓ YES' : '✗ NO'}`)
+          console.log(`  [T] TOP-UP PROMPT:   ${promptDebug.hasTopUp ? '✓ YES' : '✗ NO'} ${promptDebug.topUpSource ? `(source: ${promptDebug.topUpSource})` : ''}`)
+          console.log(`  [U] USER PROMPT:     ${promptDebug.hasUser ? '✓ YES' : '✗ NO'}`)
+          console.log(`  ─────────────────────────────────────────`)
+          console.log(`  Section Key:         ${promptDebug.sectionKey}`)
+          console.log(`  Merge Strategy:      ${promptDebug.mergeStrategy}`)
+          if (promptDebug.basePreview) {
+            console.log(`  Base Preview:        "${promptDebug.basePreview.substring(0, 80)}..."`)
+          }
+          if (promptDebug.topUpPreview) {
+            console.log(`  TopUp Preview:       "${promptDebug.topUpPreview.substring(0, 80)}..."`)
+          }
+        } else {
+          console.log(`  ⚠️  NO PROMPT DEBUG INFO AVAILABLE`)
+          console.log(`  Using legacy hardcoded prompt (this should not happen!)`)
+        }
+        console.log(`${'─'.repeat(80)}\n`)
+        
         debugSteps.push({ 
           step: `build_prompt_${s}`, 
           status: 'ok',
@@ -1387,8 +1411,10 @@ Respond in this exact JSON shape:
               U: promptDebug.hasUser,
               source: promptDebug.topUpSource,
               key: promptDebug.sectionKey,
-              strategy: promptDebug.mergeStrategy
-            } : { B: true, T: false, U: false, source: null }
+              strategy: promptDebug.mergeStrategy,
+              basePreview: promptDebug.basePreview,
+              topUpPreview: promptDebug.topUpPreview
+            } : { B: false, T: false, U: false, source: null, key: s, strategy: 'none' }
           }
         })
 
@@ -1917,9 +1943,21 @@ Respond in this exact JSON shape:
         '{{FULL_DRAFT_TEXT}}': 'Full draft text not available' // Would need current draft content
       }
 
-      // Replace all template variables
+      // Replace all template variables case-insensitively
       for (const [key, value] of Object.entries(templateVars)) {
-        promptInstruction = promptInstruction.replace(new RegExp(key, 'g'), value)
+        // Escape special characters in the key (like {{ and }}) for regex
+        const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        promptInstruction = promptInstruction.replace(new RegExp(escapedKey, 'gi'), value)
+      }
+
+      // FINAL SAFETY: Remove any unreplaced {{VAR}} tags to avoid confusing the LLM
+      // This handles typos in the database by admins (e.g. {{COUNTRY_COD}})
+      if (promptInstruction.includes('{{')) {
+        const remainingTags = promptInstruction.match(/\{\{[A-Z0-9_]+\}\}/gi);
+        if (remainingTags) {
+          console.warn(`[buildSectionPrompt] ⚠️  Removing ${remainingTags.length} unreplaced tags: ${remainingTags.join(', ')}`);
+          promptInstruction = promptInstruction.replace(/\{\{[A-Z0-9_]+\}\}/gi, '');
+        }
       }
     }
 
@@ -1994,12 +2032,86 @@ You are a senior patent attorney drafting the "${sectionLabel}" section for a ${
 - Archetype: ${archetype}
 - Avoid: ${avoid}
 ${targetDisplay}
-${promptInstruction}
-${promptConstraints}
 ${ruleBlock ? `${ruleBlock}\n` : ''}
 Ensure the writing is objective, precise, and ready for filing.
 ${writingSampleBlock}`
 
+    // CRITICAL: If database has a custom prompt instruction, use it as PRIMARY
+    // This ensures admin changes in CountrySectionPrompt take effect immediately
+    // Only fall through to hardcoded switch cases if no database prompt exists
+    if (promptInstruction && promptInstruction.trim()) {
+      console.log(`[buildSectionPrompt] Using DATABASE prompt for section "${section}" in ${jurisdiction}`)
+      
+      // Build context based on section type
+      let sectionContext = ''
+      const idea = payload.idea || {}
+      const numeralsContext = numerals ? `Reference numerals: ${numerals}` : ''
+      const figuresContext = figs ? `Figures: ${figs}` : ''
+      
+      // Add section-specific context
+      switch (section) {
+        case 'title':
+          sectionContext = `Title idea: ${idea?.title || ''}\nProblem: ${idea?.problem || ''}\nObjectives: ${idea?.objectives || ''}`
+          break
+        case 'abstract':
+          sectionContext = `Approved title: ${approved?.title || idea?.title || ''}\nProblem: ${idea?.problem || ''}\n${numeralsContext}\n${figuresContext}`
+          break
+        case 'fieldOfInvention':
+          sectionContext = `Field: ${idea?.fieldOfRelevance || ''}\nSubfield: ${idea?.subfield || ''}`
+          break
+        case 'background':
+          const priorArt = payload.manualPriorArt?.manualPriorArtText || (payload.selectedPriorArtPatents?.map((p: any) => p.patentNumber).join(', ')) || 'None provided'
+          sectionContext = `Problem: ${idea?.problem || ''}\nPrior art: ${priorArt}\n${payload.inventionBasics || ''}`
+          break
+        case 'claims':
+          sectionContext = `Problem: ${idea?.problem || ''}\nSolution: ${idea?.solution || ''}\nComponents: ${idea?.components?.map((c: any) => c.name).join(', ') || ''}`
+          break
+        case 'detailedDescription':
+          sectionContext = `${payload.inventionBasics || ''}\n${numeralsContext}\n${figuresContext}`
+          break
+        default:
+          sectionContext = `Title: ${idea?.title || ''}\nProblem: ${idea?.problem || ''}\nSolution: ${idea?.solution || ''}\n${numeralsContext}\n${figuresContext}`
+      }
+      
+      return `${roleToneHeader}
+
+=== DATABASE-CONFIGURED PROMPT FOR ${jurisdiction}/${section} ===
+${promptInstruction}
+${promptConstraints}
+
+=== CONTEXT ===
+${sectionContext}
+
+=== USER INSTRUCTIONS ===
+${instr !== 'none' ? instr : 'None provided'}
+
+Output JSON: { "${section}": "..." }
+Return ONLY a valid JSON object exactly matching the schema above. Do NOT include explanations, markdown, comments, or line breaks outside JSON.`
+    }
+
+    // NO HARDCODED FALLBACKS - Database prompts are required
+    // If we reach here, it means no database prompt exists for this section
+    const errorMsg = `
+═══════════════════════════════════════════════════════════════════════════════
+ERROR: NO DATABASE PROMPT FOUND
+═══════════════════════════════════════════════════════════════════════════════
+Section:      ${section}
+Jurisdiction: ${jurisdiction}
+
+REQUIRED ACTION:
+Add a prompt for this section in one of the following database tables:
+1. CountrySectionPrompt (for jurisdiction-specific top-up prompts)
+2. SupersetSection (for base/universal prompts)
+
+Use the Super Admin panel to add the missing prompt.
+═══════════════════════════════════════════════════════════════════════════════`
+    
+    console.error(errorMsg)
+    throw new Error(`Missing database prompt for section "${section}" in jurisdiction "${jurisdiction}". Please add the prompt via Super Admin panel.`)
+    
+    // The following legacy hardcoded prompts are DEPRECATED and will be removed
+    // They are kept here only as reference for migration to database
+    /* DEPRECATED - DO NOT USE
     switch (section) {
       case 'title':
         return `
@@ -2347,6 +2459,7 @@ Return ONLY a valid JSON object exactly matching the schema above.`
       default:
         return `{"${section}": ""}`
     }
+    END OF DEPRECATED CODE */
   }
 
   // Enforce conservative hard upper word limits per section to avoid overflows

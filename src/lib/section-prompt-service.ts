@@ -108,8 +108,8 @@ export async function getSectionPrompt(
   try {
     const dbPrompt = await prisma.countrySectionPrompt.findFirst({
       where: {
-        countryCode: jurisdiction,
-        sectionKey: sectionKey,
+        countryCode: { equals: jurisdiction, mode: 'insensitive' },
+        sectionKey: { equals: sectionKey, mode: 'insensitive' },
         status: 'ACTIVE'
       }
     })
