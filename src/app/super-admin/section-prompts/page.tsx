@@ -185,13 +185,13 @@ export default function SuperAdminSectionPromptsPage() {
                     <span className="font-semibold text-slate-700">Base Superset</span>
                   </div>
                   <p className="text-sm text-slate-600 mb-2">
-                    Universal prompts in code. Apply to ALL countries.
+                    Universal prompts from database. Apply to ALL countries.
                   </p>
                   <div className="text-xs bg-slate-200 rounded p-2 font-mono">
-                    SUPERSET_PROMPTS['claims']
+                    DB: superset_sections
                   </div>
                   <div className="mt-2 text-xs text-slate-500">
-                    📁 src/lib/drafting-service.ts
+                    🗄️ Stored in SupersetSection table
                   </div>
                 </div>
 
@@ -454,14 +454,14 @@ export default function SuperAdminSectionPromptsPage() {
                                 <div className="bg-slate-100 rounded-lg p-4">
                                   <div className="flex items-center gap-2 mb-2">
                                     <span className="bg-slate-500 text-white text-xs font-bold px-2 py-0.5 rounded">L1</span>
-                                    <span className="font-medium text-slate-700">Base Superset (Read-only)</span>
+                                    <span className="font-medium text-slate-700">Base Superset (Database)</span>
                                   </div>
                                   <p className="text-xs text-slate-500 mb-2">
-                                    Universal prompt from code - cannot be edited here
+                                    Universal prompt from SupersetSection table
                                   </p>
                                   <div className="bg-slate-200 rounded p-3 text-xs font-mono text-slate-600 max-h-32 overflow-y-auto">
-                                    SUPERSET_PROMPTS['{section.key}']<br/>
-                                    <span className="text-slate-400">// View in src/lib/drafting-service.ts</span>
+                                    DB: superset_sections['{section.key}']<br/>
+                                    <span className="text-slate-400">// Manage via SupersetSection database table</span>
                                   </div>
                                 </div>
 

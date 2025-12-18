@@ -27,7 +27,6 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
   const [rich, setRich] = useState<any>(null)
   const [sections, setSections] = useState<any[] | null>(null)
   const [showExportModal, setShowExportModal] = useState(false)
-  const [exportFormat, setExportFormat] = useState<'docx' | 'pdf'>('docx')
   const [exporting, setExporting] = useState(false)
   const availableJurisdictions = (Array.isArray(session?.draftingJurisdictions) && session.draftingJurisdictions.length > 0 ? session.draftingJurisdictions : ['IN']).map((c: string) => (c || '').toUpperCase())
   const [selectedJurisdiction, setSelectedJurisdiction] = useState<string>(() => (session?.activeJurisdiction || availableJurisdictions[0] || 'IN'))
@@ -101,19 +100,18 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
 
   useEffect(() => { loadPreview(); loadRich() }, [selectedJurisdiction])
 
-  const handleExport = async (format?: 'docx' | 'pdf') => {
+  const handleExport = async () => {
     if (!showExportModal) {
       setShowExportModal(true)
       return
     }
 
-    const targetFormat = format || exportFormat
     setExporting(true)
 
     try {
       // Build request body - only include autoNumberParagraphs if user explicitly set it
       const requestBody: any = {
-        action: targetFormat === 'pdf' ? 'export_pdf' : 'export_docx',
+        action: 'export_docx',
         sessionId: session?.id,
         jurisdiction: selectedJurisdiction
       }
@@ -138,11 +136,7 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
         return
       }
       const disp = res.headers.get('Content-Disposition') || ''
-      const contentType = res.headers.get('Content-Type') || ''
-      const isDocx = contentType.includes('officedocument')
-      const isPdf = contentType.includes('pdf')
-      const ext = isPdf ? 'pdf' : isDocx ? 'docx' : 'txt'
-      const filename = /filename="?([^";]+)"?/i.test(disp) ? RegExp.$1 : `annexure_${session?.id}.${ext}`
+      const filename = /filename="?([^";]+)"?/i.test(disp) ? RegExp.$1 : `annexure_${session?.id}.docx`
       const blob = await res.blob()
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
@@ -186,35 +180,6 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
                   </select>
                 </div>
               )}
-
-              {/* Export Format */}
-              <div>
-                <label className="block text-sm font-medium text-gray-900 mb-2">Export Format</label>
-                <div className="flex gap-3">
-                  <label className="flex items-center">
-                    <input
-                      type="radio"
-                      name="exportFormat"
-                      value="docx"
-                      checked={exportFormat === 'docx'}
-                      onChange={() => setExportFormat('docx')}
-                      className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300"
-                    />
-                    <span className="ml-2 text-sm text-gray-900">DOCX (Word)</span>
-                  </label>
-                  <label className="flex items-center">
-                    <input
-                      type="radio"
-                      name="exportFormat"
-                      value="pdf"
-                      checked={exportFormat === 'pdf'}
-                      onChange={() => setExportFormat('pdf')}
-                      className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300"
-                    />
-                    <span className="ml-2 text-sm text-gray-900">PDF</span>
-                  </label>
-                </div>
-              </div>
 
               {/* Paragraph Numbering */}
               <div className="flex items-center">
@@ -306,7 +271,7 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
                     Exporting...
                   </>
                 ) : (
-                  `Export ${exportFormat.toUpperCase()}`
+                  'Export DOCX'
                 )}
               </button>
             </div>
@@ -342,20 +307,12 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
       <div className="border rounded-lg p-6 bg-white">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold text-gray-900">Export Annexure</h3>
-          <div className="flex gap-2">
-            <button 
-              onClick={() => { setExportFormat('docx'); handleExport() }} 
-              className="px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700"
-            >
-              Export DOCX
-            </button>
-            <button 
-              onClick={() => { setExportFormat('pdf'); handleExport() }} 
-              className="px-4 py-2 rounded bg-emerald-600 text-white hover:bg-emerald-700"
-            >
-              Export PDF
-            </button>
-          </div>
+          <button 
+            onClick={() => handleExport()} 
+            className="px-4 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-700"
+          >
+            Export DOCX
+          </button>
         </div>
         <p className="text-sm text-gray-600">
           Export includes all sections formatted per {selectedJurisdiction} jurisdiction requirements.
@@ -406,46 +363,62 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
           <div className="p-4 space-y-6">
             {rich ? (
               <div className="prose max-w-none">
+                {/* Title - always at top */}
                 <h2 className="text-xl font-bold">{String(rich.title||'').toUpperCase()}</h2>
-                {(sections && sections.length
-                  ? sections.filter(s => s.key !== 'title' && s.key !== 'abstract')
-                  : [
-                      { key: 'fieldOfInvention', label: 'FIELD OF THE INVENTION' },
-                      { key: 'background', label: 'BACKGROUND OF THE INVENTION' },
-                      { key: 'summary', label: 'SUMMARY OF THE INVENTION' },
-                      { key: 'briefDescriptionOfDrawings', label: 'BRIEF DESCRIPTION OF THE DRAWINGS' },
-                      { key: 'detailedDescription', label: 'DETAILED DESCRIPTION OF THE INVENTION' },
-                      { key: 'industrialApplicability', label: 'INDUSTRIAL APPLICABILITY' },
-                      { key: 'bestMethod', label: 'BEST METHOD' },
-                      { key: 'claims', label: 'CLAIMS' },
-                      { key: 'listOfNumerals', label: 'LIST OF REFERENCE NUMERALS' }
-                    ]
-                ).map(sec => (
-                  <div key={sec.key}>
-                    <h3 className="font-semibold text-gray-900">{String(sec.label || sec.key).toUpperCase()}</h3>
-                    <p className="whitespace-pre-wrap">{rich[sec.key]}</p>
-                  </div>
-                ))}
-
-                <h3 className="font-semibold text-gray-900">DRAWINGS / FIGURES</h3>
-                <div className="space-y-6">
-                  {(rich.figures||[]).map((f:any)=>(
-                    <div key={f.figureNo} className="border rounded p-3">
-                      <div className="text-sm font-medium mb-2">{`Fig. ${f.figureNo} — ${f.caption}`}</div>
-                      {f.imageUrl ? (
-                        <img src={`/api/patents/${patent.id}/drafting?image=figure&sessionId=${session?.id}&figureNo=${f.figureNo}`} alt={`Figure ${f.figureNo}`} className="max-w-full h-auto border" />
-                      ) : (
-                        <div className="text-xs text-gray-500">No image available</div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                {(sections || []).find(s => s.key === 'abstract') || (!sections && true) ? (
+                
+                {/* Render sections in database-defined order (from API response) */}
+                {sections && sections.length > 0 ? (
                   <>
-                    <h3 className="font-semibold text-gray-900">ABSTRACT</h3>
-                    <p className="whitespace-pre-wrap">{rich.abstract}</p>
+                    {/* Body sections in jurisdiction-specific order (excludes title, abstract shown after figures) */}
+                    {sections
+                      .filter(s => s.key !== 'title' && s.key !== 'abstract')
+                      .map(sec => {
+                        const content = rich[sec.key]
+                        // Only render sections that have content
+                        if (!content || !String(content).trim()) return null
+                        return (
+                          <div key={sec.key}>
+                            <h3 className="font-semibold text-gray-900">{String(sec.label || sec.key).toUpperCase()}</h3>
+                            <p className="whitespace-pre-wrap">{content}</p>
+                          </div>
+                        )
+                      })}
+
+                    {/* Figures section */}
+                    {(rich.figures && rich.figures.length > 0) && (
+                      <>
+                        <h3 className="font-semibold text-gray-900">DRAWINGS / FIGURES</h3>
+                        <div className="space-y-6">
+                          {rich.figures.map((f:any)=>(
+                            <div key={f.figureNo} className="border rounded p-3">
+                              <div className="text-sm font-medium mb-2">{`Fig. ${f.figureNo} — ${f.caption}`}</div>
+                              {f.imageUrl ? (
+                                <img src={`/api/patents/${patent.id}/drafting?image=figure&sessionId=${session?.id}&figureNo=${f.figureNo}`} alt={`Figure ${f.figureNo}`} className="max-w-full h-auto border" />
+                              ) : (
+                                <div className="text-xs text-gray-500">No image available</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    )}
+
+                    {/* Abstract - shown at end per patent document convention */}
+                    {sections.find(s => s.key === 'abstract') && rich.abstract && (
+                      <>
+                        <h3 className="font-semibold text-gray-900">
+                          {String(sections.find(s => s.key === 'abstract')?.label || 'ABSTRACT').toUpperCase()}
+                        </h3>
+                        <p className="whitespace-pre-wrap">{rich.abstract}</p>
+                      </>
+                    )}
                   </>
-                ) : null}
+                ) : (
+                  <div className="text-amber-600 text-sm p-3 bg-amber-50 rounded">
+                    ⚠️ No section configuration found for jurisdiction {selectedJurisdiction}. 
+                    Please configure sections via /super-admin/jurisdiction-config.
+                  </div>
+                )}
               </div>
             ) : (
               <div className="text-sm text-gray-500">No visual preview yet. Click Refresh.</div>
@@ -464,16 +437,10 @@ export default function ExportCenterStage({ session, patent, onComplete, onRefre
                 Refresh Preview
               </button>
               <button 
-                onClick={() => { setExportFormat('docx'); handleExport() }} 
+                onClick={() => handleExport()} 
                 className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
               >
                 Export DOCX
-              </button>
-              <button 
-                onClick={() => { setExportFormat('pdf'); handleExport() }} 
-                className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500"
-              >
-                Export PDF
               </button>
               <button
                 onClick={() => window.location.href = '/dashboard'}

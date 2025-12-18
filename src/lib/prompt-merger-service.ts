@@ -96,9 +96,10 @@ export type MergeStrategy = 'append' | 'prepend' | 'replace'
 // No hardcoded alias maps - see section-alias-service.ts for database-driven resolution
 
 /**
- * Map canonical drafting section keys (camelCase) to the base prompt IDs used by SUPERSET_PROMPTS.
- * SUPERSET_PROMPTS is prompt-ID keyed (e.g. "field", "best_mode"), while the app stores/queries
+ * Map canonical drafting section keys (camelCase) to database prompt IDs.
+ * Database prompt IDs use snake_case (e.g. "field", "best_mode"), while the app stores/queries
  * sections using canonical camelCase keys (e.g. "fieldOfInvention", "bestMethod").
+ * This mapping ensures compatibility between the two naming conventions.
  */
 const SECTION_KEY_TO_PROMPT_KEY: Record<string, string> = {
   title: 'title',
@@ -138,7 +139,7 @@ function getSupersetPromptKeyForCanonicalSectionKey(sectionKey: string): string 
  * DATABASE IS THE ONLY SOURCE OF TRUTH - No hardcoded fallbacks
  * 
  * Resolution order:
- * 1. Prompt-ID to canonical mapping (SUPERSET_PROMPTS IDs like "field", "best_mode")
+ * 1. Prompt-ID to canonical mapping (database prompt IDs like "field", "best_mode")
  * 2. Alias-to-canonical (SupersetSection.aliases; cached; DB-driven)
  * 3. Database mapping (CountrySectionMapping)
  */
@@ -156,8 +157,8 @@ export async function resolveSectionKey(
     .replace(/_+/g, '_')
     .replace(/^_+|_+$/g, '')
 
-  // 1. Direct mapping from SUPERSET_PROMPTS prompt IDs to canonical section keys
-  // This maps legacy prompt keys like "field" to canonical keys like "fieldOfInvention"
+  // 1. Direct mapping from database prompt IDs to canonical section keys
+  // This maps prompt keys like "field" to canonical keys like "fieldOfInvention"
   for (const candidate of [lower, normalizedUnderscore]) {
     const mapped = PROMPT_KEY_TO_SECTION_KEY[candidate]
     if (mapped && isSupportedCanonicalSectionKey(mapped)) {
@@ -204,9 +205,9 @@ export async function resolveSectionKey(
  * This is the main entry point for getting jurisdiction-aware prompts.
  * 
  * Hierarchy (lowest to highest priority):
- * 1. SUPERSET_PROMPTS - Base universal prompts
- * 2. Country top-up - Database or JSON country-specific guidance
- * 3. User instructions - Per-session user customizations (HIGHEST)
+ * 1. SupersetSection (database) - Base universal prompts
+ * 2. CountrySectionPrompt (database) - Country-specific top-up guidance
+ * 3. UserInstruction (database) - Per-session user customizations (HIGHEST)
  * 
  * @param countryCode - ISO country code (e.g., "IN", "US")
  * @param sectionId - Section identifier

@@ -799,7 +799,7 @@ function AddSectionModal({
   // Context injection flags (defaults for new section)
   const [requiresPriorArt, setRequiresPriorArt] = useState(false)
   const [requiresFigures, setRequiresFigures] = useState(false)
-  const [requiresClaims, setRequiresClaims] = useState(false)
+  const [requiresClaims, setRequiresClaims] = useState(true) // Default ON for Claim 1 anchoring
   const [requiresComponents, setRequiresComponents] = useState(false)
 
   const handleSubmit = async () => {
@@ -959,14 +959,15 @@ function AddSectionModal({
               />
               <span className="text-slate-300 text-sm">🖼️ Figures</span>
             </label>
-            <label className="flex items-center gap-2 bg-slate-800/50 rounded p-2 cursor-pointer hover:bg-slate-800/70">
+            <label className="flex items-center gap-2 bg-slate-800/50 rounded p-2 cursor-pointer hover:bg-slate-800/70" title="Anchor section to Claim 1 terminology (NOT full claims)">
               <input
                 type="checkbox"
                 checked={requiresClaims}
                 onChange={(e) => setRequiresClaims(e.target.checked)}
                 className="w-4 h-4 rounded border-slate-600 text-emerald-500"
+                defaultChecked={true}
               />
-              <span className="text-slate-300 text-sm">📋 Claims</span>
+              <span className="text-slate-300 text-sm">🔗 C1 Anchor</span>
             </label>
             <label className="flex items-center gap-2 bg-slate-800/50 rounded p-2 cursor-pointer hover:bg-slate-800/70">
               <input
@@ -1253,17 +1254,17 @@ function EditSectionModal({
               </div>
             </label>
 
-            {/* Claims */}
-            <label className="flex items-center gap-3 bg-slate-800/50 rounded-lg p-3 cursor-pointer hover:bg-slate-800/70 transition">
+            {/* Claim 1 Anchoring */}
+            <label className="flex items-center gap-3 bg-slate-800/50 rounded-lg p-3 cursor-pointer hover:bg-slate-800/70 transition" title="Align section terminology with Claim 1 (not full claims)">
               <input
                 type="checkbox"
                 checked={requiresClaims}
                 onChange={(e) => setRequiresClaims(e.target.checked)}
-                className="w-5 h-5 rounded border-slate-600 text-emerald-500 focus:ring-emerald-500"
+                className="w-5 h-5 rounded border-slate-600 text-amber-500 focus:ring-amber-500"
               />
               <div>
-                <div className="text-slate-200 text-sm font-medium">📋 Claims</div>
-                <div className="text-xs text-slate-500">Patent claims text</div>
+                <div className="text-slate-200 text-sm font-medium">🔗 Claim 1 Anchoring</div>
+                <div className="text-xs text-slate-500">Align terminology with Claim 1 (for drafting sections only)</div>
               </div>
             </label>
 
@@ -1782,12 +1783,12 @@ function MappingDetailsModal({
                   </select>
                 </div>
 
-                {/* Claims Override */}
+                {/* Claim 1 Anchoring Override */}
                 <div className="bg-slate-800/50 rounded-lg p-3">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-slate-300 text-sm font-medium">📋 Claims</span>
+                    <span className="text-slate-300 text-sm font-medium">🔗 C1 Anchor</span>
                     <span className={`text-xs px-1.5 py-0.5 rounded ${
-                      section?.requiresClaims ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-600 text-slate-400'
+                      section?.requiresClaims ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-600 text-slate-400'
                     }`}>
                       Base: {section?.requiresClaims ? 'ON' : 'OFF'}
                     </span>
@@ -1801,8 +1802,8 @@ function MappingDetailsModal({
                     className="w-full px-2 py-1.5 bg-slate-700 border border-slate-600 rounded text-white text-sm focus:border-amber-500"
                   >
                     <option value="default">Default (use superset)</option>
-                    <option value="true">✓ Inject Claims</option>
-                    <option value="false">✗ Don't Inject</option>
+                    <option value="true">✓ Use Claim 1 Anchoring</option>
+                    <option value="false">✗ No Anchoring</option>
                   </select>
                 </div>
 
@@ -1869,18 +1870,18 @@ function MappingDetailsModal({
                     )
                   })()}
                   
-                  {/* Claims - with override indicator */}
+                  {/* Claim 1 Anchoring - with override indicator */}
                   {(() => {
                     const baseVal = section?.requiresClaims ?? false
                     const effectiveVal = requiresClaimsOverride ?? baseVal
                     const isOverridden = requiresClaimsOverride !== null
                     return (
                       <span className={`text-xs px-2 py-1 rounded ${
-                        effectiveVal ? 'bg-emerald-500/20 text-emerald-400' : 'bg-slate-700 text-slate-500'
+                        effectiveVal ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-700 text-slate-500'
                       } ${isOverridden ? 'ring-1 ring-amber-500/50' : ''}`}
                         title={isOverridden ? `Override active (base: ${baseVal ? 'ON' : 'OFF'})` : 'Using superset default'}
                       >
-                        📋 Claims: {effectiveVal ? 'YES' : 'NO'}
+                        🔗 C1: {effectiveVal ? 'YES' : 'NO'}
                         {isOverridden && <span className="ml-1 text-amber-400">*</span>}
                       </span>
                     )

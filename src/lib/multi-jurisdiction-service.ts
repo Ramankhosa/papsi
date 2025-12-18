@@ -13,6 +13,13 @@ import { llmGateway } from '@/lib/metering'
 import type { LLMRequest } from '@/lib/metering'
 import { getCountryProfile } from '@/lib/country-profile-service'
 import { getSectionStageCode } from '@/lib/metering/section-stage-mapping'
+import {
+  buildUniversalDraftingBundle,
+  buildAntiHallucinationGuards,
+  shouldGateSection,
+  isClaim1Available,
+  getSectionInjectionConfig
+} from '@/lib/section-injection-config'
 import crypto from 'crypto'
 
 // ============================================================================
@@ -1396,6 +1403,24 @@ export async function generateReferenceDraft(
     console.log(`  - Components: ${componentSections.join(', ') || 'none'}`)
     console.log(`  - Claims: ${claimsSections.join(', ') || 'none'}`)
 
+    // ======================================================================
+    // PRE-CALCULATE PRIOR ART COUNT (needed before sectionInstructions map)
+    // This fixes the bug where priorArtCount was used before being defined
+    // ======================================================================
+    let priorArtCount = 0
+    if (batchNeeds.needsPriorArt) {
+      if (manualPriorArt) {
+        const manualText = manualPriorArt.manualPriorArtText || manualPriorArt.text || ''
+        if (manualPriorArt.useOnlyManualPriorArt && manualText) {
+          priorArtCount = 1
+        } else if (manualPriorArt.useManualAndAISearch) {
+          priorArtCount = 1 + selectedPriorArtPatents.length
+        }
+      } else if (selectedPriorArtPatents.length > 0) {
+        priorArtCount = selectedPriorArtPatents.length
+      }
+    }
+
     // Build section instructions using database prompts
     // Add section-specific context based on database-driven requirements
     const sectionInstructions = dynamicSections.map((key, idx) => {
@@ -1472,21 +1497,32 @@ export async function generateReferenceDraft(
           }
         }
         
-        // Claims context instructions
-        if (requirements.requiresClaims && frozenClaimsText) {
-          if (key === 'summary') {
-            contextAddendum += `
+        // Claim 1 anchoring/avoidance instructions (config-driven)
+        // Per SRS: Each section has specific rules about whether to use Claim 1
+        const sectionConfig = getSectionInjectionConfig(key)
+        
+        if (sectionConfig.injectClaim1 && sectionConfig.claim1Mode === 'bindingAnchor') {
+          // Section SHOULD use Claim 1 as binding anchor
+          contextAddendum += `
    
-   CLAIMS ALIGNMENT (database-driven):
-   - Align the summary with the FROZEN CLAIMS provided.
-   - Include all essential elements from Claim 1.`
-          } else if (key === 'technicalSolution') {
-            contextAddendum += `
+   CLAIM 1 ANCHORING (REQUIRED for this section):
+   - Align all content with Claim 1 provided in the context.
+   - Do NOT add elements not supported by Claim 1.
+   - Keep terminology EXACTLY consistent with Claim 1 language.
+   - All features described must trace back to Claim 1.`
+        } else if (sectionConfig.injectClaim1 && sectionConfig.claim1Mode === 'constraintOnly') {
+          // Section uses Claim 1 for terminology consistency only
+          contextAddendum += `
    
-   CLAIMS ALIGNMENT (database-driven):
-   - The technical solution must align with the claimed features.
-   - Reference the FROZEN CLAIMS for the distinguishing features.`
-          }
+   CLAIM 1 CONSTRAINT:
+   - Use Claim 1 ONLY for terminology consistency.
+   - Do NOT enumerate or restate claim features.
+   - Avoid contradiction with Claim 1 scope.`
+        } else if (!sectionConfig.injectClaim1) {
+          // Section should NOT use Claim 1 - add explicit avoidance instruction
+          contextAddendum += `
+   
+   NOTE: Do NOT reference Claim 1 for this section. Write based on the normalized invention context only.`
         }
       }
       
@@ -1499,24 +1535,18 @@ ${instructionText}${constraints}${contextAddendum}`
     // BUILD CONTEXT DATA - ONLY INCLUDE WHAT'S NEEDED BY SECTIONS
     // ======================================================================
     
-    // Claims context - only if any section needs it
-    // Claims context - only if any section needs it (log if truncated)
-    let claimsContext = ''
-    if (batchNeeds.needsClaims && frozenClaimsText) {
-      const CLAIMS_LIMIT = 3000
-      const isTruncated = frozenClaimsText.length > CLAIMS_LIMIT
-      if (isTruncated) {
-        console.warn(`[generateReferenceDraft] Claims truncated: ${frozenClaimsText.length} chars → ${CLAIMS_LIMIT} chars (${frozenClaimsText.length - CLAIMS_LIMIT} chars lost)`)
-      }
-      claimsContext = `
-FROZEN CLAIMS (for sections requiring claims alignment):
-${frozenClaimsText.slice(0, CLAIMS_LIMIT)}${isTruncated ? '... [truncated]' : ''}
-`
-    }
+    // ══════════════════════════════════════════════════════════════════════════════
+    // IMPORTANT: Full claims are NOT injected for drafting sections.
+    // Claim 1 anchoring is handled by UDB (Universal Drafting Bundle).
+    // Full claims are only used:
+    // 1. For the 'claims' section itself (verbatim return)
+    // 2. For AI review/validation AFTER draft generation
+    // ══════════════════════════════════════════════════════════════════════════════
+    const claimsContext = '' // Full claims injection disabled for drafting - use UDB Claim 1 anchoring
 
     // Prior Art context - only if any section needs it
+    // Note: priorArtCount is pre-calculated above for use in sectionInstructions
     let priorArtContext = ''
-    let priorArtCount = 0
     
     if (batchNeeds.needsPriorArt) {
       if (manualPriorArt) {
@@ -1590,20 +1620,98 @@ ${components.map((c: any) => `  - ${c.name} (${c.numeral})`).join('\n')}
       console.log(`[generateReferenceDraft] Components context: ${components.length} components included`)
     }
 
-    const prompt = `You are generating a REFERENCE PATENT DRAFT that will be translated to these specific jurisdictions: ${selectedJurisdictions.join(', ')}.
+    // ══════════════════════════════════════════════════════════════════════════════
+    // UNIVERSAL DRAFTING BUNDLE (UDB) for batch generation
+    // ══════════════════════════════════════════════════════════════════════════════
+    const normalizedData = idea.normalizedData || {}
+    
+    // Check gating for critical sections that require frozen Claim 1
+    const gatedSections = dynamicSections.filter(key => shouldGateSection(key, normalizedData))
+    
+    if (gatedSections.length > 0) {
+      // Build specific error messages for each gated section
+      const gateErrors = gatedSections.map(key => {
+        const hasClaim = isClaim1Available(normalizedData)
+        if (!hasClaim) {
+          return `"${key}" requires claims to be generated first`
+        }
+        return `"${key}" requires claims to be frozen`
+      })
+      const gateError = `Cannot generate sections: ${gateErrors.join('; ')}. Please complete CLAIM_REFINEMENT stage and freeze claims first.`
+      console.error(`[generateReferenceDraft] GATED: ${gateError}`)
+      return {
+        success: false,
+        error: gateError
+      }
+    }
+    
+    // Build UDB for batch context
+    // Determine the "most demanding" section to get proper UDB context:
+    // - If ANY section needs C1, use a C1-requiring section as representative
+    // - Otherwise, use a ND-only section
+    const sectionsNeedingClaim1 = dynamicSections.filter(key => {
+      const config = getSectionInjectionConfig(key)
+      return config.injectClaim1
+    })
+    const representativeSection = sectionsNeedingClaim1.length > 0 
+      ? sectionsNeedingClaim1[0] // Use first C1-requiring section
+      : (dynamicSections[0] || 'detailedDescription') // Fallback to first section or default
+    
+    const udbResult = buildUniversalDraftingBundle(representativeSection, normalizedData, idea)
+    const claim1Available = isClaim1Available(normalizedData)
+    console.log(`[generateReferenceDraft] UDB batch injection:`, {
+      hasUDBBlock: !!udbResult.block,
+      blockLength: udbResult.block?.length || 0,
+      claim1Available,
+      representativeSection,
+      sectionsNeedingClaim1Count: sectionsNeedingClaim1.length
+    })
+    
+    // ══════════════════════════════════════════════════════════════════════════════
+    // ANTI-HALLUCINATION GUARDS (automatic)
+    // ══════════════════════════════════════════════════════════════════════════════
+    const hasFigures = figures.length > 0
+    const hasPriorArt = !!(manualPriorArt?.manualPriorArtText || manualPriorArt?.text || selectedPriorArtPatents.length > 0)
+    const hasComponents = components.length > 0
+    const antiHallucinationBlock = buildAntiHallucinationGuards(hasFigures, hasPriorArt, hasComponents)
+
+    // ══════════════════════════════════════════════════════════════════════════════
+    // BUILD PROMPT - CRITICAL: No empty placeholders
+    // ══════════════════════════════════════════════════════════════════════════════
+    const promptParts: string[] = []
+    
+    promptParts.push(`You are generating a REFERENCE PATENT DRAFT that will be translated to these specific jurisdictions: ${selectedJurisdictions.join(', ')}.
 
 This draft must be COUNTRY-NEUTRAL and contain ONLY the ${dynamicSections.length} sections required by the selected jurisdictions.
-The reference draft serves as the master source from which jurisdiction-specific drafts will be derived.
+The reference draft serves as the master source from which jurisdiction-specific drafts will be derived.`)
 
-==============================================================================
-INVENTION CONTEXT (Basic Information - available to all sections)
-==============================================================================
-Title: ${idea.title || 'Untitled'}
-Problem Statement: ${idea.problem || 'Not specified'}
-Objectives: ${idea.objectives || 'Not specified'}
-Working Principle: ${idea.logic || 'Not specified'}
-${componentsContext}${figuresContext}${claimsContext}${priorArtContext}
+    // Add UDB block (Normalized Data + Claim 1) - only if non-empty
+    if (udbResult.block) {
+      promptParts.push(udbResult.block)
+    }
 
+    // Add additional context (components, figures, claims, prior art) - only if non-empty
+    const additionalContextParts: string[] = []
+    if (componentsContext) additionalContextParts.push(componentsContext)
+    if (figuresContext) additionalContextParts.push(figuresContext)
+    if (claimsContext) additionalContextParts.push(claimsContext)
+    if (priorArtContext) additionalContextParts.push(priorArtContext)
+    
+    if (additionalContextParts.length > 0) {
+      promptParts.push(`
+==============================================================================
+ADDITIONAL CONTEXT
+==============================================================================
+${additionalContextParts.join('\n')}`)
+    }
+
+    // Add anti-hallucination guards
+    if (antiHallucinationBlock) {
+      promptParts.push(antiHallucinationBlock)
+    }
+
+    // Section instructions and output format
+    promptParts.push(`
 ==============================================================================
 SECTION-BY-SECTION INSTRUCTIONS (generate EXACTLY these ${dynamicSections.length} sections)
 ==============================================================================
@@ -1617,7 +1725,9 @@ OUTPUT FORMAT
 - Each value should be the complete section content following the instructions above
 - Do not include markdown code fences or explanations
 - Write in clear, technical English suitable for international filing
-- Do NOT generate sections not listed above`
+- Do NOT generate sections not listed above`)
+
+    const prompt = promptParts.join('\n')
 
     const result = await llmGateway.executeLLMOperation({ headers: requestHeaders || {} }, {
       taskCode: 'LLM2_DRAFT',
@@ -1903,6 +2013,27 @@ ${contextParts.join('\n\n')}
       requiresClaims: contextRequirements.requiresClaims
     })
 
+    // ══════════════════════════════════════════════════════════════════════════════
+    // UNIVERSAL DRAFTING BUNDLE (UDB) - Normalized Data + Claim 1
+    // ══════════════════════════════════════════════════════════════════════════════
+    const normalizedData = idea.normalizedData || {}
+    const udbResult = buildUniversalDraftingBundle(sectionKey, normalizedData, idea)
+    
+    // Check gating: if section requires Claim 1 but it's missing, return error
+    if (udbResult.gated) {
+      console.error(`[generateReferenceDraftSection] GATED: ${udbResult.gateReason}`)
+      return {
+        success: false,
+        error: udbResult.gateReason || `Section "${sectionKey}" requires Claim 1 but claims are not available.`
+      }
+    }
+    
+    console.log(`[generateReferenceDraftSection] UDB injection for "${sectionKey}":`, {
+      hasUDBBlock: !!udbResult.block,
+      blockLength: udbResult.block?.length || 0,
+      claim1Available: isClaim1Available(normalizedData)
+    })
+
     // ======================================================================
     // BUILD CONTEXT DATA - ONLY INCLUDE WHAT THIS SECTION NEEDS
     // ======================================================================
@@ -1975,20 +2106,15 @@ ${components.map((c: any) => `  - ${c.name} (${c.numeral})`).join('\n')}
       console.log(`[generateReferenceDraftSection] Components context: ${components.length} components`)
     }
     
-    // Claims context - only if this section needs it
-    let claimsContext = ''
-    if (contextRequirements.requiresClaims && frozenClaimsText) {
-      const CLAIMS_LIMIT = 2000
-      const isTruncated = frozenClaimsText.length > CLAIMS_LIMIT
-      if (isTruncated) {
-        console.warn(`[generateReferenceDraftSection] Claims truncated: ${frozenClaimsText.length} → ${CLAIMS_LIMIT} chars`)
-      }
-      claimsContext = `
-FROZEN CLAIMS (for alignment in this section):
-${frozenClaimsText.slice(0, CLAIMS_LIMIT)}${isTruncated ? '... [truncated]' : ''}
-`
-      console.log(`[generateReferenceDraftSection] Claims context included`)
-    }
+    // ══════════════════════════════════════════════════════════════════════════════
+    // IMPORTANT: Full claims are NOT injected for drafting sections.
+    // Claim 1 anchoring is handled by UDB (Universal Drafting Bundle) above.
+    // Full claims are only used:
+    // 1. For the 'claims' section itself (verbatim return)
+    // 2. For AI review/validation AFTER draft generation
+    // ══════════════════════════════════════════════════════════════════════════════
+    // Legacy claimsContext removed - replaced by Claim 1 anchoring in UDB
+    const claimsContext = '' // Intentionally empty - full claims injection disabled for drafting
 
     // Build section-specific instructions based on requirements
     let contextInstructions = ''
@@ -2037,32 +2163,51 @@ COMPONENTS REQUIREMENTS:
 - Format: "component name (numeral)", e.g., "processor (102)".`
     }
     
-    // Claims instructions
-    if (contextRequirements.requiresClaims && frozenClaimsText) {
-      if (sectionKey === 'summary') {
-        contextInstructions += `
+    // Claims instructions (now handled by UDB claim1Mode)
+    // Legacy claims alignment instructions removed - UDB provides consistent claim handling
 
-CLAIMS ALIGNMENT:
-- Align the summary with the FROZEN CLAIMS provided.
-- Include all essential elements from Claim 1.`
-      } else if (sectionKey === 'technicalSolution') {
-        contextInstructions += `
+    // ══════════════════════════════════════════════════════════════════════════════
+    // ANTI-HALLUCINATION GUARDS (automatic, not admin-controlled)
+    // ══════════════════════════════════════════════════════════════════════════════
+    const hasFigures = figures.length > 0
+    const hasPriorArt = !!(manualPriorArt?.manualPriorArtText || manualPriorArt?.text || selectedPriorArtPatents.length > 0)
+    const hasComponents = components.length > 0
+    const antiHallucinationBlock = buildAntiHallucinationGuards(hasFigures, hasPriorArt, hasComponents)
 
-CLAIMS ALIGNMENT:
-- The technical solution must align with the claimed features.`
-      }
+    // ══════════════════════════════════════════════════════════════════════════════
+    // BUILD PROMPT - CRITICAL: No empty placeholders
+    // ══════════════════════════════════════════════════════════════════════════════
+    const promptParts: string[] = []
+    
+    promptParts.push(`You are generating a SINGLE SECTION of a REFERENCE PATENT DRAFT for these jurisdictions: ${selectedJurisdictions.join(', ')}.`)
+
+    // Add UDB block (Normalized Data + Claim 1) - only if non-empty
+    if (udbResult.block) {
+      promptParts.push(udbResult.block)
     }
 
-    const prompt = `You are generating a SINGLE SECTION of a REFERENCE PATENT DRAFT for these jurisdictions: ${selectedJurisdictions.join(', ')}.
+    // Add additional context (components, figures, prior art, existing sections) - only if non-empty
+    const additionalContextParts: string[] = []
+    if (componentsContext) additionalContextParts.push(componentsContext)
+    if (figuresContext) additionalContextParts.push(figuresContext)
+    if (priorArtContext) additionalContextParts.push(priorArtContext)
+    if (existingSectionsContext) additionalContextParts.push(existingSectionsContext)
+    
+    if (additionalContextParts.length > 0) {
+      promptParts.push(`
+==============================================================================
+ADDITIONAL CONTEXT
+==============================================================================
+${additionalContextParts.join('\n')}`)
+    }
 
-==============================================================================
-INVENTION CONTEXT (Basic Information)
-==============================================================================
-Title: ${idea.title || 'Untitled'}
-Problem Statement: ${idea.problem || 'Not specified'}
-Objectives: ${idea.objectives || 'Not specified'}
-Working Principle: ${idea.logic || 'Not specified'}
-${componentsContext}${figuresContext}${claimsContext}${priorArtContext}${existingSectionsContext}
+    // Add anti-hallucination guards
+    if (antiHallucinationBlock) {
+      promptParts.push(antiHallucinationBlock)
+    }
+
+    // Section generation instructions
+    promptParts.push(`
 ==============================================================================
 SECTION TO GENERATE: ${sectionPrompt.label} (key: "${sectionKey}")
 ==============================================================================
@@ -2078,7 +2223,9 @@ OUTPUT REQUIREMENTS
 - Write in clear, technical English suitable for international filing
 - Be comprehensive but concise
 - Maintain consistency with previously generated sections (if any)
-- Return ONLY the section content text, nothing else`
+- Return ONLY the section content text, nothing else`)
+
+    const prompt = promptParts.join('\n')
 
     // Get the stage code for model resolution
     // This maps section key to workflow stage (e.g., 'background' -> 'DRAFT_ANNEXURE_BACKGROUND')

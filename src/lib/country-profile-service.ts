@@ -173,52 +173,8 @@ export async function getDraftingPrompts(countryCode: string, sectionId: string,
     }
   }
   
-  // Fallback: try superset prompts directly
-  const { SUPERSET_PROMPTS } = await import('./drafting-service')
-  const canonicalToPromptKey: Record<string, string> = {
-    title: 'title',
-    preamble: 'preamble',
-    crossReference: 'cross_reference',
-    fieldOfInvention: 'field',
-    background: 'background',
-    objectsOfInvention: 'objects',
-    summary: 'summary',
-    technicalProblem: 'technical_problem',
-    technicalSolution: 'technical_solution',
-    advantageousEffects: 'advantageous_effects',
-    briefDescriptionOfDrawings: 'brief_drawings',
-    detailedDescription: 'detailed_description',
-    bestMethod: 'best_mode',
-    industrialApplicability: 'industrial_applicability',
-    claims: 'claims',
-    abstract: 'abstract',
-    listOfNumerals: 'reference_numerals'
-  }
-
-  const fallbackKeys = Array.from(new Set([
-    sectionId,
-    canonicalToPromptKey[sectionId],
-    sectionId.replace(/([A-Z])/g, '_$1').toLowerCase().replace(/^_/, ''),
-    sectionId.toLowerCase()
-  ])).filter(Boolean) as string[]
-
-  const fallbackKey = fallbackKeys.find((k) => Boolean(SUPERSET_PROMPTS[k]))
-  if (fallbackKey) {
-    return {
-      ...SUPERSET_PROMPTS[fallbackKey],
-      debug: {
-        hasBase: true,
-        hasTopUp: false,
-        hasUser: false,
-        topUpSource: null,
-        basePreview: SUPERSET_PROMPTS[fallbackKey].instruction?.substring(0, 100),
-        sectionKey: fallbackKey,
-        mergeStrategy: 'none'
-      }
-    }
-  }
-
-  // Final fallback: country-specific prompts from JSON only
+  // NOTE: Legacy SUPERSET_PROMPTS fallback removed - all prompts must come from database
+  // If no merged prompt exists, try JSON profile as last resort
   const profile = await getCountryProfile(countryCode)
   if (!profile) return null
 

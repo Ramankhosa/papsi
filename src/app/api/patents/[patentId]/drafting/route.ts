@@ -273,58 +273,72 @@ async function getExportSectionsForJurisdiction(jurisdiction: string): Promise<E
   try {
     const { resolveDisplayOrder } = await import('@/lib/section-display-order')
     // Fetch section mappings from database - this is the ONLY source of truth for ordering
-    // NO FALLBACKS - displayOrder from database is the sole source of truth
     const sectionMappings = await prisma.countrySectionMapping.findMany({
       where: { countryCode: jurisdiction.toUpperCase(), isEnabled: true },
       orderBy: { displayOrder: 'asc' }
     })
     
     // DATABASE IS THE SOURCE OF TRUTH - use section mappings directly for sections and ordering
-    // NO FALLBACK LOGIC - the order returned from Prisma (by displayOrder) is authoritative
     if (sectionMappings.length > 0) {
-      const sections: ExportSectionDef[] = []
-
+      // Get superset sections for fallback displayOrder values
       const supersetSections = await prisma.supersetSection.findMany({
         where: { sectionKey: { in: sectionMappings.map(m => m.sectionKey) } },
         select: { sectionKey: true, displayOrder: true }
       })
       const supersetOrderByKey = new Map(supersetSections.map(s => [s.sectionKey, s.displayOrder]))
       
+      // Build sections with resolved displayOrder for proper sorting
+      const sectionsWithOrder: Array<ExportSectionDef & { displayOrder: number }> = []
+      
       for (const mapping of sectionMappings) {
         const sectionKey = mapping.sectionKey
         const heading = mapping.heading || ''
-        const displayOrder = resolveDisplayOrder({
-          countryDisplayOrder: mapping.displayOrder,
-          supersetDisplayOrder: supersetOrderByKey.get(sectionKey),
-          supersetCode: (mapping as any).supersetCode,
-          context: `${jurisdiction}:${String(sectionKey)}`
-        })
         
         // Skip N/A, Implicit, or other non-applicable sections
         if (isNonApplicableHeading(heading)) {
           continue
         }
         
-        sections.push({
+        // Resolve displayOrder using country mapping -> superset fallback -> parse from supersetCode
+        let displayOrder: number
+        try {
+          displayOrder = resolveDisplayOrder({
+            countryDisplayOrder: mapping.displayOrder,
+            supersetDisplayOrder: supersetOrderByKey.get(sectionKey),
+            supersetCode: (mapping as any).supersetCode,
+            context: `${jurisdiction}:${String(sectionKey)}`
+          })
+        } catch {
+          // If displayOrder resolution fails, use a large fallback to push to end
+          displayOrder = 9999
+          console.warn(`[getExportSectionsForJurisdiction] Could not resolve displayOrder for ${sectionKey}, using fallback`)
+        }
+        
+        sectionsWithOrder.push({
           key: sectionKey,
           label: heading || sectionKey,
-          required: mapping.isRequired ?? true
+          required: mapping.isRequired ?? true,
+          displayOrder
         })
       }
       
-      // Sections are ALREADY in correct order from database (orderBy: displayOrder: 'asc')
-      // NO re-sorting needed - trust the database order completely
+      // Sort sections by resolved displayOrder to ensure correct sequence
+      sectionsWithOrder.sort((a, b) => a.displayOrder - b.displayOrder)
+      
+      // Strip displayOrder from final result (not part of ExportSectionDef interface)
+      const sections: ExportSectionDef[] = sectionsWithOrder.map(({ displayOrder, ...rest }) => rest)
       
       const keys = new Set(sections.map(s => s.key))
       if (!keys.has('title') || !keys.has('abstract')) {
         throw new Error(`Jurisdiction "${jurisdiction}" is missing required export sections (title/abstract). Configure them via /super-admin/jurisdiction-config.`)
       }
       
+      console.log(`[getExportSectionsForJurisdiction] ${jurisdiction}: ${sections.length} sections in order: ${sections.map(s => s.key).join(', ')}`)
+      
       return sections
     }
     
     // NO FALLBACK - Database is the ONLY source of truth
-    // If no database mappings exist, throw an error - jurisdiction must be configured by super admin
     console.error(`[getExportSectionsForJurisdiction] CRITICAL: No CountrySectionMapping entries found for jurisdiction "${jurisdiction}". Database must be configured via /super-admin/jurisdiction-config.`)
     throw new Error(`Jurisdiction "${jurisdiction}" is not configured in the database. Please add section mappings via /super-admin/jurisdiction-config.`)
   } catch (err) {
@@ -813,6 +827,9 @@ export async function POST(
 
       case 'export_docx':
         return await handleExportDOCX(authResult.user, patentId, data, request);
+
+      case 'export_pdf':
+        return await handleExportPDF(authResult.user, patentId, data, request);
 
       case 'get_draft_versions':
         return await handleGetDraftVersions(authResult.user, patentId, data);
@@ -1466,25 +1483,49 @@ function formatParagraphNumber(num: number, jurisdiction: string): string {
 
 // Paragraph numbering injector: adds jurisdiction-specific numbering to Description sections
 // Japan: 【0001】, Others: [0001]
+// Sections that should NOT receive paragraph numbering
+const EXCLUDED_FROM_NUMBERING = new Set([
+  'title',
+  'abstract', 
+  'claims',
+  'listOfNumerals', 'list_of_numerals', 'reference_numerals', 'reference_signs'
+])
+
 function injectParagraphNumbering(
   blocks: Array<{ type: string; section: string; subtype?: string; content: string; blockId: string }>,
-  jurisdiction: string = 'US'
+  jurisdiction: string = 'US',
+  sections?: ExportSectionDef[]
 ): void {
-  // Description sections that get numbered (excludes claims, abstract, title, listOfNumerals)
-  const descriptionSections = [
-    'fieldOfInvention', 'technical_field', 'field',
-    'background', 'background_art',
-    'summary', 'summary_of_invention',
-    'briefDescriptionOfDrawings', 'brief_description_of_drawings',
-    'detailedDescription', 'detailed_description', 'description',
-    'bestMethod', 'best_mode',
-    'industrialApplicability', 'industrial_applicability',
-    'objectsOfInvention', 'objects_of_invention',
-    'technicalProblem', 'technical_problem',
-    'technicalSolution', 'technical_solution',
-    'advantageousEffects', 'advantageous_effects',
-    'modeOfCarryingOut', 'mode_of_carrying_out'
-  ]
+  // Build set of description sections that should be numbered
+  // Uses database-defined sections if provided, otherwise uses hardcoded fallback
+  let descriptionSections: Set<string>
+  
+  if (sections && sections.length > 0) {
+    // Use database-defined sections, excluding title/abstract/claims/listOfNumerals
+    const sectionKeys = sections
+      .map(s => s.key)
+      .filter(k => !EXCLUDED_FROM_NUMBERING.has(k.toLowerCase()))
+    descriptionSections = new Set(sectionKeys)
+    console.log(`[injectParagraphNumbering] ${jurisdiction}: Numbering ${sectionKeys.length} sections from database config: ${sectionKeys.join(', ')}`)
+  } else {
+    // Fallback: hardcoded description sections
+    descriptionSections = new Set([
+      'fieldOfInvention', 'technical_field', 'field',
+      'background', 'background_art',
+      'summary', 'summary_of_invention',
+      'briefDescriptionOfDrawings', 'brief_description_of_drawings',
+      'detailedDescription', 'detailed_description', 'description',
+      'bestMethod', 'best_mode',
+      'industrialApplicability', 'industrial_applicability',
+      'objectsOfInvention', 'objects_of_invention',
+      'technicalProblem', 'technical_problem',
+      'technicalSolution', 'technical_solution',
+      'advantageousEffects', 'advantageous_effects',
+      'modeOfCarryingOut', 'mode_of_carrying_out',
+      'preamble', 'crossReference', 'cross_reference'
+    ])
+    console.log(`[injectParagraphNumbering] ${jurisdiction}: Using hardcoded fallback sections for numbering`)
+  }
 
   let paragraphNumber = 1
   const format = getParagraphNumberFormat(jurisdiction)
@@ -1494,7 +1535,7 @@ function injectParagraphNumbering(
 
   for (const block of blocks) {
     // Only number paragraphs in description sections, exclude headings, captions, tables, equations
-    if (block.type === 'paragraph' && descriptionSections.includes(block.section) && !block.subtype) {
+    if (block.type === 'paragraph' && descriptionSections.has(block.section) && !block.subtype) {
       // Strip any existing numbering pattern
       if (existingNumberRegex.test(block.content)) {
         block.content = block.content.replace(existingNumberRegex, '')
@@ -1506,6 +1547,8 @@ function injectParagraphNumbering(
       paragraphNumber++
     }
   }
+  
+  console.log(`[injectParagraphNumbering] ${jurisdiction}: Numbered ${paragraphNumber - 1} paragraphs with format ${format.prefix}XXXX${format.suffix}`)
 }
 
 async function handleExportDOCX(user: any, patentId: string, data: any, request?: NextRequest) {
@@ -1588,6 +1631,20 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
   const { getExportConfig } = await import('@/lib/jurisdiction-style-service')
   // Use DOCX-specific export config so margins/spacing/numbering follow country defaults
   const exportConfig = await getExportConfig(effectiveJurisdiction, 'spec_docx', user.id, sessionId)
+
+  // Log country-specific export configuration being applied
+  console.log(`[ExportDOCX] Jurisdiction ${effectiveJurisdiction} export config:`, {
+    source: exportConfig.source,
+    fontFamily: exportConfig.fontFamily,
+    fontSizePt: exportConfig.fontSizePt,
+    lineSpacing: exportConfig.lineSpacing,
+    pageSize: exportConfig.pageSize,
+    addParagraphNumbers: exportConfig.addParagraphNumbers,
+    addPageNumbers: exportConfig.addPageNumbers,
+    margins: `${exportConfig.marginTopCm}/${exportConfig.marginBottomCm}/${exportConfig.marginLeftCm}/${exportConfig.marginRightCm} cm`,
+    sectionsCount: sections.length,
+    sectionOrder: sections.map(s => s.key).join(' → ')
+  })
 
   // Resolve paragraph numbering: use request value if explicitly provided, otherwise fall back to country config
   const autoNumberParagraphs = requestAutoNumberParagraphs !== undefined
@@ -1724,32 +1781,66 @@ async function handleExportDOCX(user: any, patentId: string, data: any, request?
     }
   }
 
-  // Prepare content for normalization
-  const rawContent: Record<string, string> = {}
-  for (const s of sections) {
-    switch (s.key) {
-      case 'title': rawContent[s.key] = last.title || 'Untitled'; break
-      case 'fieldOfInvention': rawContent[s.key] = last.fieldOfInvention || ''; break
-      case 'background': rawContent[s.key] = last.background || ''; break
-      case 'summary': rawContent[s.key] = last.summary || ''; break
-      case 'briefDescriptionOfDrawings': rawContent[s.key] = last.briefDescriptionOfDrawings || ''; break
-      case 'detailedDescription': rawContent[s.key] = last.detailedDescription || ''; break
-      case 'bestMethod': rawContent[s.key] = last.bestMethod || ''; break
-      case 'claims': rawContent[s.key] = last.claims || ''; break
-      case 'industrialApplicability': rawContent[s.key] = (last as any).industrialApplicability || ''; break
-      case 'listOfNumerals': rawContent[s.key] = last.listOfNumerals || ''; break
-      case 'abstract': rawContent[s.key] = last.abstract || ''; break
-      default:
-        rawContent[s.key] = (last as any)?.[s.key] || ''
+  // Prepare content for normalization - read from legacy columns and extraSections JSON
+  // Handle extraSections being either an object or a JSON string
+  let extraSections: Record<string, any> = {}
+  const rawExtraSections = (last as any).extraSections
+  if (rawExtraSections) {
+    if (typeof rawExtraSections === 'string') {
+      try {
+        extraSections = JSON.parse(rawExtraSections)
+      } catch {
+        console.warn('[handleExportDOCX] Failed to parse extraSections JSON string')
+      }
+    } else if (typeof rawExtraSections === 'object') {
+      extraSections = rawExtraSections
     }
+  }
+  const rawContent: Record<string, string> = {}
+  
+  // Helper to get section content: check legacy column first, then extraSections JSON
+  const getSectionContent = (key: string): string => {
+    // Legacy columns have priority
+    const legacyColumns: Record<string, string | null | undefined> = {
+      title: last.title,
+      fieldOfInvention: last.fieldOfInvention,
+      background: last.background,
+      summary: last.summary,
+      briefDescriptionOfDrawings: last.briefDescriptionOfDrawings,
+      detailedDescription: last.detailedDescription,
+      bestMethod: last.bestMethod,
+      claims: last.claims,
+      abstract: last.abstract,
+      industrialApplicability: (last as any).industrialApplicability,
+      listOfNumerals: last.listOfNumerals
+    }
+    
+    // Check legacy column first
+    if (key in legacyColumns && legacyColumns[key]) {
+      return legacyColumns[key] || ''
+    }
+    
+    // Fall back to extraSections JSON for dynamic sections
+    if (extraSections && typeof extraSections === 'object' && key in extraSections) {
+      return String(extraSections[key] || '')
+    }
+    
+    // Final fallback: try direct property access
+    return String((last as any)?.[key] || '')
+  }
+  
+  // Build rawContent in the exact order of sections (database displayOrder)
+  for (const s of sections) {
+    rawContent[s.key] = s.key === 'title' ? (getSectionContent(s.key) || 'Untitled') : getSectionContent(s.key)
   }
 
   // Run pre-export normalizer
   const { blocks } = preExportNormalizer(rawContent, sections)
 
   // Apply paragraph numbering if enabled (jurisdiction-specific format)
+  // Pass sections to use database-defined section order for numbering
   if (autoNumberParagraphs) {
-    injectParagraphNumbering(blocks, effectiveJurisdiction)
+    injectParagraphNumbering(blocks, effectiveJurisdiction, sections)
   }
 
   // Helper to truncate caption to fit one line on A4 (approx 85 chars at 12pt)
@@ -2308,32 +2399,65 @@ async function handleExportPDF(user: any, patentId: string, data: any, request?:
     return NextResponse.json({ error: `No draft to export for jurisdiction ${effectiveJurisdiction}` }, { status: 400 })
   }
 
-  // Prepare content
-  const rawContent: Record<string, string> = {}
-  for (const s of sections) {
-    switch (s.key) {
-      case 'title': rawContent[s.key] = last.title || 'Untitled'; break
-      case 'fieldOfInvention': rawContent[s.key] = last.fieldOfInvention || ''; break
-      case 'background': rawContent[s.key] = last.background || ''; break
-      case 'summary': rawContent[s.key] = last.summary || ''; break
-      case 'briefDescriptionOfDrawings': rawContent[s.key] = last.briefDescriptionOfDrawings || ''; break
-      case 'detailedDescription': rawContent[s.key] = last.detailedDescription || ''; break
-      case 'bestMethod': rawContent[s.key] = last.bestMethod || ''; break
-      case 'claims': rawContent[s.key] = last.claims || ''; break
-      case 'industrialApplicability': rawContent[s.key] = (last as any).industrialApplicability || ''; break
-      case 'listOfNumerals': rawContent[s.key] = last.listOfNumerals || ''; break
-      case 'abstract': rawContent[s.key] = last.abstract || ''; break
-      default:
-        rawContent[s.key] = (last as any)?.[s.key] || ''
+  // Prepare content - read from legacy columns and extraSections JSON
+  // Handle extraSections being either an object or a JSON string
+  let extraSectionsPdf: Record<string, any> = {}
+  const rawExtraSectionsPdf = (last as any).extraSections
+  if (rawExtraSectionsPdf) {
+    if (typeof rawExtraSectionsPdf === 'string') {
+      try {
+        extraSectionsPdf = JSON.parse(rawExtraSectionsPdf)
+      } catch {
+        console.warn('[handleExportPDF] Failed to parse extraSections JSON string')
+      }
+    } else if (typeof rawExtraSectionsPdf === 'object') {
+      extraSectionsPdf = rawExtraSectionsPdf
     }
+  }
+  const rawContent: Record<string, string> = {}
+  
+  // Helper to get section content: check legacy column first, then extraSections JSON
+  const getSectionContent = (key: string): string => {
+    const legacyColumns: Record<string, string | null | undefined> = {
+      title: last.title,
+      fieldOfInvention: last.fieldOfInvention,
+      background: last.background,
+      summary: last.summary,
+      briefDescriptionOfDrawings: last.briefDescriptionOfDrawings,
+      detailedDescription: last.detailedDescription,
+      bestMethod: last.bestMethod,
+      claims: last.claims,
+      abstract: last.abstract,
+      industrialApplicability: (last as any).industrialApplicability,
+      listOfNumerals: last.listOfNumerals
+    }
+    
+    // Check legacy column first
+    if (key in legacyColumns && legacyColumns[key]) {
+      return legacyColumns[key] || ''
+    }
+    
+    // Fall back to extraSections JSON for dynamic sections
+    if (extraSectionsPdf && typeof extraSectionsPdf === 'object' && key in extraSectionsPdf) {
+      return String(extraSectionsPdf[key] || '')
+    }
+    
+    // Final fallback: direct property access
+    return String((last as any)?.[key] || '')
+  }
+  
+  // Build rawContent in the exact order of sections (database displayOrder)
+  for (const s of sections) {
+    rawContent[s.key] = s.key === 'title' ? (getSectionContent(s.key) || 'Untitled') : getSectionContent(s.key)
   }
 
   // Run pre-export normalizer
   const { blocks } = preExportNormalizer(rawContent, sections)
 
   // Apply paragraph numbering if enabled (jurisdiction-specific format)
+  // Pass sections to use database-defined section order for numbering
   if (autoNumberParagraphs) {
-    injectParagraphNumbering(blocks, effectiveJurisdiction)
+    injectParagraphNumbering(blocks, effectiveJurisdiction, sections)
   }
 
   // Build HTML for PDF (use sessionWithSketches to include fallback-loaded sketches)
@@ -2907,6 +3031,52 @@ async function handleGetExportPreview(user: any, patentId: string, data: any) {
   const { getExportConfig } = await import('@/lib/jurisdiction-style-service')
   const exportConfig = await getExportConfig(effectiveJurisdiction, 'spec_pdf', user.id, sessionId)
   
+  // Build payload with section content - check legacy columns and extraSections JSON
+  // Handle extraSections being either an object or a JSON string
+  let extraSections: Record<string, any> = {}
+  const rawExtraSections = (last as any).extraSections
+  if (rawExtraSections) {
+    if (typeof rawExtraSections === 'string') {
+      try {
+        extraSections = JSON.parse(rawExtraSections)
+      } catch {
+        console.warn('[handleGetExportPreview] Failed to parse extraSections JSON string')
+      }
+    } else if (typeof rawExtraSections === 'object') {
+      extraSections = rawExtraSections
+    }
+  }
+  
+  // Helper to get section content: check legacy column first, then extraSections JSON
+  const getSectionContent = (key: string): string => {
+    const legacyColumns: Record<string, string | null | undefined> = {
+      title: last.title,
+      fieldOfInvention: last.fieldOfInvention,
+      background: last.background,
+      summary: last.summary,
+      briefDescriptionOfDrawings: last.briefDescriptionOfDrawings,
+      detailedDescription: last.detailedDescription,
+      bestMethod: last.bestMethod,
+      claims: last.claims,
+      abstract: last.abstract,
+      industrialApplicability: (last as any).industrialApplicability,
+      listOfNumerals: last.listOfNumerals
+    }
+    
+    // Check legacy column first
+    if (key in legacyColumns && legacyColumns[key]) {
+      return legacyColumns[key] || ''
+    }
+    
+    // Fall back to extraSections JSON for dynamic sections
+    if (extraSections && typeof extraSections === 'object' && key in extraSections) {
+      return String(extraSections[key] || '')
+    }
+    
+    // Final fallback: direct property access
+    return String((last as any)?.[key] || '')
+  }
+  
   const payload: any = { 
     figures, 
     sections,
@@ -2927,8 +3097,10 @@ async function handleGetExportPreview(user: any, patentId: string, data: any) {
       source: exportConfig.source
     }
   }
+  
+  // Add section content to payload in database-defined order
   for (const s of sections) {
-    payload[s.key] = (last as any)?.[s.key] || ''
+    payload[s.key] = getSectionContent(s.key)
   }
   return NextResponse.json(payload)
 }
@@ -3514,14 +3686,13 @@ ${constraintsBlock}
 ${writingSampleBlock}
 
 INVENTION CONTEXT:
-Title: ${context.title || 'Untitled Invention'}
-Problem: ${context.problem || 'Not specified'}
-Objectives: ${context.objectives || 'Not specified'}
-Technical Logic: ${context.logic || 'Not specified'}
-Key Components:
-${componentsList || 'Not specified'}
-Best Method: ${context.bestMethod || 'Not specified'}
-Abstract: ${context.abstract || 'Not specified'}
+${context.title ? `Title: ${context.title}` : ''}
+${context.problem ? `Problem: ${context.problem}` : ''}
+${context.objectives ? `Objectives: ${context.objectives}` : ''}
+${context.logic ? `Technical Logic: ${context.logic}` : ''}
+${componentsList ? `Key Components:\n${componentsList}` : ''}
+${context.bestMethod ? `Best Method: ${context.bestMethod}` : ''}
+${context.abstract ? `Abstract: ${context.abstract}` : ''}
 
 CLAIM GENERATION REQUIREMENTS:
 1. Generate a comprehensive claim set appropriate for this invention's complexity
@@ -3913,18 +4084,18 @@ ${userDirectives}
   const prompt = `You are an expert patent attorney refining claims to preserve the broadest defensible scope while addressing cited prior art.
 
 INVENTION BASICS:
-- Title: ${ideaBasics.title}
-- Problem: ${ideaBasics.problem || 'Not specified'}
-- Objectives: ${ideaBasics.objectives || 'Not specified'}
-- Abstract: ${ideaBasics.abstract || 'Not specified'}
-- Key components: ${componentList || 'Not specified'}
+${ideaBasics.title ? `- Title: ${ideaBasics.title}` : ''}
+${ideaBasics.problem ? `- Problem: ${ideaBasics.problem}` : ''}
+${ideaBasics.objectives ? `- Objectives: ${ideaBasics.objectives}` : ''}
+${ideaBasics.abstract ? `- Abstract: ${ideaBasics.abstract}` : ''}
+${componentList ? `- Key components: ${componentList}` : ''}
 
 CURRENT CLAIMS (treat as provisional unless already frozen):
 ${claimLines}
 
-${autoRefBlocks ? `PATENTS SELECTED FOR CLAIM REFINEMENT (user-selected, claims must be novel over ALL of these):\n${autoRefBlocks}\n\n*** CRITICAL: Novelty must be explicitly established over EACH reference above. These are NOT general prior art - they are specifically selected references that the user wants their claims to be distinguished from. ***` : 'PATENTS FOR CLAIM REFINEMENT: none selected (user may be relying only on manual notes or skipping refinement)'}
+${autoRefBlocks ? `PATENTS SELECTED FOR CLAIM REFINEMENT (user-selected, claims must be novel over ALL of these):\n${autoRefBlocks}\n\n*** CRITICAL: Novelty must be explicitly established over EACH reference above. These are NOT general prior art - they are specifically selected references that the user wants their claims to be distinguished from. ***` : ''}
 
-${manualBlock || 'MANUAL PRIOR ART: none provided'}
+${manualBlock || ''}
 ${criticalInstructionsBlock}
 
 Guidelines:

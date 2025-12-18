@@ -5,8 +5,8 @@
  * Provides CRUD operations, versioning, and audit trail.
  * 
  * Hierarchy:
- * 1. Database (CountrySectionPrompt) - Primary source, hot-updatable
- * 2. SUPERSET_PROMPTS - Base prompts (always merged)
+ * 1. CountrySectionPrompt (database) - Country-specific top-up prompts
+ * 2. SupersetSection (database) - Base universal prompts
  */
 
 import { Prisma } from '@prisma/client'

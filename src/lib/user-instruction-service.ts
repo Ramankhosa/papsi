@@ -4,9 +4,9 @@
  * Manages user-provided custom instructions for patent sections.
  * These are the highest priority in the prompt hierarchy:
  * 
- * 1. SUPERSET_PROMPTS (base, universal)
- * 2. Country top-up prompts (database/JSON)
- * 3. User instructions (per session - HIGHEST PRIORITY)
+ * 1. SupersetSection (database) - Base universal prompts
+ * 2. CountrySectionPrompt (database) - Country-specific top-up prompts
+ * 3. UserInstruction (database) - Per-session user instructions (HIGHEST PRIORITY)
  * 
  * Users can customize:
  * - Custom instruction text for any section

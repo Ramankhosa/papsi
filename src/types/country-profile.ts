@@ -5,8 +5,8 @@
  * used for multi-jurisdiction patent drafting.
  * 
  * Architecture:
- * - Base superset prompts (SUPERSET_PROMPTS) provide generic drafting instructions
- * - Country profiles provide top-up prompts that customize for jurisdiction
+ * - Base superset prompts (SupersetSection database table) provide generic drafting instructions
+ * - Country top-up prompts (CountrySectionPrompt database table) customize for jurisdiction
  * - The prompt-merger-service combines both at runtime
  */
 
@@ -92,7 +92,7 @@ export interface SectionDefinition {
   order: number
   /**
    * Canonical keys mapping to superset sections
-   * Used for linking country sections to SUPERSET_PROMPTS
+   * Used for linking country sections to SupersetSection database entries
    */
   canonicalKeys: CanonicalSectionKey[]
   /** Whether this section is required */
@@ -111,7 +111,7 @@ export interface SectionUI {
 }
 
 /**
- * Canonical section keys that map to SUPERSET_PROMPTS
+ * Canonical section keys that map to database prompts
  * These are the normalized keys used across the system
  */
 export type CanonicalSectionKey = 

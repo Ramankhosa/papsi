@@ -191,7 +191,7 @@ export default function SuperAdminSupersetSectionsPage() {
         const flagLabels = {
           requiresPriorArt: 'Prior Art',
           requiresFigures: 'Figures',
-          requiresClaims: 'Claims',
+          requiresClaims: 'Claim 1 Anchoring',
           requiresComponents: 'Components'
         }
         showToast('success', `${flagLabels[flag]} ${section[flag] ? 'disabled' : 'enabled'} for ${section.sectionKey}`)
@@ -298,7 +298,7 @@ export default function SuperAdminSupersetSectionsPage() {
                 <th></th>
                 <th className="px-2 py-1 text-center text-rose-400" title="Inject Prior Art references">🔴 Prior Art</th>
                 <th className="px-2 py-1 text-center text-cyan-400" title="Inject Figure list">🔵 Figures</th>
-                <th className="px-2 py-1 text-center text-amber-400" title="Inject Claims context">🟡 Claims</th>
+                <th className="px-2 py-1 text-center text-amber-400" title="Claim 1 Anchoring - align section terminology with Claim 1">🟡 C1 Anchor</th>
                 <th className="px-2 py-1 text-center text-emerald-400" title="Inject Component numerals">🟢 Components</th>
                 <th></th>
                 <th></th>
@@ -351,7 +351,7 @@ export default function SuperAdminSupersetSectionsPage() {
                           ? 'bg-amber-500 border-amber-500 text-white' 
                           : 'border-slate-600 hover:border-amber-400'
                       }`}
-                      title={`${section.requiresClaims ? 'Disable' : 'Enable'} Claims injection`}
+                      title={`${section.requiresClaims ? 'Disable' : 'Enable'} Claim 1 anchoring (terminology alignment)`}
                     >
                       {section.requiresClaims && '✓'}
                     </button>
@@ -441,7 +441,7 @@ export default function SuperAdminSupersetSectionsPage() {
             <p className="text-2xl font-bold text-cyan-400">{sections.filter(s => s.requiresFigures).length}</p>
           </div>
           <div className="bg-slate-900 rounded-lg px-4 py-3 border border-amber-500/30">
-            <p className="text-amber-400 text-xs">🟡 Claims</p>
+            <p className="text-amber-400 text-xs">🟡 C1 Anchor</p>
             <p className="text-2xl font-bold text-amber-400">{sections.filter(s => s.requiresClaims).length}</p>
           </div>
           <div className="bg-slate-900 rounded-lg px-4 py-3 border border-emerald-500/30">
