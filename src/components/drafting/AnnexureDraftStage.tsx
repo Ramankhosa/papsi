@@ -68,13 +68,14 @@ function InlineDiffView({ original, revised }: { original: string; revised: stri
       // Split into words while preserving whitespace
       const originalWords = original.split(/(\s+)/)
       const revisedWords = revised.split(/(\s+)/)
-      
+
       // Additional safeguard: limit word count for diff algorithm
-      const MAX_WORDS = 2000
-      if (originalWords.length > MAX_WORDS || revisedWords.length > MAX_WORDS) {
+      // Since split(/(\s+)/) creates ~2x elements (words + whitespace), use higher limit
+      const MAX_ELEMENTS = 4000  // Allow up to ~2000 actual words
+      if (originalWords.length > MAX_ELEMENTS || revisedWords.length > MAX_ELEMENTS) {
         return [{ 
           type: 'same' as const, 
-          text: '⚠️ Content has too many words for detailed diff. Please compare the Original and Revised panels above.' 
+          text: `⚠️ Content too complex for detailed diff (${originalWords.length} elements). Please compare the Original and Revised panels above.` 
         }]
       }
       

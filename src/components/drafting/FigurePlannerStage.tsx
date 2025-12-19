@@ -634,15 +634,24 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
     })
     setProcessingStatus((prev) => {
       const updated = { ...prev }
-      newDiagramKeys.forEach((key: string) => {
-        if (updated[key] === undefined) updated[key] = ''
+      diagramSources.forEach((d: any) => {
+        const key = getDiagramKey(d.figureNo, d.language || 'en')
+        // Clear processing status if: new key OR diagram has code but no image (needs re-rendering)
+        // This fixes the bug where modified diagrams wouldn't auto-render after a previous failure
+        if (updated[key] === undefined || (d.plantumlCode && !d.imageUploadedAt)) {
+          updated[key] = ''
+        }
       })
       return updated
     })
     setProcessingStep((prev) => {
       const updated = { ...prev }
-      newDiagramKeys.forEach((key: string) => {
-        if (updated[key] === undefined) updated[key] = 0
+      diagramSources.forEach((d: any) => {
+        const key = getDiagramKey(d.figureNo, d.language || 'en')
+        // Clear processing step if: new key OR diagram has code but no image (needs re-rendering)
+        if (updated[key] === undefined || (d.plantumlCode && !d.imageUploadedAt)) {
+          updated[key] = 0
+        }
       })
       return updated
     })
@@ -1222,13 +1231,18 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
         },
         body: JSON.stringify({
           action: 'delete_sketch',
-          sketchId
+          sketchId,
+          sessionId: session?.id // Include sessionId for figure sequence cleanup
         })
       })
       
       if (!res.ok) throw new Error('Failed to delete sketch')
       
       await loadSketches()
+      // Also refresh arrange tab data if it was previously loaded
+      if (arrangedFigures.length > 0) {
+        await loadCombinedFigures()
+      }
     } catch (err) {
       setSketchError(err instanceof Error ? err.message : 'Failed to delete sketch')
     }
@@ -2391,6 +2405,14 @@ Output: JSON array only, no markdown fences, no explanations.`
                       try {
                         await onComplete({ action: 'delete_figure', sessionId: session?.id, figureNo: figNo, language: selectedLang })
                         await onRefresh()
+                        // Clear selected arrange figure if it was the deleted one
+                        if (selectedArrangeFigure?.id === `diagram-${figNo}`) {
+                          setSelectedArrangeFigure(null)
+                        }
+                        // Refresh arrange tab data if it was previously loaded
+                        if (arrangedFigures.length > 0) {
+                          await loadCombinedFigures()
+                        }
                       } catch (e) { setError('Failed to delete') }
                     }}>
                     <Trash2 className="w-4 h-4 mr-2" /> Delete

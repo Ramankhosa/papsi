@@ -7529,7 +7529,10 @@ async function handleCreateManualFigure(user: any, patentId: string, data: any) 
     return NextResponse.json({ error: 'At least 20 words description required' }, { status: 400 })
   }
 
-  const session = await prisma.draftingSession.findFirst({ where: { id: sessionId, patentId, userId: user.id } })
+  const session = await prisma.draftingSession.findFirst({ 
+    where: { id: sessionId, patentId, userId: user.id },
+    select: { id: true, figureSequence: true, figureSequenceFinalized: true }
+  })
   if (!session) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
 
   // Assign number if not provided
@@ -7543,7 +7546,7 @@ async function handleCreateManualFigure(user: any, patentId: string, data: any) 
 
   const cleanedTitle = sanitizeFigureTitleInput(title) || `Figure ${no}`
 
-  await prisma.figurePlan.upsert({
+  const figurePlan = await prisma.figurePlan.upsert({
     where: { sessionId_figureNo: { sessionId, figureNo: no } },
     update: { title: cleanedTitle, description },
     create: { sessionId, figureNo: no, title: cleanedTitle, description, nodes: [], edges: [] }
@@ -7555,6 +7558,30 @@ async function handleCreateManualFigure(user: any, patentId: string, data: any) 
     update: {},
     create: { sessionId, figureNo: no, plantumlCode: '', checksum: '', language: 'en' }
   })
+
+  // Add new figure to figureSequence if not finalized
+  if (!session.figureSequenceFinalized) {
+    const currentSequence = (session.figureSequence as Array<{ id: string; type: string; sourceId: string; finalFigNo: number }>) || []
+    const newId = `diagram-${no}`
+    
+    // Only add if not already in sequence
+    if (!currentSequence.some(item => item.id === newId)) {
+      const updatedSequence = [
+        ...currentSequence,
+        {
+          id: newId,
+          type: 'diagram' as const,
+          sourceId: figurePlan.id,
+          finalFigNo: currentSequence.length + 1
+        }
+      ]
+      
+      await prisma.draftingSession.update({
+        where: { id: sessionId },
+        data: { figureSequence: updatedSequence }
+      })
+    }
+  }
 
   return NextResponse.json({ created: { figureNo: no } })
 }
@@ -7884,7 +7911,7 @@ async function handleGetSketch(user: any, patentId: string, data: any) {
  * Delete a sketch (soft delete)
  */
 async function handleDeleteSketch(user: any, patentId: string, data: any) {
-  const { sketchId } = data
+  const { sketchId, sessionId } = data
 
   if (!sketchId) {
     return NextResponse.json({ error: 'Sketch ID is required' }, { status: 400 })
@@ -7894,6 +7921,26 @@ async function handleDeleteSketch(user: any, patentId: string, data: any) {
     const result = await deleteSketch(sketchId, user.id)
     
     if (result.success) {
+      // Clean up figureSequence if sessionId is provided
+      if (sessionId) {
+        const session = await prisma.draftingSession.findFirst({
+          where: { id: sessionId, patentId, userId: user.id },
+          select: { id: true, figureSequence: true }
+        })
+        
+        if (session && Array.isArray(session.figureSequence)) {
+          const currentSequence = session.figureSequence as Array<{ id: string; type: string; sourceId: string; finalFigNo: number }>
+          const updatedSequence = currentSequence
+            .filter(item => !(item.type === 'sketch' && item.sourceId === sketchId))
+            .map((item, index) => ({ ...item, finalFigNo: index + 1 })) // Re-number figures
+          
+          await prisma.draftingSession.update({
+            where: { id: sessionId },
+            data: { figureSequence: updatedSequence }
+          })
+        }
+      }
+      
       return NextResponse.json({ success: true, deleted: true })
     } else {
       return NextResponse.json({ error: result.error }, { status: 400 })
@@ -8298,25 +8345,51 @@ async function handleGetCombinedFigures(user: any, patentId: string, data: any) 
       }))
     }
 
-    // Build ordered result
-    const orderedFigures = sequence.map((seqItem, index) => {
+    // Build ordered result - filter out deleted figures and track if sequence changed
+    let sequenceNeedsUpdate = false
+    const orderedFigures: any[] = []
+    const existingIds = new Set(allFigures.map(f => f.id))
+    
+    for (const seqItem of sequence) {
       const figure = allFigures.find(f => f.id === seqItem.id)
-      if (!figure) return null
-      return {
-        ...figure,
-        finalFigNo: index + 1
+      if (!figure) {
+        // Figure was deleted - mark sequence as needing update
+        sequenceNeedsUpdate = true
+        continue
       }
-    }).filter(Boolean)
+      orderedFigures.push({
+        ...figure,
+        finalFigNo: orderedFigures.length + 1
+      })
+    }
 
     // Add any figures not in sequence (newly added)
     const sequenceIds = new Set(sequence.map(s => s.id))
     const unsequenced = allFigures.filter(f => !sequenceIds.has(f.id))
-    unsequenced.forEach((fig, idx) => {
+    if (unsequenced.length > 0) {
+      sequenceNeedsUpdate = true
+    }
+    unsequenced.forEach((fig) => {
       orderedFigures.push({
         ...fig,
         finalFigNo: orderedFigures.length + 1
       })
     })
+
+    // Persist the cleaned/updated sequence if it changed (deletions or additions)
+    if (sequenceNeedsUpdate && !session.figureSequenceFinalized) {
+      const normalizedSequence = orderedFigures.map((f, idx) => ({
+        id: f.id,
+        type: f.type,
+        sourceId: f.sourceId,
+        finalFigNo: idx + 1
+      }))
+      
+      await prisma.draftingSession.update({
+        where: { id: sessionId },
+        data: { figureSequence: normalizedSequence }
+      })
+    }
 
     return NextResponse.json({
       figures: orderedFigures,
@@ -9210,6 +9283,11 @@ async function handleUploadDiagram(user: any, patentId: string, data: any) {
       id: sessionId,
       patentId,
       userId: user.id
+    },
+    select: {
+      id: true,
+      figureSequence: true,
+      figureSequenceFinalized: true
     }
   });
 
@@ -9221,9 +9299,37 @@ async function handleUploadDiagram(user: any, patentId: string, data: any) {
   }
 
   // Ensure a figurePlan exists for this figure number (some uploads may come first)
+  let figurePlanId: string | null = null
   const existingPlan = await prisma.figurePlan.findUnique({ where: { sessionId_figureNo: { sessionId, figureNo } } })
   if (!existingPlan) {
-    await prisma.figurePlan.create({ data: { sessionId, figureNo, title: `Figure ${figureNo}`, nodes: [], edges: [] } })
+    const newPlan = await prisma.figurePlan.create({ data: { sessionId, figureNo, title: `Figure ${figureNo}`, nodes: [], edges: [] } })
+    figurePlanId = newPlan.id
+    
+    // Add new figure to figureSequence if not finalized
+    if (!session.figureSequenceFinalized) {
+      const currentSequence = (session.figureSequence as Array<{ id: string; type: string; sourceId: string; finalFigNo: number }>) || []
+      const newId = `diagram-${figureNo}`
+      
+      // Only add if not already in sequence
+      if (!currentSequence.some(item => item.id === newId)) {
+        const updatedSequence = [
+          ...currentSequence,
+          {
+            id: newId,
+            type: 'diagram' as const,
+            sourceId: newPlan.id,
+            finalFigNo: currentSequence.length + 1
+          }
+        ]
+        
+        await prisma.draftingSession.update({
+          where: { id: sessionId },
+          data: { figureSequence: updatedSequence }
+        })
+      }
+    }
+  } else {
+    figurePlanId = existingPlan.id
   }
 
   // Upsert diagram source and set upload metadata

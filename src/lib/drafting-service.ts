@@ -1986,7 +1986,46 @@ Use the Super Admin panel to add the missing prompt.
     }
     if (!max || before <= max) return { text, clipped: false, before, after: before }
 
-    const sentenceSplit = (t: string) => t.split(/(?<=[\.!?;:])\s+/).filter(Boolean)
+    // Improved sentence split that preserves common abbreviations in patent text
+    // Does NOT split after: Fig., No., e.g., i.e., etc., vs., approx., ref., para., sec., art., pat.
+    const smartSentenceSplit = (t: string): string[] => {
+      // First, temporarily replace common abbreviations with placeholders
+      const abbrevs = [
+        'Fig.', 'FIG.', 'fig.', 'Figs.', 'FIGS.', 'figs.',
+        'No.', 'no.', 'Nos.', 'nos.',
+        'e.g.', 'E.g.', 'i.e.', 'I.e.', 'etc.', 'Etc.',
+        'vs.', 'Vs.', 'approx.', 'Approx.',
+        'ref.', 'Ref.', 'refs.', 'Refs.',
+        'para.', 'Para.', 'paras.', 'Paras.',
+        'sec.', 'Sec.', 'secs.', 'Secs.',
+        'art.', 'Art.', 'arts.', 'Arts.',
+        'pat.', 'Pat.', 'pats.', 'Pats.',
+        'U.S.', 'U.K.', 'E.U.', 'PCT.',
+        'Dr.', 'Mr.', 'Ms.', 'Mrs.', 'Prof.',
+        'Inc.', 'Corp.', 'Ltd.', 'Co.',
+        'al.', 'et al.'
+      ]
+      let temp = t
+      const placeholders: string[] = []
+      for (const abbr of abbrevs) {
+        const placeholder = `__ABBR${placeholders.length}__`
+        if (temp.includes(abbr)) {
+          temp = temp.split(abbr).join(placeholder)
+          placeholders.push(abbr)
+        }
+      }
+      // Now split on sentence boundaries
+      const parts = temp.split(/(?<=[\.!?])\s+/).filter(Boolean)
+      // Restore abbreviations
+      return parts.map(p => {
+        let restored = p
+        placeholders.forEach((abbr, idx) => {
+          restored = restored.split(`__ABBR${idx}__`).join(abbr)
+        })
+        return restored
+      })
+    }
+
     const wordTrim = (t: string, m: number) => t.split(/\s+/).slice(0, m).join(' ')
 
     // Claims: preserve numbering; trim from last dependent claims backwards
@@ -2002,7 +2041,7 @@ Use the Super Admin panel to add the missing prompt.
         if (!m) { blocks.pop(); current = blockWordCount(); continue }
         const prefix = m[1]
         let body = m[2].trim()
-        const sentences = sentenceSplit(body)
+        const sentences = smartSentenceSplit(body)
         if (sentences.length > 1) {
           // Remove trailing sentence and re-evaluate
           sentences.pop()
@@ -2043,8 +2082,78 @@ Use the Super Admin panel to add the missing prompt.
       return { text: out, clipped: after < before, before, after }
     }
 
+    // Abstract: Special handling to preserve complete sentences
+    // Indian Patent Act Section 10(4)(d) specifies max 150 words, but we allow
+    // a small grace buffer to complete sentences rather than cutting mid-thought
+    if (section === 'abstract') {
+      const sentences = smartSentenceSplit(String(text))
+      const graceBuffer = 15 // Allow up to 15 extra words to complete a sentence
+      const hardMax = max + graceBuffer
+      
+      // First try: fit within exact limit using complete sentences
+      let accumulated: string[] = []
+      let accumulatedWords = 0
+      for (const sentence of sentences) {
+        const sentenceWords = wc(sentence)
+        if (accumulatedWords + sentenceWords <= max) {
+          accumulated.push(sentence)
+          accumulatedWords += sentenceWords
+        } else if (accumulated.length === 0 && accumulatedWords + sentenceWords <= hardMax) {
+          // First sentence exceeds limit but within grace buffer - include it
+          accumulated.push(sentence)
+          accumulatedWords += sentenceWords
+          break
+        } else {
+          // Adding this sentence would exceed limit - stop here
+          break
+        }
+      }
+      
+      // If we have accumulated sentences, use them
+      if (accumulated.length > 0) {
+        const out = accumulated.join(' ')
+        const after = wc(out)
+        return { text: out, clipped: after < before, before, after }
+      }
+      
+      // Fallback: if even first sentence is too long, try to find a natural break point
+      // Look for semicolons, colons, or em-dashes as secondary break points
+      const firstSentence = sentences[0] || text
+      const subParts = firstSentence.split(/(?<=[;:\u2014])\s+/).filter(Boolean)
+      if (subParts.length > 1) {
+        let subAccum: string[] = []
+        let subWords = 0
+        for (const part of subParts) {
+          const partWords = wc(part)
+          if (subWords + partWords <= max) {
+            subAccum.push(part)
+            subWords += partWords
+          } else {
+            break
+          }
+        }
+        if (subAccum.length > 0) {
+          const out = subAccum.join(' ')
+          const after = wc(out)
+          return { text: out, clipped: after < before, before, after }
+        }
+      }
+      
+      // Last resort: hard word trim but try to end at a word boundary gracefully
+      const words = String(text).split(/\s+/)
+      const trimmed = words.slice(0, max)
+      // Try to end at a reasonable point (not mid-hyphenated-word)
+      let endIdx = trimmed.length - 1
+      while (endIdx > max - 10 && trimmed[endIdx]?.endsWith('-')) {
+        endIdx--
+      }
+      const out = trimmed.slice(0, endIdx + 1).join(' ')
+      const after = wc(out)
+      return { text: out, clipped: after < before, before, after }
+    }
+
     // Default: drop trailing sentences until within cap; fallback to word trim
-    let sentences = sentenceSplit(String(text))
+    let sentences = smartSentenceSplit(String(text))
     while (wc(sentences.join(' ')) > max && sentences.length > 1) {
       sentences.pop()
     }
@@ -2112,11 +2221,16 @@ Use the Super Admin panel to add the missing prompt.
     if (section === 'abstract') {
       const maxWords = typeof limits.maxWords === 'number' ? limits.maxWords : fallbackMax.abstract
       const maxChars = typeof limits.maxChars === 'number' ? limits.maxChars : undefined
-      if (maxWords && text.split(/\s+/).length > maxWords) {
-        return { ok: false, reason: `Abstract exceeds ${maxWords} words` }
+      const wordCount = text.split(/\s+/).length
+      // Allow a grace buffer of 15 words for complete sentences - enforceMaxWords will handle the final trim
+      // This prevents aggressive pre-trimming that cuts content mid-sentence
+      const graceBuffer = 15
+      const hardMaxWords = maxWords + graceBuffer
+      if (maxWords && wordCount > hardMaxWords) {
+        return { ok: false, reason: `Abstract significantly exceeds ${maxWords} words (found ${wordCount})` }
       }
-      if (maxChars && text.length > maxChars) {
-        return { ok: false, reason: `Abstract exceeds ${maxChars} characters` }
+      if (maxChars && text.length > maxChars + 100) { // 100 char grace for sentence completion
+        return { ok: false, reason: `Abstract significantly exceeds ${maxChars} characters` }
       }
       // Note: numerals/figure refs check relaxed for partial generation - will be enforced in full draft
       if (/(novel|inventive|best|unique|claim|claims)/i.test(text)) return { ok: false, reason: 'Improper tone in abstract' }
@@ -2215,10 +2329,33 @@ Use the Super Admin panel to add the missing prompt.
       if (ctx.approvedTitle && ctx.reason && ctx.reason.toLowerCase().includes('title') && !out.startsWith(ctx.approvedTitle)) {
         out = `${ctx.approvedTitle} ${out}`.trim()
       }
-      // Enforce max words, and ensure it's meaningful
-      const maxWords = extractLimit(ctx.sectionChecks, 'maxWords')
+      // Enforce max words using sentence-aware trimming (not hard word cut)
+      // The final trimming is handled by enforceMaxWords which has proper sentence preservation
+      // Here we only do minimal fixes for tone issues, not aggressive length trimming
+      const maxWords = extractLimit(ctx.sectionChecks, 'maxWords') || 150
       const words = out.split(/\s+/).filter(w=>w.length>0)
-      if (maxWords && words.length > maxWords) out = words.slice(0, maxWords).join(' ')
+      // Only do hard trim if significantly over limit (> 20 words) - otherwise let enforceMaxWords handle it gracefully
+      if (maxWords && words.length > maxWords + 20) {
+        // Sentence-aware trimming: find sentence boundaries
+        const sentences = out.split(/(?<=[\.!?])\s+/).filter(Boolean)
+        let accumulated: string[] = []
+        let accWords = 0
+        for (const s of sentences) {
+          const sWords = s.split(/\s+/).length
+          if (accWords + sWords <= maxWords) {
+            accumulated.push(s)
+            accWords += sWords
+          } else {
+            break
+          }
+        }
+        if (accumulated.length > 0) {
+          out = accumulated.join(' ')
+        } else {
+          // Fallback: hard trim if no sentence fits
+          out = words.slice(0, maxWords).join(' ')
+        }
+      }
       if (words.length < 5) out = ctx.approvedTitle || 'Patent invention description.' // Fallback if too short
       return out
     }
