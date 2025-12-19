@@ -31,15 +31,39 @@ const fs = require('fs');
 const { PrismaClient } = require('@prisma/client');
 
 // ============================================================================
-// PRODUCTION COUNTRY DATA (6 jurisdictions with fully configured mappings)
+// PRODUCTION COUNTRY DATA (All 30 jurisdictions)
 // ============================================================================
 const PRODUCTION_COUNTRIES = [
   { code: 'AU', name: 'Australia', continent: 'Oceania' },
+  { code: 'BD', name: 'Bangladesh', continent: 'Asia' },
+  { code: 'BR', name: 'Brazil', continent: 'South America' },
   { code: 'CA', name: 'Canada', continent: 'North America' },
+  { code: 'CH', name: 'Switzerland', continent: 'Europe' },
+  { code: 'CN', name: 'China', continent: 'Asia' },
+  { code: 'DE', name: 'Germany', continent: 'Europe' },
+  { code: 'EP', name: 'European Patent Office', continent: 'Europe' },
+  { code: 'ES', name: 'Spain', continent: 'Europe' },
+  { code: 'EU', name: 'European Union', continent: 'Europe' },
+  { code: 'FR', name: 'France', continent: 'Europe' },
+  { code: 'IL', name: 'Israel', continent: 'Asia' },
   { code: 'IN', name: 'India', continent: 'Asia' },
+  { code: 'IR', name: 'Iran', continent: 'Asia' },
   { code: 'JP', name: 'Japan', continent: 'Asia' },
+  { code: 'KR', name: 'South Korea', continent: 'Asia' },
+  { code: 'MX', name: 'Mexico', continent: 'North America' },
+  { code: 'MY', name: 'Malaysia', continent: 'Asia' },
+  { code: 'NZ', name: 'New Zealand', continent: 'Oceania' },
   { code: 'PCT', name: 'PCT International', continent: 'International' },
-  { code: 'US', name: 'United States of America', continent: 'North America' }
+  { code: 'PK', name: 'Pakistan', continent: 'Asia' },
+  { code: 'PL', name: 'Poland', continent: 'Europe' },
+  { code: 'RU', name: 'Russia', continent: 'Europe' },
+  { code: 'SA', name: 'Saudi Arabia', continent: 'Asia' },
+  { code: 'SE', name: 'Sweden', continent: 'Europe' },
+  { code: 'TW', name: 'Taiwan', continent: 'Asia' },
+  { code: 'UAE', name: 'United Arab Emirates', continent: 'Asia' },
+  { code: 'UK', name: 'United Kingdom', continent: 'Europe' },
+  { code: 'US', name: 'United States of America', continent: 'North America' },
+  { code: 'ZA', name: 'South Africa', continent: 'Africa' }
 ];
 
 // Parse command line arguments
@@ -72,7 +96,7 @@ Options:
 
 Seed Order:
   1. Plans & Features      (scripts/seed-production-plans.js)
-  2. Production Countries  (Direct: AU, CA, IN, JP, PCT, US)
+  2. Production Countries  (Direct: All 30 jurisdictions)
   3. Country Config        (Countries/MasterSeed.js)
   4. LLM Models            (Seed/seed-llm-models.js)
   5. Admin Users           (scripts/setup-full-hierarchy.js)
@@ -98,7 +122,7 @@ const SEED_SCRIPTS = [
     script: null, // Direct function call
     directFn: seedProductionCountries,
     skip: options.skipCountries || options.usersOnly,
-    description: 'Seeds 6 production countries (AU, CA, IN, JP, PCT, US) to country_names table',
+    description: 'Seeds all 30 jurisdictions to country_names table',
   },
   {
     name: 'Country Configurations',

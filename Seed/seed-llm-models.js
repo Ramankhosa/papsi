@@ -145,6 +145,19 @@ async function main() {
       isActive: true,
       isDefault: false
     },
+    // Google - Gemini 3.0 Nano Banana (Sketch generation model)
+    {
+      code: 'gemini-3.0-nano-banana',
+      displayName: 'Gemini 3.0 Nano Banana (Sketch)',
+      provider: 'google',
+      contextWindow: 128000,
+      supportsVision: true,
+      supportsStreaming: false,
+      inputCostPer1M: 100,    // $1.00
+      outputCostPer1M: 400,   // $4.00
+      isActive: true,
+      isDefault: false
+    },
 
     // === OPENAI MODELS ===
     // GPT-4 Series

@@ -1,51 +1,5 @@
-/**
- * ╔════════════════════════════════════════════════════════════════════════════╗
- * ║                         MASTER SEED SCRIPT                                 ║
- * ║           Multi-Country Patent Filing System Database Setup                ║
- * ╚════════════════════════════════════════════════════════════════════════════╝
- * 
- * This script seeds ALL country-specific data required for the patent drafting system:
- *   1. Superset Sections (17 universal patent sections)
- *   2. Country Names (28+ countries with continents)
- *   3. Country Section Mappings (which sections apply to each country)
- *   4. Country Section Prompts (top-up prompts for jurisdiction-specific drafting)
- *   5. Country Profiles (full country configuration from JSON files)
- *   6. Jurisdiction Styles (diagram, export, validation configs)
- * 
- * Usage:
- *   node Countries/MasterSeed.js                    # Seed all data (skip existing)
- *   node Countries/MasterSeed.js --force            # Overwrite existing data
- *   node Countries/MasterSeed.js --dry-run          # Preview without changes
- *   node Countries/MasterSeed.js --country=IN       # Seed specific country only
- *   node Countries/MasterSeed.js --skip-styles      # Skip jurisdiction styles
- * 
- * Prerequisites:
- *   1. Database migrations applied: npx prisma migrate deploy
- *   2. At least one user exists (run: node scripts/setup-full-hierarchy.js)
- */
-
-const { PrismaClient } = require('@prisma/client');
-const fs = require('fs');
-const path = require('path');
-
-const prisma = new PrismaClient();
-
 // ============================================================================
-// COMMAND LINE ARGUMENTS
-// ============================================================================
-const args = process.argv.slice(2);
-const options = {
-  force: args.includes('--force'),
-  dryRun: args.includes('--dry-run'),
-  skipStyles: args.includes('--skip-styles'),
-  country: args.find(a => a.startsWith('--country='))?.split('=')[1]?.toUpperCase()
-};
-
-const COUNTRIES_DIR = __dirname;
-const SYSTEM_USER_ID = 'system-seeder';
-
-// ============================================================================
-// SUPERSET SECTIONS DEFINITION (UPDATED FROM DATABASE)
+// SUPERSET SECTIONS DEFINITION (EXPORTED FROM DATABASE 2025-12-19T03:34:22.841Z)
 // ============================================================================
 const SUPERSET_SECTIONS = [
   {
@@ -53,7 +7,7 @@ const SUPERSET_SECTIONS = [
     aliases: [],
     displayOrder: 1,
     label: 'Title of the Invention',
-    description: 'Title of the Invention section for patent specifications.',
+    description: 'The title should be brief, descriptive, and indicative of the technical field.',
     isRequired: true,
     requiresPriorArt: false,
     requiresFigures: false,
@@ -61,7 +15,7 @@ const SUPERSET_SECTIONS = [
     requiresComponents: false,
     instruction: `ROLE: Patent Title Drafter (Attorney-Grade).
 
-YOU ARE DRAFTING THE "TITLE OF THE INVENTION"
+YOU ARE DRAFTING THE “TITLE OF THE INVENTION”
 OF A PATENT SPECIFICATION.
 THIS IS NOT A MARKETING TITLE, PRODUCT NAME, OR DESCRIPTIVE HEADING.
 
@@ -110,12 +64,12 @@ STRUCTURAL CONSTRAINTS (STRICT)
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
 - Prefer constructions such as:
-  "System and Method for …"
-  "Apparatus for …"
-  "Method for …"
-  "Device for …"
+  “System and Method for …”
+  “Apparatus for …”
+  “Method for …”
+  “Device for …”
 - Avoid:
-  "Improved", "Advanced", "Optimized", "Intelligent", "Smart", "Novel".
+  “Improved”, “Advanced”, “Optimized”, “Intelligent”, “Smart”, “Novel”.
 - Avoid marketing or branded terminology.
 
 ────────────────────────────────────────
@@ -126,6 +80,7 @@ Do NOT:
 - Mention problems being solved.
 - Mention claims, figures, embodiments, or examples.
 - Use subjective or comparative language.
+- Use abbreviations unless standard in the field.
 
 ────────────────────────────────────────
 OUTPUT RULES
@@ -142,7 +97,7 @@ OUTPUT RULES
     aliases: [],
     displayOrder: 2,
     label: 'Preamble',
-    description: 'Preamble section for patent specifications.',
+    description: 'Legal preamble for patent applications (used in some jurisdictions).',
     isRequired: false,
     requiresPriorArt: false,
     requiresFigures: false,
@@ -158,7 +113,7 @@ OUTPUT RULES
     aliases: ["field_of_invention","technicalField","technical_field","field"],
     displayOrder: 3,
     label: 'Field of the Invention',
-    description: 'Field of the Invention section for patent specifications.',
+    description: 'A brief statement of the technical field to which the invention pertains.',
     isRequired: true,
     requiresPriorArt: false,
     requiresFigures: false,
@@ -166,7 +121,7 @@ OUTPUT RULES
     requiresComponents: false,
     instruction: `ROLE: Patent Field of the Invention Drafter (Attorney-Grade).
 
-YOU ARE DRAFTING THE "FIELD OF THE INVENTION" SECTION
+YOU ARE DRAFTING THE “FIELD OF THE INVENTION” SECTION
 OF A PATENT SPECIFICATION.
 THIS IS NOT A SUMMARY, BACKGROUND, OR TECHNICAL PROBLEM DISCUSSION.
 
@@ -220,16 +175,16 @@ PARAGRAPH DISCIPLINE (NON-NEGOTIABLE)
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
 - Prefer formulations such as:
-  "The present disclosure relates generally to…"
-  "The invention relates to the field of…"
-- Avoid: "particularly", "specifically", "in order to".
+  “The present disclosure relates generally to…”
+  “The invention relates to the field of…”
+- Avoid: “particularly”, “specifically”, “in order to”.
 - Avoid evaluative or comparative terms.
 
 ────────────────────────────────────────
 PROHIBITED CONTENT
 ────────────────────────────────────────
 Do NOT:
-- Mention the invention's purpose, problem, or solution.
+- Mention the invention’s purpose, problem, or solution.
 - Mention components, systems, or methods.
 - Mention claims, figures, embodiments, or advantages.
 - Include multiple sentences or compound statements.
@@ -241,7 +196,8 @@ OUTPUT RULES
 - Do NOT include headings, bullet points, numbering, or commentary.
 - Do NOT include examples or elaboration.
 - If the sentence narrows scope beyond a general field,
-  it MUST be rewritten more broadly.`,
+  it MUST be rewritten more broadly.
+`,
     constraints: ["1-3 sentences maximum","Start with \"The present invention relates to...\"","No claims or advantages mentioned"]
   },
   {
@@ -249,7 +205,7 @@ OUTPUT RULES
     aliases: ["backgroundOfInvention","background_of_invention","priorArt","prior_art","background_art"],
     displayOrder: 4,
     label: 'Background of the Invention',
-    description: 'Background of the Invention section for patent specifications.',
+    description: 'Description of the prior art and problems with existing solutions.',
     isRequired: true,
     requiresPriorArt: true,
     requiresFigures: false,
@@ -297,15 +253,15 @@ Use neutral, impersonal patent language throughout.
 
 Do NOT cite research papers, standards, products, or patent documents unless explicitly provided.
 
-Do NOT describe embodiments, implementations, or "the invention."
+Do NOT describe embodiments, implementations, or “the invention.”
 
 Do NOT imply novelty, superiority, inventive step, or commercial value.
 
 Avoid admissions; if generic framing is required, use cautious language such as
-"in some cases," "certain approaches," "may," or "can."
+“in some cases,” “certain approaches,” “may,” or “can.”
 
 Avoid academic or narrative transitions such as:
-"therefore," "thus," "hence," "as a result," "studies show."
+“therefore,” “thus,” “hence,” “as a result,” “studies show.”
 
 ────────────────────────────────────────
 CONTENT STRUCTURE (STRICT)
@@ -324,7 +280,7 @@ B) EXISTING APPROACHES
 
 Describe categories of existing or conventional approaches at a high technical level.
 
-Refer to them generically (e.g., "some existing systems," "certain techniques").
+Refer to them generically (e.g., “some existing systems,” “certain techniques”).
 
 Do NOT attribute features that resemble the claimed invention.
 
@@ -358,12 +314,12 @@ Avoid long, flowing narrative paragraphs.
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
 
-Prefer: "may," "can," "in some cases," "often," "tends to."
+Prefer: “may,” “can,” “in some cases,” “often,” “tends to.”
 
-Avoid: "must," "always," "only," "necessarily."
+Avoid: “must,” “always,” “only,” “necessarily.”
 
 Avoid comparative or evaluative terms such as:
-"better," "improved," "efficient," "optimal," "advanced."
+“better,” “improved,” “efficient,” “optimal,” “advanced.”
 
 ────────────────────────────────────────
 OUTPUT RULES
@@ -386,7 +342,7 @@ it must be removed or rewritten as a problem.`,
     aliases: ["objects","objects_of_invention","objectOfInvention"],
     displayOrder: 5,
     label: 'Objects of the Invention',
-    description: 'Objects of the Invention section for patent specifications.',
+    description: 'Specific objectives and goals the invention aims to achieve.',
     isRequired: false,
     requiresPriorArt: false,
     requiresFigures: false,
@@ -394,7 +350,7 @@ it must be removed or rewritten as a problem.`,
     requiresComponents: false,
     instruction: `ROLE: Patent Objects Drafter (Attorney-Grade).
 
-YOU ARE DRAFTING THE "OBJECTS OF THE INVENTION" SECTION
+YOU ARE DRAFTING THE “OBJECTS OF THE INVENTION” SECTION
 OF A PATENT SPECIFICATION.
 THIS IS NOT A SUMMARY, ADVANTAGES SECTION, OR SOLUTION DESCRIPTION.
 
@@ -458,11 +414,11 @@ PARAGRAPH DISCIPLINE (NON-NEGOTIABLE)
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
 - Prefer formulations such as:
-  "An object of the invention is to…"
-  "Another object of the invention is to…"
-  "A further object of the invention is to…"
-- Use "may", "can", or "is intended to" where appropriate.
-- Avoid: "achieves", "ensures", "provides", "results in".
+  “An object of the invention is to…”
+  “Another object of the invention is to…”
+  “A further object of the invention is to…”
+- Use “may”, “can”, or “is intended to” where appropriate.
+- Avoid: “achieves”, “ensures”, “provides”, “results in”.
 
 ────────────────────────────────────────
 PROHIBITED CONTENT
@@ -480,7 +436,8 @@ OUTPUT RULES
 - Output ONLY the Objects of the Invention text.
 - Do NOT include headings, bullet points, numbering, or commentary.
 - Do NOT reference claims, figures, embodiments, or the invention explicitly.
-- If an object appears to disclose a solution, it MUST be rewritten as an aim.`,
+- If an object appears to disclose a solution, it MUST be rewritten as an aim.
+`,
     constraints: ["3-7 specific objectives","Use formal object statements","Link to problems in background","Technical language only"]
   },
   {
@@ -488,7 +445,7 @@ OUTPUT RULES
     aliases: ["summaryOfInvention","summary_of_invention","disclosure_of_invention","disclosureOfInvention"],
     displayOrder: 6,
     label: 'Summary of the Invention',
-    description: 'Summary of the Invention section for patent specifications.',
+    description: 'A concise summary of the invention and its key features.',
     isRequired: true,
     requiresPriorArt: false,
     requiresFigures: false,
@@ -509,7 +466,7 @@ Summarize the invention at a high level without claim-style drafting.
 
 Ensure alignment with Claim 1 while preserving drafting flexibility.
 
-Enable rapid understanding of the invention's technical essence.
+Enable rapid understanding of the invention’s technical essence.
 
 THIS SECTION MUST BE CONSISTENT WITH CLAIM 1 BUT MUST NOT MIRROR OR RESTATE CLAIM LANGUAGE.
 
@@ -547,10 +504,10 @@ Do NOT imply novelty, superiority, or inventive step.
 Do NOT describe experimental results, performance metrics, or advantages.
 
 Avoid phrases such as:
-"the present invention solves," "improves," "overcomes," or "provides better"
+“the present invention solves,” “improves,” “overcomes,” or “provides better.”
 
 Prefer neutral phrasing such as:
-"embodiments," "in some implementations," "may," "can."
+“embodiments,” “in some implementations,” “may,” “can.”
 
 ────────────────────────────────────────
 CONTENT STRUCTURE (STRICT)
@@ -575,7 +532,7 @@ Identify the main system, method, or apparatus at a high level.
 
 Refer to elements generically, consistent with Claim 1 terminology.
 
-D) SCOPE-PRESERVING VARIATIONS
+D) OPTIONAL EMBODIMENT FRAMING
 
 One paragraph indicating that alternative configurations or embodiments may exist.
 
@@ -597,19 +554,19 @@ Do NOT use long narrative paragraphs.
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
 
-Prefer: "may," "can," "in some embodiments," "is configured to."
+Prefer: “may,” “can,” “in some embodiments,” “is configured to.”
 
-Avoid: "must," "always," "only," "necessarily."
+Avoid: “must,” “always,” “only,” “necessarily.”
 
 Avoid evaluative terms such as:
-"efficient," "advanced," "optimal," "improved."
+“efficient,” “advanced,” “optimal,” “improved.”
 
 ────────────────────────────────────────
 PROHIBITED CONTENT
 ────────────────────────────────────────
 Do NOT:
 
-Restate claims or use claim-style "wherein" clauses.
+Restate claims or use claim-style “wherein” clauses.
 
 Introduce reference numerals, figures, or figure descriptions.
 
@@ -635,7 +592,7 @@ If a sentence resembles claim language, rewrite it at a higher level of abstract
     aliases: ["technical_problem"],
     displayOrder: 7,
     label: 'Technical Problem',
-    description: 'Technical Problem section for patent specifications.',
+    description: 'Clear statement of the technical problem solved (used in some jurisdictions like EP/JP).',
     isRequired: false,
     requiresPriorArt: true,
     requiresFigures: false,
@@ -643,7 +600,7 @@ If a sentence resembles claim language, rewrite it at a higher level of abstract
     requiresComponents: false,
     instruction: `ROLE: Patent Technical Problem Drafter (Attorney-Grade).
 
-YOU ARE DRAFTING THE "TECHNICAL PROBLEM" SECTION
+YOU ARE DRAFTING THE “TECHNICAL PROBLEM” SECTION
 OF A PATENT SPECIFICATION.
 THIS IS NOT A SOLUTION DESCRIPTION, INVENTIVE STEP ARGUMENT,
 OR PROBLEM–SOLUTION ANALYSIS WRITE-UP.
@@ -704,11 +661,11 @@ PARAGRAPH DISCIPLINE (NON-NEGOTIABLE)
 ────────────────────────────────────────
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
-- Prefer: "there exists a need", "there remains a need", "a technical challenge exists".
-- Prefer: "may", "can", "in some cases".
-- Avoid: "must", "always", "only", "necessarily".
+- Prefer: “there exists a need”, “there remains a need”, “a technical challenge exists”.
+- Prefer: “may”, “can”, “in some cases”.
+- Avoid: “must”, “always”, “only”, “necessarily”.
 - Avoid evaluative or comparative terms such as:
-  "better", "improved", "efficient", "advanced".
+  “better”, “improved”, “efficient”, “advanced”.
 
 ────────────────────────────────────────
 PROHIBITED CONTENT
@@ -718,13 +675,14 @@ Do NOT:
 - Mention advantages, effects, or results.
 - Mention claims, figures, embodiments, or components.
 - Use language implying inevitability or exclusivity.
+- Anticipate or preview the technical solution.
 
 ────────────────────────────────────────
 OUTPUT RULES
 ────────────────────────────────────────
 - Output ONLY the Technical Problem text.
 - Do NOT include headings, bullet points, numbering, or commentary.
-- Do NOT mention the invention or "the present invention".
+- Do NOT mention the invention or “the present invention”.
 - If any sentence suggests a solution, it MUST be rewritten as a problem.`,
     constraints: ["Objective technical problem only","Must be solvable by invention features","1-2 paragraphs maximum"]
   },
@@ -733,7 +691,7 @@ OUTPUT RULES
     aliases: ["technical_solution"],
     displayOrder: 8,
     label: 'Technical Solution',
-    description: 'Technical Solution section for patent specifications.',
+    description: 'Description of how the invention solves the technical problem.',
     isRequired: false,
     requiresPriorArt: false,
     requiresFigures: false,
@@ -748,7 +706,7 @@ THIS IS NOT A RESEARCH PAPER, TECHNICAL MANUAL, OR MARKETING DOCUMENT.
 CORE LEGAL PURPOSE OF THIS SECTION
 ────────────────────────────────────────
 - Describe the technical solution corresponding to the technical problem.
-- Present the invention's solution in functional and structural terms.
+- Present the invention’s solution in functional and structural terms.
 - Ensure strict alignment with Claim 1 without restating claim language.
 - Provide a clear bridge between the problem statement and the detailed description.
 
@@ -775,7 +733,7 @@ MANDATORY PATENT DISCIPLINE
 2. Do NOT imply novelty, superiority, or inventive step.
 3. Do NOT describe experimental results, performance metrics, or advantages.
 4. Avoid promotional, comparative, or evaluative language.
-5. Prefer cautious phrasing such as "may," "can," and "in some embodiments."
+5. Prefer cautious phrasing such as “may,” “can,” and “in some embodiments.”
 
 ────────────────────────────────────────
 CONTENT STRUCTURE (STRICT)
@@ -810,18 +768,19 @@ PARAGRAPH DISCIPLINE (NON-NEGOTIABLE)
 ────────────────────────────────────────
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
-- Prefer: "includes," "comprises," "is configured to," "may," "can."
-- Avoid: "must," "always," "only," "necessarily."
+- Prefer: “includes,” “comprises,” “is configured to,” “may,” “can.”
+- Avoid: “must,” “always,” “only,” “necessarily.”
 - Avoid evaluative terms such as:
-  "better," "improved," "efficient," "optimal," "advanced."
+  “better,” “improved,” “efficient,” “optimal,” “advanced.”
 
 ────────────────────────────────────────
 PROHIBITED CONTENT
 ────────────────────────────────────────
 Do NOT:
-- Use claim-style "wherein" clauses.
+- Use claim-style “wherein” clauses.
 - Introduce reference numerals or figure references.
 - Describe advantages, effects, or results.
+- Anticipate dependent-claim detail or specific embodiments.
 
 ────────────────────────────────────────
 OUTPUT RULES
@@ -837,7 +796,7 @@ OUTPUT RULES
     aliases: ["advantageous_effects"],
     displayOrder: 9,
     label: 'Advantageous Effects',
-    description: 'Advantageous Effects section for patent specifications.',
+    description: 'Technical advantages and beneficial effects of the invention.',
     isRequired: false,
     requiresPriorArt: false,
     requiresFigures: false,
@@ -845,7 +804,7 @@ OUTPUT RULES
     requiresComponents: false,
     instruction: `ROLE: Patent Advantageous Effects Drafter (Attorney-Grade).
 
-YOU ARE DRAFTING THE "ADVANTAGEOUS EFFECTS OF THE INVENTION" SECTION
+YOU ARE DRAFTING THE “ADVANTAGEOUS EFFECTS OF THE INVENTION” SECTION
 OF A PATENT SPECIFICATION.
 THIS IS NOT A MARKETING SECTION, RESULTS DISCUSSION, OR INVENTIVE STEP ARGUMENT.
 
@@ -888,7 +847,7 @@ EFFECT-CAUSATION RULE (CRITICAL)
 Each advantageous effect MUST:
 - Be framed as a technical effect (not a benefit or result).
 - Be causally linked to a specific claimed feature or interaction.
-- Be expressed as something that "may be achieved" or "can result".
+- Be expressed as something that “may be achieved” or “can result”.
 
 Do NOT describe effects in isolation from technical structure.
 
@@ -919,18 +878,19 @@ PARAGRAPH DISCIPLINE (NON-NEGOTIABLE)
 ────────────────────────────────────────
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
-- Prefer: "may provide", "can enable", "may allow", "can facilitate".
-- Avoid: "improves", "enhances", "optimizes", "better", "more efficient".
-- Avoid: "therefore", "thus", "as a result".
+- Prefer: “may provide”, “can enable”, “may allow”, “can facilitate”.
+- Avoid: “improves”, “enhances”, “optimizes”, “better”, “more efficient”.
+- Avoid: “therefore”, “thus”, “as a result”.
 
 ────────────────────────────────────────
 PROHIBITED CONTENT
 ────────────────────────────────────────
 Do NOT:
 - Compare against prior art or conventional systems.
-- Mention "advantages over existing solutions".
+- Mention “advantages over existing solutions”.
 - Mention performance metrics, benchmarks, or results.
 - Mention embodiments, figures, or reference numerals.
+- Repeat claim language verbatim.
 
 ────────────────────────────────────────
 OUTPUT RULES
@@ -946,7 +906,7 @@ OUTPUT RULES
     aliases: ["brief_description_of_drawings","drawings","figures","brief_drawings"],
     displayOrder: 10,
     label: 'Brief Description of the Drawings',
-    description: 'Brief Description of the Drawings section for patent specifications.',
+    description: 'Descriptions of each figure in the patent drawings.',
     isRequired: true,
     requiresPriorArt: false,
     requiresFigures: true,
@@ -954,7 +914,7 @@ OUTPUT RULES
     requiresComponents: true,
     instruction: `ROLE: Patent Drawings Description Drafter (Attorney-Grade).
 
-YOU ARE DRAFTING THE "BRIEF DESCRIPTION OF THE DRAWINGS" SECTION
+YOU ARE DRAFTING THE “BRIEF DESCRIPTION OF THE DRAWINGS” SECTION
 OF A PATENT SPECIFICATION.
 THIS IS NOT A DETAILED DESCRIPTION, FIGURE ANALYSIS, OR EXPLANATORY NARRATIVE.
 
@@ -1002,9 +962,9 @@ FOR EACH FIGURE:
 - Provide a brief, neutral description of what the figure represents.
 
 Use standard phrasing such as:
-"FIG. 1 is a schematic view of …"
-"FIG. 2 is a block diagram of …"
-"FIG. 3 is a flow diagram illustrating …"
+“FIG. 1 is a schematic view of …”
+“FIG. 2 is a block diagram of …”
+“FIG. 3 is a flow diagram illustrating …”
 
 Do NOT vary sentence structure beyond this pattern.
 
@@ -1019,9 +979,9 @@ FORMAT AND LENGTH RULES (NON-NEGOTIABLE)
 ────────────────────────────────────────
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
-- Prefer: "is a schematic view of", "is a block diagram of", "is a flow diagram illustrating".
-- Avoid: "shows", "illustrates", "depicts", "represents", "demonstrates".
-- Avoid: "detailed", "preferred", "example", "advantageous".
+- Prefer: “is a schematic view of”, “is a block diagram of”, “is a flow diagram illustrating”.
+- Avoid: “shows”, “illustrates”, “depicts”, “represents”, “demonstrates”.
+- Avoid: “detailed”, “preferred”, “example”, “advantageous”.
 
 ────────────────────────────────────────
 PROHIBITED CONTENT
@@ -1047,15 +1007,15 @@ OUTPUT RULES
     aliases: ["detailed_description","detailedDescriptionOfInvention","detailed_description_of_invention"],
     displayOrder: 11,
     label: 'Detailed Description',
-    description: 'Detailed Description section for patent specifications.',
+    description: 'Comprehensive description of the invention with reference to drawings.',
     isRequired: true,
     requiresPriorArt: false,
     requiresFigures: true,
     requiresClaims: true,
     requiresComponents: true,
-    instruction: `ROLE: Patent Detailed Description Drafter (Attorney-Grade).
+    instruction: `\${roleToneHeader}
 
-YOU ARE DRAFTING THE "DETAILED DESCRIPTION OF THE INVENTION" OF A PATENT SPECIFICATION.
+YOU ARE DRAFTING THE “DETAILED DESCRIPTION OF THE INVENTION” OF A PATENT SPECIFICATION.
 THIS IS NOT A RESEARCH PAPER, TECHNICAL MANUAL, DESIGN DOCUMENT, OR MARKETING MATERIAL.
 
 ────────────────────────────────────────
@@ -1095,7 +1055,7 @@ RULES FOR USING CLAIM 1:
 2. Ensure each such element and relationship has descriptive support in this section.
 3. Use Claim 1 terminology as canonical terminology throughout this section.
 4. Do NOT restate, paraphrase, or mirror claim sentences.
-5. Do NOT follow claim numbering, "wherein" structure, or claim sentence rhythm.
+5. Do NOT follow claim numbering, “wherein” structure, or claim sentence rhythm.
 6. Do NOT introduce technical concepts not reasonably inferable from Claim 1
    and the Normalized Data.
 
@@ -1132,7 +1092,7 @@ SENTENCE RULES:
 ────────────────────────────────────────
 PERMITTED LEVEL OF TECHNICAL DETAIL
 ────────────────────────────────────────
-- Functional "configured to" descriptions are permitted.
+- Functional “configured to” descriptions are permitted.
 - Interface-level interactions (inputs, outputs, cooperation) are permitted.
 - Internal algorithms, control logic, decision trees, or computation steps
   are NOT permitted unless explicitly required by Claim 1.
@@ -1163,6 +1123,8 @@ Do NOT:
 - Explain motivations, design reasoning, benefits, or results.
 - Use evaluative or comparative language.
 - Introduce new components, figures, or numerals not provided.
+- Repeat the same element using different wording.
+- Use claim-style drafting or legal conclusions.
 
 ────────────────────────────────────────
 SELF-CHECK (INTERNAL ONLY)
@@ -1188,7 +1150,7 @@ Do NOT include any other keys.`,
     aliases: ["best_mode","bestMethod","best_method"],
     displayOrder: 12,
     label: 'Best Mode',
-    description: 'Best Mode section for patent specifications.',
+    description: 'Description of the best mode contemplated by the inventor (required in some jurisdictions).',
     isRequired: false,
     requiresPriorArt: false,
     requiresFigures: true,
@@ -1196,7 +1158,7 @@ Do NOT include any other keys.`,
     requiresComponents: true,
     instruction: `ROLE: Patent Best Mode Drafter (Attorney-Grade).
 
-YOU ARE DRAFTING THE "BEST MODE / BEST METHOD" SECTION
+YOU ARE DRAFTING THE “BEST MODE / BEST METHOD” SECTION
 OF A PATENT SPECIFICATION.
 THIS IS NOT A DESIGN RATIONALE, OPTIMIZATION DISCUSSION, OR PREFERRED EMBODIMENT SALES PITCH.
 
@@ -1259,9 +1221,9 @@ PARAGRAPH DISCIPLINE (NON-NEGOTIABLE)
 ────────────────────────────────────────
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
-- Prefer: "may be implemented", "in one configuration", "can be carried out".
-- Avoid: "best", "optimal", "most efficient", "preferred above all others".
-- Avoid: "therefore", "thus", "as a result".
+- Prefer: “may be implemented”, “in one configuration”, “can be carried out”.
+- Avoid: “best”, “optimal”, “most efficient”, “preferred above all others”.
+- Avoid: “therefore”, “thus”, “as a result”.
 
 ────────────────────────────────────────
 PROHIBITED CONTENT
@@ -1270,6 +1232,8 @@ Do NOT:
 - Introduce embodiments not already supported by Claim 1.
 - Add optional variations or design alternatives.
 - Reference figures or reference numerals unless explicitly injected.
+- Repeat or restate claim language verbatim.
+- Describe benefits, effects, or results.
 
 ────────────────────────────────────────
 OUTPUT RULES
@@ -1286,7 +1250,7 @@ OUTPUT RULES
     aliases: ["industrial_applicability"],
     displayOrder: 13,
     label: 'Industrial Applicability',
-    description: 'Industrial Applicability section for patent specifications.',
+    description: 'Statement of industrial applicability (required in some jurisdictions).',
     isRequired: false,
     requiresPriorArt: false,
     requiresFigures: false,
@@ -1294,7 +1258,7 @@ OUTPUT RULES
     requiresComponents: false,
     instruction: `ROLE: Patent Industrial Applicability Drafter (Attorney-Grade).
 
-YOU ARE DRAFTING THE "INDUSTRIAL APPLICABILITY" SECTION
+YOU ARE DRAFTING THE “INDUSTRIAL APPLICABILITY” SECTION
 OF A PATENT SPECIFICATION.
 THIS IS NOT A COMMERCIAL USE CASE, MARKET ANALYSIS, OR ADVANTAGES SECTION.
 
@@ -1353,10 +1317,10 @@ PARAGRAPH DISCIPLINE (NON-NEGOTIABLE)
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
 - Prefer formulations such as:
-  "The invention is capable of being made and used in industry."
-  "The invention may be applied in various industrial contexts including…"
-- Prefer: "may", "can", "is capable of".
-- Avoid: "will", "ensures", "guarantees".
+  “The invention is capable of being made and used in industry.”
+  “The invention may be applied in various industrial contexts including…”
+- Prefer: “may”, “can”, “is capable of”.
+- Avoid: “will”, “ensures”, “guarantees”.
 - Avoid evaluative or comparative terms.
 
 ────────────────────────────────────────
@@ -1367,6 +1331,7 @@ Do NOT:
 - Mention specific products, markets, or end users.
 - Mention claims, figures, embodiments, or prior art.
 - Include examples, scenarios, or explanatory detail.
+- Introduce new technical features or limitations.
 
 ────────────────────────────────────────
 OUTPUT RULES
@@ -1375,7 +1340,8 @@ OUTPUT RULES
 - Do NOT include headings, bullet points, numbering, or commentary.
 - Do NOT reference claims, figures, embodiments, or the invention explicitly.
 - If the paragraph narrows scope beyond general applicability,
-  it MUST be rewritten more broadly.`,
+  it MUST be rewritten more broadly.
+`,
     constraints: ["Identify specific industries","Describe practical applications","1-2 paragraphs"]
   },
   {
@@ -1383,7 +1349,7 @@ OUTPUT RULES
     aliases: [],
     displayOrder: 14,
     label: 'Claims',
-    description: 'Claims section for patent specifications.',
+    description: 'The legal claims defining the scope of patent protection.',
     isRequired: true,
     requiresPriorArt: false,
     requiresFigures: false,
@@ -1427,12 +1393,13 @@ RULES:
 MANDATORY CLAIM DRAFTING DISCIPLINE
 ────────────────────────────────────────
 1. Each claim MUST be written as a SINGLE sentence.
-2. Use open-ended transitional phrases such as "comprising" unless Top-Up requires otherwise.
+2. Use open-ended transitional phrases such as “comprising” unless Top-Up requires otherwise.
 3. Maintain strict antecedent basis:
-   - Introduce elements with "a" or "an".
-   - Refer back using "the" with identical terminology.
+   - Introduce elements with “a” or “an”.
+   - Refer back using “the” with identical terminology.
 4. Avoid subjective or relative terms unless structurally defined.
 5. Do NOT include advantages, results, motivations, or explanations.
+6. Avoid “whereby” clauses unless explicitly required by jurisdiction.
 
 ────────────────────────────────────────
 CLAIM STRUCTURE AND FORMATTING (CRITICAL)
@@ -1477,7 +1444,7 @@ B) DEPENDENT CLAIMS
 ────────────────────────────────────────
 WORDING RULES
 ────────────────────────────────────────
-- Use "configured to", "operative to", or "arranged to" for functional language.
+- Use “configured to”, “operative to”, or “arranged to” for functional language.
 - Avoid means-plus-function language unless explicitly required.
 - Avoid implementation detail unless necessary for support.
 
@@ -1499,7 +1466,8 @@ OUTPUT CONTROL
 Return ONLY a valid JSON object exactly matching this schema:
 { "claims": "..." }
 
-Do NOT include any other keys.`,
+Do NOT include any other keys.
+`,
     constraints: ["Single sentence per claim","Proper antecedent basis","Clear transition phrases","10-20 claims typical","Independent + dependent structure"]
   },
   {
@@ -1507,7 +1475,7 @@ Do NOT include any other keys.`,
     aliases: [],
     displayOrder: 15,
     label: 'Abstract',
-    description: 'Abstract section for patent specifications.',
+    description: 'A brief abstract summarizing the invention for searching purposes.',
     isRequired: true,
     requiresPriorArt: false,
     requiresFigures: false,
@@ -1580,18 +1548,20 @@ LENGTH AND FORM CONSTRAINTS
 ────────────────────────────────────────
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
-- Prefer: "includes," "comprises," "is configured to," "may," "can."
-- Avoid: "must," "always," "only," "necessarily."
+- Prefer: “includes,” “comprises,” “is configured to,” “may,” “can.”
+- Avoid: “must,” “always,” “only,” “necessarily.”
 - Avoid comparative or evaluative terms such as:
-  "better," "improved," "efficient," "optimal," "advanced."
+  “better,” “improved,” “efficient,” “optimal,” “advanced.”
 
 ────────────────────────────────────────
 PROHIBITED CONTENT
 ────────────────────────────────────────
 Do NOT:
-- Use claim-style "wherein" clauses.
+- Use claim-style “wherein” clauses.
 - Reference figures, reference numerals, or drawings.
 - Describe embodiments explicitly.
+- Describe advantages, effects, or benefits.
+- Include background or prior-art discussion.
 
 ────────────────────────────────────────
 OUTPUT RULES
@@ -1607,7 +1577,7 @@ OUTPUT RULES
     aliases: ["list_of_numerals","numeralList","numeral_list","referenceNumerals","reference_numerals"],
     displayOrder: 16,
     label: 'List of Reference Numerals',
-    description: 'List of Reference Numerals section for patent specifications.',
+    description: 'A table or list mapping reference numerals to component names used in the specification.',
     isRequired: false,
     requiresPriorArt: false,
     requiresFigures: false,
@@ -1627,7 +1597,7 @@ OUTPUT RULES
     aliases: ["cross_reference","crossReferences","cross_references","relatedApplications","related_applications"],
     displayOrder: 17,
     label: 'Cross-Reference to Related Applications',
-    description: 'Cross-Reference to Related Applications section for patent specifications.',
+    description: 'References to related patent applications, priority claims, and continuations.',
     isRequired: false,
     requiresPriorArt: false,
     requiresFigures: false,
@@ -1635,7 +1605,7 @@ OUTPUT RULES
     requiresComponents: false,
     instruction: `ROLE: Patent Cross-Reference Drafter (Attorney-Grade).
 
-YOU ARE DRAFTING THE "CROSS-REFERENCE TO RELATED APPLICATIONS" SECTION
+YOU ARE DRAFTING THE “CROSS-REFERENCE TO RELATED APPLICATIONS” SECTION
 OF A PATENT SPECIFICATION.
 THIS IS NOT A BACKGROUND SECTION, PRIOR ART DISCUSSION, OR PROCEDURAL HISTORY.
 
@@ -1706,9 +1676,9 @@ PARAGRAPH DISCIPLINE (NON-NEGOTIABLE)
 LANGUAGE CONSTRAINTS
 ────────────────────────────────────────
 - Prefer formal constructions such as:
-  "This application claims priority to…"
-  "This application claims the benefit of…"
-  "This application does not claim priority to any related application."
+  “This application claims priority to…”
+  “This application claims the benefit of…”
+  “This application does not claim priority to any related application.”
 - Avoid casual or explanatory phrasing.
 
 ────────────────────────────────────────
@@ -1725,958 +1695,802 @@ OUTPUT RULES
 ────────────────────────────────────────
 - Output ONLY the Cross-Reference to Related Applications text.
 - Do NOT include headings, bullet points, numbering, or commentary.
-- Do NOT add placeholders such as "if any".
+- Do NOT add placeholders such as “if any”.
 - If no related application data is provided,
   output a formal non-claim statement.`,
     constraints: ["List applications chronologically","Include application numbers and filing dates","Specify relationship type clearly","Use proper legal terminology"]
   },
 ];
 
+
 // ============================================================================
-// COUNTRY SECTION MAPPINGS (hardcoded for key jurisdictions)
+// COUNTRY SECTION PROMPTS (TOP-UP) - EXPORTED FROM DATABASE 2025-12-19T03:34:22.877Z
 // ============================================================================
-const COUNTRY_MAPPINGS = {
-  IN: [
-    { supersetCode: '01. Title', sectionKey: 'title', heading: 'Title of the Invention', displayOrder: 1, isRequired: true },
-    { supersetCode: '02. Field of Invention', sectionKey: 'fieldOfInvention', heading: 'Field of the Invention', displayOrder: 2, isRequired: true },
-    { supersetCode: '03. Background', sectionKey: 'background', heading: 'Background of the Invention', displayOrder: 3, isRequired: true },
-    { supersetCode: '04. Objects of Invention', sectionKey: 'objectsOfInvention', heading: 'Object(s) of the Invention', displayOrder: 4, isRequired: true },
-    { supersetCode: '05. Summary', sectionKey: 'summary', heading: 'Summary of the Invention', displayOrder: 5, isRequired: true },
-    { supersetCode: '06. Brief Description of Drawings', sectionKey: 'briefDescriptionOfDrawings', heading: 'Brief Description of the Drawings', displayOrder: 6, isRequired: false },
-    { supersetCode: '07. Detailed Description', sectionKey: 'detailedDescription', heading: 'Detailed Description of the Invention', displayOrder: 7, isRequired: true },
-    { supersetCode: '08. Claims', sectionKey: 'claims', heading: 'Claims', displayOrder: 8, isRequired: true },
-    { supersetCode: '09. Abstract', sectionKey: 'abstract', heading: 'Abstract', displayOrder: 9, isRequired: true }
+const COUNTRY_SECTION_PROMPTS = {
+  'AU': [
+    {
+      sectionKey: 'abstract',
+      instruction: `Per IP Australia guidelines, draft an Abstract of 50-150 words summarizing technical disclosure.`,
+      constraints: ["50-150 words preferred, max 150","Single paragraph","Technical summary only—no advantages/marketing","Enable quick understanding of field and main features"],
+      additions: ["IP Australia may amend abstracts exceeding 150 words","Reference most illustrative figure if drawings present"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'background',
+      instruction: `Per IP Australia guidelines, draft Background Art describing relevant prior technology without prejudicing patentability.`,
+      constraints: ["Use objective, neutral language","Avoid suggesting the invention is obvious","No harmful admissions against novelty/inventive step"],
+      additions: ["Australia has no formal IDS requirement but applicants should not deliberately mislead","Use hedging language where appropriate"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'briefDescriptionOfDrawings',
+      instruction: `Per IP Australia formatting guidelines, briefly describe each drawing figure.`,
+      constraints: ["One sentence per figure","Format: 'Fig. X is a [view type] showing [subject]'","Match figure order in drawings"],
+      additions: ["Required if drawings are present"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'claims',
+      instruction: `Draft claims compliant with Section 40 of the Patents Act 1990. Claims must be clear, succinct, and fairly based on description.`,
+      constraints: ["Each claim as single sentence","Multiple dependent claims permitted (including on other multiple dependents)","Claims must be fairly based on disclosed matter","All claims relate to single inventive concept"],
+      additions: ["Australia allows multiple dependent claims on two or more other claims","Unity follows 'single inventive concept' standard","Claims must be clear and succinct per s.40(3)"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'detailed_description',
+      instruction: `Per Section 40(2)(a) of the Patents Act 1990, draft a Description of Embodiments fully describing the invention including best method.`,
+      constraints: ["Sufficient detail for skilled person to perform invention","Disclose best method known to applicant (mandatory in AU)","Consistent reference numerals matching drawings","Include practical examples where applicable"],
+      additions: ["Australia requires 'best method' disclosure (s.40(2)(aa))","Description must be clear and complete enough to perform invention","Include industrial applicability where not self-evident"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'field',
+      instruction: `Draft the Technical Field section.`,
+      constraints: ["Limit to 1–3 sentences.","State the technical field without describing advantages or embodiments."],
+      additions: [],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'fieldOfInvention',
+      instruction: `Per IP Australia specification guidelines, draft a Technical Field identifying the technical area of the invention.`,
+      constraints: ["1-3 sentences maximum","State technical field objectively","No features or advantages"],
+      additions: ["May reference IPC/CPC classification areas"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'summary',
+      instruction: `Per IP Australia practice, draft a Summary stating technical problem, inventive solution, and advantageous effects.`,
+      constraints: ["Align with independent claims scope","Use flexible language ('in embodiments', 'according to aspects')","Include brief statement of advantages"],
+      additions: ["Structure: problem → solution → advantages"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'title',
+      instruction: `Per IP Australia guidelines and Patents Act 1990, draft a title that is brief, technically descriptive, and identifies the subject matter.`,
+      constraints: ["Maximum 500 characters","No trade names, trade marks, or personal names","Sentence case, no terminal period"],
+      additions: ["Title should align with technical field and claims"],
+      importFiguresDirectly: false
+    },
   ],
-  US: [
-    { supersetCode: '01. Title', sectionKey: 'title', heading: 'Title of Invention', displayOrder: 1, isRequired: true },
-    { supersetCode: '02. Cross-Reference', sectionKey: 'crossReference', heading: 'Cross-Reference to Related Applications', displayOrder: 2, isRequired: false },
-    { supersetCode: '03. Field of Invention', sectionKey: 'fieldOfInvention', heading: 'Technical Field', displayOrder: 3, isRequired: true },
-    { supersetCode: '04. Background', sectionKey: 'background', heading: 'Background of the Invention', displayOrder: 4, isRequired: true },
-    { supersetCode: '05. Summary', sectionKey: 'summary', heading: 'Summary of the Invention', displayOrder: 5, isRequired: true },
-    { supersetCode: '06. Brief Description of Drawings', sectionKey: 'briefDescriptionOfDrawings', heading: 'Brief Description of the Drawings', displayOrder: 6, isRequired: false },
-    { supersetCode: '07. Detailed Description', sectionKey: 'detailedDescription', heading: 'Detailed Description of Preferred Embodiments', displayOrder: 7, isRequired: true },
-    { supersetCode: '08. Claims', sectionKey: 'claims', heading: 'Claims', displayOrder: 8, isRequired: true },
-    { supersetCode: '09. Abstract', sectionKey: 'abstract', heading: 'Abstract of the Disclosure', displayOrder: 9, isRequired: true }
+  'CA': [
+    {
+      sectionKey: 'abstract',
+      instruction: `Per CIPO abstract guidelines, draft an Abstract summarizing the technical disclosure for searching purposes.`,
+      constraints: ["Maximum 150 words","Single paragraph","Technical field, problem, solution, principal use","No advantages, value statements, or claim language"],
+      additions: ["Abstract is for information/search purposes only","Reference illustrative figure if drawings present"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'background',
+      instruction: `Per CIPO guidelines, draft Background Art describing relevant prior technology without prejudicing patentability.`,
+      constraints: ["Use objective, neutral language","Summarize relevant prior art and limitations","Avoid harmful admissions"],
+      additions: ["Canada has duty of candour but no formal IDS like USPTO","Do not deliberately conceal material prior art"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'briefDescriptionOfDrawings',
+      instruction: `Per CIPO formatting guidelines, briefly describe each drawing figure.`,
+      constraints: ["One sentence per figure","Required if drawings are present"],
+      additions: [],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'claims',
+      instruction: `Per Patent Rules and CIPO Manual of Patent Office Practice (MOPOP), draft claims that are clear, concise, and supported.`,
+      constraints: ["Clear and concise language","Multiple dependent claims allowed (including on other multiple dependents)","Single inventive concept (unity)","All features supported by description"],
+      additions: ["No per-claim fees for excess claims in Canada","Unity assessed under 'single general inventive concept' standard","Reference numerals may be included"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'detailedDescription',
+      instruction: `Per s.27(3) of the Canadian Patent Act, draft detailed description correctly and fully describing the invention.`,
+      constraints: ["At least one workable mode","Sufficient for skilled person to practice","Support for all claims"],
+      additions: ["No best mode requirement in Canada"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'field',
+      instruction: `Per CIPO practice, draft Technical Field indicating the area to which the invention pertains.`,
+      constraints: ["1-3 sentences","Technical area only","No features or advantages"],
+      additions: ["Should align with abstract requirements"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'fieldOfInvention',
+      instruction: `Per CIPO practice, draft Technical Field indicating the technical area of the invention.`,
+      constraints: ["1-3 sentences","No embodiments or advantages"],
+      additions: [],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'modes_for_carrying_out',
+      instruction: `Per s.27(3) of the Canadian Patent Act, draft Mode(s) for Carrying Out the Invention correctly and fully describing the invention.`,
+      constraints: ["At least one workable mode must be described","Sufficient detail for skilled person to work invention","Each independent claim needs supporting embodiment","Reference drawings with consistent numerals"],
+      additions: ["Canada does NOT require best mode disclosure (unlike US)","But must correctly and fully describe at least one workable mode","Preferred embodiments encouraged but not mandatory"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'summary',
+      instruction: `Per Canadian Patent Rules, draft Disclosure of Invention explaining the problem, solution, and essential features.`,
+      constraints: ["Technical problem and solution","Align with independent claims","No promotional language"],
+      additions: ["Disclosure should meet s.27(3) of the Patent Act requirements"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'title',
+      instruction: `Per CIPO guidelines and Patent Rules, draft a title that is brief, technically descriptive, and identifies the invention.`,
+      constraints: ["Maximum 500 characters","No trade names, trade marks, or personal names","Suitable for both English and French examination"],
+      additions: ["Canada is bilingual - title should be clear in both languages"],
+      importFiguresDirectly: false
+    },
   ],
-  EP: [
-    { supersetCode: '01. Title', sectionKey: 'title', heading: 'Title of Invention', displayOrder: 1, isRequired: true },
-    { supersetCode: '02. Field of Invention', sectionKey: 'fieldOfInvention', heading: 'Technical Field', displayOrder: 2, isRequired: true },
-    { supersetCode: '03. Background', sectionKey: 'background', heading: 'Background Art', displayOrder: 3, isRequired: true },
-    { supersetCode: '04. Technical Problem', sectionKey: 'technicalProblem', heading: 'Technical Problem', displayOrder: 4, isRequired: true },
-    { supersetCode: '05. Technical Solution', sectionKey: 'technicalSolution', heading: 'Technical Solution', displayOrder: 5, isRequired: true },
-    { supersetCode: '06. Advantageous Effects', sectionKey: 'advantageousEffects', heading: 'Advantageous Effects', displayOrder: 6, isRequired: false },
-    { supersetCode: '07. Brief Description of Drawings', sectionKey: 'briefDescriptionOfDrawings', heading: 'Brief Description of Drawings', displayOrder: 7, isRequired: false },
-    { supersetCode: '08. Detailed Description', sectionKey: 'detailedDescription', heading: 'Description of Embodiments', displayOrder: 8, isRequired: true },
-    { supersetCode: '09. Claims', sectionKey: 'claims', heading: 'Claims', displayOrder: 9, isRequired: true },
-    { supersetCode: '10. Abstract', sectionKey: 'abstract', heading: 'Abstract', displayOrder: 10, isRequired: true }
+  'IN': [
+    {
+      sectionKey: 'abstract',
+      instruction: `Per Section 10(4)(d) and Rule 13(7)(b), provide a concise summary in not more than 150 words, commencing with the title and indicating technical field, technical advancement, and principal use.`,
+      constraints: ["Hard limit of 150 words under Indian Rules","Must commence with the title of the invention","Indicate technical field, advancement, and principal use"],
+      additions: ["Avoid claim-style wording per Manual guidelines"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'background',
+      instruction: `cite prior art while dicussing relevant invention features,processes, design, limitations.`,
+      constraints: ["One paragraph should not contain more than two to three lines and should be complete in itself."],
+      additions: [],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'briefDescriptionOfDrawings',
+      instruction: `List each drawing figure with a one-line description ensuring figure numbering and captions match the drawing sheets filed under Rule 15.`,
+      constraints: ["Use format: 'FIG. X is a [type] view of [subject]'","Ensure consistent numbering with actual drawing sheets"],
+      additions: [],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'claims',
+      instruction: `Draft claims compliant with Section 10(4) and (5) of the Indian Patents Act, 1970. Claims must define the matter for which protection is sought, be clear and succinct, and be fairly based on the matter disclosed in the specification.`,
+      constraints: ["Use 'comprising' as preferred open connector; 'including' acceptable; 'consisting of' for narrow scope","Prefer two-part format (preamble + 'characterised in that') when defining improvements","Multiple dependent claims permitted including on other multiple dependent claims","Maintain unity of invention under Section 10(5)"],
+      additions: ["All claims must be fully supported by the detailed description","Each claim must define matter for which protection is sought per Section 10(4)"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'detailedDescription',
+      instruction: `PARAGRAPH FORMATTING REQUIREMENT (STRICT):
+
+- Each disclosure unit must appear in its own paragraph.
+- Insert exactly one blank line between paragraphs.
+- Do not continue a paragraph once the disclosure unit is complete.
+- If additional disclosure is needed, start a new paragraph.
+`,
+      constraints: [],
+      additions: [],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'fieldOfInvention',
+      instruction: `Per Indian Patent Office Manual of Practice and Procedure, this section opens the description and indicates the technical field to which the invention relates.`,
+      constraints: ["Limit to 1–3 sentences as per Manual guidelines","State the general and specific technical field without advantages or embodiments"],
+      additions: [],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'objectsOfInvention',
+      instruction: `Per Indian Patent Office practice, draft the 'Object(s) of the Invention' section to clearly articulate the technical problems with existing prior art and the specific solutions provided by the invention. This section is placed after Background and before Summary in Indian Complete Specifications (Form 2).`,
+      constraints: ["Use statements beginning with 'The principal object of this invention is to...' or 'Another object of this invention is to...'","NEVER use 'The object...' (singular definite) as this implies only one objective","Focus on technical results achieved (e.g., 'to improve efficiency'), not the means","Each objective should correlate directly with features mentioned in the claims","Describe what the invention achieves, not how it achieves it"],
+      additions: ["Acknowledge closest prior art and clearly distinguish how the invention improves upon it","Ensure objectives can be substantiated by the detailed description and claims","Do not admit non-patentability or state invention is obvious","Avoid vague or non-technical goals focusing only on commercial success","Do not overstate benefits - stick to demonstrable technical advantages"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'preamble',
+      instruction: `just say the following in the output, nothing else, print ,"The following specification describes the invention.."`,
+      constraints: [],
+      additions: [],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'summary',
+      instruction: `Per Manual of Patent Office Practice and Procedure, provide a concise summary highlighting essential features and distinguishing aspects over known art, consistent with independent claims.`,
+      constraints: ["This summary should precede the detailed description for clarity","Ensure consistency with the scope of independent claims"],
+      additions: [],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'title',
+      instruction: `For Indian jurisdiction under Rule 13(7)(a), ensure the title is specific, indicates the features of the invention, and is normally expressed in not more than 15 words.`,
+      constraints: ["Avoid trademarks and personal names per Indian Patent Manual guidelines","Focus on brevity and clarity per Patents Rules, 2003"],
+      additions: [],
+      importFiguresDirectly: false
+    },
   ],
-  PCT: [
-    { supersetCode: '01. Title', sectionKey: 'title', heading: 'Title of Invention', displayOrder: 1, isRequired: true },
-    { supersetCode: '02. Field of Invention', sectionKey: 'fieldOfInvention', heading: 'Technical Field', displayOrder: 2, isRequired: true },
-    { supersetCode: '03. Background', sectionKey: 'background', heading: 'Background Art', displayOrder: 3, isRequired: true },
-    { supersetCode: '04. Technical Problem', sectionKey: 'technicalProblem', heading: 'Technical Problem', displayOrder: 4, isRequired: false },
-    { supersetCode: '05. Summary', sectionKey: 'summary', heading: 'Summary of Invention', displayOrder: 5, isRequired: true },
-    { supersetCode: '06. Brief Description of Drawings', sectionKey: 'briefDescriptionOfDrawings', heading: 'Brief Description of Drawings', displayOrder: 6, isRequired: false },
-    { supersetCode: '07. Detailed Description', sectionKey: 'detailedDescription', heading: 'Description of Embodiments', displayOrder: 7, isRequired: true },
-    { supersetCode: '08. Industrial Applicability', sectionKey: 'industrialApplicability', heading: 'Industrial Applicability', displayOrder: 8, isRequired: false },
-    { supersetCode: '09. Claims', sectionKey: 'claims', heading: 'Claims', displayOrder: 9, isRequired: true },
-    { supersetCode: '10. Abstract', sectionKey: 'abstract', heading: 'Abstract', displayOrder: 10, isRequired: true }
+  'JP': [
+    {
+      sectionKey: 'abstract',
+      instruction: `Per JPO practice, draft a concise Abstract summarizing the gist of the invention.`,
+      constraints: ["Single paragraph, ~150 words recommended (max 200)","Technical summary only","No advantages, marketing language, or claim references","~800 characters maximum for Japanese version"],
+      additions: ["Abstract may be shortened by JPO/JAPIO on publication","This is for information/searching purposes only"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'advantageousEffects',
+      instruction: `Draft the Advantageous Effects sub-section per JPO requirements, listing specific technical advantages.`,
+      constraints: ["List specific, measurable technical advantages","Support with specification features","No marketing or commercial language"],
+      additions: ["This corresponds to 【発明の効果】"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'background',
+      instruction: `Per JPO practice, draft Background Art describing conventional technology and prior art relevant to understanding the invention.`,
+      constraints: ["Describe limitations objectively without disparaging specific patents","Do not fully state problem/solution here - reserve for Summary","Use neutral language about prior art drawbacks"],
+      additions: ["Japan has no formal IDS requirement but applicants should not deliberately conceal known prior art","This section corresponds to 【背景技術】 in Japanese filings","Consider separate Citation List section for prior art references"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'briefDescriptionOfDrawings',
+      instruction: `Per JPO formatting, provide brief one-sentence description for each drawing figure.`,
+      constraints: ["One sentence per figure","Format: 'FIG. X is a [view type] of [subject]'","No detailed operation - reserve for Description of Embodiments"],
+      additions: ["This corresponds to 【図面の簡単な説明】"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'claims',
+      instruction: `Draft claims per Patent Act Article 36 and JPO Examination Guidelines, ensuring support and clarity.`,
+      constraints: ["Each claim supported by description","Clear, consistent terminology","Single general inventive concept (unity)","Multiple dependent claims allowed but cannot depend on other multiple dependents"],
+      additions: ["Fee based on total number of claims, not just independents","Multiple independent claims for different categories (product, method) are acceptable","Reference numerals may be included in claims"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'detailedDescription',
+      instruction: `Per Patent Act Article 36(4)(i), draft Description of Embodiments enabling a skilled person to carry out the invention without undue experimentation.`,
+      constraints: ["Include embodiment regarded as best mode","Sufficient detail for enablement","Use consistent reference numerals matching drawings","Avoid claim-style language"],
+      additions: ["This corresponds to 【発明を実施するための形態】","Japan requires best mode disclosure integrated in this section","Consider paragraph numbering in format 【0001】"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'fieldOfInvention',
+      instruction: `Per JPO specification guidelines, draft a Technical Field section stating the technical area of the invention.`,
+      constraints: ["Neutral technical terminology","No advantages or problem discussion","May include classification terms"],
+      additions: ["This section corresponds to 【技術分野】 in Japanese filings"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'industrialApplicability',
+      instruction: `Draft Industrial Applicability section if applicability is not self-evident from other sections.`,
+      constraints: ["Explain how invention can be used in industry","Specific practical applications"],
+      additions: ["This corresponds to 【産業上の利用可能性】","Optional - can be omitted if self-evident"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'summary',
+      instruction: `Per JPO practice, draft Summary of Invention with clear problem-solution structure including Technical Problem, Solution to Problem, and Advantageous Effects.`,
+      constraints: ["Use problem-solution structure required by JPO","Technical Problem: state objective technical problem","Solution to Problem: describe how invention solves it","Advantageous Effects: list technical benefits","Align with independent claims"],
+      additions: ["This section corresponds to 【発明の概要】 in Japanese filings","JPO strongly prefers explicit problem-solution format","Effects should be technical, not commercial"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'technicalProblem',
+      instruction: `Draft the Technical Problem sub-section per JPO requirements, stating the objective technical problem to be solved.`,
+      constraints: ["State problem objectively, not subjectively","Problem should be recognizable by skilled person","Solvable by the distinguishing features of the invention"],
+      additions: ["This corresponds to 【発明が解決しようとする課題】"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'technicalSolution',
+      instruction: `Draft the Solution to Problem sub-section per JPO requirements, describing how the invention solves the technical problem.`,
+      constraints: ["Directly address the Technical Problem","Explain cause-effect relationship","Describe technical mechanism"],
+      additions: ["This corresponds to 【課題を解決するための手段】"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'title',
+      instruction: `Per JPO practice and Patent Act Article 36, draft a concise technical title that identifies the invention without marketing language or trademarks.`,
+      constraints: ["Maximum 500 characters","No trade names, trade marks, personal names, or superlatives","Must be technical and descriptive","Avoid fanciful or abstract terms"],
+      additions: ["Title will be translated to Japanese for official filing"],
+      importFiguresDirectly: false
+    },
   ],
-  CA: [
-    { supersetCode: '01. Title', sectionKey: 'title', heading: 'Title', displayOrder: 1, isRequired: true },
-    { supersetCode: '02. Field of Invention', sectionKey: 'fieldOfInvention', heading: 'Field of the Invention', displayOrder: 2, isRequired: true },
-    { supersetCode: '03. Background', sectionKey: 'background', heading: 'Background of the Invention', displayOrder: 3, isRequired: true },
-    { supersetCode: '04. Summary', sectionKey: 'summary', heading: 'Summary of the Invention', displayOrder: 4, isRequired: true },
-    { supersetCode: '05. Brief Description of Drawings', sectionKey: 'briefDescriptionOfDrawings', heading: 'Brief Description of the Drawings', displayOrder: 5, isRequired: false },
-    { supersetCode: '06. Detailed Description', sectionKey: 'detailedDescription', heading: 'Detailed Description of the Preferred Embodiments', displayOrder: 6, isRequired: true },
-    { supersetCode: '07. Claims', sectionKey: 'claims', heading: 'Claims', displayOrder: 7, isRequired: true },
-    { supersetCode: '08. Abstract', sectionKey: 'abstract', heading: 'Abstract', displayOrder: 8, isRequired: true }
+  'PCT': [
+    {
+      sectionKey: 'abstract',
+      instruction: `Per PCT Rule 8, draft an Abstract for searching purposes that permits quick understanding of the technical disclosure.`,
+      constraints: ["50-150 words (strictly, max 150)","Technical field, problem, solution, principal use","No merits, advantages, or speculative applications","No claim-style language"],
+      additions: ["Published by WIPO in international publication","Include reference to most illustrative figure (Rule 8.1(c))","ISA may amend abstract if needed (Rule 38.2)"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'background',
+      instruction: `Per PCT Rule 5.1(a)(ii), draft Background Art indicating prior art useful for understanding, searching, and examining the invention.`,
+      constraints: ["Cite relevant prior art documents where known","Describe limitations objectively","Do not concede obviousness or lack of novelty"],
+      additions: ["Prior art citations are useful for international search","This section helps the ISA understand the technical context"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'briefDescriptionOfDrawings',
+      instruction: `Per PCT Rule 5.1(a)(iv), briefly describe each figure of the drawings.`,
+      constraints: ["One sentence per figure","Brief description only","Required if drawings are present"],
+      additions: ["Format: 'Fig. X is a [view type] showing [subject]'"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'claims',
+      instruction: `Per PCT Rules 6 and 13, draft claims that define the matter for which protection is sought, supported by the description.`,
+      constraints: ["Each claim as single sentence where practicable","Clear, consistent terminology","Unity of invention under Rule 13 (single general inventive concept)","Multiple dependent claims cannot depend on other multiple dependents","Reference numerals may be included in claims (Rule 6.2(a))"],
+      additions: ["3+ independent claims or 15+ total claims may trigger additional search fees","Consider national phase requirements when drafting (some offices prefer two-part form)","Claims must be numbered consecutively in Arabic numerals"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'detailed_description',
+      instruction: `Per PCT Rule 5.1(a)(v), draft Mode(s) for Carrying Out the Invention setting out at least the best mode contemplated by the applicant.`,
+      constraints: ["Best mode contemplated by applicant must be disclosed","Sufficient detail for enablement by skilled person","Each independent claim needs supporting embodiment","Reference drawings with consistent numerals"],
+      additions: ["Required section under PCT Rule 5.1(a)(v)","Best mode disclosure required for many national phases","Use examples where they add clarity"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'detailedDescription',
+      instruction: `Per PCT Rule 5.1(a)(v), draft Mode(s) for Carrying Out the Invention setting out at least the best mode contemplated by the applicant.`,
+      constraints: ["Best mode must be disclosed","Sufficient detail for enablement","Support for all independent claims"],
+      additions: ["Required under PCT Rule 5.1(a)(v)"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'field',
+      instruction: `Per PCT Rule 5.1(a)(i), draft Technical Field indicating the technical field to which the invention relates.`,
+      constraints: ["1-3 sentences","Must make sense to a skilled person","No advantages, embodiments, or detailed features"],
+      additions: ["Required section under PCT Rule 5.1(a)(i)","Should be suitable for international classification purposes"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'fieldOfInvention',
+      instruction: `Per PCT Rule 5.1(a)(i), draft Technical Field indicating the technical field to which the invention relates.`,
+      constraints: ["1-3 sentences","Must make sense to a skilled person","No advantages, embodiments, or detailed features"],
+      additions: ["Required section under PCT Rule 5.1(a)(i)"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'summary',
+      instruction: `Per PCT Rule 5.1(a)(iii), draft Disclosure of Invention so the technical problem and solution can be understood, with advantageous effects relative to background art.`,
+      constraints: ["Technical problem and solution must be clear","Advantageous effects compared to prior art","Align with independent claims"],
+      additions: ["Required section under PCT Rule 5.1(a)(iii)","Critical for international preliminary examination under Chapter II"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'title',
+      instruction: `Per PCT Rule 4.3, draft a title that is short, precise, and indicates the subject matter to which the invention relates.`,
+      constraints: ["Maximum 500 characters","Brief and descriptive of the technical subject","No trademarks, trade names, or fanciful expressions","Suitable for publication in multiple PCT member states"],
+      additions: ["Title appears in the international publication (WIPO)","Should be suitable for translation into multiple languages"],
+      importFiguresDirectly: false
+    },
   ],
-  AU: [
-    { supersetCode: '01. Title', sectionKey: 'title', heading: 'Title', displayOrder: 1, isRequired: true },
-    { supersetCode: '02. Field of Invention', sectionKey: 'fieldOfInvention', heading: 'Technical Field', displayOrder: 2, isRequired: true },
-    { supersetCode: '03. Background', sectionKey: 'background', heading: 'Background Art', displayOrder: 3, isRequired: true },
-    { supersetCode: '04. Summary', sectionKey: 'summary', heading: 'Summary of Invention', displayOrder: 4, isRequired: true },
-    { supersetCode: '05. Brief Description of Drawings', sectionKey: 'briefDescriptionOfDrawings', heading: 'Brief Description of Drawings', displayOrder: 5, isRequired: false },
-    // 'bestMethod' is the canonical key (matches SupersetSection and legacy DB column)
-    { supersetCode: '06. Best Method', sectionKey: 'bestMethod', heading: 'Best Method of Performing the Invention', displayOrder: 6, isRequired: true },
-    { supersetCode: '07. Claims', sectionKey: 'claims', heading: 'Claims', displayOrder: 7, isRequired: true },
-    { supersetCode: '08. Abstract', sectionKey: 'abstract', heading: 'Abstract', displayOrder: 8, isRequired: true }
+  'US': [
+    {
+      sectionKey: 'abstract',
+      instruction: `Per 37 CFR 1.72(b) and MPEP 608.01(b), draft an Abstract suitable for publication that allows quick determination of the nature of the technical disclosure.`,
+      constraints: ["Maximum 150 words (strictly enforced)","Single paragraph format","Technical summary only—no legal phraseology","Must not discuss merits or speculative applications"],
+      additions: ["Include reference to the figure that best characterizes the invention (e.g., '(FIG. 1)')","The USPTO may shorten abstracts exceeding 150 words","The abstract is published in the Official Gazette"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'background',
+      instruction: `Per MPEP 608.01(c) and 37 CFR 1.71, draft a Background that describes relevant prior art without making admissions harmful to patentability.`,
+      constraints: ["Avoid statements like 'it is known in the art' without careful consideration","Do not characterize prior art in ways that suggest the invention is obvious","Use 'conventional approaches' rather than 'well-known' where possible","Do not admit that any specific reference constitutes prior art"],
+      additions: ["Under 35 USC 102/103, statements in the background may be used against patentability","Consider using hedging language: 'Some approaches have attempted...'","IDS obligations under 37 CFR 1.56 require disclosure of material prior art"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'briefDescriptionOfDrawings',
+      instruction: `Per 37 CFR 1.74, provide a brief description of each drawing figure before the detailed description.`,
+      constraints: ["One sentence per figure","Use format: 'FIG. X is a [view type] showing [what it depicts]'","View types: block diagram, flowchart, perspective view, cross-sectional view"],
+      additions: ["This section should follow the order of figures in the drawings","Reference numerals need not be listed here—they belong in the detailed description"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'claims',
+      instruction: `Draft claims compliant with 35 USC 112 and 37 CFR 1.75. Use open-ended 'comprising' language for flexibility.`,
+      constraints: ["Each claim must be a single sentence","Maintain proper antecedent basis ('a processor'...'the processor')","Independent claims: system/apparatus, method, and optionally CRM claims","Dependent claims must reference only one prior claim (no multiple dependencies in US)","Avoid 'means for' unless invoking 35 USC 112(f)"],
+      additions: ["Per 37 CFR 1.75(c), multiple dependent claims are allowed but incur extra fees","Consider 3 independent claims and 17 dependent claims before excess claim fees apply","Use 'configured to' or 'adapted to' for functional language without invoking 112(f)"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'detailedDescription',
+      instruction: `Per 35 USC 112(a) and MPEP 2161-2165, draft a Detailed Description that satisfies the written description, enablement, and best mode requirements.`,
+      constraints: ["Describe in sufficient detail to enable a person of ordinary skill to make and use the invention (enablement)","Demonstrate possession of the claimed invention (written description)","Disclose the best mode contemplated by the inventor (best mode)","Use reference numerals consistently with the drawings"],
+      additions: ["Include multiple embodiments and alternatives using 'in another embodiment...'","The USPTO requires the best mode known at the time of filing to be disclosed","Support for functional claim language should be explicit in the description"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'fieldOfInvention',
+      instruction: `Per MPEP 608.01(c), draft a concise Field of the Invention that identifies the technical area without describing the invention itself.`,
+      constraints: ["1-3 sentences maximum","State only the technical field (e.g., 'data processing', 'chemical compositions')","Do not describe specific features, advantages, or embodiments"],
+      additions: ["This section helps the examiner classify the invention for searching purposes"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'summary',
+      instruction: `Per MPEP 608.01(d), draft a Summary that provides a general statement of the invention suitable for publication in the Official Gazette.`,
+      constraints: ["Align closely with independent claim 1","Include all essential elements of the broadest claim","Use 'in one embodiment', 'in aspects', 'according to various embodiments' for flexibility","Avoid unnecessary limitations not in the claims"],
+      additions: ["The summary may be used by the USPTO for publication purposes","Consider including a brief statement of advantageous effects"],
+      importFiguresDirectly: false
+    },
+    {
+      sectionKey: 'title',
+      instruction: `Per 37 CFR 1.72(a), draft a title that is brief, technical, and specific to the invention. Avoid abstract or fanciful terms.`,
+      constraints: ["Maximum 500 characters per USPTO rules","Do not include trademarks, trade names, or personal names","Use sentence case without a terminal period","Avoid words like 'new', 'improved', 'novel'"],
+      additions: ["The title appears at the top of the specification and should match Form PTO/SB/16 if used"],
+      importFiguresDirectly: false
+    },
   ],
-  JP: [
-    { supersetCode: '01. Title', sectionKey: 'title', heading: 'Title of Invention', displayOrder: 1, isRequired: true },
-    { supersetCode: '02. Field of Invention', sectionKey: 'fieldOfInvention', heading: 'Technical Field', displayOrder: 2, isRequired: true },
-    { supersetCode: '03. Background', sectionKey: 'background', heading: 'Background Art', displayOrder: 3, isRequired: true },
-    { supersetCode: '04. Technical Problem', sectionKey: 'technicalProblem', heading: 'Problem to be Solved', displayOrder: 4, isRequired: true },
-    { supersetCode: '05. Technical Solution', sectionKey: 'technicalSolution', heading: 'Solution to Problem', displayOrder: 5, isRequired: true },
-    { supersetCode: '06. Advantageous Effects', sectionKey: 'advantageousEffects', heading: 'Advantageous Effects of Invention', displayOrder: 6, isRequired: true },
-    { supersetCode: '07. Brief Description of Drawings', sectionKey: 'briefDescriptionOfDrawings', heading: 'Brief Description of Drawings', displayOrder: 7, isRequired: false },
-    { supersetCode: '08. Detailed Description', sectionKey: 'detailedDescription', heading: 'Description of Embodiments', displayOrder: 8, isRequired: true },
-    { supersetCode: '09. Industrial Applicability', sectionKey: 'industrialApplicability', heading: 'Industrial Applicability', displayOrder: 9, isRequired: false },
-    { supersetCode: '10. Claims', sectionKey: 'claims', heading: 'Claims', displayOrder: 10, isRequired: true },
-    { supersetCode: '11. Abstract', sectionKey: 'abstract', heading: 'Abstract', displayOrder: 11, isRequired: true }
-  ]
 };
 
-// ============================================================================
-// UTILITY FUNCTIONS
-// ============================================================================
-
-async function getSystemUserId() {
-  const superAdmin = await prisma.user.findFirst({
-    where: { roles: { has: 'SUPER_ADMIN' } }
-  });
-  if (superAdmin) return superAdmin.id;
-
-  const anyUser = await prisma.user.findFirst();
-  if (anyUser) return anyUser.id;
-
-  return null;
-}
-
-function loadCountryJson(filename) {
-  const filepath = path.join(COUNTRIES_DIR, filename);
-  try {
-    const content = fs.readFileSync(filepath, 'utf-8');
-    return JSON.parse(content);
-  } catch (error) {
-    return null;
-  }
-}
-
-function printHeader(title) {
-  console.log('\n╔' + '═'.repeat(66) + '╗');
-  console.log('║  ' + title.padEnd(64) + '║');
-  console.log('╚' + '═'.repeat(66) + '╝\n');
-}
 
 // ============================================================================
-// STEP 1: SEED SUPERSET SECTIONS
+// LLM MODELS - EXPORTED FROM DATABASE 2025-12-19T03:34:22.903Z
 // ============================================================================
-
-async function seedSupersetSections(systemUserId) {
-  printHeader('📦 STEP 1: Seeding Superset Sections');
-
-  let created = 0, updated = 0, skipped = 0;
-
-  for (const section of SUPERSET_SECTIONS) {
-    try {
-      const existing = await prisma.supersetSection.findUnique({
-        where: { sectionKey: section.sectionKey }
-      });
-
-      if (existing && !options.force) {
-        skipped++;
-        continue;
-      }
-
-      if (options.dryRun) {
-        console.log(`  [DRY-RUN] Would ${existing ? 'update' : 'create'} ${section.sectionKey}`);
-        if (existing) updated++; else created++;
-        continue;
-      }
-
-      // Build context flags summary for logging
-      const contextFlags = [
-        section.requiresPriorArt ? 'priorArt' : null,
-        section.requiresFigures ? 'figures' : null,
-        section.requiresClaims ? 'claims' : null,
-        section.requiresComponents ? 'components' : null
-      ].filter(Boolean).join(',') || 'none';
-
-      if (existing) {
-        await prisma.supersetSection.update({
-          where: { sectionKey: section.sectionKey },
-          data: {
-            displayOrder: section.displayOrder,
-            label: section.label,
-            description: section.description,
-            instruction: section.instruction,
-            constraints: section.constraints,
-            isRequired: section.isRequired,
-            aliases: section.aliases || [],
-            // Context injection flags
-            requiresPriorArt: section.requiresPriorArt ?? false,
-            requiresFigures: section.requiresFigures ?? false,
-            requiresClaims: section.requiresClaims ?? false,
-            requiresComponents: section.requiresComponents ?? false,
-            updatedBy: systemUserId
-          }
-        });
-        console.log(`  ✏️  [UPDATE] ${section.sectionKey} (context: ${contextFlags})`);
-        updated++;
-      } else {
-        await prisma.supersetSection.create({
-          data: {
-            sectionKey: section.sectionKey,
-            displayOrder: section.displayOrder,
-            label: section.label,
-            description: section.description,
-            instruction: section.instruction,
-            constraints: section.constraints,
-            isRequired: section.isRequired,
-            aliases: section.aliases || [],
-            isActive: true,
-            // Context injection flags
-            requiresPriorArt: section.requiresPriorArt ?? false,
-            requiresFigures: section.requiresFigures ?? false,
-            requiresClaims: section.requiresClaims ?? false,
-            requiresComponents: section.requiresComponents ?? false,
-            createdBy: systemUserId
-          }
-        });
-        console.log(`  ✅ [CREATE] ${section.sectionKey} (context: ${contextFlags})`);
-        created++;
-      }
-    } catch (err) {
-      console.log(`  ❌ [ERROR] ${section.sectionKey}: ${err.message}`);
-    }
-  }
-
-  console.log(`\n  📊 Summary: Created=${created}, Updated=${updated}, Skipped=${skipped}`);
-  return { created, updated, skipped };
-}
-
-// ============================================================================
-// STEP 2: SEED COUNTRY NAMES (Complete list of all jurisdictions)
-// ============================================================================
-
-// All supported country/jurisdiction names (30 total)
-const ALL_COUNTRY_NAMES = [
-  { code: 'AU', name: 'Australia', continent: 'Oceania' },
-  { code: 'BD', name: 'Bangladesh', continent: 'Asia' },
-  { code: 'BR', name: 'Brazil', continent: 'South America' },
-  { code: 'CA', name: 'Canada', continent: 'North America' },
-  { code: 'CH', name: 'Switzerland', continent: 'Europe' },
-  { code: 'CN', name: 'China', continent: 'Asia' },
-  { code: 'DE', name: 'Germany', continent: 'Europe' },
-  { code: 'EP', name: 'European Patent Office', continent: 'Europe' },
-  { code: 'ES', name: 'Spain', continent: 'Europe' },
-  { code: 'EU', name: 'European Union', continent: 'Europe' },
-  { code: 'FR', name: 'France', continent: 'Europe' },
-  { code: 'IL', name: 'Israel', continent: 'Asia' },
-  { code: 'IN', name: 'India', continent: 'Asia' },
-  { code: 'IR', name: 'Iran', continent: 'Asia' },
-  { code: 'JP', name: 'Japan', continent: 'Asia' },
-  { code: 'KR', name: 'South Korea', continent: 'Asia' },
-  { code: 'MX', name: 'Mexico', continent: 'North America' },
-  { code: 'MY', name: 'Malaysia', continent: 'Asia' },
-  { code: 'NZ', name: 'New Zealand', continent: 'Oceania' },
-  { code: 'PCT', name: 'PCT International', continent: 'International' },
-  { code: 'PK', name: 'Pakistan', continent: 'Asia' },
-  { code: 'PL', name: 'Poland', continent: 'Europe' },
-  { code: 'RU', name: 'Russia', continent: 'Europe' },
-  { code: 'SA', name: 'Saudi Arabia', continent: 'Asia' },
-  { code: 'SE', name: 'Sweden', continent: 'Europe' },
-  { code: 'TW', name: 'Taiwan', continent: 'Asia' },
-  { code: 'UAE', name: 'United Arab Emirates', continent: 'Asia' },
-  { code: 'UK', name: 'United Kingdom', continent: 'Europe' },
-  { code: 'US', name: 'United States of America', continent: 'North America' },
-  { code: 'ZA', name: 'South Africa', continent: 'Africa' }
+const LLM_MODELS = [
+  {
+    code: 'claude-3-opus',
+    displayName: 'Claude 3 Opus',
+    provider: 'anthropic',
+    contextWindow: 200000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 1500,
+    outputCostPer1M: 7500,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'claude-3.5-haiku',
+    displayName: 'Claude 3.5 Haiku',
+    provider: 'anthropic',
+    contextWindow: 200000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 80,
+    outputCostPer1M: 400,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'claude-3.5-sonnet',
+    displayName: 'Claude 3.5 Sonnet',
+    provider: 'anthropic',
+    contextWindow: 200000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 300,
+    outputCostPer1M: 1500,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'deepseek-chat',
+    displayName: 'DeepSeek Chat',
+    provider: 'deepseek',
+    contextWindow: 64000,
+    supportsVision: false,
+    supportsStreaming: true,
+    inputCostPer1M: 27,
+    outputCostPer1M: 110,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'deepseek-reasoner',
+    displayName: 'DeepSeek Reasoner (R1)',
+    provider: 'deepseek',
+    contextWindow: 64000,
+    supportsVision: false,
+    supportsStreaming: true,
+    inputCostPer1M: 55,
+    outputCostPer1M: 219,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gemini-1.5-pro',
+    displayName: 'Gemini 1.5 Pro',
+    provider: 'google',
+    contextWindow: 2000000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 125,
+    outputCostPer1M: 500,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gemini-2.0-flash',
+    displayName: 'Gemini 2.0 Flash',
+    provider: 'google',
+    contextWindow: 1000000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 10,
+    outputCostPer1M: 40,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gemini-2.0-flash-lite',
+    displayName: 'Gemini 2.0 Flash Lite',
+    provider: 'google',
+    contextWindow: 1000000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 8,
+    outputCostPer1M: 30,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gemini-2.5-flash',
+    displayName: 'Gemini 2.5 Flash (Nano Banana)',
+    provider: 'google',
+    contextWindow: 1000000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 15,
+    outputCostPer1M: 60,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gemini-2.5-flash-lite',
+    displayName: 'Gemini 2.5 Flash Lite',
+    provider: 'google',
+    contextWindow: 1000000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 10,
+    outputCostPer1M: 40,
+    isActive: true,
+    isDefault: true
+  },
+  {
+    code: 'gemini-2.5-pro',
+    displayName: 'Gemini 2.5 Pro',
+    provider: 'google',
+    contextWindow: 2000000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 125,
+    outputCostPer1M: 1000,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gemini-3-pro-image-preview',
+    displayName: 'Gemini 3 Pro Image Preview (Nano Banana Pro)',
+    provider: 'google',
+    contextWindow: 128000,
+    supportsVision: true,
+    supportsStreaming: false,
+    inputCostPer1M: 100,
+    outputCostPer1M: 400,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gemini-3-pro-preview',
+    displayName: 'Gemini 3 Pro Preview',
+    provider: 'google',
+    contextWindow: 2000000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 125,
+    outputCostPer1M: 1000,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gemini-3-pro-preview-thinking',
+    displayName: 'Gemini 3 Pro Preview (Thinking)',
+    provider: 'google',
+    contextWindow: 2000000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 125,
+    outputCostPer1M: 1000,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gemini-3.0-nano-banana',
+    displayName: 'Gemini 3.0 Nano Banana (Sketch)',
+    provider: 'google',
+    contextWindow: 128000,
+    supportsVision: true,
+    supportsStreaming: false,
+    inputCostPer1M: 100,
+    outputCostPer1M: 400,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'llama-3.3-70b',
+    displayName: 'Llama 3.3 70B (Groq)',
+    provider: 'groq',
+    contextWindow: 128000,
+    supportsVision: false,
+    supportsStreaming: true,
+    inputCostPer1M: 59,
+    outputCostPer1M: 79,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'mixtral-8x7b',
+    displayName: 'Mixtral 8x7B (Groq)',
+    provider: 'groq',
+    contextWindow: 32768,
+    supportsVision: false,
+    supportsStreaming: true,
+    inputCostPer1M: 27,
+    outputCostPer1M: 27,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gpt-3.5-turbo',
+    displayName: 'GPT-3.5 Turbo',
+    provider: 'openai',
+    contextWindow: 16384,
+    supportsVision: false,
+    supportsStreaming: true,
+    inputCostPer1M: 50,
+    outputCostPer1M: 150,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gpt-4o',
+    displayName: 'GPT-4o',
+    provider: 'openai',
+    contextWindow: 128000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 250,
+    outputCostPer1M: 1000,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gpt-4o-mini',
+    displayName: 'GPT-4o Mini',
+    provider: 'openai',
+    contextWindow: 128000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 15,
+    outputCostPer1M: 60,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gpt-5',
+    displayName: 'GPT-5',
+    provider: 'openai',
+    contextWindow: 256000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 125,
+    outputCostPer1M: 1000,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gpt-5-mini',
+    displayName: 'GPT-5 Mini',
+    provider: 'openai',
+    contextWindow: 128000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 50,
+    outputCostPer1M: 200,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gpt-5-nano',
+    displayName: 'GPT-5 Nano',
+    provider: 'openai',
+    contextWindow: 64000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 25,
+    outputCostPer1M: 100,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gpt-5.1',
+    displayName: 'GPT-5.1',
+    provider: 'openai',
+    contextWindow: 256000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 150,
+    outputCostPer1M: 1200,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gpt-5.1-thinking',
+    displayName: 'GPT-5.1 (Thinking)',
+    provider: 'openai',
+    contextWindow: 256000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 150,
+    outputCostPer1M: 1200,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gpt-5.2',
+    displayName: 'GPT-5.2',
+    provider: 'openai',
+    contextWindow: 256000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 150,
+    outputCostPer1M: 1200,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'gpt-5.2-thinking',
+    displayName: 'GPT-5.2 (Thinking)',
+    provider: 'openai',
+    contextWindow: 256000,
+    supportsVision: true,
+    supportsStreaming: true,
+    inputCostPer1M: 150,
+    outputCostPer1M: 1200,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'o1',
+    displayName: 'OpenAI o1 (Reasoning)',
+    provider: 'openai',
+    contextWindow: 200000,
+    supportsVision: true,
+    supportsStreaming: false,
+    inputCostPer1M: 1500,
+    outputCostPer1M: 6000,
+    isActive: true,
+    isDefault: false
+  },
+  {
+    code: 'o1-mini',
+    displayName: 'OpenAI o1 Mini',
+    provider: 'openai',
+    contextWindow: 128000,
+    supportsVision: false,
+    supportsStreaming: false,
+    inputCostPer1M: 110,
+    outputCostPer1M: 440,
+    isActive: true,
+    isDefault: false
+  },
 ];
-
-async function seedCountryNames() {
-  printHeader('🌍 STEP 2: Seeding Country Names');
-
-  // Use the complete hardcoded list (all 30 jurisdictions)
-  const countryNames = ALL_COUNTRY_NAMES;
-  console.log(`  📋 Seeding ${countryNames.length} country names...`);
-
-  let created = 0, updated = 0, skipped = 0;
-
-  for (const country of countryNames) {
-    if (options.country && country.code !== options.country) continue;
-
-    try {
-      const existing = await prisma.countryName.findUnique({
-        where: { code: country.code }
-      });
-
-      if (existing && !options.force) {
-        skipped++;
-        continue;
-      }
-
-      if (options.dryRun) {
-        if (existing) updated++; else created++;
-        continue;
-      }
-
-      await prisma.countryName.upsert({
-        where: { code: country.code },
-        update: { name: country.name, continent: country.continent },
-        create: { code: country.code, name: country.name, continent: country.continent }
-      });
-
-      if (existing) {
-        updated++;
-      } else {
-        console.log(`  ✅ [CREATE] ${country.code}: ${country.name}`);
-        created++;
-      }
-    } catch (err) {
-      console.log(`  ❌ [ERROR] ${country.code}: ${err.message}`);
-    }
-  }
-
-  console.log(`\n  📊 Summary: Created=${created}, Updated=${updated}, Skipped=${skipped}`);
-  return { created, updated, skipped };
-}
-
-// ============================================================================
-// STEP 3: SEED COUNTRY SECTION MAPPINGS
-// ============================================================================
-
-async function seedCountrySectionMappings() {
-  printHeader('🗺️  STEP 3: Seeding Country Section Mappings');
-
-  // First, load from backup
-  const backupPath = path.join(COUNTRIES_DIR, 'production-seed-backup.json');
-  let backupMappings = [];
-  
-  if (fs.existsSync(backupPath)) {
-    const backup = JSON.parse(fs.readFileSync(backupPath, 'utf-8'));
-    backupMappings = backup.tables?.countrySectionMapping || [];
-  }
-
-  let created = 0, updated = 0, skipped = 0;
-
-  // First seed from backup (for all countries)
-  if (backupMappings.length > 0) {
-    console.log(`  Loading ${backupMappings.length} mappings from backup...`);
-    
-    for (const mapping of backupMappings) {
-      const countryCode = mapping.country_code;
-      if (options.country && countryCode !== options.country) continue;
-
-      try {
-        const existing = await prisma.countrySectionMapping.findFirst({
-          where: { countryCode, sectionKey: mapping.section_key }
-        });
-
-        if (existing && !options.force) {
-          skipped++;
-          continue;
-        }
-
-        if (options.dryRun) {
-          if (existing) updated++; else created++;
-          continue;
-        }
-
-        if (existing) {
-          await prisma.countrySectionMapping.update({
-            where: { id: existing.id },
-            data: {
-              supersetCode: mapping.superset_code,
-              heading: mapping.heading,
-              isRequired: mapping.is_required ?? true,
-              isEnabled: mapping.is_enabled ?? true,
-              displayOrder: mapping.display_order
-            }
-          });
-          updated++;
-        } else {
-          await prisma.countrySectionMapping.create({
-            data: {
-              id: mapping.id,
-              countryCode,
-              supersetCode: mapping.superset_code,
-              sectionKey: mapping.section_key,
-              heading: mapping.heading,
-              isRequired: mapping.is_required ?? true,
-              isEnabled: mapping.is_enabled ?? true,
-              displayOrder: mapping.display_order
-            }
-          });
-          created++;
-        }
-      } catch (err) {
-        // Ignore duplicate errors
-      }
-    }
-  }
-
-  // Then seed/update from hardcoded mappings (key countries)
-  console.log(`  Processing hardcoded mappings for key jurisdictions...`);
-  
-  for (const [countryCode, sections] of Object.entries(COUNTRY_MAPPINGS)) {
-    if (options.country && countryCode !== options.country) continue;
-
-    for (const section of sections) {
-      try {
-        const existing = await prisma.countrySectionMapping.findFirst({
-          where: { countryCode, sectionKey: section.sectionKey }
-        });
-
-        if (existing) {
-          if (options.force) {
-            if (!options.dryRun) {
-              await prisma.countrySectionMapping.update({
-                where: { id: existing.id },
-                data: {
-                  supersetCode: section.supersetCode,
-                  heading: section.heading,
-                  displayOrder: section.displayOrder,
-                  isRequired: section.isRequired,
-                  isEnabled: true
-                }
-              });
-            }
-            updated++;
-          }
-        } else {
-          if (!options.dryRun) {
-            await prisma.countrySectionMapping.create({
-              data: {
-                countryCode,
-                supersetCode: section.supersetCode,
-                sectionKey: section.sectionKey,
-                heading: section.heading,
-                displayOrder: section.displayOrder,
-                isRequired: section.isRequired,
-                isEnabled: true
-              }
-            });
-          }
-          created++;
-        }
-      } catch (err) {
-        // Ignore errors
-      }
-    }
-  }
-
-  console.log(`\n  📊 Summary: Created=${created}, Updated=${updated}, Skipped=${skipped}`);
-  return { created, updated, skipped };
-}
-
-// ============================================================================
-// STEP 4: SEED SECTION PROMPTS (from JSON files)
-// ============================================================================
-
-async function seedSectionPrompts() {
-  printHeader('📝 STEP 4: Seeding Country Section Prompts (Top-ups)');
-
-  const files = fs.readdirSync(COUNTRIES_DIR)
-    .filter(f => f.endsWith('.json') && !f.startsWith('TEMPLATE') && !f.includes('backup') && !f.includes('sample'));
-
-  let created = 0, updated = 0, skipped = 0;
-
-  for (const file of files) {
-    let countryCode = file.replace('.json', '').toUpperCase();
-    if (countryCode === 'CANADA') countryCode = 'CA';
-    if (options.country && countryCode !== options.country) continue;
-
-    const profile = loadCountryJson(file);
-    if (!profile?.prompts?.sections) continue;
-
-    console.log(`  Processing ${countryCode}...`);
-    const sections = profile.prompts.sections;
-
-    for (const [sectionKey, config] of Object.entries(sections)) {
-      const topUp = config.topUp || config;
-      if (!topUp?.instruction) continue;
-
-      try {
-        const existing = await prisma.countrySectionPrompt.findFirst({
-          where: { countryCode, sectionKey }
-        });
-
-        if (existing && !options.force) {
-          skipped++;
-          continue;
-        }
-
-        const promptData = {
-          countryCode,
-          sectionKey,
-          instruction: topUp.instruction,
-          constraints: topUp.constraints || [],
-          additions: topUp.additions || [],
-          version: existing ? existing.version + 1 : 1,
-          status: 'ACTIVE',
-          createdBy: 'system:seed',
-          updatedBy: existing ? 'system:seed' : null
-        };
-
-        if (options.dryRun) {
-          if (existing) updated++; else created++;
-          continue;
-        }
-
-        if (existing) {
-          await prisma.countrySectionPrompt.update({
-            where: { id: existing.id },
-            data: promptData
-          });
-          updated++;
-        } else {
-          const newPrompt = await prisma.countrySectionPrompt.create({ data: promptData });
-          
-          // Create history entry
-          await prisma.countrySectionPromptHistory.create({
-            data: {
-              promptId: newPrompt.id,
-              countryCode,
-              sectionKey,
-              instruction: promptData.instruction,
-              constraints: promptData.constraints,
-              additions: promptData.additions,
-              version: 1,
-              changeType: 'CREATE',
-              changeReason: 'Initial seed from MasterSeed',
-              changedBy: 'system:seed'
-            }
-          });
-          
-          console.log(`    ✅ ${sectionKey}`);
-          created++;
-        }
-      } catch (err) {
-        console.log(`    ❌ ${sectionKey}: ${err.message}`);
-      }
-    }
-  }
-
-  console.log(`\n  📊 Summary: Created=${created}, Updated=${updated}, Skipped=${skipped}`);
-  return { created, updated, skipped };
-}
-
-// ============================================================================
-// STEP 5: SEED COUNTRY PROFILES
-// ============================================================================
-
-async function seedCountryProfiles(systemUserId) {
-  printHeader('📋 STEP 5: Seeding Country Profiles');
-
-  const files = fs.readdirSync(COUNTRIES_DIR)
-    .filter(f => f.endsWith('.json') && !f.startsWith('TEMPLATE') && !f.includes('backup') && !f.includes('sample'));
-
-  let created = 0, updated = 0, skipped = 0;
-
-  for (const file of files) {
-    let countryCode = file.replace('.json', '').toUpperCase();
-    if (countryCode === 'CANADA') countryCode = 'CA';
-    if (options.country && countryCode !== options.country) continue;
-
-    const profileData = loadCountryJson(file);
-    if (!profileData?.meta) continue;
-
-    const name = profileData.meta?.name || countryCode;
-
-    try {
-      const existing = await prisma.countryProfile.findUnique({
-        where: { countryCode }
-      });
-
-      if (existing && !options.force) {
-        skipped++;
-        continue;
-      }
-
-      if (options.dryRun) {
-        console.log(`  [DRY-RUN] Would ${existing ? 'update' : 'create'} ${countryCode}`);
-        if (existing) updated++; else created++;
-        continue;
-      }
-
-      if (existing) {
-        await prisma.countryProfile.update({
-          where: { countryCode },
-          data: {
-            name,
-            profileData,
-            version: existing.version + 1,
-            status: 'ACTIVE',
-            updatedBy: systemUserId
-          }
-        });
-        console.log(`  ✏️  [UPDATE] ${countryCode}: ${name}`);
-        updated++;
-      } else {
-        await prisma.countryProfile.create({
-          data: {
-            countryCode,
-            name,
-            profileData,
-            version: 1,
-            status: 'ACTIVE',
-            createdBy: systemUserId
-          }
-        });
-        console.log(`  ✅ [CREATE] ${countryCode}: ${name}`);
-        created++;
-      }
-    } catch (err) {
-      console.log(`  ❌ [ERROR] ${countryCode}: ${err.message}`);
-    }
-  }
-
-  console.log(`\n  📊 Summary: Created=${created}, Updated=${updated}, Skipped=${skipped}`);
-  return { created, updated, skipped };
-}
-
-// ============================================================================
-// STEP 6: SEED JURISDICTION STYLES
-// ============================================================================
-
-async function seedJurisdictionStyles() {
-  printHeader('🎨 STEP 6: Seeding Jurisdiction Styles');
-
-  if (options.skipStyles) {
-    console.log('  ⏭️  Skipped (--skip-styles flag)');
-    return { created: 0, updated: 0, skipped: 0 };
-  }
-
-  const files = fs.readdirSync(COUNTRIES_DIR)
-    .filter(f => f.endsWith('.json') && !f.startsWith('TEMPLATE') && !f.includes('backup') && !f.includes('sample'));
-
-  let totalCreated = 0, totalUpdated = 0, totalSkipped = 0;
-
-  for (const file of files) {
-    let countryCode = file.replace('.json', '').toUpperCase();
-    if (countryCode === 'CANADA') countryCode = 'CA';
-    if (options.country && countryCode !== options.country) continue;
-
-    const json = loadCountryJson(file);
-    if (!json?.meta) continue;
-
-    console.log(`  Processing ${countryCode}...`);
-
-    // Seed Diagram Config
-    if (json.diagrams) {
-      try {
-        const existing = await prisma.countryDiagramConfig.findUnique({ where: { countryCode } });
-        
-        if (!existing || options.force) {
-          const drawingRules = json.rules?.drawings || {};
-          
-          const configData = {
-            countryCode,
-            requiredWhenApplicable: json.diagrams.requiredWhenApplicable ?? true,
-            supportedDiagramTypes: json.diagrams.supportedDiagramTypes || ['block', 'flowchart', 'schematic'],
-            figureLabelFormat: json.diagrams.figureLabelFormat || 'Fig. {number}',
-            autoGenerateReferenceTable: json.diagrams.autoGenerateReferenceTable ?? true,
-            paperSize: drawingRules.paperSize || 'A4',
-            colorAllowed: drawingRules.colorAllowed ?? false,
-            colorUsageNote: drawingRules.colorUsageNote || null,
-            lineStyle: drawingRules.lineStyle || 'black_and_white_solid',
-            referenceNumeralsMandatory: drawingRules.referenceNumeralsMandatoryWhenDrawings ?? true,
-            minReferenceTextSizePt: drawingRules.minReferenceTextSizePt || 8,
-            drawingMarginTopCm: drawingRules.marginTopCm || 2.5,
-            drawingMarginBottomCm: drawingRules.marginBottomCm || 1.0,
-            drawingMarginLeftCm: drawingRules.marginLeftCm || 2.5,
-            drawingMarginRightCm: drawingRules.marginRightCm || 1.5,
-            defaultDiagramCount: 4,
-            maxDiagramsRecommended: 10,
-            version: existing ? existing.version + 1 : 1,
-            status: 'ACTIVE',
-            createdBy: SYSTEM_USER_ID,
-            updatedBy: SYSTEM_USER_ID
-          };
-
-          if (!options.dryRun) {
-            const result = await prisma.countryDiagramConfig.upsert({
-              where: { countryCode },
-              create: configData,
-              update: configData
-            });
-
-            // Seed diagram hints
-            if (json.diagrams.diagramGenerationHints) {
-              for (const [diagramType, hint] of Object.entries(json.diagrams.diagramGenerationHints)) {
-                await prisma.countryDiagramHint.upsert({
-                  where: { configId_diagramType: { configId: result.id, diagramType } },
-                  create: { configId: result.id, diagramType, hint, preferredSyntax: 'plantuml', requireLabels: true },
-                  update: { hint }
-                });
-              }
-            }
-          }
-          
-          if (existing) totalUpdated++; else totalCreated++;
-        } else {
-          totalSkipped++;
-        }
-      } catch (err) {
-        console.log(`    ❌ DiagramConfig: ${err.message}`);
-      }
-    }
-
-    // Seed Export Config
-    if (json.export?.documentTypes && Array.isArray(json.export.documentTypes)) {
-      for (const docType of json.export.documentTypes) {
-        try {
-          const existing = await prisma.countryExportConfig.findUnique({
-            where: { countryCode_documentTypeId: { countryCode, documentTypeId: docType.id || 'spec_pdf' } }
-          });
-
-          if (!existing || options.force) {
-            const configData = {
-              countryCode,
-              documentTypeId: docType.id || 'spec_pdf',
-              label: docType.label || `${countryCode} Specification`,
-              description: docType.description || null,
-              pageSize: docType.pageSize || 'A4',
-              marginTopCm: docType.marginTopCm || 2.5,
-              marginBottomCm: docType.marginBottomCm || 2.0,
-              marginLeftCm: docType.marginLeftCm || 2.5,
-              marginRightCm: docType.marginRightCm || 2.0,
-              fontFamily: docType.fontFamily || 'Times New Roman',
-              fontSizePt: docType.fontSizePt || 12,
-              lineSpacing: docType.lineSpacing || 1.5,
-              addPageNumbers: docType.addPageNumbers ?? true,
-              addParagraphNumbers: docType.addParagraphNumbers ?? false,
-              pageNumberFormat: 'Page {page} of {total}',
-              pageNumberPosition: 'header-right',
-              includesSections: docType.includesSections || [],
-              sectionOrder: [],
-              version: existing ? existing.version + 1 : 1,
-              status: 'ACTIVE',
-              createdBy: SYSTEM_USER_ID,
-              updatedBy: SYSTEM_USER_ID
-            };
-
-            if (!options.dryRun) {
-              const result = await prisma.countryExportConfig.upsert({
-                where: { countryCode_documentTypeId: { countryCode, documentTypeId: configData.documentTypeId } },
-                create: configData,
-                update: configData
-              });
-
-              // Seed export headings
-              if (json.export.sectionHeadings) {
-                for (const [sectionKey, heading] of Object.entries(json.export.sectionHeadings)) {
-                  await prisma.countryExportHeading.upsert({
-                    where: { exportConfigId_sectionKey: { exportConfigId: result.id, sectionKey } },
-                    create: { exportConfigId: result.id, sectionKey, heading, style: heading === heading.toUpperCase() ? 'uppercase' : 'titlecase' },
-                    update: { heading, style: heading === heading.toUpperCase() ? 'uppercase' : 'titlecase' }
-                  });
-                }
-              }
-            }
-
-            if (existing) totalUpdated++; else totalCreated++;
-          } else {
-            totalSkipped++;
-          }
-        } catch (err) {
-          console.log(`    ❌ ExportConfig: ${err.message}`);
-        }
-      }
-    }
-
-    // Seed Section Validations
-    if (json.validation?.sectionChecks) {
-      for (const [sectionKey, checks] of Object.entries(json.validation.sectionChecks)) {
-        if (!Array.isArray(checks) || checks.length === 0) continue;
-
-        try {
-          const existing = await prisma.countrySectionValidation.findUnique({
-            where: { countryCode_sectionKey: { countryCode, sectionKey } }
-          });
-
-          if (!existing || options.force) {
-            const validationData = {
-              countryCode,
-              sectionKey,
-              version: existing ? existing.version + 1 : 1,
-              status: 'ACTIVE',
-              createdBy: SYSTEM_USER_ID,
-              updatedBy: SYSTEM_USER_ID,
-              additionalRules: {}
-            };
-
-            for (const check of checks) {
-              switch (check.type) {
-                case 'maxWords': validationData.maxWords = check.limit; break;
-                case 'minWords': validationData.minWords = check.limit; break;
-                case 'maxChars': validationData.maxChars = check.limit; break;
-                case 'minChars': validationData.minChars = check.limit; break;
-                case 'maxCount': validationData.maxCount = check.limit; break;
-              }
-            }
-
-            if (!options.dryRun) {
-              await prisma.countrySectionValidation.upsert({
-                where: { countryCode_sectionKey: { countryCode, sectionKey } },
-                create: validationData,
-                update: validationData
-              });
-            }
-
-            if (existing) totalUpdated++; else totalCreated++;
-          } else {
-            totalSkipped++;
-          }
-        } catch (err) {
-          // Ignore
-        }
-      }
-    }
-
-    // Seed Cross Validations
-    if (json.validation?.crossSectionChecks) {
-      for (const check of json.validation.crossSectionChecks) {
-        try {
-          const checkId = check.id || `${check.type}_${check.from}`;
-          const existing = await prisma.countryCrossValidation.findUnique({
-            where: { countryCode_checkId: { countryCode, checkId } }
-          });
-
-          if (!existing || options.force) {
-            const toSections = check.mustBeSupportedBy || check.mustBeConsistentWith || check.mustBeShownIn || [];
-            
-            const validationData = {
-              countryCode,
-              checkId,
-              checkType: check.type,
-              fromSection: check.from,
-              toSections,
-              severity: check.severity || 'warning',
-              message: check.message,
-              reviewPrompt: `Review ${check.from} for compliance`,
-              checkParams: {},
-              isEnabled: true,
-              version: existing ? existing.version + 1 : 1
-            };
-
-            if (!options.dryRun) {
-              await prisma.countryCrossValidation.upsert({
-                where: { countryCode_checkId: { countryCode, checkId } },
-                create: validationData,
-                update: validationData
-              });
-            }
-
-            if (existing) totalUpdated++; else totalCreated++;
-          } else {
-            totalSkipped++;
-          }
-        } catch (err) {
-          // Ignore
-        }
-      }
-    }
-  }
-
-  console.log(`\n  📊 Summary: Created=${totalCreated}, Updated=${totalUpdated}, Skipped=${totalSkipped}`);
-  return { created: totalCreated, updated: totalUpdated, skipped: totalSkipped };
-}
-
-// ============================================================================
-// VERIFICATION
-// ============================================================================
-
-async function verify() {
-  printHeader('📊 VERIFICATION');
-
-  const ss = await prisma.supersetSection.count();
-  const cn = await prisma.countryName.count();
-  const csm = await prisma.countrySectionMapping.count();
-  const csp = await prisma.countrySectionPrompt.count();
-  const cp = await prisma.countryProfile.count();
-
-  console.log('  Core Tables:');
-  console.log(`    • Superset Sections: ${ss}`);
-  console.log(`    • Country Names: ${cn}`);
-  console.log(`    • Section Mappings: ${csm}`);
-  console.log(`    • Section Prompts: ${csp}`);
-  console.log(`    • Country Profiles: ${cp}`);
-
-  try {
-    const cdc = await prisma.countryDiagramConfig.count();
-    const cec = await prisma.countryExportConfig.count();
-    const csv = await prisma.countrySectionValidation.count();
-    const ccv = await prisma.countryCrossValidation.count();
-
-    console.log('\n  Jurisdiction Styles:');
-    console.log(`    • Diagram Configs: ${cdc}`);
-    console.log(`    • Export Configs: ${cec}`);
-    console.log(`    • Section Validations: ${csv}`);
-    console.log(`    • Cross-Validations: ${ccv}`);
-  } catch (e) {
-    console.log('\n  (Jurisdiction style tables not available)');
-  }
-
-  // Show by country
-  console.log('\n  Mappings by Country:');
-  const byCountry = await prisma.countrySectionMapping.groupBy({
-    by: ['countryCode'],
-    _count: { id: true },
-    orderBy: { countryCode: 'asc' }
-  });
-  byCountry.forEach(c => console.log(`    ${c.countryCode}: ${c._count.id} sections`));
-}
-
-// ============================================================================
-// MAIN
-// ============================================================================
-
-async function main() {
-  console.log('╔' + '═'.repeat(66) + '╗');
-  console.log('║' + '                    🌱 MASTER SEED SCRIPT                        '.padEnd(66) + '║');
-  console.log('║' + '           Multi-Country Patent Filing System                    '.padEnd(66) + '║');
-  console.log('╚' + '═'.repeat(66) + '╝');
-  console.log('');
-  console.log(`Options: ${options.force ? '--force ' : ''}${options.dryRun ? '--dry-run ' : ''}${options.country ? `--country=${options.country} ` : ''}${options.skipStyles ? '--skip-styles' : ''}`);
-
-  try {
-    const systemUserId = await getSystemUserId();
-    if (!systemUserId) {
-      console.warn('\n⚠️  Warning: No users found. Run: node scripts/setup-full-hierarchy.js first\n');
-    } else {
-      console.log(`\n👤 Using system user: ${systemUserId}`);
-    }
-
-    const results = {};
-    
-    results.supersetSections = await seedSupersetSections(systemUserId);
-    results.countryNames = await seedCountryNames();
-    results.sectionMappings = await seedCountrySectionMappings();
-    results.sectionPrompts = await seedSectionPrompts();
-    results.countryProfiles = await seedCountryProfiles(systemUserId);
-    results.jurisdictionStyles = await seedJurisdictionStyles();
-
-    // Final summary
-    console.log('\n' + '═'.repeat(68));
-    console.log('                         🏁 FINAL SUMMARY');
-    console.log('═'.repeat(68));
-    
-    let totalCreated = 0, totalUpdated = 0, totalSkipped = 0;
-    for (const [key, val] of Object.entries(results)) {
-      totalCreated += val.created || 0;
-      totalUpdated += val.updated || 0;
-      totalSkipped += val.skipped || 0;
-    }
-    
-    console.log(`  Total Created: ${totalCreated}`);
-    console.log(`  Total Updated: ${totalUpdated}`);
-    console.log(`  Total Skipped: ${totalSkipped}`);
-
-    if (options.dryRun) {
-      console.log('\n  🔍 [DRY-RUN] No changes were made to the database.');
-    }
-
-    await verify();
-
-    console.log('\n✅ Master seed completed successfully!');
-    console.log('\nNext steps:');
-    console.log('  1. Start the server: npm run dev');
-    console.log('  2. Login as superadmin@spotipr.com');
-    console.log('  3. Visit /super-admin/jurisdiction-config to verify');
-
-  } catch (error) {
-    console.error('\n❌ Seed failed:', error);
-    console.log('\n🔧 Troubleshooting:');
-    console.log('  1. Run migrations: npx prisma migrate deploy');
-    console.log('  2. Create users: node scripts/setup-full-hierarchy.js');
-    process.exit(1);
-  } finally {
-    await prisma.$disconnect();
-  }
-}
-
-main();
-

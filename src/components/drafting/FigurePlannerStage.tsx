@@ -181,6 +181,8 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   const uploadSectionRef = useRef<HTMLDivElement>(null)
   const [highlightUpload, setHighlightUpload] = useState(false)
   const renderQueueRef = useRef<Promise<void>>(Promise.resolve())
+  // Ref to hold latest handleUploadImage function to avoid stale closures in queueUpload
+  const handleUploadImageRef = useRef<((figureNo: number, file: File, customFilename?: string, language?: string) => Promise<void>) | null>(null)
 
   // === FIGURE PLANNER TAB STATE ===
   const [activeTab, setActiveTab] = useState<'diagrams' | 'sketches' | 'arrange'>('diagrams')
@@ -546,6 +548,30 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
   const uploadQueueRef = useRef<Promise<void>>(Promise.resolve())
   const [uploadingByKey, setUploadingByKey] = useState<Record<string, boolean>>({})
 
+  // Cleanup effect: abort pending requests and revoke blob URLs on unmount
+  useEffect(() => {
+    const controllersRef = renderAbortControllersRef
+    return () => {
+      // Abort all pending render requests
+      Object.values(controllersRef.current).forEach(controller => {
+        try { controller?.abort() } catch {}
+      })
+      controllersRef.current = {}
+    }
+  }, [])
+
+  // Cleanup blob URLs on unmount to prevent memory leaks
+  useEffect(() => {
+    return () => {
+      // Revoke all blob URLs stored in renderPreview
+      Object.values(renderPreview).forEach(url => {
+        if (url && typeof url === 'string' && url.startsWith('blob:')) {
+          try { URL.revokeObjectURL(url) } catch {}
+        }
+      })
+    }
+  }, []) // Empty deps - only run on unmount
+
   // Automatically process diagrams when PlantUML code is available
   // This effect runs after state initialization and when diagramSources change
   useEffect(() => {
@@ -587,11 +613,14 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
       const updated = { ...prev }
       diagramSources.forEach((d: any) => {
         const key = getDiagramKey(d.figureNo, d.language || 'en')
-        // Reset to false if no image exists OR if imageUploadedAt is null (cleared after regeneration)
-        if (updated[key] === undefined || (!d?.imageUploadedAt && updated[key] === true)) {
-          updated[key] = false
-          // Also clear from queued set to allow re-rendering
+        // For diagrams without an image, always clear the queued ref to allow re-rendering
+        // This fixes the bug where replaced diagrams wouldn't auto-render because the ref wasn't cleared
+        if (!d?.imageUploadedAt) {
           queuedForRenderRef.current.delete(key)
+        }
+        // Reset uploaded to false if no image exists OR if imageUploadedAt is null (cleared after regeneration)
+        if (updated[key] === undefined || (!d?.imageUploadedAt && updated[key] !== false)) {
+          updated[key] = false
         }
       })
       return updated
@@ -770,6 +799,11 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
 
   const handleAIArrange = async () => {
     if (!session?.id) return
+    // Guard: Need at least 2 figures to arrange
+    if (arrangedFigures.length < 2) {
+      setArrangeError('Need at least 2 figures to use AI arrangement')
+      return
+    }
     
     try {
       setAiArranging(true)
@@ -1656,7 +1690,10 @@ Output: JSON array only, no markdown fences, no explanations.`
         setIsUploading(true)
         const filename = `figure_${figureNo}_${language}_${Date.now()}.png`
         const file = new File([blob], filename, { type: 'image/png' })
-        await handleUploadImage(figureNo, file, filename, language)
+        // Use ref to get latest handleUploadImage and avoid stale closure
+        if (handleUploadImageRef.current) {
+          await handleUploadImageRef.current(figureNo, file, filename, language)
+        }
       } finally {
         setUploadingByKey(prev => ({ ...prev, [key]: false }))
         setIsUploading(false)
@@ -1783,6 +1820,8 @@ Output: JSON array only, no markdown fences, no explanations.`
       setIsUploading(false)
     }
   }
+  // Keep ref updated with latest handleUploadImage to avoid stale closures
+  handleUploadImageRef.current = handleUploadImage
 
   const handleViewImage = async (figureNo: number, filename?: string) => {
     if (!filename) return
@@ -1795,6 +1834,10 @@ Output: JSON array only, no markdown fences, no explanations.`
       const blob = await resp.blob()
       const blobUrl = URL.createObjectURL(blob)
       window.open(blobUrl, '_blank', 'noopener,noreferrer')
+      // Revoke blob URL after a delay to allow browser to load it
+      setTimeout(() => {
+        try { URL.revokeObjectURL(blobUrl) } catch {}
+      }, 5000)
     } catch (e) {
       setError('Unable to open image')
     } finally {
