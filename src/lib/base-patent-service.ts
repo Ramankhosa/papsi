@@ -121,6 +121,8 @@ export abstract class BasePatentService {
       parameters?: any;
       maxOutputTokens?: number;
       idempotencyKey?: string;
+      patentId?: string; // Patent ID for cost tracking - CRITICAL for patent-wise cost reports
+      metadata?: Record<string, any>; // Additional metadata for tracking
     }
   ): Promise<LLMResult> {
     try {
@@ -134,7 +136,13 @@ export abstract class BasePatentService {
             ...params.parameters,
             ...(params.maxOutputTokens && { maxOutputTokens: params.maxOutputTokens })
           },
-          idempotencyKey: params.idempotencyKey || crypto.randomUUID()
+          idempotencyKey: params.idempotencyKey || crypto.randomUUID(),
+          // Include patentId and stageCode in metadata for cost tracking
+          metadata: {
+            patentId: params.patentId,
+            stageCode: params.stageCode,
+            ...params.metadata
+          }
         }
       );
 

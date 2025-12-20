@@ -55,6 +55,9 @@ export class LLMGateway {
     request: { headers: Record<string, string> } | { tenantContext: TenantContext },
     llmRequest: LLMRequest & { stageCode?: string }
   ): Promise<{ success: boolean; response?: LLMResponse; error?: MeteringError }> {
+    // Declare decision outside try block so we can release reservation in catch block
+    let decision: any = null
+    
     try {
       // 1. Extract tenant context from request (existing metering hierarchy)
       const tenantContext = await extractTenantContextFromRequest(request)
@@ -82,7 +85,6 @@ export class LLMGateway {
       }
 
       // 4. Enforce metering policies (Super Admin controlled via Plan Features)
-      let decision: any
       try {
         decision = await this.system.policy.evaluateAccess(featureRequest)
       } catch (policyError) {
@@ -224,7 +226,8 @@ export class LLMGateway {
       // 7. Record usage (metering for billing/quotas)
       if (decision.reservationId) {
         const usageStats: UsageStats = {
-          inputTokens: llmRequest.inputTokens || 0,
+          // Use ?? (nullish coalescing) to handle 0 as a valid value
+          inputTokens: llmRequest.inputTokens ?? 0,
           outputTokens: response.outputTokens,
           modelClass: response.modelClass as any,
           apiCalls: 1,
@@ -242,8 +245,14 @@ export class LLMGateway {
 
     } catch (error) {
       // Release reservation on any failure to prevent blocking subsequent operations
-      // Note: decision is declared in try block, so we can't access it here
-      // This is a known limitation - early returns after reservation creation should handle cleanup
+      if (decision?.reservationId) {
+        try {
+          await this.system.reservation.releaseReservation(decision.reservationId)
+          console.log(`[Gateway] Released reservation ${decision.reservationId} due to LLM operation failure`)
+        } catch (releaseError) {
+          console.warn('[Gateway] Failed to release reservation on error:', releaseError)
+        }
+      }
 
       if (error instanceof MeteringError) {
         return { success: false, error }

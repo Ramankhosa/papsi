@@ -26,3 +26,5 @@ ALTER TABLE "plan_features" ADD COLUMN "dailyTokenLimit" INTEGER;
 
 
 
+
+

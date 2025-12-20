@@ -4,6 +4,7 @@
 import type { MeteringConfig, MeteringService, FeatureRequest, QuotaCheckResult, UsageStats, MeteringResult } from './types'
 import { MeteringErrorUtils, MeteringError } from './errors'
 import { prisma } from '@/lib/prisma'
+import { calculateCost, CONTINGENCY_MULTIPLIER } from './cost-calculator'
 
 function getCurrentPeriod(type: 'DAILY' | 'MONTHLY'): { key: string, start: Date, end: Date } {
   const now = new Date()
@@ -45,7 +46,25 @@ export function createMeteringService(config: MeteringConfig): MeteringService {
         // Update usage meters
         await this.updateUsageMeters(reservation, stats)
 
-        // Create usage log
+        // Calculate cost using the model class
+        // Use ?? (nullish coalescing) instead of || to handle 0 as a valid token count
+        let costData: { actualCost: number; contingencyCost: number; inputCost: number; outputCost: number } | null = null
+        if (stats.modelClass) {
+          const costBreakdown = calculateCost(
+            stats.modelClass,
+            stats.inputTokens ?? 0,
+            stats.outputTokens ?? 0,
+            stats.metadata?.thoughtTokens
+          )
+          costData = {
+            actualCost: costBreakdown.actualCost,
+            contingencyCost: costBreakdown.contingencyCost,
+            inputCost: costBreakdown.inputCost,
+            outputCost: costBreakdown.outputCost
+          }
+        }
+
+        // Create usage log with cost data in metadata
         try {
           await prisma.usageLog.create({
             data: {
@@ -63,7 +82,11 @@ export function createMeteringService(config: MeteringConfig): MeteringService {
               status: 'COMPLETED',
               idempotencyKey: reservation.idempotencyKey,
               reservationId: reservation.id,
-              meta: stats.metadata ? JSON.parse(JSON.stringify(stats.metadata)) : null
+              meta: {
+                ...(stats.metadata ? JSON.parse(JSON.stringify(stats.metadata)) : {}),
+                // Store cost data in metadata
+                cost: costData
+              }
             }
           })
         } catch (logError: any) {

@@ -145,6 +145,47 @@ interface TokenDetailsState {
   }[]
 }
 
+// Patent cost tracking interfaces
+interface PatentStageBreakdown {
+  stage: string
+  inputTokens: number
+  outputTokens: number
+  actualCost: number
+  contingencyCost: number
+  callCount: number
+}
+
+interface PatentCostMetrics {
+  patentId: string
+  patentTitle: string
+  userId: string
+  userName: string | null
+  userEmail: string
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalApiCalls: number
+  actualCost: number
+  contingencyCost: number
+  createdAt: string
+  stageBreakdown: PatentStageBreakdown[]
+}
+
+interface PatentCostsResponse {
+  startDate: string
+  endDate: string
+  tenantId: string
+  userId?: string
+  totals: {
+    totalInputTokens: number
+    totalOutputTokens: number
+    totalApiCalls: number
+    actualCost: number
+    contingencyCost: number
+    patentCount: number
+  }
+  patents: PatentCostMetrics[]
+}
+
 export default function UserServiceUsagePage() {
   // Prevent static generation
   noStore()
@@ -174,6 +215,13 @@ export default function UserServiceUsagePage() {
   const [tenantUsersTenantId, setTenantUsersTenantId] = useState<string | null>(null)
   const [tenantUsersLoading, setTenantUsersLoading] = useState<boolean>(false)
   const [tenantUsersError, setTenantUsersError] = useState<string | null>(null)
+  
+  // Patent cost tracking state
+  const [patentCosts, setPatentCosts] = useState<PatentCostsResponse | null>(null)
+  const [patentCostsLoading, setPatentCostsLoading] = useState<boolean>(false)
+  const [patentCostsError, setPatentCostsError] = useState<string | null>(null)
+  const [expandedPatentId, setExpandedPatentId] = useState<string | null>(null)
+  const [showPatentCosts, setShowPatentCosts] = useState<boolean>(false)
 
   useEffect(() => {
     if (!user) {
@@ -357,6 +405,45 @@ export default function UserServiceUsagePage() {
       setTenantUsersError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
       setTenantUsersLoading(false)
+    }
+  }
+
+  const fetchPatentCosts = async (tenantId: string, userId?: string) => {
+    try {
+      setPatentCostsLoading(true)
+      setPatentCostsError(null)
+
+      const { start, end } = resolveDateRange()
+
+      const params = new URLSearchParams({
+        tenantId,
+        startDate: start.toISOString(),
+        endDate: end.toISOString()
+      })
+
+      if (userId) {
+        params.append('userId', userId)
+      }
+
+      const response = await fetch(`/api/admin/usage/patent-costs?${params.toString()}`, {
+        headers: {
+          Authorization: `Bearer ${localStorage.getItem('auth_token') || ''}`
+        }
+      })
+
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}))
+        throw new Error(body.error || 'Failed to fetch patent costs')
+      }
+
+      const body: PatentCostsResponse = await response.json()
+      setPatentCosts(body)
+    } catch (err) {
+      console.error('Failed to fetch patent costs:', err)
+      setPatentCostsError(err instanceof Error ? err.message : 'Unknown error')
+      setPatentCosts(null)
+    } finally {
+      setPatentCostsLoading(false)
     }
   }
 
@@ -1113,6 +1200,227 @@ export default function UserServiceUsagePage() {
                   })}
                 </tbody>
               </table>
+            </div>
+          )}
+        </div>
+
+        {/* Patent-wise Cost Tracking Section */}
+        <div className="bg-white p-6 rounded-lg shadow border">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-lg font-semibold">Patent-wise Cost Breakdown</h2>
+              <p className="text-sm text-gray-500">
+                View detailed LLM costs per patent with 10% contingency buffer for billing.
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              {selectedTenantId && (
+                <button
+                  onClick={() => {
+                    setShowPatentCosts(true)
+                    fetchPatentCosts(selectedTenantId)
+                  }}
+                  disabled={patentCostsLoading}
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 disabled:opacity-50"
+                >
+                  {patentCostsLoading ? 'Loading...' : 'Load Patent Costs'}
+                </button>
+              )}
+              {!selectedTenantId && (
+                <span className="text-sm text-amber-600">
+                  ⚠️ Select a tenant to view patent-wise costs
+                </span>
+              )}
+            </div>
+          </div>
+
+          {showPatentCosts && patentCostsError && (
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded mb-4">
+              {patentCostsError}
+            </div>
+          )}
+
+          {showPatentCosts && patentCosts && (
+            <>
+              {/* Patent Cost Summary Cards */}
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
+                <div className="bg-gradient-to-br from-blue-50 to-blue-100 p-4 rounded-lg border border-blue-200">
+                  <h4 className="text-xs font-medium text-blue-700 mb-1">Total Patents</h4>
+                  <div className="text-xl font-bold text-blue-900">
+                    {formatNumber(patentCosts.totals.patentCount)}
+                  </div>
+                </div>
+                <div className="bg-gradient-to-br from-purple-50 to-purple-100 p-4 rounded-lg border border-purple-200">
+                  <h4 className="text-xs font-medium text-purple-700 mb-1">Input Tokens</h4>
+                  <div className="text-xl font-bold text-purple-900">
+                    {formatNumber(patentCosts.totals.totalInputTokens)}
+                  </div>
+                </div>
+                <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 p-4 rounded-lg border border-indigo-200">
+                  <h4 className="text-xs font-medium text-indigo-700 mb-1">Output Tokens</h4>
+                  <div className="text-xl font-bold text-indigo-900">
+                    {formatNumber(patentCosts.totals.totalOutputTokens)}
+                  </div>
+                </div>
+                <div className="bg-gradient-to-br from-green-50 to-green-100 p-4 rounded-lg border border-green-200">
+                  <h4 className="text-xs font-medium text-green-700 mb-1">Actual Cost</h4>
+                  <div className="text-xl font-bold text-green-900">
+                    {formatCurrency(patentCosts.totals.actualCost)}
+                  </div>
+                </div>
+                <div className="bg-gradient-to-br from-amber-50 to-amber-100 p-4 rounded-lg border border-amber-200">
+                  <h4 className="text-xs font-medium text-amber-700 mb-1">With 10% Buffer</h4>
+                  <div className="text-xl font-bold text-amber-900">
+                    {formatCurrency(patentCosts.totals.contingencyCost)}
+                  </div>
+                  <p className="text-[10px] text-amber-600 mt-1">Use for billing</p>
+                </div>
+              </div>
+
+              {/* Patent Cost Table */}
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-gray-50">
+                      <th className="px-4 py-2 text-left">Patent</th>
+                      <th className="px-4 py-2 text-left">User</th>
+                      <th className="px-4 py-2 text-right">Input Tokens</th>
+                      <th className="px-4 py-2 text-right">Output Tokens</th>
+                      <th className="px-4 py-2 text-right">API Calls</th>
+                      <th className="px-4 py-2 text-right">Actual Cost</th>
+                      <th className="px-4 py-2 text-right">With 10% Buffer</th>
+                      <th className="px-4 py-2 text-right">Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {patentCosts.patents.length === 0 && (
+                      <tr>
+                        <td colSpan={8} className="px-4 py-8 text-center text-gray-500">
+                          No patent cost data found for the selected filters.
+                        </td>
+                      </tr>
+                    )}
+                    {patentCosts.patents.map((patent) => {
+                      const isExpanded = expandedPatentId === patent.patentId
+                      return (
+                        <>
+                          <tr key={patent.patentId} className="border-b hover:bg-gray-50">
+                            <td className="px-4 py-2">
+                              <div className="font-medium text-gray-900 max-w-xs truncate" title={patent.patentTitle}>
+                                {patent.patentTitle}
+                              </div>
+                              <div className="text-xs text-gray-500 font-mono">{patent.patentId.substring(0, 12)}...</div>
+                            </td>
+                            <td className="px-4 py-2">
+                              <div className="text-gray-900">{patent.userName || 'Unknown'}</div>
+                              <div className="text-xs text-gray-500">{patent.userEmail}</div>
+                            </td>
+                            <td className="px-4 py-2 text-right font-mono">
+                              {formatNumber(patent.totalInputTokens)}
+                            </td>
+                            <td className="px-4 py-2 text-right font-mono">
+                              {formatNumber(patent.totalOutputTokens)}
+                            </td>
+                            <td className="px-4 py-2 text-right font-mono">
+                              {formatNumber(patent.totalApiCalls)}
+                            </td>
+                            <td className="px-4 py-2 text-right font-mono text-green-700">
+                              {formatCurrency(patent.actualCost)}
+                            </td>
+                            <td className="px-4 py-2 text-right font-mono font-semibold text-amber-700">
+                              {formatCurrency(patent.contingencyCost)}
+                            </td>
+                            <td className="px-4 py-2 text-right">
+                              <button
+                                onClick={() => setExpandedPatentId(isExpanded ? null : patent.patentId)}
+                                className="inline-flex items-center px-3 py-1 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                              >
+                                {isExpanded ? 'Hide' : 'Stages'}
+                              </button>
+                            </td>
+                          </tr>
+                          {isExpanded && patent.stageBreakdown.length > 0 && (
+                            <tr className="bg-gray-50">
+                              <td colSpan={8} className="px-4 py-3">
+                                <div className="text-xs">
+                                  <div className="font-semibold text-gray-700 mb-2">
+                                    Cost breakdown by stage/operation:
+                                  </div>
+                                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                                    {patent.stageBreakdown.map((stage, idx) => (
+                                      <div key={idx} className="bg-white border rounded p-2">
+                                        <div className="font-medium text-gray-800">{stage.stage}</div>
+                                        <div className="text-[11px] text-gray-600 space-y-0.5 mt-1">
+                                          <div>Input: {formatNumber(stage.inputTokens)} tokens</div>
+                                          <div>Output: {formatNumber(stage.outputTokens)} tokens</div>
+                                          <div>Calls: {stage.callCount}</div>
+                                          <div className="text-green-700">
+                                            Actual: {formatCurrency(stage.actualCost)}
+                                          </div>
+                                          <div className="text-amber-700 font-semibold">
+                                            +10%: {formatCurrency(stage.contingencyCost)}
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </td>
+                            </tr>
+                          )}
+                        </>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Export Patent Costs Button */}
+              <div className="flex justify-end mt-4">
+                <button
+                  onClick={() => {
+                    const header = [
+                      'patentId',
+                      'patentTitle',
+                      'userName',
+                      'userEmail',
+                      'inputTokens',
+                      'outputTokens',
+                      'apiCalls',
+                      'actualCost',
+                      'contingencyCost'
+                    ]
+                    const rows = patentCosts.patents.map(p => [
+                      p.patentId,
+                      p.patentTitle,
+                      p.userName || '',
+                      p.userEmail,
+                      p.totalInputTokens,
+                      p.totalOutputTokens,
+                      p.totalApiCalls,
+                      p.actualCost.toFixed(6),
+                      p.contingencyCost.toFixed(6)
+                    ])
+                    const csv = [header, ...rows].map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n')
+                    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+                    const url = URL.createObjectURL(blob)
+                    const link = document.createElement('a')
+                    link.href = url
+                    link.download = 'patent-costs.csv'
+                    link.click()
+                    URL.revokeObjectURL(url)
+                  }}
+                  className="inline-flex items-center px-3 py-2 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
+                >
+                  Export Patent Costs CSV
+                </button>
+              </div>
+            </>
+          )}
+
+          {showPatentCosts && patentCostsLoading && (
+            <div className="flex justify-center py-12">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600"></div>
             </div>
           )}
         </div>

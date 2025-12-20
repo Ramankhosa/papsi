@@ -6,6 +6,7 @@ import type { LLMRequest, LLMResponse, EnforcementDecision } from '../types'
 import { MeteringError } from '../index'
 import type { LLMProvider } from './llm-provider'
 import { createLLMProvider, getProviderFromModelCode, type ProviderConfig, type ProviderType } from './llm-provider'
+import { logLLMCost, calculateCost, type CostBreakdown, ensurePricingLoaded, isPricingLoaded } from '../cost-calculator'
 
 export interface ProviderPriority {
   provider: string
@@ -204,12 +205,44 @@ export class LLMProviderRouter {
       request.modelClass = modelCode
     }
 
+    const startTime = Date.now()
+    const actualModelCode = modelCode || request.modelClass || provider.supportedModels[0]
+
+    // Ensure pricing is loaded from database for accurate cost calculation
+    if (!isPricingLoaded()) {
+      await ensurePricingLoaded()
+    }
+
     // Execute with the selected provider
     try {
       const response = await provider.execute(request, limits)
 
       // Mark provider as successful for health tracking
       this.markProviderSuccess(provider.name)
+
+      const duration = Date.now() - startTime
+      
+      // Calculate and log cost breakdown
+      // Use ?? (nullish coalescing) instead of || to handle 0 as a valid value
+      const inputTokens = response.metadata?.inputTokens ?? request.inputTokens ?? 0
+      const outputTokens = response.outputTokens ?? 0
+      const thoughtTokens = response.metadata?.thoughtTokens
+      
+      const costBreakdown = logLLMCost(
+        request.taskCode || 'LLM_CALL',
+        actualModelCode,
+        inputTokens,
+        outputTokens,
+        thoughtTokens,
+        {
+          taskCode: request.taskCode,
+          stageCode: (request as any).stageCode,
+          patentId: request.metadata?.patentId,
+          userId: request.metadata?.userId,
+          tenantId: request.metadata?.tenantId,
+          duration
+        }
+      )
 
       // Add provider metadata to response
       return {
@@ -218,7 +251,20 @@ export class LLMProviderRouter {
           ...response.metadata,
           routingReason: reason,
           selectedProvider: provider.name,
-          modelUsed: modelCode || request.modelClass
+          modelUsed: actualModelCode,
+          // Add cost information to metadata
+          costBreakdown: {
+            inputTokens,
+            outputTokens,
+            thoughtTokens,
+            totalTokens: costBreakdown.totalTokens,
+            actualCost: costBreakdown.actualCost,
+            contingencyCost: costBreakdown.contingencyCost,
+            inputCost: costBreakdown.inputCost,
+            outputCost: costBreakdown.outputCost,
+            thoughtCost: costBreakdown.thoughtCost
+          },
+          durationMs: duration
         }
       }
     } catch (error) {
@@ -248,6 +294,11 @@ export class LLMProviderRouter {
     fallbackModelCodes?: string[]
   ): Promise<LLMResponse> {
     console.log(`[ProviderRouter] routeWithModel called with modelCode=${modelCode}, fallbacks=${fallbackModelCodes?.join(', ') || 'none'}`)
+    
+    // Ensure pricing is loaded from database for accurate cost calculation
+    if (!isPricingLoaded()) {
+      await ensurePricingLoaded()
+    }
     
     // Get the provider for this model
     const provider = this.getProviderForModel(modelCode)
@@ -374,11 +425,37 @@ export class LLMProviderRouter {
   ): Promise<LLMResponse> {
     console.log(`Executing with ${provider.name} (model: ${modelCode})${isFallback ? ' [FALLBACK]' : ''}`)
     
+    const startTime = Date.now()
+    
     try {
       const response = await provider.execute(request, limits)
       
       // Mark provider as successful
       this.markProviderSuccess(provider.name)
+      
+      const duration = Date.now() - startTime
+      
+      // Calculate and log cost breakdown
+      // Use ?? (nullish coalescing) instead of || to handle 0 as a valid value
+      const inputTokens = response.metadata?.inputTokens ?? request.inputTokens ?? 0
+      const outputTokens = response.outputTokens ?? 0
+      const thoughtTokens = response.metadata?.thoughtTokens
+      
+      const costBreakdown = logLLMCost(
+        `${request.taskCode || 'LLM_CALL'}${isFallback ? ' [FALLBACK]' : ''}`,
+        modelCode,
+        inputTokens,
+        outputTokens,
+        thoughtTokens,
+        {
+          taskCode: request.taskCode,
+          stageCode: (request as any).stageCode,
+          patentId: request.metadata?.patentId,
+          userId: request.metadata?.userId,
+          tenantId: request.metadata?.tenantId,
+          duration
+        }
+      )
       
       return {
         ...response,
@@ -386,7 +463,20 @@ export class LLMProviderRouter {
           ...response.metadata,
           selectedProvider: provider.name,
           modelUsed: modelCode,
-          wasFallback: isFallback
+          wasFallback: isFallback,
+          // Add cost information to metadata
+          costBreakdown: {
+            inputTokens,
+            outputTokens,
+            thoughtTokens,
+            totalTokens: costBreakdown.totalTokens,
+            actualCost: costBreakdown.actualCost,
+            contingencyCost: costBreakdown.contingencyCost,
+            inputCost: costBreakdown.inputCost,
+            outputCost: costBreakdown.outputCost,
+            thoughtCost: costBreakdown.thoughtCost
+          },
+          durationMs: duration
         }
       }
     } catch (error) {

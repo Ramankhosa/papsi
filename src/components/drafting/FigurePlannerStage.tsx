@@ -1386,28 +1386,20 @@ export default function FigurePlannerStage({ session, patent, onComplete, onRefr
         const startingFigNo = existingFigureCount + 1
 
         // Create a custom prompt that incorporates the user-provided instructions
-        let customPrompt = `You are an expert patent illustrator generating simple block diagrams for a patent specification in jurisdiction ${activeJurisdiction}.
-Your task is to generate PlantUML diagrams that follow the user's specific instructions for new figures.
+        let customPrompt = `SYSTEM ROLE — Patent Figure Diagram Generator (PlantUML)
 
-OUTPUT FORMAT (VERY IMPORTANT)
-- Output a JSON array of exactly ${overrideList.length} items.
-- Do NOT include markdown code fences, backticks, comments, or any extra text.
-- Each item must be an object with keys "title", "purpose", and "plantuml".
-- "title" must start with "Fig.X - " where X is the figure number (starting at ${startingFigNo} and increasing by 1).
-- "purpose" is one short sentence (max 200 characters) describing what the figure shows.
-- "plantuml" is a single PlantUML diagram between @startuml and @enduml, as a JSON string (you may use real newlines inside the string).
+You generate patent-office-friendly diagrams (USPTO/EPO/IPO) in black-and-white, suitable for filing.
+Your diagrams MUST be easy to understand when printed.
 
-Minimal example of a single item (structure only):
-[
-  {
-    "title": "Fig.${startingFigNo} - Custom figure",
-    "purpose": "Brief explanation of what this figure shows.",
-    "plantuml": "@startuml
-scale max 1890x2917
-rectangle \"System 100\" as S100
-@enduml"
-  }
-]
+OUTPUT FORMAT (MANDATORY)
+Return a JSON array of exactly ${overrideList.length} objects.
+Each object must be:
+{
+  "title": "Fig.X - <short title>",
+  "purpose": "<one sentence>",
+  "plantuml": "<PlantUML code from @startuml to @enduml>"
+}
+Return JSON only. No markdown. No commentary.
 
 NUMBERING
 - These new figures will be numbered starting from Fig.${startingFigNo}.
@@ -1437,58 +1429,110 @@ IMPORTANT: New figures should continue the "zoom-in" progression. If existing fi
 
         customPrompt += `
 
-═══════════════════════════════════════════════════════════════════════════════
-COMPONENTS & LABELING
-═══════════════════════════════════════════════════════════════════════════════
-- Use ONLY these components and numerals: ${numeralsPreview}.
-- Use labels with numerals exactly as assigned (e.g., "Processor 100", not just "Processor").
-- Every component referenced must exist in the list above. NO UNDEFINED REFERENCES.
+COMPONENTS / NUMERALS (MANDATORY)
+You may use ONLY these components and numerals: ${numeralsPreview}.
+- Do NOT invent components or numerals.
+- Every component label MUST include its numeral in parentheses, e.g., "Controller (200)".
 - Figure label format: ${figureLabelFormat}.
 - Color policy: ${colorAllowed ? 'color permitted if essential' : 'MONOCHROME ONLY (no color)'}.
-- Line style: ${lineStyle}.
 - Reference numerals: ${refNumeralsMandatory ? 'MANDATORY in all drawings' : 'Optional'}.
-- Minimum text size: ${minTextSize} pt.
 
-═══════════════════════════════════════════════════════════════════════════════
-DIAGRAM SYNTAX RULES (ERRORS TO AVOID)
-═══════════════════════════════════════════════════════════════════════════════
-FORBIDDEN (will cause render failure or visual clutter):
-✗ !theme, !include, !import, !pragma directives
-✗ skinparam blocks or statements
-✗ title, caption, header, footer inside the diagram
-✗ Mixing [hidden] with directions (wrong: "-[hidden]down-", correct: "-[hidden]-" OR "-down-")
-✗ Incomplete connections (wrong: "500 --", correct: "500 --> 600")
-✗ Unclosed blocks (every "if" needs "endif", every "note" needs "end note")
-✗ Multiple or nested @startuml/@enduml pairs (exactly ONE pair per diagram)
-✗ Undefined aliases or dangling arrows
-✗ ANY "note" elements - no notes, no floating notes, no notes attached to components (these render as yellow boxes and clutter the diagram)
-✗ Comments or annotations on components
+USER INSTRUCTIONS TAKE PRIORITY
+Follow the user's specific instructions above. If the user requests a specific diagram type 
+(flowchart, state diagram, deployment diagram, etc.), you may use that type.
+However, you MUST still apply the DESIGN REQUIREMENTS below to ensure patent-office compliance.
 
-ALLOWED (only these style directives):
-✓ scale max 1890x2917 (for A4 fit)
-✓ newpage (for multi-page diagrams)
+DESIGN REQUIREMENTS (ALWAYS APPLY)
+These settings ensure black-and-white, print-friendly diagrams:
 
-═══════════════════════════════════════════════════════════════════════════════
-LAYOUT PRINCIPLES
-═══════════════════════════════════════════════════════════════════════════════
-- Use VERTICAL flow: Inputs (top) → Processing (middle) → Outputs (bottom).
-- Group related nodes in frames/packages, listed top-to-bottom.
-- Max 3 horizontal siblings per layer; overflow goes to lower layer.
-- Page size: ${allowedPageSizes || 'A4/Letter safe defaults'}.
+REQUIRED SKINPARAM BLOCK (include at start of every diagram):
+skinparam monochrome true
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam defaultFontName Arial
+skinparam defaultFontSize 14
+skinparam ArrowColor black
+skinparam BorderColor black
 
-═══════════════════════════════════════════════════════════════════════════════
-SELF-VALIDATION (DO THIS BEFORE RESPONDING)
-═══════════════════════════════════════════════════════════════════════════════
-Before outputting, mentally COMPILE AND VALIDATE your code:
-1. ✓ All referenced components exist in the provided list?
-2. ✓ No forbidden directives (!theme, skinparam, title, note, etc.)?
-3. ✓ All connections have both endpoints?
-4. ✓ All blocks are properly closed?
-5. ✓ Exactly one @startuml/@enduml pair per diagram?
-6. ✓ NO "note" statements of any kind (no yellow comment boxes)?
-7. ✓ Mentally trace through code line-by-line to verify syntax correctness?
+FORBIDDEN DIRECTIVES:
+- No !include / !theme / !pragma
+- No title / caption / header / footer
+- No sprites / icons / colors
 
-Output: JSON array only, no markdown fences, no explanations.`
+PREFERRED STYLES (use unless user specifies otherwise):
+- STYLE 1: Nested block diagram (rectangles with nested rectangles) - for system overviews
+- STYLE 2: Linear pipeline (rectangles in chain with "skinparam linetype ortho") - for data flow
+- STYLE 3: Sequence diagram (with skinparam sequence block) - for interactions
+- STYLE 4: Activity diagram (with skinparam activity block) - for method steps
+
+STYLE TEMPLATES FOR REFERENCE:
+
+NESTED BLOCK:
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam defaultFontName Arial
+skinparam defaultFontSize 14
+skinparam ArrowColor black
+skinparam BorderColor black
+top to bottom direction
+rectangle "System (10)" as SYS {
+  rectangle "Subsystem A (12)" as A
+  rectangle "Subsystem B (14)" as B
+}
+A --> B : data
+@enduml
+
+SEQUENCE (with required skinparam block):
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam defaultFontName Arial
+skinparam defaultFontSize 14
+skinparam ArrowColor black
+skinparam BorderColor black
+skinparam sequence {
+  LifeLineBorderColor black
+  LifeLineBackgroundColor white
+  ParticipantBorderColor black
+  ParticipantBackgroundColor white
+}
+
+actor "User (900)" as U
+participant "Device (100)" as D
+U -> D : input
+D --> U : response
+@enduml
+
+ACTIVITY (with required skinparam block):
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam defaultFontName Arial
+skinparam defaultFontSize 14
+skinparam ArrowColor black
+skinparam BorderColor black
+skinparam activity {
+  BackgroundColor white
+  BorderColor black
+  FontColor black
+}
+
+start
+:Step one (100);
+:Step two (200);
+stop
+@enduml
+
+FINAL SELF-CHECK (MANDATORY)
+- Follows user's instructions for diagram content and type.
+- Includes required skinparam block for patent compliance.
+- Uses only allowed numerals/components.
+- Has @startuml and @enduml.
+Now output the JSON array.`
 
         const resp = await onComplete({
           action: 'generate_diagrams_llm',
@@ -1548,63 +1592,35 @@ Output: JSON array only, no markdown fences, no explanations.`
       ]
       const allowedPageSizes = allowedPageSizeList.join(', ')
 
-      const prompt = `You are an expert patent illustrator generating simple block diagrams for a patent specification in jurisdiction ${activeJurisdiction}.
-Your task is to propose clear PlantUML block diagrams that can be rendered directly without manual fixes.
+      const prompt = `SYSTEM ROLE — Patent Figure Diagram Generator (PlantUML)
 
-OUTPUT FORMAT (VERY IMPORTANT)
-- Output a JSON array of exactly ${diagramCount} items.
-- Do NOT include markdown code fences, backticks, comments, or any extra text.
-- Each item must be an object with keys "title", "purpose", and "plantuml".
-- "title" must start with "Fig.X - " where X is the figure number (1-based, in order).
-- "purpose" is one short sentence (max 200 characters) describing what the figure shows.
-- "plantuml" is a single PlantUML diagram between @startuml and @enduml, as a JSON string (you may use real newlines inside the string).
+You generate patent-office-friendly diagrams (USPTO/EPO/IPO) in black-and-white, suitable for filing.
+Your diagrams MUST be easy to understand when printed.
 
-Minimal example of a single item (structure only):
-[
-  {
-    "title": "Fig.1 - System overview",
-    "purpose": "Shows main components and data flow.",
-    "plantuml": "@startuml
-scale max 1890x2917
-rectangle \"System 100\" as S100
-@enduml"
-  }
-]
+OUTPUT FORMAT (MANDATORY)
+Return a JSON array of exactly ${diagramCount} objects.
+Each object must be:
+{
+  "title": "Fig.X - <short title>",
+  "purpose": "<one sentence>",
+  "plantuml": "<PlantUML code from @startuml to @enduml>"
+}
+Return JSON only. No markdown. No commentary.
 
-═══════════════════════════════════════════════════════════════════════════════
-CRITICAL: SEQUENTIAL ZOOM-IN HIERARCHY (MANDATORY)
-═══════════════════════════════════════════════════════════════════════════════
-Figures MUST follow a "broad-to-specific" progression, like zooming into a photograph:
-
-Fig.1 → SYSTEM OVERVIEW: Bird's-eye view showing ALL major components and their relationships.
-         Shows: The complete invention as a single unified system.
-         Detail level: Lowest (most abstract).
-
-Fig.2 → PRIMARY SUBSYSTEM: Zoom into the most important functional block from Fig.1.
-         Shows: Internal structure of the core processing unit.
-         Detail level: Medium.
-
-Fig.3 → DATA/CONTROL FLOW: How data or signals flow through the system.
-         Shows: Sequence of operations, inputs → processing → outputs.
-         Detail level: Medium.
-
-Fig.4+ → COMPONENT DEEP-DIVES: Progressively zoom into specific components.
-         Each subsequent figure should focus on a smaller, more specific aspect.
-         Detail level: Increasing with each figure.
-
-RULE: A reader viewing figures in order (1, 2, 3...) should experience a logical "drill-down" from whole system to specific details. Never show a detailed component before showing where it fits in the broader system.
-
-═══════════════════════════════════════════════════════════════════════════════
-COMPONENTS & LABELING
-═══════════════════════════════════════════════════════════════════════════════
-- Use ONLY these components and numerals: ${numeralsPreview}.
-- Use labels with numerals exactly as assigned (e.g., "Processor 100", not just "Processor").
-- Every component referenced must exist in the list above. NO UNDEFINED REFERENCES.
+COMPONENTS / NUMERALS (MANDATORY)
+You may use ONLY these components and numerals: ${numeralsPreview}.
+- Do NOT invent components or numerals.
+- Every component label MUST include its numeral in parentheses, e.g., "Controller (200)".
+- Use concise labels.
 - Figure label format: ${figureLabelFormat}.
 - Color policy: ${colorAllowed ? 'color permitted if essential' : 'MONOCHROME ONLY (no color)'}.
-- Line style: ${lineStyle}.
 - Reference numerals: ${refNumeralsMandatory ? 'MANDATORY in all drawings' : 'Optional'}.
-- Minimum text size: ${minTextSize} pt.
+
+FIGURE HIERARCHY (MANDATORY)
+Fig.1: System Overview (broad, abstract)
+Fig.2: Subsystem Zoom (nested within the system)
+Fig.3: Either (A) linear data/control pipeline OR (B) method flowchart; choose the clearest.
+Fig.4+: Only if needed (deployment/interface or another component zoom)
 ${claimsContext ? `
 ═══════════════════════════════════════════════════════════════════════════════
 CLAIM-AWARE DIAGRAM GENERATION
@@ -1615,61 +1631,150 @@ The following claims define the legal scope of this patent. Design figures that:
 - Highlight the key inventive features that distinguish this invention
 ${claimsContext}
 ` : ''}
-═══════════════════════════════════════════════════════════════════════════════
-DIAGRAM SYNTAX RULES (CRITICAL)
-═══════════════════════════════════════════════════════════════════════════════
-To ensure the diagrams render correctly, please follow these rules:
+DIAGRAM TYPE POLICY (IMPORTANT)
+You are allowed ONLY these four diagram styles:
+STYLE 1: Nested block diagram (rectangles with nested rectangles)
+STYLE 2: Linear ortho pipeline (rectangles in a chain; linetype ortho)
+STYLE 3: Sequence diagram (only for real message/interactions)
+STYLE 4: Activity diagram (method steps; max one decision)
 
-1. ARROW DIRECTIONS: Use "-down->", "-up->", "-left->", "-right->" for layout control.
-   - CORRECT: A -down-> B
-   - CORRECT: A -[hidden]- B
-   - INCORRECT: A -[hidden]down- B (Do not mix [hidden] with direction)
+Do NOT use any other PlantUML types (no class, component keyword, usecase, mindmap, etc.).
+No !include / !theme / !pragma. No title/caption. No sprites/icons. No colors.
 
-2. CONNECTIONS: Always specify both endpoints.
-   - CORRECT: 500 --> 600
-   - INCORRECT: 500 -- (Dangling connection)
+READABILITY LIMITS (STRICT)
+- Block/pipeline: 4–10 rectangles, max 12 arrows.
+- Nested block: max depth = 2 levels (System → Subsystem → Components). No deeper.
+- Sequence: 3–6 participants, max 10 messages.
+- Activity: 4–10 steps, max 1 decision.
+- Max label length (excluding numeral): 28 characters.
 
-3. BLOCKS: Close all blocks properly.
-   - matching "endif" for every "if"
-   - matching "end" for every "start"
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+APPROVED STYLE TEMPLATES (COPY EXACTLY, THEN MODIFY CONTENT)
+You MUST use one of these templates per figure.
+Preserve the skinparam lines and overall structure.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-4. STRUCTURE:
-   - Exactly ONE @startuml and ONE @enduml per diagram.
-   - NO "note" elements (they create visual clutter).
-   - NO comments on components.
+STYLE 1 — NESTED BLOCK DIAGRAM (preferred for Fig.1 & Fig.2)
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam defaultFontName Arial
+skinparam defaultFontSize 14
+skinparam ArrowColor black
+skinparam BorderColor black
 
-5. CONTENT:
-   - Use ONLY provided components/numerals.
-   - Do not invent new components.
+top to bottom direction
 
-ALLOWED (only these style directives):
-✓ scale max 1890x2917 (for A4 fit)
-✓ newpage (for multi-page diagrams)
+rectangle "System (10)" as SYS {
+  rectangle "Subsystem A (12)" as A {
+    rectangle "Component A1 (121)" as A1
+    rectangle "Component A2 (122)" as A2
+  }
+  rectangle "Subsystem B (14)" as B {
+    rectangle "Component B1 (141)" as B1
+    rectangle "Component B2 (142)" as B2
+  }
+}
 
-═══════════════════════════════════════════════════════════════════════════════
-LAYOUT PRINCIPLES
-═══════════════════════════════════════════════════════════════════════════════
-- Use VERTICAL flow: Inputs (top) → Processing (middle) → Outputs (bottom).
-- Group related nodes in frames/packages, listed top-to-bottom.
-- Max 3 horizontal siblings per layer; overflow goes to lower layer.
-- Prefer downward arrows; avoid long horizontal cross-edges.
-- Page size: ${allowedPageSizes || 'A4/Letter safe defaults'}.
-- If >12 components, split into multiple diagrams or use "newpage".
+A --> B : data
+@enduml
 
-═══════════════════════════════════════════════════════════════════════════════
-SELF-VALIDATION (DO THIS BEFORE RESPONDING)
-═══════════════════════════════════════════════════════════════════════════════
-Before outputting, mentally COMPILE AND VALIDATE your code:
-1. ✓ Figures are ordered broad→specific (zoom-in sequence)?
-2. ✓ All referenced components exist in the provided list?
-3. ✓ No forbidden directives (!theme, skinparam, title, note, etc.)?
-4. ✓ All connections have both endpoints?
-5. ✓ All blocks are properly closed?
-6. ✓ Exactly one @startuml/@enduml pair per diagram?
-7. ✓ Mentally trace through code line-by-line to verify syntax correctness?${claimsContext ? `
-8. ✓ Diagrams illustrate the frozen claims where applicable?` : ''}
+STYLE 2 — LINEAR ORTHO PIPELINE (preferred for Fig.3 if linear flow)
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam defaultFontName Arial
+skinparam defaultFontSize 14
+skinparam ArrowColor black
+skinparam BorderColor black
+skinparam linetype ortho
 
-Output: JSON array only, no markdown fences, no explanations.`
+top to bottom direction
+
+rectangle "Input (20)" as IN
+rectangle "Filter (22)" as FIL
+rectangle "Analyzer (24)" as AN
+rectangle "Controller (26)" as CO
+rectangle "Output (28)" as OUT
+
+IN --> FIL
+FIL --> AN
+AN --> CO
+CO --> OUT
+@enduml
+
+STYLE 3 — SEQUENCE (ONLY if truly message/interactions matter)
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam defaultFontName Arial
+skinparam defaultFontSize 14
+skinparam ArrowColor black
+skinparam BorderColor black
+skinparam sequence {
+  LifeLineBorderColor black
+  LifeLineBackgroundColor white
+  ParticipantBorderColor black
+  ParticipantBackgroundColor white
+}
+
+actor "User (900)" as U
+participant "Device (100)" as D
+participant "Controller (200)" as C
+participant "Storage (500)" as S
+
+U -> D : input
+D -> C : transmit data
+C -> S : read/write
+S --> C : response
+C --> D : output
+D --> U : present result
+@enduml
+
+STYLE 4 — ACTIVITY (ONLY for method steps; max 1 decision)
+@startuml
+skinparam monochrome true
+skinparam shadowing false
+skinparam roundcorner 0
+skinparam defaultFontName Arial
+skinparam defaultFontSize 14
+skinparam ArrowColor black
+skinparam BorderColor black
+
+skinparam activity {
+  BackgroundColor white
+  BorderColor black
+  FontColor black
+}
+
+start
+:Receive input data (100);
+:Extract features (200);
+:Determine condition (210);
+
+if (Condition satisfied?) then (Yes)
+  :Generate control output (400);
+else (No)
+  :Apply fallback rule (500);
+endif
+
+:Transmit result (600);
+stop
+@enduml
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FINAL SELF-CHECK (MANDATORY)
+For each figure:
+- Uses EXACTLY one of the four styles above.
+- Uses only allowed numerals/components.
+- Meets readability caps.
+- Has @startuml and @enduml.${claimsContext ? `
+- Diagrams illustrate the frozen claims where applicable.` : ''}
+Now output the JSON array.`
 
       const res = await onComplete({
         action: 'generate_diagrams_llm',

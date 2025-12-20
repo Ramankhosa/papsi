@@ -3105,24 +3105,152 @@ async function handleGetExportPreview(user: any, patentId: string, data: any) {
   return NextResponse.json(payload)
 }
 
+// Whitelist of allowed single-line skinparam keys
+const ALLOWED_SKINPARAM_KEYS = /^skinparam\s+(monochrome|shadowing|roundcorner|defaultFontName|defaultFontSize|ArrowColor|BorderColor|linetype)\b/i
+
+// Allowed skinparam block types (sequence, activity)
+const ALLOWED_SKINPARAM_BLOCKS = /^skinparam\s+(sequence|activity)\s*\{/i
+
+// Cleans PlantUML code for rendering while preserving allowed skinparams
+// This is a lighter version of sanitizePlantUML for pre-render cleaning
+function cleanForRendering(code: string): string {
+  const lines = code.split(/\r?\n/)
+  const result: string[] = []
+  
+  let inAllowedBlock = false
+  let inForbiddenBlock = false
+  let braceDepth = 0
+  
+  for (const line of lines) {
+    const trimmed = line.trim()
+    
+    // Remove title/caption
+    if (/^\s*(title|caption)\b/i.test(trimmed)) continue
+    
+    // Remove forbidden directives
+    if (/^\s*!\s*(theme|include|import|pragma)\b/i.test(trimmed)) continue
+    
+    // Handle skinparam blocks
+    if (/^\s*skinparam\s+\w+\s*\{/.test(trimmed)) {
+      if (ALLOWED_SKINPARAM_BLOCKS.test(trimmed)) {
+        inAllowedBlock = true
+        braceDepth = 1
+        result.push(line)
+      } else {
+        inForbiddenBlock = true
+        braceDepth = 1
+      }
+      continue
+    }
+    
+    // Handle block content
+    if (inAllowedBlock || inForbiddenBlock) {
+      for (const char of trimmed) {
+        if (char === '{') braceDepth++
+        else if (char === '}') braceDepth--
+      }
+      
+      if (inAllowedBlock) {
+        result.push(line)
+      }
+      
+      if (braceDepth <= 0) {
+        inAllowedBlock = false
+        inForbiddenBlock = false
+        braceDepth = 0
+      }
+      continue
+    }
+    
+    // Handle single-line skinparam - keep only allowed ones
+    if (/^\s*skinparam\b/i.test(trimmed)) {
+      if (ALLOWED_SKINPARAM_KEYS.test(trimmed)) {
+        result.push(line)
+      }
+      continue
+    }
+    
+    // Keep all other lines
+    result.push(line)
+  }
+  
+  return result.join('\n')
+}
+
 function sanitizePlantUML(input: string): string {
   const match = input.match(/@startuml[\s\S]*?@enduml/)
   const block = match ? match[0] : input
-  // Remove multi-line skinparam blocks
-  let cleaned = block.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
-  // Remove single lines we don't allow
-  cleaned = cleaned
-    .split(/\r?\n/)
-    .filter(line => {
-      if (/^\s*!\s*(theme|include|import|pragma)\b/i.test(line)) return false
-      if (/^\s*skinparam\b/i.test(line)) return false
-      if (/^\s*(title|caption)\b/i.test(line)) return false
-      // Drop obviously incomplete connection lines like "500 --"
-      if (/^\s*\d+\s*--\s*$/.test(line)) return false
-      return true
-    })
-    .join('\n')
-  return cleaned
+  const lines = block.split(/\r?\n/)
+  const result: string[] = []
+  
+  let inAllowedBlock = false      // Inside skinparam sequence { } or skinparam activity { }
+  let inForbiddenBlock = false    // Inside a skinparam { } block that is NOT sequence/activity
+  let braceDepth = 0
+  
+  for (const line of lines) {
+    const trimmed = line.trim()
+    
+    // Skip forbidden directives
+    if (/^\s*!\s*(theme|include|import|pragma)\b/i.test(trimmed)) continue
+    
+    // Skip title/caption
+    if (/^\s*(title|caption)\b/i.test(trimmed)) continue
+    
+    // Skip obviously incomplete connection lines like "500 --"
+    if (/^\s*\d+\s*--\s*$/.test(trimmed)) continue
+    
+    // Check for skinparam block start
+    if (/^\s*skinparam\s+\w+\s*\{/.test(trimmed)) {
+      if (ALLOWED_SKINPARAM_BLOCKS.test(trimmed)) {
+        // This is an allowed block (sequence or activity)
+        inAllowedBlock = true
+        braceDepth = 1
+        result.push(line)
+      } else {
+        // This is a forbidden skinparam block
+        inForbiddenBlock = true
+        braceDepth = 1
+      }
+      continue
+    }
+    
+    // Handle block content and closing braces
+    if (inAllowedBlock || inForbiddenBlock) {
+      // Count braces
+      for (const char of trimmed) {
+        if (char === '{') braceDepth++
+        else if (char === '}') braceDepth--
+      }
+      
+      if (inAllowedBlock) {
+        result.push(line)
+      }
+      // Skip forbidden block content
+      
+      // Check if block is closed
+      if (braceDepth <= 0) {
+        inAllowedBlock = false
+        inForbiddenBlock = false
+        braceDepth = 0
+      }
+      continue
+    }
+    
+    // Handle single-line skinparam
+    if (/^\s*skinparam\b/i.test(trimmed)) {
+      // Keep only whitelisted skinparam keys
+      if (ALLOWED_SKINPARAM_KEYS.test(trimmed)) {
+        result.push(line)
+      }
+      // Skip non-whitelisted skinparams
+      continue
+    }
+    
+    // Keep all other lines
+    result.push(line)
+  }
+  
+  return result.join('\n')
 }
 
 type PlantUmlValidationError = { type: string; message: string; line?: number }
@@ -3139,9 +3267,62 @@ function validatePlantUmlStructure(code: string): { ok: boolean; errors: PlantUm
   const lines = code.split(/\r?\n/)
   
   // Detect diagram type for context-aware validation
-  const isActivityDiagram = lines.some(line => /^\s*(start|stop|:.*;\s*$)/.test(line.trim()))
-  const isSequenceDiagram = lines.some(line => /^\s*(participant|actor)\b/i.test(line.trim()))
-  const isStateDiagram = lines.some(line => /^\s*\[\*\]|state\s+"/i.test(line.trim()))
+  const isActivityDiagram = lines.some(line => /^\s*(start|stop|:.*;\s*)$/.test(line))
+  const isSequenceDiagram = lines.some(line => /^\s*(participant|actor)\b/i.test(line))
+  const isStateDiagram = lines.some(line => /^\s*\[\*\]|state\s+"/i.test(line))
+  const isBlockDiagram = lines.some(line => /^\s*rectangle\b/i.test(line))
+  
+  // ═══════════════════════════════════════════════════════════════════════════════
+  // MINIMUM VIABLE CONTENT CHECKS
+  // Ensures diagrams have enough substance to be meaningful (prevents blank/tiny diagrams)
+  // ═══════════════════════════════════════════════════════════════════════════════
+  
+  if (isBlockDiagram && !isSequenceDiagram && !isActivityDiagram) {
+    // Block/pipeline diagram: require at least 3 rectangles and 1 arrow
+    // Note: Nested block diagrams (STYLE 1) may have minimal arrows since containment implies relationships
+    const rectangleCount = lines.filter(line => /^\s*rectangle\b/i.test(line)).length
+    const arrowCount = lines.filter(line => /-->|->|<--|<-|--/.test(line)).length  // Also count undirected '--' edges
+    
+    if (rectangleCount < 3) {
+      errors.push({ type: 'min_content', message: `Block diagram needs at least 3 rectangles (found ${rectangleCount})` })
+    }
+    if (arrowCount < 1) {
+      errors.push({ type: 'min_content', message: `Block diagram needs at least 1 connection (found ${arrowCount})` })
+    }
+  }
+  
+  if (isSequenceDiagram) {
+    // Sequence diagram: require at least 2 participants/actors and 2 messages
+    const participantCount = lines.filter(line => /^\s*(participant|actor)\b/i.test(line)).length
+    const messageCount = lines.filter(line => /->|-->|<-|<--/.test(line) && !/^\s*(participant|actor)\b/i.test(line)).length
+    
+    if (participantCount < 2) {
+      errors.push({ type: 'min_content', message: `Sequence diagram needs at least 2 participants/actors (found ${participantCount})` })
+    }
+    if (messageCount < 2) {
+      errors.push({ type: 'min_content', message: `Sequence diagram needs at least 2 messages (found ${messageCount})` })
+    }
+  }
+  
+  if (isActivityDiagram) {
+    // Activity diagram: require start, stop, and at least 3 action lines
+    // Note: This replaces the separate activity_flow checks below to avoid duplicate errors
+    const hasStart = lines.some(line => /^\s*start\s*$/i.test(line))
+    const hasStop = lines.some(line => /^\s*(stop|end)\s*$/i.test(line))
+    const actionCount = lines.filter(line => /^:.*;\s*$/.test(line.trim())).length
+    
+    if (!hasStart) {
+      errors.push({ type: 'min_content', message: 'Activity diagram must have "start"' })
+    }
+    if (!hasStop) {
+      errors.push({ type: 'min_content', message: 'Activity diagram must have "stop" or "end"' })
+    }
+    if (actionCount < 3) {
+      errors.push({ type: 'min_content', message: `Activity diagram needs at least 3 action steps (found ${actionCount})` })
+    }
+  }
+  
+  // ═══════════════════════════════════════════════════════════════════════════════
   
   // Dangling connectors like "A --" or "B -->"
   lines.forEach((line, idx) => {
@@ -3204,18 +3385,8 @@ function validatePlantUmlStructure(code: string): { ok: boolean; errors: PlantUm
     }
   }
 
-  // Activity diagram specific: Check start/stop balance
-  if (isActivityDiagram) {
-    const startStatements = lines.filter(line => /^\s*start\s*$/i.test(line.trim())).length
-    const stopStatements = lines.filter(line => /^\s*(stop|end)\s*$/i.test(line.trim())).length
-    
-    if (startStatements === 0) {
-      errors.push({ type: 'activity_flow', message: 'Activity diagram should begin with "start"' })
-    }
-    if (stopStatements === 0) {
-      errors.push({ type: 'activity_flow', message: 'Activity diagram should end with "stop" or "end"' })
-    }
-  }
+  // Activity diagram start/stop balance is checked in min_content section above
+  // (consolidated to avoid duplicate error messages)
 
   // Sequence diagram specific: Check participant definitions
   if (isSequenceDiagram) {
@@ -3258,6 +3429,11 @@ async function attemptRepairPlantUml(
     .join('\n')
   const prompt = `You are a diagram syntax compiler and fixer.
 Fix ONLY syntax/structure problems. Preserve all semantics, reference numerals, and component names.
+
+CRITICAL PRESERVATION RULES:
+- Preserve diagram type and the existing skinparam style. Do NOT convert a sequence diagram into a block diagram or vice versa.
+- Do NOT add !include/!theme/!pragma/title/caption.
+- Keep all existing skinparam directives (monochrome, shadowing, ArrowColor, BorderColor, etc.) intact.
 
 FIGURE: ${opts.figureTitle || 'Untitled'}
 DESCRIPTION: ${opts.description || 'n/a'}
@@ -5447,67 +5623,33 @@ async function handleGeneratePlantUML(user: any, patentId: string, data: any) {
   });
 
   // Generate and save image from PlantUML code
+  // NOTE: Repair flow is streamlined - only 1 LLM repair attempt on render failure (validation repair already done above)
   if (workingCode) {
     try {
-      // Clean the PlantUML code (remove titles, themes, etc.)
-      let cleaned = workingCode
-        .replace(/^title.*$/gmi, '')
-        .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
-      // Remove multi-line skinparam blocks
-      cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
-      // Remove single-line skinparam statements
-      cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+      // Clean the PlantUML code for rendering (preserves allowed skinparams)
+      let cleaned = cleanForRendering(workingCode)
 
       const encoded = plantumlEncoder.encode(cleaned)
       const base = process.env.PLANTUML_BASE_URL || 'https://www.plantuml.com/plantuml'
-      const txtError = await fetchPlantUmlErrorText(base, encoded)
-      if (txtError) {
-        const repair = await attemptRepairPlantUml(workingCode, validation.errors, {
-          figureTitle: session!.figurePlans[0]?.title,
-          description: session!.figurePlans[0]?.description ?? undefined,
-          plantumlErrorText: txtError
-        })
-        if (repair.ok && repair.code) {
-          workingCode = repair.code
-          validation = validatePlantUmlStructure(workingCode)
-          cleaned = workingCode
-            .replace(/^title.*$/gmi, '')
-            .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
-          cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
-          cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
-          await prisma.diagramSource.update({
-            where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
-            data: {
-              plantumlCode: workingCode,
-              checksum: crypto.createHash('sha256').update(workingCode).digest('hex')
-            }
-          })
-        }
-      }
 
-      const finalEncoded = plantumlEncoder.encode(cleaned)
-      let resp = await fetch(`${base}/png/${finalEncoded}`, {
+      let resp = await fetch(`${base}/png/${encoded}`, {
         cache: 'no-store',
         method: 'GET',
         headers: { 'Accept': 'image/png' }
       })
 
+      // One-time retry with LLM repair if render fails
       if (!resp.ok) {
-        // One-time render retry with LLM repair using PlantUML error text
         const failureText = await resp.text().catch(() => '')
+        const txtError = await fetchPlantUmlErrorText(base, encoded)
         const retryRepair = await attemptRepairPlantUml(workingCode, validation.errors, {
           figureTitle: session!.figurePlans[0]?.title,
           description: session!.figurePlans[0]?.description ?? undefined,
-          plantumlErrorText: failureText || (await fetchPlantUmlErrorText(base, finalEncoded)) || undefined
+          plantumlErrorText: txtError || failureText || undefined
         })
         if (retryRepair.ok && retryRepair.code) {
           workingCode = retryRepair.code
-          validation = validatePlantUmlStructure(workingCode)
-          cleaned = workingCode
-            .replace(/^title.*$/gmi, '')
-            .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
-          cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
-          cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+          cleaned = cleanForRendering(workingCode)
           await prisma.diagramSource.update({
             where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
             data: {
@@ -5586,13 +5728,14 @@ const DIAGRAM_TYPES: Record<DiagramType, DiagramTypeInfo> = {
     name: 'Block/Component Diagram',
     description: 'Shows system architecture with components and their relationships',
     syntaxGuide: `Use rectangle, component, or package elements connected with arrows.
-- Define components: rectangle "Name" as Alias or component "Name" as Alias
+- Define components: rectangle "Name (numeral)" as Alias or component "Name (numeral)" as Alias
+- IMPORTANT: Numerals MUST be in parentheses, e.g., "Controller (100)" not "Controller 100"
 - Connect components: A --> B or A -down-> B
 - Group related items: package "Group" { ... }`,
     exampleCode: `@startuml
-rectangle "Controller 100" as C100
-rectangle "Processor 200" as P200
-rectangle "Memory 300" as M300
+rectangle "Controller (100)" as C100
+rectangle "Processor (200)" as P200
+rectangle "Memory (300)" as M300
 
 C100 -down-> P200 : control signals
 P200 -right-> M300 : data
@@ -5605,16 +5748,17 @@ P200 -right-> M300 : data
     syntaxGuide: `Use activity diagram syntax for method/process claims.
 - Start: start
 - End: stop
-- Actions: :Action description;
+- Actions: :Action description (numeral);
+- IMPORTANT: Numerals MUST be in parentheses, e.g., "processor (200)" not "processor 200"
 - Decisions: if (condition?) then (yes) ... else (no) ... endif
 - Parallel: fork ... fork again ... end fork
 - Notes: Do NOT use "note" elements`,
     exampleCode: `@startuml
 start
 :Receive input data;
-:Process data in processor 200;
+:Process data in processor (200);
 if (Valid data?) then (yes)
-  :Store in memory 300;
+  :Store in memory (300);
   :Generate output;
 else (no)
   :Log error;
@@ -5628,15 +5772,16 @@ stop
     name: 'Sequence Diagram',
     description: 'Shows message ordering and timing between components',
     syntaxGuide: `Use sequence diagram syntax for communication protocols.
-- Participants: participant "Name" as Alias
+- Participants: participant "Name (numeral)" as Alias
+- IMPORTANT: Numerals MUST be in parentheses, e.g., "Client (100)" not "Client 100"
 - Messages: A -> B : message or A --> B : async message
 - Return: A <-- B : response
 - Activation: activate A ... deactivate A
 - Groups: group Label ... end`,
     exampleCode: `@startuml
-participant "Client 100" as C
-participant "Server 200" as S
-participant "Database 300" as D
+participant "Client (100)" as C
+participant "Server (200)" as S
+participant "Database (300)" as D
 
 C -> S : Request
 activate S
@@ -5655,14 +5800,15 @@ deactivate S
     syntaxGuide: `Use state diagram syntax for state machines and control logic.
 - Initial state: [*] --> StateName
 - Final state: StateName --> [*]
-- States: state "Description" as StateName
+- States: state "Description (numeral)" as StateName
+- IMPORTANT: Numerals MUST be in parentheses, e.g., "Idle State (100)" not "Idle State 100"
 - Transitions: StateA --> StateB : trigger`,
     exampleCode: `@startuml
 [*] --> Idle
 
-state "Idle State" as Idle
-state "Processing" as Proc
-state "Complete" as Done
+state "Idle State (100)" as Idle
+state "Processing (200)" as Proc
+state "Complete (300)" as Done
 
 Idle --> Proc : start
 Proc --> Done : success
@@ -6057,6 +6203,7 @@ To ensure the diagrams render correctly, please follow these rules:
 5. CONTENT:
    - Use ONLY provided components/numerals.
    - Do not invent new components.
+   - NUMERALS MUST be wrapped in parentheses, e.g., "Controller (100)" NOT "Controller 100".
 
 6. ACTIVITY DIAGRAMS (when assigned):
    - Use :Action text; format for actions
@@ -6418,67 +6565,33 @@ async function handleSavePlantUML(user: any, patentId: string, data: any) {
   })
 
   // Generate and save image from PlantUML code
+  // NOTE: Repair flow is streamlined - only 1 LLM repair attempt on render failure (validation repair already done above)
   try {
-    // Clean the PlantUML code (remove titles, themes, etc.)
-    let cleaned = workingCode
-      .replace(/^title.*$/gmi, '')
-      .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
-    // Remove multi-line skinparam blocks
-    cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
-    // Remove single-line skinparam statements
-    cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+    // Clean the PlantUML code for rendering (preserves allowed skinparams)
+    let cleaned = cleanForRendering(workingCode)
 
     const base = process.env.PLANTUML_BASE_URL || 'https://www.plantuml.com/plantuml'
     let encoded = plantumlEncoder.encode(cleaned)
-    const txtError = await fetchPlantUmlErrorText(base, encoded)
-    if (txtError) {
-      const repair = await attemptRepairPlantUml(workingCode, validation.errors, {
-        figureTitle: cleanedTitle,
-        description,
-        numerals: allowedNumerals,
-        plantumlErrorText: txtError
-      })
-      if (repair.ok && repair.code) {
-        workingCode = repair.code
-        validation = validatePlantUmlStructure(workingCode)
-        cleaned = workingCode
-          .replace(/^title.*$/gmi, '')
-          .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
-        cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
-        cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
-        await prisma.diagramSource.update({
-          where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
-          data: { plantumlCode: workingCode, checksum: crypto.createHash('sha256').update(workingCode).digest('hex') }
-        })
-        encoded = plantumlEncoder.encode(cleaned)
-      }
-    }
 
-    const finalUrl = `${base}/png/${encoded}`
-
-    let resp = await fetch(finalUrl, {
+    let resp = await fetch(`${base}/png/${encoded}`, {
       cache: 'no-store',
       method: 'GET',
       headers: { 'Accept': 'image/png' }
     })
 
+    // One-time retry with LLM repair if render fails
     if (!resp.ok) {
       const failureText = await resp.text().catch(() => '')
-      // One-time retry with repair using renderer error text
+      const txtError = await fetchPlantUmlErrorText(base, encoded)
       const retryRepair = await attemptRepairPlantUml(workingCode, validation.errors, {
         figureTitle: cleanedTitle,
         description,
         numerals: allowedNumerals,
-        plantumlErrorText: failureText || (await fetchPlantUmlErrorText(base, encoded)) || undefined
+        plantumlErrorText: txtError || failureText || undefined
       })
       if (retryRepair.ok && retryRepair.code) {
         workingCode = retryRepair.code
-        validation = validatePlantUmlStructure(workingCode)
-        cleaned = workingCode
-          .replace(/^title.*$/gmi, '')
-          .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
-        cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
-        cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+        cleaned = cleanForRendering(workingCode)
         await prisma.diagramSource.update({
           where: { sessionId_figureNo_language: { sessionId, figureNo, language: 'en' } },
           data: { plantumlCode: workingCode, checksum: crypto.createHash('sha256').update(workingCode).digest('hex') }
@@ -6752,11 +6865,8 @@ Return ONLY the translated PlantUML code. No explanations, no markdown formattin
 
     // Generate and save rendered image for the translated diagram
     try {
-      let cleaned = translatedCode
-        .replace(/^title.*$/gmi, '')
-        .replace(/^\s*!\s*(theme|include|import|pragma).*$/gmi, '')
-      cleaned = cleaned.replace(/skinparam\b[^\n{]*\{[\s\S]*?\}/gmi, '')
-      cleaned = cleaned.replace(/^\s*skinparam\b.*$/gmi, '')
+      // Clean the PlantUML code for rendering (preserves allowed skinparams)
+      let cleaned = cleanForRendering(translatedCode)
 
       const encoded = plantumlEncoder.encode(cleaned)
       const base = process.env.PLANTUML_BASE_URL || 'https://www.plantuml.com/plantuml'
@@ -7037,6 +7147,7 @@ async function handleRegenerateDiagramLLM(user: any, patentId: string, data: any
 
   const prompt = `You are refining a ${diagramInfo.name.toLowerCase()} for a patent figure.
 Keep the diagram simple and valid. Use only these components/numerals: ${numeralsPreview}.
+CRITICAL: All reference numerals MUST be wrapped in parentheses, e.g., "Controller (100)" NOT "Controller 100".
 Invention Type: ${archetype}
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -7089,6 +7200,7 @@ To ensure the diagram renders correctly, please follow these rules:
 5. CONTENT:
    - Use ONLY provided components/numerals.
    - Do not invent new components.
+   - NUMERALS MUST be wrapped in parentheses, e.g., "Controller (100)" NOT "Controller 100".
 
 Existing title: ${title}
 User instructions: ${instructions || 'none'}
@@ -7199,6 +7311,7 @@ async function handleAddFigureLLM(user: any, patentId: string, data: any, reques
 
   const prompt = `Add one new ${diagramInfo.name.toLowerCase()} figure for a patent.
 Use only numerals: ${numeralsPreview}.
+CRITICAL: All reference numerals MUST be wrapped in parentheses, e.g., "Controller (100)" NOT "Controller 100".
 Invention Type: ${archetype}
 
 ═══════════════════════════════════════════════════════════════════════════════
@@ -7252,6 +7365,7 @@ To ensure the diagram renders correctly, please follow these rules:
 5. CONTENT:
    - Use ONLY provided components/numerals.
    - Do not invent new components.
+   - NUMERALS MUST be wrapped in parentheses, e.g., "Controller (100)" NOT "Controller 100".
 
 User instructions: ${instructions || 'none'}
 Return ONLY diagram code.`
@@ -7354,6 +7468,7 @@ async function handleAddFiguresLLM(user: any, patentId: string, data: any, reque
   const aggregatePrompt = `You are adding ${instructionsList.length} new simple block diagram figures to a patent.
 Invention: ${inventionTitle}
 Use only components/numerals: ${numeralsPreview}
+CRITICAL: All reference numerals MUST be wrapped in parentheses, e.g., "Controller (100)" NOT "Controller 100".
 Existing figures: ${existingNames || 'none'}
 Invention Type: ${archetype}
 
@@ -7397,6 +7512,7 @@ To ensure the diagrams render correctly, please follow these rules:
 5. CONTENT:
    - Use ONLY provided components/numerals.
    - Do not invent new components.
+   - NUMERALS MUST be wrapped in parentheses, e.g., "Controller (100)" NOT "Controller 100".
 
 Generate ${instructionsList.length} SEPARATE DIAGRAMS. Each must be complete and valid.
 For each item below, return ONLY PlantUML (@startuml..@enduml), one block per item, in the same order.
@@ -11393,6 +11509,7 @@ async function handleApplyAIFix(
   // This handles both original AIReviewIssue format and converted ValidationIssue format
   const normalizedIssue: AIReviewIssue = {
     ...issue,
+    category: (issue as any).category || 'general', // Preserve category if it exists, default to 'general'
     fixPrompt: issue.fixPrompt || (issue.metadata as any)?.fixPrompt || issue.suggestedFix || '',
     sectionKey: issue.sectionKey || (issue.metadata as any)?.sectionKey || sectionKey,
     sectionLabel: issue.sectionLabel || (issue.metadata as any)?.sectionLabel || sectionKey,
