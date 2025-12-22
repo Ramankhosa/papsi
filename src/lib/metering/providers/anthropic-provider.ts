@@ -9,15 +9,13 @@ import type { LLMProvider, ProviderConfig } from './llm-provider'
 export class AnthropicProvider implements LLMProvider {
   name = 'anthropic'
   supportedModels = [
-    'claude-3-5-sonnet-latest',
-    'claude-3-5-haiku-latest',
-    'claude-3-opus-latest',
-    'claude-3-sonnet-20240229',
-    'claude-3-haiku-20240307',
-    // Legacy dated versions (mapped to latest)
-    'claude-3-5-sonnet-20241022',
-    'claude-3-5-haiku-20241022', 
-    'claude-3-opus-20240229',
+    // Claude 3.5 models - use the stable aliases that Anthropic actually supports
+    'claude-3-5-sonnet',
+    'claude-3-5-haiku', 
+    // Claude 3 models
+    'claude-3-opus',
+    'claude-3-sonnet',
+    'claude-3-haiku',
   ]
 
   private config: ProviderConfig
@@ -51,27 +49,30 @@ export class AnthropicProvider implements LLMProvider {
     }
 
     const startTime = Date.now()
-    const modelToUse = request.modelClass || this.config.model || 'claude-3-5-sonnet-latest'
+    const modelToUse = request.modelClass || this.config.model || 'claude-3-5-sonnet'
     
-    // Map friendly model names to Anthropic model IDs
-    // Using 'latest' aliases for stability, or specific dated versions known to work
+    // Map friendly model names to Anthropic's required exact model IDs
+    // Anthropic API requires dated versions - aliases don't work
     const modelMap: Record<string, string> = {
-      // Claude 3.5 models - use latest aliases for stability
-      'claude-3.5-sonnet': 'claude-3-5-sonnet-latest',
-      'claude-3-5-sonnet': 'claude-3-5-sonnet-latest',
-      'claude-3.5-haiku': 'claude-3-5-haiku-latest',
-      'claude-3-5-haiku': 'claude-3-5-haiku-latest',
-      // Claude 3 models
-      'claude-3-opus': 'claude-3-opus-latest',
+      // Claude 3.5 Sonnet variations -> latest dated version
+      'claude-3.5-sonnet': 'claude-3-5-sonnet-20241022',
+      'claude-3-5-sonnet': 'claude-3-5-sonnet-20241022',
+      'claude-3-5-sonnet-latest': 'claude-3-5-sonnet-20241022',
+      'claude-sonnet-3.5': 'claude-3-5-sonnet-20241022',
+      // Claude 3.5 Haiku variations
+      'claude-3.5-haiku': 'claude-3-5-haiku-20241022',
+      'claude-3-5-haiku': 'claude-3-5-haiku-20241022',
+      'claude-3-5-haiku-latest': 'claude-3-5-haiku-20241022',
+      // Claude 3 Opus variations
+      'claude-3-opus': 'claude-3-opus-20240229',
+      'claude-3-opus-latest': 'claude-3-opus-20240229',
+      // Claude 3 Sonnet/Haiku
       'claude-3-sonnet': 'claude-3-sonnet-20240229',
       'claude-3-haiku': 'claude-3-haiku-20240307',
-      // Explicit dated versions - map to latest
-      'claude-3-5-sonnet-20241022': 'claude-3-5-sonnet-latest',
-      'claude-3-5-haiku-20241022': 'claude-3-5-haiku-latest',
-      'claude-3-opus-20240229': 'claude-3-opus-latest',
     }
     
     const actualModel = modelMap[modelToUse] || modelToUse
+    console.log(`Anthropic: mapping model "${modelToUse}" -> "${actualModel}"`)
 
     try {
       // Build messages array
@@ -146,23 +147,23 @@ export class AnthropicProvider implements LLMProvider {
   getTokenLimits(modelName: string): { input: number; output: number } {
     // Claude 3.5 models have 200K context
     const limits: Record<string, { input: number; output: number }> = {
-      'claude-3-5-sonnet-20241022': { input: 200000, output: 8192 },
-      'claude-3-5-haiku-20241022': { input: 200000, output: 8192 },
-      'claude-3-opus-20240229': { input: 200000, output: 4096 },
-      'claude-3-sonnet-20240229': { input: 200000, output: 4096 },
-      'claude-3-haiku-20240307': { input: 200000, output: 4096 }
+      'claude-3-5-sonnet': { input: 200000, output: 8192 },
+      'claude-3-5-haiku': { input: 200000, output: 8192 },
+      'claude-3-opus': { input: 200000, output: 4096 },
+      'claude-3-sonnet': { input: 200000, output: 4096 },
+      'claude-3-haiku': { input: 200000, output: 4096 }
     }
     return limits[modelName] || { input: 200000, output: 4096 }
   }
 
   getCostPerToken(modelName: string): { input: number; output: number } {
-    // Cost per token in USD (approximate)
+    // Cost per token in USD (approximate as of Dec 2024)
     const costs: Record<string, { input: number; output: number }> = {
-      'claude-3-5-sonnet-20241022': { input: 0.000003, output: 0.000015 },
-      'claude-3-5-haiku-20241022': { input: 0.0000008, output: 0.000004 },
-      'claude-3-opus-20240229': { input: 0.000015, output: 0.000075 },
-      'claude-3-sonnet-20240229': { input: 0.000003, output: 0.000015 },
-      'claude-3-haiku-20240307': { input: 0.00000025, output: 0.00000125 }
+      'claude-3-5-sonnet': { input: 0.000003, output: 0.000015 },
+      'claude-3-5-haiku': { input: 0.0000008, output: 0.000004 },
+      'claude-3-opus': { input: 0.000015, output: 0.000075 },
+      'claude-3-sonnet': { input: 0.000003, output: 0.000015 },
+      'claude-3-haiku': { input: 0.00000025, output: 0.00000125 }
     }
     return costs[modelName] || { input: 0.000003, output: 0.000015 }
   }

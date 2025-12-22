@@ -514,7 +514,9 @@ enum TaskCode {
   // Ideation tasks
   IDEATION_NORMALIZE // Seed normalization
   IDEATION_CLASSIFY // Classification
+  IDEATION_CONTRADICTION_MAPPING // Stage 2.5: Map contradictions to TRIZ principles
   IDEATION_EXPAND // Dimension expansion
+  IDEATION_OBVIOUSNESS_FILTER // Stage 3.5: Check combination novelty before generation
   IDEATION_GENERATE // Idea frame generation
   IDEATION_NOVELTY // Novelty gate reasoning
 }

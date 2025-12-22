@@ -91,23 +91,31 @@ const NON_LLM_STAGES = [
 const IDEATION_STAGE_INFO: Record<string, { complexity: 'lightweight' | 'advanced'; tip: string }> = {
   'IDEATION_NORMALIZE': {
     complexity: 'lightweight',
-    tip: 'Quick structured extraction - Flash/Mini models work well'
+    tip: 'Quick structured extraction with contradiction detection - Flash/Mini models work well'
   },
   'IDEATION_CLASSIFY': {
     complexity: 'lightweight',
     tip: 'Simple classification task - Flash/Mini models sufficient'
   },
+  'IDEATION_CONTRADICTION_MAPPING': {
+    complexity: 'lightweight',
+    tip: 'Maps contradictions to TRIZ principles - Flash/Mini models sufficient'
+  },
   'IDEATION_EXPAND': {
     complexity: 'lightweight',
     tip: 'Dimension expansion - Flash/Mini models handle this well'
   },
+  'IDEATION_OBVIOUSNESS_FILTER': {
+    complexity: 'lightweight',
+    tip: 'Pre-generation novelty check - Flash/Mini models sufficient'
+  },
   'IDEATION_GENERATE': {
     complexity: 'advanced',
-    tip: 'Complex idea synthesis - Recommend Pro/Sonnet/GPT-4o for quality'
+    tip: 'Complex idea synthesis with inventive logic - Recommend Pro/Sonnet/GPT-4o for quality'
   },
   'IDEATION_NOVELTY': {
     complexity: 'advanced',
-    tip: 'Novelty reasoning - Recommend Pro/Sonnet/GPT-4o for accuracy'
+    tip: 'Novelty reasoning with PHOSITA test - Recommend Pro/Sonnet/GPT-4o for accuracy'
   }
 }
 

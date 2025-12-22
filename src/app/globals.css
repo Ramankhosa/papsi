@@ -160,3 +160,39 @@
 .sidebar-content-shift {
   transition: padding-left 0.3s ease-in-out;
 }
+
+/* Smooth ReactFlow node appearance/disappearance animations */
+.react-flow__node {
+  transition: opacity 0.4s ease-in-out, transform 0.4s ease-in-out;
+}
+
+.react-flow__node[data-new="true"] {
+  animation: nodeFadeIn 0.5s ease-out;
+}
+
+@keyframes nodeFadeIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.8) translateY(-10px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Node removal animation */
+.react-flow__node.removing {
+  animation: nodeFadeOut 0.3s ease-in forwards;
+}
+
+@keyframes nodeFadeOut {
+  0% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+}

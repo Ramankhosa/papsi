@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   X,
@@ -15,6 +15,10 @@ import {
   ChevronDown,
   ChevronUp,
   Loader2,
+  Maximize2,
+  Minimize2,
+  Copy,
+  Check,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -31,12 +35,37 @@ interface IdeaFrame {
   data?: any
 }
 
+interface FeedbackLoopResult {
+  ideaId: string
+  iteration: number
+  originalNovelty: number
+  finalNovelty: number
+  improved: boolean
+  mutationApplied?: string
+}
+
+interface FeedbackLoopResults {
+  enabled: boolean
+  iterations: FeedbackLoopResult[]
+  lowNoveltyCount: number
+  totalChecked: number
+}
+
+interface QualityMetrics {
+  ideasWithInventiveLeap: number
+  ideasWithAnalogy: number
+  inventiveLeapRatio: number
+  analogyRatio: number
+}
+
 interface IdeaFramePanelProps {
   ideas: IdeaFrame[]
   onSelectIdea: (idea: IdeaFrame) => void
   onCheckNovelty: (ideaId: string) => void
   onExport: (ideaIds: string[]) => void
   onClose: () => void
+  feedbackLoopResults?: FeedbackLoopResults | null
+  qualityMetrics?: QualityMetrics | null
 }
 
 export default function IdeaFramePanel({
@@ -45,10 +74,34 @@ export default function IdeaFramePanel({
   onCheckNovelty,
   onExport,
   onClose,
+  feedbackLoopResults,
+  qualityMetrics,
 }: IdeaFramePanelProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [selectedForExport, setSelectedForExport] = useState<Set<string>>(new Set())
   const [checkingNovelty, setCheckingNovelty] = useState<string | null>(null)
+  const [fullscreenIdea, setFullscreenIdea] = useState<IdeaFrame | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
+
+  // Check for mobile viewport
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768)
+    checkMobile()
+    window.addEventListener('resize', checkMobile)
+    return () => window.removeEventListener('resize', checkMobile)
+  }, [])
+
+  // Handle escape key for fullscreen
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && fullscreenIdea) {
+        setFullscreenIdea(null)
+      }
+    }
+    window.addEventListener('keydown', handleEscape)
+    return () => window.removeEventListener('keydown', handleEscape)
+  }, [fullscreenIdea])
 
   const handleNoveltyCheck = async (ideaId: string) => {
     setCheckingNovelty(ideaId)
@@ -74,6 +127,32 @@ export default function IdeaFramePanel({
     }
   }
 
+  const copyToClipboard = async (idea: IdeaFrame) => {
+    const text = `
+Title: ${idea.title}
+
+Problem: ${idea.problem}
+
+Principle: ${idea.principle}
+
+${idea.technicalEffect ? `Technical Effect: ${idea.technicalEffect}` : ''}
+
+${idea.data?.inventiveLeap ? `Inventive Leap: ${idea.data.inventiveLeap}` : ''}
+
+${idea.data?.whyNotObvious ? `Why Not Obvious: ${idea.data.whyNotObvious}` : ''}
+
+${idea.data?.analogySource ? `Cross-Domain Analogy: ${idea.data.analogySource.domain} - ${idea.data.analogySource.concept}` : ''}
+
+${idea.data?.contradictionResolved ? `Contradiction Resolved: ${idea.data.contradictionResolved}` : ''}
+
+${idea.data?.claimHooks?.length > 0 ? `Claim Hooks: ${idea.data.claimHooks.join(', ')}` : ''}
+    `.trim()
+
+    await navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
   const getNoveltyColor = (score?: number) => {
     if (score === undefined) return 'bg-slate-100 text-slate-600'
     if (score >= 70) return 'bg-green-100 text-green-700'
@@ -94,267 +173,612 @@ export default function IdeaFramePanel({
     }
   }
 
-  return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="p-4 border-b border-slate-200 bg-gradient-to-r from-purple-50 to-violet-50">
-        <div className="flex items-center justify-between mb-2">
-          <h3 className="font-semibold text-slate-900 flex items-center gap-2">
-            <Lightbulb className="w-4 h-4 text-purple-500" />
-            Generated Ideas ({ideas.length})
-          </h3>
-          <button
-            onClick={onClose}
-            className="p-1 hover:bg-slate-200 rounded-md transition-colors"
-          >
-            <X className="w-4 h-4 text-slate-500" />
-          </button>
+  // Fullscreen Modal for Idea Details
+  const FullscreenIdeaModal = ({ idea }: { idea: IdeaFrame }) => (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 md:p-8"
+      onClick={() => setFullscreenIdea(null)}
+    >
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.9, opacity: 0 }}
+        className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Modal Header */}
+        <div className="p-4 md:p-6 border-b border-slate-200 bg-gradient-to-r from-purple-50 to-violet-50 flex-shrink-0">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-2">
+                {getStatusIcon(idea.status)}
+                <h2 className="text-lg md:text-xl font-bold text-slate-900 line-clamp-2">
+                  {idea.title}
+                </h2>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                {idea.noveltyScore !== undefined && (
+                  <Badge className={`${getNoveltyColor(idea.noveltyScore)} text-sm`}>
+                    {idea.noveltyScore}% novel
+                  </Badge>
+                )}
+                {idea.userRating && (
+                  <div className="flex items-center gap-0.5">
+                    {[1, 2, 3, 4, 5].map(star => (
+                      <Star
+                        key={star}
+                        className={`w-4 h-4 ${
+                          star <= idea.userRating!
+                            ? 'text-yellow-400 fill-yellow-400'
+                            : 'text-slate-200'
+                        }`}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => copyToClipboard(idea)}
+                className="hidden md:flex"
+              >
+                {copied ? (
+                  <>
+                    <Check className="w-4 h-4 mr-1 text-green-500" />
+                    Copied!
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4 mr-1" />
+                    Copy
+                  </>
+                )}
+              </Button>
+              <button
+                onClick={() => setFullscreenIdea(null)}
+                className="p-2 hover:bg-slate-200 rounded-full transition-colors"
+              >
+                <Minimize2 className="w-5 h-5 text-slate-500" />
+              </button>
+            </div>
+          </div>
         </div>
-        <p className="text-xs text-slate-500">
-          Review, rate, and export your generated invention ideas
-        </p>
-      </div>
 
-      {/* Ideas List */}
-      <div className="flex-1 overflow-auto">
-        {ideas.map((idea, index) => (
-          <motion.div
-            key={idea.id}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: index * 0.1 }}
-            className="border-b border-slate-100"
+        {/* Modal Content - Scrollable */}
+        <div className="flex-1 overflow-auto p-4 md:p-6 space-y-4 md:space-y-6">
+          {/* Problem */}
+          <div className="bg-slate-50 rounded-xl p-4">
+            <label className="text-xs md:text-sm font-semibold text-slate-500 uppercase tracking-wider">
+              Problem Statement
+            </label>
+            <p className="text-sm md:text-base text-slate-700 mt-2 leading-relaxed">
+              {idea.problem}
+            </p>
+          </div>
+
+          {/* Principle */}
+          <div className="bg-slate-50 rounded-xl p-4">
+            <label className="text-xs md:text-sm font-semibold text-slate-500 uppercase tracking-wider">
+              Core Principle
+            </label>
+            <p className="text-sm md:text-base text-slate-700 mt-2 leading-relaxed">
+              {idea.principle}
+            </p>
+          </div>
+
+          {/* Technical Effect */}
+          {idea.technicalEffect && (
+            <div className="bg-slate-50 rounded-xl p-4">
+              <label className="text-xs md:text-sm font-semibold text-slate-500 uppercase tracking-wider">
+                Technical Effect
+              </label>
+              <p className="text-sm md:text-base text-slate-700 mt-2 leading-relaxed">
+                {idea.technicalEffect}
+              </p>
+            </div>
+          )}
+
+          {/* Inventive Leap */}
+          {idea.data?.inventiveLeap && (
+            <div className="bg-gradient-to-r from-violet-50 to-purple-50 rounded-xl p-4 border border-violet-200">
+              <label className="text-xs md:text-sm font-semibold text-violet-600 uppercase tracking-wider">
+                🚀 Inventive Leap
+              </label>
+              <p className="text-sm md:text-base text-violet-800 mt-2 leading-relaxed">
+                {idea.data.inventiveLeap}
+              </p>
+            </div>
+          )}
+
+          {/* Why Not Obvious */}
+          {idea.data?.whyNotObvious && (
+            <div className="bg-slate-50 rounded-xl p-4">
+              <label className="text-xs md:text-sm font-semibold text-slate-500 uppercase tracking-wider">
+                Why This Is Not Obvious
+              </label>
+              <p className="text-sm md:text-base text-slate-700 mt-2 leading-relaxed">
+                {idea.data.whyNotObvious}
+              </p>
+            </div>
+          )}
+
+          {/* Cross-Domain Analogy */}
+          {idea.data?.analogySource && (
+            <div className="bg-gradient-to-r from-cyan-50 to-blue-50 rounded-xl p-4 border border-cyan-200">
+              <label className="text-xs md:text-sm font-semibold text-cyan-600 uppercase tracking-wider">
+                🔗 Cross-Domain Analogy
+              </label>
+              <div className="mt-2">
+                <span className="text-sm md:text-base font-medium text-cyan-800">
+                  From: {idea.data.analogySource.domain}
+                </span>
+                <p className="text-sm md:text-base text-cyan-700 mt-1">
+                  {idea.data.analogySource.concept}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Contradiction Resolved */}
+          {idea.data?.contradictionResolved && (
+            <div className="bg-slate-50 rounded-xl p-4">
+              <label className="text-xs md:text-sm font-semibold text-slate-500 uppercase tracking-wider">
+                Contradiction Resolved
+              </label>
+              <p className="text-sm md:text-base text-slate-700 mt-2 leading-relaxed">
+                {idea.data.contradictionResolved}
+              </p>
+            </div>
+          )}
+
+          {/* Resolution Strategy */}
+          {idea.data?.resolutionStrategy && (
+            <div className="bg-slate-50 rounded-xl p-4">
+              <label className="text-xs md:text-sm font-semibold text-slate-500 uppercase tracking-wider">
+                TRIZ Resolution Strategy
+              </label>
+              <p className="text-sm md:text-base text-slate-700 mt-2 leading-relaxed">
+                {idea.data.resolutionStrategy}
+              </p>
+            </div>
+          )}
+
+          {/* Second Order Effect */}
+          {idea.data?.secondOrderEffect && (
+            <div className="bg-gradient-to-r from-amber-50 to-orange-50 rounded-xl p-4 border border-amber-200">
+              <label className="text-xs md:text-sm font-semibold text-amber-600 uppercase tracking-wider">
+                ⚡ Second-Order Effect
+              </label>
+              <p className="text-sm md:text-base text-amber-800 mt-2 leading-relaxed">
+                {idea.data.secondOrderEffect}
+              </p>
+            </div>
+          )}
+
+          {/* Components */}
+          {idea.data?.components?.length > 0 && (
+            <div className="bg-slate-50 rounded-xl p-4">
+              <label className="text-xs md:text-sm font-semibold text-slate-500 uppercase tracking-wider">
+                Key Components
+              </label>
+              <div className="flex flex-wrap gap-2 mt-2">
+                {idea.data.components.map((comp: string, i: number) => (
+                  <Badge key={i} variant="outline" className="text-xs md:text-sm py-1 px-3">
+                    {comp}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Variants */}
+          {idea.data?.variants?.length > 0 && (
+            <div className="bg-slate-50 rounded-xl p-4">
+              <label className="text-xs md:text-sm font-semibold text-slate-500 uppercase tracking-wider">
+                Implementation Variants ({idea.data.variants.length})
+              </label>
+              <div className="mt-3 space-y-3">
+                {idea.data.variants.map((v: any, i: number) => (
+                  <div key={i} className="pl-4 border-l-4 border-violet-300 bg-white rounded-r-lg p-3">
+                    <span className="font-semibold text-slate-800">{v.title}</span>
+                    <p className="text-sm text-slate-600 mt-1">{v.description}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Claim Hooks */}
+          {idea.data?.claimHooks?.length > 0 && (
+            <div className="bg-slate-50 rounded-xl p-4">
+              <label className="text-xs md:text-sm font-semibold text-slate-500 uppercase tracking-wider">
+                Patent Claim Hooks
+              </label>
+              <div className="flex flex-wrap gap-2 mt-2">
+                {idea.data.claimHooks.map((hook: string, i: number) => (
+                  <Badge key={i} className="bg-purple-100 text-purple-700 text-xs md:text-sm py-1 px-3">
+                    {hook}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Modal Footer */}
+        <div className="p-4 md:p-6 border-t border-slate-200 bg-slate-50 flex flex-col sm:flex-row gap-3 flex-shrink-0">
+          <Button
+            variant="outline"
+            onClick={() => {
+              handleNoveltyCheck(idea.id)
+            }}
+            disabled={checkingNovelty === idea.id}
+            className="flex-1"
           >
-            {/* Idea Header */}
-            <div
-              className={`p-4 cursor-pointer hover:bg-slate-50 transition-colors ${
-                selectedForExport.has(idea.id) ? 'bg-violet-50' : ''
-              }`}
-              onClick={() => setExpandedId(expandedId === idea.id ? null : idea.id)}
+            {checkingNovelty === idea.id ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Checking Novelty...
+              </>
+            ) : (
+              <>
+                <Search className="w-4 h-4 mr-2" />
+                Check Novelty
+              </>
+            )}
+          </Button>
+          <Button
+            onClick={() => {
+              toggleExportSelection(idea.id)
+              setFullscreenIdea(null)
+            }}
+            className="flex-1 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700"
+          >
+            <Download className="w-4 h-4 mr-2" />
+            {selectedForExport.has(idea.id) ? 'Remove from Export' : 'Add to Export'}
+          </Button>
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+
+  return (
+    <>
+      {/* Fullscreen Modal */}
+      <AnimatePresence>
+        {fullscreenIdea && <FullscreenIdeaModal idea={fullscreenIdea} />}
+      </AnimatePresence>
+
+      <div className="flex flex-col h-full">
+        {/* Header */}
+        <div className="p-3 md:p-4 border-b border-slate-200 bg-gradient-to-r from-purple-50 to-violet-50 flex-shrink-0">
+          <div className="flex items-center justify-between mb-2">
+            <h3 className="font-semibold text-slate-900 flex items-center gap-2 text-sm md:text-base">
+              <Lightbulb className="w-4 h-4 text-purple-500" />
+              Generated Ideas ({ideas.length})
+            </h3>
+            <button
+              onClick={onClose}
+              className="p-1.5 hover:bg-slate-200 rounded-md transition-colors"
             >
-              <div className="flex items-start gap-3">
-                {/* Selection Checkbox */}
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    toggleExportSelection(idea.id)
-                  }}
-                  className={`
-                    flex-shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center mt-0.5
-                    transition-colors
-                    ${selectedForExport.has(idea.id)
-                      ? 'bg-violet-500 border-violet-500'
-                      : 'border-slate-300 hover:border-violet-400'
-                    }
-                  `}
-                >
-                  {selectedForExport.has(idea.id) && (
-                    <CheckCircle2 className="w-3 h-3 text-white" />
-                  )}
-                </button>
+              <X className="w-4 h-4 text-slate-500" />
+            </button>
+          </div>
+          <p className="text-[10px] md:text-xs text-slate-500">
+            Tap an idea to expand • Long press for fullscreen view
+          </p>
 
-                {/* Content */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-1">
-                    {getStatusIcon(idea.status)}
-                    <h4 className="font-medium text-slate-900 text-sm line-clamp-1">
-                      {idea.title}
-                    </h4>
-                  </div>
-                  <p className="text-xs text-slate-500 line-clamp-2">
-                    {idea.principle}
-                  </p>
-
-                  {/* Tags & Scores */}
-                  <div className="flex items-center gap-2 mt-2">
-                    {idea.noveltyScore !== undefined && (
-                      <Badge className={getNoveltyColor(idea.noveltyScore)}>
-                        {idea.noveltyScore}% novel
-                      </Badge>
-                    )}
-                    {idea.userRating && (
-                      <div className="flex items-center gap-0.5">
-                        {[1, 2, 3, 4, 5].map(star => (
-                          <Star
-                            key={star}
-                            className={`w-3 h-3 ${
-                              star <= idea.userRating!
-                                ? 'text-yellow-400 fill-yellow-400'
-                                : 'text-slate-200'
-                            }`}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
+          {/* Quality Metrics - Responsive Grid */}
+          {qualityMetrics && (
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <div className="bg-white/60 rounded-lg p-2">
+                <div className="text-[9px] md:text-[10px] text-slate-500 uppercase">Inventive Leap</div>
+                <div className="text-xs md:text-sm font-semibold text-violet-700">
+                  {Math.round(qualityMetrics.inventiveLeapRatio * 100)}%
                 </div>
-
-                {/* Expand Icon */}
-                <div className="flex-shrink-0">
-                  {expandedId === idea.id ? (
-                    <ChevronUp className="w-4 h-4 text-slate-400" />
-                  ) : (
-                    <ChevronDown className="w-4 h-4 text-slate-400" />
-                  )}
+              </div>
+              <div className="bg-white/60 rounded-lg p-2">
+                <div className="text-[9px] md:text-[10px] text-slate-500 uppercase">Cross-Domain</div>
+                <div className="text-xs md:text-sm font-semibold text-cyan-700">
+                  {Math.round(qualityMetrics.analogyRatio * 100)}%
                 </div>
               </div>
             </div>
+          )}
 
-            {/* Expanded Details */}
-            <AnimatePresence>
-              {expandedId === idea.id && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  className="overflow-hidden"
-                >
-                  <div className="px-4 pb-4 space-y-3">
-                    {/* Problem */}
-                    <div>
-                      <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                        Problem
-                      </label>
-                      <p className="text-sm text-slate-700 mt-1">
-                        {idea.problem}
-                      </p>
-                    </div>
-
-                    {/* Technical Effect */}
-                    {idea.technicalEffect && (
-                      <div>
-                        <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                          Technical Effect
-                        </label>
-                        <p className="text-sm text-slate-700 mt-1">
-                          {idea.technicalEffect}
-                        </p>
-                      </div>
-                    )}
-
-                    {/* Additional Data */}
-                    {idea.data && (
-                      <>
-                        {/* Components */}
-                        {idea.data.components?.length > 0 && (
-                          <div>
-                            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                              Components
-                            </label>
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {idea.data.components.map((comp: string, i: number) => (
-                                <Badge key={i} variant="outline" className="text-xs">
-                                  {comp}
-                                </Badge>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Variants */}
-                        {idea.data.variants?.length > 0 && (
-                          <div>
-                            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                              Variants ({idea.data.variants.length})
-                            </label>
-                            <div className="mt-1 space-y-1">
-                              {idea.data.variants.slice(0, 3).map((v: any, i: number) => (
-                                <div key={i} className="text-xs text-slate-600 pl-2 border-l-2 border-violet-200">
-                                  <span className="font-medium">{v.title}:</span> {v.description}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Claim Hooks */}
-                        {idea.data.claimHooks?.length > 0 && (
-                          <div>
-                            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                              Claim Hooks
-                            </label>
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {idea.data.claimHooks.slice(0, 5).map((hook: string, i: number) => (
-                                <Badge key={i} className="bg-purple-100 text-purple-700 text-[10px]">
-                                  {hook}
-                                </Badge>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </>
-                    )}
-
-                    {/* Actions */}
-                    <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleNoveltyCheck(idea.id)
-                        }}
-                        disabled={checkingNovelty === idea.id}
-                        className="text-xs"
-                      >
-                        {checkingNovelty === idea.id ? (
-                          <>
-                            <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                            Checking...
-                          </>
-                        ) : (
-                          <>
-                            <Search className="w-3 h-3 mr-1" />
-                            Check Novelty
-                          </>
-                        )}
-                      </Button>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          onSelectIdea(idea)
-                        }}
-                        className="text-xs"
-                      >
-                        <ArrowRight className="w-3 h-3 mr-1" />
-                        Full Details
-                      </Button>
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </motion.div>
-        ))}
-      </div>
-
-      {/* Export Footer */}
-      <div className="p-4 border-t border-slate-200 bg-slate-50">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs text-slate-500">
-            {selectedForExport.size} selected for export
-          </span>
-          {selectedForExport.size > 0 && (
-            <button
-              onClick={() => setSelectedForExport(new Set())}
-              className="text-xs text-violet-600 hover:text-violet-800"
-            >
-              Clear selection
-            </button>
+          {/* Feedback Loop Results */}
+          {feedbackLoopResults && feedbackLoopResults.enabled && (
+            <div className="mt-3 p-2 bg-white/60 rounded-lg">
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] md:text-[10px] text-slate-500 uppercase">Quality Check</span>
+                {feedbackLoopResults.lowNoveltyCount > 0 ? (
+                  <Badge className="bg-amber-100 text-amber-700 text-[8px] md:text-[9px]">
+                    {feedbackLoopResults.lowNoveltyCount} flagged
+                  </Badge>
+                ) : (
+                  <Badge className="bg-green-100 text-green-700 text-[8px] md:text-[9px]">
+                    All pass
+                  </Badge>
+                )}
+              </div>
+              <div className="text-[10px] md:text-xs text-slate-600 mt-1">
+                {feedbackLoopResults.totalChecked} ideas auto-checked
+              </div>
+            </div>
           )}
         </div>
-        <Button
-          onClick={handleExport}
-          disabled={selectedForExport.size === 0}
-          className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white shadow-lg"
-        >
-          <Download className="w-4 h-4 mr-2" />
-          Export to Idea Bank ({selectedForExport.size})
-        </Button>
+
+        {/* Ideas List */}
+        <div className="flex-1 overflow-auto">
+          {ideas.map((idea, index) => (
+            <motion.div
+              key={idea.id}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.05 }}
+              className="border-b border-slate-100"
+            >
+              {/* Idea Header */}
+              <div
+                className={`p-3 md:p-4 cursor-pointer hover:bg-slate-50 transition-colors ${
+                  selectedForExport.has(idea.id) ? 'bg-violet-50' : ''
+                }`}
+                onClick={() => setExpandedId(expandedId === idea.id ? null : idea.id)}
+                onDoubleClick={() => setFullscreenIdea(idea)}
+              >
+                <div className="flex items-start gap-2 md:gap-3">
+                  {/* Selection Checkbox */}
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      toggleExportSelection(idea.id)
+                    }}
+                    className={`
+                      flex-shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center mt-0.5
+                      transition-colors touch-manipulation
+                      ${selectedForExport.has(idea.id)
+                        ? 'bg-violet-500 border-violet-500'
+                        : 'border-slate-300 hover:border-violet-400'
+                      }
+                    `}
+                  >
+                    {selectedForExport.has(idea.id) && (
+                      <CheckCircle2 className="w-3 h-3 text-white" />
+                    )}
+                  </button>
+
+                  {/* Content */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      {getStatusIcon(idea.status)}
+                      <h4 className="font-medium text-slate-900 text-xs md:text-sm line-clamp-1">
+                        {idea.title}
+                      </h4>
+                    </div>
+                    <p className="text-[10px] md:text-xs text-slate-500 line-clamp-2">
+                      {idea.principle}
+                    </p>
+
+                    {/* Tags & Scores */}
+                    <div className="flex flex-wrap items-center gap-1 md:gap-2 mt-2">
+                      {idea.noveltyScore !== undefined && (
+                        <Badge className={`${getNoveltyColor(idea.noveltyScore)} text-[9px] md:text-[10px] py-0.5`}>
+                          {idea.noveltyScore}% novel
+                        </Badge>
+                      )}
+                      {idea.userRating && (
+                        <div className="flex items-center gap-0.5">
+                          {[1, 2, 3, 4, 5].map(star => (
+                            <Star
+                              key={star}
+                              className={`w-2.5 h-2.5 md:w-3 md:h-3 ${
+                                star <= idea.userRating!
+                                  ? 'text-yellow-400 fill-yellow-400'
+                                  : 'text-slate-200'
+                              }`}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setFullscreenIdea(idea)
+                      }}
+                      className="p-1.5 hover:bg-slate-200 rounded-md transition-colors"
+                      title="View fullscreen"
+                    >
+                      <Maximize2 className="w-3.5 h-3.5 md:w-4 md:h-4 text-slate-400" />
+                    </button>
+                    <div className="hidden md:block">
+                      {expandedId === idea.id ? (
+                        <ChevronUp className="w-4 h-4 text-slate-400" />
+                      ) : (
+                        <ChevronDown className="w-4 h-4 text-slate-400" />
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Expanded Details (Desktop only, use fullscreen on mobile) */}
+              <AnimatePresence>
+                {expandedId === idea.id && !isMobile && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 'auto', opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="px-4 pb-4 space-y-3">
+                      {/* Problem */}
+                      <div>
+                        <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                          Problem
+                        </label>
+                        <p className="text-sm text-slate-700 mt-1">
+                          {idea.problem}
+                        </p>
+                      </div>
+
+                      {/* Technical Effect */}
+                      {idea.technicalEffect && (
+                        <div>
+                          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                            Technical Effect
+                          </label>
+                          <p className="text-sm text-slate-700 mt-1">
+                            {idea.technicalEffect}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Additional Data */}
+                      {idea.data && (
+                        <>
+                          {/* Inventive Leap */}
+                          {idea.data.inventiveLeap && (
+                            <div className="p-2 bg-violet-50 rounded-lg border border-violet-100">
+                              <label className="text-xs font-semibold text-violet-600 uppercase tracking-wider">
+                                Inventive Leap
+                              </label>
+                              <p className="text-sm text-violet-800 mt-1">
+                                {idea.data.inventiveLeap}
+                              </p>
+                            </div>
+                          )}
+
+                          {/* Cross-Domain Analogy */}
+                          {idea.data.analogySource && (
+                            <div className="p-2 bg-cyan-50 rounded-lg border border-cyan-100">
+                              <label className="text-xs font-semibold text-cyan-600 uppercase tracking-wider">
+                                Cross-Domain Analogy
+                              </label>
+                              <div className="text-sm text-cyan-800 mt-1">
+                                <span className="font-medium">{idea.data.analogySource.domain}:</span>{' '}
+                                {idea.data.analogySource.concept}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Claim Hooks */}
+                          {idea.data.claimHooks?.length > 0 && (
+                            <div>
+                              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                                Claim Hooks
+                              </label>
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {idea.data.claimHooks.slice(0, 5).map((hook: string, i: number) => (
+                                  <Badge key={i} className="bg-purple-100 text-purple-700 text-[10px]">
+                                    {hook}
+                                  </Badge>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      {/* Actions */}
+                      <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            handleNoveltyCheck(idea.id)
+                          }}
+                          disabled={checkingNovelty === idea.id}
+                          className="text-xs"
+                        >
+                          {checkingNovelty === idea.id ? (
+                            <>
+                              <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                              Checking...
+                            </>
+                          ) : (
+                            <>
+                              <Search className="w-3 h-3 mr-1" />
+                              Check Novelty
+                            </>
+                          )}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setFullscreenIdea(idea)
+                          }}
+                          className="text-xs"
+                        >
+                          <Maximize2 className="w-3 h-3 mr-1" />
+                          Full View
+                        </Button>
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* Mobile: Auto-expand on tap goes to fullscreen */}
+              {expandedId === idea.id && isMobile && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  className="px-3 pb-3"
+                >
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setFullscreenIdea(idea)}
+                    className="w-full text-xs"
+                  >
+                    <Maximize2 className="w-3 h-3 mr-1" />
+                    View Full Details
+                  </Button>
+                </motion.div>
+              )}
+            </motion.div>
+          ))}
+        </div>
+
+        {/* Export Footer */}
+        <div className="p-3 md:p-4 border-t border-slate-200 bg-slate-50 flex-shrink-0">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[10px] md:text-xs text-slate-500">
+              {selectedForExport.size} selected for export
+            </span>
+            {selectedForExport.size > 0 && (
+              <button
+                onClick={() => setSelectedForExport(new Set())}
+                className="text-[10px] md:text-xs text-violet-600 hover:text-violet-800"
+              >
+                Clear selection
+              </button>
+            )}
+          </div>
+          <Button
+            onClick={handleExport}
+            disabled={selectedForExport.size === 0}
+            className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white shadow-lg text-xs md:text-sm"
+          >
+            <Download className="w-3.5 h-3.5 md:w-4 md:h-4 mr-2" />
+            Export to Idea Bank ({selectedForExport.size})
+          </Button>
+        </div>
       </div>
-    </div>
+    </>
   )
 }
-

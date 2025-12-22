@@ -43,6 +43,8 @@ import {
   Edit3,
   ChevronLeft,
   ChevronDown,
+  HelpCircle,
+  LayoutGrid,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -56,6 +58,7 @@ import OperatorNode from './nodes/OperatorNode'
 import IdeaNode from './nodes/IdeaNode'
 import CombineTray from './CombineTray'
 import IdeaFramePanel from './IdeaFramePanel'
+import IdeationHelpModal from './IdeationHelpModal'
 
 interface IdeationWorkspaceProps {
   onExportToBank: () => void
@@ -68,8 +71,10 @@ type SessionStage =
   | 'normalizing'    // Processing - analyzing seed
   | 'clarifying'     // Input needed - questions from AI
   | 'classifying'    // Processing - classifying invention
+  | 'mapping_contradictions' // NEW: Processing - mapping technical contradictions to TRIZ
   | 'expanding'      // Processing - building dimensions
   | 'exploring'      // Workspace - user explores mind map
+  | 'checking_obviousness' // NEW: Processing - checking if combination is too obvious
   | 'generating'     // Processing - creating ideas
   | 'reviewing'      // Workspace - reviewing ideas
 
@@ -78,7 +83,7 @@ const isInputView = (stage: SessionStage) =>
   ['idle', 'seed_input', 'clarifying'].includes(stage)
 
 const isProcessingView = (stage: SessionStage) =>
-  ['normalizing', 'classifying', 'expanding', 'generating'].includes(stage)
+  ['normalizing', 'classifying', 'mapping_contradictions', 'expanding', 'checking_obviousness', 'generating'].includes(stage)
 
 const isWorkspaceView = (stage: SessionStage) =>
   ['exploring', 'reviewing'].includes(stage)
@@ -112,6 +117,34 @@ const nodeTypes: NodeTypes = {
   idea: IdeaNode,
 }
 
+// Subtle edge colors that match family colors - same palette as DimensionNode
+const FAMILY_EDGE_COLORS = [
+  '#a8a29e', // stone
+  '#94a3b8', // slate
+  '#a1a1aa', // zinc
+  '#a3a3a3', // neutral
+  '#fbbf24', // amber (muted)
+  '#34d399', // emerald (muted)
+  '#38bdf8', // sky (muted)
+  '#fb7185', // rose (muted)
+  '#818cf8', // indigo (muted)
+  '#2dd4bf', // teal (muted)
+  '#fb923c', // orange (muted)
+  '#22d3ee', // cyan (muted)
+]
+
+// Simple hash function to get consistent color index from family name
+function getFamilyEdgeColor(family: string | undefined): string {
+  if (!family) return '#94a3b8' // Default slate
+  let hash = 0
+  for (let i = 0; i < family.length; i++) {
+    const char = family.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash = hash & hash
+  }
+  return FAMILY_EDGE_COLORS[Math.abs(hash) % FAMILY_EDGE_COLORS.length]
+}
+
 export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceProps) {
   // Session state
   const [sessions, setSessions] = useState<any[]>([])
@@ -142,6 +175,15 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
   
   // Collapsed nodes state
   const [collapsedNodes, setCollapsedNodes] = useState<Set<string>>(new Set())
+
+  // Expanding nodes state for loading indicators
+  const [expandingNodes, setExpandingNodes] = useState<Set<string>>(new Set())
+
+  // Track newly added nodes for smooth animations
+  const [newNodes, setNewNodes] = useState<Set<string>>(new Set())
+
+  // Ideas panel size state
+  const [ideasPanelWidth, setIdeasPanelWidth] = useState(384) // Default 24rem (w-96)
   
   // Idea frames
   const [ideaFrames, setIdeaFrames] = useState<IdeaFrame[]>([])
@@ -150,6 +192,23 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
 
   // Combine tray visibility
   const [showTray, setShowTray] = useState(false)
+
+  // NEW: Pipeline enhancement states
+  const [contradictionMapping, setContradictionMapping] = useState<any>(null)
+  const [obviousnessWarning, setObviousnessWarning] = useState<any>(null)
+  const [feedbackLoopResults, setFeedbackLoopResults] = useState<any>(null)
+  const [qualityMetrics, setQualityMetrics] = useState<any>(null)
+  
+  // Store pending generation params for "Generate Anyway" functionality
+  const [pendingGenerationParams, setPendingGenerationParams] = useState<{
+    count: number
+    intent: string
+    selectedOperators: string[]
+    buckets?: any[]
+  } | null>(null)
+
+  // Help modal state
+  const [showHelp, setShowHelp] = useState(false)
 
   // Auto-fit view when nodes change
   const fitViewToNodes = useCallback(() => {
@@ -164,12 +223,262 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
     }
   }, [reactFlowInstance, nodes.length])
 
-  // Load existing sessions
-  useEffect(() => {
-    loadSessions()
-  }, [])
+  // Auto-layout recalculation to prevent overlapping
+  // Groups nodes by parent and recalculates Y positions to avoid overlap
+  const recalculateLayout = useCallback(() => {
+    if (nodes.length === 0) return
 
+    const LEVEL_WIDTH = 400  // Horizontal spacing between levels
+    const NODE_HEIGHT = 180  // Generous vertical spacing for clear hierarchy
+    const CHILD_SPACING = 180 // Spacing between child nodes matching NODE_HEIGHT
+    
+    // Build tree structure
+    const nodeMap = new Map<string, typeof nodes[0]>()
+    const childrenMap = new Map<string, string[]>()
+    
+    nodes.forEach(node => {
+      nodeMap.set(node.id, node)
+      const parentId = (node.data as any)?.parentId || (node.data as any)?.parentNodeId
+      if (parentId) {
+        const children = childrenMap.get(parentId) || []
+        children.push(node.id)
+        childrenMap.set(parentId, children)
+      }
+    })
+
+    // Calculate subtree height recursively
+    const getSubtreeHeight = (nodeId: string, visited = new Set<string>()): number => {
+      if (visited.has(nodeId)) return NODE_HEIGHT
+      visited.add(nodeId)
+      
+      const children = childrenMap.get(nodeId) || []
+      const isCollapsed = collapsedNodes.has(nodeId)
+      
+      if (children.length === 0 || isCollapsed) {
+        return NODE_HEIGHT
+      }
+      
+      // Sum up heights of all visible children
+      let totalHeight = 0
+      children.forEach(childId => {
+        const parentId = (nodeMap.get(childId)?.data as any)?.parentId
+        // Skip if child's parent is collapsed
+        if (!collapsedNodes.has(parentId)) {
+          totalHeight += getSubtreeHeight(childId, visited)
+        }
+      })
+      
+      return Math.max(NODE_HEIGHT, totalHeight)
+    }
+
+    // Group nodes by depth level
+    const nodesByDepth = new Map<number, typeof nodes>()
+    nodes.forEach(node => {
+      const depth = (node.data as any)?.depth || 0
+      const existing = nodesByDepth.get(depth) || []
+      existing.push(node)
+      nodesByDepth.set(depth, existing)
+    })
+
+    // Recalculate Y positions for each depth level
+    const newNodes = [...nodes]
+    const depths = Array.from(nodesByDepth.keys()).sort((a, b) => a - b)
+    
+    depths.forEach(depth => {
+      if (depth === 0) return // Skip seed node
+      
+      const nodesAtDepth = nodesByDepth.get(depth) || []
+      
+      // Group by parent
+      const byParent = new Map<string, typeof nodes>()
+      nodesAtDepth.forEach(node => {
+        const parentId = (node.data as any)?.parentId || (node.data as any)?.parentNodeId || 'root'
+        const siblings = byParent.get(parentId) || []
+        siblings.push(node)
+        byParent.set(parentId, siblings)
+      })
+
+      // For each parent group, recalculate positions
+      byParent.forEach((siblings, parentId) => {
+        if (siblings.length === 0) return
+        
+        const parent = nodeMap.get(parentId)
+        const parentY = parent?.position?.y || 100
+        
+        // Calculate total height needed for this subtree
+        let totalHeight = 0
+        const heights: number[] = []
+        siblings.forEach(node => {
+          const h = getSubtreeHeight(node.id)
+          heights.push(h)
+          totalHeight += h
+        })
+        
+        // Distribute siblings vertically centered around parent
+        let currentY = parentY - (totalHeight / 2) + (NODE_HEIGHT / 2)
+        
+        siblings.forEach((node, idx) => {
+          const nodeIndex = newNodes.findIndex(n => n.id === node.id)
+          if (nodeIndex !== -1) {
+            newNodes[nodeIndex] = {
+              ...newNodes[nodeIndex],
+              position: {
+                x: newNodes[nodeIndex].position.x,
+                y: currentY,
+              },
+            }
+          }
+          currentY += heights[idx]
+        })
+      })
+    })
+
+    // Only update if positions actually changed
+    const hasChanges = newNodes.some((node, idx) => 
+      node.position.y !== nodes[idx].position.y
+    )
+    
+    if (hasChanges) {
+      setNodes(newNodes)
+    }
+  }, [nodes, collapsedNodes, setNodes, fitViewToNodes])
+
+  // Auto-layout function to properly space out nodes when needed
+  const autoLayoutNodes = useCallback(() => {
+    if (nodes.length <= 1) return
+
+    const LEVEL_WIDTH = 400  // Horizontal spacing between levels
+    const NODE_HEIGHT = 180  // Vertical spacing between nodes
+    const START_X = 100
+    const START_Y = 100
+
+    // Build parent-child relationships
+    const childrenMap = new Map<string, string[]>()
+    const nodeMap = new Map<string, typeof nodes[0]>()
+    
+    nodes.forEach(node => {
+      nodeMap.set(node.id, node)
+      const parentId = (node.data as any)?.parentId || (node.data as any)?.parentNodeId
+      if (parentId) {
+        const children = childrenMap.get(parentId) || []
+        children.push(node.id)
+        childrenMap.set(parentId, children)
+      }
+    })
+
+    // Calculate subtree height for a node
+    const getSubtreeHeight = (nodeId: string, visited = new Set<string>()): number => {
+      if (visited.has(nodeId)) return NODE_HEIGHT
+      visited.add(nodeId)
+      
+      const children = childrenMap.get(nodeId) || []
+      if (children.length === 0 || collapsedNodes.has(nodeId)) {
+        return NODE_HEIGHT
+      }
+      
+      let totalHeight = 0
+      children.forEach(childId => {
+        totalHeight += getSubtreeHeight(childId, visited)
+      })
+      
+      return Math.max(NODE_HEIGHT, totalHeight)
+    }
+
+    // Position nodes recursively
+    const positionedNodes = new Map<string, { x: number, y: number }>()
+    
+    const positionNode = (nodeId: string, x: number, yStart: number, yEnd: number): void => {
+      const yCenter = (yStart + yEnd) / 2
+      positionedNodes.set(nodeId, { x, y: yCenter })
+      
+      const children = childrenMap.get(nodeId) || []
+      if (children.length === 0 || collapsedNodes.has(nodeId)) return
+      
+      // Position children
+      const childX = x + LEVEL_WIDTH
+      let currentY = yStart
+      
+      children.forEach(childId => {
+        const childHeight = getSubtreeHeight(childId)
+        positionNode(childId, childX, currentY, currentY + childHeight)
+        currentY += childHeight
+      })
+    }
+
+    // Find root nodes (nodes without parents or seed nodes)
+    const rootNodes = nodes.filter(n => {
+      const parentId = (n.data as any)?.parentId || (n.data as any)?.parentNodeId
+      return !parentId || n.type === 'seed'
+    })
+
+    // Position from each root
+    let currentRootY = START_Y
+    rootNodes.forEach(rootNode => {
+      const subtreeHeight = getSubtreeHeight(rootNode.id)
+      positionNode(rootNode.id, START_X, currentRootY, currentRootY + subtreeHeight)
+      currentRootY += subtreeHeight + NODE_HEIGHT // Gap between trees
+    })
+
+    // Apply new positions
+    const newNodes = nodes.map(node => {
+      const newPos = positionedNodes.get(node.id)
+      if (newPos) {
+        return {
+          ...node,
+          position: { x: newPos.x, y: newPos.y },
+        }
+      }
+      return node
+    })
+
+    setNodes(newNodes)
+  }, [nodes, collapsedNodes, setNodes])
+
+  // NOTE: Auto-layout can be triggered manually via button or on specific events
+
+  // Keyboard shortcuts for help (?), ideas panel (i), and auto-layout (l)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input
+      const target = e.target as HTMLElement
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+        return
+      }
+
+      if (e.key === '?' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
+        setShowHelp(true)
+      }
+      if (e.key === 'i' && !e.ctrlKey && !e.metaKey && ideaFrames.length > 0) {
+        e.preventDefault()
+        setShowIdeaPanel(prev => !prev)
+      }
+      if (e.key === 'l' && !e.ctrlKey && !e.metaKey && nodes.length > 1) {
+        e.preventDefault()
+        autoLayoutNodes()
+        // Fit view after layout
+        setTimeout(() => {
+          if (reactFlowInstance) {
+            reactFlowInstance.fitView({ padding: 0.2, duration: 500 })
+          }
+        }, 100)
+      }
+      if (e.key === 'Escape' && showHelp) {
+        setShowHelp(false)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [showHelp, ideaFrames.length, nodes.length, autoLayoutNodes, reactFlowInstance])
+
+  // History panel state - load on demand to reduce server load
+  const [showHistory, setShowHistory] = useState(false)
+  const [sessionsLoaded, setSessionsLoaded] = useState(false)
+
+  // Load sessions only when history panel is opened (on-demand)
   const loadSessions = async () => {
+    if (sessionsLoaded) return // Don't reload if already loaded
+    
     try {
       const response = await fetch('/api/idea-bank/ideation', {
         headers: {
@@ -179,13 +488,21 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
       if (response.ok) {
         const data = await response.json()
         setSessions(data.sessions || [])
+        setSessionsLoaded(true)
       }
     } catch (e) {
       console.error('Failed to load sessions:', e)
     }
   }
 
-  const loadSession = async (sessionId: string) => {
+  // Load sessions when history panel is opened
+  useEffect(() => {
+    if (showHistory && !sessionsLoaded) {
+      loadSessions()
+    }
+  }, [showHistory, sessionsLoaded])
+
+  const loadSession = async (sessionId: string, fitView: boolean = false) => {
     setLoading(true)
     try {
       const response = await fetch(`/api/idea-bank/ideation/${sessionId}`, {
@@ -199,12 +516,16 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
         
         // Load graph nodes and edges
         if (data.graph) {
-          setNodes(data.graph.nodes.map((n: any) => ({
+          const loadedNodes = data.graph.nodes.map((n: any) => ({
             id: n.id,
             type: getNodeType(n.type),
             position: n.position,
-            data: n.data,
-          })))
+            data: {
+              ...n.data,
+              type: n.type, // Include original type for DimensionNode to determine if expandable
+            },
+          }))
+          setNodes(loadedNodes)
           setEdges(data.graph.edges.map((e: any) => ({
             id: e.id,
             source: e.source,
@@ -213,6 +534,20 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
             animated: e.animated,
             markerEnd: { type: MarkerType.ArrowClosed },
           })))
+
+          // By default, collapse all nodes that have children (show only top-level structure)
+          const nodesWithChildren = new Set<string>()
+          loadedNodes.forEach((n: any) => {
+            const parentId = n.data?.parentId || n.data?.parentNodeId
+            if (parentId) {
+              nodesWithChildren.add(parentId)
+            }
+          })
+          // Collapse all nodes that have children except the seed
+          const nodesToCollapse = loadedNodes
+            .filter((n: any) => nodesWithChildren.has(n.id) && n.type !== 'seed')
+            .map((n: any) => n.id)
+          setCollapsedNodes(new Set(nodesToCollapse))
         }
 
         // Load idea frames
@@ -222,9 +557,11 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
 
         // Set stage based on session status
         setStage(mapStatusToStage(data.session.status))
-        
-        // Auto-fit view after loading
-        setTimeout(() => fitViewToNodes(), 200)
+
+        // Auto-fit view after loading only if requested
+        if (fitView) {
+          setTimeout(() => fitViewToNodes(), 200)
+        }
       }
     } catch (e) {
       setError('Failed to load session')
@@ -354,14 +691,43 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
         const data = await response.json()
         setCurrentSession(prev => prev ? { ...prev, classification: data.classification } : null)
         
-        // Initialize dimensions
-        await handleInitializeDimensions(sessionId)
+        // NEW: Run contradiction mapping (Stage 2.5)
+        await handleMapContradictions(sessionId)
       } else {
         throw new Error('Classification failed')
       }
     } catch (e) {
       setError('Failed to classify invention')
       setStage('seed_input')
+    }
+  }
+
+  // NEW: Map technical contradictions to TRIZ principles (Stage 2.5)
+  const handleMapContradictions = async (sessionId: string) => {
+    setStage('mapping_contradictions')
+    try {
+      const response = await fetch(`/api/idea-bank/ideation/${sessionId}/contradiction-mapping`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+        },
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setContradictionMapping(data.contradictionMapping)
+        
+        // Continue to dimension initialization
+        await handleInitializeDimensions(sessionId)
+      } else {
+        // Non-fatal - continue without contradiction mapping
+        console.warn('Contradiction mapping failed, continuing...')
+        await handleInitializeDimensions(sessionId)
+      }
+    } catch (e) {
+      // Non-fatal - continue without contradiction mapping
+      console.warn('Contradiction mapping error:', e)
+      await handleInitializeDimensions(sessionId)
     }
   }
 
@@ -380,7 +746,7 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
 
       if (response.ok) {
         // Reload full session to get updated graph
-        await loadSession(sessionId)
+        await loadSession(sessionId, true) // Fit view when transitioning to exploration
         setStage('exploring')
         setShowTray(true)
         
@@ -445,9 +811,12 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
     await handleClassify(currentSession.id)
   }
 
-  // Expand a node
+  // Expand a node - SILK SMOOTH EXPANSION
   const handleExpandNode = async (nodeId: string) => {
     if (!currentSession) return
+
+    // Set expanding state for loading indicator
+    setExpandingNodes(prev => new Set(prev).add(nodeId))
 
     try {
       const response = await fetch(`/api/idea-bank/ideation/${currentSession.id}/expand`, {
@@ -460,10 +829,116 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
       })
 
       if (response.ok) {
-        await loadSession(currentSession.id)
+        const data = await response.json()
+
+        if (data.success && data.graph) {
+          // SILK SMOOTH: Add new nodes and edges incrementally without page reload
+          const newNodesForFlow = data.graph.nodes.map((n: any) => ({
+            id: n.id,
+            type: getNodeType(n.type),
+            position: n.position,
+            data: {
+              ...n.data,
+              type: n.type, // Include original type for DimensionNode
+            },
+          }))
+
+          const newEdgesForFlow = data.graph.edges.map((e: any) => ({
+            id: e.id,
+            source: e.source,
+            target: e.target,
+            label: e.label,
+            animated: e.animated,
+            markerEnd: { type: MarkerType.ArrowClosed },
+          }))
+
+          // Add new nodes and edges to existing state - SILK SMOOTH
+          // Combine all node updates in a single setState to avoid race conditions
+          const newNodeIds = newNodesForFlow.map(n => n.id)
+          
+          setNodes(prevNodes => {
+            // First add the new nodes
+            const withNewNodes = [...prevNodes, ...newNodesForFlow]
+            // Then update the parent node state
+            return withNewNodes.map(node =>
+              node.id === nodeId
+                ? { ...node, data: { ...node.data, state: 'EXPANDED' } }
+                : node
+            )
+          })
+          
+          setEdges(prevEdges => [...prevEdges, ...newEdgesForFlow])
+
+          // Remove the expanded node from collapsed nodes so its children become visible
+          setCollapsedNodes(prev => {
+            const next = new Set(prev)
+            next.delete(nodeId)
+            return next
+          })
+
+          // Mark new nodes for smooth animation
+          setNewNodes(new Set(newNodeIds))
+
+          // Clear animation flag after animation completes
+          setTimeout(() => {
+            setNewNodes(prev => {
+              const next = new Set(prev)
+              newNodeIds.forEach(id => next.delete(id))
+              return next
+            })
+          }, 600)
+
+          // Subtle pan to show newly expanded children without losing context
+          // Only pan if we have the react flow instance
+          if (reactFlowInstance && newNodesForFlow.length > 0) {
+            // Get the current viewport
+            const viewport = reactFlowInstance.getViewport()
+            
+            // Find the average position of new nodes to pan toward them slightly
+            const avgX = newNodesForFlow.reduce((sum: number, n: any) => sum + (n.position?.x || 0), 0) / newNodesForFlow.length
+            const avgY = newNodesForFlow.reduce((sum: number, n: any) => sum + (n.position?.y || 0), 0) / newNodesForFlow.length
+            
+            // Calculate current center of viewport
+            const viewportWidth = window.innerWidth * 0.6 // Approximate canvas width
+            const viewportHeight = window.innerHeight - 80 // Canvas height
+            const currentCenterX = (-viewport.x + viewportWidth / 2) / viewport.zoom
+            const currentCenterY = (-viewport.y + viewportHeight / 2) / viewport.zoom
+            
+            // Only pan if children are significantly off-screen
+            const dx = avgX - currentCenterX
+            const dy = avgY - currentCenterY
+            
+            // If children are more than 300px away from center, pan slightly toward them
+            if (Math.abs(dx) > 300 || Math.abs(dy) > 300) {
+              // Pan just a bit (30%) toward the children, keeping user somewhat in context
+              const panX = viewport.x - (dx * 0.3 * viewport.zoom)
+              const panY = viewport.y - (dy * 0.15 * viewport.zoom) // Less vertical pan
+              
+              setTimeout(() => {
+                reactFlowInstance.setViewport({
+                  x: panX,
+                  y: panY,
+                  zoom: viewport.zoom,
+                }, { duration: 400 })
+              }, 100)
+            }
+          }
+        } else {
+          throw new Error(data.error || 'Expansion failed')
+        }
+      } else {
+        throw new Error('Expansion request failed')
       }
     } catch (e) {
       setError('Failed to expand node')
+      console.error('Expansion error:', e)
+    } finally {
+      // Clear expanding state
+      setExpandingNodes(prev => {
+        const next = new Set(prev)
+        next.delete(nodeId)
+        return next
+      })
     }
   }
 
@@ -487,25 +962,90 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
     dimensionIds: string[]
   }
 
+  // NEW: Check obviousness before generation (Stage 3.5)
+  const handleCheckObviousness = async (
+    selectedDimensionIds: string[],
+    generationParams: { count: number; intent: string; selectedOperators: string[]; buckets?: any[] }
+  ): Promise<boolean> => {
+    if (!currentSession || selectedDimensionIds.length === 0) return true
+
+    setStage('checking_obviousness')
+    try {
+      const response = await fetch(`/api/idea-bank/ideation/${currentSession.id}/obviousness-filter`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+        },
+        body: JSON.stringify({ selectedDimensions: selectedDimensionIds }),
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        
+        if (!data.shouldProceed) {
+          // Store pending params for "Generate Anyway"
+          setPendingGenerationParams(generationParams)
+          
+          // Show warning to user
+          setObviousnessWarning({
+            score: data.noveltyScore,
+            flags: data.flags || [],
+            wildCard: data.wildCard,
+            analogySuggestions: data.analogySuggestions || [],
+            message: 'This combination may be too obvious. Consider adding the suggested wildcard dimension.',
+          })
+          return false // Indicate user should reconsider
+        }
+        
+        // Clear any previous warning
+        setObviousnessWarning(null)
+        setPendingGenerationParams(null)
+        return true // OK to proceed
+      }
+    } catch (e) {
+      console.warn('Obviousness check failed:', e)
+    }
+    
+    return true // On error, allow proceeding
+  }
+
   // Generate ideas - operators now come from tray selection, not mind map
   const handleGenerateIdeas = async (
     count: number = 5, 
     intent: string = 'DIVERGENT', 
     selectedOperatorIds: string[] = [],
-    buckets?: IdeaBucket[]
+    buckets?: IdeaBucket[],
+    skipObviousnessCheck: boolean = false
   ) => {
     if (!currentSession) return
+
+    // Get selected dimension nodes from mind map
+    const selectedNodeData = nodes.filter(n => selectedNodes.has(n.id))
+    const components = selectedNodeData.filter(n => (n.data as any)?.type === 'COMPONENT').map(n => n.id)
+    const dimensions = selectedNodeData.filter(n => 
+      (n.data as any)?.type === 'DIMENSION_FAMILY' || (n.data as any)?.type === 'DIMENSION_OPTION'
+    ).map(n => n.id)
+
+    const allDimensions = [...dimensions, ...Array.from(selectedNodes).filter(id => !components.includes(id))]
+
+    // NEW: Run obviousness check first (Stage 3.5)
+    if (!skipObviousnessCheck && allDimensions.length > 0) {
+      const shouldProceed = await handleCheckObviousness(allDimensions, {
+        count,
+        intent,
+        selectedOperators: selectedOperatorIds,
+        buckets,
+      })
+      if (!shouldProceed) {
+        setStage('exploring') // Return to exploring, let user decide
+        return
+      }
+    }
 
     setStage('generating')
     setLoading(true)
     try {
-      // Get selected dimension nodes from mind map
-      const selectedNodeData = nodes.filter(n => selectedNodes.has(n.id))
-      const components = selectedNodeData.filter(n => (n.data as any)?.type === 'COMPONENT').map(n => n.id)
-      const dimensions = selectedNodeData.filter(n => 
-        (n.data as any)?.type === 'DIMENSION_FAMILY' || (n.data as any)?.type === 'DIMENSION_OPTION'
-      ).map(n => n.id)
-
       const response = await fetch(`/api/idea-bank/ideation/${currentSession.id}/generate`, {
         method: 'POST',
         headers: {
@@ -515,21 +1055,33 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
         body: JSON.stringify({
           recipe: {
             selectedComponents: components,
-            selectedDimensions: [...dimensions, ...Array.from(selectedNodes).filter(id => 
-              !components.includes(id)
-            )],
-            selectedOperators: selectedOperatorIds, // Operators from tray selection
+            selectedDimensions: allDimensions,
+            selectedOperators: selectedOperatorIds,
             recipeIntent: intent,
             count,
-            buckets: buckets || null, // Pass buckets if using multi-bucket mode
+            buckets: buckets || null,
           },
+          enableFeedbackLoop: true, // Enable automatic iteration
+          maxIterations: 2,
+          noveltyThreshold: 60,
+          skipObviousnessCheck: true, // Already checked above
         }),
       })
 
       if (response.ok) {
         const data = await response.json()
+        
+        // Store feedback loop and quality metrics
+        setFeedbackLoopResults(data.feedbackLoop)
+        setQualityMetrics(data.qualityMetrics)
+        
+        // Store any obviousness warning from the generation
+        if (data.obviousnessWarning) {
+          setObviousnessWarning(data.obviousnessWarning)
+        }
+        
         // Reload session to get idea frames
-        await loadSession(currentSession.id)
+        await loadSession(currentSession.id, false)
         setStage('reviewing')
         setShowIdeaPanel(true)
       } else {
@@ -541,6 +1093,17 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
     } finally {
       setLoading(false)
     }
+  }
+
+  // Force generate despite obviousness warning
+  const handleForceGenerate = async (
+    count: number = 5, 
+    intent: string = 'DIVERGENT', 
+    selectedOperatorIds: string[] = [],
+    buckets?: IdeaBucket[]
+  ) => {
+    setObviousnessWarning(null)
+    await handleGenerateIdeas(count, intent, selectedOperatorIds, buckets, true)
   }
 
   // Check novelty
@@ -558,7 +1121,7 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
       })
 
       if (response.ok) {
-        await loadSession(currentSession.id)
+        await loadSession(currentSession.id, false)
       }
     } catch (e) {
       setError('Failed to check novelty')
@@ -944,31 +1507,60 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
             </div>
           </div>
 
-          {/* Previous Sessions */}
-          {sessions.length > 0 && !currentSession && (
+          {/* Previous Sessions - On Demand */}
+          {!currentSession && (
             <div className="mt-6">
-              <h3 className="text-sm font-semibold text-slate-700 mb-3">Previous Sessions</h3>
-              <div className="space-y-2">
-                {sessions.slice(0, 5).map((session) => (
-                  <button
-                    key={session.id}
-                    onClick={() => loadSession(session.id)}
-                    className="w-full text-left p-3 bg-white rounded-xl border border-slate-200 hover:border-violet-300 hover:shadow-md transition-all"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium text-slate-900 truncate">
-                        {session.seedText.slice(0, 50)}...
-                      </span>
-                      <Badge variant="outline" className="text-xs">
-                        {session.ideaCount} ideas
-                      </Badge>
+              {!showHistory ? (
+                <button
+                  onClick={() => setShowHistory(true)}
+                  className="w-full text-center p-3 bg-slate-50 hover:bg-slate-100 rounded-xl border border-dashed border-slate-300 text-sm text-slate-600 transition-all"
+                >
+                  <FileText className="w-4 h-4 inline mr-2" />
+                  View Previous Sessions
+                </button>
+              ) : (
+                <div>
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-semibold text-slate-700">Previous Sessions</h3>
+                    <button
+                      onClick={() => setShowHistory(false)}
+                      className="text-xs text-slate-500 hover:text-slate-700"
+                    >
+                      Hide
+                    </button>
+                  </div>
+                  {!sessionsLoaded ? (
+                    <div className="flex items-center justify-center p-4">
+                      <Loader2 className="w-5 h-5 animate-spin text-violet-500" />
+                      <span className="ml-2 text-sm text-slate-500">Loading...</span>
                     </div>
-                    <div className="text-xs text-slate-400 mt-1">
-                      {new Date(session.createdAt).toLocaleDateString()}
+                  ) : sessions.length > 0 ? (
+                    <div className="space-y-2">
+                      {sessions.slice(0, 5).map((session) => (
+                        <button
+                          key={session.id}
+                          onClick={() => loadSession(session.id)}
+                          className="w-full text-left p-3 bg-white rounded-xl border border-slate-200 hover:border-violet-300 hover:shadow-md transition-all"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="font-medium text-slate-900 truncate">
+                              {session.seedText.slice(0, 50)}...
+                            </span>
+                            <Badge variant="outline" className="text-xs">
+                              {session.ideaCount} ideas
+                            </Badge>
+                          </div>
+                          <div className="text-xs text-slate-400 mt-1">
+                            {new Date(session.createdAt).toLocaleDateString()}
+                          </div>
+                        </button>
+                      ))}
                     </div>
-                  </button>
-                ))}
-              </div>
+                  ) : (
+                    <p className="text-sm text-slate-500 text-center p-4">No previous sessions found</p>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </motion.div>
@@ -977,47 +1569,60 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
   }
 
   // ===== PROCESSING VIEW (Loading Overlay) =====
-  // Shows for: normalizing, classifying, expanding, generating stages
+  // Shows for: normalizing, classifying, mapping_contradictions, expanding, checking_obviousness, generating stages
   if (isProcessingView(stage)) {
+    const stages = ['Analyze', 'Classify', 'Contradictions', 'Build', 'Generate']
+    const stageIdx = stage === 'normalizing' ? 0 : 
+                     stage === 'classifying' ? 1 : 
+                     stage === 'mapping_contradictions' ? 2 :
+                     stage === 'expanding' ? 3 :
+                     stage === 'checking_obviousness' ? 4 :
+                     stage === 'generating' ? 4 : 0
+    
     return (
       <div className="min-h-[calc(100vh-80px)] flex items-center justify-center p-8">
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="w-full max-w-md text-center"
+          className="w-full max-w-lg text-center"
         >
           <div className="bg-white rounded-2xl shadow-xl border border-slate-200/50 p-8">
             <Loader2 className="w-16 h-16 animate-spin text-violet-500 mx-auto mb-6" />
             <h3 className="text-xl font-bold text-slate-900 mb-2">
               {stage === 'normalizing' && 'Analyzing Your Invention'}
               {stage === 'classifying' && 'Classifying Invention Type'}
+              {stage === 'mapping_contradictions' && 'Mapping Technical Contradictions'}
               {stage === 'expanding' && 'Building Mind Map'}
-              {stage === 'generating' && 'Generating Ideas'}
+              {stage === 'checking_obviousness' && 'Checking Combination Novelty'}
+              {stage === 'generating' && 'Generating Inventive Ideas'}
             </h3>
             <p className="text-slate-500 mb-6">
-              {stage === 'normalizing' && 'Extracting key components and concepts...'}
+              {stage === 'normalizing' && 'Extracting key components, contradictions, and unstated assumptions...'}
               {stage === 'classifying' && 'Identifying invention category and archetypes...'}
+              {stage === 'mapping_contradictions' && 'Applying TRIZ principles to resolve conflicts...'}
               {stage === 'expanding' && 'Creating dimension families and options...'}
-              {stage === 'generating' && 'Combining dimensions with TRIZ operators...'}
+              {stage === 'checking_obviousness' && 'Ensuring combination is non-obvious...'}
+              {stage === 'generating' && 'Forcing inventive leaps with analogy transfer...'}
             </p>
             
             {/* Progress Steps */}
-            <div className="flex justify-center gap-2 mb-6">
-              {['Analyze', 'Classify', 'Build'].map((step, idx) => {
-                const currentIdx = stage === 'normalizing' ? 0 : 
-                                   stage === 'classifying' ? 1 : 2
-                return (
-                  <div key={step} className="flex items-center">
-                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold transition-all
-                      ${idx < currentIdx ? 'bg-green-500 text-white' : 
-                        idx === currentIdx ? 'bg-violet-500 text-white animate-pulse' : 
-                        'bg-slate-200 text-slate-500'}`}>
-                      {idx < currentIdx ? '✓' : idx + 1}
-                    </div>
-                    {idx < 2 && <div className={`w-8 h-0.5 ${idx < currentIdx ? 'bg-green-500' : 'bg-slate-200'}`} />}
+            <div className="flex justify-center gap-1 mb-6 flex-wrap">
+              {stages.map((step, idx) => (
+                <div key={step} className="flex items-center">
+                  <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold transition-all
+                    ${idx < stageIdx ? 'bg-green-500 text-white' : 
+                      idx === stageIdx ? 'bg-violet-500 text-white animate-pulse' : 
+                      'bg-slate-200 text-slate-500'}`}>
+                    {idx < stageIdx ? '✓' : idx + 1}
                   </div>
-                )
-              })}
+                  {idx < stages.length - 1 && <div className={`w-4 h-0.5 ${idx < stageIdx ? 'bg-green-500' : 'bg-slate-200'}`} />}
+                </div>
+              ))}
+            </div>
+            
+            {/* Stage Description */}
+            <div className="text-xs text-slate-400 mb-4">
+              {stages[stageIdx]}
             </div>
 
             {/* Cancel Button */}
@@ -1043,26 +1648,59 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
         <ReactFlow
           nodes={nodes
             .filter(n => {
-              // Hide children of collapsed nodes
-              const parentId = ((n.data as any)?.parentId || (n.data as any)?.parentNodeId) as string | undefined
-              if (parentId && collapsedNodes.has(parentId)) {
+              // Hide children of collapsed nodes - check entire ancestor chain
+              const isAnyAncestorCollapsed = (nodeId: string, visited = new Set<string>()): boolean => {
+                if (visited.has(nodeId)) return false
+                visited.add(nodeId)
+                
+                const node = nodes.find(nd => nd.id === nodeId)
+                if (!node) return false
+                
+                const parentId = ((node.data as any)?.parentId || (node.data as any)?.parentNodeId) as string | undefined
+                if (!parentId) return false
+                
+                // If parent is collapsed, this node should be hidden
+                if (collapsedNodes.has(parentId)) return true
+                
+                // Recursively check parent's ancestors
+                return isAnyAncestorCollapsed(parentId, visited)
+              }
+              
+              // Hide if any ancestor is collapsed
+              if (isAnyAncestorCollapsed(n.id)) {
                 return false
               }
               return true
             })
-            .map(n => ({
-              ...n,
-              data: {
-                ...n.data,
-                selected: selectedNodes.has(n.id),
-                collapsed: collapsedNodes.has(n.id),
-                hasChildren: nodes.some(child => {
-                  const parentId = (child.data as any)?.parentId || (child.data as any)?.parentNodeId
-                  return parentId === n.id
-                }),
-                onSelect: () => {
-                  if (n.type !== 'seed') {
-                    setSelectedNodes(prev => {
+            .map(n => {
+              const nodeElement = {
+                ...n,
+                data: {
+                  ...n.data,
+                  selected: selectedNodes.has(n.id),
+                  collapsed: collapsedNodes.has(n.id),
+                  hasChildren: nodes.some(child => {
+                    const parentId = (child.data as any)?.parentId || (child.data as any)?.parentNodeId
+                    return parentId === n.id
+                  }),
+                  expanding: expandingNodes.has(n.id),
+                  isNew: newNodes.has(n.id),
+                  onSelect: () => {
+                    if (n.type !== 'seed') {
+                      setSelectedNodes(prev => {
+                        const next = new Set(prev)
+                        if (next.has(n.id)) {
+                          next.delete(n.id)
+                        } else {
+                          next.add(n.id)
+                        }
+                        return next
+                      })
+                    }
+                  },
+                  onExpand: () => handleExpandNode(n.id),
+                  onCollapse: () => {
+                    setCollapsedNodes(prev => {
                       const next = new Set(prev)
                       if (next.has(n.id)) {
                         next.delete(n.id)
@@ -1071,28 +1709,30 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
                       }
                       return next
                     })
-                  }
+                  },
                 },
-                onExpand: () => handleExpandNode(n.id),
-                onCollapse: () => {
-                  setCollapsedNodes(prev => {
-                    const next = new Set(prev)
-                    if (next.has(n.id)) {
-                      next.delete(n.id)
-                    } else {
-                      next.add(n.id)
-                    }
-                    return next
-                  })
-                },
-              },
-            }))}
+              }
+
+              return nodeElement
+            })}
           edges={edges
             .filter(e => {
-              // Hide edges to collapsed children
-              const targetNode = nodes.find(n => n.id === e.target)
-              const parentNodeId = ((targetNode?.data as any)?.parentId || (targetNode?.data as any)?.parentNodeId) as string | undefined
-              if (parentNodeId && collapsedNodes.has(parentNodeId)) {
+              // Hide edges to nodes that have any collapsed ancestor
+              const isAnyAncestorCollapsed = (nodeId: string, visited = new Set<string>()): boolean => {
+                if (visited.has(nodeId)) return false
+                visited.add(nodeId)
+                
+                const node = nodes.find(nd => nd.id === nodeId)
+                if (!node) return false
+                
+                const parentId = ((node.data as any)?.parentId || (node.data as any)?.parentNodeId) as string | undefined
+                if (!parentId) return false
+                
+                if (collapsedNodes.has(parentId)) return true
+                return isAnyAncestorCollapsed(parentId, visited)
+              }
+              
+              if (isAnyAncestorCollapsed(e.target)) {
                 return false
               }
               return true
@@ -1103,6 +1743,11 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
               const targetSelected = selectedNodes.has(e.target)
               const bothSelected = sourceSelected && targetSelected
               
+              // Get the target node's family for edge coloring
+              const targetNode = nodes.find(n => n.id === e.target)
+              const targetFamily = (targetNode?.data as any)?.family
+              const familyEdgeColor = getFamilyEdgeColor(targetFamily)
+              
               return {
                 ...e,
                 animated: bothSelected,
@@ -1110,8 +1755,12 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
                   ? { stroke: '#8b5cf6', strokeWidth: 3 }
                   : sourceSelected || targetSelected
                     ? { stroke: '#a78bfa', strokeWidth: 2 }
-                    : { stroke: '#94a3b8', strokeWidth: 2 },
+                    : { stroke: familyEdgeColor, strokeWidth: 2, opacity: 0.7 },
                 className: bothSelected ? 'animate-pulse' : '',
+                markerEnd: { 
+                  type: MarkerType.ArrowClosed, 
+                  color: bothSelected ? '#8b5cf6' : sourceSelected || targetSelected ? '#a78bfa' : familyEdgeColor 
+                },
               }
             })}
           onNodesChange={onNodesChange}
@@ -1120,12 +1769,6 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
           onNodeClick={onNodeClick}
           onNodeDoubleClick={onNodeDoubleClick}
           nodeTypes={nodeTypes}
-          fitView
-          fitViewOptions={{
-            padding: 0.2,
-            minZoom: 0.3,
-            maxZoom: 1.5,
-          }}
           onInit={(instance) => setReactFlowInstance(instance)}
           defaultEdgeOptions={{
             type: 'smoothstep',
@@ -1149,7 +1792,9 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
               if (selectedNodes.has(node.id)) return '#8b5cf6'
               if (node.type === 'seed') return '#06b6d4'
               if (node.type === 'operator') return '#f59e0b'
-              return '#64748b'
+              // Use family color for dimension nodes
+              const family = (node.data as any)?.family
+              return getFamilyEdgeColor(family)
             }}
             maskColor="rgba(0, 0, 0, 0.1)"
             position="bottom-left"
@@ -1215,9 +1860,28 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
                 </Button>
               </div>
 
+              {/* Auto-Layout Button */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  autoLayoutNodes()
+                  // Fit view after layout with a delay
+                  setTimeout(() => {
+                    if (reactFlowInstance) {
+                      reactFlowInstance.fitView({ padding: 0.2, duration: 500 })
+                    }
+                  }, 100)
+                }}
+                className="w-full text-xs h-8 mt-2 border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+              >
+                <LayoutGrid className="w-3 h-3 mr-1" />
+                Auto-Layout (Fix Spacing)
+              </Button>
+
               {/* Tips */}
               <div className="mt-2 p-2 bg-slate-50 rounded-lg text-[10px] text-slate-500">
-                💡 Click nodes to select • Double-click to expand • Use tray to generate ideas
+                💡 Click to select • Double-click to expand • Press 'l' to auto-layout • Press 'i' for ideas
               </div>
             </div>
           </Panel>
@@ -1272,14 +1936,26 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
                   onClick={() => setShowTray(true)}
                   disabled={selectedNodes.size === 0}
                   className={`w-full h-8 text-xs ${
-                    selectedNodes.size > 0 
-                      ? 'bg-violet-500 hover:bg-violet-600 text-white' 
+                    selectedNodes.size > 0
+                      ? 'bg-violet-500 hover:bg-violet-600 text-white'
                       : 'bg-slate-100 text-slate-400'
                   }`}
                 >
                   <Sparkles className="w-3 h-3 mr-1" />
                   {selectedNodes.size > 0 ? 'Generate Ideas' : 'Select Dimensions'}
                 </Button>
+
+                {/* Reopen Ideas Panel Button */}
+                {ideaFrames.length > 0 && !showIdeaPanel && (
+                  <Button
+                    onClick={() => setShowIdeaPanel(true)}
+                    variant="outline"
+                    className="w-full h-8 text-xs mt-2 border-emerald-200 hover:bg-emerald-50 hover:border-emerald-300"
+                  >
+                    <Lightbulb className="w-3 h-3 mr-1 text-emerald-600" />
+                    View Ideas ({ideaFrames.length})
+                  </Button>
+                )}
               </div>
             </Panel>
           )}
@@ -1315,7 +1991,7 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
             initial={{ x: 300, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: 300, opacity: 0 }}
-            className="w-80 border-l border-slate-200 bg-white overflow-hidden flex flex-col"
+            className="w-80 border-l border-slate-200 bg-white overflow-hidden flex flex-col ml-[-40px]"
           >
             <CombineTray
               selectedNodes={selectedNodes}
@@ -1339,7 +2015,8 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
             initial={{ x: 400, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: 400, opacity: 0 }}
-            className="w-96 border-l border-slate-200 bg-white overflow-hidden flex flex-col"
+            className="border-l border-slate-200 bg-white overflow-hidden flex flex-col relative ml-[-40px]"
+            style={{ width: `${ideasPanelWidth}px` }}
           >
             <IdeaFramePanel
               ideas={ideaFrames}
@@ -1347,10 +2024,212 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
               onCheckNovelty={handleCheckNovelty}
               onExport={handleExportToBank}
               onClose={() => setShowIdeaPanel(false)}
+              feedbackLoopResults={feedbackLoopResults}
+              qualityMetrics={qualityMetrics}
             />
+
+            {/* Resize Handle */}
+            <div
+              className="absolute left-0 top-0 bottom-0 w-1 bg-slate-200 hover:bg-violet-400 cursor-col-resize transition-colors duration-200 group"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                const startX = e.clientX
+                const startWidth = ideasPanelWidth
+
+                const handleMouseMove = (e: MouseEvent) => {
+                  const deltaX = startX - e.clientX
+                  const newWidth = Math.max(300, Math.min(800, startWidth + deltaX))
+                  setIdeasPanelWidth(newWidth)
+                }
+
+                const handleMouseUp = () => {
+                  document.removeEventListener('mousemove', handleMouseMove)
+                  document.removeEventListener('mouseup', handleMouseUp)
+                  document.body.style.cursor = ''
+                  document.body.style.userSelect = ''
+                }
+
+                document.addEventListener('mousemove', handleMouseMove)
+                document.addEventListener('mouseup', handleMouseUp)
+                document.body.style.cursor = 'col-resize'
+                document.body.style.userSelect = 'none'
+              }}
+            >
+              <div className="absolute left-0 top-1/2 transform -translate-y-1/2 w-0.5 h-8 bg-violet-500 opacity-0 group-hover:opacity-100 transition-opacity duration-200"></div>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Obviousness Warning Modal */}
+      <AnimatePresence>
+        {obviousnessWarning && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+            onClick={() => setObviousnessWarning(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 rounded-xl bg-amber-100 flex items-center justify-center">
+                  <AlertCircle className="w-6 h-6 text-amber-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-900">Low Novelty Warning</h3>
+                  <p className="text-sm text-slate-500">This combination may be too obvious</p>
+                </div>
+              </div>
+
+              {/* Novelty Score */}
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm text-slate-600">Combination Novelty</span>
+                  <span className={`text-lg font-bold ${
+                    obviousnessWarning.score < 30 ? 'text-red-500' :
+                    obviousnessWarning.score < 50 ? 'text-amber-500' :
+                    'text-green-500'
+                  }`}>
+                    {obviousnessWarning.score}/100
+                  </span>
+                </div>
+                <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+                  <div 
+                    className={`h-full transition-all ${
+                      obviousnessWarning.score < 30 ? 'bg-red-500' :
+                      obviousnessWarning.score < 50 ? 'bg-amber-500' :
+                      'bg-green-500'
+                    }`}
+                    style={{ width: `${obviousnessWarning.score}%` }}
+                  />
+                </div>
+              </div>
+
+              {/* Obviousness Flags */}
+              {obviousnessWarning.flags && obviousnessWarning.flags.length > 0 && (
+                <div className="mb-4">
+                  <p className="text-sm font-semibold text-slate-700 mb-2">Issues Detected:</p>
+                  <div className="space-y-1">
+                    {obviousnessWarning.flags.map((flag: string, idx: number) => (
+                      <div key={idx} className="flex items-start gap-2 text-sm text-slate-600">
+                        <span className="text-red-400">•</span>
+                        {flag}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Wildcard Suggestion */}
+              {obviousnessWarning.wildCard && (
+                <div className="mb-4 p-3 bg-violet-50 rounded-xl border border-violet-200">
+                  <p className="text-sm font-semibold text-violet-700 mb-1">
+                    💡 Suggested Wildcard Dimension
+                  </p>
+                  <p className="text-sm text-violet-600">
+                    <strong>{obviousnessWarning.wildCard.dimension}:</strong>{' '}
+                    {obviousnessWarning.wildCard.reason}
+                  </p>
+                </div>
+              )}
+
+              {/* Analogy Suggestions */}
+              {obviousnessWarning.analogySuggestions && obviousnessWarning.analogySuggestions.length > 0 && (
+                <div className="mb-4">
+                  <p className="text-sm font-semibold text-slate-700 mb-2">
+                    Consider analogies from:
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {obviousnessWarning.analogySuggestions.map((domain: string, idx: number) => (
+                      <Badge key={idx} variant="outline" className="text-xs">
+                        {domain}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="flex gap-3 mt-6">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setObviousnessWarning(null)
+                    setPendingGenerationParams(null)
+                  }}
+                  className="flex-1"
+                >
+                  Modify Selection
+                </Button>
+                <Button
+                  onClick={() => {
+                    setObviousnessWarning(null)
+                    if (pendingGenerationParams) {
+                      handleForceGenerate(
+                        pendingGenerationParams.count,
+                        pendingGenerationParams.intent,
+                        pendingGenerationParams.selectedOperators,
+                        pendingGenerationParams.buckets
+                      )
+                    }
+                    setPendingGenerationParams(null)
+                  }}
+                  className="flex-1 bg-amber-500 hover:bg-amber-600 text-white"
+                >
+                  Generate Anyway
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Contradiction Mapping Panel (Floating Badge) */}
+      {contradictionMapping && (
+        <div className="fixed bottom-4 left-4 z-40">
+          <div className="bg-white rounded-xl shadow-lg border border-slate-200 p-3 max-w-xs">
+            <div className="flex items-center gap-2 mb-2">
+              <Target className="w-4 h-4 text-violet-500" />
+              <span className="text-xs font-semibold text-slate-700">
+                {contradictionMapping.contradictions?.length || 0} Contradictions Mapped
+              </span>
+            </div>
+            {contradictionMapping.inventivePrinciples?.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {contradictionMapping.inventivePrinciples.slice(0, 3).map((p: any, i: number) => (
+                  <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-600">
+                    {p.name || p}
+                  </span>
+                ))}
+                {contradictionMapping.inventivePrinciples.length > 3 && (
+                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
+                    +{contradictionMapping.inventivePrinciples.length - 3}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Floating Help Button */}
+      <button
+        onClick={() => setShowHelp(true)}
+        className="fixed bottom-4 right-4 z-40 w-12 h-12 rounded-full bg-gradient-to-br from-violet-500 to-purple-600 text-white shadow-lg hover:shadow-xl hover:scale-105 transition-all flex items-center justify-center"
+        title="Help (Press ? for keyboard shortcut)"
+      >
+        <HelpCircle className="w-6 h-6" />
+      </button>
+
+      {/* Help Modal */}
+      <IdeationHelpModal isOpen={showHelp} onClose={() => setShowHelp(false)} />
     </div>
   )
 }

@@ -17,7 +17,7 @@ async function main() {
       code: 'IDEATION_NORMALIZE',
       displayName: 'Seed Normalization',
       featureCode: 'IDEATION',
-      description: 'Extracts structured information from the seed input (core entity, goal, constraints, unknowns)',
+      description: 'Extracts structured information from the seed input (core entity, goal, constraints, unknowns, contradictions)',
       sortOrder: 1,
     },
     {
@@ -28,25 +28,39 @@ async function main() {
       sortOrder: 2,
     },
     {
+      code: 'IDEATION_CONTRADICTION_MAPPING',
+      displayName: 'Contradiction Mapping (Stage 2.5)',
+      featureCode: 'IDEATION',
+      description: 'Maps technical contradictions to TRIZ inventive principles and resolution strategies',
+      sortOrder: 3,
+    },
+    {
       code: 'IDEATION_EXPAND',
       displayName: 'Dimension Expansion',
       featureCode: 'IDEATION',
       description: 'Expands dimension nodes with specific options based on the invention context',
-      sortOrder: 3,
+      sortOrder: 4,
+    },
+    {
+      code: 'IDEATION_OBVIOUSNESS_FILTER',
+      displayName: 'Obviousness Filter (Stage 3.5)',
+      featureCode: 'IDEATION',
+      description: 'Scores selected dimensions for novelty before generation, suggests wildcards for obvious combinations',
+      sortOrder: 5,
     },
     {
       code: 'IDEATION_GENERATE',
       displayName: 'Idea Frame Generation',
       featureCode: 'IDEATION',
-      description: 'Generates structured invention ideas (IdeaFrames) from selected components, dimensions, and operators',
-      sortOrder: 4,
+      description: 'Generates structured invention ideas (IdeaFrames) from selected components, dimensions, and operators with inventive logic',
+      sortOrder: 6,
     },
     {
       code: 'IDEATION_NOVELTY',
       displayName: 'Novelty Assessment',
       featureCode: 'IDEATION',
-      description: 'Analyzes search results to assess novelty and recommend next actions',
-      sortOrder: 5,
+      description: 'Analyzes search results to assess novelty, provides mutation instructions for weak ideas',
+      sortOrder: 7,
     },
   ]
 
@@ -113,8 +127,8 @@ async function main() {
 
         if (!workflowStage) continue
 
-        // Use lightweight model for normalize, classify, expand
-        // Use advanced model for generate, novelty
+        // Use lightweight model for normalize, classify, contradiction mapping, expand, obviousness filter
+        // Use advanced model for generate, novelty (heavy reasoning tasks)
         const modelToUse = ['IDEATION_GENERATE', 'IDEATION_NOVELTY'].includes(stage.code)
           ? advancedModel
           : lightweightModel
@@ -165,7 +179,9 @@ async function main() {
   const tasks = [
     { code: 'IDEATION_NORMALIZE', name: 'Seed Normalization' },
     { code: 'IDEATION_CLASSIFY', name: 'Invention Classification' },
+    { code: 'IDEATION_CONTRADICTION_MAPPING', name: 'Contradiction Mapping' },
     { code: 'IDEATION_EXPAND', name: 'Dimension Expansion' },
+    { code: 'IDEATION_OBVIOUSNESS_FILTER', name: 'Obviousness Filter' },
     { code: 'IDEATION_GENERATE', name: 'Idea Frame Generation' },
     { code: 'IDEATION_NOVELTY', name: 'Novelty Assessment' },
   ]

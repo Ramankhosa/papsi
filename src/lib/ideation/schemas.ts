@@ -70,8 +70,16 @@ export const RecipeIntentEnum = z.enum([
 export type RecipeIntent = z.infer<typeof RecipeIntentEnum>;
 
 // =============================================================================
-// 3.1 INPUT NORMALIZATION JSON
+// 3.1 INPUT NORMALIZATION JSON (Enhanced with Contradiction Extraction)
 // =============================================================================
+
+// Technical contradiction - core of inventive problem solving
+export const TechnicalContradictionSchema = z.object({
+  parameterToImprove: z.string().describe('What we want to improve'),
+  parameterThatWorsens: z.string().describe('What gets worse when we improve the first'),
+  conflictDescription: z.string().describe('Why these are in conflict'),
+});
+export type TechnicalContradiction = z.infer<typeof TechnicalContradictionSchema>;
 
 export const InputNormalizationSchema = z.object({
   coreEntity: z.string().min(1).describe('The main invention/concept'),
@@ -82,8 +90,57 @@ export const InputNormalizationSchema = z.object({
   negativeConstraints: z.array(z.string()).default([]).describe('Things user forbids, e.g., "no electronics"'),
   knownComponents: z.array(z.string()).default([]).describe('Parts/components user already mentioned'),
   unknownsToAsk: z.array(z.string()).default([]).describe('Questions to clarify with user'),
+  // NEW: Contradiction extraction for inventive problem solving
+  technicalContradictions: z.array(TechnicalContradictionSchema).default([]).describe('Underlying tradeoffs that drive invention'),
+  unstatedAssumptions: z.array(z.string()).default([]).describe('Hidden assumptions that could be challenged'),
+  secondOrderGoals: z.array(z.string()).default([]).describe('Goals that emerge from solving the primary goal'),
+  patentableProblemStatement: z.string().optional().describe('Reframed problem in patent-worthy terms'),
 });
 export type InputNormalization = z.infer<typeof InputNormalizationSchema>;
+
+// =============================================================================
+// 3.1.5 CONTRADICTION MAPPING JSON (NEW STAGE)
+// =============================================================================
+
+export const ContradictionMappingSchema = z.object({
+  contradictions: z.array(z.object({
+    parameterToImprove: z.string(),
+    parameterThatWorsens: z.string(),
+    whyThisIsHard: z.string().describe('Why this tradeoff is difficult to resolve'),
+    trizContradictionNumber: z.number().optional().describe('TRIZ contradiction matrix number if applicable'),
+  })).min(1),
+  secondOrderEffects: z.array(z.string()).default([]).describe('Side effects of solving each contradiction'),
+  inventivePrinciples: z.array(z.string()).default([]).describe('TRIZ principles that could resolve these contradictions'),
+  resolutionStrategies: z.array(z.object({
+    strategy: z.enum(['SEPARATION_IN_TIME', 'SEPARATION_IN_SPACE', 'SEPARATION_ON_CONDITION', 'SEPARATION_BETWEEN_PARTS', 'INVERSION', 'SUBSTANCE_FIELD_SHIFT', 'DYNAMIZATION']),
+    description: z.string(),
+    applicableTo: z.string().describe('Which contradiction this resolves'),
+  })).default([]),
+});
+export type ContradictionMapping = z.infer<typeof ContradictionMappingSchema>;
+
+// =============================================================================
+// 3.3.5 OBVIOUSNESS FILTER JSON (NEW STAGE)
+// =============================================================================
+
+export const ObviousnessFilterSchema = z.object({
+  combinationNovelty: z.number().min(0).max(100).describe('How novel is this combination? 0=obvious, 100=highly inventive'),
+  obviousnessFlags: z.array(z.enum([
+    'COMBINATIONAL',      // Just adding known elements together
+    'SAME_DOMAIN',        // All elements from same field
+    'PARAMETER_TWEAK',    // Just changing values, not structure
+    'OBVIOUS_SUBSTITUTION', // Replacing A with well-known alternative
+    'PREDICTABLE_RESULT', // Outcome is expected
+  ])).default([]),
+  wildCardSuggestion: z.string().optional().describe('Suggestion to increase novelty'),
+  dimensionQualityScores: z.array(z.object({
+    dimensionId: z.string(),
+    noveltyContribution: z.number().min(0).max(100),
+    recommendation: z.enum(['KEEP', 'REPLACE', 'INVERT']),
+  })).default([]),
+  suggestedAnalogySources: z.array(z.string()).default([]).describe('Distant domains to draw analogies from'),
+});
+export type ObviousnessFilter = z.infer<typeof ObviousnessFilterSchema>;
 
 // =============================================================================
 // 3.2 CLASSIFICATION JSON
@@ -148,7 +205,7 @@ export const CombineRecipeSchema = z.object({
 export type CombineRecipe = z.infer<typeof CombineRecipeSchema>;
 
 // =============================================================================
-// 3.5 IDEA FRAME JSON (Core output)
+// 3.5 IDEA FRAME JSON (Core output - Enhanced with Inventive Logic)
 // =============================================================================
 
 export const IdeaVariantSchema = z.object({
@@ -176,11 +233,20 @@ export const IdeaFrameSchema = z.object({
   claimHooks: z.array(z.string()).default([]).describe('Phrases to convert into claim elements'),
   riskNotes: z.array(z.string()).default([]).describe('Why this might fail or be challenged'),
   searchQueries: z.array(z.string()).default([]).describe('Queries for novelty search'),
+  
+  // NEW: Inventive Logic Fields (Patent-Worthy Enhancement)
+  inventiveLeap: z.string().optional().describe('The non-obvious insight that makes this patentable'),
+  whyNotObvious: z.string().optional().describe('Why a skilled person would NOT arrive at this solution'),
+  analogySource: z.string().optional().describe('Distant domain this draws inspiration from (2+ hops away)'),
+  eliminatedComponent: z.string().optional().describe('Traditional element removed or inverted'),
+  secondOrderEffect: z.string().optional().describe('Unexpected benefit from the inventive approach'),
+  contradictionResolved: z.string().optional().describe('Which technical contradiction this idea resolves'),
+  resolutionStrategy: z.string().optional().describe('How the contradiction was resolved (separation, inversion, etc.)'),
 });
 export type IdeaFrame = z.infer<typeof IdeaFrameSchema>;
 
 // =============================================================================
-// 3.6 NOVELTY GATE JSON
+// 3.6 NOVELTY GATE JSON (Enhanced with Feedback Loop)
 // =============================================================================
 
 export const NoveltySearchResultSchema = z.object({
@@ -191,6 +257,17 @@ export const NoveltySearchResultSchema = z.object({
   similarityScore: z.number().min(0).max(100).optional(),
   whyRelevant: z.string().describe('Why this result is relevant'),
 });
+
+// Mutation instructions for iterating weak ideas
+export const MutationInstructionsSchema = z.object({
+  action: z.enum(['MUTATE_DIMENSION', 'MUTATE_OPERATOR', 'ADD_ANALOGY', 'NARROW_PROBLEM', 'INVERT_APPROACH']),
+  specifics: z.string().describe('Detailed instruction for mutation'),
+  retainElements: z.array(z.string()).default([]).describe('Elements to keep from original idea'),
+  suggestedAnalogy: z.string().optional().describe('Distant domain to draw from'),
+  dimensionToReplace: z.string().optional(),
+  replacementSuggestion: z.string().optional(),
+});
+export type MutationInstructions = z.infer<typeof MutationInstructionsSchema>;
 export type NoveltySearchResult = z.infer<typeof NoveltySearchResultSchema>;
 
 export const NoveltyGateSchema = z.object({
@@ -201,6 +278,18 @@ export const NoveltyGateSchema = z.object({
   noveltyScore: z.number().int().min(0).max(100).describe('Overall novelty assessment 0-100'),
   recommendedAction: NoveltyActionEnum.describe('What to do next'),
   reasoning: z.string().optional().describe('Explanation of the assessment'),
+  
+  // NEW: Enhanced feedback loop fields
+  obviousnessFlags: z.array(z.enum([
+    'COMBINATIONAL',      // Just adding known elements together
+    'SAME_DOMAIN',        // All elements from same field  
+    'PARAMETER_TWEAK',    // Just changing values, not structure
+    'OBVIOUS_SUBSTITUTION', // Replacing A with well-known alternative
+    'PREDICTABLE_RESULT', // Outcome is expected
+  ])).default([]),
+  mutationInstructions: MutationInstructionsSchema.optional().describe('How to improve if novelty is low'),
+  phositaTest: z.string().optional().describe('Why a Person Having Ordinary Skill In The Art would/would not find this obvious'),
+  suggestedIterations: z.array(z.string()).default([]).describe('Specific suggestions to increase novelty'),
 });
 export type NoveltyGate = z.infer<typeof NoveltyGateSchema>;
 

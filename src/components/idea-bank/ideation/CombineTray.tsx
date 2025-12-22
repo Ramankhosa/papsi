@@ -51,32 +51,61 @@ interface CombineTrayProps {
 
 type RecipeIntent = 'DIVERGENT' | 'CONVERGENT' | 'RISK_REDUCTION' | 'COST_REDUCTION'
 
-const intentOptions: { value: RecipeIntent; label: string; description: string; icon: React.ReactNode }[] = [
+const intentOptions: { value: RecipeIntent; label: string; description: string; tooltip: string; icon: React.ReactNode }[] = [
   {
     value: 'DIVERGENT',
     label: 'Divergent',
     description: 'Creative & diverse ideas',
+    tooltip: 'Maximize creativity: generates wild, cross-domain ideas using distant analogies. Best for brainstorming & exploring new possibilities.',
     icon: <Sparkles className="w-4 h-4" />,
   },
   {
     value: 'CONVERGENT',
     label: 'Convergent',
     description: 'Practical solutions',
+    tooltip: 'Focus on feasibility: generates implementable solutions based on proven engineering principles. Best for near-term product development.',
     icon: <Target className="w-4 h-4" />,
   },
   {
     value: 'RISK_REDUCTION',
     label: 'Low Risk',
     description: 'Safety & reliability',
+    tooltip: 'Prioritize safety: generates ideas that emphasize reliability, redundancy, and fail-safe mechanisms. Best for regulated industries.',
     icon: <Layers className="w-4 h-4" />,
   },
   {
     value: 'COST_REDUCTION',
     label: 'Low Cost',
     description: 'Cost-effective',
+    tooltip: 'Minimize cost: generates ideas focused on material reduction, simpler manufacturing, and economies of scale. Best for cost-sensitive markets.',
     icon: <Box className="w-4 h-4" />,
   },
 ]
+
+// TRIZ Operator detailed descriptions
+const TRIZ_OPERATOR_TIPS: Record<string, string> = {
+  'Segmentation': 'Divide an object into independent parts, or make it modular/easy to disassemble',
+  'Extraction': 'Remove the problematic part or extract only the necessary component',
+  'Local Quality': 'Change uniform structure to non-uniform, make each part function optimally',
+  'Asymmetry': 'Replace symmetrical form with asymmetrical to improve function',
+  'Merging': 'Combine identical or similar objects, or operations in time',
+  'Universality': 'Make an object perform multiple functions, eliminating the need for other objects',
+  'Nesting': 'Place one object inside another, pass one through the cavity of another',
+  'Anti-Weight': 'Compensate object weight by merging with others that provide lift',
+  'Prior Action': 'Perform action in advance, or pre-arrange objects for convenient operation',
+  'Cushion in Advance': 'Prepare emergency means beforehand to compensate for low reliability',
+  'Equipotentiality': 'Change conditions so object doesn\'t need to be raised or lowered',
+  'Do It in Reverse': 'Invert the action, make movable parts fixed and vice versa',
+  'Spheroidality': 'Replace linear parts with curved, flat surfaces with spherical',
+  'Dynamics': 'Allow characteristics to change optimally, divide into movable parts',
+  'Partial or Excessive Action': 'If 100% is hard, use "less" or "more" to simplify the problem',
+  'Another Dimension': 'Move in 3D space, use multi-story arrangement, tilt object',
+  'Mechanical Vibration': 'Use oscillation, increase frequency to ultrasonic',
+  'Periodic Action': 'Replace continuous with periodic action, use pauses for other actions',
+  'Continuity of Useful Action': 'Carry on work continuously, eliminate idle runs',
+  'Skipping': 'Conduct process at high speed to skip harmful stages',
+  'default': 'Apply this TRIZ principle to transform your dimensions into inventive ideas'
+}
 
 export default function CombineTray({
   selectedNodes,
@@ -502,8 +531,9 @@ export default function CombineTray({
                   <button
                     key={op.id}
                     onClick={() => toggleOperator(op.id)}
+                    title={TRIZ_OPERATOR_TIPS[op.name] || op.description || TRIZ_OPERATOR_TIPS['default']}
                     className={`
-                      p-2 rounded-lg border text-left transition-all text-xs
+                      p-2 rounded-lg border text-left transition-all text-xs group relative
                       ${selectedOperators.has(op.id)
                         ? 'bg-amber-50 border-amber-300 text-amber-800'
                         : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-amber-200'
@@ -538,6 +568,7 @@ export default function CombineTray({
                   <button
                     key={option.value}
                     onClick={() => setIntent(option.value)}
+                    title={option.tooltip}
                     className={`
                       p-2 rounded-lg border text-left transition-all
                       ${intent === option.value

@@ -13,6 +13,8 @@ import {
   DimensionGraphSchema,
   IdeaFrameSchema,
   NoveltyGateSchema,
+  ContradictionMappingSchema,
+  ObviousnessFilterSchema,
   safeParseJson,
   getSchemaDescription,
   TRIZ_OPERATORS,
@@ -27,6 +29,8 @@ import {
   type InventionClass,
   type TrizOperator,
   type DimensionFamily,
+  type ContradictionMapping,
+  type ObviousnessFilter,
 } from './schemas';
 import type { 
   IdeationSession, 
@@ -250,7 +254,7 @@ export async function normalizeSeed(
     where: { id: sessionId },
   });
 
-  const prompt = `You are a patent ideation assistant. Analyze the following invention idea and extract structured information.
+  const prompt = `You are a patent ideation assistant specializing in extracting INVENTIVE problems. Analyze the following invention idea and extract structured information, focusing on underlying CONTRADICTIONS that drive innovation.
 
 INPUT IDEA:
 """
@@ -263,13 +267,29 @@ ${session.seedConstraints.length > 0 ? `USER CONSTRAINTS: ${session.seedConstrai
 Return ONLY valid JSON matching this schema (no other text):
 ${getSchemaDescription('InputNormalization')}
 
-Rules:
+CRITICAL RULES:
 - coreEntity: The main physical or conceptual thing being invented
 - intentGoal: What the user wants to achieve or solve
 - constraints: Hard limits mentioned (cost, size, no electronics, etc.)
 - negativeConstraints: Things explicitly forbidden
 - unknownsToAsk: Questions that would help clarify the invention (max 3)
-- Do NOT invent facts; if unsure, add to unknownsToAsk`;
+
+CONTRADICTION EXTRACTION (Most Important):
+- technicalContradictions: Identify 1-3 underlying tradeoffs where improving one parameter worsens another
+  * Example: "lightweight" vs "durable" - making it lighter makes it weaker
+  * If not explicit, INFER from goal vs constraint conflict
+- unstatedAssumptions: Hidden assumptions in the problem that could be challenged (e.g., "must be single-piece")
+- secondOrderGoals: Goals that emerge from solving the primary goal
+- patentableProblemStatement: Reframe the problem in inventive terms (focus on the CONTRADICTION, not just the wish)
+
+Example contradiction format:
+{
+  "parameterToImprove": "comfort (soft material)",
+  "parameterThatWorsens": "safety (rigidity)",
+  "conflictDescription": "Softer materials increase comfort but reduce protective capability"
+}
+
+Do NOT invent facts; derive contradictions from the stated context.`;
 
   const { response, tokensUsed, model } = await callLLM(
     prompt,
@@ -295,6 +315,11 @@ Rules:
     knownComponents: parsed.data.knownComponents ?? [],
     unknownsToAsk: parsed.data.unknownsToAsk ?? [],
     context: parsed.data.context,
+    // NEW: Contradiction extraction fields
+    technicalContradictions: parsed.data.technicalContradictions ?? [],
+    unstatedAssumptions: parsed.data.unstatedAssumptions ?? [],
+    secondOrderGoals: parsed.data.secondOrderGoals ?? [],
+    patentableProblemStatement: parsed.data.patentableProblemStatement,
   };
 
   await prisma.ideationSession.update({
@@ -388,6 +413,200 @@ Rules:
 }
 
 // =============================================================================
+// STAGE 2.5: CONTRADICTION MAPPING (NEW)
+// =============================================================================
+
+/**
+ * Map contradictions to TRIZ principles and resolution strategies
+ * This makes contradictions first-class citizens in the ideation process
+ */
+export async function mapContradictions(
+  sessionId: string,
+  requestHeaders: Record<string, string>
+): Promise<ContradictionMapping> {
+  const session = await prisma.ideationSession.findUniqueOrThrow({
+    where: { id: sessionId },
+  });
+
+  if (!session.normalizationJson) {
+    throw new Error('Session must be normalized before contradiction mapping');
+  }
+
+  const normalization = session.normalizationJson as InputNormalization;
+  const existingContradictions = normalization.technicalContradictions || [];
+
+  const prompt = `You are a TRIZ expert and patent strategist. Analyze the contradictions in this invention and map them to resolution strategies.
+
+INVENTION CONTEXT:
+- Core Entity: ${normalization.coreEntity}
+- Goal: ${normalization.intentGoal}
+- Constraints: ${normalization.constraints.join(', ') || 'None'}
+- Forbidden: ${normalization.negativeConstraints.join(', ') || 'None'}
+
+IDENTIFIED CONTRADICTIONS:
+${existingContradictions.length > 0 
+  ? existingContradictions.map((c, i) => `${i + 1}. Improve "${c.parameterToImprove}" → Worsens "${c.parameterThatWorsens}": ${c.conflictDescription}`).join('\n')
+  : 'None explicitly identified - you must infer them from the goal vs constraints'
+}
+
+Return ONLY valid JSON:
+${getSchemaDescription('ContradictionMapping')}
+
+RULES:
+1. If no contradictions were identified, INFER them from goal vs constraint conflicts
+2. For each contradiction, explain WHY it's hard to solve (not just what it is)
+3. Map to TRIZ inventive principles that could resolve each contradiction
+4. Suggest resolution strategies:
+   - SEPARATION_IN_TIME: Do X at time T1, Y at time T2
+   - SEPARATION_IN_SPACE: X happens in region A, Y in region B
+   - SEPARATION_ON_CONDITION: X when condition C, Y when not C
+   - SEPARATION_BETWEEN_PARTS: Part A does X, Part B does Y
+   - INVERSION: Instead of X, do opposite of X
+   - SUBSTANCE_FIELD_SHIFT: Change the field/energy type
+   - DYNAMIZATION: Make static parts dynamic
+5. Identify second-order effects (solving contradiction A may create B)
+
+Example inventive principles: Segmentation, Extraction, Local Quality, Asymmetry, Merging, Universality, Nesting, Anti-weight, Prior Counteraction, Prior Action, Cushion in Advance, Equipotentiality, Inversion, Spheroidality, Dynamics, Partial/Excessive Action`;
+
+  const { response } = await callLLM(
+    prompt,
+    'IDEATION_CONTRADICTION_MAPPING',
+    sessionId,
+    requestHeaders,
+  );
+
+  const parsed = safeParseJson(response, ContradictionMappingSchema);
+  
+  if (!parsed.success) {
+    // Return minimal valid structure on parse failure
+    const fallback: ContradictionMapping = {
+      contradictions: existingContradictions.map(c => ({
+        parameterToImprove: c.parameterToImprove,
+        parameterThatWorsens: c.parameterThatWorsens,
+        whyThisIsHard: 'Auto-derived from normalization',
+      })),
+      secondOrderEffects: [],
+      inventivePrinciples: [],
+      resolutionStrategies: [],
+    };
+    return fallback;
+  }
+
+  // Ensure all fields have proper defaults
+  const result: ContradictionMapping = {
+    contradictions: parsed.data.contradictions,
+    secondOrderEffects: parsed.data.secondOrderEffects ?? [],
+    inventivePrinciples: parsed.data.inventivePrinciples ?? [],
+    resolutionStrategies: parsed.data.resolutionStrategies ?? [],
+  };
+
+  // Store contradiction mapping in session
+  await prisma.ideationSession.update({
+    where: { id: sessionId },
+    data: {
+      normalizationJson: {
+        ...(session.normalizationJson as object),
+        contradictionMapping: result,
+      },
+    },
+  });
+
+  return result;
+}
+
+// =============================================================================
+// STAGE 3.5: OBVIOUSNESS FILTER (NEW)
+// =============================================================================
+
+/**
+ * Score selected dimensions for novelty BEFORE idea generation
+ * Prevents wasting LLM calls on obvious combinations
+ */
+export async function checkObviousness(
+  sessionId: string,
+  selectedDimensions: string[],
+  requestHeaders: Record<string, string>
+): Promise<ObviousnessFilter> {
+  const session = await prisma.ideationSession.findUniqueOrThrow({
+    where: { id: sessionId },
+    include: { nodes: true },
+  });
+
+  if (!session.normalizationJson || !session.classificationJson) {
+    throw new Error('Session must be normalized and classified');
+  }
+
+  const normalization = session.normalizationJson as InputNormalization;
+  const classification = session.classificationJson as Classification;
+  
+  // Get dimension details
+  const dimensionNodes = session.nodes.filter(n => selectedDimensions.includes(n.nodeId));
+  const dimensionDetails = dimensionNodes.map(n => `${n.family}: ${n.title} (${n.description || 'no desc'})`);
+
+  const prompt = `You are a patent examiner assessing obviousness. Would a person having ordinary skill in the art (PHOSITA) find this combination obvious?
+
+INVENTION:
+- Core Entity: ${normalization.coreEntity}
+- Goal: ${normalization.intentGoal}
+- Class: ${classification.dominantClass}
+- Domain: ${classification.archetype}
+
+SELECTED DIMENSIONS FOR COMBINATION:
+${dimensionDetails.map((d, i) => `${i + 1}. ${d}`).join('\n')}
+
+Return ONLY valid JSON:
+${getSchemaDescription('ObviousnessFilter')}
+
+ASSESSMENT CRITERIA:
+1. combinationNovelty (0-100):
+   - 0-30: Obvious - known combination in the field
+   - 31-50: Marginal - somewhat predictable
+   - 51-70: Non-obvious - unexpected combination
+   - 71-100: Highly inventive - cross-domain leap
+
+2. obviousnessFlags - mark ALL that apply:
+   - COMBINATIONAL: Just adding known elements (A + B)
+   - SAME_DOMAIN: All elements from same technical field
+   - PARAMETER_TWEAK: Only changing values, not structure
+   - OBVIOUS_SUBSTITUTION: Well-known material/component swap
+   - PREDICTABLE_RESULT: Expected outcome from this combo
+
+3. If combinationNovelty < 40:
+   - Suggest a "wildCardSuggestion" - an unexpected dimension from a DISTANT domain
+   - Example: For mechanical problem, suggest biological analogy
+
+4. dimensionQualityScores: Rate each dimension's novelty contribution
+   - KEEP: Contributes to novelty
+   - REPLACE: Too obvious, suggest replacement
+   - INVERT: Try the opposite approach
+
+5. suggestedAnalogySources: List 2-3 distant domains to draw from
+   - Should be 2+ conceptual hops away from ${classification.archetype}`;
+
+  const { response } = await callLLM(
+    prompt,
+    'IDEATION_OBVIOUSNESS_FILTER',
+    sessionId,
+    requestHeaders,
+  );
+
+  const parsed = safeParseJson(response, ObviousnessFilterSchema);
+  
+  if (!parsed.success) {
+    // Return default moderate score on failure
+    const fallback: ObviousnessFilter = {
+      combinationNovelty: 50,
+      obviousnessFlags: [],
+      dimensionQualityScores: [],
+      suggestedAnalogySources: [],
+    };
+    return fallback;
+  }
+
+  return parsed.data as ObviousnessFilter;
+}
+
+// =============================================================================
 // DIMENSION EXPANSION
 // =============================================================================
 
@@ -431,13 +650,13 @@ export async function initializeDimensions(sessionId: string): Promise<MindMapNo
   const nodesToCreate: Prisma.MindMapNodeCreateManyInput[] = [];
   const edgesToCreate: Prisma.MindMapEdgeCreateManyInput[] = [];
 
-  // Layout constants for left-to-right tree
-  const LEVEL_WIDTH = 320;  // Horizontal spacing between levels
-  const NODE_HEIGHT = 100;  // Vertical spacing between nodes (increased for descriptions)
-  const START_X = 50;       // Starting X position (seed is at left)
-  const START_Y = 80;       // Starting Y position
+  // Layout constants for left-to-right tree with generous spacing
+  const LEVEL_WIDTH = 400;  // Horizontal spacing between levels
+  const NODE_HEIGHT = 180;  // Generous vertical spacing between nodes
+  const START_X = 100;      // Starting X position (seed is at left)
+  const START_Y = 100;      // Starting Y position
 
-  // Calculate seed node Y position based on number of dimensions
+  // Calculate seed node Y position based on number of dimensions (centered)
   const seedY = START_Y + (applicableDimensions.length * NODE_HEIGHT) / 2;
 
   // Update existing seed node with normalized title and proper position
@@ -564,8 +783,9 @@ DIMENSION TO EXPAND:
 - Description: ${node.description || 'No description'}
 - Family: ${node.family || node.title}
 
-Generate 5-7 specific options within this dimension that could be explored for this invention.
+Generate 3-5 specific options within this dimension that could be explored for this invention.
 Each option should be a concrete variation or approach within the "${node.title}" dimension.
+Keep it focused - quality over quantity.
 
 Return ONLY valid JSON matching this schema (no other text):
 ${getSchemaDescription('DimensionGraph')}
@@ -596,28 +816,22 @@ Rules:
   const existingNodeIds = session.nodes.map(n => n.nodeId);
   const newNodes = parsed.data.nodes.filter(n => !existingNodeIds.includes(n.id));
 
-  // Layout constants for tile-like horizontal layout
-  const LEVEL_WIDTH = 280;   // Horizontal spacing between levels
-  const NODE_WIDTH = 220;    // Width of each node (for horizontal arrangement)
-  const NODE_HEIGHT = 80;    // Vertical spacing between rows
-  const COLS = 2;            // Number of columns for grid-like layout
-
-  // Calculate positions - children arranged in a grid to the right of parent
+  // Layout constants - SINGLE COLUMN for clarity, generous spacing
+  const LEVEL_WIDTH = 400;   // Horizontal gap between parent and children
+  const NODE_HEIGHT = 180;   // Generous vertical spacing between nodes
+  
+  // Calculate positions - children in a SINGLE COLUMN to the right of parent
   const parentNode = node;
   const parentX = parentNode.positionX || 50;
   const parentY = parentNode.positionY || 200;
   const parentDepth = parentNode.depth || 0;
   
-  // Arrange children in a 2-column grid layout (more horizontal/tile-like)
+  // Single column layout - stack children vertically, centered around parent Y
   const totalChildren = newNodes.length;
-  const rows = Math.ceil(totalChildren / COLS);
-  const totalHeight = (rows - 1) * NODE_HEIGHT;
+  const totalHeight = (totalChildren - 1) * NODE_HEIGHT;
   const startY = parentY - (totalHeight / 2);
 
   const nodesToCreate = newNodes.map((n, i) => {
-    const row = Math.floor(i / COLS);
-    const col = i % COLS;
-    
     return {
       sessionId: input.sessionId,
       nodeId: n.id,
@@ -627,12 +841,12 @@ Rules:
       family: n.family || node.family,
       tags: n.tags || [],
       state: 'COLLAPSED' as const,
-      selectable: n.selectable !== false, // Default to selectable for options
+      selectable: n.selectable !== false,
       defaultExpanded: n.defaultExpanded || false,
       depth: parentDepth + 1,
       parentNodeId: input.nodeId,
-      positionX: parentX + LEVEL_WIDTH + (col * NODE_WIDTH),  // Stagger horizontally
-      positionY: startY + (row * NODE_HEIGHT),  // Distribute in rows
+      positionX: parentX + LEVEL_WIDTH,  // All children at same X (single column)
+      positionY: startY + (i * NODE_HEIGHT),  // Stack vertically with generous spacing
     };
   });
 
@@ -664,7 +878,45 @@ Rules:
     data: { state: 'EXPANDED' },
   });
 
-  return parsed.data as DimensionGraph;
+  // Fetch the newly created nodes from database to get actual positions and parentNodeId
+  const createdNodes = await prisma.mindMapNode.findMany({
+    where: {
+      sessionId: input.sessionId,
+      nodeId: { in: newNodes.map(n => n.id) },
+    },
+  });
+
+  const createdEdges = await prisma.mindMapEdge.findMany({
+    where: {
+      sessionId: input.sessionId,
+      fromNodeId: input.nodeId,
+    },
+  });
+
+  // Return the actual database records with proper positions and parent references
+  return {
+    nodes: createdNodes.map(n => ({
+      id: n.nodeId,
+      type: n.type,
+      title: n.title,
+      descriptionShort: n.description || undefined,
+      family: n.family || undefined,
+      selectable: n.selectable,
+      defaultExpanded: n.defaultExpanded,
+      tags: n.tags,
+      parentId: n.parentNodeId || undefined,
+      // Include position data for frontend
+      positionX: n.positionX,
+      positionY: n.positionY,
+      state: n.state,
+      depth: n.depth,
+    })),
+    edges: createdEdges.map(e => ({
+      from: e.fromNodeId,
+      to: e.toNodeId,
+      relation: e.relation || 'contains',
+    })),
+  } as any;
 }
 
 // =============================================================================
@@ -747,42 +999,86 @@ export async function generateIdeas(input: GenerateIdeasInput): Promise<IdeaFram
     input.recipe.selectedOperators.includes(n.nodeId)
   ).map(n => `${n.title}: ${n.description}`);
 
-  const prompt = `You are a patent invention generator. Create ${input.recipe.count} distinct invention ideas based on the following inputs.
+  // Extract contradiction info if available
+  const contradictionMapping = (normalization as any).contradictionMapping;
+  const contradictions = normalization.technicalContradictions || [];
+  const inventivePrinciples = contradictionMapping?.inventivePrinciples || [];
+  const resolutionStrategies = contradictionMapping?.resolutionStrategies || [];
 
-INVENTION CONTEXT:
+  const prompt = `You are a PATENT INVENTION GENERATOR. Your task is to create ${input.recipe.count} PATENT-WORTHY inventions that are NON-OBVIOUS and resolve technical contradictions.
+
+═══════════════════════════════════════════════════════════════
+INVENTION CONTEXT
+═══════════════════════════════════════════════════════════════
 - Core Entity: ${normalization.coreEntity}
 - Goal: ${normalization.intentGoal}
 - Class: ${classification.dominantClass}
 - Archetype: ${classification.archetype}
 - Constraints: ${normalization.constraints.join(', ') || 'None'}
 - Forbidden: ${normalization.negativeConstraints.join(', ') || 'None'}
+${normalization.patentableProblemStatement ? `- Patentable Problem: ${normalization.patentableProblemStatement}` : ''}
 
-SELECTED COMPONENTS: ${componentDetails.join(', ') || 'Use your judgment'}
+═══════════════════════════════════════════════════════════════
+TECHNICAL CONTRADICTIONS TO RESOLVE
+═══════════════════════════════════════════════════════════════
+${contradictions.length > 0 
+  ? contradictions.map((c, i) => `${i + 1}. "${c.parameterToImprove}" ↔ "${c.parameterThatWorsens}": ${c.conflictDescription}`).join('\n')
+  : 'None identified - YOU must find the underlying tradeoff'
+}
 
-SELECTED DIMENSIONS: ${dimensionDetails.join('; ') || 'Explore broadly'}
+${inventivePrinciples.length > 0 ? `SUGGESTED TRIZ PRINCIPLES: ${inventivePrinciples.join(', ')}` : ''}
+${resolutionStrategies.length > 0 ? `RESOLUTION STRATEGIES: ${resolutionStrategies.map((s: { strategy: string }) => s.strategy).join(', ')}` : ''}
 
-SELECTED OPERATORS: ${operatorDetails.join('; ') || 'Apply appropriate operators'}
+═══════════════════════════════════════════════════════════════
+SELECTED BUILDING BLOCKS
+═══════════════════════════════════════════════════════════════
+COMPONENTS: ${componentDetails.join(', ') || 'Use your judgment'}
+DIMENSIONS: ${dimensionDetails.join('; ') || 'Explore broadly'}
+OPERATORS: ${operatorDetails.join('; ') || 'Apply appropriate operators'}
 
-RECIPE INTENT: ${input.recipe.recipeIntent}
-${input.recipe.recipeIntent === 'DIVERGENT' ? '(Generate diverse, creative ideas)' : ''}
-${input.recipe.recipeIntent === 'CONVERGENT' ? '(Focus on practical, implementable ideas)' : ''}
-${input.recipe.recipeIntent === 'RISK_REDUCTION' ? '(Focus on safety and reliability improvements)' : ''}
-${input.recipe.recipeIntent === 'COST_REDUCTION' ? '(Focus on cost-effective solutions)' : ''}
+═══════════════════════════════════════════════════════════════
+GENERATION INTENT: ${input.recipe.recipeIntent}
+═══════════════════════════════════════════════════════════════
+${input.recipe.recipeIntent === 'DIVERGENT' ? '→ Generate diverse, creative ideas with cross-domain analogies' : ''}
+${input.recipe.recipeIntent === 'CONVERGENT' ? '→ Focus on practical, implementable ideas' : ''}
+${input.recipe.recipeIntent === 'RISK_REDUCTION' ? '→ Focus on safety and reliability improvements' : ''}
+${input.recipe.recipeIntent === 'COST_REDUCTION' ? '→ Focus on cost-effective solutions' : ''}
+
+═══════════════════════════════════════════════════════════════
+MANDATORY REQUIREMENTS FOR PATENT-WORTHY IDEAS
+═══════════════════════════════════════════════════════════════
+Each idea MUST include:
+
+1. inventiveLeap: The non-obvious insight (what would surprise an expert)
+2. whyNotObvious: Why a skilled person would NOT arrive at this solution
+3. analogySource: A DISTANT domain this draws from (2+ conceptual hops)
+   - Bad: "using steel instead of aluminum" (same domain)
+   - Good: "using biological cell division patterns for manufacturing"
+4. eliminatedComponent: What traditional element is REMOVED or INVERTED
+5. contradictionResolved: Which tradeoff this solves
+6. resolutionStrategy: HOW the contradiction is resolved (separation, inversion, etc.)
+
+═══════════════════════════════════════════════════════════════
+FORBIDDEN PATTERNS (Ideas with these will be rejected)
+═══════════════════════════════════════════════════════════════
+❌ ADDITIVE COMBINATIONS: "Add sensor + AI + cloud" (just stacking)
+❌ PARAMETER TWEAKS: "Make it bigger/smaller/faster" (no structure change)
+❌ OBVIOUS SUBSTITUTIONS: "Use plastic instead of metal" (known swap)
+❌ SAME-DOMAIN COMBINATIONS: All elements from one field
+❌ PREDICTABLE OUTCOMES: Results anyone would expect
+
+═══════════════════════════════════════════════════════════════
+CLAIM HOOK FORMAT
+═══════════════════════════════════════════════════════════════
+✅ USE: "configured to [function] by [unexpected mechanism]"
+✅ USE: "wherein [component] achieves [result] through [novel approach]"
+❌ AVOID: "includes A and B" (just listing elements)
+❌ AVOID: "comprises" without functional language
 
 Generate exactly ${input.recipe.count} invention ideas as a JSON array.
-Each idea must follow this schema:
-${getSchemaDescription('IdeaFrame')}
+Schema: ${getSchemaDescription('IdeaFrame')}
 
-Rules:
-- Each ideaId must be unique (use format: idea-1, idea-2, etc.)
-- Ideas must be technically feasible
-- Include 2-5 variants per idea showing alternative embodiments
-- searchQueries should be specific enough for patent searches
-- claimHooks should be phrases suitable for patent claims
-- Be creative but realistic
-- Do NOT repeat the same idea with minor variations
-
-Return ONLY the JSON array of ideas (no other text):
+Return ONLY the JSON array (no other text):
 [{idea1}, {idea2}, ...]`;
 
   const { response } = await callLLM(
@@ -946,32 +1242,69 @@ export async function checkNovelty(input: NoveltyCheckInput): Promise<NoveltyGat
     }
   }
 
-  // Use LLM to assess novelty
+  // Use LLM to assess novelty with enhanced feedback loop
   const session = ideaFrame.session;
-  const prompt = `You are a patent novelty assessor. Analyze the following invention idea against the search results.
+  const prompt = `You are a PATENT EXAMINER conducting a novelty and non-obviousness assessment. Your goal is to determine if this invention would survive USPTO examination.
 
-INVENTION IDEA:
+═══════════════════════════════════════════════════════════════
+INVENTION UNDER REVIEW
+═══════════════════════════════════════════════════════════════
 - Title: ${idea.title}
 - Problem: ${idea.problem}
 - Principle: ${idea.principle}
 - Technical Effect: ${idea.technicalEffect}
+${idea.inventiveLeap ? `- Claimed Inventive Leap: ${idea.inventiveLeap}` : ''}
+${idea.whyNotObvious ? `- Why Not Obvious: ${idea.whyNotObvious}` : ''}
+${idea.analogySource ? `- Analogy Source: ${idea.analogySource}` : ''}
+${idea.eliminatedComponent ? `- Eliminated Component: ${idea.eliminatedComponent}` : ''}
 
-SEARCH RESULTS (${results.length} found):
+═══════════════════════════════════════════════════════════════
+PRIOR ART SEARCH RESULTS (${results.length} found)
+═══════════════════════════════════════════════════════════════
 ${results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet || 'No snippet'}`).join('\n\n')}
 
-Assess the novelty of this invention. Return ONLY valid JSON:
+Return ONLY valid JSON:
 ${getSchemaDescription('NoveltyGate')}
 
-Guidelines:
-- conceptSaturation: How crowded is the general problem space?
-- solutionSaturation: How many similar solutions exist for this specific approach?
-- noveltyScore: 0-100 (higher = more novel)
-- recommendedAction:
-  - KEEP: Novel enough to proceed
-  - MUTATE_OPERATOR: Try a different transformation approach
-  - MUTATE_DIMENSION: Explore a different dimension
-  - NARROW_MICRO_PROBLEM: Focus on a more specific sub-problem
-  - ASK_USER_QUESTION: Need more user input to differentiate`;
+═══════════════════════════════════════════════════════════════
+ASSESSMENT CRITERIA
+═══════════════════════════════════════════════════════════════
+
+1. noveltyScore (0-100):
+   - 0-30: OBVIOUS - A PHOSITA would arrive at this with routine experimentation
+   - 31-50: MARGINAL - Some prior art teaches this, needs differentiation
+   - 51-70: NON-OBVIOUS - Unexpected combination or result
+   - 71-100: HIGHLY INVENTIVE - Clear inventive leap, distant analogy
+
+2. obviousnessFlags - Mark ALL that apply:
+   - COMBINATIONAL: Just adding known elements without synergy
+   - SAME_DOMAIN: All prior art from same technical field
+   - PARAMETER_TWEAK: Only changing values, not structure
+   - OBVIOUS_SUBSTITUTION: Well-known material/component swap
+   - PREDICTABLE_RESULT: Expected outcome from this combination
+
+3. phositaTest: Write a sentence explaining why a Person Having Ordinary Skill In The Art would or would NOT find this obvious
+   - Example: "A mechanical engineer in 2024 would NOT think to use origami folding for crash absorption because..."
+
+4. IF noveltyScore < 60, MUST provide mutationInstructions:
+   - action: What type of change to make (MUTATE_DIMENSION, ADD_ANALOGY, INVERT_APPROACH, etc.)
+   - specifics: Detailed instruction (e.g., "Replace material dimension with quantum superposition analogy")
+   - retainElements: What's worth keeping from the original idea
+   - suggestedAnalogy: A DISTANT domain to draw from (biology, economics, game theory, etc.)
+
+5. suggestedIterations: List 2-3 specific ways to increase novelty:
+   - "Invert the [X] to achieve opposite effect"
+   - "Apply [biological process] analogy to [mechanism]"
+   - "Eliminate [traditional component] entirely"
+
+═══════════════════════════════════════════════════════════════
+RECOMMENDED ACTIONS
+═══════════════════════════════════════════════════════════════
+- KEEP: noveltyScore ≥ 60, proceed to patent drafting
+- MUTATE_OPERATOR: Try different TRIZ operator
+- MUTATE_DIMENSION: Explore different dimension family
+- NARROW_MICRO_PROBLEM: Focus on more specific sub-problem
+- ASK_USER_QUESTION: Need clarification to differentiate`;
 
   const { response } = await callLLM(
     prompt,
@@ -983,8 +1316,8 @@ Guidelines:
   const parsed = safeParseJson(response, NoveltyGateSchema);
   
   if (!parsed.success) {
-    // Return default assessment
-    return {
+    // Return default assessment with all required fields
+    const fallback: NoveltyGate = {
       query: queries.join(' | '),
       results: results,
       conceptSaturation: 'MEDIUM',
@@ -992,7 +1325,13 @@ Guidelines:
       noveltyScore: results.length > 5 ? 40 : 70,
       recommendedAction: results.length > 5 ? 'MUTATE_OPERATOR' : 'KEEP',
       reasoning: 'Auto-assessed based on result count',
+      // NEW: Enhanced feedback loop fields
+      obviousnessFlags: results.length > 5 ? ['SAME_DOMAIN'] : [],
+      suggestedIterations: results.length > 5 
+        ? ['Try a more distant analogy', 'Eliminate a traditional component', 'Invert the approach']
+        : [],
     };
+    return fallback;
   }
 
   // Update idea frame with novelty info

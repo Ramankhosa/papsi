@@ -1,12 +1,11 @@
 /**
- * Expand Dimensions API
- * 
- * POST - Initialize or expand dimension nodes
+ * Expand Node API Route
+ *
+ * POST - Expand a dimension node and return only the new nodes/edges added
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { authenticateUser } from '@/lib/auth-middleware';
-import { prisma } from '@/lib/prisma';
 import * as IdeationService from '@/lib/ideation/ideation-service';
 
 interface RouteParams {
@@ -25,26 +24,20 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
 
     const { sessionId } = await params;
     const body = await request.json();
-    const { nodeId, action } = body;
+    const { action, nodeId } = body;
 
-    const ideationSession = await prisma.ideationSession.findUnique({
-      where: { id: sessionId },
-      select: { userId: true, status: true, classificationJson: true },
-    });
+    if (action !== 'expand') {
+      return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
+    }
 
-    if (!ideationSession) {
+    // Get the current session to check ownership
+    const session = await IdeationService.getSession(sessionId);
+    if (!session) {
       return NextResponse.json({ error: 'Session not found' }, { status: 404 });
     }
 
-    if (ideationSession.userId !== authResult.user.id) {
+    if (session.userId !== authResult.user.id) {
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
-    }
-
-    if (!ideationSession.classificationJson) {
-      return NextResponse.json(
-        { error: 'Session must be classified first' },
-        { status: 400 }
-      );
     }
 
     // Extract request headers for LLM gateway authentication
@@ -53,48 +46,52 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       requestHeaders[key] = value;
     });
 
-    // Initialize dimensions (first expansion)
-    if (action === 'initialize') {
-      const nodes = await IdeationService.initializeDimensions(sessionId);
-      
-      return NextResponse.json({
-        success: true,
-        nodes: nodes.map(n => ({
-          id: n.nodeId,
-          type: n.type,
-          title: n.title,
-          description: n.description,
-          family: n.family,
-          state: n.state,
-          position: { x: n.positionX, y: n.positionY },
-        })),
-      });
-    }
+    // Expand the node and get the new graph data
+    const graphData = await IdeationService.expandDimensionNode({
+      sessionId,
+      nodeId,
+      requestHeaders,
+    });
 
-    // Expand specific node
-    if (action === 'expand' && nodeId) {
-      const graph = await IdeationService.expandDimensionNode({
-        sessionId,
-        nodeId,
-        requestHeaders,
-      });
+    // Transform the returned nodes and edges for React Flow format
+    const nodes = graphData.nodes.map(node => ({
+      id: node.id,
+      type: node.type,
+      position: { x: node.positionX || 0, y: node.positionY || 0 },
+      data: {
+        dbId: node.id,
+        title: node.title,
+        description: node.descriptionShort || node.description,
+        family: node.family,
+        tags: node.tags,
+        state: node.state,
+        selectable: node.selectable,
+        depth: node.depth,
+        parentId: node.parentId,
+        payload: node.payloadJson,
+        type: node.type, // Include type for DimensionNode logic
+      },
+    }));
 
-      return NextResponse.json({
-        success: true,
-        graph,
-      });
-    }
+    const edges = graphData.edges.map(edge => ({
+      id: `${edge.from}-${edge.to}`,
+      source: edge.from,
+      target: edge.to,
+      label: '',
+      animated: false,
+      data: { relation: edge.relation },
+    }));
 
+    return NextResponse.json({
+      success: true,
+      graph: { nodes, edges },
+      message: `Expanded ${graphData.nodes.length} nodes and ${graphData.edges.length} edges`,
+    });
+  } catch (error: any) {
+    console.error('Failed to expand node:', error);
     return NextResponse.json(
-      { error: 'Invalid action. Use "initialize" or "expand" with nodeId' },
-      { status: 400 }
-    );
-  } catch (error) {
-    console.error('Failed to expand dimensions:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to expand' },
+      { error: error.message || 'Failed to expand node' },
       { status: 500 }
     );
   }
 }
-
