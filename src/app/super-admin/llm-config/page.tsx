@@ -73,7 +73,8 @@ const FEATURE_LABELS: Record<string, string> = {
   PATENT_DRAFTING: 'Patent Drafting',
   PRIOR_ART_SEARCH: 'Novelty Search',
   DIAGRAM_GENERATION: 'Diagram Generation',
-  IDEA_BANK: 'Idea Bank'
+  IDEA_BANK: 'Idea Bank',
+  IDEATION: 'Ideation Engine'
   // Note: Content Generation was removed - all superset section stages
   // (DRAFT_ANNEXURE_*) are now under PATENT_DRAFTING feature
 }
@@ -83,6 +84,32 @@ const NON_LLM_STAGES = [
   'DRAFT_COMPONENT_PLANNER',  // Manual UI - no LLM
   'DRAFT_EXPORT'              // Document generation - no LLM
 ]
+
+// Ideation stage metadata - helps Super Admin choose appropriate models
+// Stages marked as 'lightweight' can use faster, cheaper models (Flash, Mini, Haiku)
+// Stages marked as 'advanced' benefit from more capable models (Pro, Sonnet, GPT-4o)
+const IDEATION_STAGE_INFO: Record<string, { complexity: 'lightweight' | 'advanced'; tip: string }> = {
+  'IDEATION_NORMALIZE': {
+    complexity: 'lightweight',
+    tip: 'Quick structured extraction - Flash/Mini models work well'
+  },
+  'IDEATION_CLASSIFY': {
+    complexity: 'lightweight',
+    tip: 'Simple classification task - Flash/Mini models sufficient'
+  },
+  'IDEATION_EXPAND': {
+    complexity: 'lightweight',
+    tip: 'Dimension expansion - Flash/Mini models handle this well'
+  },
+  'IDEATION_GENERATE': {
+    complexity: 'advanced',
+    tip: 'Complex idea synthesis - Recommend Pro/Sonnet/GPT-4o for quality'
+  },
+  'IDEATION_NOVELTY': {
+    complexity: 'advanced',
+    tip: 'Novelty reasoning - Recommend Pro/Sonnet/GPT-4o for accuracy'
+  }
+}
 
 // Superset sections that use LLMs for content generation
 // These correspond to the superset sections defined in MasterSeed.js
@@ -679,6 +706,17 @@ export default function LLMConfigPage() {
                           <div className="text-xs text-slate-500">{stage.code}</div>
                           {stage.description && (
                             <div className="text-sm text-slate-400 mt-1">{stage.description}</div>
+                          )}
+                          {/* Show model recommendation for ideation stages */}
+                          {IDEATION_STAGE_INFO[stage.code] && (
+                            <div className={`text-xs mt-2 px-2 py-1 rounded inline-flex items-center gap-1 ${
+                              IDEATION_STAGE_INFO[stage.code].complexity === 'lightweight' 
+                                ? 'bg-green-900/30 text-green-400 border border-green-700/50' 
+                                : 'bg-amber-900/30 text-amber-400 border border-amber-700/50'
+                            }`}>
+                              <span>{IDEATION_STAGE_INFO[stage.code].complexity === 'lightweight' ? '⚡' : '🧠'}</span>
+                              <span>{IDEATION_STAGE_INFO[stage.code].tip}</span>
+                            </div>
                           )}
                         </div>
 

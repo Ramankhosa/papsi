@@ -28,8 +28,8 @@ enum UserStatus {
 }
 
 enum TenantType {
-  INDIVIDUAL   // Personal tenants for solo users (can have multi-role)
-  ENTERPRISE   // Enterprise tenants (strict role separation)
+  INDIVIDUAL // Personal tenants for solo users (can have multi-role)
+  ENTERPRISE // Enterprise tenants (strict role separation)
 }
 
 // Service types for access control
@@ -40,13 +40,14 @@ enum ServiceType {
   IDEA_BANK
   PERSONA_SYNC
   DIAGRAM_GENERATION
-  PATENT_REVIEW          // AI-powered patent draft review (Pro tier)
+  PATENT_REVIEW // AI-powered patent draft review (Pro tier)
+  IDEATION // Mind-map patent ideation engine
 }
 
 // Team roles within a team
 enum TeamRole {
-  LEAD      // Team lead - can manage team settings
-  MEMBER    // Regular member
+  LEAD // Team lead - can manage team settings
+  MEMBER // Regular member
 }
 
 enum ATITokenStatus {
@@ -73,15 +74,15 @@ model Tenant {
   auditLogs AuditLog[]
 
   // Metering relations
-  tenantPlans              TenantPlan[]
-  usageReservations        UsageReservation[]
-  usageMeters              UsageMeter[]
-  usageLogs                UsageLog[]
-  quotaAlerts              QuotaAlert[]
-  patentDraftingUsage      PatentDraftingUsage[]
-  serviceCompletionUsage   ServiceCompletionUsage[]
-  diagramGenerationUsage   DiagramGenerationUsage[]
-  sketchGenerationUsage    SketchGenerationUsage[]
+  tenantPlans            TenantPlan[]
+  usageReservations      UsageReservation[]
+  usageMeters            UsageMeter[]
+  usageLogs              UsageLog[]
+  quotaAlerts            QuotaAlert[]
+  patentDraftingUsage    PatentDraftingUsage[]
+  serviceCompletionUsage ServiceCompletionUsage[]
+  diagramGenerationUsage DiagramGenerationUsage[]
+  sketchGenerationUsage  SketchGenerationUsage[]
 
   // Drafting relations
   draftingSessions DraftingSession[]
@@ -95,13 +96,16 @@ model Tenant {
   documents         Document[]
 
   // Organizational structure
-  teams             Team[]
-  writingSamples    WritingSample[]
-  writingPersonas   WritingPersona[]
+  teams           Team[]
+  writingSamples  WritingSample[]
+  writingPersonas WritingPersona[]
 
   // Style configuration overrides
   userDiagramStyles UserDiagramStyle[]
   userExportStyles  UserExportStyle[]
+
+  // Ideation relations
+  ideationSessions IdeationSession[]
 
   @@map("tenants")
 }
@@ -114,26 +118,26 @@ enum OAuthProvider {
 }
 
 model User {
-  id               String     @id @default(cuid())
-  tenantId         String?
-  signupAtiTokenId String? // Track which ATI token was used for signup
-  email            String     @unique
-  passwordHash     String?
-  name             String?
-  firstName        String?
-  lastName         String?
-  roles            UserRole[] @default([ANALYST])
-  status           UserStatus @default(ACTIVE)
-  emailVerified    Boolean    @default(false)
-  noveltySearchesCompleted Int @default(0) // Track successful novelty searches
+  id                       String     @id @default(cuid())
+  tenantId                 String?
+  signupAtiTokenId         String? // Track which ATI token was used for signup
+  email                    String     @unique
+  passwordHash             String?
+  name                     String?
+  firstName                String?
+  lastName                 String?
+  roles                    UserRole[] @default([ANALYST])
+  status                   UserStatus @default(ACTIVE)
+  emailVerified            Boolean    @default(false)
+  noveltySearchesCompleted Int        @default(0) // Track successful novelty searches
 
   // Social login fields
   oauthProvider   OAuthProvider?
   oauthProviderId String?
   oauthProfile    Json? // Store additional OAuth profile data
 
-  createdAt        DateTime   @default(now())
-  updatedAt        DateTime   @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   tenant                  Tenant?                 @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   signupAtiToken          ATIToken?               @relation("SignupATIToken", fields: [signupAtiTokenId], references: [id])
@@ -159,51 +163,54 @@ model User {
   refreshTokens           RefreshToken[]
 
   // Idea Bank relations
-  createdIdeaBankIdeas    IdeaBankIdea[]         @relation("IdeaBankIdeaCreator")
-  ideaBankReservations    IdeaBankReservation[]
-  ideaBankHistory         IdeaBankHistory[]
+  createdIdeaBankIdeas IdeaBankIdea[]        @relation("IdeaBankIdeaCreator")
+  ideaBankReservations IdeaBankReservation[]
+  ideaBankHistory      IdeaBankHistory[]
 
   // Style Profile relations
-  styleProfiles           StyleProfile[]         @relation("StyleProfileCreator")
-  lockedStyleProfiles     StyleProfile[]         @relation("StyleProfileLocker")
-  ownedStyleProfiles      StyleProfile[]         @relation("StyleProfileUser")
-  styleTrainingJobs       StyleTrainingJob[]
-  documents               Document[]
+  styleProfiles       StyleProfile[]     @relation("StyleProfileCreator")
+  lockedStyleProfiles StyleProfile[]     @relation("StyleProfileLocker")
+  ownedStyleProfiles  StyleProfile[]     @relation("StyleProfileUser")
+  styleTrainingJobs   StyleTrainingJob[]
+  documents           Document[]
 
   // Country Profile relations
-  createdCountryProfiles  CountryProfile[]       @relation("CountryProfileCreator")
-  updatedCountryProfiles  CountryProfile[]       @relation("CountryProfileUpdater")
+  createdCountryProfiles CountryProfile[] @relation("CountryProfileCreator")
+  updatedCountryProfiles CountryProfile[] @relation("CountryProfileUpdater")
 
   // Writing Samples for example-based style mimicry
-  writingSamples          WritingSample[]
-  createdPersonas         WritingPersona[]       @relation("PersonaCreator")
+  writingSamples  WritingSample[]
+  createdPersonas WritingPersona[] @relation("PersonaCreator")
 
   // Team membership and service quotas
-  teamMemberships         TeamMember[]
-  serviceQuotas           UserServiceQuota[]
-  
+  teamMemberships TeamMember[]
+  serviceQuotas   UserServiceQuota[]
+
   // Style configuration overrides
   userDiagramStyles       UserDiagramStyle[]
   userExportStyles        UserExportStyle[]
   userValidationOverrides UserValidationOverride[]
-  
+
   // Config import tracking
-  configImports           CountryConfigImport[] @relation("ConfigImporter")
-  
+  configImports CountryConfigImport[] @relation("ConfigImporter")
+
   // Service completion tracking
-  serviceCompletionUsage  ServiceCompletionUsage[]
+  serviceCompletionUsage ServiceCompletionUsage[]
+
+  // Ideation relations
+  ideationSessions IdeationSession[]
 
   @@map("users")
 }
 
 // Email verification tokens for new users
 model EmailVerificationToken {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userId    String
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -212,12 +219,12 @@ model EmailVerificationToken {
 
 // Password reset tokens
 model PasswordResetToken {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userId    String
-  tokenHash String   @unique
+  tokenHash String    @unique
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -226,17 +233,17 @@ model PasswordResetToken {
 
 // Refresh tokens for JWT rotation (stored for revocation capability)
 model RefreshToken {
-  id        String   @id @default(cuid())
-  userId    String
-  tokenHash String   @unique // SHA256 hash of the token
-  familyId  String   // Token family for rotation detection
-  expiresAt DateTime
-  isRevoked Boolean  @default(false)
-  revokedAt DateTime?
+  id            String    @id @default(cuid())
+  userId        String
+  tokenHash     String    @unique // SHA256 hash of the token
+  familyId      String // Token family for rotation detection
+  expiresAt     DateTime
+  isRevoked     Boolean   @default(false)
+  revokedAt     DateTime?
   revokedReason String? // "logout", "rotation", "security", "admin"
-  userAgent String?  // Browser/device info for session management
-  ipAddress String?  // IP address at token creation
-  createdAt DateTime @default(now())
+  userAgent     String? // Browser/device info for session management
+  ipAddress     String? // IP address at token creation
+  createdAt     DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -261,14 +268,14 @@ model ATIToken {
   notes          String?
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
-  
-  // Explicit role and team assignment for new users
-  assignedRole   UserRole?      // Explicit role for users who sign up with this token
-  assignedTeamId String?        // Team to auto-add user to on signup
 
-  tenant         Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  signupUsers    User[]  @relation("SignupATIToken")
-  assignedTeam   Team?   @relation("ATITokenTeam", fields: [assignedTeamId], references: [id], onDelete: SetNull)
+  // Explicit role and team assignment for new users
+  assignedRole   UserRole? // Explicit role for users who sign up with this token
+  assignedTeamId String? // Team to auto-add user to on signup
+
+  tenant       Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  signupUsers  User[]  @relation("SignupATIToken")
+  assignedTeam Team?   @relation("ATITokenTeam", fields: [assignedTeamId], references: [id], onDelete: SetNull)
 
   @@map("ati_tokens")
 }
@@ -299,16 +306,16 @@ model Team {
   tenantId    String
   name        String
   description String?
-  isDefault   Boolean  @default(false)  // Default team for new users (if set)
+  isDefault   Boolean  @default(false) // Default team for new users (if set)
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  createdBy   String?  // User ID who created the team
+  createdBy   String? // User ID who created the team
 
-  tenant          Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant          Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   members         TeamMember[]
   serviceAccess   TeamServiceAccess[]
-  invitedByTokens ATIToken[]         @relation("ATITokenTeam")
+  invitedByTokens ATIToken[]          @relation("ATITokenTeam")
 
   @@unique([tenantId, name])
   @@index([tenantId])
@@ -333,17 +340,17 @@ model TeamMember {
 
 // Team-level service access control
 model TeamServiceAccess {
-  id           String      @id @default(cuid())
-  teamId       String
-  serviceType  ServiceType
-  isEnabled    Boolean     @default(true)
-  
+  id          String      @id @default(cuid())
+  teamId      String
+  serviceType ServiceType
+  isEnabled   Boolean     @default(true)
+
   // Optional quotas at team level (overrides tenant plan if set)
-  monthlyQuota Int?        // NULL = use tenant plan quota
-  dailyQuota   Int?        // NULL = use tenant plan quota
-  
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+  monthlyQuota Int? // NULL = use tenant plan quota
+  dailyQuota   Int? // NULL = use tenant plan quota
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
 
@@ -353,22 +360,22 @@ model TeamServiceAccess {
 
 // User-level service quota overrides (most granular level)
 model UserServiceQuota {
-  id           String      @id @default(cuid())
-  userId       String
-  serviceType  ServiceType
-  isEnabled    Boolean     @default(true)
-  
+  id          String      @id @default(cuid())
+  userId      String
+  serviceType ServiceType
+  isEnabled   Boolean     @default(true)
+
   // Optional quotas at user level (overrides team quota if set)
-  monthlyQuota Int?        // NULL = use team/tenant quota
-  dailyQuota   Int?        // NULL = use team/tenant quota
-  
+  monthlyQuota Int? // NULL = use team/tenant quota
+  dailyQuota   Int? // NULL = use team/tenant quota
+
   // Usage tracking
-  currentMonthUsage Int    @default(0)
-  currentDayUsage   Int    @default(0)
+  currentMonthUsage Int      @default(0)
+  currentDayUsage   Int      @default(0)
   lastResetDate     DateTime @default(now())
-  
-  createdAt    DateTime    @default(now())
-  updatedAt    DateTime    @updatedAt
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -377,16 +384,16 @@ model UserServiceQuota {
 }
 
 model Project {
-  id               String                @id @default(cuid())
-  name             String
-  userId           String
-  createdAt        DateTime              @default(now())
-  updatedAt        DateTime              @updatedAt
-  applicantProfile ApplicantProfile?
-  collaborators    ProjectCollaborator[]
-  patents          Patent[]
+  id                String                @id @default(cuid())
+  name              String
+  userId            String
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  applicantProfile  ApplicantProfile?
+  collaborators     ProjectCollaborator[]
+  patents           Patent[]
   noveltySearchRuns NoveltySearchRun[]
-  user             User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user              User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("projects")
 }
@@ -488,7 +495,8 @@ enum FeatureCode {
   DIAGRAM_GENERATION
   IDEA_BANK
   PERSONA_SYNC
-  PATENT_REVIEW          // AI-powered patent draft review (Pro tier)
+  PATENT_REVIEW // AI-powered patent draft review (Pro tier)
+  IDEATION // Mind-map patent ideation engine
 }
 
 enum TaskCode {
@@ -503,6 +511,12 @@ enum TaskCode {
   IDEA_BANK_RESERVE
   IDEA_BANK_EDIT
   PERSONA_SYNC_LEARN
+  // Ideation tasks
+  IDEATION_NORMALIZE // Seed normalization
+  IDEATION_CLASSIFY // Classification
+  IDEATION_EXPAND // Dimension expansion
+  IDEATION_GENERATE // Idea frame generation
+  IDEATION_NOVELTY // Novelty gate reasoning
 }
 
 enum ModelClass {
@@ -601,12 +615,12 @@ model Plan {
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
 
-  tenantPlans        TenantPlan[]
-  planFeatures       PlanFeature[]
-  planLLMAccess      PlanLLMAccess[]
-  policyRules        PolicyRule[]
-  stageModelConfigs  PlanStageModelConfig[]
-  taskModelConfigs   PlanTaskModelConfig[]
+  tenantPlans       TenantPlan[]
+  planFeatures      PlanFeature[]
+  planLLMAccess     PlanLLMAccess[]
+  policyRules       PolicyRule[]
+  stageModelConfigs PlanStageModelConfig[]
+  taskModelConfigs  PlanTaskModelConfig[]
 
   @@map("plans")
 }
@@ -642,17 +656,17 @@ model Feature {
 }
 
 model PlanFeature {
-  id           String @id @default(cuid())
-  planId       String
-  featureId    String
-  
+  id        String @id @default(cuid())
+  planId    String
+  featureId String
+
   // Completion-based limits (counts complete operations)
-  monthlyQuota Int?   // Monthly completion limit (NULL = unlimited)
-  dailyQuota   Int?   // Daily completion limit (NULL = unlimited)
-  
+  monthlyQuota Int? // Monthly completion limit (NULL = unlimited)
+  dailyQuota   Int? // Daily completion limit (NULL = unlimited)
+
   // Token-based limits (prevents regeneration abuse)
-  monthlyTokenLimit Int?  // Monthly token limit (NULL = unlimited)
-  dailyTokenLimit   Int?  // Daily token limit (NULL = unlimited)
+  monthlyTokenLimit Int? // Monthly token limit (NULL = unlimited)
+  dailyTokenLimit   Int? // Daily token limit (NULL = unlimited)
 
   plan    Plan    @relation(fields: [planId], references: [id])
   feature Feature @relation(fields: [featureId], references: [id])
@@ -720,80 +734,80 @@ model PolicyRule {
 
 // LLM Model Registry - All available models (super admin can add/remove)
 model LLMModel {
-  id              String   @id @default(cuid())
-  code            String   @unique  // e.g., "gpt-4o", "claude-3.5-sonnet"
-  displayName     String             // Human-readable name
-  provider        String             // "openai", "anthropic", "google", "deepseek", "groq"
-  
+  id          String @id @default(cuid())
+  code        String @unique // e.g., "gpt-4o", "claude-3.5-sonnet"
+  displayName String // Human-readable name
+  provider    String // "openai", "anthropic", "google", "deepseek", "groq"
+
   // Capabilities & Metadata
-  contextWindow   Int      @default(128000)  // Max context tokens
-  supportsVision  Boolean  @default(false)
+  contextWindow     Int     @default(128000) // Max context tokens
+  supportsVision    Boolean @default(false)
   supportsStreaming Boolean @default(true)
-  
+
   // Cost tracking (per 1M tokens, in USD cents for precision)
-  inputCostPer1M  Int      @default(0)   // e.g., 250 = $2.50
-  outputCostPer1M Int      @default(0)   // e.g., 1000 = $10.00
-  
+  inputCostPer1M  Int @default(0) // e.g., 250 = $2.50
+  outputCostPer1M Int @default(0) // e.g., 1000 = $10.00
+
   // Status
-  isActive        Boolean  @default(true)
-  isDefault       Boolean  @default(false)  // System-wide fallback
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  
+  isActive  Boolean @default(true)
+  isDefault Boolean @default(false) // System-wide fallback
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  stageConfigs    PlanStageModelConfig[]
-  taskConfigs     PlanTaskModelConfig[]
-  
+  stageConfigs PlanStageModelConfig[]
+  taskConfigs  PlanTaskModelConfig[]
+
   @@map("llm_models")
 }
 
 // Workflow Stages - All stages across all features (super admin can add)
 model WorkflowStage {
-  id              String   @id @default(cuid())
-  code            String   @unique  // e.g., "DRAFT_IDEA_ENTRY", "NOVELTY_REPORT"
-  displayName     String             // "Idea Entry", "Report Generation"
-  featureCode     String             // Links to feature: "PATENT_DRAFTING", "PRIOR_ART_SEARCH"
-  description     String?
-  sortOrder       Int      @default(0)  // Display order in admin UI
-  isActive        Boolean  @default(true)
-  
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-  
+  id          String  @id @default(cuid())
+  code        String  @unique // e.g., "DRAFT_IDEA_ENTRY", "NOVELTY_REPORT"
+  displayName String // "Idea Entry", "Report Generation"
+  featureCode String // Links to feature: "PATENT_DRAFTING", "PRIOR_ART_SEARCH"
+  description String?
+  sortOrder   Int     @default(0) // Display order in admin UI
+  isActive    Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  stageConfigs    PlanStageModelConfig[]
-  
+  stageConfigs PlanStageModelConfig[]
+
   @@map("workflow_stages")
 }
 
 // Plan → Stage → Model Mapping (Core flexibility table)
 model PlanStageModelConfig {
-  id               String   @id @default(cuid())
-  planId           String
-  stageId          String
-  modelId          String   // Primary model for this plan+stage
-  
+  id      String @id @default(cuid())
+  planId  String
+  stageId String
+  modelId String // Primary model for this plan+stage
+
   // Fallback chain (JSON array of model IDs in priority order)
-  fallbackModelIds String?  // e.g., '["model-id-1", "model-id-2"]'
-  
+  fallbackModelIds String? // e.g., '["model-id-1", "model-id-2"]'
+
   // Stage-specific limits (override plan defaults)
-  maxTokensIn      Int?
-  maxTokensOut     Int?
-  temperature      Float?   @default(0.7)
-  
+  maxTokensIn  Int?
+  maxTokensOut Int?
+  temperature  Float? @default(0.7)
+
   // Status
-  isActive         Boolean  @default(true)
-  priority         Int      @default(0)  // If multiple configs, higher wins
-  
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  
+  isActive Boolean @default(true)
+  priority Int     @default(0) // If multiple configs, higher wins
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  plan             Plan           @relation(fields: [planId], references: [id], onDelete: Cascade)
-  stage            WorkflowStage  @relation(fields: [stageId], references: [id], onDelete: Cascade)
-  model            LLMModel       @relation(fields: [modelId], references: [id])
-  
+  plan  Plan          @relation(fields: [planId], references: [id], onDelete: Cascade)
+  stage WorkflowStage @relation(fields: [stageId], references: [id], onDelete: Cascade)
+  model LLMModel      @relation(fields: [modelId], references: [id])
+
   @@unique([planId, stageId])
   @@index([planId])
   @@index([stageId])
@@ -802,27 +816,27 @@ model PlanStageModelConfig {
 
 // Plan → Task → Model Mapping (Backward compatible with existing TaskCode system)
 model PlanTaskModelConfig {
-  id               String   @id @default(cuid())
-  planId           String
-  taskCode         TaskCode
-  modelId          String   // Primary model for this plan+task
-  
+  id       String   @id @default(cuid())
+  planId   String
+  taskCode TaskCode
+  modelId  String // Primary model for this plan+task
+
   // Fallback chain
   fallbackModelIds String?
-  
+
   // Task-specific limits
-  maxTokensIn      Int?
-  maxTokensOut     Int?
-  temperature      Float?   @default(0.7)
-  
-  isActive         Boolean  @default(true)
-  
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  
-  plan             Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
-  model            LLMModel @relation(fields: [modelId], references: [id])
-  
+  maxTokensIn  Int?
+  maxTokensOut Int?
+  temperature  Float? @default(0.7)
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  plan  Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  model LLMModel @relation(fields: [modelId], references: [id])
+
   @@unique([planId, taskCode])
   @@map("plan_task_model_configs")
 }
@@ -864,28 +878,28 @@ model UsageMeter {
 // Tracks patent drafts counted toward quota (not LLM tokens)
 // A patent is counted when essential sections (description + claims) are drafted
 model PatentDraftingUsage {
-  id          String   @id @default(cuid())
-  tenantId    String
-  sessionId   String   @unique // Each session can only be counted once
-  patentId    String
-  userId      String
-  
+  id        String @id @default(cuid())
+  tenantId  String
+  sessionId String @unique // Each session can only be counted once
+  patentId  String
+  userId    String
+
   // Track which essential sections have been drafted
   // Once both detailedDescription AND claims are drafted, patent is counted
   hasDescription Boolean @default(false)
   hasClaims      Boolean @default(false)
   isCounted      Boolean @default(false) // True when patent is counted toward quota
-  
-  // Period tracking for quota enforcement
-  countedDate    String?  // YYYY-MM-DD when counted (for daily quota)
-  countedMonth   String?  // YYYY-MM when counted (for monthly quota)
-  
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  countedAt   DateTime? // When the patent was counted toward quota
 
-  tenant  Tenant @relation(fields: [tenantId], references: [id])
-  
+  // Period tracking for quota enforcement
+  countedDate  String? // YYYY-MM-DD when counted (for daily quota)
+  countedMonth String? // YYYY-MM when counted (for monthly quota)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  countedAt DateTime? // When the patent was counted toward quota
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
   @@index([tenantId, countedDate])
   @@index([tenantId, countedMonth])
   @@index([sessionId])
@@ -899,38 +913,38 @@ model PatentDraftingUsage {
 // ============================================================================
 
 model ServiceCompletionUsage {
-  id          String   @id @default(cuid())
+  id          String      @id @default(cuid())
   tenantId    String
   userId      String
   serviceType ServiceType
-  
+
   // Unique operation identifier (e.g., searchId, sessionId, diagramId)
-  operationId    String
-  operationType  String   // e.g., "novelty_search", "prior_art_search", "diagram_generation"
-  
+  operationId   String
+  operationType String // e.g., "novelty_search", "prior_art_search", "diagram_generation"
+
   // Completion tracking
-  isCompleted    Boolean  @default(false) // True when operation is fully completed
-  completionDate String?  // YYYY-MM-DD when completed (for daily quota)
+  isCompleted     Boolean   @default(false) // True when operation is fully completed
+  completionDate  String? // YYYY-MM-DD when completed (for daily quota)
   completionMonth String? // YYYY-MM when completed (for monthly quota)
-  completedAt    DateTime?
-  
+  completedAt     DateTime?
+
   // Token usage for this operation (for dual-quota enforcement)
   inputTokensUsed  Int @default(0)
   outputTokensUsed Int @default(0)
   totalTokensUsed  Int @default(0)
-  
+
   // Cost tracking (calculated from model prices)
   estimatedCostUsd Float @default(0)
-  
+
   // Metadata
   metadata Json? // Additional service-specific data
-  
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
   user   User   @relation(fields: [userId], references: [id])
-  
+
   @@unique([tenantId, serviceType, operationId])
   @@index([tenantId, serviceType, completionDate])
   @@index([tenantId, serviceType, completionMonth])
@@ -940,30 +954,30 @@ model ServiceCompletionUsage {
 
 // Diagram Generation Usage (for granular diagram tracking)
 model DiagramGenerationUsage {
-  id          String   @id @default(cuid())
-  tenantId    String
-  userId      String
-  sessionId   String   // Drafting session
-  figureNo    Int      // Figure number
-  
+  id        String @id @default(cuid())
+  tenantId  String
+  userId    String
+  sessionId String // Drafting session
+  figureNo  Int // Figure number
+
   // Generation tracking
-  generationCount Int @default(0) // Number of times regenerated
+  generationCount Int     @default(0) // Number of times regenerated
   isCompleted     Boolean @default(false) // True when figure is finalized
-  
+
   // Token usage
   totalInputTokens  Int @default(0)
   totalOutputTokens Int @default(0)
-  
+
   // Period tracking
-  countedDate  String?  // YYYY-MM-DD when counted
-  countedMonth String?  // YYYY-MM when counted
+  countedDate  String? // YYYY-MM-DD when counted
+  countedMonth String? // YYYY-MM when counted
   countedAt    DateTime?
-  
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
-  
+
   @@unique([tenantId, sessionId, figureNo])
   @@index([tenantId, countedDate])
   @@index([tenantId, countedMonth])
@@ -972,30 +986,30 @@ model DiagramGenerationUsage {
 
 // Future: Sketch Generation Usage (under Figure Planner)
 model SketchGenerationUsage {
-  id          String   @id @default(cuid())
-  tenantId    String
-  userId      String
-  sessionId   String
-  sketchId    String   // Unique sketch identifier
-  
+  id        String @id @default(cuid())
+  tenantId  String
+  userId    String
+  sessionId String
+  sketchId  String // Unique sketch identifier
+
   // Generation tracking
-  generationCount Int @default(0)
+  generationCount Int     @default(0)
   isCompleted     Boolean @default(false)
-  
+
   // Token usage
   totalInputTokens  Int @default(0)
   totalOutputTokens Int @default(0)
-  
+
   // Period tracking
   countedDate  String?
   countedMonth String?
   countedAt    DateTime?
-  
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
-  
+
   @@unique([tenantId, sessionId, sketchId])
   @@index([tenantId, countedDate])
   @@map("sketch_generation_usage")
@@ -1029,14 +1043,14 @@ model UsageLog {
 }
 
 model LLMModelPrice {
-  id                      String   @id @default(cuid())
-  provider                String
-  modelClass              String
-  inputPricePerMTokens    Float    // USD per 1M input tokens
-  outputPricePerMTokens   Float    // USD per 1M output tokens
-  currency                String   @default("USD")
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  id                    String   @id @default(cuid())
+  provider              String
+  modelClass            String
+  inputPricePerMTokens  Float // USD per 1M input tokens
+  outputPricePerMTokens Float // USD per 1M output tokens
+  currency              String   @default("USD")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   @@unique([provider, modelClass])
   @@map("llm_model_prices")
@@ -1462,12 +1476,12 @@ enum NoveltySearchStage {
 }
 
 model NoveltySearchRun {
-  id        String              @id @default(cuid())
-  patentId  String?
-  projectId String? // Optional association with a project
-  userId    String
-  status    NoveltySearchStatus @default(PENDING)
-  currentStage NoveltySearchStage @default(STAGE_0)
+  id           String              @id @default(cuid())
+  patentId     String?
+  projectId    String? // Optional association with a project
+  userId       String
+  status       NoveltySearchStatus @default(PENDING)
+  currentStage NoveltySearchStage  @default(STAGE_0)
 
   // Configuration
   config Json // NoveltySearchConfig
@@ -1476,7 +1490,7 @@ model NoveltySearchRun {
   inventionDescription String
   title                String
   jurisdiction         String @default("IN")
-  filingType          String @default("utility")
+  filingType           String @default("utility")
 
   // Stage results
   stage0CompletedAt DateTime?
@@ -1499,11 +1513,11 @@ model NoveltySearchRun {
   updatedAt DateTime @updatedAt
 
   // Relations
-  patent   Patent?                @relation(fields: [patentId], references: [id], onDelete: Cascade)
-  project  Project?               @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user     User                   @relation(fields: [userId], references: [id])
-  llmCalls NoveltySearchLLMCall[]
-  featureMapCells FeatureMapCell[]
+  patent              Patent?                @relation(fields: [patentId], references: [id], onDelete: Cascade)
+  project             Project?               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user                User                   @relation(fields: [userId], references: [id])
+  llmCalls            NoveltySearchLLMCall[]
+  featureMapCells     FeatureMapCell[]
   aggregationSnapshot AggregationSnapshot?
   featureMapOverrides FeatureMapOverride[]
 
@@ -1511,15 +1525,15 @@ model NoveltySearchRun {
 }
 
 model NoveltySearchLLMCall {
-  id            String            @id @default(cuid())
-  searchId      String
-  stage         NoveltySearchStage
-  taskCode      TaskCode
-  prompt        String
-  response      Json?
-  tokensUsed    Int?
-  modelClass    String?
-  calledAt      DateTime          @default(now())
+  id         String             @id @default(cuid())
+  searchId   String
+  stage      NoveltySearchStage
+  taskCode   TaskCode
+  prompt     String
+  response   Json?
+  tokensUsed Int?
+  modelClass String?
+  calledAt   DateTime           @default(now())
 
   // Relations
   search NoveltySearchRun @relation(fields: [searchId], references: [id], onDelete: Cascade)
@@ -1528,18 +1542,18 @@ model NoveltySearchLLMCall {
 }
 
 model FeatureMapCell {
-  id            String @id @default(cuid())
-  searchId      String
+  id                String   @id @default(cuid())
+  searchId          String
   publicationNumber String
-  feature       String
-  status        String // "Present", "Partial", "Absent", "Unknown"
-  evidence      String?
-  confidence    Float?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  feature           String
+  status            String // "Present", "Partial", "Absent", "Unknown"
+  evidence          String?
+  confidence        Float?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   // Relations
-  search NoveltySearchRun @relation(fields: [searchId], references: [id], onDelete: Cascade)
+  search    NoveltySearchRun     @relation(fields: [searchId], references: [id], onDelete: Cascade)
   overrides FeatureMapOverride[]
 
   @@unique([searchId, publicationNumber, feature])
@@ -1547,11 +1561,11 @@ model FeatureMapCell {
 }
 
 model AggregationSnapshot {
-  id                String @id @default(cuid())
-  searchId          String @unique
-  noveltyScore      Float
-  decision          String // "Novel", "Partially Novel", "Not Novel", "Low Evidence"
-  confidence        String // "High", "Medium", "Low"
+  id           String @id @default(cuid())
+  searchId     String @unique
+  noveltyScore Float
+  decision     String // "Novel", "Partially Novel", "Not Novel", "Low Evidence"
+  confidence   String // "High", "Medium", "Low"
 
   // Per-patent coverage data
   perPatentCoverage Json // Array of {pn, present_count, partial_count, absent_count, coverage_ratio}
@@ -1564,10 +1578,10 @@ model AggregationSnapshot {
 
   // Quality flags and risk factors
   qualityFlags Json // {low_evidence, ambiguous_abstracts, language_mismatch}
-  riskFactors Json // Array of risk factor strings
+  riskFactors  Json // Array of risk factor strings
 
   // Metadata
-  stats Json // {patents_analyzed, avg_abstract_length_words}
+  stats     Json // {patents_analyzed, avg_abstract_length_words}
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1578,7 +1592,7 @@ model AggregationSnapshot {
 }
 
 model FeatureMapOverride {
-  id                String @id @default(cuid())
+  id                String   @id @default(cuid())
   searchId          String
   publicationNumber String
   feature           String
@@ -1591,17 +1605,17 @@ model FeatureMapOverride {
 
   // Relations
   search NoveltySearchRun @relation(fields: [searchId], references: [id], onDelete: Cascade)
-  cell FeatureMapCell @relation(fields: [searchId, publicationNumber, feature], references: [searchId, publicationNumber, feature], onDelete: Cascade)
+  cell   FeatureMapCell   @relation(fields: [searchId, publicationNumber, feature], references: [searchId, publicationNumber, feature], onDelete: Cascade)
 
   @@unique([searchId, publicationNumber, feature])
   @@map("feature_map_overrides")
 }
 
 model FeatureMappingCache {
-  id            String @id @default(cuid())
+  id            String   @id @default(cuid())
   ideaHash      String
   batchHash     String
-  promptVersion String @default("v1.0")
+  promptVersion String   @default("v1.0")
   featureMaps   Json // Array of PatentFeatureMap results
   createdAt     DateTime @default(now())
   expiresAt     DateTime // When this cache entry expires
@@ -1652,18 +1666,18 @@ enum NumeralRange {
 }
 
 model DraftingSession {
-  id       String                @id @default(cuid())
-  patentId String
-  userId   String
-  tenantId String?
-  status   DraftingSessionStatus @default(IDEA_ENTRY)
-  draftingJurisdictions String[]   @default([])
+  id                    String                @id @default(cuid())
+  patentId              String
+  userId                String
+  tenantId              String?
+  status                DraftingSessionStatus @default(IDEA_ENTRY)
+  draftingJurisdictions String[]              @default([])
   activeJurisdiction    String?
 
   // Multi-jurisdiction filing mode
-  isMultiJurisdiction     Boolean  @default(false) @map("is_multi_jurisdiction")
-  referenceDraftComplete  Boolean  @default(false) @map("reference_draft_complete")
-  referenceDraftId        String?  @map("reference_draft_id") // ID of the AnnexureDraft with jurisdiction='REFERENCE'
+  isMultiJurisdiction    Boolean @default(false) @map("is_multi_jurisdiction")
+  referenceDraftComplete Boolean @default(false) @map("reference_draft_complete")
+  referenceDraftId       String? @map("reference_draft_id") // ID of the AnnexureDraft with jurisdiction='REFERENCE'
 
   // Metadata
   createdAt   DateTime  @default(now())
@@ -1675,36 +1689,36 @@ model DraftingSession {
   priorArtConfig Json? @map("prior_art_config")
 
   // AI analysis data for related art (Stage 3.5)
-  aiAnalysisData Json?
+  aiAnalysisData          Json?
   // Per-jurisdiction draft status (e.g., {"IN":{status:"done",latestVersion:2}})
   jurisdictionDraftStatus Json?
 
   // Relations
-  patent               Patent                @relation(fields: [patentId], references: [id], onDelete: Cascade)
-  user                 User                  @relation(fields: [userId], references: [id])
-  tenant               Tenant?               @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  ideaRecord           IdeaRecord?
-  referenceMap         ReferenceMap?
-  figurePlans          FigurePlan[]
-  diagramSources       DiagramSource[]
-  annexureDrafts       AnnexureDraft[]
-  history              DraftingHistory[]
+  patent                  Patent                   @relation(fields: [patentId], references: [id], onDelete: Cascade)
+  user                    User                     @relation(fields: [userId], references: [id])
+  tenant                  Tenant?                  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  ideaRecord              IdeaRecord?
+  referenceMap            ReferenceMap?
+  figurePlans             FigurePlan[]
+  diagramSources          DiagramSource[]
+  annexureDrafts          AnnexureDraft[]
+  history                 DraftingHistory[]
   // Stage 3.5 relations
-  relatedArtRuns       RelatedArtRun[]
-  relatedArtSelections RelatedArtSelection[]
+  relatedArtRuns          RelatedArtRun[]
+  relatedArtSelections    RelatedArtSelection[]
   // User section instructions
   userSectionInstructions UserSectionInstruction[]
-  
+
   // User style overrides for this session
   userDiagramStyles       UserDiagramStyle[]
   userExportStyles        UserExportStyle[]
   userValidationOverrides UserValidationOverride[]
-  
+
   // AI Review results
-  aiReviews               AIReviewResult[]
-  
+  aiReviews AIReviewResult[]
+
   // Sketch records
-  sketchRecords           SketchRecord[]
+  sketchRecords SketchRecord[]
 
   // Figure sequence for unified ordering of diagrams + sketches
   // Array of { type: 'diagram'|'sketch', sourceId: string, finalFigNo: number }
@@ -1722,19 +1736,19 @@ model IdeaRecord {
   normalizedData Json // Structured JSON with all fields
 
   // Extracted fields for easy querying
-  problem    String?
-  objectives String?
-  components Json? // Array of component descriptions
-  logic      String?
-  inputs     String?
-  outputs    String?
-  variants   String?
-  bestMethod String?
+  problem     String?
+  objectives  String?
+  components  Json? // Array of component descriptions
+  logic       String?
+  inputs      String?
+  outputs     String?
+  variants    String?
+  bestMethod  String?
   // New: classification and abstract for linking with patent search APIs
-  abstract   String?
+  abstract    String?
   searchQuery String? // Compact search query for PQAI prior art search
-  cpcCodes   String[]
-  ipcCodes   String[]
+  cpcCodes    String[]
+  ipcCodes    String[]
 
   // LLM metadata
   llmPromptUsed String?
@@ -1795,9 +1809,9 @@ model DiagramSource {
   checksum     String // For integrity verification
 
   // Language support for multi-jurisdiction translation
-  language               String  @default("en") // ISO 639-1 code (en, ja, zh, de, fr, etc.)
+  language                String  @default("en") // ISO 639-1 code (en, ja, zh, de, fr, etc.)
   translatedFromDiagramId String? // Links to original (English) diagram for cross-referencing
-  
+
   // Self-relation for translation linking
   translatedFrom DiagramSource?  @relation("DiagramTranslations", fields: [translatedFromDiagramId], references: [id], onDelete: SetNull)
   translations   DiagramSource[] @relation("DiagramTranslations")
@@ -1807,7 +1821,7 @@ model DiagramSource {
   imagePath       String?
   imageChecksum   String?
   imageUploadedAt DateTime?
-  
+
   // Original image backup (for image editor restore)
   originalImagePath     String?
   originalImageFilename String?
@@ -1827,80 +1841,80 @@ model DiagramSource {
 // === SKETCH GENERATION (Figure Planner - Sketch Tab) ===
 
 enum SketchMode {
-  AUTO     // Generated from invention context only
-  GUIDED   // Invention context + user instructions
-  REFINE   // User-uploaded sketch + context refinement
+  AUTO // Generated from invention context only
+  GUIDED // Invention context + user instructions
+  REFINE // User-uploaded sketch + context refinement
 }
 
 enum SketchStatus {
   SUGGESTED // Suggested by LLM, not yet generated (placeholder)
-  PENDING   // Generation in progress
-  SUCCESS   // Successfully generated
-  FAILED    // Generation failed
+  PENDING // Generation in progress
+  SUCCESS // Successfully generated
+  FAILED // Generation failed
 }
 
 model SketchRecord {
-  id          String       @id @default(cuid())
-  patentId    String
-  sessionId   String?
-  figureNo    Int?         // Optional linkage to a specific figure
-  
+  id        String  @id @default(cuid())
+  patentId  String
+  sessionId String?
+  figureNo  Int? // Optional linkage to a specific figure
+
   // Mode and status
-  mode        SketchMode   @default(AUTO)
-  status      SketchStatus @default(PENDING)
-  
+  mode   SketchMode   @default(AUTO)
+  status SketchStatus @default(PENDING)
+
   // Metadata
   title       String
   description String?
-  
+
   // User prompt for GUIDED/REFINE/MODIFY
-  userPrompt  String?
-  
+  userPrompt String?
+
   // Context configuration flags
   // e.g. { useIdeaSummary: true, useClaims: true, useDiagrams: true }
   contextFlags Json?
-  
+
   // For modification chains - points to the sketch this was derived from
   sourceSketchId String?
-  
+
   // Error handling
-  errorMessage   String?
-  attemptCount   Int      @default(0)
-  
+  errorMessage String?
+  attemptCount Int     @default(0)
+
   // View configuration
   // e.g. { combinedView: true, separateViews: ['top','front'] }
   viewsRequested Json?
-  
+
   // Generated image data
-  imagePath       String?
-  imageFilename   String?
-  imageWidth      Int?
-  imageHeight     Int?
-  imageChecksum   String?
-  
+  imagePath     String?
+  imageFilename String?
+  imageWidth    Int?
+  imageHeight   Int?
+  imageChecksum String?
+
   // For REFINE mode - original uploaded sketch
-  originalImagePath    String?
+  originalImagePath     String?
   originalImageFilename String?
-  
+
   // AI generation metadata
-  aiModel        String?   // e.g., "gemini-3-pro-image-preview"
-  aiPromptUsed   String?   // Full prompt sent to AI (for debugging)
-  aiResponseMeta Json?     // Any additional metadata from AI response
+  aiModel        String? // e.g., "gemini-3-pro-image-preview"
+  aiPromptUsed   String? // Full prompt sent to AI (for debugging)
+  aiResponseMeta Json? // Any additional metadata from AI response
   tokensUsed     Int?
-  
+
   // User preferences
-  isFavorite  Boolean  @default(false)
-  isDeleted   Boolean  @default(false)  // Soft delete
-  
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  isFavorite Boolean @default(false)
+  isDeleted  Boolean @default(false) // Soft delete
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  patent      Patent          @relation(fields: [patentId], references: [id], onDelete: Cascade)
-  session     DraftingSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  sourceSketch SketchRecord?  @relation("SketchChain", fields: [sourceSketchId], references: [id], onDelete: SetNull)
-  derivedSketches SketchRecord[] @relation("SketchChain")
-  
+  patent          Patent           @relation(fields: [patentId], references: [id], onDelete: Cascade)
+  session         DraftingSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sourceSketch    SketchRecord?    @relation("SketchChain", fields: [sourceSketchId], references: [id], onDelete: SetNull)
+  derivedSketches SketchRecord[]   @relation("SketchChain")
+
   @@index([patentId])
   @@index([sessionId])
   @@index([sourceSketchId])
@@ -1909,9 +1923,9 @@ model SketchRecord {
 }
 
 model AnnexureDraft {
-  id        String @id @default(cuid())
-  sessionId String
-  version   Int    @default(1)
+  id           String @id @default(cuid())
+  sessionId    String
+  version      Int    @default(1)
   jurisdiction String @default("IN")
 
   // === LEGACY COLUMNS (kept for backward compatibility) ===
@@ -1948,7 +1962,7 @@ model AnnexureDraft {
   updatedAt DateTime @updatedAt
 
   // Relations
-  session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session   DraftingSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   aiReviews AIReviewResult[]
 
   @@map("annexure_drafts")
@@ -1957,32 +1971,32 @@ model AnnexureDraft {
 // === AI REVIEW RESULTS ===
 
 model AIReviewResult {
-  id            String   @id @default(cuid())
-  sessionId     String   @map("session_id")
-  draftId       String?  @map("draft_id") // Links to specific AnnexureDraft
-  jurisdiction  String
-  
+  id           String  @id @default(cuid())
+  sessionId    String  @map("session_id")
+  draftId      String? @map("draft_id") // Links to specific AnnexureDraft
+  jurisdiction String
+
   // Review Results
-  issues        Json     @default("[]") // Array of AIReviewIssue
-  summary       Json     @default("{}") // { totalIssues, errors, warnings, suggestions, overallScore, recommendation }
-  
+  issues  Json @default("[]") // Array of AIReviewIssue
+  summary Json @default("{}") // { totalIssues, errors, warnings, suggestions, overallScore, recommendation }
+
   // Metadata
-  reviewedAt    DateTime @default(now()) @map("reviewed_at")
-  tokensUsed    Int?     @map("tokens_used")
-  
+  reviewedAt DateTime @default(now()) @map("reviewed_at")
+  tokensUsed Int?     @map("tokens_used")
+
   // Tracking for prompt improvements
-  appliedFixes  Json     @default("[]") // Array of { issueId, sectionKey, fixedAt, wasSuccessful }
-  ignoredIssues Json     @default("[]") // Array of issueIds that were ignored
-  
+  appliedFixes  Json @default("[]") // Array of { issueId, sectionKey, fixedAt, wasSuccessful }
+  ignoredIssues Json @default("[]") // Array of issueIds that were ignored
+
   // Future: feedback for prompt tuning
-  userFeedback  Json?    @default("{}") // { wasHelpful: boolean, comments: string, rating: number }
-  
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  userFeedback Json? @default("{}") // { wasHelpful: boolean, comments: string, rating: number }
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  session       DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  draft         AnnexureDraft?  @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  draft   AnnexureDraft?  @relation(fields: [draftId], references: [id], onDelete: SetNull)
 
   @@index([sessionId, jurisdiction])
   @@index([draftId])
@@ -2001,8 +2015,8 @@ model RelatedArtRun {
   ranAt       DateTime @default(now())
 
   // Relations
-  session            DraftingSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  selections         RelatedArtSelection[]
+  session             DraftingSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  selections          RelatedArtSelection[]
   ideaBankSuggestions IdeaBankSuggestion[]
 
   @@index([sessionId])
@@ -2010,21 +2024,21 @@ model RelatedArtRun {
 }
 
 model RelatedArtSelection {
-  id             String   @id @default(cuid())
-  runId          String?
-  sessionId      String
-  patentNumber   String
-  title          String?
-  snippet        String?
-  score          Decimal? @db.Decimal(5, 2)
-  tags           String[]
-  userNotes      String?
+  id              String   @id @default(cuid())
+  runId           String?
+  sessionId       String
+  patentNumber    String
+  title           String?
+  snippet         String?
+  score           Decimal? @db.Decimal(5, 2)
+  tags            String[]
+  userNotes       String?
   publicationDate String?
-  cpcCodes       String[] // Array of CPC codes
-  ipcCodes       String[] // Array of IPC codes
-  inventors      String[] // Array of inventor names
-  assignees      String[] // Array of assignee names
-  selectedAt     DateTime @default(now())
+  cpcCodes        String[] // Array of CPC codes
+  ipcCodes        String[] // Array of IPC codes
+  inventors       String[] // Array of inventor names
+  assignees       String[] // Array of assignee names
+  selectedAt      DateTime @default(now())
 
   // Relations
   run     RelatedArtRun?  @relation(fields: [runId], references: [id], onDelete: SetNull)
@@ -2038,17 +2052,17 @@ model RelatedArtSelection {
 
 // === IDEA BANK SUGGESTIONS ===
 model IdeaBankSuggestion {
-  id                   String   @id @default(cuid())
-  relatedArtRunId      String
-  modelVersion         String?
-  ideaTitle            String
-  corePrinciple        String
-  expectedAdvantage    String
-  tags                 String[]
-  nonObviousExtension  String
-  sourceBatchIndex     Int?     @default(0)
-  confidenceScore      Float?
-  createdAt            DateTime @default(now())
+  id                  String   @id @default(cuid())
+  relatedArtRunId     String
+  modelVersion        String?
+  ideaTitle           String
+  corePrinciple       String
+  expectedAdvantage   String
+  tags                String[]
+  nonObviousExtension String
+  sourceBatchIndex    Int?     @default(0)
+  confidenceScore     Float?
+  createdAt           DateTime @default(now())
 
   // Relations
   run RelatedArtRun @relation(fields: [relatedArtRunId], references: [id], onDelete: Cascade)
@@ -2096,10 +2110,10 @@ model UserCredit {
 // === IDEA BANK MODELS ===
 
 enum IdeaBankStatus {
-  PUBLIC     // Available for everyone to see and reserve
-  RESERVED   // Reserved by a user, content redacted
-  LICENSED   // Licensed/commercialized
-  ARCHIVED   // No longer available
+  PUBLIC // Available for everyone to see and reserve
+  RESERVED // Reserved by a user, content redacted
+  LICENSED // Licensed/commercialized
+  ARCHIVED // No longer available
 }
 
 enum IdeaBankReservationStatus {
@@ -2109,44 +2123,44 @@ enum IdeaBankReservationStatus {
 }
 
 model IdeaBankIdea {
-  id                String            @id @default(cuid())
-  title             String
-  description       String
-  abstract          String?           // Patent abstract format
-  domainTags        String[]          // Array of domain tags
-  technicalField    String?           // Primary technical field
-  noveltyScore      Float?            // AI-calculated novelty score (0-1)
-  status            IdeaBankStatus    @default(PUBLIC)
+  id             String         @id @default(cuid())
+  title          String
+  description    String
+  abstract       String? // Patent abstract format
+  domainTags     String[] // Array of domain tags
+  technicalField String? // Primary technical field
+  noveltyScore   Float? // AI-calculated novelty score (0-1)
+  status         IdeaBankStatus @default(PUBLIC)
 
   // Source information
-  generatedBy       String?           // AI model/version that generated this
-  sourceBatchId     String?           // Batch ID for tracking generations
-  derivedFromIdeaId String?           // If this is a derived/edited idea
+  generatedBy       String? // AI model/version that generated this
+  sourceBatchId     String? // Batch ID for tracking generations
+  derivedFromIdeaId String? // If this is a derived/edited idea
 
   // Content metadata
-  keyFeatures       String[]          // Array of key technical features
-  potentialApplications String[]      // Array of potential applications
-  priorArtSummary   String?           // Summary of prior art analysis
+  keyFeatures           String[] // Array of key technical features
+  potentialApplications String[] // Array of potential applications
+  priorArtSummary       String? // Summary of prior art analysis
 
   // Ownership and access
-  createdBy         String            // User ID who created/uploaded this idea
-  tenantId          String?           // Tenant this idea belongs to (null for global)
+  createdBy String // User ID who created/uploaded this idea
+  tenantId  String? // Tenant this idea belongs to (null for global)
 
   // Reservation tracking
-  reservedCount     Int               @default(0) // How many times this idea has been reserved
+  reservedCount Int @default(0) // How many times this idea has been reserved
 
   // Timestamps
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
-  publishedAt       DateTime?         // When made available in idea bank
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  publishedAt DateTime? // When made available in idea bank
 
   // Relations
-  creator           User                      @relation("IdeaBankIdeaCreator", fields: [createdBy], references: [id])
-  tenant            Tenant?                   @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  derivedFrom       IdeaBankIdea?             @relation("IdeaBankDerivation", fields: [derivedFromIdeaId], references: [id])
-  derivedIdeas      IdeaBankIdea[]            @relation("IdeaBankDerivation")
-  reservations      IdeaBankReservation[]
-  history           IdeaBankHistory[]
+  creator      User                  @relation("IdeaBankIdeaCreator", fields: [createdBy], references: [id])
+  tenant       Tenant?               @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  derivedFrom  IdeaBankIdea?         @relation("IdeaBankDerivation", fields: [derivedFromIdeaId], references: [id])
+  derivedIdeas IdeaBankIdea[]        @relation("IdeaBankDerivation")
+  reservations IdeaBankReservation[]
+  history      IdeaBankHistory[]
 
   @@index([status])
   @@index([domainTags])
@@ -2157,23 +2171,23 @@ model IdeaBankIdea {
 }
 
 model IdeaBankReservation {
-  id                String                    @id @default(cuid())
-  ideaId            String
-  userId            String
-  status            IdeaBankReservationStatus @default(ACTIVE)
+  id     String                    @id @default(cuid())
+  ideaId String
+  userId String
+  status IdeaBankReservationStatus @default(ACTIVE)
 
   // Reservation details
-  reservedAt        DateTime                  @default(now())
-  expiresAt         DateTime                  // When reservation expires (default 30 days)
-  releasedAt        DateTime?                 // When user released the reservation
+  reservedAt DateTime  @default(now())
+  expiresAt  DateTime // When reservation expires (default 30 days)
+  releasedAt DateTime? // When user released the reservation
 
   // Usage tracking
-  sentToNoveltySearch Boolean                 @default(false)
-  sentToDrafting      Boolean                 @default(false)
+  sentToNoveltySearch Boolean @default(false)
+  sentToDrafting      Boolean @default(false)
 
   // Relations
-  idea              IdeaBankIdea              @relation(fields: [ideaId], references: [id], onDelete: Cascade)
-  user              User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  idea IdeaBankIdea @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([ideaId, userId]) // One reservation per user per idea
   @@index([userId, status])
@@ -2182,21 +2196,21 @@ model IdeaBankReservation {
 }
 
 model IdeaBankHistory {
-  id                String          @id @default(cuid())
-  ideaId            String
-  action            String          // CREATED, EDITED, RESERVED, RELEASED, SENT_TO_SEARCH, SENT_TO_DRAFTING, etc.
-  userId            String
+  id     String @id @default(cuid())
+  ideaId String
+  action String // CREATED, EDITED, RESERVED, RELEASED, SENT_TO_SEARCH, SENT_TO_DRAFTING, etc.
+  userId String
 
   // Change tracking
-  previousData      Json?           // Previous state
-  newData          Json?           // New state after change
-  notes            String?         // Optional notes about the change
+  previousData Json? // Previous state
+  newData      Json? // New state after change
+  notes        String? // Optional notes about the change
 
-  timestamp         DateTime        @default(now())
+  timestamp DateTime @default(now())
 
   // Relations
-  idea              IdeaBankIdea    @relation(fields: [ideaId], references: [id], onDelete: Cascade)
-  user              User            @relation(fields: [userId], references: [id])
+  idea IdeaBankIdea @relation(fields: [ideaId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id])
 
   @@index([ideaId, timestamp])
   @@index([userId])
@@ -2221,28 +2235,28 @@ enum StyleTrainingJobStatus {
 }
 
 enum DocumentType {
-  SAMPLE  // Training samples for style learning
+  SAMPLE // Training samples for style learning
   REFERENCE // Reference documents
 }
 
 model StyleProfile {
-  id          String             @id @default(cuid())
-  tenantId    String
-  userId      String
-  version     Int                @default(1)
-  json        Json // StyleProfile JSON schema
-  status      StyleProfileStatus @default(NOT_LEARNED)
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
-  createdBy   String
-  lockedAt    DateTime?
-  lockedBy    String?
+  id        String             @id @default(cuid())
+  tenantId  String
+  userId    String
+  version   Int                @default(1)
+  json      Json // StyleProfile JSON schema
+  status    StyleProfileStatus @default(NOT_LEARNED)
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+  createdBy String
+  lockedAt  DateTime?
+  lockedBy  String?
 
   // Relations
-  tenant      Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  user        User               @relation("StyleProfileUser", fields: [userId], references: [id])
-  creator     User               @relation("StyleProfileCreator", fields: [createdBy], references: [id])
-  locker      User?              @relation("StyleProfileLocker", fields: [lockedBy], references: [id])
+  tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user    User   @relation("StyleProfileUser", fields: [userId], references: [id])
+  creator User   @relation("StyleProfileCreator", fields: [createdBy], references: [id])
+  locker  User?  @relation("StyleProfileLocker", fields: [lockedBy], references: [id])
 
   // Indexes
   @@unique([tenantId, userId, version])
@@ -2252,7 +2266,7 @@ model StyleProfile {
 }
 
 model StyleTrainingJob {
-  id             String                @id @default(cuid())
+  id             String                 @id @default(cuid())
   tenantId       String
   userId         String
   status         StyleTrainingJobStatus @default(PENDING)
@@ -2261,8 +2275,8 @@ model StyleTrainingJob {
   error          String?
   startedAt      DateTime?
   completedAt    DateTime?
-  createdAt      DateTime              @default(now())
-  updatedAt      DateTime              @updatedAt
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
 
   // Relations
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -2275,17 +2289,17 @@ model StyleTrainingJob {
 }
 
 model Document {
-  id          String       @id @default(cuid())
-  tenantId    String
-  userId      String
-  type        DocumentType @default(SAMPLE)
-  filename    String
-  contentPtr  String? // File path or storage reference
-  tokens      Int          @default(0) // Token count
-  hash        String // Content hash for integrity
-  mimeType    String?
-  sizeBytes   Int?
-  createdAt   DateTime     @default(now())
+  id         String       @id @default(cuid())
+  tenantId   String
+  userId     String
+  type       DocumentType @default(SAMPLE)
+  filename   String
+  contentPtr String? // File path or storage reference
+  tokens     Int          @default(0) // Token count
+  hash       String // Content hash for integrity
+  mimeType   String?
+  sizeBytes  Int?
+  createdAt  DateTime     @default(now())
 
   // Relations
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -2301,64 +2315,64 @@ model Document {
 
 // Persona visibility levels
 enum PersonaVisibility {
-  PRIVATE       // Only creator can see/use
-  ORGANIZATION  // Everyone in tenant can see/use
+  PRIVATE // Only creator can see/use
+  ORGANIZATION // Everyone in tenant can see/use
 }
 
 // Writing Persona - Reusable style profiles that can be shared
 model WritingPersona {
-  id            String            @id @default(cuid())
-  tenantId      String
-  createdBy     String            // User who created this persona
-  
-  name          String            // "CSE Patents", "Pharma Style", "Firm Standard"
-  description   String?           // "Formal claims, detailed embodiments"
-  
-  visibility    PersonaVisibility @default(PRIVATE)
-  isTemplate    Boolean           @default(false)  // Firm-wide templates marked by admin
-  allowCopy     Boolean           @default(true)   // Others can copy to their own
-  
-  isActive      Boolean           @default(true)
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-  
+  id        String @id @default(cuid())
+  tenantId  String
+  createdBy String // User who created this persona
+
+  name        String // "CSE Patents", "Pharma Style", "Firm Standard"
+  description String? // "Formal claims, detailed embodiments"
+
+  visibility PersonaVisibility @default(PRIVATE)
+  isTemplate Boolean           @default(false) // Firm-wide templates marked by admin
+  allowCopy  Boolean           @default(true) // Others can copy to their own
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
-  tenant        Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  creator       User              @relation("PersonaCreator", fields: [createdBy], references: [id])
-  samples       WritingSample[]
-  
+  tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  creator User            @relation("PersonaCreator", fields: [createdBy], references: [id])
+  samples WritingSample[]
+
   // A user can have multiple personas, but names must be unique per user
   @@unique([createdBy, name])
-  @@index([tenantId, visibility])  // For finding org-wide personas
+  @@index([tenantId, visibility]) // For finding org-wide personas
   @@index([createdBy])
   @@map("writing_personas")
 }
 
 model WritingSample {
-  id            String   @id @default(cuid())
-  userId        String
-  tenantId      String
-  personaId     String?  // Reference to WritingPersona (optional for backward compat)
-  personaName   String   @default("Default")  // Kept for backward compatibility
-  
-  jurisdiction  String   // "IN", "US", "EP", "*" (universal/all jurisdictions)
-  sectionKey    String   // "claims", "detailedDescription", "abstract", "background", etc.
-  
-  sampleText    String   @db.Text  // User's writing sample (3-4 lines, ~100-150 words)
-  notes         String?  // Optional notes: "My preferred claims opening style"
-  
-  isShared      Boolean  @default(false)  // Deprecated: use persona.visibility instead
-  isActive      Boolean  @default(true)
-  wordCount     Int      @default(0)  // Computed word count for validation
-  
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  
+  id          String  @id @default(cuid())
+  userId      String
+  tenantId    String
+  personaId   String? // Reference to WritingPersona (optional for backward compat)
+  personaName String  @default("Default") // Kept for backward compatibility
+
+  jurisdiction String // "IN", "US", "EP", "*" (universal/all jurisdictions)
+  sectionKey   String // "claims", "detailedDescription", "abstract", "background", etc.
+
+  sampleText String  @db.Text // User's writing sample (3-4 lines, ~100-150 words)
+  notes      String? // Optional notes: "My preferred claims opening style"
+
+  isShared  Boolean @default(false) // Deprecated: use persona.visibility instead
+  isActive  Boolean @default(true)
+  wordCount Int     @default(0) // Computed word count for validation
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   // Relations
   user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   tenant  Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   persona WritingPersona? @relation(fields: [personaId], references: [id], onDelete: SetNull)
-  
+
   // Constraints - samples unique per user per jurisdiction per persona per section
   @@unique([userId, jurisdiction, personaId, sectionKey])
   @@index([tenantId, userId])
@@ -2376,19 +2390,19 @@ enum CountryProfileStatus {
 }
 
 model CountryProfile {
-  id          String              @id @default(cuid())
-  countryCode String              @unique // e.g., "US", "IN", "EP"
-  name        String              // e.g., "United States", "India", "European Patent Office"
-  profileData Json                // Complete country_profile.json structure
-  version     Int                 @default(1)
+  id          String               @id @default(cuid())
+  countryCode String               @unique // e.g., "US", "IN", "EP"
+  name        String // e.g., "United States", "India", "European Patent Office"
+  profileData Json // Complete country_profile.json structure
+  version     Int                  @default(1)
   status      CountryProfileStatus @default(DRAFT)
   createdBy   String
   updatedBy   String?
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
 
   // Relations
-  creator User @relation("CountryProfileCreator", fields: [createdBy], references: [id])
+  creator User  @relation("CountryProfileCreator", fields: [createdBy], references: [id])
   updater User? @relation("CountryProfileUpdater", fields: [updatedBy], references: [id])
 
   // Indexes
@@ -2400,27 +2414,27 @@ model CountryProfile {
 // Superset sections - the universal foundation for all patent drafting
 // These are the canonical sections that all countries map to
 model SupersetSection {
-  id            String   @id @default(cuid())
-  sectionKey    String   @unique @map("section_key") // e.g., "title", "background", "claims"
-  aliases       String[] @default([]) @map("aliases") // Alternative keys that map to this section
-  displayOrder  Int      @map("display_order") // Order in the drafting flow
-  label         String   // Display label: "Title of the Invention"
-  description   String?  @db.Text // Description of what this section contains
-  instruction   String   @db.Text // Base prompt instruction for LLM
-  constraints   Json     @default("[]") // Base constraints array
-  isRequired    Boolean  @default(true) @map("is_required") // Default required status
-  isActive      Boolean  @default(true) @map("is_active") // Can be disabled without deleting
-  
+  id           String   @id @default(cuid())
+  sectionKey   String   @unique @map("section_key") // e.g., "title", "background", "claims"
+  aliases      String[] @default([]) @map("aliases") // Alternative keys that map to this section
+  displayOrder Int      @map("display_order") // Order in the drafting flow
+  label        String // Display label: "Title of the Invention"
+  description  String?  @db.Text // Description of what this section contains
+  instruction  String   @db.Text // Base prompt instruction for LLM
+  constraints  Json     @default("[]") // Base constraints array
+  isRequired   Boolean  @default(true) @map("is_required") // Default required status
+  isActive     Boolean  @default(true) @map("is_active") // Can be disabled without deleting
+
   // Context injection flags - determines what data to inject into section prompts
-  requiresPriorArt    Boolean @default(false) @map("requires_prior_art")    // Inject prior art references (background, crossReference, etc.)
-  requiresFigures     Boolean @default(false) @map("requires_figures")      // Inject figure list (briefDescriptionOfDrawings, detailedDescription)
-  requiresClaims      Boolean @default(false) @map("requires_claims")       // Inject claims context (abstract, summary)
-  requiresComponents  Boolean @default(false) @map("requires_components")   // Inject component/numeral list (detailedDescription)
-  
-  createdBy     String?  @map("created_by")
-  updatedBy     String?  @map("updated_by")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  requiresPriorArt   Boolean @default(false) @map("requires_prior_art") // Inject prior art references (background, crossReference, etc.)
+  requiresFigures    Boolean @default(false) @map("requires_figures") // Inject figure list (briefDescriptionOfDrawings, detailedDescription)
+  requiresClaims     Boolean @default(false) @map("requires_claims") // Inject claims context (abstract, summary)
+  requiresComponents Boolean @default(false) @map("requires_components") // Inject component/numeral list (detailedDescription)
+
+  createdBy String?  @map("created_by")
+  updatedBy String?  @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   // Note: Mappings relation defined at application level for flexibility
   // mappings CountrySectionMapping[]
@@ -2432,23 +2446,23 @@ model SupersetSection {
 
 // Mapping of canonical superset sections to country-specific headings/labels
 model CountrySectionMapping {
-  id           String   @id @default(cuid())
-  countryCode  String   @map("country_code")
-  supersetCode String   @map("superset_code") // e.g., "01. Title", "05. Background"
-  sectionKey   String   @map("section_key") // canonical superset key, e.g., "title", "background"
-  heading      String   // Country-specific heading text (may be N/A)
-  isRequired   Boolean  @default(true) @map("is_required") // Whether this section is required for this country
-  isEnabled    Boolean  @default(true) @map("is_enabled") // Whether to include in drafting for this country
-  displayOrder Int?     @map("display_order") // Country-specific order override
-  
+  id           String  @id @default(cuid())
+  countryCode  String  @map("country_code")
+  supersetCode String  @map("superset_code") // e.g., "01. Title", "05. Background"
+  sectionKey   String  @map("section_key") // canonical superset key, e.g., "title", "background"
+  heading      String // Country-specific heading text (may be N/A)
+  isRequired   Boolean @default(true) @map("is_required") // Whether this section is required for this country
+  isEnabled    Boolean @default(true) @map("is_enabled") // Whether to include in drafting for this country
+  displayOrder Int?    @map("display_order") // Country-specific order override
+
   // Country-specific overrides for context injection (null = use SupersetSection default)
-  requiresPriorArtOverride   Boolean? @map("requires_prior_art_override")   // Override: inject prior art
-  requiresFiguresOverride    Boolean? @map("requires_figures_override")     // Override: inject figures
-  requiresClaimsOverride     Boolean? @map("requires_claims_override")      // Override: inject claims
-  requiresComponentsOverride Boolean? @map("requires_components_override")  // Override: inject components
-  
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  requiresPriorArtOverride   Boolean? @map("requires_prior_art_override") // Override: inject prior art
+  requiresFiguresOverride    Boolean? @map("requires_figures_override") // Override: inject figures
+  requiresClaimsOverride     Boolean? @map("requires_claims_override") // Override: inject claims
+  requiresComponentsOverride Boolean? @map("requires_components_override") // Override: inject components
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relation to superset section (optional - can be enforced later after seeding)
   // Note: Foreign key relationship is intentionally soft to allow incremental data migration
@@ -2474,22 +2488,22 @@ model CountryName {
 
 // Country-specific top-up prompts for sections (database-driven)
 model CountrySectionPrompt {
-  id          String   @id @default(cuid())
-  countryCode String   @map("country_code")
-  sectionKey  String   @map("section_key") // canonical key: "title", "background", "objectsOfInvention", etc.
-  instruction String   @db.Text // Top-up instruction to merge with base superset prompt
-  constraints Json     @default("[]") // Array of constraint strings
-  additions   Json?    @default("[]") // Array of additional guidance strings
-  importFiguresDirectly Boolean @default(false) @map("import_figures_directly") // When true, bypass LLM and directly import figure titles
-  version     Int      @default(1)
-  status      CountrySectionPromptStatus @default(ACTIVE)
-  createdBy   String?  @map("created_by")
-  updatedBy   String?  @map("updated_by")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  id                    String                     @id @default(cuid())
+  countryCode           String                     @map("country_code")
+  sectionKey            String                     @map("section_key") // canonical key: "title", "background", "objectsOfInvention", etc.
+  instruction           String                     @db.Text // Top-up instruction to merge with base superset prompt
+  constraints           Json                       @default("[]") // Array of constraint strings
+  additions             Json?                      @default("[]") // Array of additional guidance strings
+  importFiguresDirectly Boolean                    @default(false) @map("import_figures_directly") // When true, bypass LLM and directly import figure titles
+  version               Int                        @default(1)
+  status                CountrySectionPromptStatus @default(ACTIVE)
+  createdBy             String?                    @map("created_by")
+  updatedBy             String?                    @map("updated_by")
+  createdAt             DateTime                   @default(now()) @map("created_at")
+  updatedAt             DateTime                   @updatedAt @map("updated_at")
 
   // Version history relation
-  history     CountrySectionPromptHistory[]
+  history CountrySectionPromptHistory[]
 
   @@unique([countryCode, sectionKey], name: "country_section_unique")
   @@index([countryCode])
@@ -2520,7 +2534,7 @@ model CountrySectionPromptHistory {
   changedAt    DateTime @default(now()) @map("changed_at")
 
   // Relation to parent prompt
-  prompt       CountrySectionPrompt @relation(fields: [promptId], references: [id], onDelete: Cascade)
+  prompt CountrySectionPrompt @relation(fields: [promptId], references: [id], onDelete: Cascade)
 
   @@index([promptId])
   @@index([countryCode, sectionKey])
@@ -2538,14 +2552,14 @@ model UserSectionInstruction {
   instruction  String   @db.Text // User's custom instruction for this section
   emphasis     String?  @db.Text // What to emphasize/focus on
   avoid        String?  @db.Text // What to avoid/exclude
-  style        String?  // "formal", "technical", "concise", etc.
+  style        String? // "formal", "technical", "concise", etc.
   wordCount    Int?     @map("word_count") // Target word count override
   isActive     Boolean  @default(true) @map("is_active")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
   // Relation to drafting session
-  session     DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   // Unique per session + jurisdiction + section
   // User can have different instructions for same section in different jurisdictions
@@ -2563,47 +2577,47 @@ model UserSectionInstruction {
 // === SECTION VALIDATION RULES (Per jurisdiction, per section) ===
 // Stores word/char limits and validation rules for AI reviewer
 model CountrySectionValidation {
-  id           String   @id @default(cuid())
-  countryCode  String   @map("country_code")
-  sectionKey   String   @map("section_key") // "title", "abstract", "claims", etc.
-  
+  id          String @id @default(cuid())
+  countryCode String @map("country_code")
+  sectionKey  String @map("section_key") // "title", "abstract", "claims", etc.
+
   // Word limits
-  maxWords         Int?     @map("max_words")        // e.g., 150 for abstract
-  minWords         Int?     @map("min_words")        // e.g., 50 for detailed_description
-  recommendedWords Int?     @map("recommended_words") // Soft recommendation
-  
+  maxWords         Int? @map("max_words") // e.g., 150 for abstract
+  minWords         Int? @map("min_words") // e.g., 50 for detailed_description
+  recommendedWords Int? @map("recommended_words") // Soft recommendation
+
   // Character limits
-  maxChars         Int?     @map("max_chars")        // e.g., 500 for title
-  minChars         Int?     @map("min_chars")
-  recommendedChars Int?     @map("recommended_chars")
-  
+  maxChars         Int? @map("max_chars") // e.g., 500 for title
+  minChars         Int? @map("min_chars")
+  recommendedChars Int? @map("recommended_chars")
+
   // Count limits (for claims)
-  maxCount         Int?     @map("max_count")        // e.g., 20 total claims
-  maxIndependent   Int?     @map("max_independent")  // e.g., 3 independent claims
-  countBeforeExtraFee Int?  @map("count_before_extra_fee") // Fee threshold
-  
+  maxCount            Int? @map("max_count") // e.g., 20 total claims
+  maxIndependent      Int? @map("max_independent") // e.g., 3 independent claims
+  countBeforeExtraFee Int? @map("count_before_extra_fee") // Fee threshold
+
   // Severity and messaging
-  wordLimitSeverity  String?  @map("word_limit_severity")  // "error", "warning", "info"
-  charLimitSeverity  String?  @map("char_limit_severity")
-  countLimitSeverity String?  @map("count_limit_severity")
-  wordLimitMessage   String?  @map("word_limit_message") @db.Text
-  charLimitMessage   String?  @map("char_limit_message") @db.Text
-  countLimitMessage  String?  @map("count_limit_message") @db.Text
-  
+  wordLimitSeverity  String? @map("word_limit_severity") // "error", "warning", "info"
+  charLimitSeverity  String? @map("char_limit_severity")
+  countLimitSeverity String? @map("count_limit_severity")
+  wordLimitMessage   String? @map("word_limit_message") @db.Text
+  charLimitMessage   String? @map("char_limit_message") @db.Text
+  countLimitMessage  String? @map("count_limit_message") @db.Text
+
   // Legal citation for message (helps AI reviewer)
-  legalReference   String?  @map("legal_reference") // e.g., "Rule 13(7)(b)", "37 CFR 1.72(a)"
-  
+  legalReference String? @map("legal_reference") // e.g., "Rule 13(7)(b)", "37 CFR 1.72(a)"
+
   // Additional validation rules as JSON (future extensibility)
   // Examples: { "mustStartWith": "The principal object", "forbiddenPhrases": ["patent", "novel"] }
-  additionalRules  Json?    @map("additional_rules") @default("{}")
-  
-  version     Int      @default(1)
-  status      CountrySectionPromptStatus @default(ACTIVE)
-  createdBy   String?  @map("created_by")
-  updatedBy   String?  @map("updated_by")
-  createdAt   DateTime @default(now()) @map("created_at")
-  updatedAt   DateTime @updatedAt @map("updated_at")
-  
+  additionalRules Json? @default("{}") @map("additional_rules")
+
+  version   Int                        @default(1)
+  status    CountrySectionPromptStatus @default(ACTIVE)
+  createdBy String?                    @map("created_by")
+  updatedBy String?                    @map("updated_by")
+  createdAt DateTime                   @default(now()) @map("created_at")
+  updatedAt DateTime                   @updatedAt @map("updated_at")
+
   @@unique([countryCode, sectionKey])
   @@index([countryCode])
   @@index([sectionKey])
@@ -2613,32 +2627,32 @@ model CountrySectionValidation {
 // === CROSS-SECTION VALIDATION CHECKS (For AI Reviewer) ===
 // Stores validation rules that span multiple sections
 model CountryCrossValidation {
-  id           String   @id @default(cuid())
-  countryCode  String   @map("country_code")
-  checkId      String   @map("check_id") // Unique check identifier like "claims_supported_by_description"
-  
+  id          String @id @default(cuid())
+  countryCode String @map("country_code")
+  checkId     String @map("check_id") // Unique check identifier like "claims_supported_by_description"
+
   // Check configuration
-  checkType    String   @map("check_type") // "support", "consistency", "reference", "coverage"
-  fromSection  String   @map("from_section") // Source section: "claims"
-  toSections   String[] @map("to_sections") // Target sections: ["detailed_description"]
-  
+  checkType   String   @map("check_type") // "support", "consistency", "reference", "coverage"
+  fromSection String   @map("from_section") // Source section: "claims"
+  toSections  String[] @map("to_sections") // Target sections: ["detailed_description"]
+
   // Severity and messaging
-  severity     String   @default("warning") // "error", "warning", "info"
-  message      String   @db.Text // Human-readable message for UI
-  
+  severity String @default("warning") // "error", "warning", "info"
+  message  String @db.Text // Human-readable message for UI
+
   // AI Reviewer prompt context
-  reviewPrompt String?  @map("review_prompt") @db.Text // Specific instruction for AI reviewer
-  legalBasis   String?  @map("legal_basis") @db.Text // Legal citation: "Section 10(4) of Patents Act"
-  
+  reviewPrompt String? @map("review_prompt") @db.Text // Specific instruction for AI reviewer
+  legalBasis   String? @map("legal_basis") @db.Text // Legal citation: "Section 10(4) of Patents Act"
+
   // Additional check parameters as JSON
   // Examples: { "checkReferenceNumerals": true, "checkAntecedentBasis": true }
-  checkParams  Json?    @map("check_params") @default("{}")
-  
-  isEnabled    Boolean  @default(true) @map("is_enabled")
-  version      Int      @default(1)
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
-  
+  checkParams Json? @default("{}") @map("check_params")
+
+  isEnabled Boolean  @default(true) @map("is_enabled")
+  version   Int      @default(1)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
   @@unique([countryCode, checkId])
   @@index([countryCode])
   @@index([checkType])
@@ -2647,70 +2661,70 @@ model CountryCrossValidation {
 
 // === DIAGRAM CONFIGURATION (Per jurisdiction) ===
 model CountryDiagramConfig {
-  id                       String   @id @default(cuid())
-  countryCode              String   @unique @map("country_code")
-  
+  id          String @id @default(cuid())
+  countryCode String @unique @map("country_code")
+
   // Core diagram settings
-  requiredWhenApplicable   Boolean  @default(true) @map("required_when_applicable")
-  supportedDiagramTypes    String[] @default([]) @map("supported_types") // ["block", "flowchart", "schematic"]
-  figureLabelFormat        String   @default("Fig. {number}") @map("figure_label_format")
-  autoGenerateReferenceTable Boolean @default(true) @map("auto_reference_table")
-  
+  requiredWhenApplicable     Boolean  @default(true) @map("required_when_applicable")
+  supportedDiagramTypes      String[] @default([]) @map("supported_types") // ["block", "flowchart", "schematic"]
+  figureLabelFormat          String   @default("Fig. {number}") @map("figure_label_format")
+  autoGenerateReferenceTable Boolean  @default(true) @map("auto_reference_table")
+
   // Drawing rules (from rules.drawings)
-  paperSize                String   @default("A4") @map("paper_size")
-  colorAllowed             Boolean  @default(false) @map("color_allowed")
-  colorUsageNote           String?  @map("color_usage_note") @db.Text
-  lineStyle                String   @default("black_and_white_solid") @map("line_style")
+  paperSize                  String  @default("A4") @map("paper_size")
+  colorAllowed               Boolean @default(false) @map("color_allowed")
+  colorUsageNote             String? @map("color_usage_note") @db.Text
+  lineStyle                  String  @default("black_and_white_solid") @map("line_style")
   referenceNumeralsMandatory Boolean @default(true) @map("ref_numerals_mandatory")
-  minReferenceTextSizePt   Int      @default(8) @map("min_ref_text_size_pt")
-  
+  minReferenceTextSizePt     Int     @default(8) @map("min_ref_text_size_pt")
+
   // Drawing margins (cm)
-  drawingMarginTopCm       Float    @default(2.5) @map("drawing_margin_top_cm")
-  drawingMarginBottomCm    Float    @default(1.0) @map("drawing_margin_bottom_cm")
-  drawingMarginLeftCm      Float    @default(2.5) @map("drawing_margin_left_cm")
-  drawingMarginRightCm     Float    @default(1.5) @map("drawing_margin_right_cm")
-  
+  drawingMarginTopCm    Float @default(2.5) @map("drawing_margin_top_cm")
+  drawingMarginBottomCm Float @default(1.0) @map("drawing_margin_bottom_cm")
+  drawingMarginLeftCm   Float @default(2.5) @map("drawing_margin_left_cm")
+  drawingMarginRightCm  Float @default(1.5) @map("drawing_margin_right_cm")
+
   // LLM generation defaults
-  defaultDiagramCount      Int      @default(4) @map("default_diagram_count")
-  maxDiagramsRecommended   Int      @default(10) @map("max_diagrams_recommended")
-  
-  version                  Int      @default(1)
-  status                   CountrySectionPromptStatus @default(ACTIVE)
-  createdBy                String?  @map("created_by")
-  updatedBy                String?  @map("updated_by")
-  createdAt                DateTime @default(now()) @map("created_at")
-  updatedAt                DateTime @updatedAt @map("updated_at")
-  
+  defaultDiagramCount    Int @default(4) @map("default_diagram_count")
+  maxDiagramsRecommended Int @default(10) @map("max_diagrams_recommended")
+
+  version   Int                        @default(1)
+  status    CountrySectionPromptStatus @default(ACTIVE)
+  createdBy String?                    @map("created_by")
+  updatedBy String?                    @map("updated_by")
+  createdAt DateTime                   @default(now()) @map("created_at")
+  updatedAt DateTime                   @updatedAt @map("updated_at")
+
   // Relations
-  diagramHints             CountryDiagramHint[]
-  
+  diagramHints CountryDiagramHint[]
+
   @@index([countryCode])
   @@map("country_diagram_configs")
 }
 
 // === PER-DIAGRAM-TYPE GENERATION HINTS ===
 model CountryDiagramHint {
-  id           String   @id @default(cuid())
-  configId     String   @map("config_id")
-  diagramType  String   @map("diagram_type") // "block", "flowchart", "schematic", "perspective_view"
-  
+  id          String @id @default(cuid())
+  configId    String @map("config_id")
+  diagramType String @map("diagram_type") // "block", "flowchart", "schematic", "perspective_view"
+
   // LLM instruction for this diagram type
-  hint         String   @db.Text // "Use rectangles for components and arrows for data flow..."
-  
+  hint String @db.Text // "Use rectangles for components and arrows for data flow..."
+
   // Optional: specific PlantUML/Mermaid preferences
-  preferredSyntax   String?  @map("preferred_syntax") // "plantuml", "mermaid"
-  exampleCode       String?  @map("example_code") @db.Text // Example PlantUML/Mermaid snippet
-  
+  preferredSyntax String? @map("preferred_syntax") // "plantuml", "mermaid"
+  exampleCode     String? @map("example_code") @db.Text // Example PlantUML/Mermaid snippet
+
   // Constraints for this diagram type
-  maxElements       Int?     @map("max_elements") // Max components in diagram
-  requireLabels     Boolean  @default(true) @map("require_labels")
-  
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
-  
+  maxElements   Int?    @map("max_elements") // Max components in diagram
+  requireLabels Boolean @default(true) @map("require_labels")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
   // Relation
-  config       CountryDiagramConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
-  
+  config CountryDiagramConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+
   @@unique([configId, diagramType])
   @@index([configId])
   @@map("country_diagram_hints")
@@ -2718,52 +2732,52 @@ model CountryDiagramHint {
 
 // === EXPORT CONFIGURATION (Per jurisdiction, per document type) ===
 model CountryExportConfig {
-  id                   String   @id @default(cuid())
-  countryCode          String   @map("country_code")
-  documentTypeId       String   @map("document_type_id") // "spec_pdf", "claims_only", "abstract_only"
-  
+  id             String @id @default(cuid())
+  countryCode    String @map("country_code")
+  documentTypeId String @map("document_type_id") // "spec_pdf", "claims_only", "abstract_only"
+
   // Display info
-  label                String   // "Indian Complete Specification PDF (Form 2)"
-  description          String?  @db.Text
-  
+  label       String // "Indian Complete Specification PDF (Form 2)"
+  description String? @db.Text
+
   // Page layout
-  pageSize             String   @default("A4") @map("page_size") // "A4", "LETTER"
-  marginTopCm          Float    @default(2.5) @map("margin_top_cm")
-  marginBottomCm       Float    @default(2.0) @map("margin_bottom_cm")
-  marginLeftCm         Float    @default(2.5) @map("margin_left_cm")
-  marginRightCm        Float    @default(2.0) @map("margin_right_cm")
-  
+  pageSize       String @default("A4") @map("page_size") // "A4", "LETTER"
+  marginTopCm    Float  @default(2.5) @map("margin_top_cm")
+  marginBottomCm Float  @default(2.0) @map("margin_bottom_cm")
+  marginLeftCm   Float  @default(2.5) @map("margin_left_cm")
+  marginRightCm  Float  @default(2.0) @map("margin_right_cm")
+
   // Typography
-  fontFamily           String   @default("Times New Roman") @map("font_family")
-  fontSizePt           Int      @default(12) @map("font_size_pt")
-  lineSpacing          Float    @default(1.5) @map("line_spacing")
-  headingFontFamily    String?  @map("heading_font_family")
-  headingFontSizePt    Int?     @map("heading_font_size_pt")
-  
+  fontFamily        String  @default("Times New Roman") @map("font_family")
+  fontSizePt        Int     @default(12) @map("font_size_pt")
+  lineSpacing       Float   @default(1.5) @map("line_spacing")
+  headingFontFamily String? @map("heading_font_family")
+  headingFontSizePt Int?    @map("heading_font_size_pt")
+
   // Document options
-  addPageNumbers       Boolean  @default(true) @map("add_page_numbers")
-  addParagraphNumbers  Boolean  @default(false) @map("add_paragraph_numbers")
-  pageNumberFormat     String   @default("Page {page} of {total}") @map("page_number_format")
-  pageNumberPosition   String   @default("header-right") @map("page_number_position") // "header-right", "footer-center"
-  
+  addPageNumbers      Boolean @default(true) @map("add_page_numbers")
+  addParagraphNumbers Boolean @default(false) @map("add_paragraph_numbers")
+  pageNumberFormat    String  @default("Page {page} of {total}") @map("page_number_format")
+  pageNumberPosition  String  @default("header-right") @map("page_number_position") // "header-right", "footer-center"
+
   // Section configuration
-  includesSections     String[] @map("includes_sections") @default([]) // ["title", "field", "background", ...]
-  sectionOrder         String[] @map("section_order") @default([]) // Override default order if needed
-  
+  includesSections String[] @default([]) @map("includes_sections") // ["title", "field", "background", ...]
+  sectionOrder     String[] @default([]) @map("section_order") // Override default order if needed
+
   // Additional export options as JSON
   // Examples: { "includeTableOfContents": true, "watermark": "DRAFT" }
-  exportOptions        Json?    @map("export_options") @default("{}")
-  
-  version              Int      @default(1)
-  status               CountrySectionPromptStatus @default(ACTIVE)
-  createdBy            String?  @map("created_by")
-  updatedBy            String?  @map("updated_by")
-  createdAt            DateTime @default(now()) @map("created_at")
-  updatedAt            DateTime @updatedAt @map("updated_at")
-  
+  exportOptions Json? @default("{}") @map("export_options")
+
+  version   Int                        @default(1)
+  status    CountrySectionPromptStatus @default(ACTIVE)
+  createdBy String?                    @map("created_by")
+  updatedBy String?                    @map("updated_by")
+  createdAt DateTime                   @default(now()) @map("created_at")
+  updatedAt DateTime                   @updatedAt @map("updated_at")
+
   // Relations
-  sectionHeadings      CountryExportHeading[]
-  
+  sectionHeadings CountryExportHeading[]
+
   @@unique([countryCode, documentTypeId])
   @@index([countryCode])
   @@map("country_export_configs")
@@ -2771,19 +2785,19 @@ model CountryExportConfig {
 
 // === SECTION HEADINGS FOR EXPORT (Per jurisdiction, per document type) ===
 model CountryExportHeading {
-  id            String   @id @default(cuid())
-  exportConfigId String  @map("export_config_id")
-  sectionKey    String   @map("section_key") // "field", "background", "claims"
-  
-  heading       String   // "FIELD OF INVENTION", "BACKGROUND AND PRIOR ART"
-  style         String   @default("uppercase") // "uppercase", "titlecase", "sentence"
-  
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-  
+  id             String @id @default(cuid())
+  exportConfigId String @map("export_config_id")
+  sectionKey     String @map("section_key") // "field", "background", "claims"
+
+  heading String // "FIELD OF INVENTION", "BACKGROUND AND PRIOR ART"
+  style   String @default("uppercase") // "uppercase", "titlecase", "sentence"
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
   // Relation
-  exportConfig  CountryExportConfig @relation(fields: [exportConfigId], references: [id], onDelete: Cascade)
-  
+  exportConfig CountryExportConfig @relation(fields: [exportConfigId], references: [id], onDelete: Cascade)
+
   @@unique([exportConfigId, sectionKey])
   @@index([exportConfigId])
   @@map("country_export_headings")
@@ -2795,38 +2809,38 @@ model CountryExportHeading {
 
 // === USER DIAGRAM STYLE OVERRIDES ===
 model UserDiagramStyle {
-  id                String   @id @default(cuid())
-  
+  id String @id @default(cuid())
+
   // Scoping - either global to user or specific to session
-  userId            String   @map("user_id")
-  tenantId          String   @map("tenant_id")
-  sessionId         String?  @map("session_id") // null = global user preference
-  jurisdiction      String   @default("*") // "*" = all, or specific like "IN", "US"
-  
+  userId       String  @map("user_id")
+  tenantId     String  @map("tenant_id")
+  sessionId    String? @map("session_id") // null = global user preference
+  jurisdiction String  @default("*") // "*" = all, or specific like "IN", "US"
+
   // Override diagram type (if null, applies to all types)
-  diagramType       String?  @map("diagram_type") // "block", "flowchart", etc. or null for all
-  
+  diagramType String? @map("diagram_type") // "block", "flowchart", etc. or null for all
+
   // Custom hint to inject into LLM prompt
-  customHint        String?  @map("custom_hint") @db.Text
-  
+  customHint String? @map("custom_hint") @db.Text
+
   // Override drawing style
   customColorAllowed      Boolean? @map("custom_color_allowed")
   customLineStyle         String?  @map("custom_line_style")
   customMinRefTextSizePt  Int?     @map("custom_min_ref_text_size_pt")
   customFigureLabelFormat String?  @map("custom_figure_label_format")
-  
+
   // Preferred diagram count
-  preferredDiagramCount   Int?     @map("preferred_diagram_count")
-  
-  isActive          Boolean  @default(true) @map("is_active")
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
-  
+  preferredDiagramCount Int? @map("preferred_diagram_count")
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
   // Relations
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  session           DraftingSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  session DraftingSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
   @@unique([userId, sessionId, jurisdiction, diagramType])
   @@index([userId])
   @@index([sessionId])
@@ -2836,37 +2850,37 @@ model UserDiagramStyle {
 
 // === USER EXPORT STYLE OVERRIDES ===
 model UserExportStyle {
-  id                String   @id @default(cuid())
-  
+  id String @id @default(cuid())
+
   // Scoping
-  userId            String   @map("user_id")
-  tenantId          String   @map("tenant_id")
-  sessionId         String?  @map("session_id") // null = global preference
-  jurisdiction      String   @default("*") // "*" = all, or specific jurisdiction
-  
+  userId       String  @map("user_id")
+  tenantId     String  @map("tenant_id")
+  sessionId    String? @map("session_id") // null = global preference
+  jurisdiction String  @default("*") // "*" = all, or specific jurisdiction
+
   // Export overrides (null = use country default)
-  fontFamily        String?  @map("font_family")
-  fontSizePt        Int?     @map("font_size_pt")
-  lineSpacing       Float?   @map("line_spacing")
-  marginTopCm       Float?   @map("margin_top_cm")
-  marginBottomCm    Float?   @map("margin_bottom_cm")
-  marginLeftCm      Float?   @map("margin_left_cm")
-  marginRightCm     Float?   @map("margin_right_cm")
-  addPageNumbers    Boolean? @map("add_page_numbers")
+  fontFamily          String?  @map("font_family")
+  fontSizePt          Int?     @map("font_size_pt")
+  lineSpacing         Float?   @map("line_spacing")
+  marginTopCm         Float?   @map("margin_top_cm")
+  marginBottomCm      Float?   @map("margin_bottom_cm")
+  marginLeftCm        Float?   @map("margin_left_cm")
+  marginRightCm       Float?   @map("margin_right_cm")
+  addPageNumbers      Boolean? @map("add_page_numbers")
   addParagraphNumbers Boolean? @map("add_paragraph_numbers")
-  
+
   // Additional preferences as JSON
-  customOptions     Json?    @map("custom_options") @default("{}")
-  
-  isActive          Boolean  @default(true) @map("is_active")
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
-  
+  customOptions Json? @default("{}") @map("custom_options")
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
   // Relations
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tenant            Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  session           DraftingSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant  Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  session DraftingSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
   @@unique([userId, sessionId, jurisdiction])
   @@index([userId])
   @@index([sessionId])
@@ -2876,32 +2890,32 @@ model UserExportStyle {
 
 // === USER VALIDATION OVERRIDES (Per session - e.g., override word limit for specific draft) ===
 model UserValidationOverride {
-  id                String   @id @default(cuid())
-  
-  userId            String   @map("user_id")
-  sessionId         String   @map("session_id") // Always session-specific (validation overrides shouldn't be global)
-  jurisdiction      String   @default("*")
-  sectionKey        String   @map("section_key")
-  
+  id String @id @default(cuid())
+
+  userId       String @map("user_id")
+  sessionId    String @map("session_id") // Always session-specific (validation overrides shouldn't be global)
+  jurisdiction String @default("*")
+  sectionKey   String @map("section_key")
+
   // Override limits (null = use country default)
-  customMaxWords    Int?     @map("custom_max_words")
-  customMaxChars    Int?     @map("custom_max_chars")
-  customMaxCount    Int?     @map("custom_max_count")
-  
+  customMaxWords Int? @map("custom_max_words")
+  customMaxChars Int? @map("custom_max_chars")
+  customMaxCount Int? @map("custom_max_count")
+
   // Override severity (allow user to downgrade warnings to info, etc.)
-  customSeverity    String?  @map("custom_severity") // "error", "warning", "info", "ignore"
-  
+  customSeverity String? @map("custom_severity") // "error", "warning", "info", "ignore"
+
   // Reason for override (audit trail)
-  overrideReason    String?  @map("override_reason") @db.Text
-  
-  isActive          Boolean  @default(true) @map("is_active")
-  createdAt         DateTime @default(now()) @map("created_at")
-  updatedAt         DateTime @updatedAt @map("updated_at")
-  
+  overrideReason String? @map("override_reason") @db.Text
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
   // Relations
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  session           DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  
+  user    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
   @@unique([sessionId, jurisdiction, sectionKey])
   @@index([sessionId])
   @@index([userId])
@@ -2914,35 +2928,396 @@ model UserValidationOverride {
 
 // Track JSON imports for audit and rollback
 model CountryConfigImport {
-  id            String   @id @default(cuid())
-  countryCode   String   @map("country_code")
-  importType    String   @map("import_type") // "full", "validation_only", "diagram_only", "export_only"
-  
+  id          String @id @default(cuid())
+  countryCode String @map("country_code")
+  importType  String @map("import_type") // "full", "validation_only", "diagram_only", "export_only"
+
   // Source JSON (stored for rollback)
-  sourceJson    Json     @map("source_json")
-  sourceHash    String   @map("source_hash") // SHA256 of JSON for deduplication
-  
+  sourceJson Json   @map("source_json")
+  sourceHash String @map("source_hash") // SHA256 of JSON for deduplication
+
   // Import results
-  status        String   @default("pending") // "pending", "processing", "completed", "failed", "rolled_back"
-  recordsCreated Int     @default(0) @map("records_created")
-  recordsUpdated Int     @default(0) @map("records_updated")
-  recordsSkipped Int     @default(0) @map("records_skipped")
-  errorLog      Json?    @map("error_log") // Array of error objects
-  
+  status         String @default("pending") // "pending", "processing", "completed", "failed", "rolled_back"
+  recordsCreated Int    @default(0) @map("records_created")
+  recordsUpdated Int    @default(0) @map("records_updated")
+  recordsSkipped Int    @default(0) @map("records_skipped")
+  errorLog       Json?  @map("error_log") // Array of error objects
+
   // Rollback support
-  previousState Json?    @map("previous_state") // Snapshot before import for rollback
+  previousState Json?     @map("previous_state") // Snapshot before import for rollback
   rolledBackAt  DateTime? @map("rolled_back_at")
   rolledBackBy  String?   @map("rolled_back_by")
-  
-  importedBy    String   @map("imported_by")
-  importedAt    DateTime @default(now()) @map("imported_at")
-  completedAt   DateTime? @map("completed_at")
-  
+
+  importedBy  String    @map("imported_by")
+  importedAt  DateTime  @default(now()) @map("imported_at")
+  completedAt DateTime? @map("completed_at")
+
   // Relation
-  importer      User     @relation("ConfigImporter", fields: [importedBy], references: [id])
-  
+  importer User @relation("ConfigImporter", fields: [importedBy], references: [id])
+
   @@index([countryCode])
   @@index([status])
   @@index([importedBy])
   @@map("country_config_imports")
+}
+
+// ============================================================================
+// IDEATION ENGINE (Mind-Map Patent Ideation)
+// ============================================================================
+
+enum IdeationSessionStatus {
+  SEED_INPUT // Initial seed entry
+  CLARIFYING // Asking clarifying questions
+  CLASSIFYING // Running classification
+  EXPANDING // Dimension expansion in progress
+  EXPLORING // User exploring mind-map
+  GENERATING // Generating idea frames
+  NOVELTY_CHECK // Running novelty searches
+  REVIEWING // User reviewing generated ideas
+  COMPLETED // Session finalized
+  ARCHIVED // Session archived
+}
+
+enum InventionClass {
+  PRODUCT_DEVICE // Physical object: syringe, umbrella, shoe
+  SYSTEM // Multiple interacting components
+  METHOD_PROCESS // Steps: manufacturing, operating, analysis
+  COMPOSITION // Chemical, materials, mixtures
+  SOFTWARE_ALGORITHM // Pure logic/data
+  BIOTECH_PHARMA // Bio materials, treatment
+  MANUFACTURING // Process + tooling + QA
+  SERVICE_WORKFLOW // Human-centered operational method
+  HYBRID // Multiple strong labels
+}
+
+enum Archetype {
+  MECH // Mechanical
+  ELEC // Electrical/Electronic
+  SOFT // Software
+  CHEM // Chemical
+  BIO // Biological
+  MIXED // Mixed archetype
+}
+
+enum ForkMode {
+  SINGLE // Single track
+  FORK // Multiple parallel tracks
+  MERGE // Merged from fork
+}
+
+enum MindMapNodeType {
+  SEED // Root seed node
+  COMPONENT // Physical/logical component
+  DIMENSION_FAMILY // Dimension category (Material, Mechanism, Risk, etc.)
+  DIMENSION_OPTION // Specific dimension value
+  OPERATOR // TRIZ-like operator
+  CONSTRAINT // User constraint
+  IDEA_FRAME // Generated idea
+  EVIDENCE_CLUSTER // Grouped evidence
+}
+
+enum MindMapNodeState {
+  EXPANDED // Fully expanded
+  COLLAPSED // Collapsed (children hidden)
+  HIDDEN // Hidden by user
+  REMOVED // Soft-deleted
+  SELECTED // In combine tray
+}
+
+enum IdeaFrameStatus {
+  DRAFT // Just generated
+  SHORTLISTED // User shortlisted
+  REJECTED // User rejected
+  EXPORTED // Sent to Idea Bank
+  ARCHIVED // Archived
+}
+
+enum SaturationLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum NoveltyAction {
+  KEEP // Keep as is
+  MUTATE_OPERATOR // Try different operator
+  MUTATE_DIMENSION // Try different dimension
+  NARROW_MICRO_PROBLEM // Focus on sub-problem
+  ASK_USER_QUESTION // Need user input
+}
+
+// Main ideation session
+model IdeationSession {
+  id       String @id @default(cuid())
+  tenantId String
+  userId   String
+
+  // Session state
+  status IdeationSessionStatus @default(SEED_INPUT)
+
+  // Seed data
+  seedText        String   @db.Text
+  seedGoal        String?  @db.Text // Optional goal statement
+  seedConstraints String[] @default([])
+
+  // Normalization result (InputNormalization JSON)
+  normalizationJson Json?
+
+  // Classification result (Classification JSON)
+  classificationJson Json?
+
+  // Settings
+  settingsJson Json? // {deterministicSeed, modelChoices, budgetCaps}
+  budgetCap    String @default("MEDIUM") // LOW, MEDIUM, HIGH
+
+  // Track which tracks are active (for fork mode)
+  activeTracks String[] @default([])
+
+  // Timestamps
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  completedAt DateTime?
+
+  // Relations
+  tenant          Tenant            @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  nodes           MindMapNode[]
+  edges           MindMapEdge[]
+  combineTray     CombineTray?
+  ideaFrames      IdeaFrame[]
+  evidenceResults EvidenceResult[]
+  history         IdeationHistory[]
+
+  @@index([tenantId])
+  @@index([userId])
+  @@index([status])
+  @@map("ideation_sessions")
+}
+
+// Mind-map nodes
+model MindMapNode {
+  id        String @id @default(cuid())
+  sessionId String
+
+  // Node identification
+  nodeId String // Graph-local ID (e.g., "seed-1", "dim-material-1")
+  type   MindMapNodeType
+
+  // Node content
+  title       String
+  description String? @db.Text
+
+  // Categorization
+  family String? // Dimension family (Material, Mechanism, Lifecycle, Risk, etc.)
+  tags   String[] @default([])
+
+  // State
+  state           MindMapNodeState @default(COLLAPSED)
+  selectable      Boolean          @default(true)
+  defaultExpanded Boolean          @default(false)
+
+  // Hierarchy
+  parentNodeId String? // Parent node ID (graph-local)
+  depth        Int     @default(0)
+
+  // Metadata
+  payloadJson Json? // Type-specific data
+  createdBy   String @default("system") // "system" or "user"
+
+  // Position (for React Flow)
+  positionX Float?
+  positionY Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  session IdeationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, nodeId])
+  @@index([sessionId])
+  @@index([sessionId, type])
+  @@index([sessionId, state])
+  @@map("mindmap_nodes")
+}
+
+// Mind-map edges (connections between nodes)
+model MindMapEdge {
+  id        String @id @default(cuid())
+  sessionId String
+
+  // Edge definition
+  fromNodeId String // Source node (graph-local ID)
+  toNodeId   String // Target node (graph-local ID)
+  relation   String // Relationship type: "contains", "enables", "requires", "produces", etc.
+
+  // Optional label
+  label String?
+
+  // Styling
+  animated Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  // Relations
+  session IdeationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, fromNodeId, toNodeId])
+  @@index([sessionId])
+  @@map("mindmap_edges")
+}
+
+// Combine tray - user's current selection for idea generation
+model CombineTray {
+  id        String @id @default(cuid())
+  sessionId String @unique
+
+  // Selected items (arrays of graph-local node IDs)
+  selectedComponents String[] @default([])
+  selectedDimensions String[] @default([])
+  selectedOperators  String[] @default([])
+
+  // Recipe configuration
+  recipeIntent   String @default("divergent") // divergent, convergent, risk-reduction, cost-reduction
+  requestedCount Int    @default(5) // How many ideas to generate
+
+  // Full recipe JSON (CombineRecipe schema)
+  recipeJson Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  session IdeationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("combine_trays")
+}
+
+// Generated idea frames
+model IdeaFrame {
+  id        String @id @default(cuid())
+  sessionId String
+
+  // Core content (IdeaFrame JSON schema)
+  ideaFrameJson Json // Full structured idea
+
+  // Quick-access fields
+  title           String
+  problem         String  @db.Text
+  principle       String  @db.Text // One-liner
+  technicalEffect String? @db.Text
+
+  // Classification
+  classLabels String[] @default([])
+
+  // Traceability
+  operatorsUsed  String[] @default([])
+  dimensionsUsed String[] @default([])
+  componentsUsed String[] @default([])
+
+  // Status tracking
+  status IdeaFrameStatus @default(DRAFT)
+
+  // Novelty assessment
+  noveltyScore       Int? // 0-100
+  noveltySummaryJson Json? // NoveltyGate JSON
+  conceptSaturation  SaturationLevel?
+  solutionSaturation SaturationLevel?
+
+  // User interaction
+  userNotes  String? @db.Text
+  userRating Int? // 1-5 stars
+
+  // Export tracking
+  exportedToIdeaId String? // ID of IdeaBankIdea if exported
+  exportedAt       DateTime?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  session         IdeationSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  evidenceResults EvidenceResult[]
+
+  @@index([sessionId])
+  @@index([sessionId, status])
+  @@map("idea_frames")
+}
+
+// Evidence from novelty searches
+model EvidenceResult {
+  id          String  @id @default(cuid())
+  sessionId   String
+  ideaFrameId String? // Optional link to specific idea
+
+  // Search info
+  provider  String // "serpapi_patents", "serpapi_scholar", "google_patents", etc.
+  query     String @db.Text
+  queryHash String // For deduplication/caching
+
+  // Raw response
+  rawJson Json // Raw API response
+
+  // Parsed results
+  parsedJson  Json? // Normalized results
+  resultCount Int   @default(0)
+
+  // Relevance assessment
+  relevanceNotes String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  // Relations
+  session   IdeationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  ideaFrame IdeaFrame?      @relation(fields: [ideaFrameId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId])
+  @@index([queryHash])
+  @@index([ideaFrameId])
+  @@map("evidence_results")
+}
+
+// Ideation search cache (cost control)
+model IdeationSearchCache {
+  id         String   @id @default(cuid())
+  cacheKey   String   @unique // Normalized query hash
+  provider   String // "serpapi_patents", "serpapi_scholar"
+  resultJson Json // Cached results
+  hitCount   Int      @default(1)
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime // Cache expiration
+
+  @@index([cacheKey])
+  @@index([expiresAt])
+  @@map("ideation_search_cache")
+}
+
+// Ideation session history (audit trail)
+model IdeationHistory {
+  id        String @id @default(cuid())
+  sessionId String
+
+  // Action tracking
+  action String // SEED_SUBMITTED, CLASSIFIED, NODE_EXPANDED, IDEA_GENERATED, etc.
+  stage  String? // Which stage this occurred in
+
+  // Data
+  inputJson  Json? // What was sent
+  outputJson Json? // What was received
+
+  // Metadata
+  userId     String
+  tokensUsed Int?
+  modelUsed  String?
+  durationMs Int?
+
+  timestamp DateTime @default(now())
+
+  // Relations
+  session IdeationSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([sessionId, action])
+  @@map("ideation_history")
 }

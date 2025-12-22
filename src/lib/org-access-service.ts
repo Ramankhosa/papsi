@@ -98,7 +98,8 @@ const SERVICE_TO_FEATURE: Record<ServiceType, string> = {
   IDEA_BANK: 'IDEA_BANK',
   PERSONA_SYNC: 'PERSONA_SYNC',
   DIAGRAM_GENERATION: 'DIAGRAM_GENERATION',
-  PATENT_REVIEW: 'PATENT_REVIEW'      // Pro tier feature
+  PATENT_REVIEW: 'PATENT_REVIEW',      // Pro tier feature
+  IDEATION: 'IDEATION'
 }
 
 // Roles that can use each service (default, can be overridden by team/user settings)
@@ -109,7 +110,8 @@ const SERVICE_DEFAULT_ROLES: Record<ServiceType, UserRole[]> = {
   IDEA_BANK: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST'],
   PERSONA_SYNC: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST'],
   DIAGRAM_GENERATION: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST'],
-  PATENT_REVIEW: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST']  // Pro tier feature - role access same, quota-controlled
+  PATENT_REVIEW: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST'],  // Pro tier feature - role access same, quota-controlled
+  IDEATION: ['OWNER', 'ADMIN', 'MANAGER', 'ANALYST']
 }
 
 // ============================================================================
@@ -772,7 +774,8 @@ function getTaskCodeForService(serviceType: ServiceType): TaskCode | null {
     IDEA_BANK: TaskCode.IDEA_BANK_ACCESS,
     PERSONA_SYNC: TaskCode.PERSONA_SYNC_LEARN,
     DIAGRAM_GENERATION: TaskCode.LLM3_DIAGRAM,
-    PATENT_REVIEW: TaskCode.LLM2_DRAFT  // Uses drafting task code for review operations
+    PATENT_REVIEW: TaskCode.LLM2_DRAFT,  // Uses drafting task code for review operations
+    IDEATION: null  // IDEATION has multiple task codes
   }
   return mapping[serviceType]
 }

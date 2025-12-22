@@ -124,6 +124,38 @@
   animation: stagePulse 2s ease-in-out infinite;
 }
 
+/* Ideation node selection pulse animation */
+@keyframes pulseSubtle {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 4px 15px rgba(139, 92, 246, 0.3);
+  }
+  50% {
+    transform: scale(1.02);
+    box-shadow: 0 6px 25px rgba(139, 92, 246, 0.5);
+  }
+}
+
+.animate-pulse-subtle {
+  animation: pulseSubtle 2s ease-in-out infinite;
+}
+
+/* Edge glow animation for connected selections */
+@keyframes edgeGlow {
+  0%, 100% {
+    stroke-opacity: 1;
+    filter: drop-shadow(0 0 3px rgba(139, 92, 246, 0.5));
+  }
+  50% {
+    stroke-opacity: 0.8;
+    filter: drop-shadow(0 0 8px rgba(139, 92, 246, 0.8));
+  }
+}
+
+.react-flow__edge.animated path {
+  animation: edgeGlow 1.5s ease-in-out infinite;
+}
+
 /* Smooth sidebar content shift */
 .sidebar-content-shift {
   transition: padding-left 0.3s ease-in-out;

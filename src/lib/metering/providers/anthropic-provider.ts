@@ -9,11 +9,15 @@ import type { LLMProvider, ProviderConfig } from './llm-provider'
 export class AnthropicProvider implements LLMProvider {
   name = 'anthropic'
   supportedModels = [
+    'claude-3-5-sonnet-latest',
+    'claude-3-5-haiku-latest',
+    'claude-3-opus-latest',
+    'claude-3-sonnet-20240229',
+    'claude-3-haiku-20240307',
+    // Legacy dated versions (mapped to latest)
     'claude-3-5-sonnet-20241022',
     'claude-3-5-haiku-20241022', 
     'claude-3-opus-20240229',
-    'claude-3-sonnet-20240229',
-    'claude-3-haiku-20240307'
   ]
 
   private config: ProviderConfig
@@ -47,15 +51,24 @@ export class AnthropicProvider implements LLMProvider {
     }
 
     const startTime = Date.now()
-    const modelToUse = request.modelClass || this.config.model || 'claude-3-5-sonnet-20241022'
+    const modelToUse = request.modelClass || this.config.model || 'claude-3-5-sonnet-latest'
     
     // Map friendly model names to Anthropic model IDs
+    // Using 'latest' aliases for stability, or specific dated versions known to work
     const modelMap: Record<string, string> = {
-      'claude-3.5-sonnet': 'claude-3-5-sonnet-20241022',
-      'claude-3.5-haiku': 'claude-3-5-haiku-20241022',
-      'claude-3-opus': 'claude-3-opus-20240229',
+      // Claude 3.5 models - use latest aliases for stability
+      'claude-3.5-sonnet': 'claude-3-5-sonnet-latest',
+      'claude-3-5-sonnet': 'claude-3-5-sonnet-latest',
+      'claude-3.5-haiku': 'claude-3-5-haiku-latest',
+      'claude-3-5-haiku': 'claude-3-5-haiku-latest',
+      // Claude 3 models
+      'claude-3-opus': 'claude-3-opus-latest',
       'claude-3-sonnet': 'claude-3-sonnet-20240229',
-      'claude-3-haiku': 'claude-3-haiku-20240307'
+      'claude-3-haiku': 'claude-3-haiku-20240307',
+      // Explicit dated versions - map to latest
+      'claude-3-5-sonnet-20241022': 'claude-3-5-sonnet-latest',
+      'claude-3-5-haiku-20241022': 'claude-3-5-haiku-latest',
+      'claude-3-opus-20240229': 'claude-3-opus-latest',
     }
     
     const actualModel = modelMap[modelToUse] || modelToUse
