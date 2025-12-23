@@ -166,7 +166,7 @@ function NewPatentDraftPageContent() {
       setLanguageMode('individual_english_figures')
       setFiguresLanguage('en') // Figures always English when no common language
     }
-  }, [selectedCodes, availableCountries])
+  }, [selectedCodes, availableCountries, allLanguages, commonLanguage, commonLanguages, languageByJurisdiction])
 
   // Effect 2: Sync figures language when mode or common language changes
   useEffect(() => {
@@ -191,7 +191,7 @@ function NewPatentDraftPageContent() {
       })
       setLanguageByJurisdiction(synced)
     }
-  }, [languageMode, commonLanguage, selectedCodes.length])
+  }, [languageMode, commonLanguage, selectedCodes, availableCountries, languageByJurisdiction])
 
   useEffect(() => {
     if (!authLoading && !user) {

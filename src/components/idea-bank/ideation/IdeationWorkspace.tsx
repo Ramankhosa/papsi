@@ -59,6 +59,7 @@ import IdeaNode from './nodes/IdeaNode'
 import CombineTray from './CombineTray'
 import IdeaFramePanel from './IdeaFramePanel'
 import IdeationHelpModal from './IdeationHelpModal'
+import IdeationProcessingView from './IdeationProcessingView'
 
 interface IdeationWorkspaceProps {
   onExportToBank: () => void
@@ -145,6 +146,35 @@ function getFamilyEdgeColor(family: string | undefined): string {
   return FAMILY_EDGE_COLORS[Math.abs(hash) % FAMILY_EDGE_COLORS.length]
 }
 
+// Utility: Convert backend node type to React Flow node type
+function getNodeType(type: string): string {
+  const typeMap: Record<string, string> = {
+    'SEED': 'seed',
+    'DIMENSION_FAMILY': 'dimension',
+    'DIMENSION_OPTION': 'dimension',
+    'OPERATOR': 'operator',
+    'IDEA': 'idea',
+    'COMPONENT': 'dimension',
+    'CONSTRAINT': 'dimension',
+  }
+  return typeMap[type] || 'dimension'
+}
+
+// Utility: Map session status to UI stage
+function mapStatusToStage(status: string): SessionStage {
+  const stageMap: Record<string, SessionStage> = {
+    'SEED_INPUT': 'seed_input',
+    'CLARIFYING': 'clarifying',
+    'CLASSIFYING': 'classifying',
+    'EXPANDING': 'expanding',
+    'EXPLORING': 'exploring',
+    'GENERATING': 'generating',
+    'REVIEWING': 'reviewing',
+    'ARCHIVED': 'reviewing',
+  }
+  return stageMap[status] || 'exploring'
+}
+
 export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceProps) {
   // Session state
   const [sessions, setSessions] = useState<any[]>([])
@@ -209,6 +239,185 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
 
   // Help modal state
   const [showHelp, setShowHelp] = useState(false)
+  
+  // Session restoration flag
+  const [isRestoringSession, setIsRestoringSession] = useState(true)
+
+  // ============================================
+  // SESSION PERSISTENCE - Survive page refresh
+  // ============================================
+  const STORAGE_KEYS = {
+    SESSION_ID: 'ideation_current_session_id',
+    SELECTED_NODES: 'ideation_selected_nodes',
+    COLLAPSED_NODES: 'ideation_collapsed_nodes',
+  }
+
+  // Persist selected nodes to localStorage
+  const persistSelectedNodes = useCallback((nodeIds: Set<string>) => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.SELECTED_NODES, JSON.stringify(Array.from(nodeIds)))
+    } catch (e) {
+      console.warn('Failed to persist selected nodes:', e)
+    }
+  }, [])
+
+  // Persist collapsed nodes to localStorage
+  const persistCollapsedNodes = useCallback((nodeIds: Set<string>) => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.COLLAPSED_NODES, JSON.stringify(Array.from(nodeIds)))
+    } catch (e) {
+      console.warn('Failed to persist collapsed nodes:', e)
+    }
+  }, [])
+
+  // Persist current session ID to localStorage
+  const persistCurrentSession = useCallback((sessionId: string | null) => {
+    try {
+      if (sessionId) {
+        localStorage.setItem(STORAGE_KEYS.SESSION_ID, sessionId)
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.SESSION_ID)
+      }
+    } catch (e) {
+      console.warn('Failed to persist session ID:', e)
+    }
+  }, [])
+
+  // Restore session state on component mount
+  useEffect(() => {
+    const restoreSession = async () => {
+      try {
+        const savedSessionId = localStorage.getItem(STORAGE_KEYS.SESSION_ID)
+        const savedSelectedNodes = localStorage.getItem(STORAGE_KEYS.SELECTED_NODES)
+        const savedCollapsedNodes = localStorage.getItem(STORAGE_KEYS.COLLAPSED_NODES)
+
+        if (savedSessionId) {
+          console.log('[Session Restore] Found saved session:', savedSessionId)
+          
+          // Load the session
+          const response = await fetch(`/api/idea-bank/ideation/${savedSessionId}`, {
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+            },
+          })
+
+          if (response.ok) {
+            const data = await response.json()
+            
+            // Restore session
+            setCurrentSession(data.session)
+            
+            // Load graph nodes and edges
+            if (data.graph) {
+              const loadedNodes = data.graph.nodes.map((n: any) => ({
+                id: n.id,
+                type: getNodeType(n.type),
+                position: n.position,
+                data: {
+                  ...n.data,
+                  type: n.type,
+                },
+              }))
+              setNodes(loadedNodes)
+              setEdges(data.graph.edges.map((e: any) => ({
+                id: e.id,
+                source: e.source,
+                target: e.target,
+                label: e.label,
+                animated: e.animated,
+                markerEnd: { type: MarkerType.ArrowClosed },
+              })))
+
+              // Restore collapsed nodes
+              if (savedCollapsedNodes) {
+                try {
+                  const parsed = JSON.parse(savedCollapsedNodes)
+                  setCollapsedNodes(new Set(parsed))
+                } catch {
+                  // Use default collapsing
+                  const nodesWithChildren = new Set<string>()
+                  loadedNodes.forEach((n: any) => {
+                    const parentId = n.data?.parentId || n.data?.parentNodeId
+                    if (parentId) nodesWithChildren.add(parentId)
+                  })
+                  const nodesToCollapse = loadedNodes
+                    .filter((n: any) => nodesWithChildren.has(n.id) && n.type !== 'seed')
+                    .map((n: any) => n.id)
+                  setCollapsedNodes(new Set(nodesToCollapse))
+                }
+              }
+
+              // Restore selected nodes
+              if (savedSelectedNodes) {
+                try {
+                  const parsed = JSON.parse(savedSelectedNodes)
+                  // Only restore selections that exist in current graph
+                  const validSelections = parsed.filter((id: string) => 
+                    loadedNodes.some((n: any) => n.id === id)
+                  )
+                  setSelectedNodes(new Set(validSelections))
+                  if (validSelections.length > 0) {
+                    setShowTray(true)
+                  }
+                } catch {
+                  console.warn('Failed to parse saved selections')
+                }
+              }
+            }
+
+            // Load idea frames
+            if (data.ideaFrames) {
+              setIdeaFrames(data.ideaFrames)
+            }
+
+            // Set stage based on session status
+            const restoredStage = mapStatusToStage(data.session.status)
+            setStage(restoredStage)
+            
+            // Show tray if in exploring/reviewing stage
+            if (['exploring', 'reviewing'].includes(restoredStage)) {
+              setShowTray(true)
+            }
+
+            console.log('[Session Restore] Successfully restored session to stage:', restoredStage)
+          } else {
+            // Session not found or access denied - clear saved data
+            console.log('[Session Restore] Session not found, clearing saved data')
+            localStorage.removeItem(STORAGE_KEYS.SESSION_ID)
+            localStorage.removeItem(STORAGE_KEYS.SELECTED_NODES)
+            localStorage.removeItem(STORAGE_KEYS.COLLAPSED_NODES)
+          }
+        }
+      } catch (e) {
+        console.error('[Session Restore] Failed to restore session:', e)
+      } finally {
+        setIsRestoringSession(false)
+      }
+    }
+
+    restoreSession()
+  }, []) // Only run on mount
+
+  // Persist session ID whenever it changes
+  useEffect(() => {
+    if (!isRestoringSession && currentSession) {
+      persistCurrentSession(currentSession.id)
+    }
+  }, [currentSession?.id, isRestoringSession, persistCurrentSession])
+
+  // Persist selections whenever they change
+  useEffect(() => {
+    if (!isRestoringSession) {
+      persistSelectedNodes(selectedNodes)
+    }
+  }, [selectedNodes, isRestoringSession, persistSelectedNodes])
+
+  // Persist collapsed nodes whenever they change
+  useEffect(() => {
+    if (!isRestoringSession) {
+      persistCollapsedNodes(collapsedNodes)
+    }
+  }, [collapsedNodes, isRestoringSession, persistCollapsedNodes])
 
   // Auto-fit view when nodes change
   const fitViewToNodes = useCallback(() => {
@@ -570,32 +779,6 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
     }
   }
 
-  const getNodeType = (type: string): string => {
-    const typeMap: Record<string, string> = {
-      'SEED': 'seed',
-      'DIMENSION_FAMILY': 'dimension',
-      'DIMENSION_OPTION': 'dimension',
-      'OPERATOR': 'operator',
-      'IDEA_FRAME': 'idea',
-      'COMPONENT': 'dimension',
-      'CONSTRAINT': 'dimension',
-    }
-    return typeMap[type] || 'default'
-  }
-
-  const mapStatusToStage = (status: string): SessionStage => {
-    const stageMap: Record<string, SessionStage> = {
-      'SEED_INPUT': 'seed_input',
-      'CLARIFYING': 'clarifying',
-      'CLASSIFYING': 'classifying',
-      'EXPANDING': 'expanding',
-      'EXPLORING': 'exploring',
-      'GENERATING': 'generating',
-      'REVIEWING': 'reviewing',
-    }
-    return stageMap[status] || 'idle'
-  }
-
   // Create new session
   const handleCreateSession = async () => {
     if (!seedText.trim()) return
@@ -819,13 +1002,20 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
     setExpandingNodes(prev => new Set(prev).add(nodeId))
 
     try {
+      const requestBody = { action: 'expand', nodeId }
+      console.log('[Expand] Sending request:', {
+        url: `/api/idea-bank/ideation/${currentSession.id}/expand`,
+        body: requestBody,
+        authToken: localStorage.getItem('auth_token') ? 'present' : 'MISSING',
+      })
+      
       const response = await fetch(`/api/idea-bank/ideation/${currentSession.id}/expand`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
         },
-        body: JSON.stringify({ action: 'expand', nodeId }),
+        body: JSON.stringify(requestBody),
       })
 
       if (response.ok) {
@@ -854,7 +1044,7 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
 
           // Add new nodes and edges to existing state - SILK SMOOTH
           // Combine all node updates in a single setState to avoid race conditions
-          const newNodeIds = newNodesForFlow.map(n => n.id)
+          const newNodeIds = newNodesForFlow.map((n: any) => n.id)
           
           setNodes(prevNodes => {
             // First add the new nodes
@@ -883,7 +1073,7 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
           setTimeout(() => {
             setNewNodes(prev => {
               const next = new Set(prev)
-              newNodeIds.forEach(id => next.delete(id))
+              newNodeIds.forEach((id: string) => next.delete(id))
               return next
             })
           }, 600)
@@ -927,10 +1117,20 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
           throw new Error(data.error || 'Expansion failed')
         }
       } else {
-        throw new Error('Expansion request failed')
+        // Try to get the actual error message from the response
+        let errorMessage = 'Expansion request failed'
+        try {
+          const errorData = await response.json()
+          errorMessage = errorData.error || `Server error (${response.status})`
+        } catch {
+          errorMessage = `Server error (${response.status}): ${response.statusText}`
+        }
+        console.error('[Expand] Server error:', response.status, errorMessage)
+        throw new Error(errorMessage)
       }
     } catch (e) {
-      setError('Failed to expand node')
+      const errorMsg = e instanceof Error ? e.message : 'Failed to expand node'
+      setError(errorMsg)
       console.error('Expansion error:', e)
     } finally {
       // Clear expanding state
@@ -1200,6 +1400,15 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
 
   // Reset workspace
   const handleReset = () => {
+    // Clear persisted session data
+    try {
+      localStorage.removeItem(STORAGE_KEYS.SESSION_ID)
+      localStorage.removeItem(STORAGE_KEYS.SELECTED_NODES)
+      localStorage.removeItem(STORAGE_KEYS.COLLAPSED_NODES)
+    } catch (e) {
+      console.warn('Failed to clear session storage:', e)
+    }
+    
     setCurrentSession(null)
     setStage('idle')
     setSeedText('')
@@ -1208,10 +1417,28 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
     setNodes([])
     setEdges([])
     setSelectedNodes(new Set())
+    setCollapsedNodes(new Set())
     setIdeaFrames([])
     setShowTray(false)
     setShowIdeaPanel(false)
     setError(null)
+  }
+
+  // ===== RESTORING SESSION VIEW =====
+  // Shows while checking for and loading a saved session
+  if (isRestoringSession) {
+    return (
+      <div className="min-h-[calc(100vh-80px)] flex items-center justify-center p-8">
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          className="text-center"
+        >
+          <Loader2 className="w-8 h-8 animate-spin text-violet-500 mx-auto mb-4" />
+          <p className="text-slate-500">Restoring your session...</p>
+        </motion.div>
+      </div>
+    )
   }
 
   // ===== INPUT VIEW =====
@@ -1568,74 +1795,15 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
     )
   }
 
-  // ===== PROCESSING VIEW (Loading Overlay) =====
+  // ===== PROCESSING VIEW (Rich Animated Display) =====
   // Shows for: normalizing, classifying, mapping_contradictions, expanding, checking_obviousness, generating stages
   if (isProcessingView(stage)) {
-    const stages = ['Analyze', 'Classify', 'Contradictions', 'Build', 'Generate']
-    const stageIdx = stage === 'normalizing' ? 0 : 
-                     stage === 'classifying' ? 1 : 
-                     stage === 'mapping_contradictions' ? 2 :
-                     stage === 'expanding' ? 3 :
-                     stage === 'checking_obviousness' ? 4 :
-                     stage === 'generating' ? 4 : 0
-    
     return (
-      <div className="min-h-[calc(100vh-80px)] flex items-center justify-center p-8">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="w-full max-w-lg text-center"
-        >
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200/50 p-8">
-            <Loader2 className="w-16 h-16 animate-spin text-violet-500 mx-auto mb-6" />
-            <h3 className="text-xl font-bold text-slate-900 mb-2">
-              {stage === 'normalizing' && 'Analyzing Your Invention'}
-              {stage === 'classifying' && 'Classifying Invention Type'}
-              {stage === 'mapping_contradictions' && 'Mapping Technical Contradictions'}
-              {stage === 'expanding' && 'Building Mind Map'}
-              {stage === 'checking_obviousness' && 'Checking Combination Novelty'}
-              {stage === 'generating' && 'Generating Inventive Ideas'}
-            </h3>
-            <p className="text-slate-500 mb-6">
-              {stage === 'normalizing' && 'Extracting key components, contradictions, and unstated assumptions...'}
-              {stage === 'classifying' && 'Identifying invention category and archetypes...'}
-              {stage === 'mapping_contradictions' && 'Applying TRIZ principles to resolve conflicts...'}
-              {stage === 'expanding' && 'Creating dimension families and options...'}
-              {stage === 'checking_obviousness' && 'Ensuring combination is non-obvious...'}
-              {stage === 'generating' && 'Forcing inventive leaps with analogy transfer...'}
-            </p>
-            
-            {/* Progress Steps */}
-            <div className="flex justify-center gap-1 mb-6 flex-wrap">
-              {stages.map((step, idx) => (
-                <div key={step} className="flex items-center">
-                  <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold transition-all
-                    ${idx < stageIdx ? 'bg-green-500 text-white' : 
-                      idx === stageIdx ? 'bg-violet-500 text-white animate-pulse' : 
-                      'bg-slate-200 text-slate-500'}`}>
-                    {idx < stageIdx ? '✓' : idx + 1}
-                  </div>
-                  {idx < stages.length - 1 && <div className={`w-4 h-0.5 ${idx < stageIdx ? 'bg-green-500' : 'bg-slate-200'}`} />}
-                </div>
-              ))}
-            </div>
-            
-            {/* Stage Description */}
-            <div className="text-xs text-slate-400 mb-4">
-              {stages[stageIdx]}
-            </div>
-
-            {/* Cancel Button */}
-            <Button
-              variant="outline"
-              onClick={handleReset}
-              className="text-slate-500"
-            >
-              Cancel
-            </Button>
-          </div>
-        </motion.div>
-      </div>
+      <IdeationProcessingView
+        stage={stage}
+        seedText={currentSession?.seedText || seedText}
+        onCancel={handleReset}
+      />
     )
   }
 

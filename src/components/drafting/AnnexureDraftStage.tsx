@@ -232,7 +232,7 @@ function ValidationPanel({
   ]
 
   // Get celebration message based on current day and time
-  const getCelebrationMessage = () => {
+  const getCelebrationMessage = useCallback(() => {
     const now = new Date()
     const hour = now.getHours()
     const day = now.getDay() // 0 = Sunday, 6 = Saturday
@@ -247,9 +247,9 @@ function ValidationPanel({
     let msg = CELEBRATION_MESSAGES.find(m => m.time === timeOfDay && m.day === day)
     if (!msg) msg = CELEBRATION_MESSAGES.find(m => m.time === timeOfDay)
     if (!msg) msg = CELEBRATION_MESSAGES[0] // Ultimate fallback
-    
+
     return msg
-  }
+  }, [])
 
   // Numerical validation state
   const [numericIssues, setNumericIssues] = useState<ValidationIssue[]>([])
@@ -610,7 +610,7 @@ function ValidationPanel({
       return () => clearTimeout(timer)
     }
     prevScoreRef.current = currentScore
-  }, [aiSummary?.overallScore])
+  }, [aiSummary?.overallScore, getCelebrationMessage])
 
   // Calculate counts
   const numericErrorCount = numericIssues.filter(i => i.type === 'error').length

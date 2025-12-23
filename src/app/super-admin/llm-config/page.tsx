@@ -10,7 +10,7 @@
  * - Set fallback models and token limits
  */
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { unstable_noStore as noStore } from 'next/cache'
 
@@ -196,21 +196,7 @@ export default function LLMConfigPage() {
     maxTokensOut?: number
   } | null>(null)
 
-  useEffect(() => {
-    if (!user) {
-      window.location.href = '/login'
-      return
-    }
-
-    if (!user.roles?.includes('SUPER_ADMIN')) {
-      window.location.href = '/dashboard'
-      return
-    }
-
-    fetchData()
-  }, [user])
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true)
       setError(null)
@@ -240,7 +226,21 @@ export default function LLMConfigPage() {
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    if (!user) {
+      window.location.href = '/login'
+      return
+    }
+
+    if (!user.roles?.includes('SUPER_ADMIN')) {
+      window.location.href = '/dashboard'
+      return
+    }
+
+    fetchData()
+  }, [user, fetchData])
 
   const handleSetStageModel = async (stageId: string, modelId: string, fallbacks: string[] = [], maxTokensIn?: number, maxTokensOut?: number) => {
     if (!selectedPlan) return

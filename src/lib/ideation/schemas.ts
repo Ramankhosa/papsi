@@ -169,12 +169,18 @@ export const DimensionNodeSchema = z.object({
   id: z.string().min(1).describe('Unique node ID within the graph'),
   type: MindMapNodeTypeEnum,
   title: z.string().min(1),
+  description: z.string().optional(),
   descriptionShort: z.string().optional(),
   family: z.string().optional().describe('Dimension family name'),
   selectable: z.boolean().default(true),
   defaultExpanded: z.boolean().default(false),
   tags: z.array(z.string()).default([]),
   parentId: z.string().optional().describe('Parent node ID for hierarchy'),
+  positionX: z.number().optional().describe('X coordinate for React Flow positioning'),
+  positionY: z.number().optional().describe('Y coordinate for React Flow positioning'),
+  state: z.string().optional().describe('Node expansion state'),
+  depth: z.number().optional().describe('Node depth in hierarchy'),
+  payloadJson: z.any().optional().describe('Additional payload data'),
 });
 export type DimensionNode = z.infer<typeof DimensionNodeSchema>;
 

@@ -937,7 +937,7 @@ function AddSectionModal({
             <h4 className="text-white font-medium text-sm">Context Injection Defaults</h4>
           </div>
           <p className="text-xs text-slate-400 mb-3">
-            What data should be injected into this section's AI prompt?
+            What data should be injected into this section&apos;s AI prompt?
           </p>
           
           <div className="grid grid-cols-2 gap-3">
@@ -1221,7 +1221,7 @@ function EditSectionModal({
             <h4 className="text-white font-medium">Context Injection Defaults</h4>
           </div>
           <p className="text-xs text-slate-400 mb-4">
-            Select what data should be injected into this section's AI prompt by default. 
+            Select what data should be injected into this section&apos;s AI prompt by default. 
             These apply to ALL countries unless overridden at the country level.
           </p>
           
@@ -1731,7 +1731,7 @@ function MappingDetailsModal({
               </div>
               <p className="text-xs text-slate-400 mb-4">
                 Override what data gets injected into this section for {country?.name || countryCode}. 
-                Use "Default" to inherit from the superset section settings.
+                Use &quot;Default&quot; to inherit from the superset section settings.
               </p>
               
               <div className="grid grid-cols-2 gap-4">
@@ -1755,7 +1755,7 @@ function MappingDetailsModal({
                   >
                     <option value="default">Default (use superset)</option>
                     <option value="true">✓ Inject Prior Art</option>
-                    <option value="false">✗ Don't Inject</option>
+                    <option value="false">✗ Don&apos;t Inject</option>
                   </select>
                 </div>
 
@@ -1779,7 +1779,7 @@ function MappingDetailsModal({
                   >
                     <option value="default">Default (use superset)</option>
                     <option value="true">✓ Inject Figures</option>
-                    <option value="false">✗ Don't Inject</option>
+                    <option value="false">✗ Don&apos;t Inject</option>
                   </select>
                 </div>
 
@@ -1827,7 +1827,7 @@ function MappingDetailsModal({
                   >
                     <option value="default">Default (use superset)</option>
                     <option value="true">✓ Inject Components</option>
-                    <option value="false">✗ Don't Inject</option>
+                    <option value="false">✗ Don&apos;t Inject</option>
                   </select>
                 </div>
               </div>

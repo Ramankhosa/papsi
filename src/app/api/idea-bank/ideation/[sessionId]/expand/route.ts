@@ -23,12 +23,19 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     }
 
     const { sessionId } = await params;
-    const body = await request.json();
+    
+    // Parse body with error handling
+    let body: any;
+    try {
+      body = await request.json();
+    } catch (parseError) {
+      console.error('[Expand API] Failed to parse request body:', parseError);
+      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    }
+    
     const { action, nodeId } = body;
 
-    if (action !== 'expand') {
-      return NextResponse.json({ error: 'Invalid action' }, { status: 400 });
-    }
+    console.log('[Expand API] Received request:', { sessionId, action, nodeId, body });
 
     // Get the current session to check ownership
     const session = await IdeationService.getSession(sessionId);
@@ -45,6 +52,47 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
     request.headers.forEach((value, key) => {
       requestHeaders[key] = value;
     });
+
+    // Handle 'initialize' action - creates the dimension family nodes
+    if (action === 'initialize') {
+      console.log('[Expand API] Initializing dimensions for session:', sessionId);
+      const nodes = await IdeationService.initializeDimensions(sessionId);
+      
+      // Return the initialized graph
+      const transformedNodes = nodes.map(node => ({
+        id: node.nodeId,
+        type: node.type,
+        position: { x: node.positionX || 0, y: node.positionY || 0 },
+        data: {
+          dbId: node.id,
+          title: node.title,
+          description: node.description,
+          family: node.family,
+          tags: node.tags,
+          state: node.state,
+          selectable: node.selectable,
+          depth: node.depth,
+          parentId: node.parentNodeId,
+        },
+      }));
+
+      return NextResponse.json({
+        success: true,
+        graph: { nodes: transformedNodes, edges: [] },
+        message: `Initialized ${nodes.length} dimension nodes`,
+      });
+    }
+
+    // Handle 'expand' action - expands a specific node
+    if (action !== 'expand') {
+      console.error('[Expand API] Invalid action:', action);
+      return NextResponse.json({ error: `Invalid action: ${action}. Use 'initialize' or 'expand'` }, { status: 400 });
+    }
+
+    if (!nodeId) {
+      console.error('[Expand API] Missing nodeId');
+      return NextResponse.json({ error: 'Missing nodeId' }, { status: 400 });
+    }
 
     // Expand the node and get the new graph data
     const graphData = await IdeationService.expandDimensionNode({

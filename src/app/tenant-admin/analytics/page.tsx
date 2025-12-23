@@ -158,7 +158,7 @@ export default function TenantAdminAnalyticsPage() {
             <div className="p-3 bg-orange-50 rounded-lg">
               <h4 className="font-medium text-orange-900">Consider Upgrading</h4>
               <p className="text-sm text-orange-700 mt-1">
-                You're approaching 80% of your monthly limit. Consider upgrading for next month.
+                You&apos;re approaching 80% of your monthly limit. Consider upgrading for next month.
               </p>
             </div>
           </div>

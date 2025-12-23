@@ -124,7 +124,7 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
   }
   // Patents for claim refinement should ONLY come from the claim refinement config
   // DO NOT fall back to relatedArtSelections as those are for prior art drafting, not claim refinement
-  const optionsFromConfig = claimRefSelectedPatentsFromConfig
+  const optionsFromConfig = useMemo(() => claimRefSelectedPatentsFromConfig
     .map((p: any) => {
       const id = normalizePatentId(p)
       if (!id) return null
@@ -135,7 +135,7 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
         source: 'config' as const
       }
     })
-    .filter(Boolean) as Array<{ id: string; title: string; threat: string; source: 'config' }>
+    .filter(Boolean) as Array<{ id: string; title: string; threat: string; source: 'config' }>, [claimRefSelectedPatentsFromConfig])
 
   const configIdsKey = optionsFromConfig.map((p) => p.id).join('|')
   // Only use patents explicitly selected for claim refinement - no fallback to prior art selections
@@ -183,7 +183,7 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
     setUseAuto(mode !== 'manual')
     setUseManual(mode === 'manual' || mode === 'hybrid' || !!claimRefManualText || !!session?.manualPriorArt)
     setSelectedPatents(nextSelected)
-  }, [claimRefConfig.mode, claimRefManualText, session?.manualPriorArt, configIdsKey])
+  }, [claimRefConfig.mode, claimRefManualText, session?.manualPriorArt, configIdsKey, optionsFromConfig])
 
   useEffect(() => {
     if (preview?.refinedClaims) {

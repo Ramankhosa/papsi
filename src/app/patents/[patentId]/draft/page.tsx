@@ -426,7 +426,7 @@ export default function PatentDraftingPage() {
   const getCurrentStage = useCallback(() => {
     if (!session) return 'IDEA_ENTRY'
     return normalizeStage(session.status)
-  }, [session?.status])
+  }, [session])
 
   const StageComponent = useMemo(() => {
     const stage = getCurrentStage()

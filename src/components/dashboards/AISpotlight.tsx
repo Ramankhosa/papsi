@@ -64,7 +64,7 @@ export default function AISpotlight({ draftsCount, latestNoveltySearch, userRese
 
     const randomIndex = Math.floor(Math.random() * suggestions.length)
     setCurrentSuggestion(suggestions[randomIndex])
-  }, [draftsCount, latestNoveltySearch, router, userReservations])
+  }, [draftsCount, latestNoveltySearch, router])
 
   useEffect(() => {
     generateSuggestion()

@@ -61,7 +61,7 @@ export default function NoveltySearchPage() {
           </div>
           <h3 className="text-lg font-medium text-gray-900 mb-2">Access Denied</h3>
           <p className="text-gray-600 mb-4">
-            You don't have permission to access the Novelty Search feature. Please contact your administrator for
+            You don&apos;t have permission to access the Novelty Search feature. Please contact your administrator for
             access.
           </p>
           <button
