@@ -1,17 +1,34 @@
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import Stage4ResultsDisplay from './Stage4ResultsDisplay';
+import NoveltyStageNav from './NoveltyStageNav';
+import NoveltyFloatingButtons from './NoveltyFloatingButtons';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Textarea } from '../ui/textarea';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
-import { Progress } from '../ui/progress';
 import { Badge } from '../ui/badge';
 import { Alert, AlertDescription } from '../ui/alert';
-import { Loader2, Search, FileText, AlertCircle, CheckCircle, XCircle, FolderOpen, Check, Eye, AlertTriangle } from 'lucide-react';
-// import { NoveltySearchStatus, NoveltySearchStage } from '@prisma/client';
+import { 
+  Loader2, 
+  Search, 
+  FileText, 
+  AlertCircle, 
+  CheckCircle, 
+  XCircle, 
+  FolderOpen, 
+  Check, 
+  Eye, 
+  AlertTriangle,
+  Sparkles,
+  Zap,
+  ArrowRight,
+  RefreshCw,
+  ExternalLink
+} from 'lucide-react';
 
 // Local string constants for UI mapping
 const NoveltySearchStatus = {
@@ -41,9 +58,9 @@ const STAGE_LABELS = {
 
 const STAGE_PROGRESS = {
   PENDING: 0,
-  STAGE_0_COMPLETED: 25,
-  STAGE_1_COMPLETED: 50,
-  STAGE_3_5_COMPLETED: 75,
+  STAGE_0_COMPLETED: 20,
+  STAGE_1_COMPLETED: 40,
+  STAGE_3_5_COMPLETED: 70,
   COMPLETED: 100
 };
 
@@ -62,6 +79,9 @@ interface NoveltySearchWorkflowProps {
   projectId?: string;
   onComplete?: (searchId: string) => void;
   initialSearchId?: string;
+  initialTitle?: string;
+  initialDescription?: string;
+  ideaId?: string;
 }
 
 interface SearchState {
@@ -73,27 +93,43 @@ interface SearchState {
   isLoading: boolean;
 }
 
+// Stage tab types
+const STAGE_TABS = ['0','1','1.5','3.5','3.5c','4'] as const;
+type StageTab = (typeof STAGE_TABS)[number];
 
-const STATUS_COLORS = {
-  [NoveltySearchStatus.PENDING]: 'bg-gray-500',
-  [NoveltySearchStatus.STAGE_0_COMPLETED]: 'bg-blue-500',
-  [NoveltySearchStatus.STAGE_1_COMPLETED]: 'bg-yellow-500',
-  [NoveltySearchStatus.STAGE_3_5_COMPLETED]: 'bg-orange-500',
-  [NoveltySearchStatus.COMPLETED]: 'bg-green-500',
-  [NoveltySearchStatus.FAILED]: 'bg-red-500'
-} as const;
+const STAGE_TAB_LABELS: Record<StageTab, string> = {
+  '0': 'Idea Setup',
+  '1': 'Patent Search',
+  '1.5': 'AI Relevance',
+  '3.5': 'Feature Analysis',
+  '3.5c': 'Patent Remarks',
+  '4': 'Final Report'
+};
 
 export default function NoveltySearchWorkflow({
   patentId,
   projectId: initialProjectId,
   onComplete,
-  initialSearchId
+  initialSearchId,
+  initialTitle,
+  initialDescription,
+  ideaId
 }: NoveltySearchWorkflowProps) {
   const [formData, setFormData] = useState({
-    title: '',
-    inventionDescription: '',
+    title: initialTitle || '',
+    inventionDescription: initialDescription || '',
     jurisdiction: 'IN'
   });
+  
+  useEffect(() => {
+    if (initialTitle || initialDescription) {
+      setFormData(prev => ({
+        ...prev,
+        title: initialTitle || prev.title,
+        inventionDescription: initialDescription || prev.inventionDescription
+      }));
+    }
+  }, [initialTitle, initialDescription]);
 
   const [searchState, setSearchState] = useState<SearchState>({
     searchId: null,
@@ -104,9 +140,6 @@ export default function NoveltySearchWorkflow({
     isLoading: false
   });
 
-  // State for showing idea bank
-  const [showIdeaBank, setShowIdeaBank] = useState(false);
-
   const [stageProgress, setStageProgress] = useState({
     stage0: 0,
     stage1: 0,
@@ -115,39 +148,18 @@ export default function NoveltySearchWorkflow({
   });
 
   const [completedStages, setCompletedStages] = useState<string[]>([]);
-  // Stage view tabs: 0, 1, 1.5, 3.5, 4
-  const STAGE_TABS = ['0','1','1.5','3.5','4'] as const;
-  type StageTab = (typeof STAGE_TABS)[number];
-  const STAGE_TAB_LABELS: Record<StageTab, string> = {
-    '0': 'Idea Setup',
-    '1': 'Patent Search',
-    '1.5': 'AI Relevance',
-    '3.5': 'Feature Analysis',
-    '4': 'Final Report'
+  const [selectedStageTab, setSelectedStageTab] = useState<StageTab>('0');
+  const [activeExecutionStage, setActiveExecutionStage] = useState<string | null>(null);
+
+  // Map stage tab keys to execution stage numbers
+  const stageNumberByKey: Record<StageTab, string | null> = {
+    '0': null,
+    '1': '1',
+    '1.5': '1.5',
+    '3.5': '3.5',
+    '3.5c': '3.5c',
+    '4': '4'
   };
-  const [selectedStageTab, setSelectedStageTab] = useState<string>('0');
-
-  // selectedProject is derived after state initializations (memoized)
-  // Note: defined later once projects/selectedProjectId states exist
-
-  // Compute default selected tab when status/results change
-  useEffect(() => {
-    const s = searchState.status;
-    if (!s) return;
-    if (s === NoveltySearchStatus.PENDING) { setSelectedStageTab('0'); return; }
-    if (s === NoveltySearchStatus.STAGE_0_COMPLETED) { setSelectedStageTab('1'); return; }
-    if (s === NoveltySearchStatus.STAGE_1_COMPLETED) {
-      // If AI Relevance (Stage 1.5) is available, show that tab; otherwise stay on Stage 1
-      setSelectedStageTab(hasStage15() ? '1.5' : '1');
-      return;
-    }
-    if (s === NoveltySearchStatus.STAGE_3_5_COMPLETED) {
-      // Combined Stage 3.5 (feature mapping + aggregation)
-      setSelectedStageTab('3.5');
-      return;
-    }
-    if (s === NoveltySearchStatus.COMPLETED) { setSelectedStageTab('4'); return; }
-  }, [searchState.status, searchState.results]);
 
   // Evidence panel state (Stage 3.5 matrix cell details)
   const [selectedEvidence, setSelectedEvidence] = useState<null | {
@@ -162,28 +174,11 @@ export default function NoveltySearchWorkflow({
     link?: string;
   }>(null);
 
-  // Stage 1 simulation state
+  // Stage simulation states
   const [isStage1Simulating, setIsStage1Simulating] = useState(false);
   const [stage1Message, setStage1Message] = useState('');
-
-  // Borrowed progress steps from Stage 3.5 related art search
-  const stage1Messages = [
-    'ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â Scanning through 12M+ global patent database...',
-    'ÃƒÂ°Ã…Â¸Ã…Â½Ã‚Â¯ Applying advanced semantic analysis to your invention...',
-    'ÃƒÂ°Ã…Â¸Ã‚Â§Ã‚Â  Using proprietary AI algorithms for relevance matching...',
-    'ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã…Â  Calculating multi-dimensional similarity scores...',
-    'ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ‚Â¬ Cross-referencing with CPC/IPC classification systems...',
-    'ÃƒÂ¢Ã…Â¡Ã‚Â¡ Filtering results through novelty assessment engine...',
-    'ÃƒÂ¢Ã…â€œÃ‚Â¨ Ranking patents by technical relevance and impact...',
-    'ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã¢â‚¬Â¹ Preparing final results with comprehensive metadata...'
-  ];
-
-  // Stage 3.5 simulation state
   const [isStage35Simulating, setIsStage35Simulating] = useState(false);
   const [stage35Message, setStage35Message] = useState('');
-  const [isTransitioning, setIsTransitioning] = useState(false);
-
-  // Stage 3.5a simulation state
   const [isStage35aSimulating, setIsStage35aSimulating] = useState(false);
   const [stage35aMessage, setStage35aMessage] = useState('');
 
@@ -193,28 +188,36 @@ export default function NoveltySearchWorkflow({
   const [editedFeatures, setEditedFeatures] = useState<string[]>([]);
   const [editingFeatureIndex, setEditingFeatureIndex] = useState<number | null>(null);
   const [newFeatureText, setNewFeatureText] = useState('');
-
-  // Auto progression and Stage 0 approval
   const [autoMode, setAutoMode] = useState(false);
   const [stage0Approved, setStage0Approved] = useState(false);
 
+  // Progress messages
+  const stage1Messages = [
+    '🔍 Scanning through 12M+ global patent database...',
+    '🎯 Applying advanced semantic analysis to your invention...',
+    '🧠 Using proprietary AI algorithms for relevance matching...',
+    '📊 Calculating multi-dimensional similarity scores...',
+    '🔬 Cross-referencing with CPC/IPC classification systems...',
+    '⚡ Filtering results through novelty assessment engine...',
+    '📈 Ranking patents by technical relevance and impact...',
+    '📋 Preparing final results with comprehensive metadata...'
+  ];
 
   const stage35Messages = [
-    'Comparing invention claims with patent claimsÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦',
-    'Analyzing technical differencesÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦',
-    'Evaluating novelty impactÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦',
-    'Assessing obviousnessÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦',
-    'Reviewing prior art citationsÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦',
-    'Generating assessment reportÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦'
+    'Comparing invention claims with patent claims…',
+    'Analyzing technical differences…',
+    'Evaluating novelty impact…',
+    'Assessing obviousness…',
+    'Reviewing prior art citations…',
+    'Generating assessment report…'
   ];
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(initialProjectId || '');
-  // Derive the selected project object for display (memoized)
   const selectedProject = useMemo(() => projects.find(p => p.id === selectedProjectId), [projects, selectedProjectId]);
   const [isLoadingProjects, setIsLoadingProjects] = useState(true);
 
-  // If an existing searchId is provided (view mode from history), preload its status/results
+  // Load existing search if provided
   useEffect(() => {
     if (!initialSearchId) return;
 
@@ -237,9 +240,7 @@ export default function NoveltySearchWorkflow({
         }));
 
         const response = await fetch(`/api/novelty-search/${initialSearchId}`, {
-          headers: {
-            'Authorization': `Bearer ${authToken}`
-          },
+          headers: { 'Authorization': `Bearer ${authToken}` },
           cache: 'no-store'
         });
 
@@ -247,7 +248,6 @@ export default function NoveltySearchWorkflow({
 
         if (response.ok && data.search) {
           const search = data.search;
-
           setSearchState(prev => ({
             ...prev,
             searchId: initialSearchId,
@@ -291,81 +291,153 @@ export default function NoveltySearchWorkflow({
     loadExistingSearch();
   }, [initialSearchId]);
 
-
   // Helper function to get current stage display info
-  const getCurrentStageInfo = () => {
+  const getCurrentStageInfo = useCallback(() => {
     const currentStatus = searchState.status || 'PENDING';
     return {
       label: STAGE_LABELS[currentStatus as keyof typeof STAGE_LABELS] || 'Start Search',
       progress: STAGE_PROGRESS[currentStatus as keyof typeof STAGE_PROGRESS] || 0
     };
-  };
+  }, [searchState.status]);
 
-  // Helper function to get previous/next tabs (UI navigation only)
-  const getPrevNextStages = () => {
-    const idx = STAGE_TABS.indexOf(selectedStageTab as any);
-    const prev = idx > 0 ? STAGE_TABS[idx - 1] : null;
-    const next = idx >= 0 && idx < STAGE_TABS.length - 1 ? STAGE_TABS[idx + 1] : null;
-    return { prev, next };
-  };
-
-  // Helper: has Stage 1.5 (AI Relevance) been computed and attached to results?
-  const hasStage15 = (): boolean => {
+  // Helper: has Stage 1.5 (AI Relevance) been computed
+  const hasStage15 = useCallback((): boolean => {
     const r: any = searchState.results || {};
     const gate = r?.aiRelevance || r?.stage1?.aiRelevance;
     return !!(gate && (Array.isArray(gate.accepted) || Array.isArray(gate.borderline) || Array.isArray(gate.rejected)));
-  };
+  }, [searchState.results]);
 
-  // Map status to specific stage execution numbers
-  const getStageNumberForStatus = (status: string): string | null => {
-    switch (status) {
-      case 'PENDING':
-      case NoveltySearchStatus.STAGE_0_COMPLETED:
-        return '1';
-      case NoveltySearchStatus.STAGE_1_COMPLETED:
-        // If Stage 1.5 AI Relevance hasnÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢t been run yet, run it next; otherwise run combined 3.5 (a+b)
-        return hasStage15() ? '3.5' : '1.5';
-      case NoveltySearchStatus.STAGE_3_5_COMPLETED:
-        // After combined Stage 3.5, always move forward to Stage 4
-        return '4';
-      case NoveltySearchStatus.COMPLETED:
-        return null; // Already at final stage
-      default:
-        return null;
+  const hasStage15Results = useMemo(() => hasStage15(), [hasStage15]);
+
+  const stage0Snapshot = useMemo(() => {
+    const root: any = searchState.results || {};
+    const s0 = root.stage0 || root;
+    const features = Array.isArray(s0?.inventionFeatures) ? s0.inventionFeatures.length : 0;
+    return {
+      hasQuery: !!s0?.searchQuery,
+      featuresCount: features,
+    };
+  }, [searchState.results]);
+
+  const stage1Results = useMemo(() => {
+    const root: any = searchState.results || {};
+    const results = root.pqaiResults || root.stage1?.pqaiResults;
+    return Array.isArray(results) ? results : [];
+  }, [searchState.results]);
+
+  const hasStage1Results = stage1Results.length > 0;
+
+  const hasStage35Results = useMemo(() => {
+    const root: any = searchState.results || {};
+    const carrier = root.stage35 || root.stage3_5 || root;
+    const coverage = carrier?.per_patent_coverage || root.per_patent_coverage;
+    const uniqueness = carrier?.per_feature_uniqueness || root.per_feature_uniqueness;
+    const agg = carrier?.feature_coverage_summary || carrier?.stage3_5;
+    return !!(carrier?.stage35 || coverage || uniqueness || agg || root.stage4);
+  }, [searchState.results]);
+
+  const hasStage35cResults = useMemo(() => {
+    const root: any = searchState.results || {};
+    const container = root.stage4 || root;
+    const remarks = container?.per_patent_remarks;
+    return Array.isArray(remarks) && remarks.length > 0;
+  }, [searchState.results]);
+
+  const hasStage4Results = useMemo(() => {
+    const root: any = searchState.results || {};
+    return !!root.stage4;
+  }, [searchState.results]);
+
+  // Auto-navigate to appropriate tab when status changes
+  useEffect(() => {
+    const s = searchState.status;
+    if (!s) return;
+    if (s === NoveltySearchStatus.PENDING) { setSelectedStageTab('0'); return; }
+    if (s === NoveltySearchStatus.STAGE_0_COMPLETED) { setSelectedStageTab('1'); return; }
+    if (s === NoveltySearchStatus.STAGE_1_COMPLETED) {
+      setSelectedStageTab(hasStage15() ? '1.5' : '1');
+      return;
     }
-  };
-
-  const getStageNumberForPrevStatus = (status: string): string | null => {
-    switch (status) {
-      case NoveltySearchStatus.STAGE_0_COMPLETED:
-        return '0';
-      case NoveltySearchStatus.STAGE_1_COMPLETED:
-        // Navigate back to Stage 0 view (no API call); return '0' sentinel
-        return '0';
-      case NoveltySearchStatus.STAGE_3_5_COMPLETED:
-        // If Stage 1.5 exists, allow stepping back to it; else back to combined Stage 3.5
-        return hasStage15() ? '1.5' : '3.5';
-      case NoveltySearchStatus.COMPLETED:
-        return '4';
-      default:
-        return null;
+    if (s === NoveltySearchStatus.STAGE_3_5_COMPLETED) {
+      setSelectedStageTab(hasStage35cResults ? '3.5c' : '3.5');
+      return;
     }
-  };
+    if (s === NoveltySearchStatus.COMPLETED) { setSelectedStageTab('4'); return; }
+  }, [searchState.status, hasStage15, hasStage35cResults]);
 
-  // Fetch projects on component mount
+  const runningStageKey = useMemo<StageTab | null>(() => {
+    if (!activeExecutionStage) return null;
+    if (activeExecutionStage.startsWith('3.5')) return '3.5';
+    if (activeExecutionStage === '1.5') return '1.5';
+    if (activeExecutionStage === '1') return '1';
+    if (activeExecutionStage === '4') return '4';
+    return null;
+  }, [activeExecutionStage]);
+
+  const failedStageKey = useMemo<StageTab | null>(() => {
+    if (searchState.status !== NoveltySearchStatus.FAILED) return null;
+    switch (searchState.currentStage) {
+      case NoveltySearchStage.STAGE_0: return '0';
+      case NoveltySearchStage.STAGE_1: return '1';
+      case NoveltySearchStage.STAGE_3_5: return '3.5';
+      case NoveltySearchStage.STAGE_4: return '4';
+      default: return selectedStageTab;
+    }
+  }, [searchState.status, searchState.currentStage, selectedStageTab]);
+
+  const isStageCompleted = useCallback((key: StageTab) => {
+    switch (key) {
+      case '0':
+        return stage0Snapshot.hasQuery || stage0Snapshot.featuresCount > 0 || !!searchState.searchId;
+      case '1':
+        return hasStage1Results || searchState.status === NoveltySearchStatus.STAGE_1_COMPLETED;
+      case '1.5':
+        return hasStage15Results;
+      case '3.5':
+        return hasStage35Results || searchState.status === NoveltySearchStatus.STAGE_3_5_COMPLETED;
+      case '3.5c':
+        return hasStage35cResults;
+      case '4':
+        return hasStage4Results || searchState.status === NoveltySearchStatus.COMPLETED;
+      default:
+        return false;
+    }
+  }, [hasStage1Results, hasStage15Results, hasStage35Results, hasStage35cResults, hasStage4Results, searchState.searchId, searchState.status, stage0Snapshot.featuresCount, stage0Snapshot.hasQuery]);
+
+  const getStageStatus = useCallback((key: StageTab): 'completed' | 'in_progress' | 'pending' | 'failed' | 'blocked' => {
+    if (runningStageKey === key || (searchState.isLoading && selectedStageTab === key)) return 'in_progress';
+    if (failedStageKey === key) return 'failed';
+    if (isStageCompleted(key)) return 'completed';
+    const idx = STAGE_TABS.indexOf(key);
+    const prevKey = idx > 0 ? STAGE_TABS[idx - 1] : null;
+    if (prevKey && !isStageCompleted(prevKey)) return 'blocked';
+    return 'pending';
+  }, [failedStageKey, isStageCompleted, runningStageKey, searchState.isLoading, selectedStageTab]);
+
+  const stageGuard = useCallback((key: StageTab): string | null => {
+    if (key === '0') {
+      if (searchState.searchId) return 'Stage 0 already generated. Edit or proceed to the next stage.';
+      if (!formData.title.trim() || !formData.inventionDescription.trim()) return 'Add title and invention description to start the search.';
+      return null;
+    }
+    if (!searchState.searchId) return 'Start the novelty search from Idea Setup first.';
+    if (key === '1') return null;
+    if (key === '1.5') return hasStage1Results ? null : 'Run Patent Search before AI Relevance.';
+    if (key === '3.5') return (hasStage1Results || hasStage15Results) ? null : 'Run Patent Search before feature analysis.';
+    if (key === '3.5c') return hasStage35Results ? null : 'Run Feature Analysis before generating remarks.';
+    if (key === '4') return hasStage35Results ? null : 'Run Feature Analysis before generating the report.';
+    return null;
+  }, [formData.inventionDescription, formData.title, hasStage15Results, hasStage1Results, hasStage35Results, searchState.searchId]);
+
+  // Fetch projects on mount
   useEffect(() => {
     fetchProjects();
   }, []);
 
-  // Manual stage progression: Users explicitly control when each stage executes
-  // No automatic stage advancement - each stage must be manually triggered
-
   const fetchProjects = async () => {
     try {
       const response = await fetch('/api/projects', {
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-        }
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
       });
 
       if (response.ok) {
@@ -373,7 +445,6 @@ export default function NoveltySearchWorkflow({
         const userProjects = data.projects || [];
         setProjects(userProjects);
 
-        // If no initial project ID (coming from dashboard), set default project
         if (!initialProjectId && userProjects.length > 0) {
           const defaultProject = userProjects.find((p: Project) => p.name === 'Default Project');
           if (defaultProject) {
@@ -396,12 +467,9 @@ export default function NoveltySearchWorkflow({
       return;
     }
 
-    // Validate selected project exists
     const validProjectId = selectedProjectId && projects.find(p => p.id === selectedProjectId) ? selectedProjectId : null;
 
     setSearchState({ ...searchState, isLoading: true, error: null });
-    console.log('Starting novelty search with data:', { patentId, projectId: validProjectId, ...formData });
-    console.log('Selected project details:', { selectedProjectId, validProjectId, projects: projects.map(p => ({ id: p.id, name: p.name })) });
 
     try {
       const response = await fetch('/api/novelty-search', {
@@ -433,7 +501,6 @@ export default function NoveltySearchWorkflow({
         throw new Error(data.error || 'Failed to start novelty search');
       }
 
-      console.log('Novelty search started successfully:', { searchId: data.searchId, status: data.status });
       setSearchState(prev => ({
         ...prev,
         searchId: data.searchId,
@@ -455,40 +522,35 @@ export default function NoveltySearchWorkflow({
   };
 
   const executeStage = async (stageNumber: string) => {
-    if (!searchState.searchId) return;
+    setActiveExecutionStage(stageNumber);
+    if (!searchState.searchId) {
+      setActiveExecutionStage(null);
+      return;
+    }
 
-    console.log(`[Execution] Attempting to execute stage: ${stageNumber}`);
     setSearchState(prev => ({ ...prev, isLoading: true, error: null }));
 
     if (stageNumber === '1') {
       setIsStage1Simulating(true);
-      console.log('[Stage1][Client] Starting Stage 1. Current results snapshot:', searchState.results);
-      console.log('[Stage1][Client] Stage 0 searchQuery (if available):', (searchState.results as any)?.stage0?.searchQuery);
-      // Simulate sophisticated progress similar to RelatedArtStage
       for (let i = 0; i < stage1Messages.length; i++) {
         setStage1Message(stage1Messages[i]);
-        // 1.8s per step to mirror RelatedArtStage UX
-        // eslint-disable-next-line no-await-in-loop
         await new Promise(resolve => setTimeout(resolve, 1800));
       }
-      setStage1Message('ÃƒÂ°Ã…Â¸Ã¢â‚¬â„¢Ã‚Â¡ Finalizing patent analysis and generating comprehensive report...');
+      setStage1Message('💡 Finalizing patent analysis and generating comprehensive report...');
     } else if (stageNumber === '3.5') {
       setIsStage35Simulating(true);
-      setStage35Message(stage35Messages[0]); // Set first message immediately
-      const s0q = (searchState.results as any)?.stage0?.searchQuery;
-      console.log('[Stage3.5][Client] Preparing to call Stage 3.5 with searchQuery:', s0q);
+      setStage35Message(stage35Messages[0]);
     } else if (stageNumber === '3.5a') {
       setIsStage35aSimulating(true);
       const stage35aMessages = [
-        '?? Selecting top patents by PQAI relevance...',
-        '?? Applying 50% selection with max 20 and min 10...',
-        '?? Canonicalizing patents for feature mapping...',
-        '?? Mapping invention features to patent evidence...',
-        '? Computing coverage and extracting references...'
+        '📊 Selecting top patents by PQAI relevance...',
+        '🎯 Applying 50% selection with max 20 and min 10...',
+        '🔄 Canonicalizing patents for feature mapping...',
+        '📝 Mapping invention features to patent evidence...',
+        '✅ Computing coverage and extracting references...'
       ];
       setStage35aMessage(stage35aMessages[0]);
       for (let i = 1; i < stage35aMessages.length; i++) {
-        // eslint-disable-next-line no-await-in-loop
         await new Promise(resolve => setTimeout(resolve, 1200));
         setStage35aMessage(stage35aMessages[i]);
       }
@@ -501,24 +563,10 @@ export default function NoveltySearchWorkflow({
     }
 
     try {
-      // Prepare optional payload for stage 3.5
       let fetchOptions: RequestInit = {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-        }
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
       };
-
-      if (stageNumber === '3.5a') {
-        // No selection needed; server will use saved Stage 1 PQAI results
-        console.log('[Stage3.5a][Client] Calling Stage 3.5a without selection; server uses Stage 1 PQAI results');
-        fetchOptions = {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-          }
-        };
-      }
 
       const response = await fetch(`/api/novelty-search/${searchState.searchId}/stage/${stageNumber}`, fetchOptions);
 
@@ -527,26 +575,7 @@ export default function NoveltySearchWorkflow({
       try {
         data = rawBody ? JSON.parse(rawBody) : null;
       } catch (parseError) {
-        console.warn(
-          `[Execution] Non-JSON response for stage ${stageNumber} (status ${response.status}):`,
-          rawBody?.slice(0, 500)
-        );
-      }
-
-      console.log(`[Execution] Response from stage ${stageNumber}:`, data);
-      if (stageNumber === '3.5a') {
-        const safeData = data || {};
-        console.log('[Stage3.5a][Client] Detailed response:', {
-          success: safeData.success,
-          status: safeData.status,
-          resultsKeys: safeData.results ? Object.keys(safeData.results) : [],
-          stage35: safeData.results?.stage35 ? 'present' : 'missing',
-          stage35Keys: safeData.results?.stage35 ? Object.keys(safeData.results.stage35) : []
-        });
-      }
-      if (stageNumber === '1') {
-        console.log('[Stage1][Client] Received results keys:', data?.results ? Object.keys(data.results) : 'no results');
-        console.log('[Stage1][Client] PQAI results count:', Array.isArray(data?.results?.pqaiResults) ? data.results.pqaiResults.length : 'n/a');
+        console.warn(`[Execution] Non-JSON response for stage ${stageNumber}:`, rawBody?.slice(0, 500));
       }
 
       if (!response.ok || !data) {
@@ -557,23 +586,22 @@ export default function NoveltySearchWorkflow({
         throw new Error(`${baseError}${response.status ? ` (status ${response.status})` : ''}`);
       }
 
-      // If Stage 1, show the final count message before updating UI
       if (stageNumber === '1') {
         const items = Array.isArray(data?.results?.pqaiResults)
           ? data.results.pqaiResults
           : (Array.isArray(data?.results?.stage1?.pqaiResults) ? data.results.stage1.pqaiResults : []);
-        setStage1Message(`ÃƒÂ¢Ã…â€œÃ‚Â¨ Analysis complete! Found ${items.length} highly relevant patent${items.length !== 1 ? 's' : ''} from millions of global records.`);
+        setStage1Message(`✨ Analysis complete! Found ${items.length} highly relevant patent${items.length !== 1 ? 's' : ''} from millions of global records.`);
         await new Promise(resolve => setTimeout(resolve, 2500));
       }
 
-      // Update progress first
       const stageKey = (stageNumber === '3.5' || stageNumber === '3.5a' || stageNumber === '3.5b' ) ? 'stage3_5' : `stage${stageNumber}`;
       setStageProgress(prev => ({ ...prev, [stageKey]: 100 }));
 
-      // Refresh full aggregated results so navigation can use all stages' data
+      // Refresh full aggregated results
       let effectiveStatus = data.status;
       let effectiveCurrentStage = data.currentStage;
       let effectiveResults = data.results;
+
       try {
         const fullRes = await fetch(`/api/novelty-search/${searchState.searchId}`, {
           headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` },
@@ -584,53 +612,31 @@ export default function NoveltySearchWorkflow({
         try {
           fullJson = fullRaw ? JSON.parse(fullRaw) : null;
         } catch {
-          console.warn(
-            '[Execution] Non-JSON response while refreshing search results:',
-            fullRaw?.slice(0, 500)
-          );
+          console.warn('[Execution] Non-JSON response while refreshing:', fullRaw?.slice(0, 500));
         }
         if (fullRes.ok && fullJson?.success !== false && fullJson?.search) {
           effectiveStatus = fullJson.search.status;
           effectiveCurrentStage = fullJson.search.currentStage;
           effectiveResults = fullJson.search.results;
-          setSearchState(prev => ({
-            ...prev,
-            status: effectiveStatus,
-            currentStage: effectiveCurrentStage,
-            results: effectiveResults,
-            isLoading: false
-          }));
-        } else {
-          // Fallback to stage response payload
-          setSearchState(prev => ({
-            ...prev,
-            status: effectiveStatus,
-            currentStage: effectiveCurrentStage,
-            results: effectiveResults,
-            isLoading: false
-          }));
         }
-      } catch {
-        setSearchState(prev => ({
-          ...prev,
-          status: effectiveStatus,
-          currentStage: effectiveCurrentStage,
-          results: effectiveResults,
-          isLoading: false
-        }));
-      }
+      } catch {}
 
-      console.log(`[Execution] Stage ${stageNumber} complete. New state:`, { status: effectiveStatus, currentStage: effectiveCurrentStage });
+      setSearchState(prev => ({
+        ...prev,
+        status: effectiveStatus,
+        currentStage: effectiveCurrentStage,
+        results: effectiveResults,
+        isLoading: false
+      }));
 
       if (effectiveStatus === NoveltySearchStatus.COMPLETED && onComplete) {
         onComplete(data.searchId);
       }
 
-      // Optional automatic progression through later stages (after Stage 0)
+      // Auto progression
       if (autoMode) {
         const next = getStageNumberForStatus(effectiveStatus);
         if (next) {
-          // Only auto-run from Stage 1 onward; Stage 0 always requires manual confirmation
           await executeStage(next);
         }
       }
@@ -645,97 +651,83 @@ export default function NoveltySearchWorkflow({
     } finally {
       if (stageNumber === '1') {
         setIsStage1Simulating(false);
-      } else if (stageNumber === '3.5') {
+      } else if (stageNumber === '3.5' || stageNumber === '3.5b' || stageNumber === '3.5c') {
         setIsStage35Simulating(false);
       } else if (stageNumber === '3.5a') {
         setIsStage35aSimulating(false);
-      } else if (stageNumber === '3.5b') {
-        setIsStage35Simulating(false);
-      } else if (stageNumber === '3.5c') {
-        setIsStage35Simulating(false);
       }
+      setActiveExecutionStage(null);
     }
   };
 
-  // Simple wrapper to start a stage by number (used by child components)
-  const handleStartStage = async (stageNumber: string) => {
-    await executeStage(stageNumber);
+  const getStageNumberForStatus = (status: string): string | null => {
+    switch (status) {
+      case 'PENDING':
+      case NoveltySearchStatus.STAGE_0_COMPLETED:
+        return '1';
+      case NoveltySearchStatus.STAGE_1_COMPLETED:
+        return hasStage15Results ? '3.5' : '1.5';
+      case NoveltySearchStatus.STAGE_3_5_COMPLETED:
+        return hasStage35cResults ? '4' : '3.5c';
+      case NoveltySearchStatus.COMPLETED:
+        return null;
+      default:
+        return null;
+    }
   };
 
-  const fetchSearchStatus = async () => {
-    if (!searchState.searchId) return;
-
-    const authToken = localStorage.getItem('auth_token');
-    if (!authToken) {
-      console.warn('[Polling] No auth token found, skipping status fetch');
-      setSearchState(prev => ({
-        ...prev,
-        error: 'Authentication token missing. Please log in again.'
-      }));
+  const runStageForKey = useCallback(async (stageKey: StageTab, advance?: boolean) => {
+    const guardMsg = stageGuard(stageKey);
+    if (guardMsg) {
+      setSearchState(prev => ({ ...prev, error: guardMsg }));
+      setSelectedStageTab(stageKey);
       return;
     }
 
-    console.log(`[Polling] Fetching status for searchId: ${searchState.searchId}`);
-
-    try {
-      const response = await fetch(`/api/novelty-search/${searchState.searchId}`, {
-        headers: {
-          'Authorization': `Bearer ${authToken}`
-        },
-        cache: 'no-store'
-      });
-
-      const data = await response.json();
-
-      if (response.ok) {
-        console.log('[Polling] Received status data:', data);
-        setSearchState(prev => ({
-          ...prev,
-          status: data.search.status,
-          currentStage: data.search.currentStage,
-          results: data.search.results
-        }));
-
-        // Update progress based on completed stages
-        const completedStages: string[] = [];
-        if (data.search.stage0CompletedAt) completedStages.push('stage0');
-        if (data.search.stage1CompletedAt) completedStages.push('stage1');
-        if (data.search.stage35CompletedAt) completedStages.push('stage3_5');
-        if (data.search.stage4CompletedAt) completedStages.push('stage4');
-
-        setCompletedStages(completedStages);
-
-        setStageProgress(prev => {
-          const newProgress = { ...prev };
-          completedStages.forEach(stage => {
-            (newProgress as any)[stage] = 100;
-          });
-          return newProgress;
-        });
-      } else {
-        // Handle authentication errors
-        if (response.status === 401 || data.error?.includes('token') || data.error?.includes('auth')) {
-          console.warn('[Polling] Authentication error:', data.error);
-          setSearchState(prev => ({
-            ...prev,
-            error: 'Your session has expired. Please log in again.',
-            status: NoveltySearchStatus.FAILED
-          }));
-          // Stop polling on auth errors
-          return;
-        }
-
-        console.error('[Polling] API error:', response.status, data);
-        setSearchState(prev => ({
-          ...prev,
-          error: data.error || `Failed to fetch search status (${response.status})`
-        }));
-      }
-    } catch (error) {
-      console.error('Failed to fetch search status:', error);
+    if (stageKey === '0') {
+      await startNoveltySearch();
+      if (advance) setSelectedStageTab('1');
+      return;
     }
-  };
 
+    const stageNumber = stageNumberByKey[stageKey];
+    if (!stageNumber) return;
+
+    setSelectedStageTab(stageKey);
+    setActiveExecutionStage(stageNumber);
+    try {
+      await executeStage(stageNumber);
+      if (advance) {
+        const idx = STAGE_TABS.indexOf(stageKey);
+        const next = idx >= 0 && idx < STAGE_TABS.length - 1 ? STAGE_TABS[idx + 1] : null;
+        if (next) setSelectedStageTab(next);
+      }
+    } finally {
+      setActiveExecutionStage(null);
+    }
+  }, [stageGuard, stageNumberByKey]);
+
+  const handlePrevNav = useCallback(() => {
+    const idx = STAGE_TABS.indexOf(selectedStageTab);
+    if (idx <= 0) return;
+    setSelectedStageTab(STAGE_TABS[idx - 1]);
+  }, [selectedStageTab]);
+
+  const handleNextNav = useCallback(() => {
+    const idx = STAGE_TABS.indexOf(selectedStageTab);
+    if (idx < 0 || idx >= STAGE_TABS.length - 1) return;
+    const next = STAGE_TABS[idx + 1];
+    const guardMsg = stageGuard(next);
+    if (guardMsg) {
+      setSearchState(prev => ({ ...prev, error: guardMsg }));
+      return;
+    }
+    setSelectedStageTab(next);
+  }, [selectedStageTab, stageGuard]);
+
+  const handleRunCurrent = useCallback(async () => {
+    await runStageForKey(selectedStageTab);
+  }, [runStageForKey, selectedStageTab]);
 
   // Stage 0 editing functions
   const startEditingStage0 = () => {
@@ -749,12 +741,6 @@ export default function NoveltySearchWorkflow({
 
   const saveStage0Edits = async () => {
     if (!searchState.searchId) return;
-
-    console.log('ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ¢â‚¬Å¾ Saving Stage 0 edits:', {
-      searchId: searchState.searchId,
-      searchQuery: editedSearchQuery,
-      inventionFeatures: editedFeatures
-    });
 
     try {
       const response = await fetch(`/api/novelty-search/${searchState.searchId}`, {
@@ -770,18 +756,11 @@ export default function NoveltySearchWorkflow({
         })
       });
 
-      console.log('ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã‚Â¡ PATCH response status:', response.status);
-
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('ÃƒÂ¢Ã‚ÂÃ…â€™ PATCH response error:', errorText);
         throw new Error(`Failed to save Stage 0 edits: ${response.status} ${errorText}`);
       }
 
-      const result = await response.json();
-      console.log('ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ PATCH response:', result);
-
-      // Update local state
       setSearchState(prev => ({
         ...prev,
         results: {
@@ -791,15 +770,12 @@ export default function NoveltySearchWorkflow({
             searchQuery: editedSearchQuery,
             inventionFeatures: editedFeatures
           },
-          // Keep top-level fields in sync for initial Stage 0 shape
           searchQuery: editedSearchQuery,
           inventionFeatures: editedFeatures
         }
       }));
 
-      // Mark Stage 0 as user-approved after explicit save
       setStage0Approved(true);
-
       setIsEditingStage0(false);
     } catch (error) {
       console.error('Save Stage 0 edits error:', error);
@@ -831,1352 +807,1037 @@ export default function NoveltySearchWorkflow({
     setEditingFeatureIndex(index);
   };
 
-  const saveFeatureEdit = (index: number, newText: string) => {
-    const updated = [...editedFeatures];
-    updated[index] = newText.trim();
-    setEditedFeatures(updated);
-    setEditingFeatureIndex(null);
-  };
-
-  const resumeSearch = async () => {
-    if (!searchState.searchId) return;
-
-    const authToken = localStorage.getItem('auth_token');
-    if (!authToken) {
-      setSearchState(prev => ({
-        ...prev,
-        error: 'Authentication token missing. Please log in again.'
-      }));
-      return;
-    }
-
-    setSearchState(prev => ({
-      ...prev,
-      isLoading: true,
-      error: null
-    }));
-
-    try {
-      const response = await fetch(`/api/novelty-search/${searchState.searchId}`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${authToken}`,
-          'Content-Type': 'application/json'
-        }
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setSearchState(prev => ({
-          ...prev,
-          error: data.error || 'Failed to resume search',
-          isLoading: false
-        }));
-        return;
-      }
-
-      // Update search state with resume result
-      setSearchState(prev => ({
-        ...prev,
-        status: data.status,
-        currentStage: data.currentStage,
-        results: data.results,
-        isLoading: false
-      }));
-
-      console.log('[Resume] Search resumed successfully:', { status: data.status, currentStage: data.currentStage });
-
-    } catch (error) {
-      console.error('[Resume] Error resuming search:', error);
-      setSearchState(prev => ({
-        ...prev,
-        error: error instanceof Error ? error.message : 'Failed to resume search',
-        isLoading: false
-      }));
-    }
-  };
-
-  const renderForm = () => (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Search className="h-5 w-5" />
-          Start Novelty Search
-        </CardTitle>
-        <CardDescription>
-          Enter your invention details to begin a comprehensive novelty assessment
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Project Display */}
-        <div>
-          <Label className="flex items-center gap-2">
-            Project
-          </Label>
-          <div className="flex items-center space-x-3 p-3 bg-purple-50 border border-purple-200 rounded-lg mt-1">
-            <div className="w-8 h-8 bg-purple-100 rounded-full flex items-center justify-center">
-              <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-              </svg>
-            </div>
-            <div className="flex-1">
-              <div className="font-medium text-gray-900">{selectedProject?.name || 'Project'}</div>
-              <div className="text-xs text-gray-500">{selectedProject?.name === 'Default Project' ? 'Quick drafts and searches' : 'Selected project'}</div>
-            </div>
-            {selectedProject?.name === 'Default Project' && (
-              <Badge variant="secondary" className="text-xs">Default</Badge>
-            )}
-          </div>
-          <p className="mt-1 text-sm text-gray-500">
-            Your novelty search results will be saved to {selectedProject?.name ? `the ${selectedProject.name}` : 'your project'} for quick access.
-          </p>
-        </div>
-
-        <div>
-          <Label htmlFor="title">Invention Title</Label>
-          <Input
-            id="title"
-            value={formData.title}
-            onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
-            placeholder="Enter a clear, concise title for your invention"
-          />
-        </div>
-
-        <div>
-          <Label htmlFor="description">Invention Description</Label>
-          <Textarea
-            id="description"
-            value={formData.inventionDescription}
-            onChange={(e) => setFormData(prev => ({ ...prev, inventionDescription: e.target.value }))}
-            placeholder="Describe your invention in detail, including the problem it solves, how it works, and its key features..."
-            rows={8}
-          />
-        </div>
-
-        <div>
-          <Label htmlFor="jurisdiction">Jurisdiction</Label>
-          <select
-            id="jurisdiction"
-            value={formData.jurisdiction}
-            onChange={(e) => setFormData(prev => ({ ...prev, jurisdiction: e.target.value }))}
-            className="w-full p-2 border border-gray-300 rounded-md"
-          >
-            <option value="IN">India (IN)</option>
-            <option value="US">United States (US)</option>
-            <option value="EP">European Patent (EP)</option>
-            <option value="WO">PCT (WO)</option>
-          </select>
-        </div>
-
-        {searchState.error && (
-          <Alert variant="destructive">
-            <AlertCircle className="h-4 w-4" />
-            <AlertDescription>{searchState.error}</AlertDescription>
-          </Alert>
-        )}
-
-        <Button
-          onClick={startNoveltySearch}
-          disabled={searchState.isLoading}
-          className="w-full"
-        >
-          {searchState.isLoading ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Starting Novelty Search...
-            </>
-          ) : (
-            <>
-              <Search className="mr-2 h-4 w-4" />
-              Start Novelty Search
-            </>
-          )}
-        </Button>
-      </CardContent>
-    </Card>
-  );
-
-  const renderProgress = () => (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <FileText className="h-5 w-5" />
-          Novelty Search Progress
-        </CardTitle>
-        <CardDescription>
-          Search ID: {searchState.searchId}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Current Status */}
-        <div className="flex items-center justify-center">
-          <div className="text-center">
-            <div className="text-lg font-semibold text-gray-900 mb-1">
-              {getCurrentStageInfo().label}
-            </div>
-            {searchState.isLoading && (
-              <div className="flex items-center justify-center gap-2 text-sm text-blue-600">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span>Processing...</span>
-              </div>
-            )}
-            {searchState.status === NoveltySearchStatus.COMPLETED && (
-              <div className="flex items-center justify-center gap-2 text-sm text-green-600">
-                <CheckCircle className="h-4 w-4" />
-                <span>Search completed successfully</span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Manual Progression Notice */}
-        {searchState.status !== NoveltySearchStatus.COMPLETED &&
-         searchState.status !== NoveltySearchStatus.PENDING &&
-         !searchState.isLoading && (
-          <div className="text-center p-4 bg-blue-50 rounded-lg border border-blue-200">
-            <p className="text-sm text-blue-700">
-              ÃƒÂ°Ã…Â¸Ã…Â½Ã‚Â¯ Manual stage progression - click "Next" to advance to the next stage
-            </p>
-          </div>
-        )}
-
-        {/* Stage 3.5 Progress */}
-        {isStage35aSimulating && stage35aMessage && (
-          <div className="p-4 bg-gradient-to-r from-purple-50 to-teal-50 border border-purple-200 rounded-lg">
-            <div className="flex items-center gap-3">
-              <div className="flex-shrink-0">
-                <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
-                  <svg className="w-5 h-5 text-purple-600 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                </div>
-              </div>
-              <div className="flex-1">
-                <div className="text-sm font-medium text-purple-900 mb-1">Feature Mapping</div>
-                <div className="text-sm text-purple-800">{stage35aMessage}</div>
-                <div className="mt-2 bg-purple-200 rounded-full h-2">
-                  <div className="bg-purple-600 h-2 rounded-full animate-pulse" style={{ width: '100%' }}></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Stage 1 Sophisticated Progress */}
-        {isStage1Simulating && stage1Message && (
-          <div className="p-4 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg">
-            <div className="flex items-center gap-3">
-              <div className="flex-shrink-0">
-                <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
-                  <svg className="w-5 h-5 text-blue-600 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                </div>
-              </div>
-              <div className="flex-1">
-                <div className="text-sm font-medium text-blue-900 mb-1">Advanced Patent Intelligence Analysis</div>
-                <div className="text-sm text-blue-800">{stage1Message}</div>
-                <div className="mt-2 bg-blue-200 rounded-full h-2">
-                  <div className="bg-blue-600 h-2 rounded-full animate-pulse" style={{ width: '100%' }}></div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {searchState.error && (
-          <Alert variant="destructive">
-            <XCircle className="h-4 w-4" />
-            <AlertDescription>{searchState.error}</AlertDescription>
-          </Alert>
-        )}
-      </CardContent>
-    </Card>
-  );
-
+  // Compute navigation state
   const currentStageInfo = getCurrentStageInfo();
-  const { prev: prevStage, next: nextStage } = getPrevNextStages();
+  const idx = STAGE_TABS.indexOf(selectedStageTab);
+  const prevStage = idx > 0 ? STAGE_TABS[idx - 1] : null;
+  const nextStage = idx >= 0 && idx < STAGE_TABS.length - 1 ? STAGE_TABS[idx + 1] : null;
+  const currentGuard = stageGuard(selectedStageTab);
+  const canRunCurrent = (!currentGuard) && !searchState.isLoading && !activeExecutionStage && (selectedStageTab === '0' || !!stageNumberByKey[selectedStageTab]);
+  const isFailedCurrent = failedStageKey === selectedStageTab;
 
-  return (
-    <div className="bg-gray-50">
-      {/* Compact Status Card */}
-      <div className="bg-white shadow rounded-lg overflow-hidden mb-4 mx-4 sm:mx-0 mt-4 sm:mt-0">
-        <div className="px-4 py-3 sm:px-6">
-          <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-4">
-            <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 bg-gradient-to-br from-purple-500 to-teal-600 rounded-lg flex items-center justify-center shadow-sm">
-                <Search className="h-4 w-4 text-white" />
-              </div>
-              <div>
-                <h2 className="text-base font-bold text-gray-900 leading-none">AI Novelty Search</h2>
-                <p className="text-[10px] text-gray-500 mt-1">Intelligent patent novelty assessment</p>
-              </div>
+  // Calculate overall progress
+  const overallProgress = useMemo(() => {
+    const completedCount = STAGE_TABS.filter(key => isStageCompleted(key)).length;
+    return Math.round((completedCount / STAGE_TABS.length) * 100);
+  }, [isStageCompleted]);
+
+  // ============================================================================
+  // RENDER FORM (Initial State)
+  // ============================================================================
+  const renderForm = () => (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5 }}
+    >
+      <Card className="border-0 shadow-xl bg-white/80 backdrop-blur-sm">
+        <CardHeader className="pb-4">
+          <div className="flex items-center gap-4">
+            <motion.div 
+              className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg"
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              transition={{ type: 'spring', stiffness: 200 }}
+            >
+              <Sparkles className="h-6 w-6 text-white" />
+            </motion.div>
+            <div>
+              <CardTitle className="text-xl font-bold bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+                Start Novelty Search
+              </CardTitle>
+              <CardDescription className="text-slate-500">
+                Enter your invention details to begin AI-powered novelty assessment
+              </CardDescription>
             </div>
-
-            <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto">
-              <div className="text-right hidden sm:block">
-                <div className="text-xs font-medium text-gray-700">{currentStageInfo.label}</div>
-              </div>
-
-              {/* Auto mode toggle */}
-              <div className="flex items-center space-x-2 border-l pl-4 border-gray-200">
-                <span className="text-[10px] font-medium text-gray-500 uppercase tracking-wider">Auto</span>
-                <button
-                  type="button"
-                  onClick={() => setAutoMode(prev => !prev)}
-                  className={`relative inline-flex h-4 w-7 rounded-full border transition-colors duration-150 ${
-                    autoMode ? 'bg-purple-600 border-purple-600' : 'bg-gray-200 border-gray-300'
-                  }`}
-                  aria-pressed={autoMode}
-                >
-                  <span
-                    className={`inline-block h-3 w-3 rounded-full bg-white shadow transform transition-transform duration-150 ${
-                      autoMode ? 'translate-x-3' : 'translate-x-0'
-                    } mt-0.5 ml-0.5`}
-                  />
-                </button>
-              </div>
-
-              {/* Stage Navigation Buttons */}
-              {searchState.searchId && (
-                <div className="flex items-center space-x-2 border-l pl-4 border-gray-200">
-                  <button
-                    onClick={async () => {
-                      if (!prevStage) return;
-                      const stageNumber = getStageNumberForPrevStatus(searchState.status || 'PENDING');
-                      if (!stageNumber) return;
-                      if (stageNumber === '0') {
-                        // Navigate to Stage 0 view without re-running anything
-                        await fetchSearchStatus();
-                        startEditingStage0();
-                        return;
-                      }
-                      await executeStage(stageNumber);
-                    }}
-                    className="inline-flex items-center px-2 py-1 border border-gray-300 text-xs font-medium rounded text-gray-700 bg-white hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed h-7"
-                    disabled={!prevStage}
-                    title="Previous"
-                  >
-                    <svg className="w-3 h-3 sm:mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                    </svg>
-                    <span className="hidden sm:inline">Prev</span>
-                  </button>
-
-                  <button
-                    onClick={async () => {
-                      if (!nextStage) return;
-                      // For manual progression, execute the next stage based on current status
-                      const stageNumber = getStageNumberForStatus(searchState.status || 'PENDING');
-                      if (stageNumber) {
-                        await executeStage(stageNumber);
-                      }
-                    }}
-                    className="inline-flex items-center px-2 py-1 border border-transparent text-xs font-medium rounded text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed h-7 shadow-sm"
-                    disabled={!nextStage}
-                    title="Next"
-                  >
-                    <span className="hidden sm:inline">Next</span>
-                    <svg className="w-3 h-3 sm:ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Idea Bank Banner */}
+          {ideaId && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              className="p-4 rounded-xl bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200"
+            >
+              <div className="flex items-center gap-3">
+                <Sparkles className="h-5 w-5 text-indigo-500" />
+                <div>
+                  <p className="text-sm font-medium text-indigo-900">Loaded from Idea Bank</p>
+                  <p className="text-xs text-indigo-700">The title and description have been pre-filled from your reserved idea.</p>
                 </div>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Project Display */}
+          <div className="space-y-2">
+            <Label className="text-sm font-medium text-slate-700">Project</Label>
+            <div className="flex items-center gap-3 p-3 bg-gradient-to-r from-slate-50 to-slate-100 border border-slate-200 rounded-xl">
+              <div className="w-10 h-10 bg-gradient-to-br from-indigo-400 to-purple-500 rounded-xl flex items-center justify-center shadow-sm">
+                <FolderOpen className="w-5 h-5 text-white" />
+              </div>
+              <div className="flex-1">
+                <div className="font-medium text-slate-900">{selectedProject?.name || 'Loading...'}</div>
+                <div className="text-xs text-slate-500">
+                  {selectedProject?.name === 'Default Project' ? 'Quick drafts and searches' : 'Selected project'}
+                </div>
+              </div>
+              {selectedProject?.name === 'Default Project' && (
+                <Badge variant="secondary" className="text-xs bg-indigo-100 text-indigo-700">Default</Badge>
               )}
             </div>
           </div>
-          
-          {/* Integrated Progress Bar */}
-          <div className="mt-3 flex items-center gap-3">
-            <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-              <div
-                className="bg-gradient-to-r from-purple-600 to-teal-600 h-full transition-all duration-500 ease-out"
-                style={{ width: `${currentStageInfo.progress}%` }}
-              ></div>
-            </div>
-            <div className="text-[10px] font-medium text-gray-400 w-8 text-right">
-              {currentStageInfo.progress}%
-            </div>
-          </div>
-        </div>
-      </div>
 
-      {/* Main Content */}
-      <div className="space-y-4">
-        {/* Stage Tabs */}
-        <div className="bg-white rounded-lg border p-3 mb-4">
-          <div className="flex flex-wrap gap-2">
-            {STAGE_TABS.map((tab, index) => (
-              <button
-                key={tab}
-                onClick={() => setSelectedStageTab(tab)}
-                className={`px-3 py-1.5 rounded-md text-sm border ${selectedStageTab === tab ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'}`}
-                title={STAGE_TAB_LABELS[tab]}
+          {/* Title Input */}
+          <div className="space-y-2">
+            <Label htmlFor="title" className="text-sm font-medium text-slate-700">Invention Title</Label>
+            <Input
+              id="title"
+              value={formData.title}
+              onChange={(e) => setFormData(prev => ({ ...prev, title: e.target.value }))}
+              placeholder="Enter a clear, concise title for your invention"
+              className="h-12 rounded-xl border-slate-200 focus:border-indigo-400 focus:ring-indigo-400/20"
+            />
+          </div>
+
+          {/* Description Input */}
+          <div className="space-y-2">
+            <Label htmlFor="description" className="text-sm font-medium text-slate-700">Invention Description</Label>
+            <Textarea
+              id="description"
+              value={formData.inventionDescription}
+              onChange={(e) => setFormData(prev => ({ ...prev, inventionDescription: e.target.value }))}
+              placeholder="Describe your invention in detail, including the problem it solves, how it works, and its key features..."
+              rows={8}
+              className="rounded-xl border-slate-200 focus:border-indigo-400 focus:ring-indigo-400/20 resize-none"
+            />
+          </div>
+
+          {/* Jurisdiction Select */}
+          <div className="space-y-2">
+            <Label htmlFor="jurisdiction" className="text-sm font-medium text-slate-700">Jurisdiction</Label>
+            <select
+              id="jurisdiction"
+              value={formData.jurisdiction}
+              onChange={(e) => setFormData(prev => ({ ...prev, jurisdiction: e.target.value }))}
+              className="w-full h-12 px-4 rounded-xl border border-slate-200 bg-white focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 outline-none transition-all"
+            >
+              <option value="IN">India (IN)</option>
+              <option value="US">United States (US)</option>
+              <option value="EP">European Patent (EP)</option>
+              <option value="WO">PCT (WO)</option>
+            </select>
+          </div>
+
+          {/* Error Display */}
+          <AnimatePresence>
+            {searchState.error && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
               >
-                <span
-                  className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-xs font-semibold mr-2 ${
-                    selectedStageTab === tab ? 'bg-white text-purple-600' : 'bg-gray-200 text-gray-700'
+                <Alert variant="destructive" className="rounded-xl">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>{searchState.error}</AlertDescription>
+                </Alert>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Start Button */}
+          <motion.div whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}>
+            <Button
+              onClick={startNoveltySearch}
+              disabled={searchState.isLoading}
+              className="w-full h-14 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white font-semibold text-base shadow-lg shadow-indigo-500/30 transition-all"
+            >
+              {searchState.isLoading ? (
+                <>
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                  Initializing AI Analysis...
+                </>
+              ) : (
+                <>
+                  <Zap className="mr-2 h-5 w-5" />
+                  Start Novelty Search
+                  <ArrowRight className="ml-2 h-5 w-5" />
+                </>
+              )}
+            </Button>
+          </motion.div>
+        </CardContent>
+      </Card>
+    </motion.div>
+  );
+
+  // ============================================================================
+  // RENDER PROGRESS (Active State)
+  // ============================================================================
+  const renderProgress = () => (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="space-y-4"
+    >
+      {/* Status Card */}
+      <Card className="border-0 shadow-lg bg-white/80 backdrop-blur-sm overflow-hidden">
+        <div className="h-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500" />
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
+                searchState.status === NoveltySearchStatus.COMPLETED 
+                  ? 'bg-gradient-to-br from-emerald-400 to-emerald-600' 
+                  : searchState.status === NoveltySearchStatus.FAILED
+                  ? 'bg-gradient-to-br from-rose-400 to-rose-600'
+                  : 'bg-gradient-to-br from-indigo-400 to-purple-500'
+              }`}>
+                {searchState.status === NoveltySearchStatus.COMPLETED ? (
+                  <CheckCircle className="h-5 w-5 text-white" />
+                ) : searchState.status === NoveltySearchStatus.FAILED ? (
+                  <XCircle className="h-5 w-5 text-white" />
+                ) : searchState.isLoading ? (
+                  <Loader2 className="h-5 w-5 text-white animate-spin" />
+                ) : (
+                  <Search className="h-5 w-5 text-white" />
+                )}
+              </div>
+              <div>
+                <div className="text-sm font-semibold text-slate-900">{currentStageInfo.label}</div>
+                <div className="text-xs text-slate-500">Search ID: {searchState.searchId?.slice(0, 12)}...</div>
+              </div>
+            </div>
+
+            {/* Auto Mode Toggle */}
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-slate-500">Auto</span>
+                <button
+                  type="button"
+                  onClick={() => setAutoMode(prev => !prev)}
+                  className={`relative inline-flex h-5 w-9 rounded-full transition-colors ${
+                    autoMode ? 'bg-indigo-500' : 'bg-slate-200'
                   }`}
                 >
-                  {index + 1}
-                </span>
-                <span>{STAGE_TAB_LABELS[tab]}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="bg-white rounded-lg shadow-sm overflow-hidden">
-          {!searchState.searchId ? renderForm() : renderProgress()}
-        </div>
+                  <span className={`inline-block h-4 w-4 rounded-full bg-white shadow transform transition-transform ${
+                    autoMode ? 'translate-x-4' : 'translate-x-0.5'
+                  } mt-0.5`} />
+                </button>
+              </div>
 
-        {/* Current Stage Results Only */}
-        <div className="mt-8 space-y-6">
-          {/* Patent-by-Patent Remarks (light fallback card) */}
-          {selectedStageTab === '3.5c' && (() => {
-            const root: any = (searchState.results as any) || {};
-            const stage4 = root.stage4;
-            const aggShape = (root?.per_patent_coverage && root?.per_feature_uniqueness) ? root : undefined;
-            const carrier: any = stage4 || aggShape || {};
-            const remarks: any[] = Array.isArray(carrier?.per_patent_remarks) ? carrier.per_patent_remarks : [];
-            return (
-              <Card className="border-indigo-200 bg-indigo-50/30">
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                      <div className="w-8 h-8 bg-indigo-500 rounded-full flex items-center justify-center">
-                        <CheckCircle className="h-4 w-4 text-white" />
-                      </div>
-                      <div>
-                        <CardTitle className="text-lg">Patent-by-Patent Remarks</CardTitle>
-                        <CardDescription>Concise remarks per reference to feed the final report</CardDescription>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Button size="sm" variant="outline" onClick={() => executeStage('3.5c')} disabled={searchState.isLoading}>
-                        {searchState.isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                        Generate Remarks
-                      </Button>
-                    </div>
+              <Badge 
+                variant="outline" 
+                className={`text-xs ${
+                  searchState.status === NoveltySearchStatus.COMPLETED 
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                    : searchState.status === NoveltySearchStatus.FAILED
+                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                    : 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                }`}
+              >
+                {currentStageInfo.progress}% Complete
+              </Badge>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Processing Messages */}
+      <AnimatePresence>
+        {(isStage1Simulating || isStage35Simulating || isStage35aSimulating) && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+          >
+            <Card className="border-0 shadow-lg overflow-hidden">
+              <div className="p-4 bg-gradient-to-r from-indigo-50 via-purple-50 to-pink-50">
+                <div className="flex items-center gap-4">
+                  <div className="flex-shrink-0">
+                    <motion.div 
+                      className="w-12 h-12 bg-gradient-to-br from-indigo-400 to-purple-500 rounded-xl flex items-center justify-center shadow-lg"
+                      animate={{ rotate: 360 }}
+                      transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+                    >
+                      <Sparkles className="w-6 h-6 text-white" />
+                    </motion.div>
                   </div>
-                </CardHeader>
-                <CardContent>
-                  {remarks.length === 0 ? (
-                    <div className="text-sm text-gray-600">No remarks available yet. Click "Generate Remarks" to create per-patent remarks.</div>
-                  ) : (
-                    <div className="space-y-3">
-                      {remarks.map((it: any, idx: number) => (
-                        <div key={idx} className="rounded-lg border bg-white p-3">
-                          <div className="flex items-start gap-3">
-                            <div className="flex-shrink-0 w-8 h-8 bg-indigo-600 text-white rounded-full flex items-center justify-center text-sm font-semibold">{idx + 1}</div>
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2">
-                              <div className="text-sm font-semibold text-gray-900">{it.pn || 'Unknown PN'}</div>
-                              {it.decision && (
-                                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${
-                                  it.decision === 'obvious' ? 'bg-red-50 text-red-700 border-red-200' :
-                                  it.decision === 'partial_novelty' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                                  'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                }`} title="PerÃ¢â‚¬â€˜patent decision">
-                                  {it.decision}
-                                </span>
-                              )}
-                            </div>
-                            {it.title && <div className="text-xs text-gray-700">{it.title}</div>}
-                            {it.abstract && <div className="mt-1 text-xs text-gray-600 line-clamp-3" title={it.abstract}>{it.abstract}</div>}
-                            <div className="mt-2 text-sm text-gray-900 whitespace-pre-wrap">{it.remarks || '-'}</div>
-                          </div>
-                          </div>
-                        </div>
-                      ))}
+                  <div className="flex-1">
+                    <div className="text-sm font-semibold text-slate-900 mb-1">
+                      {isStage1Simulating ? 'Advanced Patent Intelligence Analysis' : 
+                       isStage35aSimulating ? 'Feature Mapping' : 'Feature Analysis'}
                     </div>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })()}
-          {/* Stage 0 Results (tab-gated) */}
-          {selectedStageTab === '0' && (() => {
-            const s0 = (searchState.results as any)?.stage0 || (searchState.results as any) || {};
-            const hasS0 = !!(s0.searchQuery || (Array.isArray(s0.inventionFeatures) && s0.inventionFeatures.length > 0));
-            return hasS0;
-          })() && (
-            <Card className="border-green-200 bg-green-50/30">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-3">
-                    <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center">
-                      <CheckCircle className="h-4 w-4 text-white" />
+                    <div className="text-sm text-slate-700">
+                      {stage1Message || stage35Message || stage35aMessage}
                     </div>
-                    <div>
-                      <CardTitle className="text-lg">Idea Setup & Query Generation</CardTitle>
-                      <CardDescription>
-                        {isEditingStage0 ? 'Edit search query and features before proceeding' : 'Search query and feature extraction completed'}
-                      </CardDescription>
-                    </div>
-                  </div>
-                  <div className="flex items-center space-x-3">
-                    {searchState.status === NoveltySearchStatus.STAGE_0_COMPLETED && (
-                      <span
-                        className={`text-xs px-2 py-1 rounded-full border ${
-                          stage0Approved
-                            ? 'bg-green-100 text-green-700 border-green-200'
-                            : 'bg-yellow-50 text-yellow-700 border-yellow-200'
-                        }`}
-                      >
-                        {stage0Approved ? 'Search terms approved' : 'Awaiting approval'}
-                      </span>
-                    )}
-                    {!isEditingStage0 && searchState.status === NoveltySearchStatus.STAGE_0_COMPLETED && (
-                      <Button
-                        onClick={startEditingStage0}
-                        variant="outline"
-                        size="sm"
-                        className="text-green-700 border-green-300 hover:bg-green-50"
-                      >
-                        <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                        </svg>
-                        Edit Results
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent>
-                {isEditingStage0 ? (
-                  <div className="space-y-6">
-                    {/* Search Query Editing */}
-                    <div>
-                      <label className="block text-sm font-medium text-gray-900 mb-2">Search Query</label>
-                      <Textarea
-                        value={editedSearchQuery}
-                        onChange={(e) => setEditedSearchQuery(e.target.value)}
-                        placeholder="Enter search query..."
-                        className="min-h-[80px]"
+                    <div className="mt-3 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                      <motion.div 
+                        className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 rounded-full"
+                        initial={{ width: '0%' }}
+                        animate={{ width: '100%' }}
+                        transition={{ duration: 10, ease: 'linear' }}
                       />
                     </div>
-
-                    {/* Features Editing */}
-                    <div>
-                      <label className="block text-sm font-medium text-gray-900 mb-2">
-                        Invention Features ({editedFeatures.length})
-                      </label>
-
-                      {/* Existing Features */}
-                      <div className="space-y-2 mb-4">
-                        {editedFeatures.map((feature: string, idx: number) => (
-                          <div key={idx} className="flex items-center space-x-2 p-3 bg-white rounded-lg border">
-                            <span className="text-xs font-mono bg-purple-100 text-purple-700 px-2 py-1 rounded">
-                              {idx + 1}
-                            </span>
-                            {editingFeatureIndex === idx ? (
-                              <Input
-                                value={feature}
-                                onChange={(e) => {
-                                  const updated = [...editedFeatures];
-                                  updated[idx] = e.target.value;
-                                  setEditedFeatures(updated);
-                                }}
-                                onBlur={() => setEditingFeatureIndex(null)}
-                                onKeyPress={(e) => {
-                                  if (e.key === 'Enter') {
-                                    setEditingFeatureIndex(null);
-                                  }
-                                }}
-                                className="flex-1"
-                                autoFocus
-                              />
-                            ) : (
-                              <span className="text-sm text-gray-700 flex-1">{feature}</span>
-                            )}
-                            <div className="flex space-x-1">
-                              <Button
-                                onClick={() => startEditingFeature(idx)}
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 w-8 p-0 text-gray-500 hover:text-blue-600"
-                              >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                </svg>
-                              </Button>
-                              <Button
-                                onClick={() => removeFeature(idx)}
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 w-8 p-0 text-gray-500 hover:text-red-600"
-                              >
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                                </svg>
-                              </Button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-
-                      {/* Evidence Panel (opens when a matrix cell is clicked) */}
-                      {selectedEvidence && (
-                        <div className="mt-4 rounded-lg border bg-white p-4">
-                          <div className="flex items-start justify-between">
-                            <div>
-                              <div className="text-sm text-gray-500">Evidence</div>
-                              <div className="text-base font-medium text-gray-900 mt-0.5">
-                                {selectedEvidence.feature} ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â {selectedEvidence.status}
-                              </div>
-                              <div className="text-xs text-gray-600 mt-0.5">
-                                Patent: {selectedEvidence.pn}{selectedEvidence.patentTitle ? ` ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ${selectedEvidence.patentTitle}` : ''}
-                              </div>
-                            </div>
-                            <div>
-                              <Button variant="outline" size="sm" onClick={() => setSelectedEvidence(null)}>Close</Button>
-                            </div>
-                          </div>
-
-                          <div className="mt-3 text-sm text-gray-800">
-                            {(selectedEvidence.status === 'Present' || selectedEvidence.status === 'Partial') && (
-                              <>
-                                <div className="text-gray-600 text-xs mb-1">Verbatim quote{selectedEvidence.field ? ` (${selectedEvidence.field})` : ''}{typeof selectedEvidence.confidence === 'number' ? ` ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ confidence ${selectedEvidence.confidence.toFixed(2)}` : ''}</div>
-                                <div className="whitespace-pre-wrap border rounded p-2 bg-gray-50">{selectedEvidence.quote || 'No evidence provided'}</div>
-                              </>
-                            )}
-                            {selectedEvidence.status === 'Absent' && (
-                              <>
-                                <div className="text-gray-600 text-xs mb-1">Reason</div>
-                                <div className="whitespace-pre-wrap border rounded p-2 bg-gray-50">{selectedEvidence.reason || 'No direct evidence in title/abstract'}</div>
-                              </>
-                            )}
-                          </div>
-
-                          <div className="mt-3 flex gap-2">
-                            {selectedEvidence.link && (
-                              <a className="text-xs inline-flex items-center px-2 py-1 border rounded hover:bg-gray-50" href={selectedEvidence.link} target="_blank" rel="noreferrer">
-                                Open on Google Patents
-                              </a>
-                            )}
-                            <button
-                              type="button"
-                              className="text-xs inline-flex items-center px-2 py-1 border rounded hover:bg-gray-50"
-                              onClick={() => {
-                                const text = [
-                                  `Patent: ${selectedEvidence.pn}${selectedEvidence.patentTitle ? ' ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ' + selectedEvidence.patentTitle : ''}`,
-                                  `Feature: ${selectedEvidence.feature}`,
-                                  `Status: ${selectedEvidence.status}${typeof selectedEvidence.confidence === 'number' ? ' ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ' + selectedEvidence.confidence.toFixed(2) : ''}`,
-                                  selectedEvidence.quote ? `Quote: "${selectedEvidence.quote}"` : (selectedEvidence.reason ? `Reason: ${selectedEvidence.reason}` : '')
-                                ].filter(Boolean).join('\n');
-                                navigator.clipboard?.writeText(text).catch(() => {});
-                              }}
-                            >
-                              Copy evidence
-                            </button>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Add New Feature */}
-                      <div className="flex space-x-2">
-                        <Input
-                          value={newFeatureText}
-                          onChange={(e) => setNewFeatureText(e.target.value)}
-                          placeholder="Add new feature..."
-                          onKeyPress={(e) => {
-                            if (e.key === 'Enter') {
-                              addFeature();
-                            }
-                          }}
-                        />
-                        <Button
-                          onClick={addFeature}
-                          disabled={!newFeatureText.trim()}
-                          variant="outline"
-                          size="sm"
-                        >
-                          <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                          </svg>
-                          Add
-                        </Button>
-                      </div>
-                    </div>
-
-                    {/* Action Buttons */}
-                    <div className="flex justify-end space-x-3 pt-4 border-t">
-                      <Button
-                        onClick={cancelStage0Edits}
-                        variant="outline"
-                      >
-                        Cancel
-                      </Button>
-                      <Button
-                        onClick={saveStage0Edits}
-                        className="bg-green-600 hover:bg-green-700"
-                        disabled={!editedSearchQuery.trim() || editedFeatures.length === 0}
-                      >
-                        <CheckCircle className="w-4 h-4 mr-2" />
-                        Save & Continue
-                      </Button>
-                    </div>
                   </div>
-                ) : (
-                  <div className="grid md:grid-cols-2 gap-4">
-                    <div>
-                      <h4 className="font-medium text-gray-900 mb-2">Search Query</h4>
-                      <div className="p-3 bg-white rounded-lg border">
-                        {(() => {
-                          const s0 = (searchState.results as any)?.stage0 || (searchState.results as any) || {};
-                          return (
-                            <p className="text-sm text-gray-700">"{s0.searchQuery}"</p>
-                          );
-                        })()}
-                      </div>
-                    </div>
-                    <div>
-                      {(() => {
-                        const s0 = (searchState.results as any)?.stage0 || (searchState.results as any) || {};
-                        const features = Array.isArray(s0.inventionFeatures) ? s0.inventionFeatures : [];
-                        return (
-                          <h4 className="font-medium text-gray-900 mb-2">Extracted Features ({features.length || 0})</h4>
-                        );
-                      })()}
-                      <div className="space-y-2">
-                        {(() => {
-                          const s0 = (searchState.results as any)?.stage0 || (searchState.results as any) || {};
-                          const features = Array.isArray(s0.inventionFeatures) ? s0.inventionFeatures : [];
-                          return features.length > 0 ? (
-                            features.map((feature: string, idx: number) => (
-                              <div key={idx} className="flex items-center space-x-2 p-2 bg-white rounded border">
-                                <span className="text-xs font-mono bg-purple-100 text-purple-700 px-2 py-1 rounded">
-                                  {idx + 1}
-                                </span>
-                                <span className="text-sm text-gray-700">{feature}</span>
-                              </div>
-                            ))
-                          ) : (
-                            <p className="text-sm text-gray-500">No features extracted</p>
-                          );
-                        })()}
-                      </div>
-                    </div>
-                  </div>
+                </div>
+              </div>
+            </Card>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Error Display */}
+      <AnimatePresence>
+        {searchState.error && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            exit={{ opacity: 0, height: 0 }}
+          >
+            <Alert variant="destructive" className="rounded-xl border-rose-200 bg-rose-50">
+              <AlertCircle className="h-4 w-4" />
+              <AlertDescription>{searchState.error}</AlertDescription>
+            </Alert>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+
+  // ============================================================================
+  // RENDER STAGE CONTENT
+  // ============================================================================
+  const renderStageContent = () => {
+    switch (selectedStageTab) {
+      case '0':
+        return renderStage0Content();
+      case '1':
+        return renderStage1Content();
+      case '1.5':
+        return renderStage15Content();
+      case '3.5':
+        return renderStage35Content();
+      case '3.5c':
+        return renderStage35cContent();
+      case '4':
+        return renderStage4Content();
+      default:
+        return null;
+    }
+  };
+
+  // Stage 0 Content
+  const renderStage0Content = () => {
+    const s0 = (searchState.results as any)?.stage0 || (searchState.results as any) || {};
+    const hasS0 = !!(s0.searchQuery || (Array.isArray(s0.inventionFeatures) && s0.inventionFeatures.length > 0));
+
+    if (!hasS0) return null;
+
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+        <Card className="border-0 shadow-lg bg-white/80 backdrop-blur-sm">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-gradient-to-br from-emerald-400 to-emerald-600 rounded-xl flex items-center justify-center shadow-md">
+                  <CheckCircle className="h-5 w-5 text-white" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg">Idea Setup & Query Generation</CardTitle>
+                  <CardDescription>
+                    {isEditingStage0 ? 'Edit search query and features before proceeding' : 'Search query and feature extraction completed'}
+                  </CardDescription>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {searchState.status === NoveltySearchStatus.STAGE_0_COMPLETED && (
+                  <Badge className={stage0Approved ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}>
+                    {stage0Approved ? 'Approved' : 'Awaiting approval'}
+                  </Badge>
                 )}
-
-                {/* Stage 0 approval control (non-editing view) */}
                 {!isEditingStage0 && searchState.status === NoveltySearchStatus.STAGE_0_COMPLETED && (
-                  <div className="mt-6 flex justify-end">
-                    <Button
-                      size="sm"
-                      className={stage0Approved ? 'bg-green-600 hover:bg-green-700' : 'bg-indigo-600 hover:bg-indigo-700'}
-                      onClick={() => setStage0Approved(true)}
-                    >
-                      <CheckCircle className="w-4 h-4 mr-2" />
-                      {stage0Approved ? 'Search terms approved' : 'Approve Search Terms'}
+                  <Button onClick={startEditingStage0} variant="outline" size="sm" className="rounded-lg">
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Edit
+                  </Button>
+                )}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {isEditingStage0 ? (
+              <div className="space-y-6">
+                <div>
+                  <Label className="text-sm font-medium text-slate-700 mb-2">Search Query</Label>
+                  <Textarea
+                    value={editedSearchQuery}
+                    onChange={(e) => setEditedSearchQuery(e.target.value)}
+                    placeholder="Enter search query..."
+                    className="min-h-[80px] rounded-xl"
+                  />
+                </div>
+
+                <div>
+                  <Label className="text-sm font-medium text-slate-700 mb-2">
+                    Invention Features ({editedFeatures.length})
+                  </Label>
+                  <div className="space-y-2 mb-4">
+                    {editedFeatures.map((feature: string, idx: number) => (
+                      <div key={idx} className="flex items-center gap-2 p-3 bg-slate-50 rounded-xl border">
+                        <span className="text-xs font-mono bg-indigo-100 text-indigo-700 px-2 py-1 rounded-lg">{idx + 1}</span>
+                        {editingFeatureIndex === idx ? (
+                          <Input
+                            value={feature}
+                            onChange={(e) => {
+                              const updated = [...editedFeatures];
+                              updated[idx] = e.target.value;
+                              setEditedFeatures(updated);
+                            }}
+                            onBlur={() => setEditingFeatureIndex(null)}
+                            className="flex-1 rounded-lg"
+                            autoFocus
+                          />
+                        ) : (
+                          <span className="text-sm text-slate-700 flex-1">{feature}</span>
+                        )}
+                        <div className="flex gap-1">
+                          <Button onClick={() => startEditingFeature(idx)} variant="ghost" size="sm" className="h-8 w-8 p-0">
+                            <RefreshCw className="w-4 h-4" />
+                          </Button>
+                          <Button onClick={() => removeFeature(idx)} variant="ghost" size="sm" className="h-8 w-8 p-0 text-rose-500 hover:text-rose-600">
+                            <XCircle className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Input
+                      value={newFeatureText}
+                      onChange={(e) => setNewFeatureText(e.target.value)}
+                      placeholder="Add new feature..."
+                      onKeyPress={(e) => { if (e.key === 'Enter') addFeature(); }}
+                      className="rounded-xl"
+                    />
+                    <Button onClick={addFeature} disabled={!newFeatureText.trim()} variant="outline" size="sm" className="rounded-xl">
+                      Add
                     </Button>
                   </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
+                </div>
 
-          {/* Stage 1 Results (tab-gated) */}
-          {selectedStageTab === '1' && (() => {
-            const root: any = (searchState.results as any) || {};
-            const pqaiResults = root.pqaiResults || root.stage1?.pqaiResults || [];
-            const hasStage1 = Array.isArray(pqaiResults) && pqaiResults.length > 0;
-            const aiRel = root.aiRelevance || root.stage1?.aiRelevance || null;
-
-            if (!hasStage1) {
-              return (
-                <Card className="border-blue-100 bg-blue-50/40">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-lg">Patent Search</CardTitle>
-                    <CardDescription>
-                      This stage has not been run yet. Execute the patent search to view results here.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-sm text-gray-600">
-                      Use the controls above to run the Patent Search stage once you are satisfied with your idea setup.
-                    </p>
-                  </CardContent>
-                </Card>
-              );
-            }
-
-            return (
-            <Card className="border-blue-200 bg-blue-50/30">
-              <CardHeader className="pb-3">
-                <div className="flex items-center space-x-3">
-                  <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
-                    <CheckCircle className="h-4 w-4 text-white" />
-                  </div>
-                  <div>
-                    <CardTitle className="text-lg">Patent Search</CardTitle>
-                    <CardDescription>Patent database search and relevance-based selection</CardDescription>
+                <div className="flex justify-end gap-3 pt-4 border-t">
+                  <Button onClick={cancelStage0Edits} variant="outline" className="rounded-xl">Cancel</Button>
+                  <Button onClick={saveStage0Edits} className="rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600" disabled={!editedSearchQuery.trim() || editedFeatures.length === 0}>
+                    <CheckCircle className="w-4 h-4 mr-2" />
+                    Save & Continue
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid md:grid-cols-2 gap-6">
+                <div>
+                  <h4 className="font-medium text-slate-900 mb-3">Search Query</h4>
+                  <div className="p-4 bg-slate-50 rounded-xl border">
+                    <p className="text-sm text-slate-700">"{s0.searchQuery}"</p>
                   </div>
                 </div>
-              </CardHeader>
-              <CardContent>
-                {(() => {
-                  const highRelevanceCount = pqaiResults.filter((p: any) => p.relevanceScore && p.relevanceScore > 0.5).length || 0;
-                  const avgRelevance = pqaiResults.length > 0 ?
-                    (pqaiResults.reduce((avg: number, p: any) => avg + (p.relevanceScore || 0), 0) / pqaiResults.length * 100) : 0;
-
-                  return (
-                    <>
-                      {(() => {
-                        const s0 = (searchState.results as any)?.stage0 || (searchState.results as any) || {};
-                        const types = Array.isArray(s0.inventionType)
-                          ? s0.inventionType
-                          : (typeof s0.inventionType === 'string' && s0.inventionType ? [s0.inventionType] : []);
-                        if (!types.length) return null;
-                        return (
-                          <div className="mb-3 text-sm text-gray-700">
-                            <span className="font-medium mr-2">Detected invention type:</span>
-                            {types.map((t: string) => (
-                              <span
-                                key={t}
-                                className="inline-flex items-center px-2 py-0.5 mr-1 rounded-full text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-100"
-                              >
-                                {t}
-                              </span>
-                            ))}
-                          </div>
-                        );
-                      })()}
-                      <div className="grid md:grid-cols-3 gap-4 mb-6">
-                        <div className="text-center p-4 bg-white rounded-lg border">
-                          <div className="text-2xl font-bold text-blue-600">{pqaiResults.length}</div>
-                          <div className="text-sm text-gray-600">Patents Found</div>
-                        </div>
-                        <div className="text-center p-4 bg-white rounded-lg border">
-                          <div className="text-2xl font-bold text-green-600">{highRelevanceCount}</div>
-                          <div className="text-sm text-gray-600">High Relevance</div>
-                        </div>
-                        <div className="text-center p-4 bg-white rounded-lg border">
-                          <div className="text-2xl font-bold text-purple-600">{avgRelevance.toFixed(1)}%</div>
-                          <div className="text-sm text-gray-600">Avg Relevance</div>
-                        </div>
+                <div>
+                  <h4 className="font-medium text-slate-900 mb-3">
+                    Extracted Features ({Array.isArray(s0.inventionFeatures) ? s0.inventionFeatures.length : 0})
+                  </h4>
+                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                    {Array.isArray(s0.inventionFeatures) && s0.inventionFeatures.map((feature: string, idx: number) => (
+                      <div key={idx} className="flex items-center gap-2 p-2 bg-slate-50 rounded-lg border">
+                        <span className="text-xs font-mono bg-indigo-100 text-indigo-700 px-2 py-1 rounded">{idx + 1}</span>
+                        <span className="text-sm text-slate-700">{feature}</span>
                       </div>
-
-                      <div className="flex items-center justify-between mb-4">
-                        <div className="text-sm text-gray-600">
-                          {aiRel ? 'AI Relevance computed.' : 'Run AI Relevance to filter candidates before feature mapping.'}
-                        </div>
-                        <div className="flex gap-2">
-                          {!aiRel && (
-                            <Button size="sm" variant="outline" onClick={async () => { await executeStage('1.5'); }}>
-                              Run AI Relevance
-                            </Button>
-                          )}
-                          {aiRel && (
-                            <Button size="sm" variant="outline" onClick={async () => { await executeStage('3.5'); }}>
-                              Run Feature Mapping + Aggregation
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-
-                      <div>
-                        <h4 className="font-medium text-gray-900 mb-3">Patent Database Results (Sorted by Relevance)</h4>
-                        <div className="space-y-3 max-h-96 overflow-y-auto">
-                          {pqaiResults.map((r: any, i: number) => {
-                            const patentNumber = r.publicationNumber || r.pn || r.patent_number || r.publication_number || 'N/A'
-                            const title = r.title || r.invention_title || patentNumber || 'Untitled'
-                            const abstract = r.abstract || r.snippet || r.description || ''
-                            const pubDate = r.year || r.publication_date || r.filing_date || ''
-                            const relevanceScore = r.relevanceScore || r.score || r.relevance || 0
-                            const inventors = r.inventors || r.inventor_names || []
-                            const assignees = r.assignees || r.assignee_names || []
-                            const cpcCodes = r.cpcCodes || r.cpc_codes || []
-                            const ipcCodes = r.ipcCodes || r.ipc_codes || []
-
-                            // Check if patent has additional details
-                            const hasDetails = abstract || (Array.isArray(inventors) && inventors.length) ||
-                                              (Array.isArray(assignees) && assignees.length) ||
-                                              (Array.isArray(cpcCodes) && cpcCodes.length) ||
-                                              (Array.isArray(ipcCodes) && ipcCodes.length)
-
-                            return (
-                              <div key={i} className="py-4 px-3 border rounded-lg mb-3 bg-gray-50">
-                                <div className="flex items-start gap-3">
-                                  {/* Item Number */}
-                                  <div className="flex items-center justify-center w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 font-semibold text-sm flex-shrink-0">
-                                    {i + 1}
-                                  </div>
-
-                                  <div className="flex-1">
-                                    {/* Header with title and score */}
-                                    <div className="flex items-start justify-between">
-                                      <div className="flex-1">
-                                        <a className="font-medium text-indigo-700 hover:underline text-sm" target="_blank" href={`https://lens.org/${encodeURIComponent(patentNumber).replace(/\s+/g,'-')}`}>
-                                          {title}
-                                        </a>
-                                        <div className="text-xs text-gray-500 mt-1">
-                                          {patentNumber !== 'N/A' && `Patent: ${patentNumber}`}
-                                          {pubDate && (patentNumber !== 'N/A' ? ' Ãƒâ€šÃ‚Â· ' : '') + `Published: ${String(pubDate).slice(0,10)}`}
-                                          {relevanceScore !== null && ` Ãƒâ€šÃ‚Â· Relevance: ${(relevanceScore * 100).toFixed(1)}%`}
-                                        </div>
-                                      </div>
-                                      {/* Expand/Collapse button for details */}
-                                      {hasDetails && (
-                                        <button
-                                          onClick={() => {
-                                            const detailsEl = document.getElementById(`patent-details-${i}`)
-                                            if (detailsEl) {
-                                              detailsEl.classList.toggle('hidden')
-                                              const button = event?.target as HTMLElement
-                                              if (button) {
-                                                button.textContent = detailsEl.classList.contains('hidden') ? 'Show Details' : 'Hide Details'
-                                              }
-                                            }
-                                          }}
-                                          className="text-xs text-indigo-600 hover:text-indigo-800 underline ml-2 flex-shrink-0"
-                                        >
-                                          Show Details
-                                        </button>
-                                      )}
-                                    </div>
-
-                                    {/* Expandable Patent Details */}
-                                    {hasDetails && (
-                                      <div id={`patent-details-${i}`} className="hidden mt-3 space-y-3">
-                                        {/* Snippet/Abstract */}
-                                        {abstract && (
-                                          <div>
-                                            <div className="text-xs font-medium text-gray-700 mb-1">Abstract/Summary:</div>
-                                            <div className="text-sm text-gray-700 whitespace-pre-wrap bg-white p-3 rounded border leading-relaxed max-h-32 overflow-y-auto">
-                                              {abstract}
-                                            </div>
-                                          </div>
-                                        )}
-
-                                        {/* Additional metadata */}
-                                        {((Array.isArray(inventors) && inventors.length) ||
-                                          (Array.isArray(assignees) && assignees.length) ||
-                                          (Array.isArray(cpcCodes) && cpcCodes.length) ||
-                                          (Array.isArray(ipcCodes) && ipcCodes.length)) && (
-                                          <div className="text-xs text-gray-600 space-y-2">
-                                            {Array.isArray(inventors) && inventors.length > 0 && (
-                                              <div><strong>Inventors:</strong> {inventors.join(', ')}</div>
-                                            )}
-                                            {Array.isArray(assignees) && assignees.length > 0 && (
-                                              <div><strong>Assignees:</strong> {assignees.join(', ')}</div>
-                                            )}
-                                            {Array.isArray(cpcCodes) && cpcCodes.length > 0 && (
-                                              <div>
-                                                <strong>CPC Codes:</strong>
-                                                <div className="flex flex-wrap gap-1 mt-1">
-                                                  {cpcCodes.map((code: string, idx: number) => (
-                                                    <span key={idx} className="bg-blue-50 text-blue-700 px-2 py-1 rounded text-xs">
-                                                      {code}
-                                                    </span>
-                                                  ))}
-                                                </div>
-                                              </div>
-                                            )}
-                                            {Array.isArray(ipcCodes) && ipcCodes.length > 0 && (
-                                              <div>
-                                                <strong>IPC Codes:</strong>
-                                                <div className="flex flex-wrap gap-1 mt-1">
-                                                  {ipcCodes.map((code: string, idx: number) => (
-                                                    <span key={idx} className="bg-purple-50 text-purple-700 px-2 py-1 rounded text-xs">
-                                                      {code}
-                                                    </span>
-                                                  ))}
-                                                </div>
-                                              </div>
-                                            )}
-                                          </div>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              </div>
-                            )
-                          })}
-                          {pqaiResults.length === 0 && <p className="text-sm text-gray-500">No patent results available</p>}
-                        </div>
-                      </div>
-                    </>
-                  );
-                })()}
-              </CardContent>
-            </Card>
-          );})()}
-
-          {/* Stage 1.5 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â AI Relevance Summary (tab-gated) */}
-          {selectedStageTab === '1.5' && (
-            (() => {
-              const aiRel = (searchState.results as any)?.aiRelevance || (searchState.results as any)?.stage1?.aiRelevance;
-              if (!aiRel) return null;
-              const acc = Array.isArray(aiRel.accepted) ? aiRel.accepted.length : 0;
-              const bor = Array.isArray(aiRel.borderline) ? aiRel.borderline.length : 0;
-              const rej = Array.isArray(aiRel.rejected) ? aiRel.rejected.length : 0;
-              const total = acc + bor + rej;
-              const sampleList = (list: string[], max = 10) => list.slice(0, max).map((pn, i) => (
-                <li key={i} className="truncate">{pn}</li>
-              ));
-              return (
-                <Card className="mt-4">
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center justify-between">
-                      <CardTitle className="text-lg">AI Relevance</CardTitle>
-                      <div className="text-xs text-gray-500">Thresholds: High {(aiRel.thresholds?.high ?? 0.6)}, Medium {(aiRel.thresholds?.medium ?? 0.4)}</div>
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-                      <div className="text-center p-4 bg-white rounded-lg border">
-                        <div className="text-sm text-gray-600">Accepted</div>
-                        <div className="text-2xl font-bold text-emerald-600">{acc}</div>
-                      </div>
-                      <div className="text-center p-4 bg-white rounded-lg border">
-                        <div className="text-sm text-gray-600">Borderline</div>
-                        <div className="text-2xl font-bold text-amber-600">{bor}</div>
-                      </div>
-                      <div className="text-center p-4 bg-white rounded-lg border">
-                        <div className="text-sm text-gray-600">Rejected</div>
-                        <div className="text-2xl font-bold text-red-600">{rej}</div>
-                      </div>
-                      <div className="text-center p-4 bg-white rounded-lg border">
-                        <div className="text-sm text-gray-600">Total Scored</div>
-                        <div className="text-2xl font-bold text-indigo-600">{total}</div>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div>
-                        <div className="text-sm font-semibold text-gray-700 mb-2">Accepted (sample)</div>
-                        <ul className="list-disc list-inside text-sm text-gray-800 space-y-1">
-                          {sampleList(Array.isArray(aiRel.accepted) ? aiRel.accepted : [])}
-                        </ul>
-                      </div>
-                      <div>
-                        <div className="text-sm font-semibold text-gray-700 mb-2">Borderline (sample)</div>
-                        <ul className="list-disc list-inside text-sm text-gray-800 space-y-1">
-                          {sampleList(Array.isArray(aiRel.borderline) ? aiRel.borderline : [])}
-                        </ul>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })()
-          )}
-
-          {/* Stage 3.5 Results (tab-gated) */}
-          {selectedStageTab === '3.5' && (() => {
-            const stage35Any: any = (searchState.results as any)?.stage35;
-            const hasResults = Array.isArray((searchState.results as any)?.feature_map) || Array.isArray(stage35Any?.feature_map);
-            console.log('[Stage3.5a][UI] Status check:', {
-              status: searchState.status,
-              expectedStatus: NoveltySearchStatus.STAGE_3_5_COMPLETED,
-              hasResults,
-              stage35_has_feature_map: Array.isArray(stage35Any?.feature_map),
-              top_feature_map: Array.isArray((searchState.results as any)?.feature_map),
-              resultsKeys: searchState.results ? Object.keys(searchState.results) : []
-            });
-            const statusOk = searchState.status === NoveltySearchStatus.STAGE_3_5_COMPLETED || searchState.status === NoveltySearchStatus.COMPLETED;
-            return statusOk && hasResults && (
-            <Card className="border-purple-200 bg-purple-50/30">
-              <CardHeader className="pb-3">
-                <div className="flex items-center space-x-3">
-                  <div className="w-8 h-8 bg-purple-500 rounded-full flex items-center justify-center">
-                    <CheckCircle className="h-4 w-4 text-white" />
-                  </div>
-                  <div>
-                    <CardTitle className="text-lg">Feature Analysis</CardTitle>
-                    <CardDescription>AI-powered feature-to-patent mapping with evidence extraction</CardDescription>
+                    ))}
                   </div>
                 </div>
-              </CardHeader>
-              <CardContent>
-                {(() => {
-                  const stage35 = (searchState.results as any)?.stage35;
-                  const topFeatureMap = (searchState.results as any)?.feature_map;
-                  const items = Array.isArray(stage35?.feature_map)
-                    ? stage35.feature_map
-                    : (Array.isArray(topFeatureMap) ? topFeatureMap : []);
-                  const presentSum = items.reduce((sum: number, p: any) => sum + (p.coverage?.present || 0), 0);
-                  const partialSum = items.reduce((sum: number, p: any) => sum + (p.coverage?.partial || 0), 0);
-                  const absentSum = items.reduce((sum: number, p: any) => sum + (p.coverage?.absent || 0), 0);
+              </div>
+            )}
 
-                  return (
-                    <>
-                      <div className="grid md:grid-cols-4 gap-4 mb-6">
-                        <div className="text-center p-4 bg-white rounded-lg border">
-                          <div className="text-2xl font-bold text-purple-600">{items.length}</div>
-                          <div className="text-sm text-gray-600">Patents Analyzed</div>
-                        </div>
-                        <div className="text-center p-4 bg-white rounded-lg border">
-                          <div className="text-2xl font-bold text-green-600">{presentSum}</div>
-                          <div className="text-sm text-gray-600">Present Features</div>
-                        </div>
-                        <div className="text-center p-4 bg-white rounded-lg border">
-                          <div className="text-2xl font-bold text-yellow-600">{partialSum}</div>
-                          <div className="text-sm text-gray-600">Partial Features</div>
-                        </div>
-                        <div className="text-center p-4 bg-white rounded-lg border">
-                          <div className="text-2xl font-bold text-red-600">{absentSum}</div>
-                          <div className="text-sm text-gray-600">Absent Features</div>
-                        </div>
+            {!isEditingStage0 && searchState.status === NoveltySearchStatus.STAGE_0_COMPLETED && (
+              <div className="mt-6 flex justify-end">
+                <Button
+                  size="sm"
+                  className={`rounded-xl ${stage0Approved ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-indigo-500 hover:bg-indigo-600'}`}
+                  onClick={() => setStage0Approved(true)}
+                >
+                  <CheckCircle className="w-4 h-4 mr-2" />
+                  {stage0Approved ? 'Approved' : 'Approve Search Terms'}
+                </Button>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </motion.div>
+    );
+  };
+
+  // Stage 1 Content
+  const renderStage1Content = () => {
+    const root: any = (searchState.results as any) || {};
+    const pqaiResults = root.pqaiResults || root.stage1?.pqaiResults || [];
+    const hasStage1 = Array.isArray(pqaiResults) && pqaiResults.length > 0;
+
+    if (!hasStage1) {
+      return (
+        <Card className="border-0 shadow-lg bg-slate-50/50">
+          <CardContent className="py-16 text-center">
+            <Search className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-slate-700 mb-2">Patent Search Not Started</h3>
+            <p className="text-sm text-slate-500 max-w-md mx-auto">
+              Execute the patent search to find relevant prior art from our global database of 12M+ patents.
+            </p>
+            {canRunCurrent && selectedStageTab === '1' && (
+              <Button onClick={handleRunCurrent} className="mt-6 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-600">
+                <Search className="w-4 h-4 mr-2" />
+                Run Patent Search
+              </Button>
+            )}
+          </CardContent>
+        </Card>
+      );
+    }
+
+    const highRelevanceCount = pqaiResults.filter((p: any) => p.relevanceScore && p.relevanceScore > 0.5).length;
+    const avgRelevance = pqaiResults.length > 0 ? (pqaiResults.reduce((avg: number, p: any) => avg + (p.relevanceScore || 0), 0) / pqaiResults.length * 100) : 0;
+
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+        <Card className="border-0 shadow-lg bg-white/80 backdrop-blur-sm">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-gradient-to-br from-blue-400 to-blue-600 rounded-xl flex items-center justify-center shadow-md">
+                <Search className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <CardTitle className="text-lg">Patent Search Results</CardTitle>
+                <CardDescription>Patent database search and relevance-based selection</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {/* Stats Grid */}
+            <div className="grid grid-cols-3 gap-4 mb-6">
+              <div className="text-center p-4 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl border border-blue-100">
+                <div className="text-3xl font-bold text-blue-600">{pqaiResults.length}</div>
+                <div className="text-xs text-blue-700 font-medium">Patents Found</div>
+              </div>
+              <div className="text-center p-4 bg-gradient-to-br from-emerald-50 to-green-50 rounded-xl border border-emerald-100">
+                <div className="text-3xl font-bold text-emerald-600">{highRelevanceCount}</div>
+                <div className="text-xs text-emerald-700 font-medium">High Relevance</div>
+              </div>
+              <div className="text-center p-4 bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl border border-purple-100">
+                <div className="text-3xl font-bold text-purple-600">{avgRelevance.toFixed(0)}%</div>
+                <div className="text-xs text-purple-700 font-medium">Avg Relevance</div>
+              </div>
+            </div>
+
+            {/* Patent List */}
+            <div className="space-y-3 max-h-96 overflow-y-auto">
+              {pqaiResults.map((r: any, i: number) => {
+                const patentNumber = r.publicationNumber || r.pn || r.patent_number || 'N/A';
+                const title = r.title || r.invention_title || patentNumber;
+                const abstract = r.abstract || r.snippet || '';
+                const pubDate = r.year || r.publication_date || '';
+                const relevanceScore = r.relevanceScore || r.score || 0;
+
+                return (
+                  <motion.div
+                    key={i}
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: i * 0.02 }}
+                    className="p-4 border rounded-xl bg-white hover:shadow-md transition-shadow"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-sm font-semibold flex-shrink-0">
+                        {i + 1}
                       </div>
-
-                      {/* Detailed Feature-Patent Matrix */}
-                      <div className="mt-6">
-                        <h4 className="font-medium text-gray-900 mb-3">Detailed Feature-Patent Matrix</h4>
-                        {(() => {
-                          const s0 = (searchState.results as any)?.stage0 || (searchState.results as any) || {};
-                          const featuresFromS0: string[] = Array.isArray(s0.inventionFeatures) ? s0.inventionFeatures : [];
-                          const featuresFromMaps: string[] = Array.from(new Set(
-                            items.flatMap((p: any) => Array.isArray(p?.feature_analysis) ? p.feature_analysis.map((c: any) => c.feature).filter(Boolean) : [])
-                          ));
-                          const features: string[] = (featuresFromS0 && featuresFromS0.length > 0) ? featuresFromS0 : featuresFromMaps;
-
-                          if (!Array.isArray(items) || items.length === 0 || features.length === 0) {
-                            return <p className="text-sm text-gray-500">No feature mapping data available to display.</p>;
-                          }
-
-                          // Limit for readability
-                          const visiblePatents = items.slice(0, 20);
-                          const visibleFeatures = features.slice(0, 18);
-
-                          const getStatusClass = (status: string | undefined) => {
-                            switch (status) {
-                              case 'Present': return 'bg-green-100 text-green-700 border-green-300';
-                              case 'Partial': return 'bg-yellow-100 text-yellow-800 border-yellow-300';
-                              case 'Absent': return 'bg-red-100 text-red-700 border-red-300';
-                              default: return 'bg-gray-100 text-gray-600 border-gray-300';
-                            }
-                          };
-
-                          return (
-                            <div className="overflow-auto border rounded-lg">
-                              <table className="min-w-full text-sm">
-                                <thead className="bg-gray-50">
-                                  <tr>
-                                    <th className="px-3 py-2 text-left font-medium text-gray-700 border-b w-44">Patent</th>
-                                    {visibleFeatures.map((f: string, idx: number) => (
-                                      <th key={idx} className="px-2 py-2 text-left font-medium text-gray-700 border-b min-w-[120px] max-w-[140px]">
-                                        <div className="text-xs leading-tight break-words">{f}</div>
-                                      </th>
-                                    ))}
-                                  </tr>
-                                </thead>
-                                <tbody className="bg-white">
-                                  {visiblePatents.map((patent: any, rowIdx: number) => {
-                                    const pn = patent.pn || patent.publicationNumber || patent.patent_number || patent.publication_number || 'N/A';
-                                    const cellsArray = Array.isArray(patent.feature_analysis)
-                                      ? patent.feature_analysis
-                                      : [
-                                          ...Array.isArray(patent.present) ? patent.present : [],
-                                          ...Array.isArray(patent.partial) ? patent.partial : [],
-                                          ...Array.isArray(patent.absent) ? patent.absent : []
-                                        ];
-                                    const featureToStatus = new Map<string, string>();
-                                    for (const c of cellsArray) {
-                                      if (c && typeof c.feature === 'string' && c.feature) {
-                                        featureToStatus.set(c.feature, c.status || 'Unknown');
-                                      }
-                                    }
-
-                                    return (
-                                      <tr key={rowIdx} className="border-t border-gray-100">
-                                        <td className="px-3 py-2 align-top">
-                                          <div className="font-medium text-gray-900">{pn}</div>
-                                          {patent.title && (
-                                            <div className="text-xs text-gray-500 mt-1 max-w-xs truncate" title={patent.title}>
-                                              {patent.title.split(' ').slice(0, 2).join(' ')}{patent.title.split(' ').length > 2 ? '...' : ''}
-                                            </div>
-                                          )}
-                                        </td>
-                                        {visibleFeatures.map((f: string, colIdx: number) => {
-                                          const status = featureToStatus.get(f) || 'Unknown';
-                                          // Find full cell object for tooltip/details
-                                          const cellObj = (() => {
-                                            const byExact = cellsArray.find((c: any) => c && typeof c.feature === 'string' && c.feature === f);
-                                            if (byExact) return byExact;
-                                            const byLower = cellsArray.find((c: any) => c && typeof c.feature === 'string' && c.feature.toLowerCase() === f.toLowerCase());
-                                            return byLower || null;
-                                          })();
-
-                                          const quote = (cellObj && (cellObj.quote || cellObj.evidence)) ? String(cellObj.quote || cellObj.evidence) : '';
-                                          const reason = cellObj && cellObj.reason ? String(cellObj.reason) : '';
-                                          const field = cellObj && cellObj.field ? String(cellObj.field) : undefined;
-                                          const confidence = (cellObj && typeof cellObj.confidence === 'number') ? cellObj.confidence : undefined;
-                                          const link = (patent.link || (pn && `https://patents.google.com/patent/${pn}`)) as string | undefined;
-
-                                          const tooltip = (() => {
-                                            if (status === 'Present' || status === 'Partial') {
-                                              const snip = quote ? (quote.length > 160 ? quote.slice(0, 157) + 'ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦' : quote) : 'No evidence provided';
-                                              const conf = (typeof confidence === 'number') ? ` ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢ ${confidence.toFixed(2)}` : '';
-                                              const fld = field ? ` (${field})` : '';
-                                              return `${status}${conf}${fld}: "${snip}"`;
-                                            }
-                                            if (status === 'Absent') {
-                                              const r = reason || 'No direct evidence in title/abstract';
-                                              return `${status}: ${r}`;
-                                            }
-                                            return 'Unknown: No analysis available';
-                                          })();
-
-                                          return (
-                                            <td key={colIdx} className="px-2 py-1 align-top">
-                                              <button
-                                                type="button"
-                                                title={tooltip}
-                                                onClick={() => setSelectedEvidence({
-                                                  pn,
-                                                  patentTitle: patent.title,
-                                                  feature: f,
-                                                  status,
-                                                  quote: quote || undefined,
-                                                  reason: reason || undefined,
-                                                  field,
-                                                  confidence,
-                                                  link
-                                                })}
-                                                className={`w-full text-left cursor-pointer inline-block text-xs px-2 py-1 rounded border ${getStatusClass(status)} hover:opacity-90`}
-                                              >
-                                                {status}
-                                              </button>
-                                            </td>
-                                          );
-                                        })}
-                                      </tr>
-                                    );
-                                  })}
-                                </tbody>
-                              </table>
-                              {(items.length > visiblePatents.length || features.length > visibleFeatures.length) && (
-                                <div className="p-2 text-xs text-gray-500 border-t bg-gray-50">
-                                  Showing {visiblePatents.length}/{items.length} patents and {visibleFeatures.length}/{features.length} features. Refine to view more.
-                                </div>
-                              )}
-                              <div className="p-2 text-xs text-gray-600 flex gap-3 border-t bg-white">
-                                <span><span className="inline-block w-2 h-2 rounded-sm align-middle mr-1 bg-green-500"></span>Present</span>
-                                <span><span className="inline-block w-2 h-2 rounded-sm align-middle mr-1 bg-yellow-500"></span>Partial</span>
-                                <span><span className="inline-block w-2 h-2 rounded-sm align-middle mr-1 bg-red-500"></span>Absent</span>
-                                <span><span className="inline-block w-2 h-2 rounded-sm align-middle mr-1 bg-gray-400"></span>Unknown</span>
-                              </div>
-                            </div>
-                          );
-                        })()}
-                      </div>
-                      {/* Per-Patent Remarks from Stage 3.5a */}
-                      {Array.isArray(items) && items.some((p: any) => p.remarks) && (
-                        <div className="mt-6">
-                          <h4 className="font-medium text-gray-900 mb-2">Per-Patent Remarks</h4>
-                          <div className="space-y-2 max-h-64 overflow-y-auto">
-                            {items
-                              .filter((p: any) => p.remarks)
-                              .map((p: any, idx: number) => (
-                                <div key={p.pn || idx} className="rounded border bg-white p-2">
-                                  <div className="text-xs font-semibold text-gray-900">
-                                    {p.pn || 'Unknown PN'}
-                                  </div>
-                                  {p.title && (
-                                    <div className="text-[11px] text-gray-600 truncate" title={p.title}>
-                                      {p.title}
-                                    </div>
-                                  )}
-                                  <div className="mt-1 text-xs text-gray-800 whitespace-pre-wrap">
-                                    {p.remarks}
-                                  </div>
-                                </div>
-                              ))}
-                          </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-start justify-between gap-2">
+                          <a className="font-medium text-indigo-700 hover:underline text-sm line-clamp-1" target="_blank" href={`https://lens.org/${encodeURIComponent(patentNumber)}`}>
+                            {title}
+                          </a>
+                          <Badge variant="outline" className="text-xs bg-indigo-50 text-indigo-700 border-indigo-200 flex-shrink-0">
+                            {(relevanceScore * 100).toFixed(0)}%
+                          </Badge>
                         </div>
-                      )}
-                    </>
-                  );
-                })()}
-              </CardContent>
-            </Card>
-            );
-
-          {/* Stage 3.5c ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Patent-by-Patent Remarks */}
-          {selectedStageTab === '3.5c' && (() => {
-            const root: any = (searchState.results as any) || {};
-            const stage4OrAgg = root.stage4 || ((root?.per_patent_coverage && root?.per_feature_uniqueness) ? root : undefined);
-            const remarks: any[] = Array.isArray(stage4OrAgg?.per_patent_remarks) ? stage4OrAgg.per_patent_remarks : [];
-            const canRun35c = !!stage4OrAgg && remarks.length === 0;
-            const hasAgg = !!stage4OrAgg;
-            return (
-              <Card className="border-indigo-200 bg-indigo-50/30">
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-3">
-                      <div className="w-8 h-8 bg-indigo-500 rounded-full flex items-center justify-center">
-                        <CheckCircle className="h-4 w-4 text-white" />
-                      </div>
-                      <div>
-                        <CardTitle className="text-lg">Patent-by-Patent Remarks</CardTitle>
-                        <CardDescription>Concise remarks per reference to feed the final report</CardDescription>
+                        <div className="text-xs text-slate-500 mt-1">
+                          {patentNumber} {pubDate && `• ${String(pubDate).slice(0, 10)}`}
+                        </div>
+                        {abstract && (
+                          <p className="text-xs text-slate-600 mt-2 line-clamp-2">{abstract}</p>
+                        )}
                       </div>
                     </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+    );
+  };
+
+  // Stage 1.5 Content
+  const renderStage15Content = () => {
+    const aiRel = (searchState.results as any)?.aiRelevance || (searchState.results as any)?.stage1?.aiRelevance;
+    
+    if (!aiRel) {
+      return (
+        <Card className="border-0 shadow-lg bg-slate-50/50">
+          <CardContent className="py-16 text-center">
+            <Zap className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-slate-700 mb-2">AI Relevance Not Computed</h3>
+            <p className="text-sm text-slate-500 max-w-md mx-auto">
+              Run AI relevance filtering to categorize patents by their relevance to your invention.
+            </p>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    const acc = Array.isArray(aiRel.accepted) ? aiRel.accepted.length : 0;
+    const bor = Array.isArray(aiRel.borderline) ? aiRel.borderline.length : 0;
+    const rej = Array.isArray(aiRel.rejected) ? aiRel.rejected.length : 0;
+    const total = acc + bor + rej;
+
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+        <Card className="border-0 shadow-lg bg-white/80 backdrop-blur-sm">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-gradient-to-br from-amber-400 to-orange-500 rounded-xl flex items-center justify-center shadow-md">
+                  <Zap className="h-5 w-5 text-white" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg">AI Relevance Analysis</CardTitle>
+                  <CardDescription>Smart filtering of patent results</CardDescription>
+                </div>
+              </div>
+              <div className="text-xs text-slate-500">
+                Thresholds: High {(aiRel.thresholds?.high ?? 0.6)}, Medium {(aiRel.thresholds?.medium ?? 0.4)}
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-4 gap-4 mb-6">
+              <div className="text-center p-4 bg-gradient-to-br from-emerald-50 to-green-50 rounded-xl border border-emerald-100">
+                <div className="text-3xl font-bold text-emerald-600">{acc}</div>
+                <div className="text-xs text-emerald-700 font-medium">Accepted</div>
+              </div>
+              <div className="text-center p-4 bg-gradient-to-br from-amber-50 to-yellow-50 rounded-xl border border-amber-100">
+                <div className="text-3xl font-bold text-amber-600">{bor}</div>
+                <div className="text-xs text-amber-700 font-medium">Borderline</div>
+              </div>
+              <div className="text-center p-4 bg-gradient-to-br from-rose-50 to-red-50 rounded-xl border border-rose-100">
+                <div className="text-3xl font-bold text-rose-600">{rej}</div>
+                <div className="text-xs text-rose-700 font-medium">Rejected</div>
+              </div>
+              <div className="text-center p-4 bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl border border-indigo-100">
+                <div className="text-3xl font-bold text-indigo-600">{total}</div>
+                <div className="text-xs text-indigo-700 font-medium">Total</div>
+              </div>
+            </div>
+
+            <div className="grid md:grid-cols-2 gap-6">
+              <div>
+                <div className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-emerald-500" />
+                  Accepted Patents
+                </div>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {Array.isArray(aiRel.accepted) && aiRel.accepted.slice(0, 10).map((pn: string, i: number) => (
+                    <div key={i} className="text-xs text-slate-700 p-2 bg-emerald-50 rounded">{pn}</div>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="text-sm font-semibold text-slate-700 mb-3 flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full bg-amber-500" />
+                  Borderline Patents
+                </div>
+                <div className="space-y-1 max-h-48 overflow-y-auto">
+                  {Array.isArray(aiRel.borderline) && aiRel.borderline.slice(0, 10).map((pn: string, i: number) => (
+                    <div key={i} className="text-xs text-slate-700 p-2 bg-amber-50 rounded">{pn}</div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+    );
+  };
+
+  // Stage 3.5 Content
+  const renderStage35Content = () => {
+    const stage35Any: any = (searchState.results as any)?.stage35;
+    const topFeatureMap = (searchState.results as any)?.feature_map;
+    const items = Array.isArray(stage35Any?.feature_map) ? stage35Any.feature_map : (Array.isArray(topFeatureMap) ? topFeatureMap : []);
+
+    if (items.length === 0) {
+      return (
+        <Card className="border-0 shadow-lg bg-slate-50/50">
+          <CardContent className="py-16 text-center">
+            <FileText className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-slate-700 mb-2">Feature Analysis Not Started</h3>
+            <p className="text-sm text-slate-500 max-w-md mx-auto">
+              Run feature analysis to map your invention features to prior art evidence.
+            </p>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    const presentSum = items.reduce((sum: number, p: any) => sum + (p.coverage?.present || 0), 0);
+    const partialSum = items.reduce((sum: number, p: any) => sum + (p.coverage?.partial || 0), 0);
+    const absentSum = items.reduce((sum: number, p: any) => sum + (p.coverage?.absent || 0), 0);
+
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+        <Card className="border-0 shadow-lg bg-white/80 backdrop-blur-sm">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-gradient-to-br from-purple-400 to-purple-600 rounded-xl flex items-center justify-center shadow-md">
+                <FileText className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <CardTitle className="text-lg">Feature Analysis</CardTitle>
+                <CardDescription>AI-powered feature-to-patent mapping</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-4 gap-4 mb-6">
+              <div className="text-center p-4 bg-gradient-to-br from-purple-50 to-indigo-50 rounded-xl border border-purple-100">
+                <div className="text-3xl font-bold text-purple-600">{items.length}</div>
+                <div className="text-xs text-purple-700 font-medium">Patents Analyzed</div>
+              </div>
+              <div className="text-center p-4 bg-gradient-to-br from-emerald-50 to-green-50 rounded-xl border border-emerald-100">
+                <div className="text-3xl font-bold text-emerald-600">{presentSum}</div>
+                <div className="text-xs text-emerald-700 font-medium">Present</div>
+              </div>
+              <div className="text-center p-4 bg-gradient-to-br from-amber-50 to-yellow-50 rounded-xl border border-amber-100">
+                <div className="text-3xl font-bold text-amber-600">{partialSum}</div>
+                <div className="text-xs text-amber-700 font-medium">Partial</div>
+              </div>
+              <div className="text-center p-4 bg-gradient-to-br from-rose-50 to-red-50 rounded-xl border border-rose-100">
+                <div className="text-3xl font-bold text-rose-600">{absentSum}</div>
+                <div className="text-xs text-rose-700 font-medium">Absent</div>
+              </div>
+            </div>
+
+            {/* Feature Matrix - Simplified view */}
+            <div className="text-sm text-slate-600 mb-4">
+              Feature-patent mapping completed. View detailed matrix in the full report.
+            </div>
+
+            {/* Quick Patent List */}
+            <div className="space-y-2 max-h-64 overflow-y-auto">
+              {items.slice(0, 10).map((patent: any, idx: number) => {
+                const pn = patent.pn || patent.publicationNumber || 'N/A';
+                return (
+                  <div key={idx} className="p-3 bg-slate-50 rounded-lg border flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      {hasAgg ? (
-                        <Button size="sm" variant="outline" onClick={() => executeStage('3.5c')} disabled={!canRun35c || searchState.isLoading}>
-                          {searchState.isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                          {canRun35c ? 'Generate Remarks' : 'Remarks Ready'}
-                        </Button>
-                      ) : (
-                        <Button size="sm" variant="outline" onClick={() => executeStage('3.5')} disabled={searchState.isLoading}>
-                          {searchState.isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                          Run feature analysis (Map + Aggregate)
-                        </Button>
-                      )}
+                      <span className="text-xs font-mono bg-purple-100 text-purple-700 px-2 py-1 rounded">{idx + 1}</span>
+                      <span className="text-sm font-medium text-slate-700">{pn}</span>
+                    </div>
+                    <div className="flex gap-2 text-xs">
+                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded">{patent.coverage?.present || 0} present</span>
+                      <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded">{patent.coverage?.partial || 0} partial</span>
+                      <span className="px-2 py-0.5 bg-rose-100 text-rose-700 rounded">{patent.coverage?.absent || 0} absent</span>
                     </div>
                   </div>
-                </CardHeader>
-                <CardContent>
-                  {!hasAgg ? (
-                    <div className="text-sm text-gray-600">Aggregation not available. Run feature analysis to compute metrics, then generate remarks.</div>
-                  ) : remarks.length === 0 ? (
-                    <div className="text-sm text-gray-600">No remarks generated yet. Click "Generate Remarks" to create per-patent remarks.</div>
-                  ) : (
-                    <div className="space-y-3">
-                      {remarks.map((it: any, idx: number) => (
-                        <div key={idx} className="rounded-lg border bg-white p-3">
-                          <div className="flex items-start gap-3">
-                            <div className="flex-shrink-0 w-8 h-8 bg-indigo-600 text-white rounded-full flex items-center justify-center text-sm font-semibold">{idx + 1}</div>
-                            <div className="flex-1">
-                              <div className="text-sm font-semibold text-gray-900">{it.pn || 'Unknown PN'}</div>
-                              {it.title && <div className="text-xs text-gray-700">{it.title}</div>}
-                              {it.abstract && <div className="mt-1 text-xs text-gray-600 line-clamp-3" title={it.abstract}>{it.abstract}</div>}
-                              <div className="mt-2 text-sm text-gray-900 whitespace-pre-wrap">{it.remarks || 'ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â'}</div>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+    );
+  };
+
+  // Stage 3.5c Content
+  const renderStage35cContent = () => {
+    const root: any = (searchState.results as any) || {};
+    const container = root.stage4 || root;
+    const remarks: any[] = Array.isArray(container?.per_patent_remarks) ? container.per_patent_remarks : [];
+
+    if (remarks.length === 0) {
+      return (
+        <Card className="border-0 shadow-lg bg-slate-50/50">
+          <CardContent className="py-16 text-center">
+            <FileText className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-slate-700 mb-2">Patent Remarks Not Generated</h3>
+            <p className="text-sm text-slate-500 max-w-md mx-auto">
+              Generate patent-by-patent remarks to create detailed analysis for each reference.
+            </p>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    return (
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+        <Card className="border-0 shadow-lg bg-white/80 backdrop-blur-sm">
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-gradient-to-br from-indigo-400 to-indigo-600 rounded-xl flex items-center justify-center shadow-md">
+                <FileText className="h-5 w-5 text-white" />
+              </div>
+              <div>
+                <CardTitle className="text-lg">Patent-by-Patent Remarks</CardTitle>
+                <CardDescription>{remarks.length} patents analyzed with detailed remarks</CardDescription>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4 max-h-[500px] overflow-y-auto">
+              {remarks.map((it: any, idx: number) => (
+                <motion.div
+                  key={idx}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: idx * 0.03 }}
+                  className="p-4 rounded-xl border bg-white hover:shadow-md transition-shadow"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="w-8 h-8 bg-indigo-600 text-white rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0">
+                      {idx + 1}
                     </div>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })()}
-          })()}
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-semibold text-slate-900">{it.pn || 'Unknown PN'}</span>
+                        {it.decision && (
+                          <Badge className={`text-[10px] ${
+                            it.decision === 'obvious' ? 'bg-rose-100 text-rose-700' :
+                            it.decision === 'partial_novelty' ? 'bg-amber-100 text-amber-700' :
+                            'bg-emerald-100 text-emerald-700'
+                          }`}>
+                            {it.decision}
+                          </Badge>
+                        )}
+                      </div>
+                      {it.title && <div className="text-xs text-slate-600 mt-1">{it.title}</div>}
+                      <div className="mt-3 text-sm text-slate-700 whitespace-pre-wrap">{it.remarks || '-'}</div>
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+    );
+  };
 
-          {/* Stage 4 Results (Report) - New UI */}
-          {selectedStageTab === '4' && (searchState.results as any) && (() => {
-            const root: any = (searchState.results as any) || {};
-            const r = root.stage4 || root;
-            return (
-              <Stage4ResultsDisplay
-                stage4Results={r}
-                searchId={searchState.searchId as any}
-                onRerun={async () => {
-                  await handleStartStage('4');
-                }}
-              />
-            );
-          })()}
+  // Stage 4 Content
+  const renderStage4Content = () => {
+    const root: any = (searchState.results as any) || {};
+    const r = root.stage4 || root;
 
-          {/* Legacy Stage 4 (removed) */}
+    if (!r || !hasStage4Results) {
+      return (
+        <Card className="border-0 shadow-lg bg-slate-50/50">
+          <CardContent className="py-16 text-center">
+            <FileText className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-slate-700 mb-2">Final Report Not Generated</h3>
+            <p className="text-sm text-slate-500 max-w-md mx-auto">
+              Generate the final novelty assessment report with comprehensive analysis and recommendations.
+            </p>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    return (
+      <Stage4ResultsDisplay
+        stage4Results={r}
+        searchId={searchState.searchId as any}
+        onRerun={async () => {
+          await executeStage('4');
+        }}
+      />
+    );
+  };
+
+  // ============================================================================
+  // MAIN RENDER
+  // ============================================================================
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-50">
+      {/* Background Pattern */}
+      <div className="fixed inset-0 pointer-events-none opacity-30">
+        <div className="absolute inset-0" style={{
+          backgroundImage: `radial-gradient(circle at 1px 1px, rgb(148 163 184 / 0.3) 1px, transparent 0)`,
+          backgroundSize: '40px 40px'
+        }} />
+      </div>
+
+      <div className="relative flex">
+        {/* Left Navigation Sidebar */}
+        <div className="w-[280px] min-h-screen p-4 sticky top-0">
+          <NoveltyStageNav
+            selectedStage={selectedStageTab}
+            onStageSelect={setSelectedStageTab}
+            getStageStatus={getStageStatus}
+            isStageCompleted={isStageCompleted}
+            onRunStage={runStageForKey}
+            activeExecutionStage={activeExecutionStage}
+            searchId={searchState.searchId}
+            overallProgress={overallProgress}
+            formTitle={formData.title}
+          />
+        </div>
+
+        {/* Main Content Area */}
+        <div className="flex-1 p-6 max-w-4xl">
+          {/* Header */}
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6"
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <motion.div
+                  className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-xl"
+                  initial={{ scale: 0, rotate: -180 }}
+                  animate={{ scale: 1, rotate: 0 }}
+                  transition={{ type: 'spring', stiffness: 200 }}
+                >
+                  <Sparkles className="w-7 h-7 text-white" />
+                </motion.div>
+                <div>
+                  <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
+                    AI Novelty Search
+                  </h1>
+                  <p className="text-sm text-slate-500">Intelligent patent novelty assessment</p>
+                </div>
+              </div>
+
+              {/* Current Stage Indicator */}
+              <div className="text-right">
+                <div className="text-sm font-medium text-slate-700">{STAGE_TAB_LABELS[selectedStageTab]}</div>
+                <div className="text-xs text-slate-500">Stage {idx + 1} of {STAGE_TABS.length}</div>
+              </div>
+            </div>
+          </motion.div>
+
+          {/* Content */}
+          <AnimatePresence mode="wait">
+            {!searchState.searchId ? (
+              <motion.div key="form" exit={{ opacity: 0, x: -20 }}>
+                {renderForm()}
+              </motion.div>
+            ) : (
+              <motion.div key="workflow" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
+                {renderProgress()}
+                {renderStageContent()}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
       </div>
+
+      {/* Floating Navigation Buttons */}
+      {searchState.searchId && (
+        <NoveltyFloatingButtons
+          onPrevious={prevStage ? handlePrevNav : null}
+          onNext={nextStage ? handleNextNav : null}
+          onRunCurrent={canRunCurrent ? handleRunCurrent : null}
+          previousLabel={prevStage ? STAGE_TAB_LABELS[prevStage] : undefined}
+          nextLabel={nextStage ? STAGE_TAB_LABELS[nextStage] : undefined}
+          currentStageLabel={`Run ${STAGE_TAB_LABELS[selectedStageTab]}`}
+          isRunning={!!activeExecutionStage}
+          isFailed={isFailedCurrent}
+          disabled={searchState.isLoading}
+        />
+      )}
+
+      {/* Evidence Panel Modal */}
+      <AnimatePresence>
+        {selectedEvidence && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+            onClick={() => setSelectedEvidence(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <div className="text-xs text-slate-500">Evidence</div>
+                  <div className="text-lg font-semibold text-slate-900">
+                    {selectedEvidence.feature}
+                  </div>
+                  <div className="text-sm text-slate-600 mt-1">
+                    Patent: {selectedEvidence.pn}{selectedEvidence.patentTitle ? ` • ${selectedEvidence.patentTitle}` : ''}
+                  </div>
+                </div>
+                <Badge className={`${
+                  selectedEvidence.status === 'Present' ? 'bg-emerald-100 text-emerald-700' :
+                  selectedEvidence.status === 'Partial' ? 'bg-amber-100 text-amber-700' :
+                  'bg-rose-100 text-rose-700'
+                }`}>
+                  {selectedEvidence.status}
+                </Badge>
+              </div>
+
+              {(selectedEvidence.status === 'Present' || selectedEvidence.status === 'Partial') && selectedEvidence.quote && (
+                <div className="mb-4">
+                  <div className="text-xs text-slate-500 mb-2">Evidence Quote</div>
+                  <div className="p-3 bg-slate-50 rounded-lg text-sm text-slate-700 whitespace-pre-wrap">
+                    "{selectedEvidence.quote}"
+                  </div>
+                </div>
+              )}
+
+              {selectedEvidence.status === 'Absent' && selectedEvidence.reason && (
+                <div className="mb-4">
+                  <div className="text-xs text-slate-500 mb-2">Reason</div>
+                  <div className="p-3 bg-slate-50 rounded-lg text-sm text-slate-700">
+                    {selectedEvidence.reason}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-2 mt-6">
+                {selectedEvidence.link && (
+                  <a
+                    href={selectedEvidence.link}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-700"
+                  >
+                    <ExternalLink className="w-4 h-4" />
+                    View Patent
+                  </a>
+                )}
+                <Button variant="outline" onClick={() => setSelectedEvidence(null)} className="ml-auto rounded-lg">
+                  Close
+                </Button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

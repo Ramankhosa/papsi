@@ -196,3 +196,152 @@
     transform: scale(0.9);
   }
 }
+
+/* ============================================================================
+   Novelty Search UI Enhancements
+   ============================================================================ */
+
+/* Glass morphism effect for novelty search cards */
+.novelty-glass {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+/* Gradient text animation */
+@keyframes gradientShift {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+.novelty-gradient-text {
+  background: linear-gradient(135deg, #6366f1, #a855f7, #ec4899, #6366f1);
+  background-size: 300% 300%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: gradientShift 4s ease infinite;
+}
+
+/* Glow effect for active stages */
+.novelty-stage-glow {
+  box-shadow: 0 0 20px rgba(99, 102, 241, 0.15),
+              0 0 40px rgba(168, 85, 247, 0.1),
+              0 0 60px rgba(236, 72, 153, 0.05);
+}
+
+/* Smooth stage transition */
+.novelty-stage-transition {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* AI processing shimmer effect */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.novelty-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.5) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
+
+/* Floating button hover effect */
+.novelty-float-btn {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.novelty-float-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(99, 102, 241, 0.25);
+}
+
+/* Progress ring animation */
+@keyframes progressRing {
+  0% {
+    stroke-dashoffset: 100;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+.novelty-progress-ring circle {
+  transition: stroke-dasharray 0.5s ease;
+}
+
+/* Stage card enter animation */
+@keyframes stageCardEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(20px) scale(0.95);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.novelty-stage-card-enter {
+  animation: stageCardEnter 0.4s ease-out;
+}
+
+/* AI indicator pulse */
+@keyframes aiPulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.1);
+  }
+}
+
+.novelty-ai-pulse {
+  animation: aiPulse 2s ease-in-out infinite;
+}
+
+/* Matrix cell hover effect */
+.novelty-matrix-cell {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.novelty-matrix-cell:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+/* Status badge animation */
+@keyframes statusBlink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.novelty-status-running {
+  animation: statusBlink 1s ease-in-out infinite;
+}
+
+/* Smooth content fade */
+.novelty-content-fade {
+  animation: fadeIn 0.3s ease-out;
+}
