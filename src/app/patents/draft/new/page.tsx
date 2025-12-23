@@ -17,6 +17,16 @@ type CountryOption = {
   languages: string[]
 }
 
+const areLanguageMapsEqual = (a: Record<string, string>, b: Record<string, string>) => {
+  const aKeys = Object.keys(a)
+  const bKeys = Object.keys(b)
+  if (aKeys.length !== bKeys.length) return false
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false
+  }
+  return true
+}
+
 // Language display names
 const LANGUAGE_LABELS: Record<string, string> = {
   en: 'English',
@@ -48,11 +58,20 @@ function NewPatentDraftPageContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
   const initialProjectId = searchParams?.get('projectId') || ''
+  const ideaId = searchParams?.get('ideaId') || ''
   const [projects, setProjects] = useState<Project[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [selectedProject, setSelectedProject] = useState<string>(initialProjectId)
   const [patentTitle, setPatentTitle] = useState('')
   const [rawIdea, setRawIdea] = useState('')
+  
+  // Load content from URL params (for idea bank integration)
+  useEffect(() => {
+    const urlTitle = searchParams?.get('title')
+    const urlRawIdea = searchParams?.get('rawIdea')
+    if (urlTitle) setPatentTitle(urlTitle)
+    if (urlRawIdea) setRawIdea(urlRawIdea)
+  }, [searchParams])
   const [isCreating, setIsCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [availableCountries, setAvailableCountries] = useState<CountryOption[]>([])
@@ -125,17 +144,19 @@ function NewPatentDraftPageContent() {
     if (selectedCodes.length === 0) return
 
     // Update per-jurisdiction language defaults
-    const newLanguageByJurisdiction: Record<string, string> = {}
-    selectedCodes.forEach(code => {
-      const country = availableCountries.find(c => c.code === code)
-      const langs = getSafeLanguages(country)
-      // Default to English if available, otherwise first language
-      const defaultLang = langs.includes('en') ? 'en' : langs[0]
-      // Preserve existing selection if valid, otherwise use default
-      const existingLang = languageByJurisdiction[code]
-      newLanguageByJurisdiction[code] = (existingLang && langs.includes(existingLang)) ? existingLang : defaultLang
+    setLanguageByJurisdiction(prev => {
+      const next: Record<string, string> = {}
+      selectedCodes.forEach(code => {
+        const country = availableCountries.find(c => c.code === code)
+        const langs = getSafeLanguages(country)
+        // Default to English if available, otherwise first language
+        const defaultLang = langs.includes('en') ? 'en' : langs[0]
+        // Preserve existing selection if valid, otherwise use default
+        const existingLang = prev[code]
+        next[code] = (existingLang && langs.includes(existingLang)) ? existingLang : defaultLang
+      })
+      return areLanguageMapsEqual(prev, next) ? prev : next
     })
-    setLanguageByJurisdiction(newLanguageByJurisdiction)
 
     // Single jurisdiction: ALWAYS force common mode (no choice)
     if (selectedCodes.length === 1) {
@@ -166,7 +187,7 @@ function NewPatentDraftPageContent() {
       setLanguageMode('individual_english_figures')
       setFiguresLanguage('en') // Figures always English when no common language
     }
-  }, [selectedCodes, availableCountries, allLanguages, commonLanguage, commonLanguages, languageByJurisdiction])
+  }, [selectedCodes, availableCountries, allLanguages, commonLanguage, commonLanguages])
 
   // Effect 2: Sync figures language when mode or common language changes
   useEffect(() => {
@@ -182,16 +203,18 @@ function NewPatentDraftPageContent() {
   // This ensures all jurisdictions use the common language in common mode
   useEffect(() => {
     if (languageMode === 'common' && selectedCodes.length > 0 && commonLanguage) {
-      const synced: Record<string, string> = {}
-      selectedCodes.forEach(code => {
-        const country = availableCountries.find(c => c.code === code)
-        const langs = getSafeLanguages(country)
-        // In common mode, set all to common language if supported, else keep existing
-        synced[code] = langs.includes(commonLanguage) ? commonLanguage : languageByJurisdiction[code] || langs[0]
+      setLanguageByJurisdiction(prev => {
+        const synced: Record<string, string> = {}
+        selectedCodes.forEach(code => {
+          const country = availableCountries.find(c => c.code === code)
+          const langs = getSafeLanguages(country)
+          // In common mode, set all to common language if supported, else keep existing
+          synced[code] = langs.includes(commonLanguage) ? commonLanguage : prev[code] || langs[0]
+        })
+        return areLanguageMapsEqual(prev, synced) ? prev : synced
       })
-      setLanguageByJurisdiction(synced)
     }
-  }, [languageMode, commonLanguage, selectedCodes, availableCountries, languageByJurisdiction])
+  }, [languageMode, commonLanguage, selectedCodes, availableCountries])
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -542,6 +565,30 @@ function NewPatentDraftPageContent() {
                 <div className="ml-3">
                   <p className="text-sm text-red-800">{error}</p>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Idea Bank Banner */}
+          {ideaId && (
+            <div className="mb-6 bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+              <div className="flex items-center">
+                <div className="flex-shrink-0">
+                  <svg className="h-5 w-5 text-indigo-500" viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M11 3a1 1 0 10-2 0v1a1 1 0 102 0V3zM15.657 5.757a1 1 0 00-1.414-1.414l-.707.707a1 1 0 001.414 1.414l.707-.707zM18 10a1 1 0 01-1 1h-1a1 1 0 110-2h1a1 1 0 011 1zM5.05 6.464A1 1 0 106.464 5.05l-.707-.707a1 1 0 00-1.414 1.414l.707.707zM5 10a1 1 0 01-1 1H3a1 1 0 110-2h1a1 1 0 011 1zM8 16v-1h4v1a2 2 0 11-4 0zM12 14c.015-.34.208-.646.477-.859a4 4 0 10-4.954 0c.27.213.462.519.476.859h4.002z" />
+                  </svg>
+                </div>
+                <div className="ml-3 flex-1">
+                  <p className="text-sm text-indigo-800">
+                    <span className="font-semibold">Loaded from Idea Bank</span> — The title and description have been pre-filled from your reserved idea. You can edit them before starting the draft.
+                  </p>
+                </div>
+                <Link
+                  href="/idea-bank"
+                  className="ml-4 text-xs font-medium text-indigo-600 hover:text-indigo-500"
+                >
+                  Back to Idea Bank →
+                </Link>
               </div>
             </div>
           )}

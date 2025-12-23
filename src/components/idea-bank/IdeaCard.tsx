@@ -152,65 +152,78 @@ export default function IdeaCard({
           )}
 
           {/* Action Buttons */}
-          <div className="pt-2 grid grid-cols-2 gap-2">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onView}
-              className="w-full text-slate-500 hover:text-slate-900 hover:bg-slate-100"
-            >
-              View Data
-            </Button>
+          <div className="pt-2 space-y-2">
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={onView}
+                className="w-full text-slate-500 hover:text-slate-900 hover:bg-slate-100"
+              >
+                View Data
+              </Button>
 
-            {isReservedByUser ? (
-              <div className="flex gap-1">
-                <Button
-                  size="sm"
-                  onClick={onSendToDrafting}
-                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs shadow-sm"
-                >
-                  Draft
-                </Button>
+              {isReservedByUser ? (
                 <Button
                   size="sm"
                   variant="ghost"
                   onClick={onRelease}
-                  className="px-2 text-amber-600 hover:bg-amber-50"
+                  className="w-full text-amber-600 hover:bg-amber-50"
                 >
-                  ✕
+                  Release
+                </Button>
+              ) : !isReserved ? (
+                <Button
+                  size="sm"
+                  onClick={handleReserve}
+                  disabled={isReserving}
+                  className={`w-full relative overflow-hidden transition-all duration-300 shadow-sm ${
+                    reservationSuccess 
+                      ? 'bg-emerald-600 hover:bg-emerald-700' 
+                      : 'bg-slate-900 hover:bg-slate-800 text-white'
+                  }`}
+                >
+                  {isReserving ? (
+                    <div className="flex items-center gap-2">
+                      <div className="animate-spin rounded-full h-3 w-3 border border-white border-t-transparent"></div>
+                    </div>
+                  ) : reservationSuccess ? (
+                    <span className="flex items-center gap-1">✓ Acquired</span>
+                  ) : (
+                    <span className="flex items-center gap-1 font-semibold tracking-wide text-xs uppercase">
+                      Reserve
+                    </span>
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  disabled
+                  className="w-full bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200"
+                >
+                  Locked
+                </Button>
+              )}
+            </div>
+
+            {/* Reserved by user: Show Draft Patent and Deep Novelty Search buttons */}
+            {isReservedByUser && (
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  size="sm"
+                  onClick={onSendToDrafting}
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white text-xs shadow-sm"
+                >
+                  ✍️ Draft Patent
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={onSendToSearch}
+                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs shadow-sm"
+                >
+                  🔍 Deep Novelty
                 </Button>
               </div>
-            ) : !isReserved ? (
-              <Button
-                size="sm"
-                onClick={handleReserve}
-                disabled={isReserving}
-                className={`w-full relative overflow-hidden transition-all duration-300 shadow-sm ${
-                  reservationSuccess 
-                    ? 'bg-emerald-600 hover:bg-emerald-700' 
-                    : 'bg-slate-900 hover:bg-slate-800 text-white'
-                }`}
-              >
-                {isReserving ? (
-                  <div className="flex items-center gap-2">
-                    <div className="animate-spin rounded-full h-3 w-3 border border-white border-t-transparent"></div>
-                  </div>
-                ) : reservationSuccess ? (
-                  <span className="flex items-center gap-1">✓ Acquired</span>
-                ) : (
-                  <span className="flex items-center gap-1 font-semibold tracking-wide text-xs uppercase">
-                    Reserve
-                  </span>
-                )}
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                disabled
-                className="w-full bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200"
-              >
-                Locked
-              </Button>
             )}
           </div>
         </CardContent>

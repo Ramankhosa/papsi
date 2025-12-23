@@ -8449,6 +8449,7 @@ async function handleGetCombinedFigures(user: any, patentId: string, data: any) 
 
     // If sequence exists, use it; otherwise generate initial sequence
     let sequence: any[] = session.figureSequence as any[] || []
+    let generatedInitialSequence = false
     const allFigures = [...diagrams, ...sketches]
 
     if (sequence.length === 0 && allFigures.length > 0) {
@@ -8459,6 +8460,7 @@ async function handleGetCombinedFigures(user: any, patentId: string, data: any) 
         sourceId: fig.sourceId,
         finalFigNo: index + 1
       }))
+      generatedInitialSequence = true
     }
 
     // Build ordered result - filter out deleted figures and track if sequence changed
@@ -8493,7 +8495,8 @@ async function handleGetCombinedFigures(user: any, patentId: string, data: any) 
     })
 
     // Persist the cleaned/updated sequence if it changed (deletions or additions)
-    if (sequenceNeedsUpdate && !session.figureSequenceFinalized) {
+    // Also persist the initial sequence we just generated (so finalize has data even before any drag)
+    if ((sequenceNeedsUpdate || generatedInitialSequence) && !session.figureSequenceFinalized) {
       const normalizedSequence = orderedFigures.map((f, idx) => ({
         id: f.id,
         type: f.type,

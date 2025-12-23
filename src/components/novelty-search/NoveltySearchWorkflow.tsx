@@ -353,7 +353,7 @@ export default function NoveltySearchWorkflow({
     const s = searchState.status;
     if (!s) return;
     if (s === NoveltySearchStatus.PENDING) { setSelectedStageTab('0'); return; }
-    if (s === NoveltySearchStatus.STAGE_0_COMPLETED) { setSelectedStageTab('1'); return; }
+    // Don't auto-navigate to stage 1 after STAGE_0_COMPLETED - wait for user approval
     if (s === NoveltySearchStatus.STAGE_1_COMPLETED) {
       setSelectedStageTab(hasStage15() ? '1.5' : '1');
       return;
@@ -663,8 +663,10 @@ export default function NoveltySearchWorkflow({
   const getStageNumberForStatus = (status: string): string | null => {
     switch (status) {
       case 'PENDING':
+        return '0'; // Start with stage 0 for new searches
       case NoveltySearchStatus.STAGE_0_COMPLETED:
-        return '1';
+        // Only auto-progress to stage 1 if user has approved the search terms
+        return stage0Approved ? '1' : null;
       case NoveltySearchStatus.STAGE_1_COMPLETED:
         return hasStage15Results ? '3.5' : '1.5';
       case NoveltySearchStatus.STAGE_3_5_COMPLETED:
@@ -1265,7 +1267,13 @@ export default function NoveltySearchWorkflow({
                 <Button
                   size="sm"
                   className={`rounded-xl ${stage0Approved ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-indigo-500 hover:bg-indigo-600'}`}
-                  onClick={() => setStage0Approved(true)}
+                  onClick={async () => {
+                    setStage0Approved(true);
+                    // Auto-progress to next stage if autoMode is enabled and we're on stage 0
+                    if (autoMode && selectedStageTab === '0') {
+                      await runStageForKey('1', true);
+                    }
+                  }}
                 >
                   <CheckCircle className="w-4 h-4 mr-2" />
                   {stage0Approved ? 'Approved' : 'Approve Search Terms'}
@@ -1478,7 +1486,7 @@ export default function NoveltySearchWorkflow({
     );
   };
 
-  // Stage 3.5 Content
+  // Stage 3.5 Content - Full Feature-Patent Matrix
   const renderStage35Content = () => {
     const stage35Any: any = (searchState.results as any)?.stage35;
     const topFeatureMap = (searchState.results as any)?.feature_map;
@@ -1502,8 +1510,29 @@ export default function NoveltySearchWorkflow({
     const partialSum = items.reduce((sum: number, p: any) => sum + (p.coverage?.partial || 0), 0);
     const absentSum = items.reduce((sum: number, p: any) => sum + (p.coverage?.absent || 0), 0);
 
+    // Extract features from Stage 0 or from the feature_map items
+    const s0 = (searchState.results as any)?.stage0 || (searchState.results as any) || {};
+    const featuresFromS0: string[] = Array.isArray(s0.inventionFeatures) ? s0.inventionFeatures : [];
+    const featuresFromMaps: string[] = Array.from(new Set(
+      items.flatMap((p: any) => Array.isArray(p?.feature_analysis) ? p.feature_analysis.map((c: any) => c.feature).filter(Boolean) : [])
+    ));
+    const features: string[] = (featuresFromS0 && featuresFromS0.length > 0) ? featuresFromS0 : featuresFromMaps;
+
+    // Limit for readability
+    const visiblePatents = items.slice(0, 20);
+    const visibleFeatures = features.slice(0, 18);
+
+    const getStatusClass = (status: string | undefined) => {
+      switch (status) {
+        case 'Present': return 'bg-emerald-100 text-emerald-700 border-emerald-300 hover:bg-emerald-200';
+        case 'Partial': return 'bg-amber-100 text-amber-700 border-amber-300 hover:bg-amber-200';
+        case 'Absent': return 'bg-rose-100 text-rose-700 border-rose-300 hover:bg-rose-200';
+        default: return 'bg-slate-100 text-slate-600 border-slate-300';
+      }
+    };
+
     return (
-      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
         <Card className="border-0 shadow-lg bg-white/80 backdrop-blur-sm">
           <CardHeader className="pb-3">
             <div className="flex items-center gap-3">
@@ -1512,11 +1541,12 @@ export default function NoveltySearchWorkflow({
               </div>
               <div>
                 <CardTitle className="text-lg">Feature Analysis</CardTitle>
-                <CardDescription>AI-powered feature-to-patent mapping</CardDescription>
+                <CardDescription>AI-powered feature-to-patent mapping with evidence extraction</CardDescription>
               </div>
             </div>
           </CardHeader>
           <CardContent>
+            {/* Summary Stats */}
             <div className="grid grid-cols-4 gap-4 mb-6">
               <div className="text-center p-4 bg-gradient-to-br from-purple-50 to-indigo-50 rounded-xl border border-purple-100">
                 <div className="text-3xl font-bold text-purple-600">{items.length}</div>
@@ -1524,42 +1554,204 @@ export default function NoveltySearchWorkflow({
               </div>
               <div className="text-center p-4 bg-gradient-to-br from-emerald-50 to-green-50 rounded-xl border border-emerald-100">
                 <div className="text-3xl font-bold text-emerald-600">{presentSum}</div>
-                <div className="text-xs text-emerald-700 font-medium">Present</div>
+                <div className="text-xs text-emerald-700 font-medium">Present Features</div>
               </div>
               <div className="text-center p-4 bg-gradient-to-br from-amber-50 to-yellow-50 rounded-xl border border-amber-100">
                 <div className="text-3xl font-bold text-amber-600">{partialSum}</div>
-                <div className="text-xs text-amber-700 font-medium">Partial</div>
+                <div className="text-xs text-amber-700 font-medium">Partial Features</div>
               </div>
               <div className="text-center p-4 bg-gradient-to-br from-rose-50 to-red-50 rounded-xl border border-rose-100">
                 <div className="text-3xl font-bold text-rose-600">{absentSum}</div>
-                <div className="text-xs text-rose-700 font-medium">Absent</div>
+                <div className="text-xs text-rose-700 font-medium">Absent Features</div>
               </div>
             </div>
 
-            {/* Feature Matrix - Simplified view */}
-            <div className="text-sm text-slate-600 mb-4">
-              Feature-patent mapping completed. View detailed matrix in the full report.
+            {/* Detailed Feature-Patent Matrix */}
+            <div className="mt-6">
+              <h4 className="font-semibold text-slate-900 mb-4 flex items-center gap-2">
+                <span>Feature-Patent Matrix</span>
+                <span className="text-xs font-normal text-slate-500">
+                  (Click any cell to view evidence)
+                </span>
+              </h4>
+
+              {features.length === 0 ? (
+                <p className="text-sm text-slate-500">No feature mapping data available to display.</p>
+              ) : (
+                <div className="overflow-auto rounded-xl border border-slate-200 shadow-sm">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-gradient-to-r from-slate-50 to-slate-100 sticky top-0">
+                      <tr>
+                        <th className="px-3 py-3 text-left font-semibold text-slate-700 border-b border-slate-200 w-44 bg-slate-50">
+                          Patent
+                        </th>
+                        {visibleFeatures.map((f: string, idx: number) => (
+                          <th key={idx} className="px-2 py-3 text-left font-medium text-slate-700 border-b border-slate-200 min-w-[120px] max-w-[160px]">
+                            <div className="flex items-start gap-1">
+                              <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-purple-100 text-purple-700 text-[10px] font-bold flex-shrink-0">
+                                {idx + 1}
+                              </span>
+                              <span className="text-xs leading-tight break-words line-clamp-2" title={f}>{f}</span>
+                            </div>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-slate-100">
+                      {visiblePatents.map((patent: any, rowIdx: number) => {
+                        const pn = patent.pn || patent.publicationNumber || patent.patent_number || patent.publication_number || 'N/A';
+                        const cellsArray = Array.isArray(patent.feature_analysis)
+                          ? patent.feature_analysis
+                          : [
+                              ...Array.isArray(patent.present) ? patent.present : [],
+                              ...Array.isArray(patent.partial) ? patent.partial : [],
+                              ...Array.isArray(patent.absent) ? patent.absent : []
+                            ];
+                        const featureToStatus = new Map<string, string>();
+                        for (const c of cellsArray) {
+                          if (c && typeof c.feature === 'string' && c.feature) {
+                            featureToStatus.set(c.feature, c.status || 'Unknown');
+                          }
+                        }
+
+                        return (
+                          <tr key={rowIdx} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="px-3 py-3 align-top border-r border-slate-100">
+                              <div className="flex items-start gap-2">
+                                <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-indigo-100 text-indigo-700 text-xs font-bold flex-shrink-0">
+                                  {rowIdx + 1}
+                                </span>
+                                <div>
+                                  <div className="font-medium text-slate-900 text-xs">{pn}</div>
+                                  {patent.title && (
+                                    <div className="text-[10px] text-slate-500 mt-0.5 max-w-[140px] truncate" title={patent.title}>
+                                      {patent.title}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </td>
+                            {visibleFeatures.map((f: string, colIdx: number) => {
+                              const status = featureToStatus.get(f) || 'Unknown';
+                              // Find full cell object for tooltip/details
+                              const cellObj = (() => {
+                                const byExact = cellsArray.find((c: any) => c && typeof c.feature === 'string' && c.feature === f);
+                                if (byExact) return byExact;
+                                const byLower = cellsArray.find((c: any) => c && typeof c.feature === 'string' && c.feature.toLowerCase() === f.toLowerCase());
+                                return byLower || null;
+                              })();
+
+                              const quote = (cellObj && (cellObj.quote || cellObj.evidence)) ? String(cellObj.quote || cellObj.evidence) : '';
+                              const reason = cellObj && cellObj.reason ? String(cellObj.reason) : '';
+                              const field = cellObj && cellObj.field ? String(cellObj.field) : undefined;
+                              const confidence = (cellObj && typeof cellObj.confidence === 'number') ? cellObj.confidence : undefined;
+                              const link = (patent.link || (pn && `https://patents.google.com/patent/${pn}`)) as string | undefined;
+
+                              const tooltip = (() => {
+                                if (status === 'Present' || status === 'Partial') {
+                                  const snip = quote ? (quote.length > 160 ? quote.slice(0, 157) + '…' : quote) : 'No evidence provided';
+                                  const conf = (typeof confidence === 'number') ? ` • ${confidence.toFixed(2)}` : '';
+                                  const fld = field ? ` (${field})` : '';
+                                  return `${status}${conf}${fld}: "${snip}"`;
+                                }
+                                if (status === 'Absent') {
+                                  const r = reason || 'No direct evidence in title/abstract';
+                                  return `${status}: ${r}`;
+                                }
+                                return 'Unknown: No analysis available';
+                              })();
+
+                              return (
+                                <td key={colIdx} className="px-2 py-2 align-middle">
+                                  <button
+                                    type="button"
+                                    title={tooltip}
+                                    onClick={() => setSelectedEvidence({
+                                      pn,
+                                      patentTitle: patent.title,
+                                      feature: f,
+                                      status,
+                                      quote: quote || undefined,
+                                      reason: reason || undefined,
+                                      field,
+                                      confidence,
+                                      link
+                                    })}
+                                    className={`
+                                      w-full text-center cursor-pointer 
+                                      text-[10px] font-medium px-2 py-1.5 rounded-lg border 
+                                      transition-all duration-150 
+                                      ${getStatusClass(status)}
+                                    `}
+                                  >
+                                    {status === 'Present' ? '✓ Present' : 
+                                     status === 'Partial' ? '◐ Partial' : 
+                                     status === 'Absent' ? '✗ Absent' : '? Unknown'}
+                                  </button>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  
+                  {/* Table Footer with Legend */}
+                  {(items.length > visiblePatents.length || features.length > visibleFeatures.length) && (
+                    <div className="p-3 text-xs text-slate-500 border-t bg-slate-50">
+                      Showing {visiblePatents.length}/{items.length} patents and {visibleFeatures.length}/{features.length} features.
+                    </div>
+                  )}
+                  <div className="p-3 text-xs text-slate-600 flex items-center gap-4 border-t bg-white">
+                    <span className="font-medium text-slate-700">Legend:</span>
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block w-3 h-3 rounded bg-emerald-500"></span>
+                      Present
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block w-3 h-3 rounded bg-amber-500"></span>
+                      Partial
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block w-3 h-3 rounded bg-rose-500"></span>
+                      Absent
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <span className="inline-block w-3 h-3 rounded bg-slate-400"></span>
+                      Unknown
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
 
-            {/* Quick Patent List */}
-            <div className="space-y-2 max-h-64 overflow-y-auto">
-              {items.slice(0, 10).map((patent: any, idx: number) => {
-                const pn = patent.pn || patent.publicationNumber || 'N/A';
-                return (
-                  <div key={idx} className="p-3 bg-slate-50 rounded-lg border flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono bg-purple-100 text-purple-700 px-2 py-1 rounded">{idx + 1}</span>
-                      <span className="text-sm font-medium text-slate-700">{pn}</span>
-                    </div>
-                    <div className="flex gap-2 text-xs">
-                      <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded">{patent.coverage?.present || 0} present</span>
-                      <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded">{patent.coverage?.partial || 0} partial</span>
-                      <span className="px-2 py-0.5 bg-rose-100 text-rose-700 rounded">{patent.coverage?.absent || 0} absent</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            {/* Per-Patent Remarks from Stage 3.5a (if available) */}
+            {Array.isArray(items) && items.some((p: any) => p.remarks) && (
+              <div className="mt-6">
+                <h4 className="font-semibold text-slate-900 mb-3">Per-Patent Remarks</h4>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {items
+                    .filter((p: any) => p.remarks)
+                    .map((p: any, idx: number) => (
+                      <div key={p.pn || idx} className="rounded-xl border bg-slate-50 p-3">
+                        <div className="flex items-start gap-2">
+                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-lg bg-indigo-600 text-white text-xs font-bold flex-shrink-0">
+                            {idx + 1}
+                          </span>
+                          <div className="flex-1">
+                            <div className="text-xs font-semibold text-slate-900">{p.pn || 'Unknown PN'}</div>
+                            {p.title && (
+                              <div className="text-[10px] text-slate-600 truncate" title={p.title}>{p.title}</div>
+                            )}
+                            <div className="mt-1.5 text-xs text-slate-700 whitespace-pre-wrap">{p.remarks}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
       </motion.div>
@@ -1701,34 +1893,26 @@ export default function NoveltySearchWorkflow({
 
         {/* Main Content Area */}
         <div className="flex-1 p-6 max-w-4xl">
-          {/* Header */}
+          {/* Compact Header */}
           <motion.div
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="mb-6"
+            className="mb-4"
           >
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3">
                 <motion.div
-                  className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-xl"
+                  className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 flex items-center justify-center shadow-md"
                   initial={{ scale: 0, rotate: -180 }}
                   animate={{ scale: 1, rotate: 0 }}
                   transition={{ type: 'spring', stiffness: 200 }}
                 >
-                  <Sparkles className="w-7 h-7 text-white" />
+                  <Sparkles className="w-4 h-4 text-white" />
                 </motion.div>
                 <div>
-                  <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
-                    AI Novelty Search
-                  </h1>
-                  <p className="text-sm text-slate-500">Intelligent patent novelty assessment</p>
+                  <div className="text-sm font-medium text-slate-700">{STAGE_TAB_LABELS[selectedStageTab]}</div>
+                  <div className="text-xs text-slate-500">Stage {idx + 1} of {STAGE_TABS.length}</div>
                 </div>
-              </div>
-
-              {/* Current Stage Indicator */}
-              <div className="text-right">
-                <div className="text-sm font-medium text-slate-700">{STAGE_TAB_LABELS[selectedStageTab]}</div>
-                <div className="text-xs text-slate-500">Stage {idx + 1} of {STAGE_TABS.length}</div>
               </div>
             </div>
           </motion.div>

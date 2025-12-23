@@ -11,8 +11,18 @@ import { PageLoadingBird } from '@/components/ui/loading-bird';
 function NoveltySearchContent() {
   const searchParams = useSearchParams();
   const projectId = searchParams?.get('projectId');
+  const title = searchParams?.get('title');
+  const description = searchParams?.get('description');
+  const ideaId = searchParams?.get('ideaId');
 
-  return <NoveltySearchWorkflow projectId={projectId || undefined} />;
+  return (
+    <NoveltySearchWorkflow 
+      projectId={projectId || undefined}
+      initialTitle={title || undefined}
+      initialDescription={description || undefined}
+      ideaId={ideaId || undefined}
+    />
+  );
 }
 
 export default function NoveltySearchPage() {

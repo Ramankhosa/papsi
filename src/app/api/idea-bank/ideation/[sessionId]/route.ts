@@ -94,6 +94,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
         userRating: frame.userRating,
         userNotes: frame.userNotes,
         data: frame.ideaFrameJson,
+        noveltySummary: frame.noveltySummaryJson, // Prior art analysis results
         createdAt: frame.createdAt,
       })),
     });

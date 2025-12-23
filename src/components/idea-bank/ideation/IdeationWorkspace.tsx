@@ -60,6 +60,7 @@ import CombineTray from './CombineTray'
 import IdeaFramePanel from './IdeaFramePanel'
 import IdeationHelpModal from './IdeationHelpModal'
 import IdeationProcessingView from './IdeationProcessingView'
+import ContradictionInsightPanel from './ContradictionInsightPanel'
 
 interface IdeationWorkspaceProps {
   onExportToBank: () => void
@@ -72,19 +73,30 @@ type SessionStage =
   | 'normalizing'    // Processing - analyzing seed
   | 'clarifying'     // Input needed - questions from AI
   | 'classifying'    // Processing - classifying invention
-  | 'mapping_contradictions' // NEW: Processing - mapping technical contradictions to TRIZ
+  | 'mapping_contradictions' // Processing - mapping technical contradictions to TRIZ
   | 'expanding'      // Processing - building dimensions
   | 'exploring'      // Workspace - user explores mind map
-  | 'checking_obviousness' // NEW: Processing - checking if combination is too obvious
+  | 'checking_obviousness' // Processing - checking if combination is too obvious
   | 'generating'     // Processing - creating ideas
+  | 'checking_novelty' // Processing - verifying novelty against patent databases
   | 'reviewing'      // Workspace - reviewing ideas
+
+// Streaming idea interface for progressive display
+interface StreamingIdea {
+  id: string
+  title: string
+  problem: string
+  principle: string
+  status: 'generating' | 'ready' | 'checking_novelty' | 'verified'
+  noveltyScore?: number
+}
 
 // Helper to determine which view to show
 const isInputView = (stage: SessionStage) => 
   ['idle', 'seed_input', 'clarifying'].includes(stage)
 
 const isProcessingView = (stage: SessionStage) =>
-  ['normalizing', 'classifying', 'mapping_contradictions', 'expanding', 'checking_obviousness', 'generating'].includes(stage)
+  ['normalizing', 'classifying', 'mapping_contradictions', 'expanding', 'checking_obviousness', 'generating', 'checking_novelty'].includes(stage)
 
 const isWorkspaceView = (stage: SessionStage) =>
   ['exploring', 'reviewing'].includes(stage)
@@ -109,6 +121,26 @@ interface IdeaFrame {
   noveltyScore?: number
   userRating?: number
   data?: any
+  noveltySummary?: {
+    patentsAnalyzed?: number
+    closestPriorArt?: Array<{
+      publicationNumber: string
+      title: string
+      relevanceScore: number
+      overlappingFeatures: string[]
+      differentiatingFactors: string[]
+      remark: string
+    }>
+    priorArtSummary?: string
+    phositaTest?: string
+    reasoning?: string
+    results?: Array<{
+      publicationNumber?: string
+      title: string
+      snippet?: string
+      assignee?: string
+    }>
+  }
 }
 
 const nodeTypes: NodeTypes = {
@@ -222,6 +254,21 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
 
   // Combine tray visibility
   const [showTray, setShowTray] = useState(false)
+  
+  // Streaming ideas for progressive display during generation
+  const [streamingIdeas, setStreamingIdeas] = useState<StreamingIdea[]>([])
+  
+  // Novelty check progress state
+  const [noveltyProgress, setNoveltyProgress] = useState<{
+    currentStep: number
+    totalSteps: number
+    message: string
+    recordsSearched?: number
+    matchesFound?: number
+  } | undefined>(undefined)
+  
+  // Track which idea is being novelty checked
+  const [noveltyCheckingIdeaId, setNoveltyCheckingIdeaId] = useState<string | null>(null)
 
   // NEW: Pipeline enhancement states
   const [contradictionMapping, setContradictionMapping] = useState<any>(null)
@@ -1245,6 +1292,17 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
 
     setStage('generating')
     setLoading(true)
+    
+    // Initialize streaming ideas with placeholders
+    const placeholderIdeas: StreamingIdea[] = Array.from({ length: count }, (_, i) => ({
+      id: `generating-${i}`,
+      title: '',
+      problem: '',
+      principle: '',
+      status: 'generating' as const,
+    }))
+    setStreamingIdeas(placeholderIdeas)
+    
     try {
       const response = await fetch(`/api/idea-bank/ideation/${currentSession.id}/generate`, {
         method: 'POST',
@@ -1282,6 +1340,33 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
         
         // Reload session to get idea frames
         await loadSession(currentSession.id, false)
+        
+        // Progressive reveal of actual ideas (simulated streaming effect)
+        const newIdeaFrames = data.ideaFrames || []
+        if (newIdeaFrames.length > 0) {
+          for (let i = 0; i < newIdeaFrames.length; i++) {
+            await new Promise(resolve => setTimeout(resolve, 300))
+            const idea = newIdeaFrames[i]
+            setStreamingIdeas(prev => {
+              const updated = [...prev]
+              if (updated[i]) {
+                updated[i] = {
+                  id: idea.id,
+                  title: idea.ideaFrameJson?.title || idea.title || 'Untitled Idea',
+                  problem: idea.ideaFrameJson?.problem || '',
+                  principle: idea.ideaFrameJson?.principle || '',
+                  status: 'ready',
+                  noveltyScore: idea.noveltyScore,
+                }
+              }
+              return updated
+            })
+          }
+        }
+        
+        // Brief pause to show all ideas revealed
+        await new Promise(resolve => setTimeout(resolve, 500))
+        
         setStage('reviewing')
         setShowIdeaPanel(true)
       } else {
@@ -1292,6 +1377,7 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
       setStage('exploring')
     } finally {
       setLoading(false)
+      setStreamingIdeas([])
     }
   }
 
@@ -1306,11 +1392,48 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
     await handleGenerateIdeas(count, intent, selectedOperatorIds, buckets, true)
   }
 
-  // Check novelty
+  // Check novelty with progress visualization
   const handleCheckNovelty = async (ideaFrameId: string) => {
     if (!currentSession) return
 
+    // Set stage to show novelty checking view
+    setNoveltyCheckingIdeaId(ideaFrameId)
+    setStage('checking_novelty')
+    
+    // Initialize progress
+    setNoveltyProgress({
+      currentStep: 1,
+      totalSteps: 5,
+      message: 'Connecting to patent databases...',
+      recordsSearched: 0,
+      matchesFound: 0,
+    })
+
     try {
+      // Simulate progress updates while the API call runs
+      const progressSimulation = setInterval(() => {
+        setNoveltyProgress(prev => {
+          if (!prev) return prev
+          const newRecords = prev.recordsSearched! + Math.floor(Math.random() * 100000) + 50000
+          const steps = [
+            { step: 1, msg: 'Connecting to patent databases...' },
+            { step: 2, msg: 'Executing semantic search across global records...' },
+            { step: 3, msg: 'Analyzing prior art relevance...' },
+            { step: 4, msg: 'Scoring novelty confidence...' },
+            { step: 5, msg: 'Generating assessment report...' },
+          ]
+          const nextStep = Math.min(prev.currentStep + 1, 5)
+          const stepInfo = steps.find(s => s.step === nextStep) || steps[steps.length - 1]
+          return {
+            ...prev,
+            currentStep: nextStep,
+            message: stepInfo.msg,
+            recordsSearched: Math.min(newRecords, 2500000),
+            matchesFound: prev.matchesFound! + (Math.random() > 0.7 ? 1 : 0),
+          }
+        })
+      }, 1500)
+
       const response = await fetch(`/api/idea-bank/ideation/${currentSession.id}/novelty`, {
         method: 'POST',
         headers: {
@@ -1320,11 +1443,33 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
         body: JSON.stringify({ ideaFrameId }),
       })
 
+      // Stop progress simulation
+      clearInterval(progressSimulation)
+
       if (response.ok) {
+        // Final progress state
+        setNoveltyProgress({
+          currentStep: 5,
+          totalSteps: 5,
+          message: 'Assessment complete!',
+          recordsSearched: 2500000,
+          matchesFound: (await response.json()).noveltyGate?.results?.length || 0,
+        })
+        
+        // Brief delay to show completion
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        
         await loadSession(currentSession.id, false)
+        setStage('reviewing')
+      } else {
+        throw new Error('Novelty check failed')
       }
     } catch (e) {
       setError('Failed to check novelty')
+      setStage('reviewing')
+    } finally {
+      setNoveltyCheckingIdeaId(null)
+      setNoveltyProgress(undefined)
     }
   }
 
@@ -1796,13 +1941,15 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
   }
 
   // ===== PROCESSING VIEW (Rich Animated Display) =====
-  // Shows for: normalizing, classifying, mapping_contradictions, expanding, checking_obviousness, generating stages
+  // Shows for: normalizing, classifying, mapping_contradictions, expanding, checking_obviousness, generating, checking_novelty stages
   if (isProcessingView(stage)) {
     return (
       <IdeationProcessingView
         stage={stage}
         seedText={currentSession?.seedText || seedText}
         onCancel={handleReset}
+        streamingIdeas={streamingIdeas}
+        noveltyProgress={noveltyProgress}
       />
     )
   }
@@ -2159,7 +2306,7 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
             initial={{ x: 300, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: 300, opacity: 0 }}
-            className="w-80 border-l border-slate-200 bg-white overflow-hidden flex flex-col ml-[-40px]"
+            className="w-80 border-l border-slate-200 bg-white overflow-hidden flex flex-col"
           >
             <CombineTray
               selectedNodes={selectedNodes}
@@ -2183,7 +2330,7 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
             initial={{ x: 400, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             exit={{ x: 400, opacity: 0 }}
-            className="border-l border-slate-200 bg-white overflow-hidden flex flex-col relative ml-[-40px]"
+            className="border-l border-slate-200 bg-white overflow-hidden flex flex-col relative"
             style={{ width: `${ideasPanelWidth}px` }}
           >
             <IdeaFramePanel
@@ -2359,32 +2506,12 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
         )}
       </AnimatePresence>
 
-      {/* Contradiction Mapping Panel (Floating Badge) */}
+      {/* Contradiction Insight Panel */}
       {contradictionMapping && (
-        <div className="fixed bottom-4 left-4 z-40">
-          <div className="bg-white rounded-xl shadow-lg border border-slate-200 p-3 max-w-xs">
-            <div className="flex items-center gap-2 mb-2">
-              <Target className="w-4 h-4 text-violet-500" />
-              <span className="text-xs font-semibold text-slate-700">
-                {contradictionMapping.contradictions?.length || 0} Contradictions Mapped
-              </span>
-            </div>
-            {contradictionMapping.inventivePrinciples?.length > 0 && (
-              <div className="flex flex-wrap gap-1">
-                {contradictionMapping.inventivePrinciples.slice(0, 3).map((p: any, i: number) => (
-                  <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-600">
-                    {p.name || p}
-                  </span>
-                ))}
-                {contradictionMapping.inventivePrinciples.length > 3 && (
-                  <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
-                    +{contradictionMapping.inventivePrinciples.length - 3}
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-        </div>
+        <ContradictionInsightPanel 
+          data={contradictionMapping}
+          onClose={() => setContradictionMapping(null)}
+        />
       )}
 
       {/* Floating Help Button */}

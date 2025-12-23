@@ -260,9 +260,23 @@ export const NoveltySearchResultSchema = z.object({
   title: z.string(),
   snippet: z.string().optional(),
   url: z.string().optional(),
+  publicationNumber: z.string().optional().describe('Patent publication number (e.g., US1234567B1)'),
+  assignee: z.string().optional().describe('Patent assignee/owner'),
+  filingDate: z.string().optional().describe('Patent filing date'),
   similarityScore: z.number().min(0).max(100).optional(),
   whyRelevant: z.string().describe('Why this result is relevant'),
 });
+
+// Schema for closest prior art patents identified by LLM
+export const ClosestPriorArtSchema = z.object({
+  publicationNumber: z.string().default('Unknown').describe('Patent publication number'),
+  title: z.string().default('Unknown Patent').describe('Patent title'),
+  relevanceScore: z.number().min(0).max(100).default(50).describe('How closely this matches the invention (0-100)'),
+  overlappingFeatures: z.array(z.string()).default([]).describe('Features that overlap with the invention'),
+  differentiatingFactors: z.array(z.string()).default([]).describe('How the invention differs from this patent'),
+  remark: z.string().default('Requires manual review').describe('Brief analysis of this patent vs the invention'),
+});
+export type ClosestPriorArt = z.infer<typeof ClosestPriorArtSchema>;
 
 // Mutation instructions for iterating weak ideas
 export const MutationInstructionsSchema = z.object({
@@ -285,7 +299,12 @@ export const NoveltyGateSchema = z.object({
   recommendedAction: NoveltyActionEnum.describe('What to do next'),
   reasoning: z.string().optional().describe('Explanation of the assessment'),
   
-  // NEW: Enhanced feedback loop fields
+  // Prior art analysis
+  patentsAnalyzed: z.number().optional().describe('Total number of patents analyzed'),
+  closestPriorArt: z.array(ClosestPriorArtSchema).default([]).describe('Top 3-5 most relevant prior art patents with analysis'),
+  priorArtSummary: z.string().optional().describe('Brief summary of prior art landscape and how invention differentiates'),
+  
+  // Enhanced feedback loop fields
   obviousnessFlags: z.array(z.enum([
     'COMBINATIONAL',      // Just adding known elements together
     'SAME_DOMAIN',        // All elements from same field  
@@ -743,13 +762,26 @@ export function getSchemaDescription(schemaName: string): string {
   "searchQueries": ["novelty search queries"]
 }`,
     NoveltyGate: `{
-  "query": "search query used",
-  "results": [{"source": "origin", "title": "title", "snippet": "text", "url": "link", "similarityScore": 0-100, "whyRelevant": "reason"}],
   "conceptSaturation": "LOW|MEDIUM|HIGH",
   "solutionSaturation": "LOW|MEDIUM|HIGH",
   "noveltyScore": 0-100,
   "recommendedAction": "KEEP|MUTATE_OPERATOR|MUTATE_DIMENSION|NARROW_MICRO_PROBLEM|ASK_USER_QUESTION",
-  "reasoning": "explanation"
+  "reasoning": "explanation of assessment",
+  "closestPriorArt": [
+    {
+      "publicationNumber": "patent number from search results",
+      "title": "patent title",
+      "relevanceScore": 0-100,
+      "overlappingFeatures": ["features that overlap with invention"],
+      "differentiatingFactors": ["how invention differs"],
+      "remark": "1-2 sentence analysis"
+    }
+  ],
+  "priorArtSummary": "2-3 sentence summary of prior art landscape and differentiation",
+  "obviousnessFlags": ["COMBINATIONAL", "SAME_DOMAIN", "PARAMETER_TWEAK", "OBVIOUS_SUBSTITUTION", "PREDICTABLE_RESULT"],
+  "phositaTest": "why PHOSITA would/wouldn't find this obvious",
+  "suggestedIterations": ["suggestions to increase novelty"],
+  "mutationInstructions": {"action": "MUTATE_DIMENSION|ADD_ANALOGY|etc", "specifics": "details", "retainElements": [], "suggestedAnalogy": "domain"}
 }`,
   };
   return descriptions[schemaName] || 'Schema not found';

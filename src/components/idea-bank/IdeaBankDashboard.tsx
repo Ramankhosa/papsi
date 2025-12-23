@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -35,6 +36,7 @@ type LayoutType = 'tile' | 'list'
 
 export default function IdeaBankDashboard() {
   const { user } = useAuth()
+  const router = useRouter()
   const [ideas, setIdeas] = useState<IdeaBankIdeaWithDetails[]>([])
   const [stats, setStats] = useState<IdeaBankStats | null>(null)
   const [loading, setLoading] = useState(true)
@@ -314,54 +316,83 @@ export default function IdeaBankDashboard() {
     }
   }
 
-  const handleSendToSearch = async (ideaId: string) => {
-    try {
-      const response = await fetch(`/api/idea-bank/${ideaId}/send-to-search`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-        }
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        alert(`Idea sent to novelty search! Search ID: ${data.searchRunId}`)
-      } else if (response.status === 403) {
-        alert('You do not have access to novelty search. Please upgrade your plan.')
-      } else {
-        const errorData = await response.json()
-        alert(errorData.details || 'Failed to send idea to novelty search')
-      }
-    } catch (error) {
-      console.error('Failed to send to search:', error)
-      alert('Failed to send idea to novelty search. Please try again.')
+  // Helper to build merged description from idea
+  const buildMergedDescription = (idea: IdeaBankIdeaWithDetails): string => {
+    const parts: string[] = []
+    
+    if (idea.description) {
+      parts.push(idea.description)
     }
+    
+    if (idea.abstract) {
+      parts.push(`\n\n## Abstract\n${idea.abstract}`)
+    }
+    
+    if (idea.technicalField) {
+      parts.push(`\n\n## Technical Field\n${idea.technicalField}`)
+    }
+    
+    if (idea.keyFeatures && idea.keyFeatures.length > 0) {
+      parts.push(`\n\n## Key Features\n${idea.keyFeatures.map(f => `• ${f}`).join('\n')}`)
+    }
+    
+    if (idea.potentialApplications && idea.potentialApplications.length > 0) {
+      parts.push(`\n\n## Potential Applications\n${idea.potentialApplications.map(a => `• ${a}`).join('\n')}`)
+    }
+    
+    if (idea.priorArtSummary) {
+      parts.push(`\n\n## Prior Art Summary\n${idea.priorArtSummary}`)
+    }
+    
+    const result = parts.join('') || idea.description || 'No description available'
+    // Truncate to avoid URL length limits (keep under 4000 chars for safety)
+    return result.length > 4000 ? result.substring(0, 4000) + '...' : result
   }
 
-  const handleSendToDrafting = async (ideaId: string) => {
-    try {
-      const response = await fetch(`/api/idea-bank/${ideaId}/send-to-drafting`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-        }
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        alert(`Idea sent to drafting pipeline! Session ID: ${data.draftingSessionId}`)
-      } else if (response.status === 403) {
-        alert('You do not have access to patent drafting. Please upgrade your plan.')
-      } else {
-        const errorData = await response.json()
-        alert(errorData.details || 'Failed to send idea to drafting')
-      }
-    } catch (error) {
-      console.error('Failed to send to drafting:', error)
-      alert('Failed to send idea to drafting. Please try again.')
+  const handleSendToSearch = (ideaId: string) => {
+    const idea = ideas.find(i => i.id === ideaId)
+    if (!idea) {
+      alert('Idea not found')
+      return
     }
+    
+    // Verify the idea is reserved by current user
+    if (!idea._isReservedByCurrentUser) {
+      alert('You must reserve this idea before sending it to novelty search')
+      return
+    }
+    
+    const mergedDescription = buildMergedDescription(idea)
+    const params = new URLSearchParams({
+      title: idea.title,
+      description: mergedDescription,
+      ideaId: ideaId
+    })
+    
+    router.push(`/novelty-search?${params.toString()}`)
+  }
+
+  const handleSendToDrafting = (ideaId: string) => {
+    const idea = ideas.find(i => i.id === ideaId)
+    if (!idea) {
+      alert('Idea not found')
+      return
+    }
+    
+    // Verify the idea is reserved by current user
+    if (!idea._isReservedByCurrentUser) {
+      alert('You must reserve this idea before sending it to drafting')
+      return
+    }
+    
+    const mergedDescription = buildMergedDescription(idea)
+    const params = new URLSearchParams({
+      title: idea.title,
+      rawIdea: mergedDescription,
+      ideaId: ideaId
+    })
+    
+    router.push(`/patents/draft/new?${params.toString()}`)
   }
 
   // Pagination controls

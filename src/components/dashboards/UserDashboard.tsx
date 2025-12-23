@@ -35,6 +35,7 @@ export default function UserDashboard() {
   const [showIdleMessage, setShowIdleMessage] = useState(false)
   const [projectsList, setProjectsList] = useState<any[]>([])
   const projectsScrollRef = useRef<HTMLDivElement | null>(null)
+  const userId = user?.user_id || user?.email
 
   // Idle detection and intelligence cues
   useEffect(() => {
@@ -155,7 +156,15 @@ export default function UserDashboard() {
     setGreeting(getRandomGreeting())
     setCurrentTime(getCurrentTimeString())
 
-    // Update time every minute and check if time segment changed
+    // Fetch dashboard stats
+    await fetchDashboardStats()
+
+    setIsLoading(false)
+  }, [fetchDashboardStats])
+
+  useEffect(() => {
+    if (!userId) return
+    initializeDashboard()
     const timeInterval = setInterval(() => {
       const newTime = getCurrentTimeString()
       const newTimeSegment = getTimeSegment()
@@ -169,19 +178,8 @@ export default function UserDashboard() {
       }
     }, 60000)
 
-    // Fetch dashboard stats
-    await fetchDashboardStats()
-
-    setIsLoading(false)
-
     return () => clearInterval(timeInterval)
-  }, [fetchDashboardStats])
-
-  useEffect(() => {
-    if (user) {
-      initializeDashboard()
-    }
-  }, [user, initializeDashboard])
+  }, [userId, initializeDashboard])
 
   const handleCardHover = (cardType: string, message: string) => {
     setHoverTooltip(message)

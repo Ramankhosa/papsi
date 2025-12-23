@@ -1159,10 +1159,15 @@ export async function checkNovelty(input: NoveltyCheckInput): Promise<NoveltyGat
   });
 
   const idea = ideaFrame.ideaFrameJson as IdeaFrame;
-  const queries = idea.searchQueries.slice(0, 3); // Limit to 3 queries for cost
+  const queries = (idea.searchQueries || []).slice(0, 3); // Limit to 3 queries for cost
 
   // Check cache first
   const results: NoveltyGate['results'] = [];
+  
+  // Handle case with no search queries
+  if (queries.length === 0) {
+    console.warn('No search queries available for novelty check');
+  }
   
   for (const query of queries) {
     const cacheKey = getSearchCacheKey(query, 'serpapi_patents');
@@ -1173,16 +1178,21 @@ export async function checkNovelty(input: NoveltyCheckInput): Promise<NoveltyGat
     });
 
     if (cached && new Date(cached.expiresAt) > new Date()) {
-      // Use cached results
-      const cachedResults = cached.resultJson as any[];
-      results.push(...cachedResults.slice(0, 5).map((r: any) => ({
-        source: 'Google Patents (cached)',
-        title: r.title || 'Unknown',
-        snippet: r.snippet,
-        url: r.link,
-        similarityScore: undefined,
-        whyRelevant: 'Matched search query',
-      })));
+      // Use cached results - ensure it's an array
+      const cachedResults = Array.isArray(cached.resultJson) ? cached.resultJson : [];
+      if (cachedResults.length > 0) {
+        results.push(...cachedResults.slice(0, 5).map((r: any) => ({
+          source: 'Google Patents (cached)',
+          title: r?.title || 'Unknown',
+          snippet: r?.snippet || undefined,
+          url: r?.link || undefined,
+          publicationNumber: r?.publication_number || r?.patent_id || undefined,
+          assignee: r?.assignee || undefined,
+          filingDate: r?.filing_date || r?.priority_date || undefined,
+          similarityScore: undefined,
+          whyRelevant: 'Matched search query',
+        })));
+      }
       
       // Update hit count
       await prisma.ideationSearchCache.update({
@@ -1213,11 +1223,15 @@ export async function checkNovelty(input: NoveltyCheckInput): Promise<NoveltyGat
             },
           });
 
-          results.push(...searchResult.organic_results.slice(0, 5).map((r: any) => ({
+          const organicResults = Array.isArray(searchResult.organic_results) ? searchResult.organic_results : [];
+          results.push(...organicResults.slice(0, 5).map((r: any) => ({
             source: 'Google Patents',
-            title: r.title || 'Unknown',
-            snippet: r.snippet,
-            url: r.link,
+            title: r?.title || 'Unknown',
+            snippet: r?.snippet || undefined,
+            url: r?.link || undefined,
+            publicationNumber: r?.publication_number || r?.patent_id || undefined,
+            assignee: r?.assignee || undefined,
+            filingDate: r?.filing_date || r?.priority_date || undefined,
             similarityScore: undefined,
             whyRelevant: 'Matched search query',
           })));
@@ -1259,9 +1273,9 @@ ${idea.analogySource ? `- Analogy Source: ${idea.analogySource}` : ''}
 ${idea.eliminatedComponent ? `- Eliminated Component: ${idea.eliminatedComponent}` : ''}
 
 ═══════════════════════════════════════════════════════════════
-PRIOR ART SEARCH RESULTS (${results.length} found)
+PRIOR ART SEARCH RESULTS (${results.length} patents analyzed)
 ═══════════════════════════════════════════════════════════════
-${results.map((r, i) => `${i + 1}. ${r.title}\n   ${r.snippet || 'No snippet'}`).join('\n\n')}
+${results.map((r, i) => `${i + 1}. [${r.publicationNumber || 'Unknown'}] ${r.title}${r.assignee ? ` (${r.assignee})` : ''}\n   ${r.snippet || 'No snippet'}`).join('\n\n')}
 
 Return ONLY valid JSON:
 ${getSchemaDescription('NoveltyGate')}
@@ -1297,6 +1311,21 @@ ASSESSMENT CRITERIA
    - "Apply [biological process] analogy to [mechanism]"
    - "Eliminate [traditional component] entirely"
 
+6. closestPriorArt (REQUIRED): Identify 2-4 most relevant patents from the search results:
+   - publicationNumber: The patent number (e.g., "US1234567B1")
+   - title: Patent title
+   - relevanceScore: 0-100 how closely it matches the invention
+   - overlappingFeatures: Array of features that overlap
+   - differentiatingFactors: Array of how the invention differs
+   - remark: Brief 1-2 sentence analysis
+
+7. priorArtSummary (REQUIRED): A 2-3 sentence summary explaining:
+   - The general landscape of prior art found
+   - Key differentiating factors of the invention
+   - Why it is/isn't novel compared to existing patents
+
+8. patentsAnalyzed: Set to ${results.length}
+
 ═══════════════════════════════════════════════════════════════
 RECOMMENDED ACTIONS
 ═══════════════════════════════════════════════════════════════
@@ -1315,6 +1344,11 @@ RECOMMENDED ACTIONS
 
   const parsed = safeParseJson(response, NoveltyGateSchema);
   
+  console.log('📊 Novelty assessment - LLM response parsed:', parsed.success ? 'SUCCESS' : 'FAILED');
+  if (!parsed.success) {
+    console.log('⚠️ Parse error details:', (parsed as any).error);
+  }
+  
   if (!parsed.success) {
     // Return default assessment with all required fields
     const fallback: NoveltyGate = {
@@ -1325,27 +1359,116 @@ RECOMMENDED ACTIONS
       noveltyScore: results.length > 5 ? 40 : 70,
       recommendedAction: results.length > 5 ? 'MUTATE_OPERATOR' : 'KEEP',
       reasoning: 'Auto-assessed based on result count',
-      // NEW: Enhanced feedback loop fields
+      // Prior art analysis
+      patentsAnalyzed: results.length,
+      closestPriorArt: results.length > 0 
+        ? results.slice(0, 3).map(r => ({
+            publicationNumber: r.publicationNumber || 'Unknown',
+            title: r.title || 'Unknown Patent',
+            relevanceScore: 50,
+            overlappingFeatures: ['Technical domain match'],
+            differentiatingFactors: ['Specific implementation may differ'],
+            remark: 'Potentially relevant based on title/snippet match. Manual review recommended.',
+          }))
+        : [],
+      priorArtSummary: results.length > 0
+        ? `Analyzed ${results.length} patents from patent databases. The search returned results in similar technical domains. Further detailed analysis recommended to confirm novelty.`
+        : 'No prior art patents found in the search. This could indicate high novelty or may require alternative search terms.',
+      // Enhanced feedback loop fields
       obviousnessFlags: results.length > 5 ? ['SAME_DOMAIN'] : [],
       suggestedIterations: results.length > 5 
         ? ['Try a more distant analogy', 'Eliminate a traditional component', 'Invert the approach']
         : [],
     };
+    
+    // IMPORTANT: Save fallback to database too!
+    console.log('🔄 Using fallback novelty assessment (LLM parse failed):', parsed.success === false ? 'parse error' : 'validation error');
+    await prisma.ideaFrame.update({
+      where: { id: input.ideaFrameId },
+      data: {
+        noveltyScore: fallback.noveltyScore,
+        noveltySummaryJson: fallback as any,
+        conceptSaturation: fallback.conceptSaturation,
+        solutionSaturation: fallback.solutionSaturation,
+      },
+    });
+    
     return fallback;
   }
 
+  // Merge LLM response with search results (LLM won't return the full results array)
+  const finalResult: NoveltyGate = {
+    // Include required fields from parsed data
+    query: queries.join(' | '),
+    noveltyScore: parsed.data.noveltyScore,
+    conceptSaturation: parsed.data.conceptSaturation,
+    solutionSaturation: parsed.data.solutionSaturation,
+    recommendedAction: parsed.data.recommendedAction,
+
+    // Include optional fields with fallbacks
+    reasoning: parsed.data.reasoning,
+    patentsAnalyzed: results.length,
+    priorArtSummary: parsed.data.priorArtSummary || (results.length > 0
+      ? `Analyzed ${results.length} patents from patent databases. ${parsed.data.reasoning || 'Further review recommended.'}`
+      : 'No prior art patents found in the search.'),
+    mutationInstructions: parsed.data.mutationInstructions ? {
+      ...parsed.data.mutationInstructions,
+      retainElements: parsed.data.mutationInstructions.retainElements || [],
+    } : undefined,
+    phositaTest: parsed.data.phositaTest,
+
+    // Always include the actual search results
+    results: results,
+
+    // Ensure closestPriorArt is always an array with required fields
+    closestPriorArt: parsed.data.closestPriorArt && parsed.data.closestPriorArt.length > 0
+      ? parsed.data.closestPriorArt.map(item => ({
+          publicationNumber: item.publicationNumber || 'Unknown',
+          title: item.title || 'Unknown Patent',
+          relevanceScore: item.relevanceScore || 50,
+          overlappingFeatures: item.overlappingFeatures || ['Technical domain match'],
+          differentiatingFactors: item.differentiatingFactors || ['Specific implementation may differ'],
+          remark: item.remark || 'Requires manual review',
+        }))
+      : results.length > 0
+        ? results.slice(0, 3).map(r => ({
+            publicationNumber: r.publicationNumber || 'Unknown',
+            title: r.title || 'Unknown Patent',
+            relevanceScore: 50,
+            overlappingFeatures: ['Technical domain match'],
+            differentiatingFactors: ['Specific implementation may differ'],
+            remark: 'Potentially relevant based on title/snippet match. Manual review recommended.',
+          }))
+        : [],
+
+    // Ensure obviousnessFlags is always an array
+    obviousnessFlags: parsed.data.obviousnessFlags || [],
+
+    // Ensure suggestedIterations is always an array
+    suggestedIterations: parsed.data.suggestedIterations || [],
+  };
+
   // Update idea frame with novelty info
+  console.log('💾 Saving novelty assessment to database...', {
+    ideaFrameId: input.ideaFrameId,
+    noveltyScore: finalResult.noveltyScore,
+    patentsAnalyzed: finalResult.patentsAnalyzed,
+    closestPriorArtCount: finalResult.closestPriorArt?.length || 0,
+    hasPriorArtSummary: !!finalResult.priorArtSummary,
+  });
+  
   await prisma.ideaFrame.update({
     where: { id: input.ideaFrameId },
     data: {
-      noveltyScore: parsed.data.noveltyScore,
-      noveltySummaryJson: parsed.data as any,
-      conceptSaturation: parsed.data.conceptSaturation,
-      solutionSaturation: parsed.data.solutionSaturation,
+      noveltyScore: finalResult.noveltyScore,
+      noveltySummaryJson: finalResult as any,
+      conceptSaturation: finalResult.conceptSaturation,
+      solutionSaturation: finalResult.solutionSaturation,
     },
   });
 
-  return parsed.data as NoveltyGate;
+  console.log('✅ Novelty assessment saved successfully');
+  return finalResult;
 }
 
 // =============================================================================
