@@ -91,6 +91,44 @@ async function main() {
       isActive: true,
       isDefault: false
     },
+    // Gemini 2.0 Experimental Models (best for image generation)
+    {
+      code: 'gemini-2.0-flash-exp',
+      displayName: 'Gemini 2.0 Flash Experimental (Best Image Output)',
+      provider: 'google',
+      contextWindow: 1000000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 10,     // $0.10
+      outputCostPer1M: 40,    // $0.40
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'gemini-2.0-flash-thinking-exp',
+      displayName: 'Gemini 2.0 Flash Thinking (Higher Quality Reasoning)',
+      provider: 'google',
+      contextWindow: 1000000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 30,     // $0.30
+      outputCostPer1M: 120,   // $1.20
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'gemini-exp-1206',
+      displayName: 'Gemini Experimental 1206 (Good Image Capability)',
+      provider: 'google',
+      contextWindow: 2000000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 100,    // $1.00
+      outputCostPer1M: 400,   // $4.00
+      isActive: true,
+      isDefault: false
+    },
+    // Gemini 1.5 Series
     {
       code: 'gemini-1.5-pro',
       displayName: 'Gemini 1.5 Pro',
@@ -100,6 +138,18 @@ async function main() {
       supportsStreaming: true,
       inputCostPer1M: 125,
       outputCostPer1M: 500,
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'gemini-1.5-flash',
+      displayName: 'Gemini 1.5 Flash',
+      provider: 'google',
+      contextWindow: 1000000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 8,      // $0.075
+      outputCostPer1M: 30,    // $0.30
       isActive: true,
       isDefault: false
     },
@@ -284,6 +334,31 @@ async function main() {
       isActive: true,
       isDefault: false
     },
+    // GPT-4 Turbo
+    {
+      code: 'gpt-4-turbo',
+      displayName: 'GPT-4 Turbo',
+      provider: 'openai',
+      contextWindow: 128000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 1000,   // $10.00
+      outputCostPer1M: 3000,  // $30.00
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'gpt-4',
+      displayName: 'GPT-4',
+      provider: 'openai',
+      contextWindow: 8192,
+      supportsVision: false,
+      supportsStreaming: true,
+      inputCostPer1M: 3000,   // $30.00
+      outputCostPer1M: 6000,  // $60.00
+      isActive: true,
+      isDefault: false
+    },
     // o1 Reasoning Models
     {
       code: 'o1',
@@ -309,10 +384,23 @@ async function main() {
       isActive: true,
       isDefault: false
     },
+    {
+      code: 'o1-preview',
+      displayName: 'OpenAI o1 Preview',
+      provider: 'openai',
+      contextWindow: 128000,
+      supportsVision: true,
+      supportsStreaming: false,
+      inputCostPer1M: 1500,   // $15.00
+      outputCostPer1M: 6000,  // $60.00
+      isActive: true,
+      isDefault: false
+    },
 
     // === ANTHROPIC MODELS ===
+    // Provider supports: claude-3-5-sonnet, claude-3-5-haiku, claude-3-opus, claude-3-sonnet, claude-3-haiku
     {
-      code: 'claude-3.5-sonnet',
+      code: 'claude-3-5-sonnet',
       displayName: 'Claude 3.5 Sonnet',
       provider: 'anthropic',
       contextWindow: 200000,
@@ -324,8 +412,32 @@ async function main() {
       isDefault: false
     },
     {
-      code: 'claude-3.5-haiku',
+      code: 'claude-3.5-sonnet',
+      displayName: 'Claude 3.5 Sonnet [Alias]',
+      provider: 'anthropic',
+      contextWindow: 200000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 300,    // $3.00
+      outputCostPer1M: 1500,  // $15.00
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'claude-3-5-haiku',
       displayName: 'Claude 3.5 Haiku',
+      provider: 'anthropic',
+      contextWindow: 200000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 80,     // $0.80
+      outputCostPer1M: 400,   // $4.00
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'claude-3.5-haiku',
+      displayName: 'Claude 3.5 Haiku [Alias]',
       provider: 'anthropic',
       contextWindow: 200000,
       supportsVision: true,
@@ -344,6 +456,30 @@ async function main() {
       supportsStreaming: true,
       inputCostPer1M: 1500,   // $15.00
       outputCostPer1M: 7500,  // $75.00
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'claude-3-sonnet',
+      displayName: 'Claude 3 Sonnet',
+      provider: 'anthropic',
+      contextWindow: 200000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 300,    // $3.00
+      outputCostPer1M: 1500,  // $15.00
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'claude-3-haiku',
+      displayName: 'Claude 3 Haiku',
+      provider: 'anthropic',
+      contextWindow: 200000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 25,     // $0.25
+      outputCostPer1M: 125,   // $1.25
       isActive: true,
       isDefault: false
     },
@@ -375,9 +511,10 @@ async function main() {
     },
 
     // === GROQ MODELS (Fast inference) ===
+    // Provider supports: llama-3.3-70b-versatile, llama-3.1-70b-versatile, llama-3.1-8b-instant, mixtral-8x7b-32768, gemma2-9b-it
     {
-      code: 'llama-3.3-70b',
-      displayName: 'Llama 3.3 70B (Groq)',
+      code: 'llama-3.3-70b-versatile',
+      displayName: 'Llama 3.3 70B Versatile (Groq)',
       provider: 'groq',
       contextWindow: 128000,
       supportsVision: false,
@@ -388,7 +525,31 @@ async function main() {
       isDefault: false
     },
     {
-      code: 'mixtral-8x7b',
+      code: 'llama-3.1-70b-versatile',
+      displayName: 'Llama 3.1 70B Versatile (Groq)',
+      provider: 'groq',
+      contextWindow: 128000,
+      supportsVision: false,
+      supportsStreaming: true,
+      inputCostPer1M: 59,     // $0.59
+      outputCostPer1M: 79,    // $0.79
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'llama-3.1-8b-instant',
+      displayName: 'Llama 3.1 8B Instant (Groq)',
+      provider: 'groq',
+      contextWindow: 128000,
+      supportsVision: false,
+      supportsStreaming: true,
+      inputCostPer1M: 5,      // $0.05
+      outputCostPer1M: 8,     // $0.08
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'mixtral-8x7b-32768',
       displayName: 'Mixtral 8x7B (Groq)',
       provider: 'groq',
       contextWindow: 32768,
@@ -396,6 +557,43 @@ async function main() {
       supportsStreaming: true,
       inputCostPer1M: 27,     // $0.27
       outputCostPer1M: 27,    // $0.27
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'gemma2-9b-it',
+      displayName: 'Gemma 2 9B IT (Groq)',
+      provider: 'groq',
+      contextWindow: 8192,
+      supportsVision: false,
+      supportsStreaming: true,
+      inputCostPer1M: 20,     // $0.20
+      outputCostPer1M: 20,    // $0.20
+      isActive: true,
+      isDefault: false
+    },
+    // Legacy Groq model codes (aliases for backwards compatibility)
+    {
+      code: 'groq-llama-3.3-70b',
+      displayName: 'Llama 3.3 70B (Groq) [Alias]',
+      provider: 'groq',
+      contextWindow: 128000,
+      supportsVision: false,
+      supportsStreaming: true,
+      inputCostPer1M: 59,
+      outputCostPer1M: 79,
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'groq-mixtral-8x7b',
+      displayName: 'Mixtral 8x7B (Groq) [Alias]',
+      provider: 'groq',
+      contextWindow: 32768,
+      supportsVision: false,
+      supportsStreaming: true,
+      inputCostPer1M: 27,
+      outputCostPer1M: 27,
       isActive: true,
       isDefault: false
     }
@@ -473,7 +671,16 @@ async function main() {
     { code: 'DIAGRAM_PLANTUML', displayName: 'PlantUML Generation', featureCode: 'DIAGRAM_GENERATION', sortOrder: 1, description: 'Generate PlantUML code' },
     { code: 'DIAGRAM_FLOWCHART', displayName: 'Flowchart Generation', featureCode: 'DIAGRAM_GENERATION', sortOrder: 2, description: 'Generate flowcharts' },
     { code: 'DIAGRAM_SEQUENCE', displayName: 'Sequence Diagram', featureCode: 'DIAGRAM_GENERATION', sortOrder: 3, description: 'Generate sequence diagrams' },
-    { code: 'DIAGRAM_BLOCK', displayName: 'Block Diagram', featureCode: 'DIAGRAM_GENERATION', sortOrder: 4, description: 'Generate block diagrams' }
+    { code: 'DIAGRAM_BLOCK', displayName: 'Block Diagram', featureCode: 'DIAGRAM_GENERATION', sortOrder: 4, description: 'Generate block diagrams' },
+
+    // === IDEATION ENGINE STAGES (Mind-Map Patent Ideation) ===
+    { code: 'IDEATION_NORMALIZE', displayName: 'Seed Normalization', featureCode: 'IDEATION', sortOrder: 1, description: 'Extracts structured information from the seed input (core entity, goal, constraints, unknowns, contradictions)' },
+    { code: 'IDEATION_CLASSIFY', displayName: 'Invention Classification', featureCode: 'IDEATION', sortOrder: 2, description: 'Classifies the invention into categories (Product/Method/System/etc.) with multi-label support' },
+    { code: 'IDEATION_CONTRADICTION_MAPPING', displayName: 'Contradiction Mapping (Stage 2.5)', featureCode: 'IDEATION', sortOrder: 3, description: 'Maps technical contradictions to TRIZ inventive principles and resolution strategies' },
+    { code: 'IDEATION_EXPAND', displayName: 'Dimension Expansion', featureCode: 'IDEATION', sortOrder: 4, description: 'Expands dimension nodes with specific options based on the invention context' },
+    { code: 'IDEATION_OBVIOUSNESS_FILTER', displayName: 'Obviousness Filter (Stage 3.5)', featureCode: 'IDEATION', sortOrder: 5, description: 'Scores selected dimensions for novelty before generation, suggests wildcards for obvious combinations' },
+    { code: 'IDEATION_GENERATE', displayName: 'Idea Frame Generation', featureCode: 'IDEATION', sortOrder: 6, description: 'Generates structured invention ideas (IdeaFrames) from selected components, dimensions, and operators with inventive logic' },
+    { code: 'IDEATION_NOVELTY', displayName: 'Novelty Assessment', featureCode: 'IDEATION', sortOrder: 7, description: 'Analyzes search results to assess novelty, provides mutation instructions for weak ideas' }
   ];
 
   try {
@@ -519,49 +726,60 @@ async function main() {
   allStages.forEach(s => { stagesByCode[s.code] = s.id; });
 
   // ============================================================================
-  // PRODUCTION TOKEN LIMITS (from Enterprise Plan - same for ALL plans)
+  // PRODUCTION TOKEN LIMITS - GENEROUS LIMITS TO PREVENT FAILURES
+  // These limits are set high to ensure LLM requests don't fail due to token limits
   // ============================================================================
   const tokenLimits = {
-    'DRAFT_IDEA_ENTRY':                   { maxTokensIn: 5000,  maxTokensOut: 6000 },
-    'DRAFT_CLAIM_GENERATION':             { maxTokensIn: 10000, maxTokensOut: 10000 },
-    'DRAFT_PRIOR_ART_ANALYSIS':           { maxTokensIn: 10000, maxTokensOut: 12000 },
-    'DRAFT_CLAIM_REFINEMENT':             { maxTokensIn: 8000,  maxTokensOut: 6000 },
-    'DRAFT_FIGURE_PLANNER':               { maxTokensIn: 10000, maxTokensOut: 10000 },
-    'DRAFT_SKETCH_GENERATION':            { maxTokensIn: 8000,  maxTokensOut: 10000 },
-    'DRAFT_DIAGRAM_GENERATION':           { maxTokensIn: 10000, maxTokensOut: 10000 },
-    'DRAFT_ANNEXURE_TITLE':               { maxTokensIn: 8000,  maxTokensOut: 500 },
-    'DRAFT_ANNEXURE_PREAMBLE':            { maxTokensIn: 8000,  maxTokensOut: 1000 },
-    'DRAFT_ANNEXURE_FIELD':               { maxTokensIn: 8000,  maxTokensOut: 1000 },
-    'DRAFT_ANNEXURE_BACKGROUND':          { maxTokensIn: 10000, maxTokensOut: 10000 },
-    'DRAFT_ANNEXURE_OBJECTS':             { maxTokensIn: 5000,  maxTokensOut: 5000 },
-    'DRAFT_ANNEXURE_SUMMARY':             { maxTokensIn: 8000,  maxTokensOut: 5000 },
-    'DRAFT_ANNEXURE_TECHNICAL_PROBLEM':   { maxTokensIn: 10000, maxTokensOut: 5000 },
-    'DRAFT_ANNEXURE_TECHNICAL_SOLUTION':  { maxTokensIn: 8000,  maxTokensOut: 2000 },
-    'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS':{ maxTokensIn: 10000, maxTokensOut: 5000 },
-    'DRAFT_ANNEXURE_DRAWINGS':            { maxTokensIn: 8000,  maxTokensOut: 5000 },
-    'DRAFT_ANNEXURE_DESCRIPTION':         { maxTokensIn: 10000, maxTokensOut: 10000 },
-    'DRAFT_ANNEXURE_BEST_MODE':           { maxTokensIn: 5000,  maxTokensOut: 3000 },
-    'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': { maxTokensIn: 5000, maxTokensOut: 3000 },
-    'DRAFT_ANNEXURE_CLAIMS':              { maxTokensIn: 8000,  maxTokensOut: 7000 },
-    'DRAFT_ANNEXURE_ABSTRACT':            { maxTokensIn: 8000,  maxTokensOut: 5000 },
-    'DRAFT_ANNEXURE_NUMERALS':            { maxTokensIn: 3000,  maxTokensOut: 1500 },
-    'DRAFT_ANNEXURE_CROSS_REFERENCE':     { maxTokensIn: 10000, maxTokensOut: 8000 },
-    'DRAFT_REVIEW':                       { maxTokensIn: 20000, maxTokensOut: 10000 },
-    // Novelty search stages
-    'NOVELTY_QUERY_GENERATION':           { maxTokensIn: 5000,  maxTokensOut: 3000 },
-    'NOVELTY_RELEVANCE_SCORING':          { maxTokensIn: 8000,  maxTokensOut: 2000 },
-    'NOVELTY_FEATURE_ANALYSIS':           { maxTokensIn: 10000, maxTokensOut: 8000 },
-    'NOVELTY_COMPARISON':                 { maxTokensIn: 15000, maxTokensOut: 10000 },
-    'NOVELTY_REPORT_GENERATION':          { maxTokensIn: 20000, maxTokensOut: 15000 },
+    // Core drafting stages - HIGH LIMITS for complex generation
+    'DRAFT_IDEA_ENTRY':                   { maxTokensIn: 20000,  maxTokensOut: 16000 },
+    'DRAFT_CLAIM_GENERATION':             { maxTokensIn: 30000,  maxTokensOut: 16000 },
+    'DRAFT_PRIOR_ART_ANALYSIS':           { maxTokensIn: 50000,  maxTokensOut: 16000 },
+    'DRAFT_CLAIM_REFINEMENT':             { maxTokensIn: 30000,  maxTokensOut: 16000 },
+    'DRAFT_FIGURE_PLANNER':               { maxTokensIn: 30000,  maxTokensOut: 16000 },
+    'DRAFT_SKETCH_GENERATION':            { maxTokensIn: 20000,  maxTokensOut: 8192 },
+    'DRAFT_DIAGRAM_GENERATION':           { maxTokensIn: 30000,  maxTokensOut: 16000 },
+    // Annexure/Section stages - GENEROUS LIMITS for patent sections
+    'DRAFT_ANNEXURE_TITLE':               { maxTokensIn: 20000,  maxTokensOut: 2000 },
+    'DRAFT_ANNEXURE_PREAMBLE':            { maxTokensIn: 20000,  maxTokensOut: 4000 },
+    'DRAFT_ANNEXURE_FIELD':               { maxTokensIn: 20000,  maxTokensOut: 4000 },
+    'DRAFT_ANNEXURE_BACKGROUND':          { maxTokensIn: 40000,  maxTokensOut: 16000 },
+    'DRAFT_ANNEXURE_OBJECTS':             { maxTokensIn: 20000,  maxTokensOut: 8000 },
+    'DRAFT_ANNEXURE_SUMMARY':             { maxTokensIn: 40000,  maxTokensOut: 16000 },
+    'DRAFT_ANNEXURE_TECHNICAL_PROBLEM':   { maxTokensIn: 30000,  maxTokensOut: 10000 },
+    'DRAFT_ANNEXURE_TECHNICAL_SOLUTION':  { maxTokensIn: 30000,  maxTokensOut: 10000 },
+    'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS':{ maxTokensIn: 30000,  maxTokensOut: 10000 },
+    'DRAFT_ANNEXURE_DRAWINGS':            { maxTokensIn: 30000,  maxTokensOut: 10000 },
+    'DRAFT_ANNEXURE_DESCRIPTION':         { maxTokensIn: 60000,  maxTokensOut: 16000 },  // Largest section
+    'DRAFT_ANNEXURE_BEST_MODE':           { maxTokensIn: 30000,  maxTokensOut: 10000 },
+    'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': { maxTokensIn: 20000, maxTokensOut: 8000 },
+    'DRAFT_ANNEXURE_CLAIMS':              { maxTokensIn: 40000,  maxTokensOut: 16000 },  // Critical section
+    'DRAFT_ANNEXURE_ABSTRACT':            { maxTokensIn: 30000,  maxTokensOut: 8000 },
+    'DRAFT_ANNEXURE_NUMERALS':            { maxTokensIn: 20000,  maxTokensOut: 8000 },
+    'DRAFT_ANNEXURE_CROSS_REFERENCE':     { maxTokensIn: 30000,  maxTokensOut: 10000 },
+    'DRAFT_REVIEW':                       { maxTokensIn: 100000, maxTokensOut: 16000 },  // Needs full patent context
+    // Novelty search stages - HIGH LIMITS for analysis
+    'NOVELTY_QUERY_GENERATION':           { maxTokensIn: 20000,  maxTokensOut: 8000 },
+    'NOVELTY_RELEVANCE_SCORING':          { maxTokensIn: 40000,  maxTokensOut: 8000 },
+    'NOVELTY_FEATURE_ANALYSIS':           { maxTokensIn: 60000,  maxTokensOut: 16000 },
+    'NOVELTY_COMPARISON':                 { maxTokensIn: 80000,  maxTokensOut: 16000 },
+    'NOVELTY_REPORT_GENERATION':          { maxTokensIn: 100000, maxTokensOut: 16000 },  // Comprehensive report
     // Idea bank stages
-    'IDEA_BANK_GENERATION':               { maxTokensIn: 10000, maxTokensOut: 8000 },
-    'IDEA_BANK_NORMALIZE':                { maxTokensIn: 5000,  maxTokensOut: 4000 },
-    'IDEA_BANK_SEARCH':                   { maxTokensIn: 3000,  maxTokensOut: 2000 },
+    'IDEA_BANK_GENERATION':               { maxTokensIn: 40000,  maxTokensOut: 16000 },
+    'IDEA_BANK_NORMALIZE':                { maxTokensIn: 20000,  maxTokensOut: 8000 },
+    'IDEA_BANK_SEARCH':                   { maxTokensIn: 20000,  maxTokensOut: 8000 },
     // Diagram stages
-    'DIAGRAM_PLANTUML':                   { maxTokensIn: 8000,  maxTokensOut: 4000 },
-    'DIAGRAM_FLOWCHART':                  { maxTokensIn: 8000,  maxTokensOut: 4000 },
-    'DIAGRAM_SEQUENCE':                   { maxTokensIn: 8000,  maxTokensOut: 4000 },
-    'DIAGRAM_BLOCK':                      { maxTokensIn: 8000,  maxTokensOut: 4000 },
+    'DIAGRAM_PLANTUML':                   { maxTokensIn: 30000,  maxTokensOut: 8000 },
+    'DIAGRAM_FLOWCHART':                  { maxTokensIn: 30000,  maxTokensOut: 8000 },
+    'DIAGRAM_SEQUENCE':                   { maxTokensIn: 30000,  maxTokensOut: 8000 },
+    'DIAGRAM_BLOCK':                      { maxTokensIn: 30000,  maxTokensOut: 8000 },
+    // IDEATION stages (Mind-Map Patent Ideation Engine) - GENEROUS for creative work
+    'IDEATION_NORMALIZE':                 { maxTokensIn: 20000,  maxTokensOut: 8192 },
+    'IDEATION_CLASSIFY':                  { maxTokensIn: 20000,  maxTokensOut: 8192 },
+    'IDEATION_CONTRADICTION_MAPPING':     { maxTokensIn: 30000,  maxTokensOut: 8192 },
+    'IDEATION_EXPAND':                    { maxTokensIn: 30000,  maxTokensOut: 8192 },
+    'IDEATION_OBVIOUSNESS_FILTER':        { maxTokensIn: 30000,  maxTokensOut: 8192 },
+    'IDEATION_GENERATE':                  { maxTokensIn: 40000,  maxTokensOut: 16000 },  // Heavy generation
+    'IDEATION_NOVELTY':                   { maxTokensIn: 50000,  maxTokensOut: 16000 },  // Complex analysis
   };
 
   // ============================================================================
@@ -615,6 +833,14 @@ async function main() {
       'DIAGRAM_FLOWCHART':                  'gemini-2.5-flash-lite',
       'DIAGRAM_SEQUENCE':                   'gemini-2.5-flash-lite',
       'DIAGRAM_BLOCK':                      'gemini-2.5-flash-lite',
+      // IDEATION stages - Use Pro for heavy reasoning, Flash Lite for lighter tasks
+      'IDEATION_NORMALIZE':                 'gemini-2.5-flash-lite',
+      'IDEATION_CLASSIFY':                  'gemini-2.5-flash-lite',
+      'IDEATION_CONTRADICTION_MAPPING':     'gemini-2.5-pro',         // Complex TRIZ reasoning
+      'IDEATION_EXPAND':                    'gemini-2.5-flash-lite',
+      'IDEATION_OBVIOUSNESS_FILTER':        'gemini-2.5-pro',         // Novelty assessment
+      'IDEATION_GENERATE':                  'gemini-2.5-pro',         // Creative idea generation
+      'IDEATION_NOVELTY':                   'gemini-2.5-pro',         // Complex analysis
     },
 
     // =========================================================================
@@ -663,6 +889,14 @@ async function main() {
       'DIAGRAM_FLOWCHART':                  'gpt-4o',
       'DIAGRAM_SEQUENCE':                   'gpt-4o',
       'DIAGRAM_BLOCK':                      'gpt-4o',
+      // IDEATION stages - Pro tier: GPT-5 for creative, Gemini Pro for analysis
+      'IDEATION_NORMALIZE':                 'gemini-2.5-pro',
+      'IDEATION_CLASSIFY':                  'gemini-2.5-pro',
+      'IDEATION_CONTRADICTION_MAPPING':     'gpt-5',                  // Complex TRIZ reasoning
+      'IDEATION_EXPAND':                    'gemini-2.5-pro',
+      'IDEATION_OBVIOUSNESS_FILTER':        'gpt-5',                  // Novelty assessment
+      'IDEATION_GENERATE':                  'gpt-5',                  // Creative idea generation
+      'IDEATION_NOVELTY':                   'gpt-5',                  // Complex analysis
     },
 
     // =========================================================================
@@ -711,6 +945,14 @@ async function main() {
       'DIAGRAM_FLOWCHART':                  'gpt-4o',
       'DIAGRAM_SEQUENCE':                   'gpt-4o',
       'DIAGRAM_BLOCK':                      'gpt-4o',
+      // IDEATION stages - Enterprise tier: Best models for maximum quality
+      'IDEATION_NORMALIZE':                 'gpt-5-mini',
+      'IDEATION_CLASSIFY':                  'gpt-5-mini',
+      'IDEATION_CONTRADICTION_MAPPING':     'gpt-5.1',                // Complex TRIZ reasoning - best model
+      'IDEATION_EXPAND':                    'gpt-5-mini',
+      'IDEATION_OBVIOUSNESS_FILTER':        'gpt-5',                  // Novelty assessment
+      'IDEATION_GENERATE':                  'gpt-5.1',                // Creative idea generation - best model
+      'IDEATION_NOVELTY':                   'gpt-5.1',                // Complex analysis - best model
     }
   };
 
