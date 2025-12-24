@@ -1,6 +1,9 @@
 -- ============================================================================
 -- IDEATION ENGINE Migration (Idempotent - Safe for production)
 -- ============================================================================
+-- NOTE: This migration requires 20251224_add_ideation_enums to run first.
+-- That migration adds IDEATION to FeatureCode, ServiceType, and TaskCode enums.
+-- ============================================================================
 
 -- CreateEnum: Ideation Session Status (idempotent)
 DO $$ BEGIN
