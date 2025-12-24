@@ -76,7 +76,9 @@ const SERVICE_LABELS: Record<string, string> = {
   PRIOR_ART_SEARCH: 'Prior Art Search',
   DIAGRAM_GENERATION: 'Diagram Generation',
   IDEA_BANK: 'Idea Bank',
-  PERSONA_SYNC: 'Persona Sync'
+  PERSONA_SYNC: 'Persona Sync',
+  PATENT_REVIEW: 'Patent Review',
+  IDEATION: 'Patent Ideation Engine'
 }
 
 const FEATURE_CODES = [
@@ -84,7 +86,9 @@ const FEATURE_CODES = [
   'PRIOR_ART_SEARCH',
   'DIAGRAM_GENERATION',
   'IDEA_BANK',
-  'PERSONA_SYNC'
+  'PERSONA_SYNC',
+  'PATENT_REVIEW',
+  'IDEATION'
 ]
 
 export default function ServiceControlPage() {
