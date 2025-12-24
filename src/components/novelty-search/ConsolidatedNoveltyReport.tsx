@@ -167,6 +167,20 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
   const finalRemarks = stage4?.final_remarks || stage4?.concluding_remarks || {};
   const riskFactors = stage4?.risk_factors || finalRemarks?.key_risks || [];
   const ideaSuggestions: any[] = Array.isArray(stage4?.idea_bank_suggestions) ? stage4.idea_bank_suggestions : [];
+  
+  // Enhanced per-patent analysis for inventor review
+  const perPatentAnalysis: any[] = Array.isArray(finalRemarks?.per_patent_analysis) 
+    ? finalRemarks.per_patent_analysis 
+    : [];
+  
+  // Inventor action items
+  const inventorActions: string[] = Array.isArray(finalRemarks?.inventor_action_items)
+    ? finalRemarks.inventor_action_items
+    : [];
+  
+  // Filing advice
+  const filingAdvice = finalRemarks?.filing_advice || '';
+  const whyNoveltyExists = finalRemarks?.why_novelty_exists || '';
 
   // Handle recommendations - could be in structured format or array format
   let recommendations = [];
@@ -291,18 +305,46 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
             <div>
               <div className="flex items-center gap-3 mb-2">
                 <span className="px-2 py-1 rounded bg-slate-100 text-slate-600 text-[10px] font-bold tracking-wider uppercase border border-slate-200">Confidential</span>
+                <span className="px-2 py-1 rounded bg-purple-100 text-purple-700 text-[10px] font-bold tracking-wider uppercase border border-purple-200">Inventor Review Copy</span>
                 <span className="text-xs text-slate-400 uppercase tracking-wide">ID: {searchId.slice(0,8)}</span>
               </div>
               <h1 className="text-3xl md:text-4xl font-bold text-slate-900 tracking-tight mb-2">{sanitizedTitle}</h1>
-              <div className="text-sm text-slate-500 flex gap-4">
+              <p className="text-sm text-slate-600 mb-2">Prior Art Analysis & Patentability Assessment</p>
+              <div className="text-sm text-slate-500 flex flex-wrap gap-4">
                 <span>Generated: {new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}</span>
                 <span>•</span>
                 <span>Jurisdiction: {stage0?.jurisdiction || 'US'}</span>
+                {finalRemarks?.analysis_date && (
+                  <>
+                    <span>•</span>
+                    <span>Analysis Date: {finalRemarks.analysis_date}</span>
+                  </>
+                )}
               </div>
             </div>
             <div className="text-right hidden md:block">
               <div className="text-xl font-bold text-slate-900">PatentNest.ai</div>
-              <div className="text-xs text-slate-400">Premium Intelligence</div>
+              <div className="text-xs text-slate-400">AI-Powered Patent Intelligence</div>
+              <div className="mt-2 px-3 py-1 bg-blue-50 text-blue-700 text-[10px] rounded-full border border-blue-100">
+                Professional Assessment Report
+              </div>
+            </div>
+          </div>
+          
+          {/* Report Purpose Notice */}
+          <div className="mt-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-100">
+            <div className="flex items-start gap-3">
+              <svg className="w-5 h-5 text-blue-600 mt-0.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <div>
+                <h3 className="text-sm font-semibold text-blue-900 mb-1">Purpose of This Report</h3>
+                <p className="text-xs text-blue-800 leading-relaxed">
+                  This comprehensive analysis evaluates the novelty and patentability of your invention against identified prior art. 
+                  Review the highlighted overlapping elements and differentiators to understand how your invention compares to existing patents. 
+                  Use the Inventor Action Items section to strengthen your application with additional details.
+                </p>
+              </div>
             </div>
           </div>
         </header>
@@ -440,6 +482,58 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
           </div>
         </SectionCard>
 
+        {/* --- FILING ADVICE FOR INVENTORS --- */}
+        {filingAdvice && (
+          <SectionCard title="Filing Advice" className="mb-8">
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-lg p-5">
+              <div className="flex items-start gap-4">
+                <div className="flex-shrink-0 w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+                  <svg className="w-5 h-5 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-blue-900 mb-2">Patent Filing Recommendation</h4>
+                  <p className="text-sm text-blue-800 leading-relaxed">{filingAdvice}</p>
+                </div>
+              </div>
+            </div>
+            
+            {whyNoveltyExists && (
+              <div className="mt-4 p-4 bg-slate-50 rounded-lg border border-slate-100">
+                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Novelty Basis</h4>
+                <p className="text-sm text-slate-700">{whyNoveltyExists}</p>
+              </div>
+            )}
+          </SectionCard>
+        )}
+
+        {/* --- INVENTOR ACTION ITEMS --- */}
+        {inventorActions.length > 0 && (
+          <SectionCard title="Inventor Action Items" className="mb-8">
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-4">
+              <p className="text-sm text-amber-800">
+                <strong>For the Inventor:</strong> Please review and respond to these items to strengthen the patent application.
+              </p>
+            </div>
+            <div className="space-y-3">
+              {inventorActions.map((action: string, i: number) => (
+                <div key={i} className="flex items-start gap-3 p-3 bg-white border border-slate-200 rounded-lg hover:border-blue-300 transition-colors">
+                  <div className="flex-shrink-0 w-6 h-6 bg-blue-100 rounded-full flex items-center justify-center text-blue-700 text-xs font-bold">
+                    {i + 1}
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm text-slate-700">{action}</p>
+                  </div>
+                  <div className="flex-shrink-0">
+                    <span className="px-2 py-1 bg-slate-100 text-slate-500 text-[10px] rounded uppercase tracking-wider">Pending</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </SectionCard>
+        )}
+
         {/* --- FEATURE MATRIX --- */}
         <SectionCard title="Feature Comparison Matrix">
           {featureMaps.length > 0 ? (
@@ -500,33 +594,158 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
           )}
         </SectionCard>
 
-        {/* --- FEATURE UNIQUENESS ANALYSIS --- */}
-        <SectionCard title="Feature Novelty Analysis">
-          <div className="space-y-6">
-            {featureUniq && featureUniq.length > 0 ? featureUniq.map((u: any, i: number) => {
-              const val = typeof u.uniqueness === 'string' ? parseFloat(u.uniqueness) : u.uniqueness;
-              const pct = val < 1 ? val * 100 : val; // Handle 0.8 vs 80
-              const color = pct > 75 ? 'bg-emerald-500' : pct > 40 ? 'bg-amber-500' : 'bg-rose-500';
-              
-              return (
-                <div key={i} className="break-inside-avoid">
-                  <div className="flex justify-between items-end mb-1">
-                    <div className="font-medium text-sm text-slate-800">{u.feature || u.name}</div>
-                    <div className="text-xs font-bold text-slate-600">{pct.toFixed(1)}% Unique</div>
-                  </div>
-                  <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                    <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }}></div>
-                  </div>
-                  <div className="mt-1 text-xs text-slate-500">{u.notes || u.rationale}</div>
-                </div>
-              );
-            }) : (
-               <div className="text-center py-4 text-slate-500">No uniqueness data.</div>
-            )}
-          </div>
-        </SectionCard>
+        {/* Feature Novelty Analysis section removed - data shown in per-patent analysis */}
 
-        {/* --- DETAILED EVIDENCE (Prior Art) --- */}
+        {/* --- ENHANCED PER-PATENT ANALYSIS FOR INVENTOR REVIEW --- */}
+        {perPatentAnalysis.length > 0 && (
+          <section className="mb-8 print-break-before">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center">
+                <div className="h-6 w-1 bg-purple-600 rounded-full mr-3"></div>
+                <div>
+                  <h2 className="text-lg font-bold text-slate-900 uppercase tracking-wide">Prior Art Analysis for Inventor Review</h2>
+                  <p className="text-xs text-slate-500 mt-1">Detailed assessment of each relevant patent with actionable insights</p>
+                </div>
+              </div>
+              <span className="px-3 py-1 bg-purple-100 text-purple-700 text-xs font-medium rounded-full">
+                {perPatentAnalysis.length} patent(s)
+              </span>
+            </div>
+
+            <div className="space-y-6">
+              {perPatentAnalysis.map((patent: any, idx: number) => {
+                const pn = patent.pn || patent.patent_number || 'Unknown';
+                const title = patent.title || 'Untitled Reference';
+                const relevance = typeof patent.relevance === 'number' ? patent.relevance : 0.5;
+                const noveltyThreat = patent.novelty_threat || 'unknown';
+                const summary = patent.summary || '';
+                const detailed = patent.detailedAnalysis || {};
+                
+                // Ensure arrays are arrays (defensive check)
+                const relevantParts = Array.isArray(detailed.relevant_parts) ? detailed.relevant_parts : [];
+                const irrelevantParts = Array.isArray(detailed.irrelevant_parts) ? detailed.irrelevant_parts : [];
+                
+                // Color coding for novelty threat levels
+                const threatConfig: Record<string, { bg: string; border: string; text: string; label: string; icon: string }> = {
+                  anticipates: { bg: 'bg-red-50', border: 'border-red-200', text: 'text-red-700', label: 'HIGH RISK - May Anticipate', icon: '⚠️' },
+                  obvious: { bg: 'bg-orange-50', border: 'border-orange-200', text: 'text-orange-700', label: 'MODERATE RISK - Obviousness Concern', icon: '⚡' },
+                  adjacent: { bg: 'bg-yellow-50', border: 'border-yellow-200', text: 'text-yellow-700', label: 'LOW RISK - Adjacent Art', icon: '📎' },
+                  remote: { bg: 'bg-green-50', border: 'border-green-200', text: 'text-green-700', label: 'MINIMAL RISK - Remote Reference', icon: '✓' },
+                  unknown: { bg: 'bg-slate-50', border: 'border-slate-200', text: 'text-slate-600', label: 'Unassessed', icon: '?' }
+                };
+                
+                const threat = threatConfig[noveltyThreat] || threatConfig.unknown;
+                const relevancePercent = Math.round(relevance * 100);
+
+                return (
+                  <div key={idx} className={`rounded-xl border-2 ${threat.border} ${threat.bg} shadow-sm overflow-hidden break-inside-avoid`}>
+                    {/* Header */}
+                    <div className="p-5 border-b border-slate-200 bg-white/80">
+                      <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+                        <div className="flex-1">
+                          <div className="flex items-center gap-3 flex-wrap mb-1">
+                            <span className="font-mono text-base font-bold text-slate-900">{pn}</span>
+                            <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider ${threat.bg} ${threat.text} border ${threat.border}`}>
+                              {threat.icon} {threat.label}
+                            </span>
+                          </div>
+                          <h3 className="text-sm text-slate-700">{title}</h3>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <div className="text-center">
+                            <div className="text-xs text-slate-400 uppercase tracking-wider">Relevance</div>
+                            <div className={`text-lg font-bold ${relevancePercent >= 70 ? 'text-red-600' : relevancePercent >= 50 ? 'text-orange-600' : 'text-slate-600'}`}>
+                              {relevancePercent}%
+                            </div>
+                          </div>
+                          <a 
+                            href={`https://patents.google.com/patent/${encodeURIComponent(String(pn).replace(/\s+/g, ''))}`}
+                            target="_blank" 
+                            rel="noreferrer"
+                            className="px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-md hover:bg-blue-700 transition-colors no-print"
+                          >
+                            View Patent →
+                          </a>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Analysis Content */}
+                    <div className="p-5 space-y-4">
+                      {/* Summary */}
+                      {summary && (
+                        <div>
+                          <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Analysis Summary</h4>
+                          <p className="text-sm text-slate-700 leading-relaxed">{summary}</p>
+                        </div>
+                      )}
+
+                      {/* Detailed Analysis Grid */}
+                      <div className="grid md:grid-cols-2 gap-4">
+                        {/* Overlapping Elements - RED */}
+                        {relevantParts.length > 0 && (
+                          <div className="p-4 bg-red-50 rounded-lg border border-red-100">
+                            <h5 className="text-xs font-bold text-red-700 uppercase tracking-wider mb-2 flex items-center gap-2">
+                              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                              </svg>
+                              Overlapping Elements (Requires Attention)
+                            </h5>
+                            <ul className="space-y-2">
+                              {relevantParts.map((part: string, i: number) => (
+                                <li key={i} className="text-xs text-red-800 flex items-start gap-2">
+                                  <span className="text-red-400 mt-0.5">•</span>
+                                  <span>{part}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        {/* Differentiators - GREEN */}
+                        {irrelevantParts.length > 0 && (
+                          <div className="p-4 bg-green-50 rounded-lg border border-green-100">
+                            <h5 className="text-xs font-bold text-green-700 uppercase tracking-wider mb-2 flex items-center gap-2">
+                              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                              </svg>
+                              Your Differentiators (Claim Focus Points)
+                            </h5>
+                            <ul className="space-y-2">
+                              {irrelevantParts.map((part: string, i: number) => (
+                                <li key={i} className="text-xs text-green-800 flex items-start gap-2">
+                                  <span className="text-green-500 mt-0.5">✓</span>
+                                  <span>{part}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Novelty Comparison */}
+                      {detailed.novelty_comparison && (
+                        <div className="p-4 bg-blue-50 rounded-lg border border-blue-100">
+                          <h5 className="text-xs font-bold text-blue-700 uppercase tracking-wider mb-2 flex items-center gap-2">
+                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                              <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
+                              <path fillRule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" />
+                            </svg>
+                            Novelty Assessment vs This Reference
+                          </h5>
+                          <p className="text-xs text-blue-800 leading-relaxed">{detailed.novelty_comparison}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* --- DETAILED EVIDENCE (Prior Art) - LEGACY --- */}
+        {perPatentAnalysis.length === 0 && featureMaps.length > 0 && (
         <section className="mb-8">
           <div className="flex items-center mb-6">
             <div className="h-6 w-1 bg-blue-600 rounded-full mr-3"></div>
@@ -604,74 +823,32 @@ export default function ConsolidatedNoveltyReport({ searchId, searchData }: Cons
             })}
           </div>
         </section>
-
-        {/* --- IDEA BANK SUGGESTIONS --- */}
-        {(ideaSuggestions.length > 0) && (
-          <SectionCard title="Idea Bank: White Space Opportunities" className="mb-8 bg-gradient-to-r from-indigo-50 to-violet-50 border-indigo-100">
-            <div className="space-y-4">
-              <p className="text-sm text-indigo-800 mb-4">
-                Based on the analysis of prior art gaps, here are potential non-obvious invention directions:
-              </p>
-              <div className="grid md:grid-cols-2 gap-4">
-                {ideaSuggestions.map((idea: any, idx: number) => (
-                  <div key={idx} className="bg-white p-4 rounded-lg border border-indigo-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="flex items-start justify-between mb-2">
-                      <h4 className="font-bold text-indigo-900 text-sm">{idea.title || 'Untitled Idea'}</h4>
-                      <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] rounded-full font-medium uppercase tracking-wider">
-                        New Concept
-                      </span>
-                    </div>
-                    
-                    {/* New structure fields */}
-                    {idea.problem_solved && (
-                       <div className="mb-2">
-                        <span className="text-xs font-semibold text-slate-500 uppercase">Problem: </span>
-                        <span className="text-xs text-slate-700">{idea.problem_solved}</span>
-                      </div>
-                    )}
-
-                    <div className="mb-2">
-                      <span className="text-xs font-semibold text-slate-500 uppercase">Mechanism: </span>
-                      <p className="text-xs text-slate-600 mt-1 line-clamp-3">{idea.core_principle}</p>
-                    </div>
-
-                    {idea.novel_mechanism && (
-                       <div className="mb-2">
-                        <span className="text-xs font-semibold text-slate-500 uppercase">Novelty: </span>
-                         <p className="text-xs text-slate-600 mt-1 line-clamp-3">{idea.novel_mechanism}</p>
-                      </div>
-                    )}
-
-                    <div className="mb-2">
-                      <span className="text-xs font-semibold text-slate-500 uppercase">Advantage: </span>
-                      <p className="text-xs text-slate-600 mt-1">{idea.expected_advantage}</p>
-                    </div>
-
-                    {idea.non_obvious_extension && (
-                      <div className="mb-3 p-2 bg-amber-50 border border-amber-100 rounded text-xs">
-                        <span className="font-semibold text-amber-800">Cross-Ref Killshot: </span>
-                        <span className="text-amber-900">{idea.non_obvious_extension}</span>
-                      </div>
-                    )}
-                    
-                    <div className="flex flex-wrap gap-1.5 mt-3">
-                      {(idea.tags || []).map((t: string, i: number) => (
-                        <span key={i} className="px-2 py-0.5 bg-slate-100 text-slate-500 text-[10px] rounded">
-                          {t}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </SectionCard>
         )}
 
+        {/* IDEA BANK SECTION HIDDEN - Ideas are saved silently to user's idea bank */}
+
         {/* --- FOOTER --- */}
-        <footer className="mt-12 pt-8 border-t border-slate-200 text-center text-xs text-slate-400">
-          <p className="mb-2">Generated by PatentNest.ai • AI-Assisted Analysis</p>
-          <p>Confidential • For Informational Purposes Only • Consult a Qualified Attorney</p>
+        <footer className="mt-12 pt-8 border-t border-slate-200">
+          {/* Disclaimer */}
+          {finalRemarks?.disclaimer && (
+            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-lg">
+              <div className="flex items-start gap-3">
+                <svg className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                </svg>
+                <div>
+                  <h4 className="text-sm font-semibold text-amber-900 mb-1">Important Legal Disclaimer</h4>
+                  <p className="text-xs text-amber-800 leading-relaxed">{finalRemarks.disclaimer}</p>
+                </div>
+              </div>
+            </div>
+          )}
+          
+          <div className="text-center text-xs text-slate-400">
+            <p className="mb-2">Generated by PatentNest.ai • AI-Powered Patent Intelligence</p>
+            <p className="mb-2">Confidential • For Informational Purposes Only • Consult a Qualified Patent Attorney</p>
+            <p className="text-slate-300">© {new Date().getFullYear()} PatentNest.ai - All Rights Reserved</p>
+          </div>
         </footer>
 
       </div>

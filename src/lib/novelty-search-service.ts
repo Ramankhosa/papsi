@@ -3,6 +3,7 @@ import { llmGateway } from './metering/gateway';
 import { prisma } from './prisma';
 import { TaskCode, NoveltySearchStatus, NoveltySearchStage } from '@prisma/client';
 import { IdeaBankService } from './idea-bank-service';
+import { ideaBankFunnel, type IdeaFunnelInput, type PriorArtAnalysisItem } from './idea-bank-funnel';
 import crypto from 'crypto';
 
 // LLM Prompt Specification for Novelty Search (enhanced versions)
@@ -454,8 +455,20 @@ Output JSON shape (exact keys):
     "key_risks": ["...", "..."],
     "strategic_recommendations": ["...", "...", "..."],
     "filing_advice": "Action-oriented single sentence",
-    "per_patent_discussion": [
-      {"patent_number": "PN", "novelty_overlap": "≤1 sentence", "gaps_or_differences": "≤1 sentence"}
+    "per_patent_analysis": [
+      {
+        "pn": "patent_number",
+        "title": "patent_title",
+        "relevance": 0.85,
+        "novelty_threat": "anticipates | obvious | adjacent | remote",
+        "summary": "1-2 sentence analysis of how this patent relates to our invention",
+        "detailedAnalysis": {
+          "summary": "Brief overview of the comparison",
+          "relevant_parts": ["specific overlapping element 1", "overlapping element 2"],
+          "irrelevant_parts": ["non-overlapping aspect 1", "different approach 1"],
+          "novelty_comparison": "What specific elements make our invention novel compared to this patent"
+        }
+      }
     ]
   },
   "idea_bank_suggestions": [
@@ -471,7 +484,10 @@ Output JSON shape (exact keys):
 
 Authoring guidance:
 - Derive search_trail from search_metadata counts if present; otherwise set nulls.
-- Populate per_patent_discussion only for selected_patents.
+- Populate per_patent_analysis only for relevant selected_patents (relevance >= 0.3).
+- For each patent, assess novelty_threat based on claim overlap: 'anticipates' if it discloses all elements, 'obvious' if combination renders obvious, 'adjacent' if related but doesn't threaten, 'remote' if different field.
+- In detailedAnalysis, be specific about which elements overlap (relevant_parts) and which don't (irrelevant_parts).
+- novelty_comparison should explain what SPECIFICALLY makes our invention novel compared to this patent.
 - When feature_analysis_matrix shows scattered coverage, explain lack of integration candidly.
 - Avoid legal conclusions; write in neutral, evidence-led tone.
 `;
@@ -518,8 +534,20 @@ Output JSON shape (exact keys):
     "key_risks": ["...", "..."],
     "strategic_recommendations": ["...", "...", "..."],
     "filing_advice": "Action‑oriented single sentence",
-    "per_patent_discussion": [
-      {"patent_number": "PN", "novelty_overlap": "≤1 sentence", "gaps_or_differences": "≤1 sentence"}
+    "per_patent_analysis": [
+      {
+        "pn": "patent_number",
+        "title": "patent_title",
+        "relevance": 0.85,
+        "novelty_threat": "anticipates | obvious | adjacent | remote",
+        "summary": "1-2 sentence analysis of how this patent relates to our invention",
+        "detailedAnalysis": {
+          "summary": "Brief overview of the comparison",
+          "relevant_parts": ["specific overlapping element 1", "overlapping element 2"],
+          "irrelevant_parts": ["non-overlapping aspect 1", "different approach 1"],
+          "novelty_comparison": "What specific elements make our invention novel compared to this patent"
+        }
+      }
     ]
   },
   "idea_bank_suggestions": [
@@ -535,7 +563,10 @@ Output JSON shape (exact keys):
 
 Authoring guidance:
 - Derive search_trail from search_metadata if available; otherwise set nulls except deeply_analyzed_count ≈ per_patent_remarks.length.
-- Build per_patent_discussion using pn and remarks; keep each entry ≤ 2 sentences total.
+- Build per_patent_analysis using pn and remarks with full detailed format (relevance, novelty_threat, detailedAnalysis).
+- For each patent, assess novelty_threat: 'anticipates' | 'obvious' | 'adjacent' | 'remote' based on claim overlap.
+- In detailedAnalysis, list specific relevant_parts (overlapping) and irrelevant_parts (non-overlapping).
+- novelty_comparison should explain what SPECIFICALLY makes our invention novel vs this patent.
 - Prioritize mechanisms and integrative differences over application context or benefits.
 `;
 
@@ -2781,7 +2812,7 @@ RESPONSE:`;
   }
 
   /**
-   * Enhance LLM-generated report with deterministic data
+   * Enhance LLM-generated report with deterministic data and professional patent analysis remarks
    */
   private enhanceReportWithDeterministicData(
     llmReport: any,
@@ -2793,38 +2824,46 @@ RESPONSE:`;
     const highlyUnique = aggregationResult.per_feature_uniqueness
       .filter(f => f.uniqueness > 0.8)
       .sort((a, b) => b.uniqueness - a.uniqueness);
+    const moderateUnique = aggregationResult.per_feature_uniqueness
+      .filter(f => f.uniqueness > 0.5 && f.uniqueness <= 0.8);
+    const lowUnique = aggregationResult.per_feature_uniqueness
+      .filter(f => f.uniqueness <= 0.5);
     const topUniqueNames = highlyUnique.slice(0, 3).map(f => f.feature);
     const integration = aggregationResult.integration_check;
-    const integrationLine = integration?.any_single_patent_covers_majority === false
-      ? 'No single prior-art patent integrates a majority of the key features, indicating system-level novelty arises from their specific combination.'
-      : (integration?.explanation || 'Several references show partial overlap; novelty depends on claim focus and specific combinations.');
+    const score = aggregationResult.novelty_score;
+    const decision = aggregationResult.decision;
 
-    const deterministicSummary = `Based on feature-level mapping of the shortlisted prior art, ${highlyUnique.length} of ${totalFeatures} key features show high uniqueness (>80%). ` +
-      (topUniqueNames.length > 0 ? `The strongest differentiators include ${topUniqueNames.join(', ')}. ` : '') +
-      `${integrationLine} Overall determination: ${aggregationResult.decision} with ${(aggregationResult.novelty_score * 100).toFixed(1)}% novelty and ${aggregationResult.confidence.toLowerCase()} confidence.`;
+    // Professional integration analysis
+    const integrationLine = integration?.any_single_patent_covers_majority === false
+      ? 'No single prior-art reference discloses a majority of the claimed features in combination, supporting system-level novelty arising from the specific integration of these elements.'
+      : (integration?.explanation || 'Several references exhibit partial feature overlap; patentability depends on the claim scope and the specific combination of elements.');
+
+    // Professional executive summary
+    const deterministicSummary = this.buildProfessionalExecutiveSummary(
+      totalFeatures, highlyUnique.length, moderateUnique.length, lowUnique.length,
+      topUniqueNames, integrationLine, decision, score, aggregationResult.confidence
+    );
 
     const existingExec = llmReport?.executive_summary || {};
     const finalExec = {
       ...existingExec,
       summary: existingExec.summary || existingExec.text || deterministicSummary,
-      novelty_score: (aggregationResult.novelty_score * 100).toFixed(1) + "%",
+      novelty_score: (score * 100).toFixed(1) + "%",
       confidence: aggregationResult.confidence,
       visual_cards: {
-        "Novelty Score": (aggregationResult.novelty_score * 100).toFixed(1) + "%",
+        "Novelty Score": (score * 100).toFixed(1) + "%",
         "Patents Analyzed": aggregationResult.per_patent_coverage.length.toString(),
         "Unique Features": `${highlyUnique.length} of ${totalFeatures}`,
         "Confidence": aggregationResult.confidence
       }
     };
 
-    // Concluding remarks with explicit "why novelty exists"
+    // Enhanced professional concluding remarks
     const existingRemarks = llmReport?.concluding_remarks || {};
-    const whyNovel = `Novelty is primarily supported by the high-uniqueness features (${topUniqueNames.join(', ') || 'several key features'}) and the lack of a single prior-art reference integrating a majority of the inventionâ€™s features. The inventive contribution lies in the specific configuration and interaction of these features.`;
-    const finalRemarks = {
-      ...existingRemarks,
-      overall_novelty_assessment: existingRemarks.overall_novelty_assessment || aggregationResult.decision,
-      why_novelty_exists: existingRemarks.why_novelty_exists || whyNovel
-    };
+    const professionalRemarks = this.buildProfessionalConcludingRemarks(
+      existingRemarks, aggregationResult, topUniqueNames, highlyUnique, 
+      moderateUnique, lowUnique, integrationLine, reportInputs
+    );
 
     // Ensure deterministic data overrides any LLM hallucinations
     return {
@@ -2837,9 +2876,174 @@ RESPONSE:`;
         uniqueness: (f.uniqueness * 100).toFixed(1) + "%",
         color: f.uniqueness > 0.8 ? "#4CAF50" : f.uniqueness > 0.6 ? "#FFC107" : "#E53935"
       })),
-      concluding_remarks: finalRemarks,
+      concluding_remarks: professionalRemarks,
       // Add patent metadata
       relevant_patent_summaries: reportInputs.patent_metadata
+    };
+  }
+
+  /**
+   * Build professional executive summary suitable for inventor review
+   */
+  private buildProfessionalExecutiveSummary(
+    totalFeatures: number, highCount: number, modCount: number, lowCount: number,
+    topUniqueNames: string[], integrationLine: string, decision: string, 
+    score: number, confidence: string
+  ): string {
+    const scorePercent = (score * 100).toFixed(1);
+    
+    let verdictPhrase = '';
+    let actionPhrase = '';
+    
+    if (decision === 'Novel') {
+      verdictPhrase = 'The invention demonstrates strong novelty characteristics';
+      actionPhrase = 'Recommend proceeding with patent application preparation.';
+    } else if (decision === 'Partially Novel') {
+      verdictPhrase = 'The invention exhibits partial novelty with identifiable differentiation points';
+      actionPhrase = 'Recommend focusing claims on unique feature combinations and considering design-arounds for overlapping elements.';
+    } else if (decision === 'Not Novel') {
+      verdictPhrase = 'Significant prior art overlap has been identified';
+      actionPhrase = 'Recommend re-evaluating the invention scope or pivoting to unique aspects not covered by prior art.';
+    } else {
+      verdictPhrase = 'Limited prior art was identified for comprehensive assessment';
+      actionPhrase = 'Consider expanding the search or proceeding with caution.';
+    }
+
+    let featureAnalysis = `Feature-level analysis across ${totalFeatures} key invention features indicates: `;
+    if (highCount > 0) {
+      featureAnalysis += `${highCount} feature(s) demonstrate high uniqueness (>80%)`;
+      if (topUniqueNames.length > 0) {
+        featureAnalysis += `, notably ${topUniqueNames.slice(0, 2).join(' and ')}`;
+      }
+      featureAnalysis += '. ';
+    }
+    if (modCount > 0) {
+      featureAnalysis += `${modCount} feature(s) show moderate differentiation (50-80%). `;
+    }
+    if (lowCount > 0) {
+      featureAnalysis += `${lowCount} feature(s) have substantial prior art coverage requiring claim refinement. `;
+    }
+
+    return `${verdictPhrase} with a calculated novelty score of ${scorePercent}% (${confidence.toLowerCase()} confidence). ${featureAnalysis}${integrationLine} ${actionPhrase}`;
+  }
+
+  /**
+   * Build comprehensive professional concluding remarks for patent analysis report
+   */
+  private buildProfessionalConcludingRemarks(
+    existingRemarks: any,
+    aggregationResult: AggregationResult,
+    topUniqueNames: string[],
+    highlyUnique: any[],
+    moderateUnique: any[],
+    lowUnique: any[],
+    integrationLine: string,
+    reportInputs: any
+  ): any {
+    const decision = aggregationResult.decision;
+    const score = aggregationResult.novelty_score;
+    const confidence = aggregationResult.confidence;
+
+    // Build professional key strengths based on analysis
+    const keyStrengths: string[] = [];
+    if (highlyUnique.length > 0) {
+      keyStrengths.push(`${highlyUnique.length} core feature(s) demonstrate high uniqueness (>80%), providing strong claim support`);
+      if (topUniqueNames.length > 0) {
+        keyStrengths.push(`Primary differentiators identified: ${topUniqueNames.join(', ')}`);
+      }
+    }
+    if (aggregationResult.integration_check?.any_single_patent_covers_majority === false) {
+      keyStrengths.push('No single prior art reference covers the majority of features, indicating system-level novelty');
+    }
+    if (score >= 0.7) {
+      keyStrengths.push('Overall novelty score exceeds 70%, suggesting favorable patentability prospects');
+    }
+    if (confidence === 'High') {
+      keyStrengths.push('High confidence in assessment based on comprehensive prior art coverage');
+    }
+
+    // Build professional key risks
+    const keyRisks: string[] = [];
+    if (lowUnique.length > 0) {
+      keyRisks.push(`${lowUnique.length} feature(s) have substantial prior art overlap (≤50% uniqueness) - consider claim narrowing`);
+      const riskFeatures = lowUnique.slice(0, 2).map(f => f.feature);
+      if (riskFeatures.length > 0) {
+        keyRisks.push(`Features requiring attention: ${riskFeatures.join(', ')}`);
+      }
+    }
+    if (decision === 'Not Novel' || decision === 'Partially Novel') {
+      keyRisks.push('Prior art citations may be combined under obviousness analysis (35 U.S.C. § 103)');
+    }
+    if (confidence === 'Low') {
+      keyRisks.push('Limited prior art coverage may indicate undiscovered references - consider supplemental search');
+    }
+    if (aggregationResult.per_patent_coverage.some(p => p.coverage_ratio > 0.7)) {
+      keyRisks.push('One or more references show high feature coverage (>70%) - review for potential anticipation');
+    }
+
+    // Build strategic recommendations for inventors
+    const recommendations: string[] = [];
+    if (decision === 'Novel') {
+      recommendations.push('Proceed with drafting claims emphasizing the identified high-uniqueness features');
+      recommendations.push('Consider filing provisional application to establish priority date');
+      recommendations.push('Conduct freedom-to-operate analysis for commercial implementation');
+    } else if (decision === 'Partially Novel') {
+      recommendations.push('Focus independent claims on the combination of high-uniqueness features');
+      recommendations.push('Draft dependent claims to capture alternative embodiments');
+      recommendations.push('Consider design-around opportunities for features with prior art overlap');
+      recommendations.push('Document technical advantages of the specific combination');
+    } else {
+      recommendations.push('Re-evaluate invention disclosure with focus on novel technical contributions');
+      recommendations.push('Consider pivoting to unexplored aspects of the technology');
+      recommendations.push('Identify any secondary considerations (unexpected results, commercial success) that may support patentability');
+      recommendations.push('Consult with patent counsel before proceeding');
+    }
+
+    // Build filing advice
+    let filingAdvice = '';
+    if (decision === 'Novel') {
+      filingAdvice = 'Based on this analysis, the invention appears to meet the novelty and non-obviousness requirements under 35 U.S.C. §§ 102 and 103. Recommend proceeding with patent application preparation with focus on the identified differentiators.';
+    } else if (decision === 'Partially Novel') {
+      filingAdvice = 'The invention shows patentable subject matter, but claim scope may need refinement. Recommend working with patent counsel to focus claims on the unique feature combinations while avoiding prior art overlap.';
+    } else if (decision === 'Not Novel') {
+      filingAdvice = 'Significant prior art overlap suggests challenges meeting novelty requirements. Recommend inventor consultation to identify any unconsidered aspects or technical improvements that may distinguish from prior art.';
+    } else {
+      filingAdvice = 'Insufficient prior art for definitive assessment. Consider expanded search before making filing decisions.';
+    }
+
+    // Build "why novelty exists" explanation
+    const uniqueFeaturesText = topUniqueNames.length > 0 
+      ? topUniqueNames.slice(0, 3).join(', ') 
+      : 'key technical features';
+    const whyNovel = highlyUnique.length > 0 
+      ? `Novelty determination is primarily supported by ${highlyUnique.length} feature(s) showing high uniqueness: ${uniqueFeaturesText}. ${integrationLine} The inventive contribution lies in the specific configuration and technical integration of these elements.`
+      : `The novelty assessment is based on the overall feature mapping analysis. ${integrationLine}`;
+
+    // Build inventor action items
+    const inventorActions: string[] = [];
+    if (lowUnique.length > 0) {
+      inventorActions.push(`Review overlapping features (${lowUnique.map(f => f.feature).slice(0, 2).join(', ')}) and document any technical distinctions not captured in the analysis`);
+    }
+    if (decision !== 'Novel') {
+      inventorActions.push('Provide additional technical details that may distinguish from cited prior art');
+      inventorActions.push('Identify any performance improvements, efficiency gains, or unexpected results');
+    }
+    inventorActions.push('Review cited prior art references and note any mischaracterizations');
+    inventorActions.push('Document the problem being solved and why prior art solutions are inadequate');
+
+    return {
+      ...existingRemarks,
+      title: 'Final Assessment & Recommendations',
+      overall_novelty_assessment: existingRemarks.overall_novelty_assessment || decision,
+      novelty_score_summary: `${(score * 100).toFixed(1)}% novelty score with ${confidence.toLowerCase()} confidence`,
+      why_novelty_exists: existingRemarks.why_novelty_exists || whyNovel,
+      key_strengths: existingRemarks.key_strengths?.length > 0 ? existingRemarks.key_strengths : keyStrengths,
+      key_risks: existingRemarks.key_risks?.length > 0 ? existingRemarks.key_risks : keyRisks,
+      strategic_recommendations: existingRemarks.strategic_recommendations?.length > 0 ? existingRemarks.strategic_recommendations : recommendations,
+      filing_advice: existingRemarks.filing_advice || filingAdvice,
+      inventor_action_items: inventorActions,
+      analysis_date: new Date().toISOString().split('T')[0],
+      disclaimer: 'This analysis is AI-generated and should be reviewed by a qualified patent attorney before making legal or business decisions. Patent law is complex and fact-specific; this report does not constitute legal advice.'
     };
   }
 
@@ -3663,7 +3867,21 @@ OUTPUT JSON:
       basePrompt += "\n- Under concluding_remarks, keep key_strengths/risks/recommendations and also include:";
       basePrompt += "\n  â€¢ 'advisory' field: Do NOT give legal conclusions; advise deep analysis of selected patents and next steps.";
       basePrompt += "\n  â€¢ 'patent_numbers' array listing the selected patent_number values for user review.";
-      basePrompt += "\n- Add 'per_patent_discussion' array with short entries per selected patent: {patent_number, novelty_overlap (1 sentence), gaps_or_differences (1 sentence)}. Keep it brief and factual.";
+      basePrompt += "\n- Add 'per_patent_analysis' array with detailed entries per selected/relevant patent using this format:";
+      basePrompt += "\n  {";
+      basePrompt += "\n    pn: patent_number,";
+      basePrompt += "\n    title: patent_title,";
+      basePrompt += "\n    relevance: 0.0-1.0 score (how relevant to our invention),";
+      basePrompt += "\n    novelty_threat: 'anticipates' (discloses ALL elements) | 'obvious' (combining would render obvious) | 'adjacent' (related but doesn't threaten scope) | 'remote' (different field),";
+      basePrompt += "\n    summary: 1-2 sentence explanation of relationship to our invention,";
+      basePrompt += "\n    detailedAnalysis: {";
+      basePrompt += "\n      summary: brief overview,";
+      basePrompt += "\n      relevant_parts: [specific overlapping elements/claims],";
+      basePrompt += "\n      irrelevant_parts: [elements that don't overlap with our claims],";
+      basePrompt += "\n      novelty_comparison: what makes our invention novel vs this patent";
+      basePrompt += "\n    }";
+      basePrompt += "\n  }";
+      basePrompt += "\n  Only include patents with relevance >= 0.3 (filter out remote/irrelevant ones).";
 
       // Enforce a critical, examiner-style stance and explicit decision policy
       basePrompt += "\n\nCRITICAL STANCE AND DECISION RULES:";
@@ -3826,48 +4044,53 @@ OUTPUT JSON:
         idea_bank_suggestions: ideaBank
       };
 
-      // Persist Idea Bank suggestions to the main idea bank table
-      try {
-        if (Array.isArray(ideaBank) && ideaBank.length > 0 && searchRun.userId) {
-          const ideaBankService = new IdeaBankService();
-          const avgRelevance = (aggRes.per_patent_coverage || []).reduce((s, p) => s + (p.coverage_ratio || 0), 0) / Math.max(1, (aggRes.per_patent_coverage || []).length);
-
-          console.log('💾 Persisting', ideaBank.length, 'Stage 4 idea bank suggestions to main idea bank...');
-
-          // Get user for the idea bank service
-          const user = await prisma.user.findUnique({
-            where: { id: searchRun.userId }
-          });
-
-          if (user) {
-            for (let i = 0; i < ideaBank.length; i++) {
-              const ib = ideaBank[i] || {};
-              try {
-                // Convert the idea format to match what addIdeaFromNoveltySearch expects
-                const extractedIdea = {
-                  title: String(ib.title || '').slice(0, 200),
-                  description: String(ib.core_principle || '').slice(0, 2000),
-                  abstract: String(ib.expected_advantage || '').slice(0, 500),
-                  domainTags: Array.isArray(ib.tags) ? ib.tags.map((t: any) => String(t).slice(0, 60)) : [],
-                  technicalField: 'AI-Generated',
-                  keyFeatures: [String(ib.non_obvious_extension || '').slice(0, 200)],
-                  potentialApplications: ['Patentable invention'],
-                  noveltyScore: avgRelevance || 0.5
-                };
-
-                await ideaBankService.addIdeaFromNoveltySearch(extractedIdea, user, searchRun.id);
-                console.log(' Persisted idea bank suggestion:', ib.title);
-              } catch (e) {
-                console.error('âŒ Failed to persist Stage 4 idea bank suggestion:', ib.title, e);
-              }
+      // === TRIGGER UNIFIED IDEA BANK FUNNEL ASYNCHRONOUSLY ===
+      // Old synchronous persistence removed - now using unified funnel with:
+      // - Stream A: Cross-Domain Applications
+      // - Stream B: Technology Combinations  
+      // - Stream C: LLM Validation Layer (approves/rejects before persistence)
+      if (searchRun.userId && aggRes.per_patent_coverage?.length > 0) {
+        // Build prior art analysis in unified format for the funnel
+        const priorArtForFunnel: PriorArtAnalysisItem[] = (enhancedReportInputs.patent_details || []).map((p: any, idx: number) => {
+          const coverage = aggRes.per_patent_coverage?.[idx];
+          const perPatentAnalysis = reportData?.concluding_remarks?.per_patent_analysis?.find(
+            (a: any) => a.pn === p.patent_number || a.patent_number === p.patent_number
+          );
+          
+          return {
+            pn: p.patent_number || '',
+            title: p.title || '',
+            abstract: p.abstract || '',
+            relevance: coverage?.coverage_ratio || 0.5,
+            novelty_threat: perPatentAnalysis?.novelty_threat || 'adjacent',
+            summary: perPatentAnalysis?.summary || '',
+            detailedAnalysis: {
+              summary: perPatentAnalysis?.detailedAnalysis?.summary || '',
+              relevant_parts: perPatentAnalysis?.detailedAnalysis?.relevant_parts || [],
+              irrelevant_parts: perPatentAnalysis?.detailedAnalysis?.irrelevant_parts || [],
+              novelty_comparison: perPatentAnalysis?.detailedAnalysis?.novelty_comparison || ''
             }
-            console.log(' Stage 4 idea bank suggestions persisted to main idea bank');
-          } else {
-            console.warn('âš ï¸ Could not find user for idea bank persistence');
-          }
-        }
-      } catch (persistErr) {
-        console.warn('âš ï¸ Idea bank persistence failed:', persistErr);
+          } as PriorArtAnalysisItem;
+        }).filter((p: PriorArtAnalysisItem) => p.pn && p.relevance >= 0.3);
+
+        const funnelInput: IdeaFunnelInput = {
+          source: 'novelty_search',
+          invention: {
+            title: searchRun.title || '',
+            abstract: (stage0Data as any)?.abstract || '',
+            features: stage0Data.inventionFeatures || [],
+            searchQuery: stage0Data.searchQuery || ''
+          },
+          priorArtAnalysis: priorArtForFunnel,
+          userId: searchRun.userId,
+          searchRunId: searchRun.id,
+          requestHeaders: requestHeaders || {}
+        };
+
+        console.log('[Stage4] Triggering Idea Bank Funnel asynchronously...');
+        ideaBankFunnel.processIdeasAsync(funnelInput).catch(err => {
+          console.error('[Stage4] Idea Bank Funnel failed:', err);
+        });
       }
 
       // PDF export removed for novelty report path

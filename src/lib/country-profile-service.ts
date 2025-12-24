@@ -24,13 +24,18 @@ export async function getActiveCountryProfiles(): Promise<Map<string, CountryPro
 
   // Return cached data if still valid
   if (countryProfileCache && (now - cacheTimestamp) < CACHE_DURATION) {
+    console.log('[CountryProfiles] Returning cached data:', countryProfileCache.size, 'profiles')
     return countryProfileCache
   }
 
+  console.log('[CountryProfiles] Cache miss or expired, fetching from database...')
   try {
     const profiles = await prisma.countryProfile.findMany({
       where: { status: 'ACTIVE' }
     })
+
+    console.log('[CountryProfiles] Database query returned:', profiles.length, 'profiles')
+    profiles.forEach(p => console.log(`  - ${p.countryCode}: ${p.name} (${p.status})`))
 
     // Create new cache
     countryProfileCache = new Map()
@@ -48,9 +53,10 @@ export async function getActiveCountryProfiles(): Promise<Map<string, CountryPro
     })
 
     cacheTimestamp = now
+    console.log('[CountryProfiles] Cache populated with:', countryProfileCache.size, 'profiles')
     return countryProfileCache
   } catch (error) {
-    console.error('Error fetching country profiles:', error)
+    console.error('[CountryProfiles] Error fetching country profiles:', error)
     // Return empty map on error, don't break the application
     return new Map()
   }

@@ -7,6 +7,7 @@ import { authenticateUser } from '@/lib/auth-middleware';
 import { prisma } from '@/lib/prisma';
 import { DraftingService } from '@/lib/drafting-service';
 import { IdeaBankService } from '@/lib/idea-bank-service';
+import { ideaBankFunnel, type IdeaFunnelInput, type PriorArtAnalysisItem } from '@/lib/idea-bank-funnel';
 import { llmGateway } from '@/lib/metering/gateway';
 // NOTE: Old document-based style learning (getGatedStyleInstructions) has been removed
 // The new Writing Personas system uses writing samples directly in DraftingService
@@ -1180,107 +1181,9 @@ ${batchText}`
     })
   }
 
-  // STEP 2: Idea Generation (separate call)
-  console.log('Starting idea generation with Gemini 2.5 Flash-Lite...')
-  const ideaPrompt = `You are a dual-headed entity:
-- Left brain: ruthless patent examiner who kills any idea that is obvious under 35 U.S.C. §103 or abstract under §101.
-- Right brain: visionary CTO who invents only “white-space” solutions that make the cited references obsolete.
-
-Both brains must co-sign every concept or it is rejected.
-
-INVENTION CONTEXT:
-Title: ${title}
-Search Query: ${query}
-
-CORE OBJECTIVE:
-The user is looking for "White Space" inventions—areas where no patent currently exists.
-Do not just improve the references. Make them obsolete.
-Think from First Principles: What is the fundamental physics/logic limit here, and how do we bypass it?
-
-INVENTION BRIEFING:
-Generate exactly 5 patent-grade concepts that:
-1. Are **orthogonal** to every mechanism disclosed in REFERENCES.
-2. Contain at least one **physical structure** or **chemical composition** (no pure algorithms, no “AI to optimize”).
-3. Can be **enabled** by a PHOSITA with only routine experimentation (no perpetual motion, no room-temperature superconductors unless you supply the formula).
-4. Pass the **“cold shower” test**: if you woke up tomorrow and read the claim on the front page of TechCrunch, you would think “wow, that’s clever—and nobody did that before.”
-
-CREATIVITY FILTERS (apply ≥1 per idea):
-A. **Anti-Solution**: Invert the primary physical state (e.g., if it's rigid, make it fluid; if it's centralized, make it swarm-based).
-B. **Resource Starvation**: Design for zero electricity, zero RF bandwidth, or zero rare-earth materials.
-C. **Biomimicry**: Copy a biological mechanism that has **no** existing engineering analog in the field.
-D. **Dimensional Shift**: Replace spatial hardware with temporal encoding, or vice-versa.
-E. **Cross-Pollination**: Import a physical phenomenon from an unrelated domain (e.g., high-frequency trading latency-arbitrage → ultrasonic acoustic arbitrage in concrete sensing).
-
-OUTPUT SPECIFICATION:
-Return ONLY valid JSON with exactly this schema.
-{
-  "idea_bank_suggestions": [
-    {
-      "title": "≤12 words, technical, no fluff",
-      "core_principle": "One sentence problem statement anchored in white space, followed by: Unlike standard approaches that use X, this embodiment uses Y (2-3 sentences, physical detail)",
-      "expected_advantage": "Concrete commercial scenario with $-size if possible",
-      "tags": ["technical-domain", "application", "disruption-type", "cross-discipline"],
-      "non_obvious_extension": "Exact sentence from REFERENCES that this idea avoids (Cross-ref Killshot)"
-    }
-  ]
-}
-
-GENERATE 5 RADICAL IDEAS.
-
-REFERENCE SNAPSHOTS (Analyze these to find what to AVOID or DISRUPT):
-${candidatesText}`
-
-  // Use dedicated IDEA_BANK_GENERATION stage for idea generation
-  // This stage is shared between drafting pipeline and novelty search
-  // Admin can configure the model for idea generation from one place
-  const ideaResult = await llmGateway.executeLLMOperation(request, {
-    taskCode: 'LLM1_PRIOR_ART',  // Task code for metering (prior art analysis feature)
-    stageCode: 'IDEA_BANK_GENERATION', // Stage code for model selection - unified idea bank generation
-    prompt: ideaPrompt,
-    idempotencyKey: crypto.randomUUID(),
-    inputTokens: Math.ceil(ideaPrompt.length / 4),
-    parameters: { 
-      maxOutputTokens: 5000,
-      temperature: 0.9,
-      topP: 0.95
-    },
-    metadata: {
-      patentId,
-      sessionId,
-      runId: useRunId,
-      purpose: 'idea_bank_generation'  // Updated purpose to reflect unified idea bank
-    }
-  })
-
-  console.log('Idea generation model used:', ideaResult?.response?.modelClass || 'unknown')
-
-  let ideaBank: any[] = []
-  if (ideaResult.success && ideaResult.response) {
-    try {
-      const txt = (ideaResult.response.output || '').trim()
-      const start = txt.indexOf('{'); const end = txt.lastIndexOf('}')
-      const json = start !== -1 && end !== -1 ? txt.substring(start, end + 1) : txt
-      const parsed = JSON.parse(json)
-      ideaBank = Array.isArray(parsed?.idea_bank_suggestions) ? parsed.idea_bank_suggestions : []
-      console.log('Idea generation successful:', ideaBank.length, 'ideas generated')
-      if (ideaBank.length > 0) {
-        console.log('Sample idea:', ideaBank[0].title)
-      }
-    } catch (e) {
-      console.log('Idea generation JSON parse failed:', e)
-      // Continue with empty ideaBank rather than failing completely
-    }
-  } else {
-    console.log('Idea generation failed:', ideaResult?.error || 'Unknown error')
-    // Log the full error for debugging
-    console.error('Idea generation LLM call failed:', {
-      success: ideaResult?.success,
-      error: ideaResult?.error,
-      response: ideaResult?.response
-    })
-    // Continue with empty ideaBank rather than failing completely
-  }
-
+  // STEP 2: Idea Generation moved to async Idea Bank Funnel
+  // The funnel runs silently in the background after we return results to user
+  // This prevents blocking the response and provides better idea quality with validation
 
   const autoUse: string[] = []
   const tagsFor = (d: typeof allDecisions[number]) => {
@@ -1305,58 +1208,65 @@ ${candidatesText}`
     if (d.novelty_threat !== 'anticipates') autoUse.push(d.pn)
   }
 
-  // Debug: log the idea bank suggestions
-  console.log('Idea Bank suggestions to persist:', ideaBank.length)
-
-  // Persist Idea Bank suggestions to the main idea bank table
-  console.log('ÃƒÂ°Ã…Â¸Ã¢â‚¬ÂÃ¢â‚¬Å¾ Persisting', ideaBank.length, 'idea bank suggestions to main idea bank...')
-  if (ideaBank.length > 0) {
-    const ideaBankService = new IdeaBankService();
-    const avgRelevance = allDecisions.length
-      ? (allDecisions.reduce((acc, d) => acc + (d.relevance || 0), 0) / allDecisions.length)
-      : 0.5;
-
-    for (let i = 0; i < ideaBank.length; i++) {
-      const ib = ideaBank[i] || {}
-      try {
-        // Convert the idea format to match what addIdeaFromNoveltySearch expects
-        const extractedIdea = {
-          title: String(ib.title || '').slice(0, 200),
-          description: String(ib.core_principle || '').slice(0, 2000),
-          abstract: String(ib.expected_advantage || '').slice(0, 500),
-          domainTags: Array.isArray(ib.tags) ? ib.tags.map((t: any) => String(t).slice(0, 60)) : [],
-          technicalField: 'AI-Generated',
-          keyFeatures: [String(ib.non_obvious_extension || '').slice(0, 200)],
-          potentialApplications: ['Patentable invention'],
-          noveltyScore: avgRelevance
-        };
-
-        await ideaBankService.addIdeaFromNoveltySearch(extractedIdea, user, patentId);
-        console.log('ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Persisted idea bank suggestion:', ib.title?.substring(0, 50))
-      } catch (e) {
-        console.error('ÃƒÂ¢Ã‚ÂÃ…â€™ Failed to persist idea bank suggestion:', ib.title, 'Error:', e)
-      }
-    }
-    console.log('ÃƒÂ¢Ã…â€œÃ¢â‚¬Â¦ Finished persisting', ideaBank.length, 'idea bank suggestions to main idea bank')
-  } else {
-    console.log('ÃƒÂ¢Ã…Â¡Ã‚Â ÃƒÂ¯Ã‚Â¸Ã‚Â No idea bank suggestions to persist')
-  }
+  // Build response - old synchronous idea bank persistence removed
+  // Now handled asynchronously by unified Idea Bank Funnel (Stream A, B, C)
 
   const response = {
     reviewed: allDecisions.length,
     decisions: allDecisions,
     autoSelect: autoUse,
     runId: useRunId,
-    ideaBankSuggestions: ideaBank
+    // ideaBankSuggestions removed - now generated asynchronously via unified funnel
+    ideaFunnelTriggered: true  // Indicates async idea generation is in progress
   }
   console.log('API Response structure:', {
     reviewed: response.reviewed,
     decisionsCount: response.decisions.length,
     autoSelectCount: response.autoSelect.length,
-    runId: response.runId,
-    ideaBankSuggestionsCount: response.ideaBankSuggestions.length,
-    ideaBankSuggestions: response.ideaBankSuggestions
+    runId: response.runId
   })
+
+  // Trigger Idea Bank Funnel asynchronously (fire and forget)
+  // This runs in the background after returning response to user
+  // Ideas are validated through Stream A (Cross-Domain), Stream B (Tech Combinations),
+  // and Stream C (Validation Layer) before being persisted to the idea bank
+  const funnelInput: IdeaFunnelInput = {
+    source: 'drafting_pipeline',
+    invention: {
+      title: title || 'Untitled Invention',
+      abstract: (session?.ideaRecord as any)?.abstract || '',
+      claims: claimsText || '',
+      features: Array.isArray(frozenClaims) ? frozenClaims.map((c: any) => c.text || '').filter(Boolean) : [],
+      searchQuery: query || ''
+    },
+    priorArtAnalysis: allDecisions
+      .filter(d => d.pn && d.relevance >= 0.3) // Only include relevant patents with valid PN
+      .map(d => ({
+        pn: d.pn || '',
+        title: d.title || 'Untitled Patent',
+        relevance: typeof d.relevance === 'number' ? d.relevance : 0.5,
+        novelty_threat: d.novelty_threat || 'adjacent',
+        summary: d.summary || '',
+        detailedAnalysis: d.detailedAnalysis || {
+          summary: d.summary || '',
+          relevant_parts: [],
+          irrelevant_parts: [],
+          novelty_comparison: ''
+        }
+      } as PriorArtAnalysisItem)),
+    userId: user.id,
+    patentId,
+    sessionId,
+    runId: useRunId,
+    requestHeaders
+  }
+
+  // Fire and forget - don't await
+  console.log('[Prior Art Review] Triggering Idea Bank Funnel asynchronously...')
+  ideaBankFunnel.processIdeasAsync(funnelInput).catch(err => {
+    console.error('[Prior Art Review] Idea Bank Funnel failed:', err)
+  })
+
   return NextResponse.json(response)
 }
 async function handleRunReview(user: any, patentId: string, data: any) {

@@ -33,7 +33,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 // Types
 // ============================================================================
 
-type StageTab = '0' | '1' | '1.5' | '3.5' | '3.5c' | '4'
+type StageTab = '0' | '1' | '1.5' | '3.5' | '3.5c' | '4' | '5'
 type StageStatus = 'completed' | 'in_progress' | 'pending' | 'failed' | 'blocked'
 type NavTheme = 'dark' | 'light'
 
@@ -103,6 +103,13 @@ const STAGE_CONFIGS: StageConfig[] = [
     description: 'Complete novelty assessment',
     icon: FileText,
     stageNumber: '4' 
+  },
+  { 
+    key: '5', 
+    label: 'Download Report', 
+    description: 'View and download PDF report',
+    icon: FileText,
+    stageNumber: null  // Display-only stage, no execution needed
   }
 ]
 

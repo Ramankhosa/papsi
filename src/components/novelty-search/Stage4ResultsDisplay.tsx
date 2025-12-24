@@ -8,9 +8,11 @@ interface Stage4ResultsProps {
   searchId: string;
   onRerun?: () => Promise<void> | void;
   hidePerPatentRemarks?: boolean;
+  hideIdeaBank?: boolean;
+  hideConsolidatedButton?: boolean;
 }
 
-export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun, hidePerPatentRemarks }: Stage4ResultsProps) {
+export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun, hidePerPatentRemarks, hideIdeaBank = true, hideConsolidatedButton = true }: Stage4ResultsProps) {
   const r: any = stage4Results || {};
   const exec = r.executive_summary || {};
   const cards = exec.visual_cards || {};
@@ -48,13 +50,15 @@ export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun,
 
       {/* Controls */}
       <div className="flex justify-end gap-2">
-        <Link
-          href={`/novelty-search/${metadata.search_id || searchId}/consolidated`}
-          target="_blank"
-          className="inline-flex items-center px-3 py-2 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm"
-        >
-          Consolidated Report
-        </Link>
+        {!hideConsolidatedButton && (
+          <Link
+            href={`/novelty-search/${metadata.search_id || searchId}/consolidated`}
+            target="_blank"
+            className="inline-flex items-center px-3 py-2 rounded-md bg-indigo-600 hover:bg-indigo-700 text-white text-sm"
+          >
+            Consolidated Report
+          </Link>
+        )}
         {onRerun && (
           <button
             type="button"
@@ -110,8 +114,26 @@ export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun,
         <BulletsCard title="Strategic Recommendations" bullets={concl.strategic_recommendations} color="indigo" />
       )}
 
-      {/* Per-Patent Remarks */}
-      {!hidePerPatentRemarks && Array.isArray(remarks) && remarks.length > 0 && (
+      {/* Enhanced Per-Patent Analysis (Professional Format) */}
+      {!hidePerPatentRemarks && Array.isArray(concl.per_patent_analysis) && concl.per_patent_analysis.length > 0 && (
+        <div className="rounded-lg border bg-white p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <div className="text-sm font-semibold text-gray-900">Prior Art Analysis</div>
+              <div className="text-xs text-gray-500">Detailed patent-by-patent assessment for inventor review</div>
+            </div>
+            <div className="text-xs text-gray-400">{concl.per_patent_analysis.length} patent(s) analyzed</div>
+          </div>
+          <div className="space-y-4 max-h-[40rem] overflow-auto pr-1">
+            {concl.per_patent_analysis.map((patent: any, idx: number) => (
+              <PatentAnalysisCard key={idx} patent={patent} sanitize={sanitize} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Legacy Per-Patent Remarks (fallback if no enhanced analysis) */}
+      {!hidePerPatentRemarks && (!concl.per_patent_analysis || concl.per_patent_analysis.length === 0) && Array.isArray(remarks) && remarks.length > 0 && (
         <div className="rounded-lg border bg-white p-4">
           <div className="text-sm font-medium text-gray-900 mb-2">Per-Patent Remarks</div>
           <div className="space-y-2 max-h-[28rem] overflow-auto pr-1">
@@ -178,6 +200,147 @@ function BulletsCard({ title, bullets, color }: { title: string; bullets: string
         </ul>
       ) : (
         <div className="text-xs text-gray-600">No items.</div>
+      )}
+    </div>
+  );
+}
+
+// Professional patent analysis card for inventor review
+function PatentAnalysisCard({ patent, sanitize }: { patent: any; sanitize: (t: any) => any }) {
+  if (!patent) return null;
+  
+  const pn = patent.pn || patent.patent_number || 'Unknown';
+  const title = patent.title || 'Untitled Reference';
+  const relevance = typeof patent.relevance === 'number' ? patent.relevance : 0.5;
+  const noveltyThreat = patent.novelty_threat || 'unknown';
+  const summary = patent.summary || '';
+  const detailed = patent.detailedAnalysis || {};
+  
+  // Ensure arrays are arrays
+  const relevantParts = Array.isArray(detailed.relevant_parts) ? detailed.relevant_parts : [];
+  const irrelevantParts = Array.isArray(detailed.irrelevant_parts) ? detailed.irrelevant_parts : [];
+  
+  // Color coding for novelty threat levels
+  const threatColors: Record<string, { bg: string; text: string; border: string; label: string }> = {
+    anticipates: { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200', label: 'High Risk - Anticipates' },
+    obvious: { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200', label: 'Moderate Risk - Obviousness' },
+    adjacent: { bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200', label: 'Low Risk - Adjacent Art' },
+    remote: { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200', label: 'Minimal Risk - Remote' },
+    unknown: { bg: 'bg-gray-50', text: 'text-gray-600', border: 'border-gray-200', label: 'Unassessed' }
+  };
+  
+  const threat = threatColors[noveltyThreat] || threatColors.unknown;
+  const relevancePercent = Math.round(relevance * 100);
+  const relevanceColor = relevance >= 0.7 ? 'bg-red-500' : relevance >= 0.5 ? 'bg-orange-400' : relevance >= 0.3 ? 'bg-yellow-400' : 'bg-green-400';
+
+  return (
+    <div className={`rounded-lg border ${threat.border} ${threat.bg} p-4`}>
+      {/* Header with patent info and threat badge */}
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-mono text-sm font-semibold text-gray-900">{pn}</span>
+            <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${threat.bg} ${threat.text} border ${threat.border}`}>
+              {threat.label}
+            </span>
+          </div>
+          <div className="text-sm text-gray-700 mt-0.5 line-clamp-2">{sanitize(title)}</div>
+        </div>
+        <Link
+          href={`https://patents.google.com/patent/${encodeURIComponent(String(pn).replace(/\s+/g, ''))}`}
+          target="_blank"
+          className="flex-shrink-0 text-[11px] text-indigo-600 hover:underline"
+        >
+          View Patent →
+        </Link>
+      </div>
+      
+      {/* Relevance Bar */}
+      <div className="mb-3">
+        <div className="flex items-center justify-between text-[11px] text-gray-500 mb-1">
+          <span>Relevance Score</span>
+          <span className="font-medium">{relevancePercent}%</span>
+        </div>
+        <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+          <div className={`h-full ${relevanceColor} rounded-full transition-all`} style={{ width: `${relevancePercent}%` }} />
+        </div>
+      </div>
+      
+      {/* Summary */}
+      {summary && (
+        <div className="mb-3">
+          <div className="text-[11px] font-medium text-gray-500 uppercase tracking-wide mb-1">Analysis Summary</div>
+          <div className="text-sm text-gray-800">{sanitize(summary)}</div>
+        </div>
+      )}
+      
+      {/* Detailed Analysis Accordion */}
+      {(relevantParts.length > 0 || irrelevantParts.length > 0 || detailed.novelty_comparison) && (
+        <details className="group">
+          <summary className="cursor-pointer text-[11px] font-medium text-indigo-600 hover:text-indigo-700 flex items-center gap-1">
+            <span>Show Detailed Analysis</span>
+            <svg className="w-3 h-3 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </summary>
+          <div className="mt-2 pt-2 border-t border-gray-200 space-y-3">
+            {/* Relevant Parts - What overlaps */}
+            {relevantParts.length > 0 && (
+              <div>
+                <div className="text-[11px] font-medium text-red-600 uppercase tracking-wide mb-1 flex items-center gap-1">
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                  </svg>
+                  Overlapping Elements (Action Required)
+                </div>
+                <ul className="text-xs text-gray-700 space-y-1">
+                  {relevantParts.map((part: string, i: number) => (
+                    <li key={i} className="flex items-start gap-1.5">
+                      <span className="text-red-400 mt-0.5">•</span>
+                      <span>{sanitize(part)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            
+            {/* Irrelevant Parts - Your differentiators */}
+            {irrelevantParts.length > 0 && (
+              <div>
+                <div className="text-[11px] font-medium text-green-600 uppercase tracking-wide mb-1 flex items-center gap-1">
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                  </svg>
+                  Your Differentiators (Claim Focus Points)
+                </div>
+                <ul className="text-xs text-gray-700 space-y-1">
+                  {irrelevantParts.map((part: string, i: number) => (
+                    <li key={i} className="flex items-start gap-1.5">
+                      <span className="text-green-500 mt-0.5">✓</span>
+                      <span>{sanitize(part)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            
+            {/* Novelty Comparison */}
+            {detailed.novelty_comparison && (
+              <div>
+                <div className="text-[11px] font-medium text-blue-600 uppercase tracking-wide mb-1 flex items-center gap-1">
+                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
+                    <path fillRule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" />
+                  </svg>
+                  Novelty Assessment
+                </div>
+                <div className="text-xs text-gray-700 bg-white/50 rounded p-2 border border-gray-100">
+                  {sanitize(detailed.novelty_comparison)}
+                </div>
+              </div>
+            )}
+          </div>
+        </details>
       )}
     </div>
   );

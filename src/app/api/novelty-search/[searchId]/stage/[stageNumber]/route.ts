@@ -118,7 +118,9 @@ export async function POST(
         result = await noveltySearchService.executeStage35b(searchId, userId, requestHeaders);
         break;
       case '3.5c':
-        return NextResponse.json({ success: false, error: 'Stage 3.5c is temporarily disabled. Remarks are produced in Stage 3.5a and consumed by Stage 4.' }, { status: 400 });
+        // Stage 3.5c generates per-patent remarks - now enabled for enhanced reports
+        result = await noveltySearchService.executeStage35c(searchId, userId, requestHeaders);
+        break;
       case '4':
         result = await noveltySearchService.executeStage4(searchId, userId, requestHeaders);
         break;

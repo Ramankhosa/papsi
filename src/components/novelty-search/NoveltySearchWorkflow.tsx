@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import Link from 'next/link';
 import { motion, AnimatePresence } from 'framer-motion';
 import Stage4ResultsDisplay from './Stage4ResultsDisplay';
 import NoveltyStageNav from './NoveltyStageNav';
@@ -94,7 +95,7 @@ interface SearchState {
 }
 
 // Stage tab types
-const STAGE_TABS = ['0','1','1.5','3.5','3.5c','4'] as const;
+const STAGE_TABS = ['0','1','1.5','3.5','3.5c','4','5'] as const;
 type StageTab = (typeof STAGE_TABS)[number];
 
 const STAGE_TAB_LABELS: Record<StageTab, string> = {
@@ -103,7 +104,8 @@ const STAGE_TAB_LABELS: Record<StageTab, string> = {
   '1.5': 'AI Relevance',
   '3.5': 'Feature Analysis',
   '3.5c': 'Patent Remarks',
-  '4': 'Final Report'
+  '4': 'Final Report',
+  '5': 'Download Report'
 };
 
 export default function NoveltySearchWorkflow({
@@ -158,7 +160,8 @@ export default function NoveltySearchWorkflow({
     '1.5': '1.5',
     '3.5': '3.5',
     '3.5c': '3.5c',
-    '4': '4'
+    '4': '4',
+    '5': null  // Stage 5 is just display, no execution needed
   };
 
   // Evidence panel state (Stage 3.5 matrix cell details)
@@ -399,6 +402,8 @@ export default function NoveltySearchWorkflow({
         return hasStage35cResults;
       case '4':
         return hasStage4Results || searchState.status === NoveltySearchStatus.COMPLETED;
+      case '5':
+        return hasStage4Results; // Stage 5 is available once Stage 4 is complete
       default:
         return false;
     }
@@ -668,8 +673,20 @@ export default function NoveltySearchWorkflow({
         // Only auto-progress to stage 1 if user has approved the search terms
         return stage0Approved ? '1' : null;
       case NoveltySearchStatus.STAGE_1_COMPLETED:
+        // In auto mode, always progress through all stages
+        if (autoMode) {
+          if (!hasStage15Results) return '1.5';
+          if (!hasStage35Results) return '3.5';
+          if (!hasStage35cResults) return '3.5c';
+          if (!hasStage4Results) return '4';
+        }
         return hasStage15Results ? '3.5' : '1.5';
       case NoveltySearchStatus.STAGE_3_5_COMPLETED:
+        // In auto mode, always progress through all stages
+        if (autoMode) {
+          if (!hasStage35cResults) return '3.5c';
+          if (!hasStage4Results) return '4';
+        }
         return hasStage35cResults ? '4' : '3.5c';
       case NoveltySearchStatus.COMPLETED:
         return null;
@@ -677,6 +694,32 @@ export default function NoveltySearchWorkflow({
         return null;
     }
   };
+  
+  // Run all remaining stages automatically (for auto mode after approval)
+  const runAllRemainingStages = useCallback(async () => {
+    if (!searchState.searchId) return;
+    
+    const stages = ['1', '1.5', '3.5', '3.5c', '4'];
+    
+    for (const stageNum of stages) {
+      // Check if stage already completed
+      if (stageNum === '1' && hasStage1Results) continue;
+      if (stageNum === '1.5' && hasStage15Results) continue;
+      if (stageNum === '3.5' && hasStage35Results) continue;
+      if (stageNum === '3.5c' && hasStage35cResults) continue;
+      if (stageNum === '4' && hasStage4Results) continue;
+      
+      try {
+        console.log(`[Auto] Running stage ${stageNum}...`);
+        await executeStage(stageNum);
+        // Small delay between stages to let state update
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } catch (err) {
+        console.error(`[Auto] Stage ${stageNum} failed:`, err);
+        break; // Stop on error
+      }
+    }
+  }, [searchState.searchId, hasStage1Results, hasStage15Results, hasStage35Results, hasStage35cResults, hasStage4Results, executeStage]);
 
   const runStageForKey = useCallback(async (stageKey: StageTab, advance?: boolean) => {
     const guardMsg = stageGuard(stageKey);
@@ -1125,6 +1168,8 @@ export default function NoveltySearchWorkflow({
         return renderStage35cContent();
       case '4':
         return renderStage4Content();
+      case '5':
+        return renderStage5Content();
       default:
         return null;
     }
@@ -1269,9 +1314,14 @@ export default function NoveltySearchWorkflow({
                   className={`rounded-xl ${stage0Approved ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-indigo-500 hover:bg-indigo-600'}`}
                   onClick={async () => {
                     setStage0Approved(true);
-                    // Auto-progress to next stage if autoMode is enabled and we're on stage 0
-                    if (autoMode && selectedStageTab === '0') {
-                      await runStageForKey('1', true);
+                    // Auto-progress through all stages if autoMode is enabled
+                    if (autoMode) {
+                      setSelectedStageTab('1');
+                      // Run all stages automatically
+                      await runAllRemainingStages();
+                    } else if (selectedStageTab === '0') {
+                      // Just move to next tab
+                      setSelectedStageTab('1');
                     }
                   }}
                 >
@@ -1858,7 +1908,107 @@ export default function NoveltySearchWorkflow({
         onRerun={async () => {
           await executeStage('4');
         }}
+        hideIdeaBank={true}
       />
+    );
+  };
+
+  // Stage 5 Content - Download Report
+  const renderStage5Content = () => {
+    if (!hasStage4Results) {
+      return (
+        <Card className="border-0 shadow-lg bg-slate-50/50">
+          <CardContent className="py-16 text-center">
+            <FileText className="w-12 h-12 text-slate-300 mx-auto mb-4" />
+            <h3 className="text-lg font-semibold text-slate-700 mb-2">Report Not Ready</h3>
+            <p className="text-sm text-slate-500 max-w-md mx-auto">
+              Complete the Final Report stage first to generate the downloadable report.
+            </p>
+          </CardContent>
+        </Card>
+      );
+    }
+
+    return (
+      <Card className="border-0 shadow-lg bg-gradient-to-br from-indigo-50 via-white to-purple-50">
+        <CardHeader className="pb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
+              <FileText className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <CardTitle className="text-lg">Professional Report</CardTitle>
+              <CardDescription>Download your comprehensive novelty assessment</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Report Preview */}
+          <div className="p-6 bg-white rounded-xl border border-slate-200 shadow-sm">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="font-semibold text-slate-900">{formData.title || 'Novelty Assessment Report'}</h3>
+                <p className="text-sm text-slate-500">Generated by PatentNest.ai</p>
+              </div>
+              <Badge className="bg-emerald-100 text-emerald-700">Ready</Badge>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-4 mb-6">
+              <div className="p-3 bg-slate-50 rounded-lg">
+                <div className="text-xs text-slate-500 uppercase tracking-wider">Patents Analyzed</div>
+                <div className="text-xl font-bold text-slate-900">{stage1Results.length}</div>
+              </div>
+              <div className="p-3 bg-slate-50 rounded-lg">
+                <div className="text-xs text-slate-500 uppercase tracking-wider">Search ID</div>
+                <div className="text-sm font-mono text-slate-700">{searchState.searchId?.slice(0, 12)}...</div>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              {/* View Consolidated Report */}
+              <Link
+                href={`/novelty-search/${searchState.searchId}/consolidated`}
+                target="_blank"
+                className="flex items-center justify-center gap-2 w-full py-3 px-4 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl hover:from-indigo-700 hover:to-purple-700 transition-all font-medium"
+              >
+                <Eye className="w-4 h-4" />
+                View Full Report
+              </Link>
+              
+              {/* Download PDF Instructions */}
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <h4 className="text-sm font-medium text-amber-900 mb-1">Download as PDF</h4>
+                    <p className="text-xs text-amber-700">
+                      Click "View Full Report" above, then use <kbd className="px-1.5 py-0.5 bg-amber-100 rounded text-amber-800 font-mono">Ctrl+P</kbd> (or <kbd className="px-1.5 py-0.5 bg-amber-100 rounded text-amber-800 font-mono">Cmd+P</kbd> on Mac) to print/save as PDF with our PatentNest branding.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Share Options */}
+          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200">
+            <h4 className="font-medium text-slate-900 mb-3 flex items-center gap-2">
+              <ExternalLink className="w-4 h-4" />
+              Share with Inventors
+            </h4>
+            <p className="text-sm text-slate-600 mb-3">
+              Generate a public link to share this report with inventors or colleagues.
+            </p>
+            <Link
+              href={`/novelty-search/${searchState.searchId}/consolidated`}
+              target="_blank"
+              className="inline-flex items-center gap-2 text-sm text-indigo-600 hover:text-indigo-700 font-medium"
+            >
+              Open Consolidated Report →
+            </Link>
+          </div>
+        </CardContent>
+      </Card>
     );
   };
 

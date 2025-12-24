@@ -2244,17 +2244,19 @@ async function seedSectionPrompts() {
 }
 
 // ============================================================================
-// STEP 5: SEED COUNTRY PROFILES
+// STEP 5: SEED COUNTRY PROFILES (only from dedicated JSON files)
 // ============================================================================
 
 async function seedCountryProfiles(systemUserId) {
   printHeader('📋 STEP 5: Seeding Country Profiles');
 
+  // Only seed profiles from dedicated JSON files (AU, CA, IN, JP, PCT, US)
   const files = fs.readdirSync(COUNTRIES_DIR)
-    .filter(f => f.endsWith('.json') && !f.startsWith('TEMPLATE') && !f.includes('backup') && !f.includes('sample'));
+    .filter(f => f.endsWith('.json') && !f.startsWith('TEMPLATE') && !f.includes('backup') && !f.includes('sample') && !f.startsWith('db-'));
 
   let created = 0, updated = 0, skipped = 0;
 
+  console.log('  📂 Seeding countries with complete JSON configurations...');
   for (const file of files) {
     let countryCode = file.replace('.json', '').toUpperCase();
     if (countryCode === 'CANADA') countryCode = 'CA';
@@ -2314,6 +2316,8 @@ async function seedCountryProfiles(systemUserId) {
   }
 
   console.log(`\n  📊 Summary: Created=${created}, Updated=${updated}, Skipped=${skipped}`);
+  console.log('  💡 Only countries with complete JSON files are seeded.');
+  console.log('     To add more, create [COUNTRY_CODE].json in Countries/ folder.');
   return { created, updated, skipped };
 }
 
