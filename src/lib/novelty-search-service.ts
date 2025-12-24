@@ -204,10 +204,6 @@ OUTPUT (JSON only)
       "pn": "string",
       "link": "https://patents.google.com/patent/<pn>",
       "coverage": {"present":0,"partial":0,"absent":0},
-      // Optional but preferred additions for each patent:
-      // Keep remarks highly information-dense and compact (≤ 25 words, no fluff).
-      "remarks": "≤25-word, information-dense summary of how this patent overlaps with or differs from the invention; no legalese; do NOT restate abstracts",
-      "model_decision": "novel|partial_novelty|obvious",
       "present": [
         {"feature":"<copy from FEATURES>",
          "quote":"up to 18 words verbatim",
@@ -233,7 +229,6 @@ RULES
 - Copy FEATURES strings exactly as given (no paraphrase); each feature appears exactly once across present/partial/absent.
 - Do not add extra features; do not invent text; rely only on given fields.
 - Quotes must be verbatim and <= 18 words; absent reasons <= 8 words.
-- Remarks must be 2-4 sentences; do not include citations, tables, or abstracts; ASCII only.
 - ASCII only; JSON only; no markdown, comments, or explanations.
 - Output must be valid JSON (double-quoted keys/values, comma-separated).`;
 
@@ -405,25 +400,28 @@ GUIDELINES:
 // Lightweight prompt: compile final report strictly from per-patent remarks
 /* LEGACY: do not use, replaced by STAGE4_REPORT_PROMPT_FROM_REMARKS_V2 */
 // New Stage 4 prompts (attorney-style, JSON-only)
-export const STAGE4_REPORT_PROMPT_V3 = `You are a senior patent attorney preparing the FINAL Stage 4 novelty report for the Novelty UI.
+export const STAGE4_REPORT_PROMPT_V3 = `You are a senior patent attorney preparing the FINAL CONCLUDING REMARKS for the Novelty UI.
+
+IMPORTANT: Detailed per-patent analysis is already provided in Stage 3.5c. Your role is to provide FINAL STRATEGIC CONCLUSIONS.
 
 Use the following inputs only for reasoning — do not echo them back verbatim:
 - invention_features: {invention_features}
-- selected_patents: {selected_patents}
+- selected_patents: {selected_patents} (includes per_patent_remarks with detailed analysis from Stage 3.5c)
 - search_metadata: {search_metadata}
 - feature_analysis_matrix: {feature_analysis_matrix}
 - structured_narrative: {structured_narrative}
 
 Objectives:
-- Deliver an attorney-grade narrative that walks the user through the search journey (Stage 0 → 1 → 1.5 → 3.5 → 4).
-- Ground conclusions in feature coverage and mapping evidence; avoid fluff.
-- Provide concrete, actionable recommendations to craft novelty or reposition scope.
+- Provide HONEST, STRAIGHTFORWARD final assessment based on the closest matching patents.
+- Give actionable recommendations on how to make the invention MORE NOVEL.
+- Suggest course corrections or improvements if novelty is threatened.
+- Be candid about risks - if a patent anticipates the invention, say so clearly.
 
 Hard constraints:
 - Return valid JSON only (no markdown, no prose before/after).
-- Do NOT include citations, hyperlinks, CPC/IPC codes, copied abstracts, or large tables.
+- Do NOT include per_patent_analysis (that's in Stage 3.5c now).
 - Keep the executive summary under 250 words; each bullet under 18 words.
-- Prefer short, information-dense phrasing.
+- Focus on STRATEGIC GUIDANCE, not detailed patent comparisons.
 
 Output JSON shape (exact keys):
 {
@@ -441,7 +439,7 @@ Output JSON shape (exact keys):
     "deeply_analyzed_count": "number | null"
   },
   "executive_summary": {
-    "summary": "Attorney-style paragraph summarizing journey, overlaps vs gaps, and novelty outlook.",
+    "summary": "HONEST assessment: What is the novelty outlook? What are the closest threats? What makes the invention unique despite prior art?",
     "visual_cards": {
       "Novelty Score": "..%",
       "Patents Analyzed": "N",
@@ -451,31 +449,19 @@ Output JSON shape (exact keys):
   },
   "concluding_remarks": {
     "overall_novelty_assessment": "Novel | Partially Novel | Not Novel | Low Evidence",
-    "key_strengths": ["...", "...", "..."],
-    "key_risks": ["...", "..."],
-    "strategic_recommendations": ["...", "...", "..."],
-    "filing_advice": "Action-oriented single sentence",
-    "per_patent_analysis": [
-      {
-        "pn": "patent_number",
-        "title": "patent_title",
-        "relevance": 0.85,
-        "novelty_threat": "anticipates | obvious | adjacent | remote",
-        "summary": "1-2 sentence analysis of how this patent relates to our invention",
-        "detailedAnalysis": {
-          "summary": "Brief overview of the comparison",
-          "relevant_parts": ["specific overlapping element 1", "overlapping element 2"],
-          "irrelevant_parts": ["non-overlapping aspect 1", "different approach 1"],
-          "novelty_comparison": "What specific elements make our invention novel compared to this patent"
-        }
-      }
-    ]
+    "honest_assessment": "A candid 2-3 sentence verdict on the invention's novelty prospects",
+    "key_strengths": ["What makes this invention defensible", "Unique technical contributions", "..."],
+    "key_risks": ["Specific threats from prior art", "What could invalidate claims", "..."],
+    "strategic_recommendations": ["How to strengthen novelty", "Claim drafting focus areas", "Technical improvements to consider"],
+    "course_corrections": ["If novelty is weak, what changes would help", "Alternative approaches to consider"],
+    "filing_advice": "Action-oriented guidance: proceed, pivot, or strengthen specific aspects",
+    "inventor_action_items": ["Specific next steps for the inventor", "Research/development suggestions"]
   },
   "idea_bank_suggestions": [
     {
-      "title": "Short idea title",
-      "core_principle": "Distinctive technical principle",
-      "expected_advantage": "Why this helps novelty/claims",
+      "title": "Improvement idea title",
+      "core_principle": "Technical enhancement that increases novelty",
+      "expected_advantage": "How this addresses prior art gaps",
       "tags": ["mechanism", "domain"],
       "non_obvious_extension": "Concrete step reducing obviousness risk"
     }
@@ -483,26 +469,30 @@ Output JSON shape (exact keys):
 }
 
 Authoring guidance:
-- Derive search_trail from search_metadata counts if present; otherwise set nulls.
-- Populate per_patent_analysis only for relevant selected_patents (relevance >= 0.3).
-- For each patent, assess novelty_threat based on claim overlap: 'anticipates' if it discloses all elements, 'obvious' if combination renders obvious, 'adjacent' if related but doesn't threaten, 'remote' if different field.
-- In detailedAnalysis, be specific about which elements overlap (relevant_parts) and which don't (irrelevant_parts).
-- novelty_comparison should explain what SPECIFICALLY makes our invention novel compared to this patent.
-- When feature_analysis_matrix shows scattered coverage, explain lack of integration candidly.
-- Avoid legal conclusions; write in neutral, evidence-led tone.
+- Be HONEST: If the closest patents seriously threaten novelty, say so and explain why.
+- Be CONSTRUCTIVE: Always provide actionable suggestions for improvement.
+- Focus on the TOP 2-3 closest matching patents when drawing conclusions.
+- course_corrections should offer real alternatives if current approach has issues.
+- inventor_action_items should be specific and actionable (not generic advice).
+- idea_bank_suggestions should help pivot or strengthen the invention.
 `;
 
-export const STAGE4_REPORT_PROMPT_FROM_REMARKS_V2 = `You are a senior patent attorney preparing the FINAL Stage 4 novelty report from per‑patent remarks.
+export const STAGE4_REPORT_PROMPT_FROM_REMARKS_V2 = `You are a senior patent attorney preparing the FINAL CONCLUDING REMARKS from per-patent analysis.
+
+IMPORTANT: Detailed per-patent analysis is already provided in Stage 3.5c. Your role is to provide FINAL STRATEGIC CONCLUSIONS.
 
 Inputs provided separately in this prompt:
-- per_patent_remarks: JSON array of { pn, title, remarks, overlap_features, missing_features, novelty_points, confidence, decision }
-- invention_features: optional JSON array of strings (mechanism‑level)
-- search_metadata: optional JSON with counts (pqai_initial_count, ai_relevance_accepted, ai_relevance_borderline, selected_patents_count, total_patents_found, search_id, search_date, jurisdiction)
+- per_patent_remarks: JSON array with detailed analysis (pn, title, remarks, relevance, novelty_threat, detailedAnalysis, etc.)
+- invention_features: optional JSON array of strings (mechanism-level)
+- search_metadata: optional JSON with counts
+
+Your job: Synthesize the per_patent_remarks into HONEST, ACTIONABLE conclusions.
 
 Strict rules:
-- Use per_patent_remarks as primary evidence; do not restate abstracts or raw mappings.
-- Return valid JSON only, with the exact keys below. No markdown, no extra prose.
-- Keep phrasing precise, neutral, and information‑dense.
+- Focus on the TOP 2-3 closest matching patents when drawing conclusions.
+- Be CANDID about risks - if a patent anticipates the invention, say so clearly.
+- Provide ACTIONABLE recommendations for improvement.
+- Return valid JSON only, no markdown.
 
 Output JSON shape (exact keys):
 {
@@ -520,7 +510,7 @@ Output JSON shape (exact keys):
     "deeply_analyzed_count": "number | null"
   },
   "executive_summary": {
-    "summary": "Attorney‑style paragraph summarizing journey, overlaps vs gaps, and novelty outlook.",
+    "summary": "HONEST assessment based on closest matching patents. What threatens novelty? What remains unique?",
     "visual_cards": {
       "Novelty Score": "..%",
       "Patents Analyzed": "N",
@@ -530,31 +520,19 @@ Output JSON shape (exact keys):
   },
   "concluding_remarks": {
     "overall_novelty_assessment": "Novel | Partially Novel | Not Novel | Low Evidence",
-    "key_strengths": ["...", "...", "..."],
-    "key_risks": ["...", "..."],
-    "strategic_recommendations": ["...", "...", "..."],
-    "filing_advice": "Action‑oriented single sentence",
-    "per_patent_analysis": [
-      {
-        "pn": "patent_number",
-        "title": "patent_title",
-        "relevance": 0.85,
-        "novelty_threat": "anticipates | obvious | adjacent | remote",
-        "summary": "1-2 sentence analysis of how this patent relates to our invention",
-        "detailedAnalysis": {
-          "summary": "Brief overview of the comparison",
-          "relevant_parts": ["specific overlapping element 1", "overlapping element 2"],
-          "irrelevant_parts": ["non-overlapping aspect 1", "different approach 1"],
-          "novelty_comparison": "What specific elements make our invention novel compared to this patent"
-        }
-      }
-    ]
+    "honest_assessment": "Candid 2-3 sentence verdict on novelty prospects based on the closest threats",
+    "key_strengths": ["What makes this invention defensible", "Unique contributions"],
+    "key_risks": ["Specific prior art threats", "What could invalidate claims"],
+    "strategic_recommendations": ["How to strengthen novelty", "Claim drafting focus areas"],
+    "course_corrections": ["If novelty is weak, what changes would help", "Alternative approaches"],
+    "filing_advice": "Action-oriented: proceed, pivot, or strengthen specific aspects",
+    "inventor_action_items": ["Specific next steps", "Research/development suggestions"]
   },
   "idea_bank_suggestions": [
     {
-      "title": "Short idea title",
-      "core_principle": "Distinctive technical principle",
-      "expected_advantage": "Why this helps novelty/claims",
+      "title": "Improvement idea",
+      "core_principle": "Technical enhancement increasing novelty",
+      "expected_advantage": "How this addresses prior art gaps",
       "tags": ["mechanism", "domain"],
       "non_obvious_extension": "Concrete step reducing obviousness risk"
     }
@@ -562,12 +540,11 @@ Output JSON shape (exact keys):
 }
 
 Authoring guidance:
-- Derive search_trail from search_metadata if available; otherwise set nulls except deeply_analyzed_count ≈ per_patent_remarks.length.
-- Build per_patent_analysis using pn and remarks with full detailed format (relevance, novelty_threat, detailedAnalysis).
-- For each patent, assess novelty_threat: 'anticipates' | 'obvious' | 'adjacent' | 'remote' based on claim overlap.
-- In detailedAnalysis, list specific relevant_parts (overlapping) and irrelevant_parts (non-overlapping).
-- novelty_comparison should explain what SPECIFICALLY makes our invention novel vs this patent.
-- Prioritize mechanisms and integrative differences over application context or benefits.
+- Identify the TOP THREATS from per_patent_remarks (highest relevance, 'anticipates' or 'obvious' novelty_threat).
+- honest_assessment should directly address these threats and the invention's prospects.
+- course_corrections should offer REAL alternatives if current approach has serious issues.
+- inventor_action_items should be specific and immediately actionable.
+- idea_bank_suggestions should help pivot or strengthen against identified weakness
 `;
 
 export interface NoveltySearchConfig {
@@ -812,6 +789,15 @@ export interface PerPatentRemark {
   novelty_points?: string[];
   confidence?: number; // 0..1
   decision?: 'novel' | 'partial_novelty' | 'obvious';
+  // Enhanced detailed analysis fields (for Stage 3.5c)
+  relevance?: number; // 0-1 relevance/overlap score
+  novelty_threat?: 'anticipates' | 'obvious' | 'adjacent' | 'remote';
+  summary?: string; // analysis summary
+  detailedAnalysis?: {
+    relevant_parts: string[];    // overlapping elements with prior art
+    irrelevant_parts: string[];  // differentiators - what's unique to the invention
+    novelty_comparison: string;  // detailed novelty assessment narrative
+  };
 }
 
 export class NoveltySearchService extends BasePatentService {
@@ -1304,9 +1290,37 @@ export class NoveltySearchService extends BasePatentService {
           }).join('\n');
 
           const batchPrompt = [
-            'You are a patent analyst. Given invention features and multiple prior-art patents (title + abstract) and their feature mapping, return ONLY a JSON array.',
-            'Each element: {"pn","title","remarks","overlap_features","missing_features","novelty_points","confidence"}.',
-            'Rules: keep remarks 2-4 concise sentences; novelty_points are short phrases; JSON only; follow input PN order.',
+            'You are a senior patent analyst providing detailed prior art assessment for inventor review.',
+            'Given invention features and multiple prior-art patents with their feature mapping, return ONLY a JSON array.',
+            '',
+            'Each element must have these fields:',
+            '{',
+            '  "pn": "patent number",',
+            '  "title": "patent title",',
+            '  "relevance": 0.0-1.0 (how relevant/threatening is this patent to the invention),',
+            '  "novelty_threat": "anticipates|obvious|adjacent|remote",',
+            '  "summary": "2-3 sentence analysis summary",',
+            '  "detailedAnalysis": {',
+            '    "relevant_parts": ["specific overlapping elements - what the patent covers that matches the invention"],',
+            '    "irrelevant_parts": ["differentiators - what makes the invention UNIQUE vs this patent"],',
+            '    "novelty_comparison": "detailed novelty assessment: how does the invention differ technically? what improvements does it offer?"',
+            '  },',
+            '  "overlap_features": ["features present in both"],',
+            '  "missing_features": ["features absent from patent"],',
+            '  "novelty_points": ["short phrases of unique aspects"],',
+            '  "confidence": 0.0-1.0',
+            '}',
+            '',
+            'NOVELTY THREAT LEVELS:',
+            '- anticipates: Patent covers most/all features, high risk to novelty',
+            '- obvious: Patent + common knowledge could combine to reach invention',
+            '- adjacent: Related field but different approach/mechanism',
+            '- remote: Minimal overlap, low threat to novelty',
+            '',
+            'Be HONEST and STRAIGHTFORWARD. If a patent is highly relevant, say so clearly.',
+            'Focus on actionable insights the inventor can use to strengthen their claims.',
+            'JSON only; follow input PN order.',
+            '',
             itemsText
           ].join('\n');
 
@@ -1343,7 +1357,7 @@ export class NoveltySearchService extends BasePatentService {
 
             let item: PerPatentRemark | null = null;
             const fromParsed = Array.isArray(parsedArr) ? parsedArr[i] : undefined;
-            if (fromParsed && (fromParsed.pn || fromParsed.remarks)) {
+            if (fromParsed && (fromParsed.pn || fromParsed.remarks || fromParsed.summary)) {
               try {
                 item = {
                   pn,
@@ -1353,7 +1367,19 @@ export class NoveltySearchService extends BasePatentService {
                   overlap_features: Array.isArray(fromParsed.overlap_features) ? fromParsed.overlap_features : present,
                   missing_features: Array.isArray(fromParsed.missing_features) ? fromParsed.missing_features : absent,
                   novelty_points: Array.isArray(fromParsed.novelty_points) ? fromParsed.novelty_points : [],
-                  confidence: typeof fromParsed.confidence === 'number' ? fromParsed.confidence : undefined
+                  confidence: typeof fromParsed.confidence === 'number' ? fromParsed.confidence : undefined,
+                  // Enhanced detailed analysis fields
+                  relevance: typeof fromParsed.relevance === 'number' ? fromParsed.relevance : undefined,
+                  novelty_threat: ['anticipates', 'obvious', 'adjacent', 'remote'].includes(fromParsed.novelty_threat) 
+                    ? fromParsed.novelty_threat : undefined,
+                  summary: fromParsed.summary || fromParsed.remarks || undefined,
+                  detailedAnalysis: fromParsed.detailedAnalysis ? {
+                    relevant_parts: Array.isArray(fromParsed.detailedAnalysis.relevant_parts) 
+                      ? fromParsed.detailedAnalysis.relevant_parts : [],
+                    irrelevant_parts: Array.isArray(fromParsed.detailedAnalysis.irrelevant_parts) 
+                      ? fromParsed.detailedAnalysis.irrelevant_parts : [],
+                    novelty_comparison: fromParsed.detailedAnalysis.novelty_comparison || ''
+                  } : undefined
                 };
               } catch {}
             }
@@ -1363,9 +1389,30 @@ export class NoveltySearchService extends BasePatentService {
               if (absent.length) lines.push(`Missing vs idea: ${absent.slice(0, 4).join(', ')}${absent.length > 4 ? '...' : ''}.`);
               if (partial.length) lines.push(`Partially aligned: ${partial.slice(0, 3).join(', ')}${partial.length > 3 ? '...' : ''}.`);
               if (lines.length === 0) lines.push('Insufficient evidence in title/abstract to assess overlap.');
-              item = { pn, title, abstract: maxAbstract || undefined, remarks: lines.join(' '), overlap_features: present, missing_features: absent, novelty_points: [], confidence: undefined };
+              // Compute relevance score for fallback
+              const total = Math.max(1, features.length);
+              const relevanceScore = (present.length + partial.length * 0.5) / total;
+              const threatLevel = relevanceScore >= 0.7 ? 'anticipates' : relevanceScore >= 0.5 ? 'obvious' : relevanceScore >= 0.3 ? 'adjacent' : 'remote';
+              item = { 
+                pn, 
+                title, 
+                abstract: maxAbstract || undefined, 
+                remarks: lines.join(' '), 
+                overlap_features: present, 
+                missing_features: absent, 
+                novelty_points: absent.slice(0, 3), // Use absent features as novelty points
+                confidence: undefined,
+                relevance: relevanceScore,
+                novelty_threat: threatLevel as 'anticipates' | 'obvious' | 'adjacent' | 'remote',
+                summary: lines.join(' '),
+                detailedAnalysis: {
+                  relevant_parts: present.map((f: string) => `Patent covers: ${f}`),
+                  irrelevant_parts: absent.map((f: string) => `Invention unique: ${f}`),
+                  novelty_comparison: `This patent ${present.length > 0 ? `overlaps on ${present.length} feature(s)` : 'has minimal overlap'} with the invention. ${absent.length > 0 ? `The invention remains differentiated by ${absent.length} unique feature(s).` : ''}`
+                }
+              };
             }
-            // Compute perâ€‘patent decision
+            // Compute per-patent decision
             {
               const total = Math.max(1, features.length);
               const presentCount = present.length;
@@ -1398,12 +1445,32 @@ export class NoveltySearchService extends BasePatentService {
         const partial = (p.feature_analysis || []).filter((c: FeatureMapCell) => c.status === 'Partial').map((c: FeatureMapCell) => c.feature);
         const absent = features.filter(f => !present.includes(f) && !partial.includes(f));
 
-        // Build compact prompt for the lite model
+        // Build detailed prompt for single patent analysis
         const maxAbstract = abstract ? String(abstract).split(/\s+/).slice(0, 120).join(' ') : '';
         const prompt = [
-          'You are a patent analyst. Given invention features and a single prior-art patent (title + abstract) and feature mapping, output ONLY compact JSON with 7 fields.',
-          'Fields: {"pn","remarks","overlap_features","missing_features","novelty_points","confidence","title"}.',
-          'Rules: 2-4 crisp sentences in "remarks". No legalese. Cite concrete differentiators in "novelty_points" as short phrases.',
+          'You are a senior patent analyst providing detailed prior art assessment for inventor review.',
+          'Given invention features and a single prior-art patent with feature mapping, output ONLY JSON.',
+          '',
+          'Output structure:',
+          '{',
+          '  "pn": "patent number",',
+          '  "title": "patent title",',
+          '  "relevance": 0.0-1.0,',
+          '  "novelty_threat": "anticipates|obvious|adjacent|remote",',
+          '  "summary": "2-3 sentence analysis",',
+          '  "detailedAnalysis": {',
+          '    "relevant_parts": ["overlapping elements"],',
+          '    "irrelevant_parts": ["differentiators - what makes invention UNIQUE"],',
+          '    "novelty_comparison": "detailed novelty assessment"',
+          '  },',
+          '  "overlap_features": ["features in both"],',
+          '  "missing_features": ["features absent"],',
+          '  "novelty_points": ["unique aspects"],',
+          '  "confidence": 0.0-1.0',
+          '}',
+          '',
+          'Be HONEST. If patent is highly relevant, say so clearly.',
+          '',
           `PN: ${pn}`,
           `Title: ${title || 'Untitled'}`,
           `Abstract: ${maxAbstract || 'N/A'}`,
@@ -1435,7 +1502,19 @@ export class NoveltySearchService extends BasePatentService {
                 overlap_features: Array.isArray(parsed.overlap_features) ? parsed.overlap_features : present,
                 missing_features: Array.isArray(parsed.missing_features) ? parsed.missing_features : absent,
                 novelty_points: Array.isArray(parsed.novelty_points) ? parsed.novelty_points : [],
-                confidence: typeof parsed.confidence === 'number' ? parsed.confidence : undefined
+                confidence: typeof parsed.confidence === 'number' ? parsed.confidence : undefined,
+                // Enhanced detailed analysis fields
+                relevance: typeof parsed.relevance === 'number' ? parsed.relevance : undefined,
+                novelty_threat: ['anticipates', 'obvious', 'adjacent', 'remote'].includes(parsed.novelty_threat) 
+                  ? parsed.novelty_threat : undefined,
+                summary: parsed.summary || parsed.remarks || undefined,
+                detailedAnalysis: parsed.detailedAnalysis ? {
+                  relevant_parts: Array.isArray(parsed.detailedAnalysis.relevant_parts) 
+                    ? parsed.detailedAnalysis.relevant_parts : [],
+                  irrelevant_parts: Array.isArray(parsed.detailedAnalysis.irrelevant_parts) 
+                    ? parsed.detailedAnalysis.irrelevant_parts : [],
+                  novelty_comparison: parsed.detailedAnalysis.novelty_comparison || ''
+                } : undefined
               };
             } catch {
               // fall through to deterministic fallback
@@ -1452,6 +1531,10 @@ export class NoveltySearchService extends BasePatentService {
           if (absent.length) lines.push(`Missing vs idea: ${absent.slice(0, 4).join(', ')}${absent.length > 4 ? '...' : ''}.`);
           if (partial.length) lines.push(`Partially aligned: ${partial.slice(0, 3).join(', ')}${partial.length > 3 ? '...' : ''}.`);
           if (lines.length === 0) lines.push('Insufficient evidence in title/abstract to assess overlap.');
+          // Compute relevance score for fallback
+          const total = Math.max(1, features.length);
+          const relevanceScore = (present.length + partial.length * 0.5) / total;
+          const threatLevel = relevanceScore >= 0.7 ? 'anticipates' : relevanceScore >= 0.5 ? 'obvious' : relevanceScore >= 0.3 ? 'adjacent' : 'remote';
           remarksItem = {
             pn,
             title,
@@ -1459,8 +1542,16 @@ export class NoveltySearchService extends BasePatentService {
             remarks: lines.join(' '),
             overlap_features: present,
             missing_features: absent,
-            novelty_points: [],
-            confidence: undefined
+            novelty_points: absent.slice(0, 3),
+            confidence: undefined,
+            relevance: relevanceScore,
+            novelty_threat: threatLevel as 'anticipates' | 'obvious' | 'adjacent' | 'remote',
+            summary: lines.join(' '),
+            detailedAnalysis: {
+              relevant_parts: present.map((f: string) => `Patent covers: ${f}`),
+              irrelevant_parts: absent.map((f: string) => `Invention unique: ${f}`),
+              novelty_comparison: `This patent ${present.length > 0 ? `overlaps on ${present.length} feature(s)` : 'has minimal overlap'} with the invention. ${absent.length > 0 ? `The invention remains differentiated by ${absent.length} unique feature(s).` : ''}`
+            }
           };
         }
         // Add deterministic decision to single-call fallback item
@@ -1986,12 +2077,12 @@ RESPONSE:`;
 
       console.log('ðŸ“ Stage 0 Final Prompt:', prompt);
 
-      // Execute LLM call for feature extraction using admin-configured model
+      // Execute LLM call for query generation/normalization using admin-configured model
       const llmResult = await llmGateway.executeLLMOperation(
         { headers: requestHeaders || {} },
         {
           taskCode: TaskCode.LLM5_NOVELTY_ASSESS,
-          stageCode: 'NOVELTY_FEATURE_ANALYSIS',
+          stageCode: 'NOVELTY_QUERY_GENERATION',  // Stage 0: Query/Feature Generation
           prompt
         }
       );

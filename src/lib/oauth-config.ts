@@ -22,10 +22,12 @@ export const oauthConfig = {
     clientId: process.env.LINKEDIN_CLIENT_ID,
     clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
     redirectUri: `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/auth/social/linkedin/callback`,
-    scope: ['r_liteprofile', 'r_emailaddress'],
+    // Using OpenID Connect scopes (Sign In with LinkedIn v2)
+    scope: ['openid', 'profile', 'email'],
     authorizationUrl: 'https://www.linkedin.com/oauth/v2/authorization',
     tokenUrl: 'https://www.linkedin.com/oauth/v2/accessToken',
-    userInfoUrl: 'https://api.linkedin.com/v2/people/~:(id,firstName,lastName,emailAddress,profilePicture(displayImage~:playableStreams))'
+    // Using OpenID Connect userinfo endpoint
+    userInfoUrl: 'https://api.linkedin.com/v2/userinfo'
   },
   twitter: {
     clientId: process.env.TWITTER_CLIENT_ID,

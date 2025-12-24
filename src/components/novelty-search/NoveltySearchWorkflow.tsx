@@ -1808,7 +1808,7 @@ export default function NoveltySearchWorkflow({
     );
   };
 
-  // Stage 3.5c Content
+  // Stage 3.5c Content - Detailed Prior Art Analysis with Novelty Lines
   const renderStage35cContent = () => {
     const root: any = (searchState.results as any) || {};
     const container = root.stage4 || root;
@@ -1821,60 +1821,239 @@ export default function NoveltySearchWorkflow({
             <FileText className="w-12 h-12 text-slate-300 mx-auto mb-4" />
             <h3 className="text-lg font-semibold text-slate-700 mb-2">Patent Remarks Not Generated</h3>
             <p className="text-sm text-slate-500 max-w-md mx-auto">
-              Generate patent-by-patent remarks to create detailed analysis for each reference.
+              Generate patent-by-patent analysis to create detailed prior art assessment for inventor review.
             </p>
           </CardContent>
         </Card>
       );
     }
 
+    // Helper to get novelty line color and width based on threat level and relevance
+    const getNoveltyLineStyle = (patent: any) => {
+      const relevance = typeof patent.relevance === 'number' ? patent.relevance : 0.5;
+      const threat = patent.novelty_threat || patent.decision || 'unknown';
+      
+      // Color based on novelty threat level
+      const threatColors: Record<string, string> = {
+        anticipates: 'bg-red-500',
+        obvious: 'bg-orange-400',
+        adjacent: 'bg-yellow-400',
+        remote: 'bg-emerald-400',
+        novel: 'bg-emerald-500',
+        partial_novelty: 'bg-amber-400',
+        unknown: 'bg-slate-300'
+      };
+      
+      const color = threatColors[threat] || threatColors.unknown;
+      const width = Math.round(relevance * 100);
+      
+      return { color, width, relevance };
+    };
+
+    // Helper to get threat label
+    const getThreatLabel = (threat: string) => {
+      const labels: Record<string, { text: string; color: string }> = {
+        anticipates: { text: 'High Risk - Anticipates', color: 'text-red-600 bg-red-50 border-red-200' },
+        obvious: { text: 'Moderate Risk - Obviousness', color: 'text-orange-600 bg-orange-50 border-orange-200' },
+        adjacent: { text: 'Low Risk - Adjacent Art', color: 'text-yellow-700 bg-yellow-50 border-yellow-200' },
+        remote: { text: 'Minimal Risk - Remote', color: 'text-emerald-600 bg-emerald-50 border-emerald-200' },
+        novel: { text: 'Novel', color: 'text-emerald-600 bg-emerald-50 border-emerald-200' },
+        partial_novelty: { text: 'Partial Novelty', color: 'text-amber-600 bg-amber-50 border-amber-200' }
+      };
+      return labels[threat] || { text: 'Unassessed', color: 'text-slate-500 bg-slate-50 border-slate-200' };
+    };
+
     return (
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-        <Card className="border-0 shadow-lg bg-white/80 backdrop-blur-sm">
-          <CardHeader className="pb-3">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-gradient-to-br from-indigo-400 to-indigo-600 rounded-xl flex items-center justify-center shadow-md">
-                <FileText className="h-5 w-5 text-white" />
+        <Card className="border-0 shadow-lg bg-white">
+          <CardHeader className="pb-3 border-b">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl flex items-center justify-center shadow-md">
+                  <FileText className="h-5 w-5 text-white" />
+                </div>
+                <div>
+                  <CardTitle className="text-lg">Detailed Prior Art Analysis</CardTitle>
+                  <CardDescription>{remarks.length} patents analyzed for inventor review</CardDescription>
+                </div>
               </div>
-              <div>
-                <CardTitle className="text-lg">Patent-by-Patent Remarks</CardTitle>
-                <CardDescription>{remarks.length} patents analyzed with detailed remarks</CardDescription>
+              {/* Legend */}
+              <div className="hidden md:flex items-center gap-4 text-[10px]">
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 rounded-full bg-red-500"></div>
+                  <span className="text-slate-500">Anticipates</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 rounded-full bg-orange-400"></div>
+                  <span className="text-slate-500">Obvious</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 rounded-full bg-yellow-400"></div>
+                  <span className="text-slate-500">Adjacent</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 rounded-full bg-emerald-400"></div>
+                  <span className="text-slate-500">Remote/Novel</span>
+                </div>
               </div>
             </div>
           </CardHeader>
-          <CardContent>
-            <div className="space-y-4 max-h-[500px] overflow-y-auto">
-              {remarks.map((it: any, idx: number) => (
-                <motion.div
-                  key={idx}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: idx * 0.03 }}
-                  className="p-4 rounded-xl border bg-white hover:shadow-md transition-shadow"
-                >
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 bg-indigo-600 text-white rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0">
-                      {idx + 1}
+          <CardContent className="p-0">
+            <div className="divide-y divide-slate-100">
+              {remarks.map((patent: any, idx: number) => {
+                const lineStyle = getNoveltyLineStyle(patent);
+                const threatInfo = getThreatLabel(patent.novelty_threat || patent.decision);
+                const detailed = patent.detailedAnalysis || {};
+                const relevantParts = Array.isArray(detailed.relevant_parts) ? detailed.relevant_parts : [];
+                const irrelevantParts = Array.isArray(detailed.irrelevant_parts) ? detailed.irrelevant_parts : [];
+                const noveltyComparison = detailed.novelty_comparison || '';
+
+                return (
+                  <motion.div
+                    key={idx}
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: idx * 0.03 }}
+                    className="bg-white hover:bg-slate-50/50 transition-colors"
+                  >
+                    {/* Novelty Line Indicator - Horizontal colored line at top */}
+                    <div className="h-1.5 bg-slate-100 relative overflow-hidden">
+                      <div 
+                        className={`h-full ${lineStyle.color} transition-all duration-500`}
+                        style={{ width: `${lineStyle.width}%` }}
+                      />
                     </div>
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold text-slate-900">{it.pn || 'Unknown PN'}</span>
-                        {it.decision && (
-                          <Badge className={`text-[10px] ${
-                            it.decision === 'obvious' ? 'bg-rose-100 text-rose-700' :
-                            it.decision === 'partial_novelty' ? 'bg-amber-100 text-amber-700' :
-                            'bg-emerald-100 text-emerald-700'
-                          }`}>
-                            {it.decision}
-                          </Badge>
-                        )}
+                    
+                    <div className="p-5">
+                      {/* Header Row */}
+                      <div className="flex items-start justify-between gap-4 mb-4">
+                        <div className="flex items-start gap-3">
+                          <div className="w-8 h-8 bg-slate-900 text-white rounded-lg flex items-center justify-center text-sm font-bold flex-shrink-0">
+                            {idx + 1}
+                          </div>
+                          <div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <a 
+                                href={`https://patents.google.com/patent/${(patent.pn || '').replace(/\s+/g, '')}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-mono text-sm font-semibold text-slate-900 hover:text-indigo-600 transition-colors"
+                              >
+                                {patent.pn || 'Unknown PN'}
+                              </a>
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${threatInfo.color}`}>
+                                {threatInfo.text}
+                              </span>
+                            </div>
+                            {patent.title && (
+                              <p className="text-sm text-slate-600 mt-1 line-clamp-2">{patent.title}</p>
+                            )}
+                          </div>
+                        </div>
+                        
+                        {/* Relevance Score */}
+                        <div className="text-right flex-shrink-0">
+                          <div className="text-[10px] text-slate-400 uppercase tracking-wider">Relevance</div>
+                          <div className="text-lg font-bold text-slate-900">{Math.round(lineStyle.relevance * 100)}%</div>
+                        </div>
                       </div>
-                      {it.title && <div className="text-xs text-slate-600 mt-1">{it.title}</div>}
-                      <div className="mt-3 text-sm text-slate-700 whitespace-pre-wrap">{it.remarks || '-'}</div>
+
+                      {/* Summary */}
+                      {(patent.summary || patent.remarks) && (
+                        <div className="mb-4 p-3 bg-slate-50 rounded-lg">
+                          <p className="text-sm text-slate-700">{patent.summary || patent.remarks}</p>
+                        </div>
+                      )}
+
+                      {/* Detailed Analysis Section */}
+                      {(relevantParts.length > 0 || irrelevantParts.length > 0 || noveltyComparison) && (
+                        <details className="group">
+                          <summary className="cursor-pointer text-xs font-medium text-indigo-600 hover:text-indigo-700 flex items-center gap-1.5 select-none">
+                            <span>View Detailed Analysis</span>
+                            <svg className="w-3.5 h-3.5 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                            </svg>
+                          </summary>
+                          
+                          <div className="mt-4 space-y-4">
+                            {/* Overlapping Elements */}
+                            {relevantParts.length > 0 && (
+                              <div className="rounded-lg border border-red-100 bg-red-50/30 p-3">
+                                <div className="flex items-center gap-2 text-xs font-medium text-red-700 mb-2">
+                                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                                  </svg>
+                                  <span>Overlapping Elements (Action Required)</span>
+                                </div>
+                                <ul className="space-y-1.5">
+                                  {relevantParts.map((part: string, i: number) => (
+                                    <li key={i} className="flex items-start gap-2 text-xs text-slate-700">
+                                      <span className="text-red-400 mt-0.5 flex-shrink-0">•</span>
+                                      <span>{part}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+
+                            {/* Your Differentiators */}
+                            {irrelevantParts.length > 0 && (
+                              <div className="rounded-lg border border-emerald-100 bg-emerald-50/30 p-3">
+                                <div className="flex items-center gap-2 text-xs font-medium text-emerald-700 mb-2">
+                                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                                  </svg>
+                                  <span>Your Differentiators (Claim Focus Points)</span>
+                                </div>
+                                <ul className="space-y-1.5">
+                                  {irrelevantParts.map((part: string, i: number) => (
+                                    <li key={i} className="flex items-start gap-2 text-xs text-slate-700">
+                                      <span className="text-emerald-500 mt-0.5 flex-shrink-0">✓</span>
+                                      <span>{part}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+
+                            {/* Novelty Comparison */}
+                            {noveltyComparison && (
+                              <div className="rounded-lg border border-blue-100 bg-blue-50/30 p-3">
+                                <div className="flex items-center gap-2 text-xs font-medium text-blue-700 mb-2">
+                                  <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                                    <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z" />
+                                    <path fillRule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd" />
+                                  </svg>
+                                  <span>Novelty Assessment</span>
+                                </div>
+                                <p className="text-xs text-slate-700">{noveltyComparison}</p>
+                              </div>
+                            )}
+                          </div>
+                        </details>
+                      )}
+
+                      {/* Feature Summary Row */}
+                      {(patent.overlap_features?.length > 0 || patent.missing_features?.length > 0) && (
+                        <div className="mt-4 flex flex-wrap gap-3 text-[10px]">
+                          {patent.overlap_features?.length > 0 && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-slate-400">Overlapping:</span>
+                              <span className="font-medium text-red-600">{patent.overlap_features.length} feature(s)</span>
+                            </div>
+                          )}
+                          {patent.missing_features?.length > 0 && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-slate-400">Unique to invention:</span>
+                              <span className="font-medium text-emerald-600">{patent.missing_features.length} feature(s)</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                  </div>
-                </motion.div>
-              ))}
+                  </motion.div>
+                );
+              })}
             </div>
           </CardContent>
         </Card>

@@ -176,7 +176,7 @@ function CompleteSocialSignupContent() {
           )}
 
           <p className="mt-4 text-center text-sm text-ai-graphite-400">
-            Enter your organization&apos;s ATI token to complete registration.
+            Enter your organization&apos;s access code to complete registration.
           </p>
         </div>
 
@@ -197,7 +197,7 @@ function CompleteSocialSignupContent() {
             <div className="space-y-4">
               <div>
                 <label htmlFor="atiToken" className="block text-sm font-medium text-ai-graphite-300 mb-2">
-                  ATI Token
+                  Organization Access Code
                 </label>
                 <input
                   id="atiToken"
@@ -205,13 +205,22 @@ function CompleteSocialSignupContent() {
                   type="text"
                   required
                   className="appearance-none block w-full px-4 py-3 border border-ai-graphite-700 bg-ai-graphite-900/50 placeholder-ai-graphite-500 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-ai-blue-500 focus:border-transparent transition-colors sm:text-sm"
-                  placeholder="Enter your organization ATI token"
+                  placeholder="Enter your organization's access code"
                   value={atiToken}
                   onChange={(e) => setAtiToken(e.target.value)}
                 />
-                <p className="mt-2 text-xs text-ai-graphite-500">
-                  Contact your organization administrator if you don&apos;t have an ATI token.
-                </p>
+                {/* Helpful info box */}
+                <div className="mt-3 p-3 bg-ai-graphite-900/30 border border-ai-graphite-800 rounded-lg">
+                  <p className="text-xs text-ai-graphite-400 leading-relaxed">
+                    <span className="text-ai-graphite-300 font-medium">What&apos;s an access code?</span>
+                    <br />
+                    Your organization admin provides this code to control who can join. 
+                    It ensures only authorized team members can access your workspace.
+                  </p>
+                  <p className="mt-2 text-xs text-ai-graphite-500">
+                    💡 Check your email or ask your team admin for the code.
+                  </p>
+                </div>
               </div>
             </div>
 

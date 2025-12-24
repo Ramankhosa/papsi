@@ -16,6 +16,7 @@ export async function GET(request: NextRequest) {
 
     // Generate authorization URL
     const authUrl = getAuthorizationUrl('linkedin', state)
+    console.log('LinkedIn OAuth URL:', authUrl)
 
     return NextResponse.redirect(authUrl)
   } catch (error) {

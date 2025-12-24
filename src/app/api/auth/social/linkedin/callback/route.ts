@@ -43,31 +43,35 @@ export async function GET(request: NextRequest) {
     })
 
     if (!tokenResponse.ok) {
-      throw new Error('Failed to exchange code for access token')
+      const errorText = await tokenResponse.text()
+      console.error('LinkedIn token exchange failed:', tokenResponse.status, errorText)
+      throw new Error(`Failed to exchange code for access token: ${tokenResponse.status} ${errorText}`)
     }
 
     const tokenData = await tokenResponse.json()
     const accessToken = tokenData.access_token
 
-    // Get user info from LinkedIn
+    // Get user info from LinkedIn using OpenID Connect userinfo endpoint
     const userInfoResponse = await fetch(oauthConfig.linkedin.userInfoUrl, {
       headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'X-Restli-Protocol-Version': '2.0.0'
+        'Authorization': `Bearer ${accessToken}`
       }
     })
 
     if (!userInfoResponse.ok) {
-      throw new Error('Failed to fetch LinkedIn user info')
+      const errorText = await userInfoResponse.text()
+      console.error('LinkedIn user info fetch failed:', userInfoResponse.status, errorText)
+      throw new Error(`Failed to fetch LinkedIn user info: ${userInfoResponse.status} ${errorText}`)
     }
 
     const linkedinUser = await userInfoResponse.json()
 
-    // LinkedIn API v2 returns data in a different format
-    const profileId = linkedinUser.id
-    const firstName = linkedinUser.firstName?.localized?.en_US || linkedinUser.firstName?.localized?.default || ''
-    const lastName = linkedinUser.lastName?.localized?.en_US || linkedinUser.lastName?.localized?.default || ''
-    const email = linkedinUser.emailAddress || linkedinUser.email?.[0] || ''
+    // LinkedIn OpenID Connect response format:
+    // { sub, name, given_name, family_name, picture, locale, email, email_verified }
+    const profileId = linkedinUser.sub
+    const firstName = linkedinUser.given_name || ''
+    const lastName = linkedinUser.family_name || ''
+    const email = linkedinUser.email || ''
 
     // Check if user already exists with this LinkedIn account
     let user = await prisma.user.findFirst({

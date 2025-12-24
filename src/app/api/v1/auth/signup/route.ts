@@ -6,19 +6,22 @@ import { generateToken, hashToken } from '@/lib/token-utils'
 import { sendEmail } from '@/lib/mailer'
 import { verificationTemplate } from '@/lib/email-templates'
 import { autoAssignToDefaultTeam } from '@/lib/org-access-service'
+import { validateInviteToken, recordSignup } from '@/lib/trial-invite-service'
+import { assignTrialPlanToTenant } from '@/lib/trial-plan-service'
 
 const signupSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
   atiToken: z.string().min(1),
   firstName: z.string().min(1).max(100),
-  lastName: z.string().min(1).max(100)
+  lastName: z.string().min(1).max(100),
+  isTrialInvite: z.boolean().optional() // Flag for trial invite tokens
 })
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { email, password, atiToken, firstName, lastName } = signupSchema.parse(body)
+    const { email, password, atiToken, firstName, lastName, isTrialInvite } = signupSchema.parse(body)
 
     // Check if email is already in use globally
     const existingUser = await prisma.user.findUnique({
@@ -32,8 +35,24 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Check if this is a trial invite token (email-locked)
+    let trialInvite = null
+    if (isTrialInvite) {
+      const inviteValidation = await validateInviteToken(atiToken, email)
+      if (!inviteValidation.valid) {
+        return NextResponse.json(
+          { code: 'INVALID_INVITE', message: inviteValidation.error || 'Invalid trial invite' },
+          { status: 400 }
+        )
+      }
+      trialInvite = inviteValidation.invite
+    }
+
     // Validate ATI token by finding the tenant it belongs to
-    const tokenValidation = await validateATIToken(atiToken)
+    // For trial invites, we use the campaign's trial ATI or create a trial tenant
+    const tokenValidation = trialInvite 
+      ? await getTrialTokenValidation(trialInvite)
+      : await validateATIToken(atiToken)
 
     // Get full token with tenant info for scope checking
     let fullToken = null
@@ -46,7 +65,7 @@ export async function POST(request: NextRequest) {
 
     if (!tokenValidation.valid) {
       return NextResponse.json(
-        { code: tokenValidation.error, message: `ATI token validation failed: ${tokenValidation.error}` },
+        { code: 'ATI_TOKEN_INVALID', message: 'ATI token validation failed' },
         { status: 400 }
       )
     }
@@ -316,10 +335,21 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Record trial invite signup if applicable
+    if (trialInvite) {
+      try {
+        await recordSignup(atiToken, user.id)
+        console.log('Trial signup recorded for invite:', trialInvite.id)
+      } catch (trialError) {
+        console.warn('Failed to record trial signup:', trialError)
+      }
+    }
+
     return NextResponse.json({
       user_id: user.id,
       tenant_id: tenant.id,
-      roles: user.roles
+      roles: user.roles,
+      is_trial: !!trialInvite
     }, { status: 201 })
 
   } catch (error) {
@@ -335,6 +365,109 @@ export async function POST(request: NextRequest) {
       { code: 'INTERNAL_ERROR', message: 'Internal server error' },
       { status: 500 }
     )
+  }
+}
+
+/**
+ * Get token validation for trial invites
+ * Uses the campaign's trial ATI token or creates a pseudo-validation for trial tenant
+ */
+async function getTrialTokenValidation(trialInvite: any) {
+  // If campaign has a specific trial ATI token, use it
+  if (trialInvite.campaign.trialAtiTokenId) {
+    const atiToken = await prisma.aTIToken.findUnique({
+      where: { id: trialInvite.campaign.trialAtiTokenId },
+      include: { tenant: true }
+    })
+    if (atiToken) {
+      return {
+        valid: true,
+        atiToken: {
+          id: atiToken.id,
+          tenantId: atiToken.tenantId,
+          fingerprint: atiToken.fingerprint,
+          planTier: atiToken.planTier
+        }
+      }
+    }
+  }
+
+  // Otherwise, use a trial tenant (create if needed)
+  let trialTenant = await prisma.tenant.findFirst({
+    where: { atiId: 'TRIAL' }
+  })
+
+  if (!trialTenant) {
+    // Create trial tenant
+    trialTenant = await prisma.tenant.create({
+      data: {
+        name: 'Trial Users',
+        atiId: 'TRIAL',
+        type: 'INDIVIDUAL',
+        status: 'ACTIVE'
+      }
+    })
+  }
+
+  // Ensure trial tenant has TRIAL plan assigned
+  try {
+    await assignTrialPlanToTenant(trialTenant.id)
+  } catch (e) {
+    console.warn('Failed to assign trial plan:', e)
+  }
+
+  // Get or create a default trial ATI token
+  let trialAtiToken = await prisma.aTIToken.findFirst({
+    where: { 
+      tenantId: trialTenant.id,
+      fingerprint: 'TRIAL_DEFAULT',
+      status: { in: ['ACTIVE', 'ISSUED'] }
+    }
+  })
+
+  if (!trialAtiToken) {
+    const crypto = await import('crypto')
+    // Use tenant ID in hash to ensure uniqueness per tenant
+    const tokenHash = crypto.createHash('sha256')
+      .update(`TRIAL_DEFAULT_${trialTenant.id}_${Date.now()}`)
+      .digest('hex')
+    
+    try {
+      trialAtiToken = await prisma.aTIToken.create({
+        data: {
+          tenantId: trialTenant.id,
+          tokenHash,
+          fingerprint: 'TRIAL_DEFAULT',
+          status: 'ACTIVE',
+          planTier: 'TRIAL', // Use TRIAL tier instead of BASIC
+          notes: 'Default trial token for trial invites'
+        }
+      })
+    } catch (error: any) {
+      // Handle race condition - token might have been created by another request
+      if (error.code === 'P2002') {
+        trialAtiToken = await prisma.aTIToken.findFirst({
+          where: { 
+            tenantId: trialTenant.id,
+            fingerprint: 'TRIAL_DEFAULT',
+            status: { in: ['ACTIVE', 'ISSUED'] }
+          }
+        })
+      }
+      if (!trialAtiToken) {
+        throw error
+      }
+    }
+  }
+
+  return {
+    valid: true,
+    atiToken: {
+      id: trialAtiToken.id,
+      tenantId: trialAtiToken.tenantId,
+      fingerprint: trialAtiToken.fingerprint,
+      planTier: trialAtiToken.planTier
+    }
   }
 }
 

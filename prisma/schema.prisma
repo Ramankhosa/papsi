@@ -107,6 +107,9 @@ model Tenant {
   // Ideation relations
   ideationSessions IdeationSession[]
 
+  // Trial campaign relations
+  trialCampaigns TrialCampaign[]
+
   @@map("tenants")
 }
 
@@ -3322,4 +3325,226 @@ model IdeationHistory {
   @@index([sessionId])
   @@index([sessionId, action])
   @@map("ideation_history")
+}
+
+// ============================================================================
+// TRIAL INVITE CAMPAIGN SYSTEM
+// ============================================================================
+
+enum TrialCampaignStatus {
+  DRAFT // Campaign created but not active
+  ACTIVE // Accepting invites, sending emails
+  PAUSED // Temporarily paused
+  COMPLETED // Campaign ended
+  ARCHIVED // Archived for reference
+}
+
+enum TrialInviteStatus {
+  PENDING // Uploaded but not sent
+  SCHEDULED // Scheduled for future send
+  SENDING // Currently being sent
+  SENT // Email sent successfully
+  DELIVERED // Confirmed delivered (via webhook)
+  OPENED // Email opened (tracking pixel)
+  CLICKED // Invite link clicked
+  SIGNED_UP // User completed registration
+  BOUNCED // Email bounced
+  FAILED // Failed to send
+  UNSUBSCRIBED // User unsubscribed
+  EXPIRED // Invite expired without action
+}
+
+// Campaign groups invites for better organization and tracking
+model TrialCampaign {
+  id       String @id @default(cuid())
+  tenantId String // Usually PLATFORM tenant for super admin
+
+  // Campaign details
+  name        String
+  description String? @db.Text
+  status      TrialCampaignStatus @default(DRAFT)
+
+  // Email template settings
+  emailSubject    String  @default("You're Invited to Try Our Patent Platform")
+  emailTemplate   String? @db.Text // Custom HTML template (uses default if null)
+  senderName      String  @default("Patent Platform Team")
+  replyToEmail    String?
+
+  // Campaign settings
+  trialDurationDays Int      @default(14) // How long trial lasts after signup
+  inviteExpiryDays  Int      @default(30) // How long invite link is valid
+  autoExpireInvites Boolean  @default(true)
+
+  // ATI Token settings
+  trialAtiTokenId String? // Link to a specific trial ATI token (optional)
+  maxSignups      Int?    // Max total signups for this campaign
+
+  // Trial Plan Limits (per-user limits for this campaign's trial users)
+  // NULL means use the default TRIAL plan limits
+  patentDraftLimit     Int? // Max patents a trial user can draft
+  noveltySearchLimit   Int? // Max novelty searches
+  ideationRunLimit     Int? // Max ideation runs
+  priorArtSearchLimit  Int? // Max prior art searches
+  diagramLimit         Int? // Max diagram generations
+  
+  // Token budget for trial users (optional)
+  totalTokenBudget     Int? // Max total tokens for all features combined
+
+  // Scheduling
+  defaultSendTime String? // Default time to send scheduled emails (HH:MM format)
+  timezone        String  @default("UTC")
+
+  // Stats (denormalized for quick access)
+  totalInvites    Int @default(0)
+  sentCount       Int @default(0)
+  deliveredCount  Int @default(0)
+  openedCount     Int @default(0)
+  clickedCount    Int @default(0)
+  signedUpCount   Int @default(0)
+  bouncedCount    Int @default(0)
+
+  // Metadata
+  createdBy String // Super admin who created
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  tenant  Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  invites TrialInvite[]
+
+  @@index([tenantId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("trial_campaigns")
+}
+
+// Individual trial invite records
+model TrialInvite {
+  id         String @id @default(cuid())
+  campaignId String
+
+  // Recipient info
+  email       String
+  firstName   String?
+  lastName    String?
+  country     String?
+  company     String?
+  jobTitle    String?
+  customData  Json?  // Any additional custom fields from CSV
+
+  // Invite status
+  status TrialInviteStatus @default(PENDING)
+
+  // Email-locked ATI token (unique per invite)
+  inviteToken       String  @unique // Unique token for this invite
+  inviteTokenHash   String  @unique // Hashed version for security
+  allowedEmail      String  // Email that can use this token (prevents sharing)
+  tokenExpiresAt    DateTime?
+
+  // Scheduling
+  scheduledSendAt DateTime? // When to send (null = send immediately when triggered)
+  sentAt          DateTime? // When actually sent
+
+  // Tracking
+  deliveredAt    DateTime?
+  firstOpenedAt  DateTime?
+  lastOpenedAt   DateTime?
+  openCount      Int       @default(0)
+  firstClickedAt DateTime?
+  lastClickedAt  DateTime?
+  clickCount     Int       @default(0)
+  signedUpAt     DateTime?
+  signedUpUserId String?   // Link to User if they signed up
+  bouncedAt      DateTime?
+  bounceReason   String?
+  unsubscribedAt DateTime?
+
+  // Email provider tracking
+  mailjetMessageId String? // Mailjet message ID for webhook correlation
+  mailjetStatus    String? // Last status from Mailjet
+
+  // Resend tracking
+  resendCount     Int       @default(0)
+  lastResendAt    DateTime?
+  resendReason    String?
+
+  // Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  campaign TrialCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  events   TrialInviteEvent[]
+
+  @@unique([campaignId, email]) // One invite per email per campaign
+  @@index([campaignId])
+  @@index([email])
+  @@index([status])
+  @@index([scheduledSendAt])
+  @@index([inviteToken])
+  @@index([mailjetMessageId]) // For webhook correlation lookups
+  @@index([tokenExpiresAt]) // For expire job queries
+  @@index([signedUpUserId]) // For user activity queries
+  @@map("trial_invites")
+}
+
+// Detailed event log for each invite
+model TrialInviteEvent {
+  id       String @id @default(cuid())
+  inviteId String
+
+  // Event details
+  eventType String // CREATED, SCHEDULED, SENT, DELIVERED, OPENED, CLICKED, SIGNED_UP, BOUNCED, FAILED, RESENT, UNSUBSCRIBED
+  eventData Json?  // Additional event data (e.g., IP, user agent, bounce reason)
+
+  // Source
+  source String? // "mailjet_webhook", "tracking_pixel", "link_click", "signup", "manual"
+
+  // IP tracking (for opens/clicks)
+  ipAddress String?
+  userAgent String?
+  geoCountry String?
+  geoCity    String?
+
+  timestamp DateTime @default(now())
+
+  // Relations
+  invite TrialInvite @relation(fields: [inviteId], references: [id], onDelete: Cascade)
+
+  @@index([inviteId])
+  @@index([eventType])
+  @@index([timestamp])
+  @@map("trial_invite_events")
+}
+
+// Email template variations for A/B testing (future)
+model TrialEmailTemplate {
+  id String @id @default(cuid())
+
+  name        String
+  description String?
+  subject     String
+  htmlContent String @db.Text
+  textContent String? @db.Text // Plain text fallback
+
+  // Variables available: {{firstName}}, {{lastName}}, {{inviteLink}}, {{expiryDate}}, {{companyName}}
+  isDefault Boolean @default(false)
+  isActive  Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("trial_email_templates")
+}
+
+// Unsubscribe list (GDPR compliance)
+model TrialUnsubscribe {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  reason    String?
+  source    String?  // Which campaign/invite triggered unsubscribe
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@map("trial_unsubscribes")
 }

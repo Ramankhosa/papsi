@@ -1,13 +1,13 @@
 'use client'
 
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useState, useEffect, Suspense } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { useAuth } from '@/lib/auth-context'
 import { motion } from 'framer-motion'
 import AnimatedLogo from '@/components/ui/animated-logo'
 
-export default function RegisterPage() {
+function RegisterContent() {
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
   const [email, setEmail] = useState('')
@@ -17,8 +17,29 @@ export default function RegisterPage() {
   const [error, setError] = useState('')
   const [success, setSuccess] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [isInvited, setIsInvited] = useState(false)
+  const [isTrial, setIsTrial] = useState(false)
   const { signup } = useAuth()
   const router = useRouter()
+  const searchParams = useSearchParams()
+
+  // Check for invite token in URL (magic link support)
+  useEffect(() => {
+    const inviteToken = searchParams?.get('invite')
+    const trialParam = searchParams?.get('trial')
+    const emailParam = searchParams?.get('email')
+    
+    if (inviteToken) {
+      setAtiToken(inviteToken)
+      setIsInvited(true)
+    }
+    if (trialParam === 'true') {
+      setIsTrial(true)
+    }
+    if (emailParam) {
+      setEmail(decodeURIComponent(emailParam))
+    }
+  }, [searchParams])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -38,10 +59,14 @@ export default function RegisterPage() {
       return
     }
 
-    const result = await signup(email, password, atiToken, firstName, lastName)
+    const result = await signup(email, password, atiToken, firstName, lastName, isTrial)
 
     if (result.success) {
-      setSuccess('Account created successfully! You can now log in.')
+      if (isTrial) {
+        setSuccess('Trial account created! Redirecting to login...')
+      } else {
+        setSuccess('Account created successfully! You can now log in.')
+      }
       setTimeout(() => {
         router.push('/login')
       }, 2000)
@@ -71,12 +96,42 @@ export default function RegisterPage() {
             <div className="absolute -inset-4 bg-ai-blue-500/20 blur-xl rounded-full" />
             <AnimatedLogo size="lg" />
           </div>
-          <h2 className="text-center text-3xl font-bold text-white tracking-tight">
-            Create your account
-          </h2>
-          <p className="mt-2 text-center text-sm text-ai-graphite-400">
-            You need an ATI token to join. Contact your organization administrator.
-          </p>
+          
+          {/* Dynamic header based on invite/trial status */}
+          {isInvited && isTrial ? (
+            <>
+              <div className="mb-2 px-3 py-1 bg-emerald-500/20 border border-emerald-500/30 rounded-full">
+                <span className="text-xs font-medium text-emerald-400">✨ Free Trial Access</span>
+              </div>
+              <h2 className="text-center text-3xl font-bold text-white tracking-tight">
+                Welcome to Your Trial
+              </h2>
+              <p className="mt-2 text-center text-sm text-ai-graphite-400">
+                You&apos;ve been invited to try our platform. Create your account to get started.
+              </p>
+            </>
+          ) : isInvited ? (
+            <>
+              <div className="mb-2 px-3 py-1 bg-ai-blue-500/20 border border-ai-blue-500/30 rounded-full">
+                <span className="text-xs font-medium text-ai-blue-400">🎉 You&apos;re Invited</span>
+              </div>
+              <h2 className="text-center text-3xl font-bold text-white tracking-tight">
+                Join Your Team
+              </h2>
+              <p className="mt-2 text-center text-sm text-ai-graphite-400">
+                Your team has invited you to collaborate. Create your account to join.
+              </p>
+            </>
+          ) : (
+            <>
+              <h2 className="text-center text-3xl font-bold text-white tracking-tight">
+                Create your account
+              </h2>
+              <p className="mt-2 text-center text-sm text-ai-graphite-400">
+                Join your organization&apos;s secure workspace with an access code.
+              </p>
+            </>
+          )}
         </div>
 
         {/* Social Login Section */}
@@ -105,6 +160,7 @@ export default function RegisterPage() {
               Google
             </button>
 
+            {/* Facebook button hidden for now
             <button
               type="button"
               onClick={() => window.location.href = '/api/auth/social/facebook'}
@@ -115,6 +171,7 @@ export default function RegisterPage() {
               </svg>
               Facebook
             </button>
+            */}
 
             <button
               type="button"
@@ -127,6 +184,7 @@ export default function RegisterPage() {
               LinkedIn
             </button>
 
+            {/* Twitter button hidden for now
             <button
               type="button"
               onClick={() => window.location.href = '/api/auth/social/twitter'}
@@ -137,10 +195,13 @@ export default function RegisterPage() {
               </svg>
               Twitter
             </button>
+            */}
           </div>
 
           <p className="mt-3 text-xs text-center text-ai-graphite-500">
-            Social signup will require ATI token verification
+            {isInvited 
+              ? 'Your access code will be applied automatically' 
+              : 'You\'ll enter your access code after social verification'}
           </p>
         </div>
 
@@ -205,21 +266,46 @@ export default function RegisterPage() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
-            <div>
-              <label htmlFor="atiToken" className="sr-only">
-                ATI Token
-              </label>
-              <input
-                id="atiToken"
-                name="atiToken"
-                type="text"
-                required
-                className="appearance-none block w-full px-4 py-3 border border-ai-graphite-700 bg-ai-graphite-900/50 placeholder-ai-graphite-500 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-ai-blue-500 focus:border-transparent transition-colors sm:text-sm"
-                placeholder="Enter your ATI token"
-                value={atiToken}
-                onChange={(e) => setAtiToken(e.target.value)}
-              />
-            </div>
+            {/* ATI Token Section - Hidden if pre-filled from invite link */}
+            {isInvited ? (
+              <div className="p-3 bg-ai-graphite-900/50 border border-ai-graphite-700 rounded-lg">
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <span className="text-sm text-ai-graphite-300">Access code applied from your invitation</span>
+                </div>
+                <input type="hidden" name="atiToken" value={atiToken} />
+              </div>
+            ) : (
+              <div>
+                <label htmlFor="atiToken" className="block text-sm font-medium text-ai-graphite-300 mb-1.5">
+                  Organization Access Code
+                </label>
+                <input
+                  id="atiToken"
+                  name="atiToken"
+                  type="text"
+                  required
+                  className="appearance-none block w-full px-4 py-3 border border-ai-graphite-700 bg-ai-graphite-900/50 placeholder-ai-graphite-500 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-ai-blue-500 focus:border-transparent transition-colors sm:text-sm"
+                  placeholder="Enter your organization's access code"
+                  value={atiToken}
+                  onChange={(e) => setAtiToken(e.target.value)}
+                />
+                {/* Helpful info about access codes */}
+                <div className="mt-2 p-3 bg-ai-graphite-900/30 border border-ai-graphite-800 rounded-lg">
+                  <p className="text-xs text-ai-graphite-400 leading-relaxed">
+                    <span className="text-ai-graphite-300 font-medium">What&apos;s an access code?</span>
+                    <br />
+                    Your organization admin provides this code to control who can join the team workspace. 
+                    It ensures your patent data stays secure and only authorized team members can access it.
+                  </p>
+                  <p className="mt-2 text-xs text-ai-graphite-500">
+                    💡 Check your email or ask your team admin for the code.
+                  </p>
+                </div>
+              </div>
+            )}
             <div>
               <label htmlFor="password" className="sr-only">
                 Password
@@ -308,5 +394,18 @@ export default function RegisterPage() {
         </form>
       </motion.div>
     </div>
+  )
+}
+
+// Wrap with Suspense for useSearchParams
+export default function RegisterPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-ai-graphite-950">
+        <div className="text-white">Loading...</div>
+      </div>
+    }>
+      <RegisterContent />
+    </Suspense>
   )
 }

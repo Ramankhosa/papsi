@@ -12,13 +12,20 @@ interface Stage4ResultsProps {
   hideConsolidatedButton?: boolean;
 }
 
-export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun, hidePerPatentRemarks, hideIdeaBank = true, hideConsolidatedButton = true }: Stage4ResultsProps) {
+export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun, hidePerPatentRemarks = true, hideIdeaBank = true, hideConsolidatedButton = true }: Stage4ResultsProps) {
   const r: any = stage4Results || {};
   const exec = r.executive_summary || {};
   const cards = exec.visual_cards || {};
   const remarks: any[] = Array.isArray(r.per_patent_remarks) ? r.per_patent_remarks : [];
   const metadata = r.report_metadata || {};
   const concl = r.concluding_remarks || {};
+  
+  // New final concluding remarks fields
+  const honestAssessment = concl.honest_assessment || '';
+  const courseCorrections = Array.isArray(concl.course_corrections) ? concl.course_corrections : [];
+  const inventorActions = Array.isArray(concl.inventor_action_items) ? concl.inventor_action_items : [];
+  const overallAssessment = concl.overall_novelty_assessment || '';
+  const filingAdvice = concl.filing_advice || '';
 
   // Basic sanitizer to avoid mojibake while preserving content
   const sanitize = (t: any) => (typeof t === 'string' ? t.normalize('NFKC').replace(/\uFFFD/g, '') : t);
@@ -82,6 +89,23 @@ export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun,
         </div>
       )}
 
+      {/* Overall Novelty Assessment */}
+      {overallAssessment && (
+        <div className="rounded-lg border bg-white p-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium text-gray-900">Overall Assessment</div>
+            <span className={`px-3 py-1 rounded-full text-sm font-semibold ${
+              overallAssessment === 'Novel' ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' :
+              overallAssessment === 'Partially Novel' ? 'bg-amber-100 text-amber-700 border border-amber-200' :
+              overallAssessment === 'Not Novel' ? 'bg-red-100 text-red-700 border border-red-200' :
+              'bg-slate-100 text-slate-700 border border-slate-200'
+            }`}>
+              {overallAssessment}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Executive Summary */}
       <div className="rounded-lg border bg-white p-4">
         <div className="text-sm font-medium text-gray-900 mb-1">Executive Summary</div>
@@ -89,6 +113,23 @@ export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun,
           {sanitize(exec.summary) || 'Summary not available.'}
         </div>
       </div>
+
+      {/* Honest Assessment - Candid verdict */}
+      {honestAssessment && (
+        <div className="rounded-lg border-2 border-indigo-200 bg-indigo-50/50 p-4">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center flex-shrink-0">
+              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-indigo-900 mb-1">Honest Assessment</div>
+              <div className="text-sm text-indigo-800">{sanitize(honestAssessment)}</div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Search Trail */}
       <div className="rounded-lg border bg-white p-4">
@@ -112,6 +153,65 @@ export default function Stage4ResultsDisplay({ stage4Results, searchId, onRerun,
       {/* Strategic Recommendations */}
       {concl.strategic_recommendations && (
         <BulletsCard title="Strategic Recommendations" bullets={concl.strategic_recommendations} color="indigo" />
+      )}
+
+      {/* Course Corrections - If novelty is weak */}
+      {courseCorrections.length > 0 && (
+        <div className="rounded-lg border border-purple-200 bg-purple-50/30 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <svg className="w-5 h-5 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <div className="text-sm font-semibold text-purple-900">Course Corrections</div>
+          </div>
+          <ul className="space-y-2">
+            {courseCorrections.map((item: string, i: number) => (
+              <li key={i} className="flex items-start gap-2 text-sm text-purple-800">
+                <span className="text-purple-400 mt-1 flex-shrink-0">→</span>
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Inventor Action Items */}
+      {inventorActions.length > 0 && (
+        <div className="rounded-lg border border-teal-200 bg-teal-50/30 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <svg className="w-5 h-5 text-teal-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+            </svg>
+            <div className="text-sm font-semibold text-teal-900">Inventor Action Items</div>
+          </div>
+          <ul className="space-y-2">
+            {inventorActions.map((item: string, i: number) => (
+              <li key={i} className="flex items-start gap-2 text-sm text-teal-800">
+                <span className="w-5 h-5 rounded bg-teal-600 text-white text-xs flex items-center justify-center flex-shrink-0 mt-0.5">
+                  {i + 1}
+                </span>
+                <span>{item}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Filing Advice */}
+      {filingAdvice && (
+        <div className="rounded-lg border-2 border-slate-300 bg-slate-50 p-4">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-slate-700 flex items-center justify-center flex-shrink-0">
+              <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <div>
+              <div className="text-sm font-semibold text-slate-900 mb-1">Filing Advice</div>
+              <div className="text-sm text-slate-700">{sanitize(filingAdvice)}</div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Enhanced Per-Patent Analysis (Professional Format) */}

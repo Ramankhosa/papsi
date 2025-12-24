@@ -109,6 +109,7 @@ export default function LoginPage() {
               Google
             </button>
 
+            {/* Facebook button hidden for now
             <button
               type="button"
               onClick={() => window.location.href = '/api/auth/social/facebook'}
@@ -119,6 +120,7 @@ export default function LoginPage() {
               </svg>
               Facebook
             </button>
+            */}
 
             <button
               type="button"
@@ -131,6 +133,7 @@ export default function LoginPage() {
               LinkedIn
             </button>
 
+            {/* Twitter button hidden for now
             <button
               type="button"
               onClick={() => window.location.href = '/api/auth/social/twitter'}
@@ -141,6 +144,7 @@ export default function LoginPage() {
               </svg>
               Twitter
             </button>
+            */}
           </div>
         </div>
 

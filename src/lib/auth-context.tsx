@@ -16,7 +16,7 @@ interface AuthContextType {
   token: string | null
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>
   logout: (logoutAll?: boolean) => Promise<void>
-  signup: (email: string, password: string, atiToken: string, firstName: string, lastName: string) => Promise<{ success: boolean; error?: string }>
+  signup: (email: string, password: string, atiToken: string, firstName: string, lastName: string, isTrialInvite?: boolean) => Promise<{ success: boolean; error?: string }>
   isLoading: boolean
   refreshUser: (authToken?: string) => Promise<void>
   // Authenticated fetch that automatically handles token refresh
@@ -306,20 +306,27 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }
 
-  const signup = async (email: string, password: string, atiToken: string, firstName: string, lastName: string) => {
+  const signup = async (
+    email: string, 
+    password: string, 
+    atiToken: string, 
+    firstName: string, 
+    lastName: string,
+    isTrialInvite?: boolean
+  ) => {
     try {
       const response = await fetch('/api/v1/auth/signup', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ email, password, atiToken, firstName, lastName })
+        body: JSON.stringify({ email, password, atiToken, firstName, lastName, isTrialInvite })
       })
 
       const data = await response.json()
 
       if (response.ok) {
-        return { success: true }
+        return { success: true, isTrial: data.is_trial }
       } else {
         return { success: false, error: data.message || 'Signup failed' }
       }
