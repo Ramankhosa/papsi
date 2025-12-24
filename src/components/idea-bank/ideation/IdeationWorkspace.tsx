@@ -96,7 +96,8 @@ const isInputView = (stage: SessionStage) =>
   ['idle', 'seed_input', 'clarifying'].includes(stage)
 
 const isProcessingView = (stage: SessionStage) =>
-  ['normalizing', 'classifying', 'mapping_contradictions', 'expanding', 'checking_obviousness', 'generating', 'checking_novelty'].includes(stage)
+  ['normalizing', 'classifying', 'mapping_contradictions', 'expanding', 'generating', 'checking_novelty'].includes(stage)
+  // Note: 'checking_obviousness' is handled inline in the combine tray, not as a full processing view
 
 const isWorkspaceView = (stage: SessionStage) =>
   ['exploring', 'reviewing'].includes(stage)
@@ -273,6 +274,7 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
   // NEW: Pipeline enhancement states
   const [contradictionMapping, setContradictionMapping] = useState<any>(null)
   const [obviousnessWarning, setObviousnessWarning] = useState<any>(null)
+  const [checkingObviousness, setCheckingObviousness] = useState(false) // Inline loading state for obviousness check
   const [feedbackLoopResults, setFeedbackLoopResults] = useState<any>(null)
   const [qualityMetrics, setQualityMetrics] = useState<any>(null)
   
@@ -758,7 +760,7 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
     }
   }, [showHistory, sessionsLoaded])
 
-  const loadSession = async (sessionId: string, fitView: boolean = false) => {
+  const loadSession = async (sessionId: string, fitView: boolean = false, skipStageUpdate: boolean = false) => {
     setLoading(true)
     try {
       const response = await fetch(`/api/idea-bank/ideation/${sessionId}`, {
@@ -811,8 +813,10 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
           setIdeaFrames(data.ideaFrames)
         }
 
-        // Set stage based on session status
-        setStage(mapStatusToStage(data.session.status))
+        // Set stage based on session status (unless explicitly skipped during generation flow)
+        if (!skipStageUpdate) {
+          setStage(mapStatusToStage(data.session.status))
+        }
 
         // Auto-fit view after loading only if requested
         if (fitView) {
@@ -1210,13 +1214,15 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
   }
 
   // NEW: Check obviousness before generation (Stage 3.5)
+  // Note: This is handled inline with loading state, not as a full processing view
   const handleCheckObviousness = async (
     selectedDimensionIds: string[],
     generationParams: { count: number; intent: string; selectedOperators: string[]; buckets?: any[] }
   ): Promise<boolean> => {
     if (!currentSession || selectedDimensionIds.length === 0) return true
 
-    setStage('checking_obviousness')
+    // Use inline loading state instead of full processing view
+    setCheckingObviousness(true)
     try {
       const response = await fetch(`/api/idea-bank/ideation/${currentSession.id}/obviousness-filter`, {
         method: 'POST',
@@ -1252,6 +1258,8 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
       }
     } catch (e) {
       console.warn('Obviousness check failed:', e)
+    } finally {
+      setCheckingObviousness(false)
     }
     
     return true // On error, allow proceeding
@@ -1319,8 +1327,8 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
             count,
             buckets: buckets || null,
           },
-          enableFeedbackLoop: true, // Enable automatic iteration
-          maxIterations: 2,
+          enableFeedbackLoop: false, // Disable automatic novelty checking - user can check manually
+          maxIterations: 0,
           noveltyThreshold: 60,
           skipObviousnessCheck: true, // Already checked above
         }),
@@ -1338,8 +1346,8 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
           setObviousnessWarning(data.obviousnessWarning)
         }
         
-        // Reload session to get idea frames
-        await loadSession(currentSession.id, false)
+        // Reload session to get idea frames (skip stage update to prevent resetting to exploring)
+        await loadSession(currentSession.id, false, true)
         
         // Progressive reveal of actual ideas (simulated streaming effect)
         const newIdeaFrames = data.ideaFrames || []
@@ -2316,8 +2324,14 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
                 ((currentSession?.classification as any)?.applicableOperators as any[]) || []
               }
               onGenerate={handleGenerateIdeas}
-              onClear={() => setSelectedNodes(new Set())}
+              onClear={() => {
+                setSelectedNodes(new Set())
+                setObviousnessWarning(null) // Clear warning when clearing selection
+              }}
               loading={loading}
+              checkingObviousness={checkingObviousness}
+              obviousnessWarning={obviousnessWarning}
+              onForceGenerate={handleForceGenerate}
             />
           </motion.div>
         )}
