@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
+// Allow longer-running LLM operations (related_art_llm_review, draft generation) without platform timeouts
+export const maxDuration = 300; // 5 minutes - matches novelty-search stage route
 import { authenticateUser } from '@/lib/auth-middleware';
 import { prisma } from '@/lib/prisma';
 import { DraftingService } from '@/lib/drafting-service';
