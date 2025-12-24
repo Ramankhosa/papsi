@@ -1,32 +1,72 @@
--- CreateEnum: Ideation Session Status
-CREATE TYPE "IdeationSessionStatus" AS ENUM ('SEED_INPUT', 'CLARIFYING', 'CLASSIFYING', 'EXPANDING', 'EXPLORING', 'GENERATING', 'NOVELTY_CHECK', 'REVIEWING', 'COMPLETED', 'ARCHIVED');
+-- ============================================================================
+-- IDEATION ENGINE Migration (Idempotent - Safe for production)
+-- ============================================================================
 
--- CreateEnum: Invention Class
-CREATE TYPE "InventionClass" AS ENUM ('PRODUCT_DEVICE', 'SYSTEM', 'METHOD_PROCESS', 'COMPOSITION', 'SOFTWARE_ALGORITHM', 'BIOTECH_PHARMA', 'MANUFACTURING', 'SERVICE_WORKFLOW', 'HYBRID');
+-- CreateEnum: Ideation Session Status (idempotent)
+DO $$ BEGIN
+    CREATE TYPE "IdeationSessionStatus" AS ENUM ('SEED_INPUT', 'CLARIFYING', 'CLASSIFYING', 'EXPANDING', 'EXPLORING', 'GENERATING', 'NOVELTY_CHECK', 'REVIEWING', 'COMPLETED', 'ARCHIVED');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- CreateEnum: Archetype
-CREATE TYPE "Archetype" AS ENUM ('MECH', 'ELEC', 'SOFT', 'CHEM', 'BIO', 'MIXED');
+-- CreateEnum: Invention Class (idempotent)
+DO $$ BEGIN
+    CREATE TYPE "InventionClass" AS ENUM ('PRODUCT_DEVICE', 'SYSTEM', 'METHOD_PROCESS', 'COMPOSITION', 'SOFTWARE_ALGORITHM', 'BIOTECH_PHARMA', 'MANUFACTURING', 'SERVICE_WORKFLOW', 'HYBRID');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- CreateEnum: Fork Mode
-CREATE TYPE "ForkMode" AS ENUM ('SINGLE', 'FORK', 'MERGE');
+-- CreateEnum: Archetype (idempotent)
+DO $$ BEGIN
+    CREATE TYPE "Archetype" AS ENUM ('MECH', 'ELEC', 'SOFT', 'CHEM', 'BIO', 'MIXED');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- CreateEnum: Mind Map Node Type
-CREATE TYPE "MindMapNodeType" AS ENUM ('SEED', 'COMPONENT', 'DIMENSION_FAMILY', 'DIMENSION_OPTION', 'OPERATOR', 'CONSTRAINT', 'IDEA_FRAME', 'EVIDENCE_CLUSTER');
+-- CreateEnum: Fork Mode (idempotent)
+DO $$ BEGIN
+    CREATE TYPE "ForkMode" AS ENUM ('SINGLE', 'FORK', 'MERGE');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- CreateEnum: Mind Map Node State
-CREATE TYPE "MindMapNodeState" AS ENUM ('EXPANDED', 'COLLAPSED', 'HIDDEN', 'REMOVED', 'SELECTED');
+-- CreateEnum: Mind Map Node Type (idempotent)
+DO $$ BEGIN
+    CREATE TYPE "MindMapNodeType" AS ENUM ('SEED', 'COMPONENT', 'DIMENSION_FAMILY', 'DIMENSION_OPTION', 'OPERATOR', 'CONSTRAINT', 'IDEA_FRAME', 'EVIDENCE_CLUSTER');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- CreateEnum: Idea Frame Status
-CREATE TYPE "IdeaFrameStatus" AS ENUM ('DRAFT', 'SHORTLISTED', 'REJECTED', 'EXPORTED', 'ARCHIVED');
+-- CreateEnum: Mind Map Node State (idempotent)
+DO $$ BEGIN
+    CREATE TYPE "MindMapNodeState" AS ENUM ('EXPANDED', 'COLLAPSED', 'HIDDEN', 'REMOVED', 'SELECTED');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- CreateEnum: Saturation Level
-CREATE TYPE "SaturationLevel" AS ENUM ('LOW', 'MEDIUM', 'HIGH');
+-- CreateEnum: Idea Frame Status (idempotent)
+DO $$ BEGIN
+    CREATE TYPE "IdeaFrameStatus" AS ENUM ('DRAFT', 'SHORTLISTED', 'REJECTED', 'EXPORTED', 'ARCHIVED');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- CreateEnum: Novelty Action
-CREATE TYPE "NoveltyAction" AS ENUM ('KEEP', 'MUTATE_OPERATOR', 'MUTATE_DIMENSION', 'NARROW_MICRO_PROBLEM', 'ASK_USER_QUESTION');
+-- CreateEnum: Saturation Level (idempotent)
+DO $$ BEGIN
+    CREATE TYPE "SaturationLevel" AS ENUM ('LOW', 'MEDIUM', 'HIGH');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- CreateTable: Main Ideation Sessions
-CREATE TABLE "ideation_sessions" (
+-- CreateEnum: Novelty Action (idempotent)
+DO $$ BEGIN
+    CREATE TYPE "NoveltyAction" AS ENUM ('KEEP', 'MUTATE_OPERATOR', 'MUTATE_DIMENSION', 'NARROW_MICRO_PROBLEM', 'ASK_USER_QUESTION');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- CreateTable: Main Ideation Sessions (idempotent)
+CREATE TABLE IF NOT EXISTS "ideation_sessions" (
     "id" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
@@ -46,8 +86,8 @@ CREATE TABLE "ideation_sessions" (
     CONSTRAINT "ideation_sessions_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable: Mind Map Nodes
-CREATE TABLE "mindmap_nodes" (
+-- CreateTable: Mind Map Nodes (idempotent)
+CREATE TABLE IF NOT EXISTS "mindmap_nodes" (
     "id" TEXT NOT NULL,
     "sessionId" TEXT NOT NULL,
     "nodeId" TEXT NOT NULL,
@@ -71,8 +111,8 @@ CREATE TABLE "mindmap_nodes" (
     CONSTRAINT "mindmap_nodes_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable: Mind Map Edges
-CREATE TABLE "mindmap_edges" (
+-- CreateTable: Mind Map Edges (idempotent)
+CREATE TABLE IF NOT EXISTS "mindmap_edges" (
     "id" TEXT NOT NULL,
     "sessionId" TEXT NOT NULL,
     "fromNodeId" TEXT NOT NULL,
@@ -85,8 +125,8 @@ CREATE TABLE "mindmap_edges" (
     CONSTRAINT "mindmap_edges_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable: Combine Trays (User's selection for idea generation)
-CREATE TABLE "combine_trays" (
+-- CreateTable: Combine Trays (idempotent)
+CREATE TABLE IF NOT EXISTS "combine_trays" (
     "id" TEXT NOT NULL,
     "sessionId" TEXT NOT NULL,
     "selectedComponents" TEXT[] DEFAULT ARRAY[]::TEXT[],
@@ -101,8 +141,8 @@ CREATE TABLE "combine_trays" (
     CONSTRAINT "combine_trays_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable: Idea Frames (Generated Ideas)
-CREATE TABLE "idea_frames" (
+-- CreateTable: Idea Frames (idempotent)
+CREATE TABLE IF NOT EXISTS "idea_frames" (
     "id" TEXT NOT NULL,
     "sessionId" TEXT NOT NULL,
     "ideaFrameJson" JSONB NOT NULL,
@@ -129,8 +169,8 @@ CREATE TABLE "idea_frames" (
     CONSTRAINT "idea_frames_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable: Evidence Results (Novelty search evidence)
-CREATE TABLE "evidence_results" (
+-- CreateTable: Evidence Results (idempotent)
+CREATE TABLE IF NOT EXISTS "evidence_results" (
     "id" TEXT NOT NULL,
     "sessionId" TEXT NOT NULL,
     "ideaFrameId" TEXT,
@@ -146,8 +186,8 @@ CREATE TABLE "evidence_results" (
     CONSTRAINT "evidence_results_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable: Ideation Search Cache (Cost control)
-CREATE TABLE "ideation_search_cache" (
+-- CreateTable: Ideation Search Cache (idempotent)
+CREATE TABLE IF NOT EXISTS "ideation_search_cache" (
     "id" TEXT NOT NULL,
     "cacheKey" TEXT NOT NULL,
     "provider" TEXT NOT NULL,
@@ -159,8 +199,8 @@ CREATE TABLE "ideation_search_cache" (
     CONSTRAINT "ideation_search_cache_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable: Ideation History (Audit trail)
-CREATE TABLE "ideation_history" (
+-- CreateTable: Ideation History (idempotent)
+CREATE TABLE IF NOT EXISTS "ideation_history" (
     "id" TEXT NOT NULL,
     "sessionId" TEXT NOT NULL,
     "action" TEXT NOT NULL,
@@ -176,62 +216,99 @@ CREATE TABLE "ideation_history" (
     CONSTRAINT "ideation_history_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex: Ideation Sessions indexes
-CREATE INDEX "ideation_sessions_tenantId_idx" ON "ideation_sessions"("tenantId");
-CREATE INDEX "ideation_sessions_userId_idx" ON "ideation_sessions"("userId");
-CREATE INDEX "ideation_sessions_status_idx" ON "ideation_sessions"("status");
+-- CreateIndex: Ideation Sessions indexes (idempotent)
+CREATE INDEX IF NOT EXISTS "ideation_sessions_tenantId_idx" ON "ideation_sessions"("tenantId");
+CREATE INDEX IF NOT EXISTS "ideation_sessions_userId_idx" ON "ideation_sessions"("userId");
+CREATE INDEX IF NOT EXISTS "ideation_sessions_status_idx" ON "ideation_sessions"("status");
 
--- CreateIndex: Mind Map Nodes indexes
-CREATE UNIQUE INDEX "mindmap_nodes_sessionId_nodeId_key" ON "mindmap_nodes"("sessionId", "nodeId");
-CREATE INDEX "mindmap_nodes_sessionId_idx" ON "mindmap_nodes"("sessionId");
-CREATE INDEX "mindmap_nodes_sessionId_type_idx" ON "mindmap_nodes"("sessionId", "type");
-CREATE INDEX "mindmap_nodes_sessionId_state_idx" ON "mindmap_nodes"("sessionId", "state");
+-- CreateIndex: Mind Map Nodes indexes (idempotent)
+CREATE UNIQUE INDEX IF NOT EXISTS "mindmap_nodes_sessionId_nodeId_key" ON "mindmap_nodes"("sessionId", "nodeId");
+CREATE INDEX IF NOT EXISTS "mindmap_nodes_sessionId_idx" ON "mindmap_nodes"("sessionId");
+CREATE INDEX IF NOT EXISTS "mindmap_nodes_sessionId_type_idx" ON "mindmap_nodes"("sessionId", "type");
+CREATE INDEX IF NOT EXISTS "mindmap_nodes_sessionId_state_idx" ON "mindmap_nodes"("sessionId", "state");
 
--- CreateIndex: Mind Map Edges indexes
-CREATE UNIQUE INDEX "mindmap_edges_sessionId_fromNodeId_toNodeId_key" ON "mindmap_edges"("sessionId", "fromNodeId", "toNodeId");
-CREATE INDEX "mindmap_edges_sessionId_idx" ON "mindmap_edges"("sessionId");
+-- CreateIndex: Mind Map Edges indexes (idempotent)
+CREATE UNIQUE INDEX IF NOT EXISTS "mindmap_edges_sessionId_fromNodeId_toNodeId_key" ON "mindmap_edges"("sessionId", "fromNodeId", "toNodeId");
+CREATE INDEX IF NOT EXISTS "mindmap_edges_sessionId_idx" ON "mindmap_edges"("sessionId");
 
--- CreateIndex: Combine Trays indexes
-CREATE UNIQUE INDEX "combine_trays_sessionId_key" ON "combine_trays"("sessionId");
+-- CreateIndex: Combine Trays indexes (idempotent)
+CREATE UNIQUE INDEX IF NOT EXISTS "combine_trays_sessionId_key" ON "combine_trays"("sessionId");
 
--- CreateIndex: Idea Frames indexes
-CREATE INDEX "idea_frames_sessionId_idx" ON "idea_frames"("sessionId");
-CREATE INDEX "idea_frames_sessionId_status_idx" ON "idea_frames"("sessionId", "status");
+-- CreateIndex: Idea Frames indexes (idempotent)
+CREATE INDEX IF NOT EXISTS "idea_frames_sessionId_idx" ON "idea_frames"("sessionId");
+CREATE INDEX IF NOT EXISTS "idea_frames_sessionId_status_idx" ON "idea_frames"("sessionId", "status");
 
--- CreateIndex: Evidence Results indexes
-CREATE INDEX "evidence_results_sessionId_idx" ON "evidence_results"("sessionId");
-CREATE INDEX "evidence_results_queryHash_idx" ON "evidence_results"("queryHash");
-CREATE INDEX "evidence_results_ideaFrameId_idx" ON "evidence_results"("ideaFrameId");
+-- CreateIndex: Evidence Results indexes (idempotent)
+CREATE INDEX IF NOT EXISTS "evidence_results_sessionId_idx" ON "evidence_results"("sessionId");
+CREATE INDEX IF NOT EXISTS "evidence_results_queryHash_idx" ON "evidence_results"("queryHash");
+CREATE INDEX IF NOT EXISTS "evidence_results_ideaFrameId_idx" ON "evidence_results"("ideaFrameId");
 
--- CreateIndex: Ideation Search Cache indexes
-CREATE UNIQUE INDEX "ideation_search_cache_cacheKey_key" ON "ideation_search_cache"("cacheKey");
-CREATE INDEX "ideation_search_cache_cacheKey_idx" ON "ideation_search_cache"("cacheKey");
-CREATE INDEX "ideation_search_cache_expiresAt_idx" ON "ideation_search_cache"("expiresAt");
+-- CreateIndex: Ideation Search Cache indexes (idempotent)
+CREATE UNIQUE INDEX IF NOT EXISTS "ideation_search_cache_cacheKey_key" ON "ideation_search_cache"("cacheKey");
+CREATE INDEX IF NOT EXISTS "ideation_search_cache_cacheKey_idx" ON "ideation_search_cache"("cacheKey");
+CREATE INDEX IF NOT EXISTS "ideation_search_cache_expiresAt_idx" ON "ideation_search_cache"("expiresAt");
 
--- CreateIndex: Ideation History indexes
-CREATE INDEX "ideation_history_sessionId_idx" ON "ideation_history"("sessionId");
-CREATE INDEX "ideation_history_sessionId_action_idx" ON "ideation_history"("sessionId", "action");
+-- CreateIndex: Ideation History indexes (idempotent)
+CREATE INDEX IF NOT EXISTS "ideation_history_sessionId_idx" ON "ideation_history"("sessionId");
+CREATE INDEX IF NOT EXISTS "ideation_history_sessionId_action_idx" ON "ideation_history"("sessionId", "action");
 
--- AddForeignKey: Ideation Sessions
-ALTER TABLE "ideation_sessions" ADD CONSTRAINT "ideation_sessions_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-ALTER TABLE "ideation_sessions" ADD CONSTRAINT "ideation_sessions_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey: Ideation Sessions (idempotent)
+DO $$ BEGIN
+    ALTER TABLE "ideation_sessions" ADD CONSTRAINT "ideation_sessions_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey: Mind Map Nodes
-ALTER TABLE "mindmap_nodes" ADD CONSTRAINT "mindmap_nodes_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ideation_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "ideation_sessions" ADD CONSTRAINT "ideation_sessions_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey: Mind Map Edges
-ALTER TABLE "mindmap_edges" ADD CONSTRAINT "mindmap_edges_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ideation_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey: Mind Map Nodes (idempotent)
+DO $$ BEGIN
+    ALTER TABLE "mindmap_nodes" ADD CONSTRAINT "mindmap_nodes_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ideation_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey: Combine Trays
-ALTER TABLE "combine_trays" ADD CONSTRAINT "combine_trays_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ideation_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey: Mind Map Edges (idempotent)
+DO $$ BEGIN
+    ALTER TABLE "mindmap_edges" ADD CONSTRAINT "mindmap_edges_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ideation_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey: Idea Frames
-ALTER TABLE "idea_frames" ADD CONSTRAINT "idea_frames_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ideation_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey: Combine Trays (idempotent)
+DO $$ BEGIN
+    ALTER TABLE "combine_trays" ADD CONSTRAINT "combine_trays_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ideation_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey: Evidence Results
-ALTER TABLE "evidence_results" ADD CONSTRAINT "evidence_results_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ideation_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-ALTER TABLE "evidence_results" ADD CONSTRAINT "evidence_results_ideaFrameId_fkey" FOREIGN KEY ("ideaFrameId") REFERENCES "idea_frames"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+-- AddForeignKey: Idea Frames (idempotent)
+DO $$ BEGIN
+    ALTER TABLE "idea_frames" ADD CONSTRAINT "idea_frames_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ideation_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
--- AddForeignKey: Ideation History
-ALTER TABLE "ideation_history" ADD CONSTRAINT "ideation_history_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ideation_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+-- AddForeignKey: Evidence Results (idempotent)
+DO $$ BEGIN
+    ALTER TABLE "evidence_results" ADD CONSTRAINT "evidence_results_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ideation_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
+DO $$ BEGIN
+    ALTER TABLE "evidence_results" ADD CONSTRAINT "evidence_results_ideaFrameId_fkey" FOREIGN KEY ("ideaFrameId") REFERENCES "idea_frames"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- AddForeignKey: Ideation History (idempotent)
+DO $$ BEGIN
+    ALTER TABLE "ideation_history" ADD CONSTRAINT "ideation_history_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ideation_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;

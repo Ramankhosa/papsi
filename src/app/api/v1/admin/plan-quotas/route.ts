@@ -4,7 +4,7 @@ import { requireRole } from '@/lib/middleware'
 
 export const dynamic = 'force-dynamic'
 
-const FEATURE_CODES = ['PRIOR_ART_SEARCH', 'PATENT_DRAFTING', 'IDEA_BANK'] as const
+const FEATURE_CODES = ['PRIOR_ART_SEARCH', 'PATENT_DRAFTING', 'IDEA_BANK', 'DIAGRAM_GENERATION', 'PERSONA_SYNC', 'PATENT_REVIEW', 'IDEATION'] as const
 const PLAN_CODES = ['FREE_PLAN', 'PRO_PLAN', 'ENTERPRISE_PLAN'] as const
 
 type FeatureCode = (typeof FEATURE_CODES)[number]
@@ -76,7 +76,10 @@ export async function GET(request: NextRequest) {
         return {
           featureCode: code,
           dailyQuota: pf?.dailyQuota ?? 0,
-          monthlyQuota: pf?.monthlyQuota ?? 0
+          monthlyQuota: pf?.monthlyQuota ?? 0,
+          // Token limits (used by IDEATION feature for dual quota enforcement)
+          dailyTokenLimit: (pf as any)?.dailyTokenLimit ?? null,
+          monthlyTokenLimit: (pf as any)?.monthlyTokenLimit ?? null
         }
       })
     }))

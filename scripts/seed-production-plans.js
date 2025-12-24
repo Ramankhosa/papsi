@@ -33,7 +33,8 @@ async function seedProductionPlans() {
       { code: 'PATENT_DRAFTING', name: 'AI-Assisted Patent Drafting', unit: 'tokens' },
       { code: 'DIAGRAM_GENERATION', name: 'Technical Diagram Generation', unit: 'diagrams' },
       { code: 'IDEA_BANK', name: 'Idea Bank Access', unit: 'reservations' },
-      { code: 'PERSONA_SYNC', name: 'PersonaSync Style Learning', unit: 'trainings' }
+      { code: 'PERSONA_SYNC', name: 'PersonaSync Style Learning', unit: 'trainings' },
+      { code: 'IDEATION', name: 'Patent Ideation Engine', unit: 'sessions' }
     ]
 
     const featuresByCode = {}
@@ -56,10 +57,19 @@ async function seedProductionPlans() {
       { code: 'LLM4_NOVELTY_SCREEN', name: 'Novelty Screening', linkedFeature: 'PRIOR_ART_SEARCH' },
       { code: 'LLM5_NOVELTY_ASSESS', name: 'Novelty Assessment', linkedFeature: 'PRIOR_ART_SEARCH' },
       { code: 'LLM6_REPORT_GENERATION', name: 'Report Generation', linkedFeature: 'PRIOR_ART_SEARCH' },
+      { code: 'LLM1_CLAIM_REFINEMENT', name: 'Claim Refinement', linkedFeature: 'PATENT_DRAFTING' },
       { code: 'IDEA_BANK_ACCESS', name: 'Idea Bank Access', linkedFeature: 'IDEA_BANK' },
       { code: 'IDEA_BANK_RESERVE', name: 'Idea Reservation', linkedFeature: 'IDEA_BANK' },
       { code: 'IDEA_BANK_EDIT', name: 'Idea Editing', linkedFeature: 'IDEA_BANK' },
-      { code: 'PERSONA_SYNC_LEARN', name: 'Style Learning', linkedFeature: 'PERSONA_SYNC' }
+      { code: 'PERSONA_SYNC_LEARN', name: 'Style Learning', linkedFeature: 'PERSONA_SYNC' },
+      // IDEATION tasks (7 stages of the mind-map ideation engine)
+      { code: 'IDEATION_NORMALIZE', name: 'Seed Normalization', linkedFeature: 'IDEATION' },
+      { code: 'IDEATION_CLASSIFY', name: 'Invention Classification', linkedFeature: 'IDEATION' },
+      { code: 'IDEATION_CONTRADICTION_MAPPING', name: 'Contradiction Mapping', linkedFeature: 'IDEATION' },
+      { code: 'IDEATION_EXPAND', name: 'Dimension Expansion', linkedFeature: 'IDEATION' },
+      { code: 'IDEATION_OBVIOUSNESS_FILTER', name: 'Obviousness Filter', linkedFeature: 'IDEATION' },
+      { code: 'IDEATION_GENERATE', name: 'Idea Frame Generation', linkedFeature: 'IDEATION' },
+      { code: 'IDEATION_NOVELTY', name: 'Novelty Assessment', linkedFeature: 'IDEATION' }
     ]
 
     for (const def of taskDefs) {
@@ -145,22 +155,24 @@ async function seedProductionPlans() {
     // 5. Plan features (quotas per feature per plan)
     console.log('\n5. Ensuring plan feature quotas...')
     const planFeatureDefs = [
-      // BASIC PLAN (FREE_PLAN) - Patent drafting + novelty search
+      // BASIC PLAN (FREE_PLAN) - Patent drafting + novelty search (no Idea Bank, no Ideation)
       { planCode: 'FREE_PLAN', featureCode: 'PRIOR_ART_SEARCH', monthlyQuota: 50, dailyQuota: 10 },
       { planCode: 'FREE_PLAN', featureCode: 'PATENT_DRAFTING', monthlyQuota: 1000, dailyQuota: 100 },
 
-      // PRO PLAN - Basic services + Idea Bank + Diagram generation
+      // PRO PLAN - Basic services + Idea Bank + Diagram generation + Ideation
       { planCode: 'PRO_PLAN', featureCode: 'PRIOR_ART_SEARCH', monthlyQuota: 1000, dailyQuota: 100 },
       { planCode: 'PRO_PLAN', featureCode: 'PATENT_DRAFTING', monthlyQuota: 10000, dailyQuota: 1000 },
       { planCode: 'PRO_PLAN', featureCode: 'DIAGRAM_GENERATION', monthlyQuota: 200, dailyQuota: 40 },
       { planCode: 'PRO_PLAN', featureCode: 'IDEA_BANK', monthlyQuota: 50, dailyQuota: 10 },
+      { planCode: 'PRO_PLAN', featureCode: 'IDEATION', monthlyQuota: 500, dailyQuota: 50, monthlyTokenLimit: 5000000, dailyTokenLimit: 500000 },
 
       // ENTERPRISE PLAN - Everything (all features)
       { planCode: 'ENTERPRISE_PLAN', featureCode: 'PRIOR_ART_SEARCH', monthlyQuota: 5000, dailyQuota: 500 },
       { planCode: 'ENTERPRISE_PLAN', featureCode: 'PATENT_DRAFTING', monthlyQuota: 50000, dailyQuota: 5000 },
       { planCode: 'ENTERPRISE_PLAN', featureCode: 'DIAGRAM_GENERATION', monthlyQuota: 500, dailyQuota: 100 },
       { planCode: 'ENTERPRISE_PLAN', featureCode: 'IDEA_BANK', monthlyQuota: 200, dailyQuota: 50 },
-      { planCode: 'ENTERPRISE_PLAN', featureCode: 'PERSONA_SYNC', monthlyQuota: 50, dailyQuota: 10 }
+      { planCode: 'ENTERPRISE_PLAN', featureCode: 'PERSONA_SYNC', monthlyQuota: 50, dailyQuota: 10 },
+      { planCode: 'ENTERPRISE_PLAN', featureCode: 'IDEATION', monthlyQuota: 2000, dailyQuota: 200, monthlyTokenLimit: 20000000, dailyTokenLimit: 2000000 }
     ]
 
     for (const def of planFeatureDefs) {
@@ -170,6 +182,19 @@ async function seedProductionPlans() {
         throw new Error(`Missing plan/feature for PlanFeature: ${def.planCode} / ${def.featureCode}`)
       }
 
+      const updateData = {
+        monthlyQuota: def.monthlyQuota,
+        dailyQuota: def.dailyQuota
+      }
+      
+      // Add token limits if specified (used by IDEATION feature)
+      if (def.monthlyTokenLimit !== undefined) {
+        updateData.monthlyTokenLimit = def.monthlyTokenLimit
+      }
+      if (def.dailyTokenLimit !== undefined) {
+        updateData.dailyTokenLimit = def.dailyTokenLimit
+      }
+
       await prisma.planFeature.upsert({
         where: {
           planId_featureId: {
@@ -177,15 +202,11 @@ async function seedProductionPlans() {
             featureId: feature.id
           }
         },
-        update: {
-          monthlyQuota: def.monthlyQuota,
-          dailyQuota: def.dailyQuota
-        },
+        update: updateData,
         create: {
           planId: plan.id,
           featureId: feature.id,
-          monthlyQuota: def.monthlyQuota,
-          dailyQuota: def.dailyQuota
+          ...updateData
         }
       })
     }
@@ -211,6 +232,14 @@ async function seedProductionPlans() {
       { planCode: 'PRO_PLAN', taskCode: 'IDEA_BANK_ACCESS', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_M' },
       { planCode: 'PRO_PLAN', taskCode: 'IDEA_BANK_RESERVE', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_M' },
       { planCode: 'PRO_PLAN', taskCode: 'IDEA_BANK_EDIT', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_M' },
+      // PRO PLAN - IDEATION tasks (lightweight stages use BASE_M, heavy stages use PRO_M)
+      { planCode: 'PRO_PLAN', taskCode: 'IDEATION_NORMALIZE', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_M' },
+      { planCode: 'PRO_PLAN', taskCode: 'IDEATION_CLASSIFY', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_M' },
+      { planCode: 'PRO_PLAN', taskCode: 'IDEATION_CONTRADICTION_MAPPING', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_M' },
+      { planCode: 'PRO_PLAN', taskCode: 'IDEATION_EXPAND', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_M' },
+      { planCode: 'PRO_PLAN', taskCode: 'IDEATION_OBVIOUSNESS_FILTER', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_M' },
+      { planCode: 'PRO_PLAN', taskCode: 'IDEATION_GENERATE', allowedClasses: ['BASE_M', 'PRO_M'], defaultClass: 'PRO_M' },
+      { planCode: 'PRO_PLAN', taskCode: 'IDEATION_NOVELTY', allowedClasses: ['BASE_M', 'PRO_M'], defaultClass: 'PRO_M' },
 
       // ENTERPRISE PLAN - All access (everything)
       { planCode: 'ENTERPRISE_PLAN', taskCode: 'LLM1_PRIOR_ART', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' },
@@ -222,7 +251,15 @@ async function seedProductionPlans() {
       { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEA_BANK_ACCESS', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M'], defaultClass: 'PRO_M' },
       { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEA_BANK_RESERVE', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M'], defaultClass: 'PRO_M' },
       { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEA_BANK_EDIT', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M'], defaultClass: 'PRO_M' },
-      { planCode: 'ENTERPRISE_PLAN', taskCode: 'PERSONA_SYNC_LEARN', allowedClasses: ['BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' }
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'PERSONA_SYNC_LEARN', allowedClasses: ['BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' },
+      // ENTERPRISE PLAN - IDEATION tasks (access to all model tiers)
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEATION_NORMALIZE', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M', 'PRO_L'], defaultClass: 'PRO_M' },
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEATION_CLASSIFY', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M', 'PRO_L'], defaultClass: 'PRO_M' },
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEATION_CONTRADICTION_MAPPING', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M', 'PRO_L'], defaultClass: 'PRO_M' },
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEATION_EXPAND', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M', 'PRO_L'], defaultClass: 'PRO_M' },
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEATION_OBVIOUSNESS_FILTER', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M', 'PRO_L'], defaultClass: 'PRO_M' },
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEATION_GENERATE', allowedClasses: ['BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' },
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEATION_NOVELTY', allowedClasses: ['BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' }
     ]
 
     for (const def of llmAccessDefs) {

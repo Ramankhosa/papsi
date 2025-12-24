@@ -4,13 +4,15 @@ import { useEffect, useState } from 'react'
 import { unstable_noStore as noStore } from 'next/cache'
 import { useAuth } from '@/lib/auth-context'
 
-type FeatureCode = 'PRIOR_ART_SEARCH' | 'PATENT_DRAFTING' | 'IDEA_BANK'
+type FeatureCode = 'PRIOR_ART_SEARCH' | 'PATENT_DRAFTING' | 'IDEA_BANK' | 'DIAGRAM_GENERATION' | 'PERSONA_SYNC' | 'PATENT_REVIEW' | 'IDEATION'
 type PlanCode = 'FREE_PLAN' | 'PRO_PLAN' | 'ENTERPRISE_PLAN'
 
 interface FeatureQuota {
   featureCode: FeatureCode
   dailyQuota: number
   monthlyQuota: number
+  dailyTokenLimit?: number | null
+  monthlyTokenLimit?: number | null
 }
 
 interface PlanQuota {
@@ -30,6 +32,10 @@ const FEATURE_LABELS: Record<FeatureCode, string> = {
   PRIOR_ART_SEARCH: 'Novelty searches',
   PATENT_DRAFTING: 'Patent drafts',
   IDEA_BANK: 'Ideas reserved',
+  DIAGRAM_GENERATION: 'Diagrams generated',
+  PERSONA_SYNC: 'Style trainings',
+  PATENT_REVIEW: 'Patent reviews',
+  IDEATION: 'Ideation sessions',
 }
 
 export default function QuotaControllerPage() {
