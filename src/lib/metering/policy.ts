@@ -4,6 +4,7 @@
 import type { MeteringConfig, PolicyService, FeatureRequest, EnforcementDecision, PolicyLimits } from './types'
 import { MeteringErrorUtils, MeteringError } from './errors'
 import { prisma } from '@/lib/prisma'
+import { getTrialUserInfo } from '@/lib/trial-plan-service'
 
 export function createPolicyService(config: MeteringConfig): PolicyService {
   return {
@@ -79,15 +80,28 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
           }
         }
 
-        // 5. Check quota limits
-        const quotaCheck = await this.checkQuota(request)
-        if (!quotaCheck.allowed) {
-          return {
-            allowed: false,
-            reason: quotaCheck.resetTime
-              ? `Quota exceeded. Resets at ${quotaCheck.resetTime.toISOString()}`
-              : 'Quota exceeded',
-            remainingQuota: quotaCheck.remaining
+        // 5. Check if user is a trial user (bypass quotas for trial users)
+        const trialUserInfo = request.userId ? await getTrialUserInfo(request.userId) : { isTrialUser: false }
+        const isTrialUser = trialUserInfo.isTrialUser
+
+        // Debug logging for trial user detection
+        console.log(`[Policy] User ${request.userId} trial status: ${isTrialUser}`, {
+          hasInvite: !!trialUserInfo.invite,
+          hasCampaign: !!trialUserInfo.campaign,
+          tenantAtiId: trialUserInfo.invite?.campaign?.trialAtiTokenId ? 'campaign-specific' : 'unknown'
+        })
+
+        // 6. Check quota limits (skip for trial users)
+        if (!isTrialUser) {
+          const quotaCheck = await this.checkQuota(request)
+          if (!quotaCheck.allowed) {
+            return {
+              allowed: false,
+              reason: quotaCheck.resetTime
+                ? `Quota exceeded. Resets at ${quotaCheck.resetTime.toISOString()}`
+                : 'Quota exceeded',
+              remainingQuota: quotaCheck.remaining
+            }
           }
         }
 
@@ -121,7 +135,7 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
           maxFiles: policyLimits.diagramFilesPerReq,
           concurrencyLimit: policyLimits.concurrencyLimit,
           reservationId,
-          remainingQuota: quotaCheck.remaining
+          remainingQuota: isTrialUser ? { monthly: 999999, daily: 999999 } : await this.checkQuota(request).then(q => q.remaining)
         }
 
       } catch (error) {
