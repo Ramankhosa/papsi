@@ -410,7 +410,7 @@ export default function IdeaBankDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50/50 text-slate-900 -m-8 p-8 font-sans">
+    <div className="min-h-full bg-slate-50/50 text-slate-900 font-sans">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-12">

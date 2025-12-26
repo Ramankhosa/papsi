@@ -7,6 +7,7 @@
 
 import { prisma } from '@/lib/prisma';
 import { serpApiProvider } from '@/lib/serpapi-provider';
+import { z } from 'zod';
 import {
   InputNormalizationSchema,
   ClassificationSchema,
@@ -15,6 +16,8 @@ import {
   NoveltyGateSchema,
   ContradictionMappingSchema,
   ObviousnessFilterSchema,
+  SuggestedMovesResponseSchema,
+  SuggestedMoveSchema,
   safeParseJson,
   getSchemaDescription,
   TRIZ_OPERATORS,
@@ -31,6 +34,10 @@ import {
   type DimensionFamily,
   type ContradictionMapping,
   type ObviousnessFilter,
+  type SuggestedMove,
+  type SuggestedMovesResponse,
+  type ExpandedDimensionGraph,
+  type SuggestedMovePayloadType,
 } from './schemas';
 import type { 
   IdeationSession, 
@@ -651,8 +658,8 @@ export async function initializeDimensions(sessionId: string): Promise<MindMapNo
   const edgesToCreate: Prisma.MindMapEdgeCreateManyInput[] = [];
 
   // Layout constants for left-to-right tree with generous spacing
-  const LEVEL_WIDTH = 400;  // Horizontal spacing between levels
-  const NODE_HEIGHT = 180;  // Generous vertical spacing between nodes
+  const LEVEL_WIDTH = 480;  // Horizontal spacing between levels
+  const NODE_HEIGHT = 200;  // Vertical spacing between dimension family nodes
   const START_X = 100;      // Starting X position (seed is at left)
   const START_Y = 100;      // Starting Y position
 
@@ -750,7 +757,47 @@ export async function initializeDimensions(sessionId: string): Promise<MindMapNo
 }
 
 /**
- * Expand a dimension family with specific options using LLM
+ * Get previously selected dimensions for context-aware expansion
+ */
+async function getSelectedDimensionsContext(sessionId: string): Promise<{
+  selectedMoves: Array<{ id: string; title: string; impact: string; family: string }>;
+  hasContext: boolean;
+}> {
+  // Get the combine tray to find selected dimensions
+  const combineTray = await prisma.combineTray.findUnique({
+    where: { sessionId },
+  });
+
+  // Safely handle missing combineTray or empty/undefined selectedDimensions
+  const selectedDimensionIds = combineTray?.selectedDimensions ?? [];
+  if (!combineTray || selectedDimensionIds.length === 0) {
+    return { selectedMoves: [], hasContext: false };
+  }
+
+  // Get the selected dimension nodes with their payloads
+  const selectedNodes = await prisma.mindMapNode.findMany({
+    where: {
+      sessionId,
+      nodeId: { in: selectedDimensionIds },
+    },
+  });
+
+  const selectedMoves = selectedNodes.map(n => ({
+    id: n.nodeId,
+    title: n.title,
+    impact: (n.payloadJson as any)?.impact || n.description || '',
+    family: n.family || '',
+  }));
+
+  return { selectedMoves, hasContext: selectedMoves.length > 0 };
+}
+
+/**
+ * Expand a dimension family with context-aware suggested moves
+ * 
+ * This function generates actionable invention moves instead of abstract options.
+ * Each move includes: What-If statement, Impact, and Leads-To consequence.
+ * Moves are context-aware, considering previously selected dimensions.
  */
 export async function expandDimensionNode(input: ExpandNodeInput): Promise<DimensionGraph> {
   const session = await prisma.ideationSession.findUniqueOrThrow({
@@ -770,34 +817,86 @@ export async function expandDimensionNode(input: ExpandNodeInput): Promise<Dimen
   const normalization = session.normalizationJson as InputNormalization;
   const classification = session.classificationJson as Classification;
 
-  const prompt = `You are a patent ideation expert. Generate dimension options for the following context.
+  // Get context from previously selected dimensions
+  const { selectedMoves, hasContext } = await getSelectedDimensionsContext(input.sessionId);
 
-INVENTION:
+  // Build context section for prompt
+  const contextSection = hasContext 
+    ? `
+═══════════════════════════════════════════════════════════════
+PREVIOUSLY SELECTED MOVES (Consider these for context-awareness)
+═══════════════════════════════════════════════════════════════
+${selectedMoves.map((m, i) => `${i + 1}. [${m.family}] ${m.title}
+   → Impact: ${m.impact}`).join('\n')}
+
+CONTEXT INSTRUCTIONS:
+- Reference prior selections when suggesting synergies or tensions
+- At least ONE move MUST challenge or relax an assumption from prior selections
+- Use phrasing like: "Given your selection of X, this becomes interesting..."
+- If a move conflicts with prior choices, explicitly frame the tradeoff
+`
+    : `
+═══════════════════════════════════════════════════════════════
+NO PRIOR SELECTIONS
+═══════════════════════════════════════════════════════════════
+This is the first dimension being explored. Generate foundational moves.
+`;
+
+  const prompt = `You are a PATENT INVENTION ADVISOR generating context-aware SUGGESTED MOVES for mind-map exploration.
+
+═══════════════════════════════════════════════════════════════
+INVENTION CONTEXT
+═══════════════════════════════════════════════════════════════
 - Core Entity: ${normalization.coreEntity}
 - Goal: ${normalization.intentGoal}
 - Class: ${classification.dominantClass}
 - Archetype: ${classification.archetype}
+- Constraints: ${normalization.constraints?.join(', ') || 'None specified'}
+${(normalization.technicalContradictions && normalization.technicalContradictions.length > 0 && normalization.technicalContradictions[0])
+  ? `- Key Contradiction: "${normalization.technicalContradictions[0].parameterToImprove}" vs "${normalization.technicalContradictions[0].parameterThatWorsens}"`
+  : ''}
 
-DIMENSION TO EXPAND:
-- Name: ${node.title}
-- Description: ${node.description || 'No description'}
-- Family: ${node.family || node.title}
+═══════════════════════════════════════════════════════════════
+DIMENSION FAMILY TO EXPLORE: ${node.title}
+═══════════════════════════════════════════════════════════════
+Description: ${node.description || 'No description'}
+${contextSection}
+═══════════════════════════════════════════════════════════════
+OUTPUT REQUIREMENTS
+═══════════════════════════════════════════════════════════════
 
-Generate 3-5 specific options within this dimension that could be explored for this invention.
-Each option should be a concrete variation or approach within the "${node.title}" dimension.
-Keep it focused - quality over quantity.
+Generate 3-5 SUGGESTED MOVES. Each move must:
 
-Return ONLY valid JSON matching this schema (no other text):
-${getSchemaDescription('DimensionGraph')}
+1. Be phrased as: "What if we <specific design action>?"
+2. Specify IMPACT: The immediate behavioral/functional change
+3. Specify LEADS TO: The new constraint, problem, or opportunity created
+4. Modify at least ONE of:
+   - BEHAVIOR_OVER_TIME (how system acts across time)
+   - ARCHITECTURE_CONTROL_FLOW (structure or control logic)
+   - INTERFACE_BOUNDARY (connection points or APIs)
+   - FAILURE_MODE_LIFECYCLE (error handling or lifecycle stage)
 
-Rules:
-- All nodes should have parentId set to "${input.nodeId}"
-- Each node id should be unique and prefixed with "opt-${input.nodeId}-"
-- type should be "DIMENSION_OPTION"
-- Make options specific to the invention context, not generic
-- IMPORTANT: descriptionShort MUST be exactly 4-5 words explaining the benefit/purpose (e.g., "Reduces cost by 50%", "Enables wireless connectivity", "Improves user grip strength")
-- title should be 2-4 words (the option name)
-- tags can include 2-3 relevant keywords`;
+FORBIDDEN PATTERNS (reject these):
+❌ "Optimize X" or "Improve Y" without structural change
+❌ "Add AI/ML" or "Use cloud" (buzzwords)
+❌ "Make it faster/better/cheaper" (vague)
+❌ Pure feature additions without behavior change
+
+${hasContext ? `MANDATORY: At least 1 move must challenge an implicit assumption from prior selections.` : ''}
+
+Return ONLY valid JSON matching this schema:
+${getSchemaDescription('SuggestedMovesResponse')}
+
+Example move format:
+{
+  "id": "move-${input.nodeId}-1",
+  "move": "What if the system operates only on threshold events instead of continuously?",
+  "impact": "Reduces energy consumption by 90% during idle periods",
+  "leadsTo": "Need for reliable event detection and state persistence",
+  "tension": "Challenges assumption of real-time responsiveness",
+  "challengesPrior": true,
+  "modifies": "BEHAVIOR_OVER_TIME"
+}`;
 
   const { response } = await callLLM(
     prompt,
@@ -806,58 +905,126 @@ Rules:
     input.requestHeaders,
   );
 
-  const parsed = safeParseJson(response, DimensionGraphSchema);
+  // Parse the new SuggestedMovesResponse format
+  let parsed = safeParseJson(response, SuggestedMovesResponseSchema);
   
   if (!parsed.success) {
-    throw new Error(`Expansion failed: ${parsed.error}`);
+    // Fallback 1: Try parsing as raw array of moves (LLM sometimes omits wrapper)
+    const rawArraySchema = z.array(SuggestedMoveSchema).min(1);
+    const rawArrayParsed = safeParseJson(response, rawArraySchema);
+    if (rawArrayParsed.success) {
+      console.log('LLM returned raw moves array, wrapping in response object');
+      parsed = { 
+        success: true, 
+        data: { 
+          moves: rawArrayParsed.data, 
+          contextAcknowledged: false, 
+          priorSelectionsUsed: [] 
+        } 
+      };
+    } else {
+      console.warn('Failed to parse SuggestedMovesResponse, falling back to legacy parsing:', parsed.error);
+      // Fallback 2: Attempt legacy DimensionGraph parsing
+      const legacyParsed = safeParseJson(response, DimensionGraphSchema);
+      if (!legacyParsed.success) {
+        throw new Error(`Expansion failed: ${parsed.error}`);
+      }
+      // Convert legacy format to new format (fallback path)
+      // Ensure nodes have required fields with defaults applied
+      const normalizedLegacyData: DimensionGraph = {
+        nodes: legacyParsed.data.nodes.map(n => ({
+          ...n,
+          tags: n.tags ?? [],
+          selectable: n.selectable ?? true,
+          defaultExpanded: n.defaultExpanded ?? false,
+        })),
+        edges: legacyParsed.data.edges ?? [],
+      };
+      return await processLegacyExpansion(input, session, node, normalizedLegacyData);
+    }
   }
 
-  // Create new nodes and edges
+  // Process the new moves format
+  const moves = parsed.data.moves;
   const existingNodeIds = session.nodes.map(n => n.nodeId);
-  const newNodes = parsed.data.nodes.filter(n => !existingNodeIds.includes(n.id));
+  const newMoves = moves.filter(m => !existingNodeIds.includes(m.id));
 
-  // Layout constants - SINGLE COLUMN for clarity, generous spacing
-  const LEVEL_WIDTH = 400;   // Horizontal gap between parent and children
-  const NODE_HEIGHT = 180;   // Generous vertical spacing between nodes
+  // Layout constants
+  const LEVEL_WIDTH = 480;
+  const NODE_WIDTH = 340; // Card width in pixels
+  const CHARS_PER_LINE = 42; // Approximate chars that fit per line
+  const LINE_HEIGHT = 16; // Pixels per line of text
+  const BASE_NODE_HEIGHT = 120; // Base height for padding, borders, tags
+  const SECTION_PADDING = 28; // Padding per section (Impact, LeadsTo, Tension)
+  const VERTICAL_GAP = 40; // Gap between nodes
   
-  // Calculate positions - children in a SINGLE COLUMN to the right of parent
-  const parentNode = node;
-  const parentX = parentNode.positionX || 50;
-  const parentY = parentNode.positionY || 200;
-  const parentDepth = parentNode.depth || 0;
+  // Calculate estimated height for each move based on content
+  const calculateNodeHeight = (m: typeof moves[0]) => {
+    const moveLines = Math.ceil((m.move?.length || 0) / CHARS_PER_LINE);
+    const impactLines = Math.ceil((m.impact?.length || 0) / CHARS_PER_LINE);
+    const leadsToLines = Math.ceil((m.leadsTo?.length || 0) / CHARS_PER_LINE);
+    const tensionLines = m.tension ? Math.ceil(m.tension.length / CHARS_PER_LINE) : 0;
+    
+    let height = BASE_NODE_HEIGHT;
+    height += moveLines * LINE_HEIGHT; // Title
+    height += SECTION_PADDING + (impactLines * LINE_HEIGHT); // Impact section
+    height += SECTION_PADDING + (leadsToLines * LINE_HEIGHT); // LeadsTo section
+    if (m.tension) {
+      height += SECTION_PADDING + (tensionLines * LINE_HEIGHT); // Tension section
+    }
+    
+    return Math.max(height, 180); // Minimum height
+  };
   
-  // Single column layout - stack children vertically, centered around parent Y
-  const totalChildren = newNodes.length;
-  const totalHeight = (totalChildren - 1) * NODE_HEIGHT;
-  const startY = parentY - (totalHeight / 2);
+  const parentX = node.positionX || 50;
+  const parentY = node.positionY || 200;
+  const parentDepth = node.depth || 0;
+  
+  // Calculate cumulative Y positions based on each node's estimated height
+  const nodeHeights = newMoves.map(m => calculateNodeHeight(m));
+  const totalHeight = nodeHeights.reduce((sum, h) => sum + h + VERTICAL_GAP, 0) - VERTICAL_GAP;
+  let currentY = parentY - (totalHeight / 2);
 
-  const nodesToCreate = newNodes.map((n, i) => {
+  // Convert moves to nodes for storage with adaptive positioning
+  const nodesToCreate = newMoves.map((m, i) => {
+    const nodeY = currentY;
+    currentY += nodeHeights[i] + VERTICAL_GAP; // Move to next position
+    
     return {
       sessionId: input.sessionId,
-      nodeId: n.id,
-      type: n.type as any,
-      title: n.title,
-      description: n.descriptionShort || null,
-      family: n.family || node.family,
-      tags: n.tags || [],
+      nodeId: m.id,
+      type: 'DIMENSION_OPTION' as const,
+      title: m.move, // The "What if..." statement becomes the title
+      description: m.impact, // Impact becomes the short description
+      family: node.family || node.title,
+      tags: [m.modifies || 'BEHAVIOR_OVER_TIME', m.challengesPrior ? 'CHALLENGES_PRIOR' : 'BUILDS_ON_PRIOR'].filter((t): t is string => !!t),
       state: 'COLLAPSED' as const,
-      selectable: n.selectable !== false,
-      defaultExpanded: n.defaultExpanded || false,
+      selectable: true,
+      defaultExpanded: false,
       depth: parentDepth + 1,
       parentNodeId: input.nodeId,
-      positionX: parentX + LEVEL_WIDTH,  // All children at same X (single column)
-      positionY: startY + (i * NODE_HEIGHT),  // Stack vertically with generous spacing
+      positionX: parentX + LEVEL_WIDTH,
+      positionY: nodeY,
+      // Store full move data in payloadJson for frontend rendering
+      payloadJson: {
+        move: m.move,
+        impact: m.impact,
+        leadsTo: m.leadsTo,
+        tension: m.tension,
+        challengesPrior: m.challengesPrior,
+        modifies: m.modifies,
+        isSuggestedMove: true, // Flag to identify new format
+      },
     };
   });
 
-  const edgesToCreate = newNodes.map(n => ({
+  const edgesToCreate = newMoves.map(m => ({
     sessionId: input.sessionId,
     fromNodeId: input.nodeId,
-    toNodeId: n.id,
-    relation: 'contains',
+    toNodeId: m.id,
+    relation: 'suggests_move',
   }));
 
-  // Use skipDuplicates to handle cases where nodes might already exist
   if (nodesToCreate.length > 0) {
     await prisma.mindMapNode.createMany({ 
       data: nodesToCreate,
@@ -878,7 +1045,122 @@ Rules:
     data: { state: 'EXPANDED' },
   });
 
-  // Fetch the newly created nodes from database to get actual positions and parentNodeId
+  // Fetch and return ALL children of this node (including both new and existing)
+  // This handles the case where a node is re-expanded (e.g., after page refresh)
+  const allChildNodeIds = newMoves.length > 0 
+    ? newMoves.map(m => m.id) 
+    : moves.map(m => m.id);
+    
+  const createdNodes = await prisma.mindMapNode.findMany({
+    where: {
+      sessionId: input.sessionId,
+      OR: [
+        { nodeId: { in: allChildNodeIds } },
+        { parentNodeId: input.nodeId }, // Also get any existing children
+      ],
+    },
+  });
+
+  const createdEdges = await prisma.mindMapEdge.findMany({
+    where: {
+      sessionId: input.sessionId,
+      fromNodeId: input.nodeId,
+    },
+  });
+
+  const result: ExpandedDimensionGraph = {
+    nodes: createdNodes.map(n => ({
+      id: n.nodeId,
+      type: n.type,
+      title: n.title,
+      descriptionShort: n.description || undefined,
+      family: n.family || undefined,
+      selectable: n.selectable,
+      defaultExpanded: n.defaultExpanded,
+      tags: n.tags,
+      parentId: n.parentNodeId || undefined,
+      positionX: n.positionX,
+      positionY: n.positionY,
+      state: n.state,
+      depth: n.depth,
+      payloadJson: n.payloadJson as SuggestedMovePayloadType | Record<string, unknown> | undefined,
+    })),
+    edges: createdEdges.map(e => ({
+      from: e.fromNodeId,
+      to: e.toNodeId,
+      relation: e.relation || 'suggests_move',
+    })),
+  };
+  return result as DimensionGraph;
+}
+
+/**
+ * Fallback processor for legacy DimensionGraph format
+ * Used when LLM returns old format instead of SuggestedMovesResponse
+ */
+async function processLegacyExpansion(
+  input: ExpandNodeInput,
+  session: any,
+  node: any,
+  data: DimensionGraph
+): Promise<DimensionGraph> {
+  const existingNodeIds = session.nodes.map((n: any) => n.nodeId);
+  const newNodes = data.nodes.filter(n => !existingNodeIds.includes(n.id));
+
+  const LEVEL_WIDTH = 480;
+  const NODE_HEIGHT = 450; // Same generous spacing as new format
+  
+  const parentX = node.positionX || 50;
+  const parentY = node.positionY || 200;
+  const parentDepth = node.depth || 0;
+  
+  const totalChildren = newNodes.length;
+  const totalHeight = (totalChildren - 1) * NODE_HEIGHT;
+  const startY = parentY - (totalHeight / 2);
+
+  const nodesToCreate = newNodes.map((n, i) => ({
+    sessionId: input.sessionId,
+    nodeId: n.id,
+    type: n.type as any,
+    title: n.title,
+    description: n.descriptionShort || null,
+    family: n.family || node.family,
+    tags: n.tags || [],
+    state: 'COLLAPSED' as const,
+    selectable: n.selectable !== false,
+    defaultExpanded: n.defaultExpanded || false,
+    depth: parentDepth + 1,
+    parentNodeId: input.nodeId,
+    positionX: parentX + LEVEL_WIDTH,
+    positionY: startY + (i * NODE_HEIGHT),
+  }));
+
+  const edgesToCreate = newNodes.map(n => ({
+    sessionId: input.sessionId,
+    fromNodeId: input.nodeId,
+    toNodeId: n.id,
+    relation: 'contains',
+  }));
+
+  if (nodesToCreate.length > 0) {
+    await prisma.mindMapNode.createMany({ 
+      data: nodesToCreate,
+      skipDuplicates: true,
+    });
+  }
+  
+  if (edgesToCreate.length > 0) {
+    await prisma.mindMapEdge.createMany({ 
+      data: edgesToCreate,
+      skipDuplicates: true,
+    });
+  }
+
+  await prisma.mindMapNode.update({
+    where: { id: node.id },
+    data: { state: 'EXPANDED' },
+  });
+
   const createdNodes = await prisma.mindMapNode.findMany({
     where: {
       sessionId: input.sessionId,
@@ -893,7 +1175,6 @@ Rules:
     },
   });
 
-  // Return the actual database records with proper positions and parent references
   return {
     nodes: createdNodes.map(n => ({
       id: n.nodeId,
@@ -905,11 +1186,11 @@ Rules:
       defaultExpanded: n.defaultExpanded,
       tags: n.tags,
       parentId: n.parentNodeId || undefined,
-      // Include position data for frontend
       positionX: n.positionX,
       positionY: n.positionY,
       state: n.state,
       depth: n.depth,
+      payloadJson: n.payloadJson, // Include for consistency (may be null for legacy nodes)
     })),
     edges: createdEdges.map(e => ({
       from: e.fromNodeId,
@@ -1045,13 +1326,26 @@ ${input.recipe.recipeIntent === 'RISK_REDUCTION' ? '→ Focus on safety and reli
 ${input.recipe.recipeIntent === 'COST_REDUCTION' ? '→ Focus on cost-effective solutions' : ''}
 
 ═══════════════════════════════════════════════════════════════
+SCOPE CONTROL (CRITICAL)
+═══════════════════════════════════════════════════════════════
+Each invention MUST be centered around exactly ONE primary inventive mechanism.
+- One mechanism = one physical principle, material behavior, structural configuration, or signal pathway.
+- Additional elements (feedback, control, adaptation, UX, algorithms) may be included ONLY if they directly support the primary mechanism.
+- Any feedback, haptics, UI, skill inference, or algorithmic adaptation MUST be framed as a dependent or optional feature and MUST NOT appear as a primary claim hook.
+- If an idea contains multiple independent inventive mechanisms, REDUCE it to the strongest one and demote others to optional or dependent aspects.
+═══════════════════════════════════════════════════════════════
 MANDATORY REQUIREMENTS FOR PATENT-WORTHY IDEAS
 ═══════════════════════════════════════════════════════════════
 Each idea MUST include:
 
+0. coreMechanism: A single sentence describing the ONE primary inventive mechanism.
+   - All other fields (inventiveLeap, eliminatedComponent, claimHooks, etc.) must directly relate to this coreMechanism.
 1. inventiveLeap: The non-obvious insight (what would surprise an expert)
 2. whyNotObvious: Why a skilled person would NOT arrive at this solution
-3. analogySource: A DISTANT domain this draws from (2+ conceptual hops)
+3. analogySource:
+   - A distant domain that INSPIRED the idea
+   - The analogy must map to a specific FUNCTION or MECHANISM
+   - Do NOT rely on analogy alone for novelty; structural or functional differences must be explicit
    - Bad: "using steel instead of aluminum" (same domain)
    - Good: "using biological cell division patterns for manufacturing"
 4. eliminatedComponent: What traditional element is REMOVED or INVERTED
@@ -1074,6 +1368,10 @@ CLAIM HOOK FORMAT
 ✅ USE: "wherein [component] achieves [result] through [novel approach]"
 ❌ AVOID: "includes A and B" (just listing elements)
 ❌ AVOID: "comprises" without functional language
+
+LIMIT: Provide at most 2–3 claim hooks per idea.
+The first claim hook must correspond to the primary inventive mechanism.
+Additional claim hooks must be clearly dependent or optional.
 
 Generate exactly ${input.recipe.count} invention ideas as a JSON array.
 Schema: ${getSchemaDescription('IdeaFrame')}

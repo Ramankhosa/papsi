@@ -1505,6 +1505,30 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
     }
   }
 
+  // Delete an idea
+  const handleDeleteIdea = async (ideaId: string) => {
+    if (!currentSession) return
+
+    try {
+      const response = await fetch(`/api/idea-bank/ideation/${currentSession.id}/ideas/${ideaId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`,
+        },
+      })
+
+      if (response.ok) {
+        // Remove the idea from local state
+        setIdeaFrames(prev => prev.filter(idea => idea.id !== ideaId))
+      } else {
+        const data = await response.json()
+        setError(data.error || 'Failed to delete idea')
+      }
+    } catch (e) {
+      setError('Failed to delete idea')
+    }
+  }
+
   // Handle edge connection
   const onConnect = useCallback(
     (params: Connection) => setEdges((eds) => addEdge({
@@ -2328,6 +2352,14 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
                 setSelectedNodes(new Set())
                 setObviousnessWarning(null) // Clear warning when clearing selection
               }}
+              onRemoveNode={(nodeId) => {
+                setSelectedNodes(prev => {
+                  const next = new Set(prev)
+                  next.delete(nodeId)
+                  return next
+                })
+                setObviousnessWarning(null) // Clear warning when removing dimension
+              }}
               loading={loading}
               checkingObviousness={checkingObviousness}
               obviousnessWarning={obviousnessWarning}
@@ -2353,6 +2385,7 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
               onCheckNovelty={handleCheckNovelty}
               onExport={handleExportToBank}
               onClose={() => setShowIdeaPanel(false)}
+              onDeleteIdea={handleDeleteIdea}
               feedbackLoopResults={feedbackLoopResults}
               qualityMetrics={qualityMetrics}
             />

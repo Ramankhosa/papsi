@@ -46,6 +46,7 @@ interface CombineTrayProps {
   availableOperators: TrizOperator[]
   onGenerate: (count: number, intent: string, selectedOperators: string[], buckets?: IdeaBucket[]) => void
   onClear: () => void
+  onRemoveNode?: (nodeId: string) => void  // NEW: Remove a single dimension from selection
   loading: boolean
   // Obviousness check states
   checkingObviousness?: boolean
@@ -123,6 +124,7 @@ export default function CombineTray({
   availableOperators,
   onGenerate,
   onClear,
+  onRemoveNode,
   loading,
   checkingObviousness = false,
   obviousnessWarning,
@@ -360,10 +362,23 @@ export default function CombineTray({
                     onDragStart={(e: React.DragEvent) => handleDragStart(e, node.id)}
                     onDragEnd={handleDragEnd}
                     className={`cursor-grab active:cursor-grabbing ${draggedDimension === node.id ? 'opacity-50' : ''}`}
+                    title={(node.data as any).title || node.id}
                   >
-                    <Badge className="bg-violet-100 text-violet-800 text-xs flex items-center gap-1">
-                      <GripVertical className="w-3 h-3 text-violet-400" />
-                      {(node.data as any).title || node.id}
+                    <Badge className="bg-violet-100 text-violet-800 text-xs flex items-center gap-1 pr-1">
+                      <GripVertical className="w-3 h-3 text-violet-400 flex-shrink-0" />
+                      <span className="text-left">{(node.data as any).title || node.id}</span>
+                      {onRemoveNode && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onRemoveNode(node.id)
+                          }}
+                          className="ml-1 p-0.5 rounded-full hover:bg-violet-200 transition-colors flex-shrink-0"
+                          title="Remove dimension"
+                        >
+                          <X className="w-3 h-3 text-violet-600" />
+                        </button>
+                      )}
                     </Badge>
                   </div>
                 ))
@@ -390,10 +405,23 @@ export default function CombineTray({
                         onDragStart={(e: React.DragEvent) => handleDragStart(e, node.id)}
                         onDragEnd={handleDragEnd}
                         className={`cursor-grab active:cursor-grabbing ${draggedDimension === node.id ? 'opacity-50 scale-105' : ''}`}
+                        title={(node.data as any).title || node.id}
                       >
-                        <Badge className="bg-slate-200 text-slate-700 text-xs flex items-center gap-1">
-                          <GripVertical className="w-3 h-3 text-slate-400" />
-                          {(node.data as any).title || node.id}
+                        <Badge className="bg-slate-200 text-slate-700 text-xs flex items-center gap-1 pr-1">
+                          <GripVertical className="w-3 h-3 text-slate-400 flex-shrink-0" />
+                          <span className="text-left">{(node.data as any).title || node.id}</span>
+                          {onRemoveNode && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onRemoveNode(node.id)
+                              }}
+                              className="ml-1 p-0.5 rounded-full hover:bg-slate-300 transition-colors flex-shrink-0"
+                              title="Remove dimension"
+                            >
+                              <X className="w-3 h-3 text-slate-600" />
+                            </button>
+                          )}
                         </Badge>
                       </div>
                     ))}

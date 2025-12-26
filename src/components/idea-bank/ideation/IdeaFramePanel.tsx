@@ -22,6 +22,7 @@ import {
   FileText,
   Scale,
   AlertTriangle,
+  Trash2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -91,6 +92,7 @@ interface IdeaFramePanelProps {
   onCheckNovelty: (ideaId: string) => void
   onExport: (ideaIds: string[]) => void
   onClose: () => void
+  onDeleteIdea?: (ideaId: string) => void  // NEW: Delete an idea
   feedbackLoopResults?: FeedbackLoopResults | null
   qualityMetrics?: QualityMetrics | null
 }
@@ -101,6 +103,7 @@ export default function IdeaFramePanel({
   onCheckNovelty,
   onExport,
   onClose,
+  onDeleteIdea,
   feedbackLoopResults,
   qualityMetrics,
 }: IdeaFramePanelProps) {
@@ -754,6 +757,20 @@ ${idea.data?.claimHooks?.length > 0 ? `Claim Hooks: ${idea.data.claimHooks.join(
                     >
                       <Maximize2 className="w-3.5 h-3.5 md:w-4 md:h-4 text-slate-400" />
                     </button>
+                    {onDeleteIdea && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          if (window.confirm('Delete this idea? This cannot be undone.')) {
+                            onDeleteIdea(idea.id)
+                          }
+                        }}
+                        className="p-1.5 hover:bg-red-100 rounded-md transition-colors group"
+                        title="Delete idea"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 md:w-4 md:h-4 text-slate-400 group-hover:text-red-500" />
+                      </button>
+                    )}
                     <div className="hidden md:block">
                       {expandedId === idea.id ? (
                         <ChevronUp className="w-4 h-4 text-slate-400" />

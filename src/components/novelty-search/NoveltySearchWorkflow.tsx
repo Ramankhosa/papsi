@@ -362,11 +362,13 @@ export default function NoveltySearchWorkflow({
       return;
     }
     if (s === NoveltySearchStatus.STAGE_3_5_COMPLETED) {
-      setSelectedStageTab(hasStage35cResults ? '3.5c' : '3.5');
+      // Always show Feature Analysis (3.5) first to display the feature comparison matrix
+      // User should see the matrix before per-patent remarks, so don't skip to 3.5c
+      setSelectedStageTab('3.5');
       return;
     }
     if (s === NoveltySearchStatus.COMPLETED) { setSelectedStageTab('4'); return; }
-  }, [searchState.status, hasStage15, hasStage35cResults]);
+  }, [searchState.status, hasStage15]);
 
   const runningStageKey = useMemo<StageTab | null>(() => {
     if (!activeExecutionStage) return null;

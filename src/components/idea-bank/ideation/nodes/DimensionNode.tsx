@@ -2,7 +2,18 @@
 
 import { memo, useCallback, useMemo, useState } from 'react'
 import { Handle, Position, NodeProps } from '@xyflow/react'
-import { Check, ZoomIn, Plus, Minus } from 'lucide-react'
+import { Check, ZoomIn, Plus, Minus, ArrowRight, AlertTriangle, Zap } from 'lucide-react'
+
+// Payload structure for suggested moves (new format)
+interface SuggestedMovePayload {
+  move: string
+  impact: string
+  leadsTo: string
+  tension?: string
+  challengesPrior?: boolean
+  modifies?: 'BEHAVIOR_OVER_TIME' | 'ARCHITECTURE_CONTROL_FLOW' | 'INTERFACE_BOUNDARY' | 'FAILURE_MODE_LIFECYCLE'
+  isSuggestedMove: true
+}
 
 interface DimensionNodeData {
   title: string
@@ -16,6 +27,8 @@ interface DimensionNodeData {
   hasChildren?: boolean
   expanding?: boolean
   isNew?: boolean
+  payloadJson?: SuggestedMovePayload | Record<string, unknown>
+  payload?: SuggestedMovePayload | Record<string, unknown>  // API returns as 'payload'
   onSelect?: () => void
   onExpand?: () => void
   onCollapse?: () => void
@@ -48,6 +61,25 @@ function getFamilyColorIndex(family: string | undefined): number {
   return Math.abs(hash) % FAMILY_COLORS.length
 }
 
+// Helper to check if payload is a suggested move with required fields
+function isSuggestedMovePayload(payload: unknown): payload is SuggestedMovePayload {
+  if (typeof payload !== 'object' || payload === null) return false
+  const p = payload as Partial<SuggestedMovePayload>
+  // Verify it has the flag AND the required content fields
+  return p.isSuggestedMove === true && 
+    typeof p.move === 'string' && 
+    typeof p.impact === 'string' && 
+    typeof p.leadsTo === 'string'
+}
+
+// Labels for the "modifies" field
+const MODIFIES_LABELS: Record<string, { label: string; color: string }> = {
+  'BEHAVIOR_OVER_TIME': { label: 'Behavior', color: 'bg-blue-100 text-blue-700' },
+  'ARCHITECTURE_CONTROL_FLOW': { label: 'Architecture', color: 'bg-purple-100 text-purple-700' },
+  'INTERFACE_BOUNDARY': { label: 'Interface', color: 'bg-green-100 text-green-700' },
+  'FAILURE_MODE_LIFECYCLE': { label: 'Lifecycle', color: 'bg-orange-100 text-orange-700' },
+}
+
 function DimensionNode({ data, selected }: NodeProps) {
   const nodeData = data as unknown as DimensionNodeData
   const isExpanded = nodeData.state === 'EXPANDED'
@@ -57,6 +89,12 @@ function DimensionNode({ data, selected }: NodeProps) {
   const isSelected = nodeData.selected || selected
   const isExpanding = nodeData.expanding || false
   const isNew = nodeData.isNew || false
+  
+  // Check if this is a suggested move (new format)
+  // API returns payloadJson as 'payload', so check both
+  const payloadData = nodeData.payloadJson || nodeData.payload
+  const isSuggestedMove = isSuggestedMovePayload(payloadData)
+  const moveData = isSuggestedMove ? payloadData : null
   
   // Hover state for showing full description
   const [isHovered, setIsHovered] = useState(false)
@@ -75,14 +113,206 @@ function DimensionNode({ data, selected }: NodeProps) {
     }
   }, [canExpand, nodeData])
 
+  // Render suggested move format (new context-aware format)
+  if (isSuggestedMove && moveData) {
+    return (
+      <div
+        onClick={(e) => e.stopPropagation()} // Prevent React Flow from selecting node on click
+        onDoubleClick={handleDoubleClick}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        data-new={isNew ? "true" : undefined}
+        className={`
+          group relative rounded-lg transition-all duration-150
+          w-[340px] border-l-4 border border-slate-200
+          ${isSelected
+            ? 'bg-violet-50 border-l-violet-500 shadow-md ring-1 ring-violet-300'
+            : moveData.challengesPrior
+              ? 'bg-amber-50/50 border-l-amber-500 hover:shadow-sm hover:border-amber-300'
+              : `${familyColor.bg} ${familyColor.border} hover:shadow-sm hover:border-slate-300`
+          }
+        `}
+      >
+        {/* Handles */}
+        <Handle
+          type="target"
+          position={Position.Left}
+          className={`!w-2 !h-2 !border !border-white !-left-1 ${
+            isSelected ? '!bg-violet-500' : moveData.challengesPrior ? '!bg-amber-500' : familyColor.handle
+          }`}
+        />
+        <Handle
+          type="source"
+          position={Position.Right}
+          className={`!w-2 !h-2 !border !border-white !-right-1 ${
+            isSelected ? '!bg-violet-500' : moveData.challengesPrior ? '!bg-amber-500' : familyColor.handle
+          }`}
+        />
+
+        {/* Content area for suggested move */}
+        <div className="px-3 py-2.5">
+          {/* Header: checkbox + "What if" statement + expand button */}
+          <div className="flex items-start gap-2">
+            <button
+              onClick={(e) => {
+                e.stopPropagation()
+                nodeData.onSelect?.()
+              }}
+              className={`
+                flex-shrink-0 w-5 h-5 rounded mt-0.5
+                flex items-center justify-center
+                transition-all duration-100
+                ${isSelected 
+                  ? 'bg-violet-500 text-white' 
+                  : 'border-2 border-slate-300 hover:border-violet-400 hover:bg-violet-50'
+                }
+              `}
+              title="Select this move for idea generation"
+            >
+              {isSelected && <Check className="w-3 h-3" />}
+            </button>
+            
+            <div className="flex-1 min-w-0 pr-8">
+              {/* "What if..." statement - the main move */}
+              <h4 className={`font-semibold text-[13px] leading-tight ${
+                isSelected ? 'text-violet-800' : moveData.challengesPrior ? 'text-amber-800' : familyColor.text
+              }`}>
+                {moveData.move}
+              </h4>
+            </div>
+          </div>
+          
+          {/* Impact section */}
+          <div className="mt-2 flex items-start gap-1.5">
+            <ArrowRight className="w-3 h-3 text-emerald-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <span className="text-[10px] font-semibold text-emerald-700 uppercase tracking-wide">Impact:</span>
+              <p className="text-[11px] text-slate-700 leading-snug">{moveData.impact}</p>
+            </div>
+          </div>
+          
+          {/* Leads to section */}
+          <div className="mt-1.5 flex items-start gap-1.5">
+            <Zap className="w-3 h-3 text-blue-600 mt-0.5 flex-shrink-0" />
+            <div>
+              <span className="text-[10px] font-semibold text-blue-700 uppercase tracking-wide">Leads to:</span>
+              <p className={`text-[11px] text-slate-600 leading-snug ${isHovered ? '' : 'line-clamp-2'}`}>
+                {moveData.leadsTo}
+              </p>
+            </div>
+          </div>
+          
+          {/* Tension/Challenge indicator (if this challenges prior assumptions) */}
+          {moveData.tension && (
+            <div className="mt-1.5 flex items-start gap-1.5">
+              <AlertTriangle className="w-3 h-3 text-amber-600 mt-0.5 flex-shrink-0" />
+              <div>
+                <span className="text-[10px] font-semibold text-amber-700 uppercase tracking-wide">Tension:</span>
+                <p className={`text-[11px] text-amber-700 leading-snug ${isHovered ? '' : 'line-clamp-2'}`}>
+                  {moveData.tension}
+                </p>
+              </div>
+            </div>
+          )}
+          
+          {/* Tags: modifies type + challenges prior badge */}
+          <div className="mt-2 flex flex-wrap gap-1">
+            {moveData.modifies && MODIFIES_LABELS[moveData.modifies] && (
+              <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium ${MODIFIES_LABELS[moveData.modifies].color}`}>
+                {MODIFIES_LABELS[moveData.modifies].label}
+              </span>
+            )}
+            {moveData.challengesPrior && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded font-medium bg-amber-100 text-amber-700">
+                Challenges Prior
+              </span>
+            )}
+            {nodeData.family && (
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
+                {nodeData.family}
+              </span>
+            )}
+          </div>
+        </div>
+        
+        {/* Expand/Zoom button - to further explore this dimension */}
+        {canExpand && (
+          <div className="absolute right-2 top-2">
+            {isExpanding ? (
+              <div className="w-7 h-7 rounded-full bg-blue-100 flex items-center justify-center">
+                <div className="w-3.5 h-3.5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+              </div>
+            ) : (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation()
+                  nodeData.onExpand?.()
+                }}
+                className="
+                  w-7 h-7 rounded-full
+                  bg-emerald-500 hover:bg-emerald-600
+                  text-white
+                  flex items-center justify-center
+                  shadow-sm hover:shadow
+                  transition-all duration-150
+                  hover:scale-110
+                "
+                title="Explore deeper into this move"
+              >
+                <ZoomIn className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        )}
+        
+        {/* Collapse/Expand children toggle */}
+        {(hasChildren || isExpanded) && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              nodeData.onCollapse?.()
+            }}
+            className={`
+              absolute -right-3 top-1/2 -translate-y-1/2 z-10
+              group/collapse
+              w-6 h-6 rounded-full
+              flex items-center justify-center
+              transition-all duration-200
+              shadow-sm hover:shadow-md
+              ${isCollapsed 
+                ? 'bg-amber-500 hover:bg-amber-600 text-white' 
+                : 'bg-slate-200 hover:bg-slate-300 text-slate-600'
+              }
+            `}
+          >
+            {isCollapsed ? (
+              <Plus className="w-3.5 h-3.5" />
+            ) : (
+              <Minus className="w-3.5 h-3.5" />
+            )}
+          </button>
+        )}
+        
+        {/* Selected indicator */}
+        {isSelected && (
+          <div className="absolute -top-1.5 -left-1.5 w-5 h-5 bg-violet-500 rounded-full flex items-center justify-center shadow-sm">
+            <Check className="w-3 h-3 text-white" />
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // Original dimension node format (for families and legacy options)
   return (
     <div
+      onClick={(e) => e.stopPropagation()} // Prevent React Flow from selecting node on click
       onDoubleClick={handleDoubleClick}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       data-new={isNew ? "true" : undefined}
       className={`
-        group relative rounded-lg transition-all duration-150 cursor-pointer
+        group relative rounded-lg transition-all duration-150
         w-[280px] border-l-4 border border-slate-200
         ${isSelected
           ? 'bg-violet-50 border-l-violet-500 shadow-md ring-1 ring-violet-300'
@@ -110,23 +340,24 @@ function DimensionNode({ data, selected }: NodeProps) {
       <div className="px-2.5 py-2">
         {/* Header row: checkbox + title + expand button */}
         <div className="flex items-start gap-2">
-          {/* Tiny checkbox */}
+          {/* Checkbox for selection */}
           <button
             onClick={(e) => {
               e.stopPropagation()
               nodeData.onSelect?.()
             }}
             className={`
-              flex-shrink-0 w-4 h-4 rounded mt-0.5
+              flex-shrink-0 w-5 h-5 rounded mt-0.5
               flex items-center justify-center
               transition-all duration-100
               ${isSelected 
                 ? 'bg-violet-500 text-white' 
-                : 'border border-slate-300 hover:border-violet-400 hover:bg-violet-50'
+                : 'border-2 border-slate-300 hover:border-violet-400 hover:bg-violet-50'
               }
             `}
+            title="Select this dimension for idea generation"
           >
-            {isSelected && <Check className="w-2.5 h-2.5" />}
+            {isSelected && <Check className="w-3 h-3" />}
           </button>
           
           {/* Title - wraps instead of truncates, takes full width */}

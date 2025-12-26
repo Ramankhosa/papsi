@@ -197,6 +197,79 @@ export const DimensionGraphSchema = z.object({
 });
 export type DimensionGraph = z.infer<typeof DimensionGraphSchema>;
 
+// Extended node type that includes payloadJson for suggested moves
+// This is a standalone interface that matches what we return from the service
+// (compatible with both Prisma nulls and Zod undefineds)
+export interface DimensionNodeWithPayload {
+  id: string;
+  type: z.infer<typeof MindMapNodeTypeEnum>;
+  title: string;
+  description?: string;
+  descriptionShort?: string;
+  family?: string;
+  selectable: boolean;
+  defaultExpanded: boolean;
+  tags: string[];
+  parentId?: string;
+  positionX?: number | null;
+  positionY?: number | null;
+  state?: string | null;
+  depth?: number | null;
+  payloadJson?: SuggestedMovePayloadType | Record<string, unknown> | null;
+}
+
+// Payload structure for suggested moves
+export interface SuggestedMovePayloadType {
+  move: string;
+  impact: string;
+  leadsTo: string;
+  tension?: string;
+  challengesPrior?: boolean;
+  modifies?: 'BEHAVIOR_OVER_TIME' | 'ARCHITECTURE_CONTROL_FLOW' | 'INTERFACE_BOUNDARY' | 'FAILURE_MODE_LIFECYCLE';
+  isSuggestedMove: true;
+}
+
+// Extended graph type for expansion results that include payloadJson
+export interface ExpandedDimensionGraph {
+  nodes: DimensionNodeWithPayload[];
+  edges: Array<{ from: string; to: string; relation: string }>;
+}
+
+// =============================================================================
+// 3.3.1 SUGGESTED MOVE SCHEMA (Context-Aware Dimension Exploration)
+// =============================================================================
+
+/**
+ * A SuggestedMove replaces abstract dimension options with actionable invention moves.
+ * Each move must modify: behavior, architecture, interface boundary, OR failure mode.
+ * Moves are generated dynamically with context from previously selected dimensions.
+ */
+export const SuggestedMoveSchema = z.object({
+  id: z.string().min(1).describe('Unique move ID: move-{familyId}-{N}'),
+  move: z.string().min(1).describe('What-if statement: "What if we <design action>?"'),
+  impact: z.string().min(1).describe('Immediate behavioral/functional change'),
+  leadsTo: z.string().min(1).describe('New constraint, problem, or opportunity this creates'),
+  tension: z.string().optional().describe('What existing assumption this challenges'),
+  challengesPrior: z.boolean().default(false).describe('True if this relaxes an assumption from prior selections'),
+  // Made optional with default to handle LLM inconsistency - fallback to BEHAVIOR_OVER_TIME
+  modifies: z.enum([
+    'BEHAVIOR_OVER_TIME',
+    'ARCHITECTURE_CONTROL_FLOW', 
+    'INTERFACE_BOUNDARY',
+    'FAILURE_MODE_LIFECYCLE'
+  ]).optional().default('BEHAVIOR_OVER_TIME').describe('What structural aspect this move modifies'),
+});
+export type SuggestedMove = z.infer<typeof SuggestedMoveSchema>;
+
+export const SuggestedMovesResponseSchema = z.object({
+  // min(1) instead of min(3) to be lenient - LLMs sometimes return fewer moves
+  // The prompt asks for 3-5, but we accept 1+ to avoid parsing failures
+  moves: z.array(SuggestedMoveSchema).min(1).max(10),
+  contextAcknowledged: z.boolean().default(false).describe('True if prior selections were considered'),
+  priorSelectionsUsed: z.array(z.string()).default([]).describe('IDs of prior selections that influenced these moves'),
+});
+export type SuggestedMovesResponse = z.infer<typeof SuggestedMovesResponseSchema>;
+
 // =============================================================================
 // 3.4 COMBINE RECIPE JSON
 // =============================================================================
@@ -228,6 +301,7 @@ export const IdeaFrameSchema = z.object({
   classLabels: z.array(z.string()).default([]).describe('Classification labels for the idea'),
   problem: z.string().min(1).describe('Problem being solved'),
   principle: z.string().min(1).max(500).describe('One-liner describing the core principle'),
+  coreMechanism: z.string().optional().describe('A single sentence describing the ONE primary inventive mechanism'),
   components: z.array(z.string()).default([]).describe('List of components/parts'),
   mechanismSteps: z.array(z.string()).default([]).describe('How it works, step by step'),
   triggerCondition: z.string().optional().describe('What triggers the mechanism'),
@@ -782,6 +856,21 @@ export function getSchemaDescription(schemaName: string): string {
   "phositaTest": "why PHOSITA would/wouldn't find this obvious",
   "suggestedIterations": ["suggestions to increase novelty"],
   "mutationInstructions": {"action": "MUTATE_DIMENSION|ADD_ANALOGY|etc", "specifics": "details", "retainElements": [], "suggestedAnalogy": "domain"}
+}`,
+    SuggestedMovesResponse: `{
+  "moves": [
+    {
+      "id": "move-{familyId}-1",
+      "move": "What if we <specific design action that changes structure/behavior>?",
+      "impact": "<immediate behavioral or functional change>",
+      "leadsTo": "<new constraint, problem, or opportunity this creates>",
+      "tension": "<what existing assumption this challenges, if any>",
+      "challengesPrior": true/false,
+      "modifies": "BEHAVIOR_OVER_TIME|ARCHITECTURE_CONTROL_FLOW|INTERFACE_BOUNDARY|FAILURE_MODE_LIFECYCLE"
+    }
+  ],
+  "contextAcknowledged": true/false,
+  "priorSelectionsUsed": ["id-of-prior-selection", ...]
 }`,
   };
   return descriptions[schemaName] || 'Schema not found';
