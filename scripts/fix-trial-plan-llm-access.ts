@@ -26,7 +26,7 @@ async function fixTrialPlanLLMAccess() {
   console.log(`✓ Found TRIAL plan: ${trialPlan.id}`)
 
   // 2. Get the BASE_S model class (most cost-effective for trial users)
-  const baseModelClass = await prisma.modelClass.findFirst({
+  const baseModelClass = await prisma.lLMModelClass.findFirst({
     where: { code: 'BASE_S' }
   })
 
