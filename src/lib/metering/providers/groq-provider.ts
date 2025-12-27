@@ -7,6 +7,8 @@
 import type { LLMRequest, LLMResponse, EnforcementDecision } from '../types'
 import type { LLMProvider, ProviderConfig } from './llm-provider'
 
+const SHOULD_LOG_PROVIDER_INIT = process.env.LLM_PROVIDER_INIT_LOGS === 'true'
+
 export class GroqProvider implements LLMProvider {
   name = 'groq'
   supportedModels = [
@@ -25,7 +27,9 @@ export class GroqProvider implements LLMProvider {
     if (name) this.name = name
 
     if (typeof window === 'undefined') {
-      console.log(`Initializing Groq provider with API key present: ${!!config.apiKey}`)
+      if (SHOULD_LOG_PROVIDER_INIT) {
+        console.log(`Initializing Groq provider with API key present: ${!!config.apiKey}`)
+      }
       
       if (!config.apiKey) {
         console.error('No API key provided for Groq provider!')
@@ -39,7 +43,9 @@ export class GroqProvider implements LLMProvider {
           apiKey: config.apiKey,
           baseURL: config.baseURL || 'https://api.groq.com/openai/v1'
         })
-        console.log('Groq client initialized successfully')
+        if (SHOULD_LOG_PROVIDER_INIT) {
+          console.log('Groq client initialized successfully')
+        }
       } catch (error) {
         console.warn('Groq client initialization failed:', error)
       }

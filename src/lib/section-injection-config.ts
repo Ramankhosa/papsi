@@ -108,6 +108,16 @@ export const SECTIONS_REQUIRING_CLAIM1_FOR_GENERATION = new Set([
 ])
 
 /**
+ * Normalize a section key for consistent comparison.
+ * Removes underscores, hyphens, spaces, and converts to lowercase.
+ * This handles alias variations like 'detailed_description' → 'detaileddescription'
+ */
+function normalizeSectionKeyForGating(key: string): string {
+  if (!key) return ''
+  return key.toLowerCase().replace(/[_\-\s.]/g, '')
+}
+
+/**
  * Check if a section should be gated (blocked) when Claim 1 is missing or not frozen.
  * 
  * Per SRS: Gated sections require FROZEN Claim 1, not just working claims.
@@ -121,13 +131,14 @@ export function shouldGateSection(
   normalizedData: Record<string, any> | null | undefined
 ): boolean {
   // Normalize section key for case-insensitive lookup
-  const normalizedKey = sectionKey?.toLowerCase() || ''
+  // Also remove underscores/hyphens to handle aliases like 'detailed_description' vs 'detailedDescription'
+  const normalizedKey = normalizeSectionKeyForGating(sectionKey)
   
   const config = getSectionInjectionConfig(sectionKey)
   if (!config.injectClaim1) return false // Section doesn't need C1
   
   // Check if this is a critical section that requires frozen Claim 1
-  // Use only lowercase comparison since SECTIONS_REQUIRING_CLAIM1_FOR_GENERATION uses lowercase keys
+  // SECTIONS_REQUIRING_CLAIM1_FOR_GENERATION uses normalized lowercase keys without separators
   const isCriticalSection = SECTIONS_REQUIRING_CLAIM1_FOR_GENERATION.has(normalizedKey)
   
   if (!isCriticalSection) return false // Non-critical sections don't gate
@@ -787,13 +798,14 @@ export function validateConfiguration(): { valid: boolean; errors: string[] } {
   // Check 1: All gated sections must have injectClaim1 = true
   const gatedSectionsList = Array.from(SECTIONS_REQUIRING_CLAIM1_FOR_GENERATION)
   for (const gatedSection of gatedSectionsList) {
-    // Find the config for this section (need to handle case)
-    const lowerKey = gatedSection.toLowerCase()
+    // Find the config for this section using same normalization as shouldGateSection
+    const normalizedGated = normalizeSectionKeyForGating(gatedSection)
     let foundConfig = false
     let hasC1Injection = false
     
     for (const [key, config] of Object.entries(SECTION_INJECTION_CONFIG)) {
-      if (key.toLowerCase() === lowerKey) {
+      // Use same normalization to match keys consistently
+      if (normalizeSectionKeyForGating(key) === normalizedGated) {
         foundConfig = true
         hasC1Injection = config.injectClaim1
         break

@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { generateJWT, generateRefreshToken, storeRefreshToken, createAuditLog } from '@/lib/auth'
-import { oauthConfig } from '@/lib/oauth-config'
+import { getAppOrigin, getRedirectUri, oauthConfig } from '@/lib/oauth-config'
 
 // Force dynamic rendering since we access search params
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: NextRequest) {
   try {
+    const appOrigin = getAppOrigin(request.nextUrl.origin)
     const searchParams = request.nextUrl.searchParams
     const code = searchParams.get('code')
     const state = searchParams.get('state')
@@ -17,13 +18,13 @@ export async function GET(request: NextRequest) {
     if (error) {
       console.error('Twitter OAuth error:', error)
       return NextResponse.redirect(
-        `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/login?error=oauth_error`
+        new URL('/login?error=oauth_error', appOrigin)
       )
     }
 
     if (!code || !state) {
       return NextResponse.redirect(
-        `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/login?error=no_code`
+        new URL('/login?error=no_code', appOrigin)
       )
     }
 
@@ -33,11 +34,12 @@ export async function GET(request: NextRequest) {
       decodedState = JSON.parse(Buffer.from(state, 'base64url').toString())
     } catch (e) {
       return NextResponse.redirect(
-        `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/login?error=invalid_state`
+        new URL('/login?error=invalid_state', appOrigin)
       )
     }
 
     const { codeVerifier } = decodedState
+    const redirectUri = getRedirectUri('twitter', request.nextUrl.origin)
 
     // Exchange authorization code for access token using PKCE
     const tokenResponse = await fetch(oauthConfig.twitter.tokenUrl, {
@@ -49,7 +51,7 @@ export async function GET(request: NextRequest) {
       body: new URLSearchParams({
         grant_type: 'authorization_code',
         code: code,
-        redirect_uri: oauthConfig.twitter.redirectUri,
+        redirect_uri: redirectUri,
         code_verifier: codeVerifier
       })
     })
@@ -123,7 +125,7 @@ export async function GET(request: NextRequest) {
         const pendingToken = Buffer.from(JSON.stringify(pendingData)).toString('base64url')
 
         return NextResponse.redirect(
-          `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/register/complete-social?token=${pendingToken}&provider=twitter`
+          new URL(`/register/complete-social?token=${pendingToken}&provider=twitter`, appOrigin)
         )
       }
     }
@@ -168,7 +170,7 @@ export async function GET(request: NextRequest) {
 
     // Create response
     const response = NextResponse.redirect(
-      `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/dashboard`
+      new URL('/dashboard', appOrigin)
     )
 
     // Set tokens as cookies
@@ -193,7 +195,7 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error('Twitter OAuth callback error:', error)
     return NextResponse.redirect(
-      `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/login?error=oauth_callback_failed`
+      new URL('/login?error=oauth_callback_failed', getAppOrigin(request.nextUrl.origin))
     )
   }
 }

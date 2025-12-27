@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { validateOAuthConfig } from '@/lib/oauth-config'
+import { getRedirectUri, validateOAuthConfig } from '@/lib/oauth-config'
 import crypto from 'crypto'
 
 export async function GET(request: NextRequest) {
@@ -26,9 +26,10 @@ export async function GET(request: NextRequest) {
       codeVerifier
     })).toString('base64url')
 
+    const redirectUri = getRedirectUri('twitter', request.nextUrl.origin)
     const params = new URLSearchParams({
       client_id: process.env.TWITTER_CLIENT_ID!,
-      redirect_uri: `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/auth/social/twitter/callback`,
+      redirect_uri: redirectUri,
       scope: 'tweet.read users.read offline.access',
       response_type: 'code',
       state: encodedState,

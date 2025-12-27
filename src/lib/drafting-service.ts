@@ -132,6 +132,8 @@ export interface SectionGenerationResult {
   llmMeta?: { model?: string; promptHash?: string; params?: any };
   error?: string;
   retryAfter?: number;
+  // Warnings about missing context (prior art, figures, components) - non-blocking
+  warnings?: Array<{ section: string; type: 'priorArt' | 'figures' | 'components'; message: string; impact: string }>;
 }
 
 export class DraftingService {
@@ -999,6 +1001,62 @@ Respond in this exact JSON shape:
           console.warn(`[DraftingService] Failed to get context requirements for ${s}:`, err)
         }
 
+        // ══════════════════════════════════════════════════════════════════════════════
+        // CONTEXT AVAILABILITY WARNINGS (Non-blocking)
+        // Warn users when sections require context data that isn't provided
+        // ══════════════════════════════════════════════════════════════════════════════
+        const hasPriorArt = !!(payload.manualPriorArt?.manualPriorArtText || (payload.selectedPriorArtPatents && payload.selectedPriorArtPatents.length > 0))
+        const hasFigures = !!(figures && figures.length > 0)
+        const hasComponents = !!(referenceMap?.components && referenceMap.components.length > 0)
+        
+        const missingContextWarnings: string[] = []
+        
+        if (contextRequirements?.requiresPriorArt && !hasPriorArt) {
+          missingContextWarnings.push('Prior Art references recommended for optimal quality')
+          debugSteps.push({
+            step: `context_warning_${s}`,
+            status: 'warning',
+            meta: {
+              missingContext: 'priorArt',
+              section: s,
+              message: `Section "${s}" requires prior art references for best results. Consider adding prior art in the Prior Art Selection stage.`,
+              impact: 'Section will be generated with generic background. Quality may be reduced.'
+            }
+          })
+        }
+        
+        if (contextRequirements?.requiresFigures && !hasFigures) {
+          missingContextWarnings.push('Figures/drawings recommended for optimal quality')
+          debugSteps.push({
+            step: `context_warning_${s}`,
+            status: 'warning',
+            meta: {
+              missingContext: 'figures',
+              section: s,
+              message: `Section "${s}" requires figures/drawings for best results. Consider adding figures in the Figures & Sketches stage.`,
+              impact: 'Section will be generated without figure references. Quality may be reduced.'
+            }
+          })
+        }
+        
+        if (contextRequirements?.requiresComponents && !hasComponents) {
+          missingContextWarnings.push('Component reference numerals recommended for optimal quality')
+          debugSteps.push({
+            step: `context_warning_${s}`,
+            status: 'warning',
+            meta: {
+              missingContext: 'components',
+              section: s,
+              message: `Section "${s}" requires component reference numerals for best results. Consider adding components in the Reference Numerals stage.`,
+              impact: 'Section will be generated without reference numerals. Quality may be reduced.'
+            }
+          })
+        }
+        
+        if (missingContextWarnings.length > 0) {
+          console.warn(`[DraftingService] ⚠️ Section "${s}" has missing recommended context: ${missingContextWarnings.join('; ')}`)
+        }
+
         const prompt = this.buildSectionPrompt(s, payload, {
           jurisdiction: jurisdictionCode,
           countryProfile,
@@ -1355,10 +1413,23 @@ Respond in this exact JSON shape:
       })
       // Do not block generation - issues will be caught during AI review stage
 
-      return { success: true, generated, debugSteps, llmMeta }
+      // Extract context warnings from debugSteps for explicit return
+      const warnings = debugSteps
+        .filter(step => step.step.startsWith('context_warning_') && step.status === 'warning')
+        .map(step => ({
+          section: step.meta?.section || '',
+          type: step.meta?.missingContext as 'priorArt' | 'figures' | 'components',
+          message: step.meta?.message || '',
+          impact: step.meta?.impact || ''
+        }))
+
+      return { success: true, generated, debugSteps, llmMeta, warnings: warnings.length > 0 ? warnings : undefined }
     } catch (e) {
-      debugSteps.push({ step: 'exception', status: 'fail', meta: { message: e instanceof Error ? e.message : String(e) } })
-      return { success: false, error: 'Section generation failed', debugSteps }
+      const errorMessage = e instanceof Error ? e.message : String(e)
+      debugSteps.push({ step: 'exception', status: 'fail', meta: { message: errorMessage } })
+      // Preserve the actual error message (especially for gating errors like missing frozen claims)
+      // instead of returning a generic "Section generation failed"
+      return { success: false, error: errorMessage || 'Section generation failed', debugSteps }
     }
   }
 

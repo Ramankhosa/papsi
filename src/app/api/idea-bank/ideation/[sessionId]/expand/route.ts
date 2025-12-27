@@ -33,9 +33,9 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
     }
     
-    const { action, nodeId } = body;
+    const { action, nodeId, userInput } = body;
 
-    console.log('[Expand API] Received request:', { sessionId, action, nodeId, body });
+    console.log('[Expand API] Received request:', { sessionId, action, nodeId, userInput: userInput?.slice(0, 50), body });
 
     // Get the current session to check ownership
     const session = await IdeationService.getSession(sessionId);
@@ -99,6 +99,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       sessionId,
       nodeId,
       requestHeaders,
+      userInput: userInput?.trim() || undefined,  // Pass user's specific direction
     });
 
     // Transform the returned nodes and edges for React Flow format

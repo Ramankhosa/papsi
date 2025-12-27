@@ -97,137 +97,56 @@ interface IdeaFramePanelProps {
   qualityMetrics?: QualityMetrics | null
 }
 
-export default function IdeaFramePanel({
-  ideas,
-  onSelectIdea,
-  onCheckNovelty,
-  onExport,
+// Helper functions defined outside component to avoid recreation
+const getNoveltyColorStatic = (score?: number) => {
+  if (score === undefined) return 'bg-slate-100 text-slate-600'
+  if (score >= 70) return 'bg-green-100 text-green-700'
+  if (score >= 40) return 'bg-yellow-100 text-yellow-700'
+  return 'bg-red-100 text-red-700'
+}
+
+const getStatusIconStatic = (status: string) => {
+  switch (status) {
+    case 'SHORTLISTED':
+      return <CheckCircle2 className="w-4 h-4 text-green-500" />
+    case 'REJECTED':
+      return <XCircle className="w-4 h-4 text-red-500" />
+    case 'EXPORTED':
+      return <ExternalLink className="w-4 h-4 text-blue-500" />
+    default:
+      return <Lightbulb className="w-4 h-4 text-purple-500" />
+  }
+}
+
+// Fullscreen Modal - defined as a separate component to prevent re-creation on parent re-renders
+interface FullscreenIdeaModalProps {
+  idea: IdeaFrame
+  onClose: () => void
+  onCopy: (idea: IdeaFrame) => void
+  copied: boolean
+  onCheckNovelty: (ideaId: string) => void
+  checkingNovelty: string | null
+  onToggleExport: (ideaId: string) => void
+  isSelectedForExport: boolean
+}
+
+function FullscreenIdeaModal({
+  idea,
   onClose,
-  onDeleteIdea,
-  feedbackLoopResults,
-  qualityMetrics,
-}: IdeaFramePanelProps) {
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [selectedForExport, setSelectedForExport] = useState<Set<string>>(new Set())
-  const [checkingNovelty, setCheckingNovelty] = useState<string | null>(null)
-  const [fullscreenIdea, setFullscreenIdea] = useState<IdeaFrame | null>(null)
-  const [copied, setCopied] = useState(false)
-  const [isMobile, setIsMobile] = useState(false)
-
-  // Check for mobile viewport
-  useEffect(() => {
-    const checkMobile = () => setIsMobile(window.innerWidth < 768)
-    checkMobile()
-    window.addEventListener('resize', checkMobile)
-    return () => window.removeEventListener('resize', checkMobile)
-  }, [])
-
-  // Handle escape key for fullscreen
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && fullscreenIdea) {
-        setFullscreenIdea(null)
-      }
-    }
-    window.addEventListener('keydown', handleEscape)
-    return () => window.removeEventListener('keydown', handleEscape)
-  }, [fullscreenIdea])
-
-  // Update fullscreenIdea when ideas prop changes (e.g., after novelty check)
-  // This ensures the modal shows updated data like noveltySummary
-  useEffect(() => {
-    if (fullscreenIdea) {
-      const updatedIdea = ideas.find(i => i.id === fullscreenIdea.id)
-      if (updatedIdea) {
-        // Check if novelty data was added/updated
-        const hasNewNoveltyData = updatedIdea.noveltySummary && !fullscreenIdea.noveltySummary
-        const noveltyScoreChanged = updatedIdea.noveltyScore !== fullscreenIdea.noveltyScore
-        
-        if (hasNewNoveltyData || noveltyScoreChanged) {
-          setFullscreenIdea(updatedIdea)
-        }
-      }
-    }
-  }, [ideas]) // Only depend on ideas to avoid infinite loops
-
-  const handleNoveltyCheck = async (ideaId: string) => {
-    setCheckingNovelty(ideaId)
-    await onCheckNovelty(ideaId)
-    setCheckingNovelty(null)
-  }
-
-  const toggleExportSelection = (ideaId: string) => {
-    setSelectedForExport(prev => {
-      const next = new Set(prev)
-      if (next.has(ideaId)) {
-        next.delete(ideaId)
-      } else {
-        next.add(ideaId)
-      }
-      return next
-    })
-  }
-
-  const handleExport = () => {
-    if (selectedForExport.size > 0) {
-      onExport(Array.from(selectedForExport))
-    }
-  }
-
-  const copyToClipboard = async (idea: IdeaFrame) => {
-    const text = `
-Title: ${idea.title}
-
-Problem: ${idea.problem}
-
-Principle: ${idea.principle}
-
-${idea.technicalEffect ? `Technical Effect: ${idea.technicalEffect}` : ''}
-
-${idea.data?.inventiveLeap ? `Inventive Leap: ${idea.data.inventiveLeap}` : ''}
-
-${idea.data?.whyNotObvious ? `Why Not Obvious: ${idea.data.whyNotObvious}` : ''}
-
-${idea.data?.analogySource ? `Cross-Domain Analogy: ${idea.data.analogySource.domain} - ${idea.data.analogySource.concept}` : ''}
-
-${idea.data?.contradictionResolved ? `Contradiction Resolved: ${idea.data.contradictionResolved}` : ''}
-
-${idea.data?.claimHooks?.length > 0 ? `Claim Hooks: ${idea.data.claimHooks.join(', ')}` : ''}
-    `.trim()
-
-    await navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
-
-  const getNoveltyColor = (score?: number) => {
-    if (score === undefined) return 'bg-slate-100 text-slate-600'
-    if (score >= 70) return 'bg-green-100 text-green-700'
-    if (score >= 40) return 'bg-yellow-100 text-yellow-700'
-    return 'bg-red-100 text-red-700'
-  }
-
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'SHORTLISTED':
-        return <CheckCircle2 className="w-4 h-4 text-green-500" />
-      case 'REJECTED':
-        return <XCircle className="w-4 h-4 text-red-500" />
-      case 'EXPORTED':
-        return <ExternalLink className="w-4 h-4 text-blue-500" />
-      default:
-        return <Lightbulb className="w-4 h-4 text-purple-500" />
-    }
-  }
-
-  // Fullscreen Modal for Idea Details
-  const FullscreenIdeaModal = ({ idea }: { idea: IdeaFrame }) => (
+  onCopy,
+  copied,
+  onCheckNovelty,
+  checkingNovelty,
+  onToggleExport,
+  isSelectedForExport,
+}: FullscreenIdeaModalProps) {
+  return (
     <motion.div
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 md:p-8"
-      onClick={() => setFullscreenIdea(null)}
+      onClick={onClose}
     >
       <motion.div
         initial={{ scale: 0.9, opacity: 0 }}
@@ -241,14 +160,14 @@ ${idea.data?.claimHooks?.length > 0 ? `Claim Hooks: ${idea.data.claimHooks.join(
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-2">
-                {getStatusIcon(idea.status)}
+                {getStatusIconStatic(idea.status)}
                 <h2 className="text-lg md:text-xl font-bold text-slate-900 line-clamp-2">
                   {idea.title}
                 </h2>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 {idea.noveltyScore !== undefined && (
-                  <Badge className={`${getNoveltyColor(idea.noveltyScore)} text-sm`}>
+                  <Badge className={`${getNoveltyColorStatic(idea.noveltyScore)} text-sm`}>
                     {idea.noveltyScore}% novel
                   </Badge>
                 )}
@@ -272,7 +191,10 @@ ${idea.data?.claimHooks?.length > 0 ? `Claim Hooks: ${idea.data.claimHooks.join(
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => copyToClipboard(idea)}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onCopy(idea)
+                }}
                 className="hidden md:flex"
               >
                 {copied ? (
@@ -288,7 +210,7 @@ ${idea.data?.claimHooks?.length > 0 ? `Claim Hooks: ${idea.data.claimHooks.join(
                 )}
               </Button>
               <button
-                onClick={() => setFullscreenIdea(null)}
+                onClick={onClose}
                 className="p-2 hover:bg-slate-200 rounded-full transition-colors"
               >
                 <Minimize2 className="w-5 h-5 text-slate-500" />
@@ -571,9 +493,7 @@ ${idea.data?.claimHooks?.length > 0 ? `Claim Hooks: ${idea.data.claimHooks.join(
         <div className="p-4 md:p-6 border-t border-slate-200 bg-slate-50 flex flex-col sm:flex-row gap-3 flex-shrink-0">
           <Button
             variant="outline"
-            onClick={() => {
-              handleNoveltyCheck(idea.id)
-            }}
+            onClick={() => onCheckNovelty(idea.id)}
             disabled={checkingNovelty === idea.id}
             className="flex-1"
           >
@@ -591,24 +511,160 @@ ${idea.data?.claimHooks?.length > 0 ? `Claim Hooks: ${idea.data.claimHooks.join(
           </Button>
           <Button
             onClick={() => {
-              toggleExportSelection(idea.id)
-              setFullscreenIdea(null)
+              onToggleExport(idea.id)
+              onClose()
             }}
             className="flex-1 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700"
           >
             <Download className="w-4 h-4 mr-2" />
-            {selectedForExport.has(idea.id) ? 'Remove from Export' : 'Add to Export'}
+            {isSelectedForExport ? 'Remove from Export' : 'Add to Export'}
           </Button>
         </div>
       </motion.div>
     </motion.div>
   )
+}
+
+export default function IdeaFramePanel({
+  ideas,
+  onSelectIdea,
+  onCheckNovelty,
+  onExport,
+  onClose,
+  onDeleteIdea,
+  feedbackLoopResults,
+  qualityMetrics,
+}: IdeaFramePanelProps) {
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [selectedForExport, setSelectedForExport] = useState<Set<string>>(new Set())
+  const [checkingNovelty, setCheckingNovelty] = useState<string | null>(null)
+  const [fullscreenIdea, setFullscreenIdea] = useState<IdeaFrame | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [isMobile, setIsMobile] = useState(false)
+
+  // Check for mobile viewport
+  useEffect(() => {
+    const checkMobile = () => setIsMobile(window.innerWidth < 768)
+    checkMobile()
+    window.addEventListener('resize', checkMobile)
+    return () => window.removeEventListener('resize', checkMobile)
+  }, [])
+
+  // Handle escape key for fullscreen
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && fullscreenIdea) {
+        setFullscreenIdea(null)
+      }
+    }
+    window.addEventListener('keydown', handleEscape)
+    return () => window.removeEventListener('keydown', handleEscape)
+  }, [fullscreenIdea])
+
+  // Update fullscreenIdea when ideas prop changes (e.g., after novelty check)
+  // This ensures the modal shows updated data like noveltySummary
+  useEffect(() => {
+    if (fullscreenIdea) {
+      const updatedIdea = ideas.find(i => i.id === fullscreenIdea.id)
+      if (updatedIdea) {
+        // Check if novelty data was added/updated
+        const hasNewNoveltyData = updatedIdea.noveltySummary && !fullscreenIdea.noveltySummary
+        const noveltyScoreChanged = updatedIdea.noveltyScore !== fullscreenIdea.noveltyScore
+        
+        if (hasNewNoveltyData || noveltyScoreChanged) {
+          setFullscreenIdea(updatedIdea)
+        }
+      }
+    }
+  }, [ideas]) // Only depend on ideas to avoid infinite loops
+
+  const handleNoveltyCheck = async (ideaId: string) => {
+    setCheckingNovelty(ideaId)
+    await onCheckNovelty(ideaId)
+    setCheckingNovelty(null)
+  }
+
+  const toggleExportSelection = (ideaId: string) => {
+    setSelectedForExport(prev => {
+      const next = new Set(prev)
+      if (next.has(ideaId)) {
+        next.delete(ideaId)
+      } else {
+        next.add(ideaId)
+      }
+      return next
+    })
+  }
+
+  const handleExport = () => {
+    if (selectedForExport.size > 0) {
+      onExport(Array.from(selectedForExport))
+    }
+  }
+
+  const getNoveltyColor = (score?: number) => {
+    if (score === undefined) return 'bg-slate-100 text-slate-600'
+    if (score >= 70) return 'bg-green-100 text-green-700'
+    if (score >= 40) return 'bg-yellow-100 text-yellow-700'
+    return 'bg-red-100 text-red-700'
+  }
+
+  const getStatusIcon = (status: string) => {
+    switch (status) {
+      case 'SHORTLISTED':
+        return <CheckCircle2 className="w-4 h-4 text-green-500" />
+      case 'REJECTED':
+        return <XCircle className="w-4 h-4 text-red-500" />
+      case 'EXPORTED':
+        return <ExternalLink className="w-4 h-4 text-blue-500" />
+      default:
+        return <Lightbulb className="w-4 h-4 text-purple-500" />
+    }
+  }
+
+  // Copy to clipboard handler - moved outside modal to use local state
+  const handleCopyToClipboard = async (idea: IdeaFrame) => {
+    const text = `
+Title: ${idea.title}
+
+Problem: ${idea.problem}
+
+Principle: ${idea.principle}
+
+${idea.technicalEffect ? `Technical Effect: ${idea.technicalEffect}` : ''}
+
+${idea.data?.inventiveLeap ? `Inventive Leap: ${idea.data.inventiveLeap}` : ''}
+
+${idea.data?.whyNotObvious ? `Why Not Obvious: ${idea.data.whyNotObvious}` : ''}
+
+${idea.data?.analogySource ? `Cross-Domain Analogy: ${idea.data.analogySource.domain} - ${idea.data.analogySource.concept}` : ''}
+
+${idea.data?.contradictionResolved ? `Contradiction Resolved: ${idea.data.contradictionResolved}` : ''}
+
+${idea.data?.claimHooks?.length > 0 ? `Claim Hooks: ${idea.data.claimHooks.join(', ')}` : ''}
+    `.trim()
+
+    await navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
 
   return (
     <>
       {/* Fullscreen Modal */}
       <AnimatePresence>
-        {fullscreenIdea && <FullscreenIdeaModal idea={fullscreenIdea} />}
+        {fullscreenIdea && (
+          <FullscreenIdeaModal
+            idea={fullscreenIdea}
+            onClose={() => setFullscreenIdea(null)}
+            onCopy={handleCopyToClipboard}
+            copied={copied}
+            onCheckNovelty={handleNoveltyCheck}
+            checkingNovelty={checkingNovelty}
+            onToggleExport={toggleExportSelection}
+            isSelectedForExport={selectedForExport.has(fullscreenIdea.id)}
+          />
+        )}
       </AnimatePresence>
 
       <div className="flex flex-col h-full">

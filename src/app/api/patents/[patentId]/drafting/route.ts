@@ -19,7 +19,7 @@ import { getDiagramConfig, generateDiagramPromptInstructions } from '@/lib/juris
 import { trackSectionDrafted } from '@/lib/patent-drafting-tracker';
 import { resolveSourceOfTruth, computeJurisdictionStateOnDelete } from '@/lib/jurisdiction-state-service';
 import { cloneInstructionsBetweenSessions } from '@/lib/user-instruction-service';
-import { getSupersetSectionKeys, isNonApplicableHeading } from '@/lib/multi-jurisdiction-service';
+import { getSupersetSectionKeys, isNonApplicableHeading, getSectionContextRequirements } from '@/lib/multi-jurisdiction-service';
 import { ANNEXURE_LEGACY_COLUMNS } from '@/lib/annexure-schema';
 import {
   generateSketch,
@@ -680,6 +680,10 @@ export async function POST(
       // New: Section-level generation and save for Annexure 2
       case 'generate_sections':
         return await handleGenerateSections(authResult.user, patentId, data, requestHeaders);
+
+      // Check for warnings before auto-generation
+      case 'check_warnings':
+        return await handleCheckWarnings(authResult.user, patentId, data, requestHeaders);
 
       case 'save_sections':
         return await handleSaveSections(authResult.user, patentId, data);
@@ -9959,7 +9963,95 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
     console.error('Error details:', e instanceof Error ? e.message : 'Unknown error')
   }
 
-  return NextResponse.json({ generated: result.generated, debugSteps: result.debugSteps, llmMeta: result.llmMeta })
+  // Include warnings in the response so the UI can display them
+  return NextResponse.json({ 
+    generated: result.generated, 
+    debugSteps: result.debugSteps, 
+    llmMeta: result.llmMeta,
+    warnings: result.warnings // Context warnings (prior art, figures, components missing)
+  })
+}
+
+// Check for warnings before auto-generation starts
+async function handleCheckWarnings(user: any, patentId: string, data: any, requestHeaders: Record<string, string>) {
+  const { sessionId, sections, jurisdiction } = data
+
+  if (!sessionId || !Array.isArray(sections) || sections.length === 0) {
+    return NextResponse.json({ error: 'sessionId and sections[] are required' }, { status: 400 })
+  }
+
+  const baseSession = await prisma.draftingSession.findFirst({
+    where: { id: sessionId, patentId, userId: user.id },
+    include: {
+      ideaRecord: true,
+      referenceMap: true,
+      figurePlans: true,
+      diagramSources: true,
+      relatedArtSelections: true,
+      sketchRecords: {
+        where: { isDeleted: false, status: 'SUCCESS' }
+      }
+    }
+  })
+  if (!baseSession) return NextResponse.json({ error: 'Session not found or access denied' }, { status: 404 })
+
+  // Use the same logic as generateSections to set up context
+  const effectiveJurisdiction = (jurisdiction || baseSession.activeJurisdiction || baseSession.draftingJurisdictions?.[0] || 'IN').toUpperCase()
+
+  // Check context availability warnings (similar to generateSections but without actual generation)
+  const warnings: Array<{ section: string; type: 'priorArt' | 'figures' | 'components'; message: string; impact: string }> = []
+
+  // Check prior art availability
+  const manualPriorArt = baseSession.manualPriorArt as any
+  const hasPriorArt = !!((manualPriorArt && typeof manualPriorArt === 'object' && manualPriorArt.manualPriorArtText) ||
+                        (typeof manualPriorArt === 'string' && manualPriorArt?.trim()) ||
+                        (baseSession.relatedArtSelections && baseSession.relatedArtSelections.length > 0))
+
+  // Check figures availability
+  const hasFigures = !!((baseSession.figurePlans && baseSession.figurePlans.length > 0) ||
+                       (baseSession.sketchRecords && baseSession.sketchRecords.length > 0))
+
+  // Check components availability
+  const referenceMap = baseSession.referenceMap as any
+  const hasComponents = !!(referenceMap?.components && Array.isArray(referenceMap.components) && referenceMap.components.length > 0)
+
+  // Get context requirements for each section
+  for (const section of sections) {
+    try {
+      const contextReq = await getSectionContextRequirements(section, effectiveJurisdiction)
+
+      if (contextReq.requiresPriorArt && !hasPriorArt) {
+        warnings.push({
+          section,
+          type: 'priorArt',
+          message: `Section "${section}" requires prior art references for best results. Consider adding prior art in the Prior Art Selection stage.`,
+          impact: 'Section will be generated with generic background. Quality may be reduced.'
+        })
+      }
+
+      if (contextReq.requiresFigures && !hasFigures) {
+        warnings.push({
+          section,
+          type: 'figures',
+          message: `Section "${section}" requires figures/drawings for best results. Consider adding figures in the Figures & Sketches stage.`,
+          impact: 'Section will be generated without figure references. Quality may be reduced.'
+        })
+      }
+
+      if (contextReq.requiresComponents && !hasComponents) {
+        warnings.push({
+          section,
+          type: 'components',
+          message: `Section "${section}" requires component reference numerals for best results. Consider adding components in the Reference Numerals stage.`,
+          impact: 'Section will be generated without reference numerals. Quality may be reduced.'
+        })
+      }
+    } catch (err) {
+      console.warn(`Failed to get context requirements for ${section}:`, err)
+    }
+  }
+
+  return NextResponse.json({ warnings })
 }
 
 // New: Persist approved sections and run consistency validation
@@ -10432,7 +10524,9 @@ async function handleGenerateReferenceDraft(
       sectionsSaved: fullSupersetSize - sectionsGenerated,
       selectedJurisdictions: jurisdictionsToUse,
       dynamicSections: result.dynamicSections
-    }
+    },
+    // Include warnings about missing context (prior art, figures, components)
+    warnings: result.warnings
   })
 }
 

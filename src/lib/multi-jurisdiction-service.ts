@@ -31,6 +31,8 @@ export interface ReferenceDraftResult {
   draft?: Record<string, string>
   error?: string
   tokensUsed?: number
+  // Warnings about missing context (prior art, figures, components) - non-blocking
+  warnings?: Array<{ section: string; type: 'priorArt' | 'figures' | 'components'; message: string; impact: string }>
 }
 
 export interface TranslationResult {
@@ -1621,6 +1623,50 @@ ${components.map((c: any) => `  - ${c.name} (${c.numeral})`).join('\n')}
     }
 
     // ══════════════════════════════════════════════════════════════════════════════
+    // CONTEXT AVAILABILITY WARNINGS (Non-blocking)
+    // ══════════════════════════════════════════════════════════════════════════════
+    const contextWarnings: Array<{ section: string; type: 'priorArt' | 'figures' | 'components'; message: string; impact: string }> = []
+    
+    // Check prior art requirements
+    if (priorArtSections.length > 0 && priorArtCount === 0) {
+      for (const section of priorArtSections) {
+        contextWarnings.push({
+          section,
+          type: 'priorArt',
+          message: `Section "${section}" requires prior art references for best results. Consider adding prior art in the Prior Art Selection stage.`,
+          impact: 'Section will be generated with generic background. Quality may be reduced.'
+        })
+      }
+      console.warn(`[generateReferenceDraft] ⚠️ Prior art required by [${priorArtSections.join(', ')}] but none provided`)
+    }
+    
+    // Check figures requirements
+    if (figureSections.length > 0 && figures.length === 0) {
+      for (const section of figureSections) {
+        contextWarnings.push({
+          section,
+          type: 'figures',
+          message: `Section "${section}" requires figures/drawings for best results. Consider adding figures in the Figures & Sketches stage.`,
+          impact: 'Section will be generated without figure references. Quality may be reduced.'
+        })
+      }
+      console.warn(`[generateReferenceDraft] ⚠️ Figures required by [${figureSections.join(', ')}] but none provided`)
+    }
+    
+    // Check components requirements
+    if (componentSections.length > 0 && components.length === 0) {
+      for (const section of componentSections) {
+        contextWarnings.push({
+          section,
+          type: 'components',
+          message: `Section "${section}" requires component reference numerals for best results. Consider adding components in the Reference Numerals stage.`,
+          impact: 'Section will be generated without reference numerals. Quality may be reduced.'
+        })
+      }
+      console.warn(`[generateReferenceDraft] ⚠️ Components required by [${componentSections.join(', ')}] but none provided`)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════
     // UNIVERSAL DRAFTING BUNDLE (UDB) for batch generation
     // ══════════════════════════════════════════════════════════════════════════════
     const normalizedData = idea.normalizedData || {}
@@ -1803,7 +1849,8 @@ OUTPUT FORMAT
       tokensUsed: result.response.outputTokens,
       dynamicSections,
       sectionDetails,
-      jurisdictionMappings
+      jurisdictionMappings,
+      warnings: contextWarnings.length > 0 ? contextWarnings : undefined
     }
   } catch (error) {
     console.error('Reference draft generation error:', error)

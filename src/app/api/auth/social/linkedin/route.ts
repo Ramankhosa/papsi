@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAuthorizationUrl, validateOAuthConfig } from '@/lib/oauth-config'
 
+// Force dynamic rendering since we access request.nextUrl.origin
+export const dynamic = 'force-dynamic'
+
 export async function GET(request: NextRequest) {
   try {
     // Validate OAuth configuration
@@ -15,8 +18,7 @@ export async function GET(request: NextRequest) {
     const state = crypto.randomUUID()
 
     // Generate authorization URL
-    const authUrl = getAuthorizationUrl('linkedin', state)
-    console.log('LinkedIn OAuth URL:', authUrl)
+    const authUrl = getAuthorizationUrl('linkedin', state, request.nextUrl.origin)
 
     return NextResponse.redirect(authUrl)
   } catch (error) {

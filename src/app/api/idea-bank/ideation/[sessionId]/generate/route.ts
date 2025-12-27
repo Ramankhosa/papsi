@@ -26,9 +26,11 @@ interface GenerateRequestBody {
     recipeIntent: string;
     count: number;
     buckets?: any[];
+    userGuidance?: string;  // User's guidance for idea generation
   };
   intent?: string;
   count?: number;
+  userGuidance?: string;  // User's guidance for idea generation (alternative location)
   // Feedback loop options
   enableFeedbackLoop?: boolean;
   maxIterations?: number;
@@ -77,12 +79,16 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       ? (rawIntent as RecipeIntent) 
       : 'DIVERGENT';
     
+    // Get user guidance from recipe or top-level body
+    const userGuidance = body.recipe?.userGuidance || body.userGuidance || undefined;
+    
     const recipe = {
       selectedComponents: body.recipe?.selectedComponents || ideationSession.combineTray?.selectedComponents || [],
       selectedDimensions: body.recipe?.selectedDimensions || ideationSession.combineTray?.selectedDimensions || [],
       selectedOperators: body.recipe?.selectedOperators || ideationSession.combineTray?.selectedOperators || [],
       recipeIntent,
       count: body.recipe?.count || body.count || ideationSession.combineTray?.requestedCount || 5,
+      userGuidance,  // Pass user guidance to recipe
     };
 
     // Validate minimum selections
@@ -138,6 +144,7 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       sessionId,
       recipe,
       requestHeaders,
+      userGuidance: userGuidance?.trim() || undefined,  // Pass user guidance for HIGH PRIORITY consideration
     });
 
     // =========================================================================

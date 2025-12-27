@@ -65,12 +65,14 @@ export interface ExpandNodeInput {
   nodeId: string;
   depth?: number;
   requestHeaders: Record<string, string>;
+  userInput?: string;  // User's specific direction/thought to explore
 }
 
 export interface GenerateIdeasInput {
   sessionId: string;
   recipe: CombineRecipe;
   requestHeaders: Record<string, string>;
+  userGuidance?: string;  // User's guidance for how to approach idea generation
 }
 
 export interface NoveltyCheckInput {
@@ -368,9 +370,9 @@ export async function classifyInvention(
 INVENTION:
 - Core Entity: ${normalization.coreEntity}
 - Goal: ${normalization.intentGoal}
-- Components: ${normalization.knownComponents.join(', ') || 'Not specified'}
+- Components: ${normalization.knownComponents?.join(', ') || 'Not specified'}
 - Context: ${normalization.context || 'General'}
-- Constraints: ${normalization.constraints.join(', ') || 'None'}
+- Constraints: ${normalization.constraints?.join(', ') || 'None'}
 
 AVAILABLE CLASSES:
 - PRODUCT_DEVICE: Physical objects (syringe, umbrella, shoe)
@@ -447,8 +449,8 @@ export async function mapContradictions(
 INVENTION CONTEXT:
 - Core Entity: ${normalization.coreEntity}
 - Goal: ${normalization.intentGoal}
-- Constraints: ${normalization.constraints.join(', ') || 'None'}
-- Forbidden: ${normalization.negativeConstraints.join(', ') || 'None'}
+- Constraints: ${normalization.constraints?.join(', ') || 'None'}
+- Forbidden: ${normalization.negativeConstraints?.join(', ') || 'None'}
 
 IDENTIFIED CONTRADICTIONS:
 ${existingContradictions.length > 0 
@@ -842,6 +844,24 @@ NO PRIOR SELECTIONS
 This is the first dimension being explored. Generate foundational moves.
 `;
 
+  // Build user input section (HIGH PRIORITY) for prompt
+  const userInputSection = input.userInput?.trim() 
+    ? `
+═══════════════════════════════════════════════════════════════
+⚡ USER DIRECTION (HIGH PRIORITY - MUST ADDRESS)
+═══════════════════════════════════════════════════════════════
+The user wants to explore THIS specific direction:
+"${input.userInput.trim()}"
+
+MANDATORY REQUIREMENTS:
+- You MUST generate at least 2 moves that DIRECTLY address the user's direction
+- Frame moves that build upon or extend the user's thinking
+- If the user's idea has merit, explore its variations and implications
+- If the user's direction conflicts with prior context, acknowledge the tradeoff
+- Place user-directed moves FIRST in the output list
+`
+    : '';
+
   const prompt = `You are a PATENT INVENTION ADVISOR generating context-aware SUGGESTED MOVES for mind-map exploration.
 
 ═══════════════════════════════════════════════════════════════
@@ -860,7 +880,7 @@ ${(normalization.technicalContradictions && normalization.technicalContradiction
 DIMENSION FAMILY TO EXPLORE: ${node.title}
 ═══════════════════════════════════════════════════════════════
 Description: ${node.description || 'No description'}
-${contextSection}
+${userInputSection}${contextSection}
 ═══════════════════════════════════════════════════════════════
 OUTPUT REQUIREMENTS
 ═══════════════════════════════════════════════════════════════
@@ -1295,8 +1315,8 @@ INVENTION CONTEXT
 - Goal: ${normalization.intentGoal}
 - Class: ${classification.dominantClass}
 - Archetype: ${classification.archetype}
-- Constraints: ${normalization.constraints.join(', ') || 'None'}
-- Forbidden: ${normalization.negativeConstraints.join(', ') || 'None'}
+- Constraints: ${normalization.constraints?.join(', ') || 'None'}
+- Forbidden: ${normalization.negativeConstraints?.join(', ') || 'None'}
 ${normalization.patentableProblemStatement ? `- Patentable Problem: ${normalization.patentableProblemStatement}` : ''}
 
 ═══════════════════════════════════════════════════════════════
@@ -1324,6 +1344,20 @@ ${input.recipe.recipeIntent === 'DIVERGENT' ? '→ Generate diverse, creative id
 ${input.recipe.recipeIntent === 'CONVERGENT' ? '→ Focus on practical, implementable ideas' : ''}
 ${input.recipe.recipeIntent === 'RISK_REDUCTION' ? '→ Focus on safety and reliability improvements' : ''}
 ${input.recipe.recipeIntent === 'COST_REDUCTION' ? '→ Focus on cost-effective solutions' : ''}
+${input.userGuidance?.trim() ? `
+═══════════════════════════════════════════════════════════════
+⚡ USER GUIDANCE (HIGH PRIORITY - MUST HONOR)
+═══════════════════════════════════════════════════════════════
+The user has provided specific guidance for idea generation:
+"${input.userGuidance.trim()}"
+
+MANDATORY REQUIREMENTS:
+- You MUST incorporate the user's guidance into ALL generated ideas
+- If user mentions a specific approach, analogy, or constraint, apply it directly
+- User guidance takes precedence over other generation parameters
+- Frame ideas that explicitly address what the user asked for
+- If user guidance conflicts with selected dimensions, find creative resolutions
+` : ''}
 
 ═══════════════════════════════════════════════════════════════
 SCOPE CONTROL (CRITICAL)

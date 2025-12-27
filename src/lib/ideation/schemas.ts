@@ -280,6 +280,7 @@ export const CombineRecipeSchema = z.object({
   selectedOperators: z.array(z.string()).default([]).describe('IDs of selected operator nodes'),
   recipeIntent: RecipeIntentEnum.default('DIVERGENT'),
   count: z.number().int().min(1).max(20).default(5).describe('Number of ideas to generate'),
+  userGuidance: z.string().optional().describe('User-provided guidance for idea generation (HIGH PRIORITY)'),
 });
 export type CombineRecipe = z.infer<typeof CombineRecipeSchema>;
 

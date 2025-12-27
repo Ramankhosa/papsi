@@ -1046,17 +1046,23 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
   }
 
   // Expand a node - SILK SMOOTH EXPANSION
-  const handleExpandNode = async (nodeId: string) => {
+  // userInput: Optional user-provided direction for the AI to consider with HIGH PRIORITY
+  const handleExpandNode = async (nodeId: string, userInput?: string) => {
     if (!currentSession) return
 
     // Set expanding state for loading indicator
     setExpandingNodes(prev => new Set(prev).add(nodeId))
 
     try {
-      const requestBody = { action: 'expand', nodeId }
+      const requestBody = { 
+        action: 'expand', 
+        nodeId,
+        userInput: userInput?.trim() || undefined,  // Pass user input to API
+      }
       console.log('[Expand] Sending request:', {
         url: `/api/idea-bank/ideation/${currentSession.id}/expand`,
         body: requestBody,
+        hasUserInput: !!userInput,
         authToken: localStorage.getItem('auth_token') ? 'present' : 'MISSING',
       })
       
@@ -1266,11 +1272,13 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
   }
 
   // Generate ideas - operators now come from tray selection, not mind map
+  // userGuidance: Optional user-provided guidance for the AI to follow with HIGH PRIORITY
   const handleGenerateIdeas = async (
     count: number = 5, 
     intent: string = 'DIVERGENT', 
     selectedOperatorIds: string[] = [],
     buckets?: IdeaBucket[],
+    userGuidance?: string,
     skipObviousnessCheck: boolean = false
   ) => {
     if (!currentSession) return
@@ -1326,7 +1334,9 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
             recipeIntent: intent,
             count,
             buckets: buckets || null,
+            userGuidance: userGuidance?.trim() || undefined,  // Pass user guidance to API
           },
+          userGuidance: userGuidance?.trim() || undefined,  // Also at top level for backwards compatibility
           enableFeedbackLoop: false, // Disable automatic novelty checking - user can check manually
           maxIterations: 0,
           noveltyThreshold: 60,
@@ -1394,10 +1404,11 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
     count: number = 5, 
     intent: string = 'DIVERGENT', 
     selectedOperatorIds: string[] = [],
-    buckets?: IdeaBucket[]
+    buckets?: IdeaBucket[],
+    userGuidance?: string
   ) => {
     setObviousnessWarning(null)
-    await handleGenerateIdeas(count, intent, selectedOperatorIds, buckets, true)
+    await handleGenerateIdeas(count, intent, selectedOperatorIds, buckets, userGuidance, true)
   }
 
   // Check novelty with progress visualization
@@ -2045,7 +2056,7 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
                       })
                     }
                   },
-                  onExpand: () => handleExpandNode(n.id),
+                  onExpand: (userInput?: string) => handleExpandNode(n.id, userInput),
                   onCollapse: () => {
                     setCollapsedNodes(prev => {
                       const next = new Set(prev)
@@ -2347,7 +2358,9 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
                 // Get operators from session classification
                 ((currentSession?.classification as any)?.applicableOperators as any[]) || []
               }
-              onGenerate={handleGenerateIdeas}
+              onGenerate={(count, intent, ops, buckets, guidance) => 
+                handleGenerateIdeas(count, intent, ops, buckets, guidance, false)
+              }
               onClear={() => {
                 setSelectedNodes(new Set())
                 setObviousnessWarning(null) // Clear warning when clearing selection
@@ -2363,7 +2376,9 @@ export default function IdeationWorkspace({ onExportToBank }: IdeationWorkspaceP
               loading={loading}
               checkingObviousness={checkingObviousness}
               obviousnessWarning={obviousnessWarning}
-              onForceGenerate={handleForceGenerate}
+              onForceGenerate={(count, intent, ops, buckets, guidance) => 
+                handleForceGenerate(count, intent, ops, buckets, guidance)
+              }
             />
           </motion.div>
         )}

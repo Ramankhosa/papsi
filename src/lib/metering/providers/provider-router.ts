@@ -8,6 +8,8 @@ import type { LLMProvider } from './llm-provider'
 import { createLLMProvider, getProviderFromModelCode, type ProviderConfig, type ProviderType } from './llm-provider'
 import { logLLMCost, calculateCost, type CostBreakdown, ensurePricingLoaded, isPricingLoaded } from '../cost-calculator'
 
+const SHOULD_LOG_PROVIDER_INIT = process.env.LLM_PROVIDER_INIT_LOGS === 'true'
+
 export interface ProviderPriority {
   provider: string
   priority: number // Lower number = higher priority
@@ -101,12 +103,9 @@ export class LLMProviderRouter {
 
   private initializeProviders() {
     // Initialize all providers from environment variables
-    console.log('Initializing LLM providers...')
-    console.log('GOOGLE_AI_API_KEY present:', !!process.env.GOOGLE_AI_API_KEY)
-    console.log('OPENAI_API_KEY present:', !!process.env.OPENAI_API_KEY)
-    console.log('ANTHROPIC_API_KEY present:', !!process.env.ANTHROPIC_API_KEY)
-    console.log('DEEPSEEK_API_KEY present:', !!process.env.DEEPSEEK_API_KEY)
-    console.log('GROQ_API_KEY present:', !!process.env.GROQ_API_KEY)
+    if (SHOULD_LOG_PROVIDER_INIT) {
+      console.log('Initializing LLM providers...')
+    }
 
     const configs: ProviderConfigs = {
       // Google Gemini providers
@@ -157,16 +156,22 @@ export class LLMProviderRouter {
           const provider = createLLMProvider(type as ProviderType, config as ProviderConfig)
           this.providers.set(type, provider)
           this.providerConfigs[type] = config as ProviderConfig
-          console.log(`✓ Initialized ${type} provider`)
+          if (SHOULD_LOG_PROVIDER_INIT) {
+            console.log(`Initialized ${type} provider`)
+          }
         } catch (error) {
-          console.warn(`✗ Failed to initialize ${type} provider:`, error)
+          console.warn(`Failed to initialize ${type} provider:`, error)
         }
       } else {
-        console.log(`- Skipping ${type} provider (no API key)`)
+        if (SHOULD_LOG_PROVIDER_INIT) {
+          console.log(`Skipping ${type} provider (no API key)`)
+        }
       }
     })
     
-    console.log(`Total providers initialized: ${this.providers.size}`)
+    if (SHOULD_LOG_PROVIDER_INIT) {
+      console.log(`Total providers initialized: ${this.providers.size}`)
+    }
   }
 
   /**

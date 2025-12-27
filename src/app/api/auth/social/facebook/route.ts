@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
     const state = crypto.randomUUID()
 
     // Generate authorization URL
-    const authUrl = getAuthorizationUrl('facebook', state)
+    const authUrl = getAuthorizationUrl('facebook', state, request.nextUrl.origin)
 
     return NextResponse.redirect(authUrl)
   } catch (error) {

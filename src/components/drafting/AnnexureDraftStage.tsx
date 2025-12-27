@@ -2747,32 +2747,49 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       return { success: false, error: err instanceof Error ? err.message : String(err) }
     }
   }
-  
-  // Auto-mode: Generate all sections sequentially without user interaction
-  const handleAutoGenerateAll = async () => {
-    if (autoModeRunning || loading) return
 
-    if (!sectionConfigs) return
-
-    // Get all section keys that don't have content yet
-    const pendingSections = sectionConfigs
-      .map(s => s.keys[0])
-      .filter(key => key && !generated?.[key]?.trim())
-    
-    if (pendingSections.length === 0) {
-      alert('All sections already have content. Use the regenerate option to update individual sections.')
-      return
+  // Pre-check function to identify all warnings before starting auto-generation
+  const checkAutoModeWarnings = async (sectionsToCheck: string[]): Promise<{ warnings: Array<{ section: string; type: 'priorArt' | 'figures' | 'components'; message: string; impact: string }>; errors: string[] }> => {
+    try {
+      const isReference = activeJurisdiction.toUpperCase() === 'REFERENCE'
+      
+      // Consolidated API call - same endpoint for both REFERENCE and regular jurisdictions
+      const res = await fetch(`/api/patents/${patent?.id}/drafting`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'check_warnings',
+          sessionId: session?.id,
+          sections: sectionsToCheck,
+          // Only include jurisdiction for non-REFERENCE drafts
+          ...(isReference ? {} : { jurisdiction: activeJurisdiction })
+        })
+      })
+      
+      const data = await res.json()
+      if (res.ok && data.warnings) {
+        return { warnings: data.warnings, errors: [] }
+      }
+      return { warnings: [], errors: [] }
+    } catch (err) {
+      console.warn('Failed to check warnings:', err)
+      return { warnings: [], errors: [] }
     }
-    
-    const confirmed = confirm(
-      `🚀 Auto-Generate Mode\n\n` +
-      `This will automatically generate ${pendingSections.length} section(s) one by one.\n\n` +
-      `Sections to generate:\n${pendingSections.map(k => `• ${displayName[k] || k}`).join('\n')}\n\n` +
-      `You can cancel at any time by clicking the Stop button.\n\n` +
-      `Do you want to continue?`
-    )
-    
-    if (!confirmed) return
+  }
+
+  // State for auto-mode warning modal
+  const [autoModeWarningModal, setAutoModeWarningModal] = useState<{
+    show: boolean
+    warnings: Array<{ section: string; type: 'priorArt' | 'figures' | 'components'; message: string; impact: string }>
+    pendingSections: string[]
+  }>({ show: false, warnings: [], pendingSections: [] })
+
+  // Start auto-generation after user confirms in the modal
+  const startAutoGeneration = async (pendingSections: string[]) => {
+    setAutoModeWarningModal({ show: false, warnings: [], pendingSections: [] })
     
     // Reset cancellation flag
     autoModeCancelledRef.current = false
@@ -2856,19 +2873,20 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
           `❌ Auto-generation stopped due to error.\n\n` +
           `Failed section: ${failedSection}\n` +
           `Error: ${failedError}\n\n` +
-          `${successCount} of ${pendingSections.length} section(s) were generated and saved.\n\n` +
-          `You can try generating the remaining sections manually or restart auto-mode.`
+          `${successCount} of ${pendingSections.length} section(s) were generated before the error.`
         )
       } else {
         // Success - show different message based on jurisdiction
-        if (isReference) {
-          alert(
-            `✅ Reference Draft Complete!\n\n` +
-            `${successCount} section(s) have been generated and saved.\n\n` +
-            `🔓 Other jurisdictions (${availableJurisdictions.join(', ')}) are now unlocked for translation.`
-          )
-        } else {
-          alert(`✅ Auto-generation complete!\n\n${successCount} section(s) have been generated and saved.`)
+        if (successCount > 0) {
+          if (isReference) {
+            alert(
+              `✅ Reference Draft Complete!\n\n` +
+              `${successCount} section(s) have been generated and saved.\n\n` +
+              `🔓 Other jurisdictions (${availableJurisdictions.join(', ')}) are now unlocked for translation.`
+            )
+          } else {
+            alert(`✅ Auto-generation complete!\n\n${successCount} section(s) have been generated and saved.`)
+          }
         }
       }
     } catch (error) {
@@ -2881,6 +2899,35 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
       // Reset cancellation flag
       autoModeCancelledRef.current = false
     }
+  }
+
+  // Auto-mode: Generate all sections sequentially without user interaction
+  const handleAutoGenerateAll = async () => {
+    if (autoModeRunning || loading) return
+
+    if (!sectionConfigs) return
+
+    // Get all section keys that don't have content yet
+    const pendingSections = sectionConfigs
+      .map(s => s.keys[0])
+      .filter(key => key && !generated?.[key]?.trim())
+
+    if (pendingSections.length === 0) {
+      alert('All sections already have content. Use the regenerate option to update individual sections.')
+      return
+    }
+
+    // Pre-check for warnings before starting auto-generation
+    setLoading(true)
+    const { warnings } = await checkAutoModeWarnings(pendingSections)
+    setLoading(false)
+
+    // Show warning modal with all warnings before proceeding
+    setAutoModeWarningModal({
+      show: true,
+      warnings,
+      pendingSections
+    })
   }
   
   // Stop auto-mode immediately
@@ -4136,6 +4183,136 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             // Could refresh any UI state related to samples
           }}
         />
+      )}
+
+      {/* Auto-Generation Warning Modal */}
+      {autoModeWarningModal.show && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 max-h-[85vh] flex flex-col animate-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center text-white text-xl">
+                  🚀
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">Auto-Generate Mode</h3>
+                  <p className="text-sm text-gray-500">{autoModeWarningModal.pendingSections.length} section(s) to generate</p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setAutoModeWarningModal({ show: false, warnings: [], pendingSections: [] })}
+                className="p-2 rounded-lg hover:bg-gray-100 transition-colors text-gray-400 hover:text-gray-600"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="px-6 py-4 overflow-y-auto flex-1">
+              {/* Sections List */}
+              <div className="mb-4">
+                <h4 className="text-sm font-medium text-gray-700 mb-2">Sections to generate:</h4>
+                <div className="flex flex-wrap gap-2">
+                  {autoModeWarningModal.pendingSections.map(key => (
+                    <span key={key} className="px-2.5 py-1 bg-gray-100 text-gray-700 rounded-lg text-xs font-medium">
+                      {displayName[key] || key}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              {/* Warnings */}
+              {autoModeWarningModal.warnings.length > 0 && (
+                <div className="mb-4 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-amber-600 text-lg">⚠️</span>
+                    <h4 className="text-sm font-semibold text-amber-800">Missing Context Detected</h4>
+                  </div>
+                  <p className="text-xs text-amber-700 mb-3">
+                    The following context is missing and may reduce generation quality:
+                  </p>
+                  <div className="space-y-3">
+                    {autoModeWarningModal.warnings.map((w, idx) => (
+                      <div key={idx} className="bg-white/60 rounded-lg p-3 border border-amber-100">
+                        <div className="flex items-start gap-2">
+                          <span className="text-amber-500 mt-0.5">
+                            {w.type === 'priorArt' ? '📚' : w.type === 'figures' ? '🖼️' : '🔧'}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-medium text-sm text-gray-800">{displayName[w.section] || w.section}</span>
+                              <span className="px-1.5 py-0.5 text-[10px] font-medium bg-amber-100 text-amber-700 rounded uppercase">
+                                {w.type === 'priorArt' ? 'Prior Art' : w.type === 'figures' ? 'Figures' : 'Components'}
+                              </span>
+                            </div>
+                            <p className="text-xs text-gray-600 mt-1">{w.message}</p>
+                            <p className="text-xs text-amber-700 mt-1.5 italic">Impact: {w.impact}</p>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-amber-700 mt-3 pt-3 border-t border-amber-200">
+                    💡 You can add this context now by closing this dialog and using the context panels, or continue with potentially reduced quality.
+                  </p>
+                </div>
+              )}
+
+              {/* No Warnings */}
+              {autoModeWarningModal.warnings.length === 0 && (
+                <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl">
+                  <div className="flex items-center gap-2">
+                    <span className="text-emerald-600 text-lg">✅</span>
+                    <p className="text-sm text-emerald-800 font-medium">All required context is available</p>
+                  </div>
+                  <p className="text-xs text-emerald-700 mt-2">
+                    The AI has access to all the context it needs for optimal generation quality.
+                  </p>
+                </div>
+              )}
+
+              {/* Info */}
+              <div className="mt-4 p-3 bg-gray-50 rounded-lg text-xs text-gray-600">
+                <p>• Sections will be generated one by one in sequence</p>
+                <p>• You can cancel at any time using the Stop button</p>
+                <p>• Failed sections will be retried once automatically</p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-4 border-t border-gray-100 flex items-center justify-end gap-3">
+              <button
+                onClick={() => setAutoModeWarningModal({ show: false, warnings: [], pendingSections: [] })}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => startAutoGeneration(autoModeWarningModal.pendingSections)}
+                className={`px-4 py-2 text-sm font-medium text-white rounded-lg transition-colors flex items-center gap-2 ${
+                  autoModeWarningModal.warnings.length > 0
+                    ? 'bg-amber-500 hover:bg-amber-600'
+                    : 'bg-indigo-600 hover:bg-indigo-700'
+                }`}
+              >
+                {autoModeWarningModal.warnings.length > 0 ? (
+                  <>
+                    <span>Continue Anyway</span>
+                    <span className="text-xs opacity-75">({autoModeWarningModal.warnings.length} warning{autoModeWarningModal.warnings.length > 1 ? 's' : ''})</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Start Generation</span>
+                    <span>→</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
     </div>

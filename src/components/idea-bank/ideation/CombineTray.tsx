@@ -19,6 +19,8 @@ import {
   FolderPlus,
   GripVertical,
   Edit2,
+  MessageSquare,
+  Brain,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -44,7 +46,7 @@ interface CombineTrayProps {
   selectedNodes: Set<string>
   nodes: Node[]
   availableOperators: TrizOperator[]
-  onGenerate: (count: number, intent: string, selectedOperators: string[], buckets?: IdeaBucket[]) => void
+  onGenerate: (count: number, intent: string, selectedOperators: string[], buckets?: IdeaBucket[], userGuidance?: string) => void
   onClear: () => void
   onRemoveNode?: (nodeId: string) => void  // NEW: Remove a single dimension from selection
   loading: boolean
@@ -57,7 +59,7 @@ interface CombineTrayProps {
     analogySuggestions?: string[]
     message: string
   } | null
-  onForceGenerate?: (count: number, intent: string, selectedOperators: string[], buckets?: IdeaBucket[]) => void
+  onForceGenerate?: (count: number, intent: string, selectedOperators: string[], buckets?: IdeaBucket[], userGuidance?: string) => void
 }
 
 type RecipeIntent = 'DIVERGENT' | 'CONVERGENT' | 'RISK_REDUCTION' | 'COST_REDUCTION'
@@ -134,6 +136,10 @@ export default function CombineTray({
   const [intent, setIntent] = useState<RecipeIntent>('DIVERGENT')
   const [selectedOperators, setSelectedOperators] = useState<Set<string>>(new Set())
   const [showOperatorInfo, setShowOperatorInfo] = useState(false)
+  
+  // User guidance for idea generation
+  const [userGuidance, setUserGuidance] = useState('')
+  const [showGuidanceInput, setShowGuidanceInput] = useState(false)
   
   // Multi-bucket system
   const [buckets, setBuckets] = useState<IdeaBucket[]>([])
@@ -292,12 +298,13 @@ export default function CombineTray({
   const selectedIntent = intentOptions.find(o => o.value === intent)!
 
   const handleGenerate = () => {
+    const guidance = userGuidance.trim() || undefined
     if (useBuckets && buckets.length > 0) {
       // Generate with buckets
-      onGenerate(ideaCount, intent, Array.from(selectedOperators), buckets)
+      onGenerate(ideaCount, intent, Array.from(selectedOperators), buckets, guidance)
     } else {
       // Generate without buckets (all selected dimensions together)
-      onGenerate(ideaCount, intent, Array.from(selectedOperators))
+      onGenerate(ideaCount, intent, Array.from(selectedOperators), undefined, guidance)
     }
   }
 
@@ -307,7 +314,7 @@ export default function CombineTray({
       <div className="p-4 border-b border-slate-200 bg-white">
         <div className="flex items-center justify-between mb-1">
           <h3 className="font-bold text-slate-900 flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-violet-500" />
+            <Brain className="w-4 h-4 text-blue-500" />
             Idea Recipe
           </h3>
           {totalDimensionsSelected > 0 && (
@@ -318,6 +325,8 @@ export default function CombineTray({
                 setBuckets([])
                 setUseBuckets(false)
                 setBucketCounter(1)
+                setUserGuidance('')
+                setShowGuidanceInput(false)
               }}
               className="text-xs text-slate-500 hover:text-slate-700 flex items-center gap-1"
             >
@@ -337,13 +346,13 @@ export default function CombineTray({
         <div className="bg-white rounded-xl p-3 border border-slate-200">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
-              <Layers className="w-4 h-4 text-violet-500" />
+              <Layers className="w-4 h-4 text-blue-500" />
               <span className="text-sm font-semibold text-slate-700">Dimensions</span>
             </div>
             {!useBuckets && totalDimensionsSelected > 1 && (
               <button
                 onClick={() => setUseBuckets(true)}
-                className="text-xs text-violet-600 hover:text-violet-700 flex items-center gap-1"
+                className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
               >
                 <FolderPlus className="w-3 h-3" />
                 Use Buckets
@@ -364,8 +373,8 @@ export default function CombineTray({
                     className={`cursor-grab active:cursor-grabbing ${draggedDimension === node.id ? 'opacity-50' : ''}`}
                     title={(node.data as any).title || node.id}
                   >
-                    <Badge className="bg-violet-100 text-violet-800 text-xs flex items-center gap-1 pr-1">
-                      <GripVertical className="w-3 h-3 text-violet-400 flex-shrink-0" />
+                    <Badge className="bg-blue-100 text-blue-800 text-xs flex items-center gap-1 pr-1">
+                      <GripVertical className="w-3 h-3 text-blue-400 flex-shrink-0" />
                       <span className="text-left">{(node.data as any).title || node.id}</span>
                       {onRemoveNode && (
                         <button
@@ -373,10 +382,10 @@ export default function CombineTray({
                             e.stopPropagation()
                             onRemoveNode(node.id)
                           }}
-                          className="ml-1 p-0.5 rounded-full hover:bg-violet-200 transition-colors flex-shrink-0"
+                          className="ml-1 p-0.5 rounded-full hover:bg-blue-200 transition-colors flex-shrink-0"
                           title="Remove dimension"
                         >
-                          <X className="w-3 h-3 text-violet-600" />
+                          <X className="w-3 h-3 text-blue-600" />
                         </button>
                       )}
                     </Badge>
@@ -435,8 +444,8 @@ export default function CombineTray({
                   key={bucket.id} 
                   className={`p-2 rounded-lg border-2 transition-all
                     ${dragOverBucket === bucket.id 
-                      ? 'bg-violet-100 border-violet-400 border-dashed scale-[1.02]' 
-                      : 'bg-violet-50 border-violet-200'}`}
+                      ? 'bg-blue-100 border-blue-400 border-dashed scale-[1.02]' 
+                      : 'bg-blue-50 border-blue-200'}`}
                   onDragOver={(e) => handleDragOver(e, bucket.id)}
                   onDragLeave={handleDragLeave}
                   onDrop={(e) => handleDrop(e, bucket.id)}
@@ -457,7 +466,7 @@ export default function CombineTray({
                     ) : (
                       <button
                         onClick={() => startEditingBucket(bucket)}
-                        className="text-xs font-semibold text-violet-700 flex items-center gap-1 hover:text-violet-900"
+                        className="text-xs font-semibold text-blue-700 flex items-center gap-1 hover:text-blue-900"
                       >
                         🗂️ {bucket.name}
                         <Edit2 className="w-2.5 h-2.5 opacity-50" />
@@ -465,7 +474,7 @@ export default function CombineTray({
                     )}
                     <button
                       onClick={() => removeBucket(bucket.id)}
-                      className="text-violet-400 hover:text-red-500"
+                      className="text-blue-400 hover:text-red-500"
                     >
                       <Trash2 className="w-3 h-3" />
                     </button>
@@ -483,8 +492,8 @@ export default function CombineTray({
                             onDragEnd={handleDragEnd}
                             className={`cursor-grab active:cursor-grabbing ${draggedDimension === dimId ? 'opacity-50' : ''}`}
                           >
-                            <Badge className="bg-violet-200 text-violet-800 text-xs flex items-center gap-1">
-                              <GripVertical className="w-3 h-3 text-violet-400" />
+                            <Badge className="bg-blue-200 text-blue-800 text-xs flex items-center gap-1">
+                              <GripVertical className="w-3 h-3 text-blue-400" />
                               {(node.data as any).title || dimId}
                               <button
                                 onClick={(e) => { e.stopPropagation(); removeFromBucket(bucket.id, dimId) }}
@@ -497,7 +506,7 @@ export default function CombineTray({
                         )
                       })
                     ) : (
-                      <p className="text-[10px] text-violet-400 italic w-full text-center py-1">
+                      <p className="text-[10px] text-blue-400 italic w-full text-center py-1">
                         {dragOverBucket === bucket.id ? '↓ Drop here!' : 'Drag dimensions here'}
                       </p>
                     )}
@@ -510,7 +519,7 @@ export default function CombineTray({
                 className={`p-3 rounded-lg border-2 border-dashed transition-all flex items-center justify-center gap-2 cursor-pointer
                   ${draggedDimension && !dragOverBucket 
                     ? 'bg-green-50 border-green-400 text-green-700' 
-                    : 'bg-slate-50 border-slate-300 text-slate-500 hover:border-violet-300 hover:text-violet-600'}`}
+                    : 'bg-slate-50 border-slate-300 text-slate-500 hover:border-blue-300 hover:text-blue-600'}`}
                 onClick={() => addBucket()}
                 onDragOver={(e) => { e.preventDefault(); setDragOverBucket('new') }}
                 onDragLeave={() => setDragOverBucket(null)}
@@ -613,15 +622,15 @@ export default function CombineTray({
                     className={`
                       p-2 rounded-lg border text-left transition-all
                       ${intent === option.value
-                        ? 'bg-violet-50 border-violet-300'
-                        : 'bg-slate-50 border-slate-200 hover:border-violet-200'
+                        ? 'bg-blue-50 border-blue-300'
+                        : 'bg-slate-50 border-slate-200 hover:border-blue-200'
                       }
                     `}
                   >
                     <div className="flex items-center gap-1.5">
                       <div className={`
                         w-5 h-5 rounded flex items-center justify-center
-                        ${intent === option.value ? 'bg-violet-500 text-white' : 'bg-slate-200 text-slate-500'}
+                        ${intent === option.value ? 'bg-blue-500 text-white' : 'bg-slate-200 text-slate-500'}
                       `}>
                         {option.icon}
                       </div>
@@ -640,7 +649,7 @@ export default function CombineTray({
                 <label className="text-xs font-semibold text-slate-700">
                   Ideas {useBuckets && buckets.length > 0 ? 'per bucket' : ''}
                 </label>
-                <span className="text-sm font-bold text-violet-600">{ideaCount}</span>
+                <span className="text-sm font-bold text-blue-600">{ideaCount}</span>
               </div>
               <Slider
                 value={[ideaCount]}
@@ -651,6 +660,68 @@ export default function CombineTray({
                 className="w-full"
               />
             </div>
+          </div>
+        )}
+
+        {/* User Guidance Section - Guide the AI */}
+        {totalDimensionsSelected > 0 && (
+          <div className="bg-gradient-to-br from-blue-50 to-slate-50 rounded-xl p-3 border border-blue-200">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="w-4 h-4 text-blue-500" />
+                <span className="text-sm font-semibold text-slate-700">Guide the AI</span>
+              </div>
+              {userGuidance && (
+                <button
+                  onClick={() => {
+                    setUserGuidance('')
+                    setShowGuidanceInput(false)
+                  }}
+                  className="text-xs text-slate-400 hover:text-slate-600"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            
+            {!showGuidanceInput && !userGuidance ? (
+              <button
+                onClick={() => setShowGuidanceInput(true)}
+                className="
+                  w-full flex items-center gap-2 px-3 py-2.5
+                  text-xs text-blue-600 hover:text-blue-700
+                  bg-white hover:bg-blue-50/50
+                  rounded-lg border border-blue-100 hover:border-blue-200
+                  transition-all duration-150
+                "
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Add your guidance to steer idea generation...</span>
+              </button>
+            ) : (
+              <div className="space-y-2">
+                <textarea
+                  value={userGuidance}
+                  onChange={(e) => setUserGuidance(e.target.value)}
+                  placeholder="e.g., Focus on mechanical solutions without electronics, explore biological analogies like cell division, prioritize safety over cost..."
+                  className="
+                    w-full px-3 py-2 text-xs
+                    bg-white border border-blue-200 rounded-lg
+                    focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent
+                    placeholder:text-slate-400
+                    resize-none
+                  "
+                  rows={3}
+                  autoFocus={showGuidanceInput && !userGuidance}
+                />
+                {userGuidance && (
+                  <p className="text-[10px] text-blue-600 flex items-center gap-1">
+                    <Check className="w-3 h-3" />
+                    Your guidance will be honored with high priority
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -676,7 +747,7 @@ export default function CombineTray({
           </div>
           {onForceGenerate && (
             <Button
-              onClick={() => onForceGenerate(ideaCount, intent, Array.from(selectedOperators), useBuckets ? buckets : undefined)}
+              onClick={() => onForceGenerate(ideaCount, intent, Array.from(selectedOperators), useBuckets ? buckets : undefined, userGuidance.trim() || undefined)}
               variant="outline"
               size="sm"
               className="w-full text-amber-700 border-amber-300 hover:bg-amber-100"
@@ -693,7 +764,7 @@ export default function CombineTray({
         <Button
           onClick={handleGenerate}
           disabled={!canGenerate || loading || checkingObviousness}
-          className="w-full bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-600 hover:to-purple-700 text-white shadow-lg"
+          className="w-full bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white shadow-lg"
         >
           {checkingObviousness ? (
             <>
@@ -707,17 +778,24 @@ export default function CombineTray({
             </>
           ) : (
             <>
-              <Sparkles className="w-4 h-4 mr-2" />
+              <Brain className="w-4 h-4 mr-2" />
               Generate {useBuckets && buckets.length > 0 
                 ? `${ideaCount * buckets.length} Ideas (${buckets.length} buckets)`
                 : `${ideaCount} Ideas`
               }
+              {userGuidance && ' (Guided)'}
             </>
           )}
         </Button>
         {!canGenerate && (
           <p className="text-[10px] text-center text-slate-400 mt-2">
             Select dimensions from the mind map first
+          </p>
+        )}
+        {userGuidance && canGenerate && !loading && (
+          <p className="text-[10px] text-center text-blue-500 mt-1.5 flex items-center justify-center gap-1">
+            <MessageSquare className="w-3 h-3" />
+            AI will follow your guidance
           </p>
         )}
       </div>

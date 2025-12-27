@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import { generateJWT, generateRefreshToken, storeRefreshToken, createAuditLog } from '@/lib/auth'
-import { oauthConfig } from '@/lib/oauth-config'
+import { getAppOrigin, getRedirectUri, oauthConfig } from '@/lib/oauth-config'
 
 // Force dynamic rendering since we access search params
 export const dynamic = 'force-dynamic'
 
 export async function GET(request: NextRequest) {
   try {
+    const appOrigin = getAppOrigin(request.nextUrl.origin)
     const searchParams = request.nextUrl.searchParams
     const code = searchParams.get('code')
     const state = searchParams.get('state')
@@ -17,21 +18,23 @@ export async function GET(request: NextRequest) {
     if (error) {
       console.error('Facebook OAuth error:', error)
       return NextResponse.redirect(
-        `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/login?error=oauth_error`
+        new URL('/login?error=oauth_error', appOrigin)
       )
     }
 
     if (!code) {
       return NextResponse.redirect(
-        `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/login?error=no_code`
+        new URL('/login?error=no_code', appOrigin)
       )
     }
+
+    const redirectUri = getRedirectUri('facebook', request.nextUrl.origin)
 
     // Exchange authorization code for access token
     const tokenParams = new URLSearchParams({
       client_id: oauthConfig.facebook.clientId!,
       client_secret: oauthConfig.facebook.clientSecret!,
-      redirect_uri: oauthConfig.facebook.redirectUri,
+      redirect_uri: redirectUri,
       code: code
     })
 
@@ -103,7 +106,7 @@ export async function GET(request: NextRequest) {
         const pendingToken = Buffer.from(JSON.stringify(pendingData)).toString('base64url')
 
         return NextResponse.redirect(
-          `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/register/complete-social?token=${pendingToken}&provider=facebook`
+          new URL(`/register/complete-social?token=${pendingToken}&provider=facebook`, appOrigin)
         )
       }
     }
@@ -148,7 +151,7 @@ export async function GET(request: NextRequest) {
 
     // Create response
     const response = NextResponse.redirect(
-      `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/dashboard`
+      new URL('/dashboard', appOrigin)
     )
 
     // Set tokens as cookies
@@ -173,7 +176,7 @@ export async function GET(request: NextRequest) {
   } catch (error) {
     console.error('Facebook OAuth callback error:', error)
     return NextResponse.redirect(
-      `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/login?error=oauth_callback_failed`
+      new URL('/login?error=oauth_callback_failed', getAppOrigin(request.nextUrl.origin))
     )
   }
 }
