@@ -163,7 +163,11 @@ export function getGatingReason(
   const hasClaim1 = isClaim1Available(normalizedData)
   const isFrozen = areClaimsFrozen(normalizedData)
   
-  if (!hasClaim1) {
+  // Check if HTML claims exist (even without structured claims)
+  const htmlClaims = normalizedData?.claimsFinal || normalizedData?.claims || normalizedData?.claimsProvisional || ''
+  const hasHtmlClaims = typeof htmlClaims === 'string' && htmlClaims.trim().length > 0
+  
+  if (!hasClaim1 && !hasHtmlClaims) {
     return `Section "${sectionKey}" requires Claim 1 but no claims have been generated yet. Please complete the Claims Generation stage first.`
   }
   
@@ -171,7 +175,8 @@ export function getGatingReason(
     return `Section "${sectionKey}" requires frozen claims but claims are not yet frozen. Please freeze your claims in the CLAIM_REFINEMENT stage before generating this section.`
   }
   
-  return `Section "${sectionKey}" cannot be generated due to missing Claim 1 context.`
+  // If frozen but still gated (shouldn't happen after the isClaim1AvailableAndFrozen fix)
+  return `Section "${sectionKey}" cannot be generated. Claims appear to be frozen but in an invalid format. Please try unfreezing and refreezing your claims, or regenerate them in the CLAIM_REFINEMENT stage.`
 }
 
 /**
@@ -373,9 +378,36 @@ export function isClaim1Available(normalizedData: Record<string, any> | null | u
 /**
  * Check if Claim 1 is available AND frozen.
  * This is stricter - used for gating critical sections.
+ * 
+ * IMPORTANT: Returns true if claims are frozen AND claims exist in ANY form:
+ * 1. Structured claims with extractable Claim 1 (preferred)
+ * 2. HTML/text claims in claimsFinal or claims fields (fallback)
+ * 
+ * This handles cases where claims were manually entered or imported
+ * without being parsed into structured format.
  */
 export function isClaim1AvailableAndFrozen(normalizedData: Record<string, any> | null | undefined): boolean {
-  return extractClaim1(normalizedData, true) !== null
+  if (!normalizedData) return false
+  
+  // First check: claims must be frozen
+  const isFrozen = !!normalizedData.claimsApprovedAt
+  if (!isFrozen) return false
+  
+  // Second check: try to extract Claim 1 from structured claims (preferred)
+  const claim1FromStructured = extractClaim1(normalizedData, true)
+  if (claim1FromStructured !== null) return true
+  
+  // Fallback check: if structured claims are empty but HTML claims exist, allow it
+  // This handles cases where claims were frozen but not in structured format
+  const htmlClaims = normalizedData.claimsFinal || normalizedData.claims || normalizedData.claimsProvisional || ''
+  const hasHtmlClaims = typeof htmlClaims === 'string' && htmlClaims.trim().length > 0
+  
+  if (hasHtmlClaims) {
+    console.warn('[isClaim1AvailableAndFrozen] Claims are frozen with HTML content but no structured claims. Allowing generation with reduced precision.')
+    return true
+  }
+  
+  return false
 }
 
 /**
