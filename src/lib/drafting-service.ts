@@ -1490,6 +1490,37 @@ Respond in this exact JSON shape:
     return base
   }
 
+  /**
+   * Normalize claims data to ensure consistent detection of frozen claims.
+   * This backfills provisional/final fields from legacy data structures.
+   * 
+   * This is critical for the UDB (Universal Drafting Bundle) gating check to work
+   * correctly across different data formats that may exist in legacy sessions.
+   */
+  private static normalizeClaimsData(normalized: Record<string, any> = {}): Record<string, any> {
+    const merged = { ...(normalized || {}) }
+    
+    // Backfill provisional/final for legacy sessions
+    if (!merged.claimsProvisional && merged.claims) {
+      merged.claimsProvisional = merged.claims
+    }
+    if (!merged.claimsStructuredProvisional && merged.claimsStructured) {
+      merged.claimsStructuredProvisional = merged.claimsStructured
+    }
+    
+    // If claims are frozen (claimsApprovedAt is set), ensure final fields are populated
+    if (merged.claimsApprovedAt) {
+      if (!merged.claimsFinal) {
+        merged.claimsFinal = merged.claims || merged.claimsProvisional
+      }
+      if (!merged.claimsStructuredFinal && merged.claimsStructured) {
+        merged.claimsStructuredFinal = merged.claimsStructured
+      }
+    }
+    
+    return merged
+  }
+
   private static normalizeArchetypeList(input: any, fallbackField?: string): string[] {
     const set = new Set<string>()
     const add = (raw?: string) => {
@@ -1826,7 +1857,11 @@ ${writingSampleBlock}`
       console.log(`[buildSectionPrompt] Using DATABASE prompt for section "${section}" in ${jurisdiction}`)
       
       const idea = payload.idea || {}
-      const normalizedData = idea?.normalizedData || {}
+      const rawNormalizedData = idea?.normalizedData || {}
+      
+      // Normalize claims data to ensure consistent detection of frozen claims
+      // This backfills provisional/final fields from legacy data structures
+      const normalizedData = this.normalizeClaimsData(rawNormalizedData)
       
       // ══════════════════════════════════════════════════════════════════════════════
       // UNIVERSAL DRAFTING BUNDLE (UDB) - Normalized Data + Claim 1

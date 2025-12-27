@@ -10001,11 +10001,33 @@ async function handleCheckWarnings(user: any, patentId: string, data: any, reque
   // Check context availability warnings (similar to generateSections but without actual generation)
   const warnings: Array<{ section: string; type: 'priorArt' | 'figures' | 'components'; message: string; impact: string }> = []
 
-  // Check prior art availability
+  // Check prior art availability - must match the logic in DraftingService.generateSections()
+  // Sources checked (in priority order):
+  // 1. priorArtConfig.priorArtForDrafting.selectedPatents (Stage 3.5 workflow - PRIMARY)
+  // 2. Manual prior art text
+  // 3. USER_SELECTED tagged patents from relatedArtSelections
   const manualPriorArt = baseSession.manualPriorArt as any
-  const hasPriorArt = !!((manualPriorArt && typeof manualPriorArt === 'object' && manualPriorArt.manualPriorArtText) ||
-                        (typeof manualPriorArt === 'string' && manualPriorArt?.trim()) ||
-                        (baseSession.relatedArtSelections && baseSession.relatedArtSelections.length > 0))
+  const priorArtConfig = (baseSession as any).priorArtConfig || {}
+  const priorArtForDraftingConfig = priorArtConfig.priorArtForDrafting || {}
+  const configSelectedPatents = Array.isArray(priorArtForDraftingConfig.selectedPatents) 
+    ? priorArtForDraftingConfig.selectedPatents 
+    : []
+  
+  // Check if user has selected patents via the Prior Art for Drafting tab (Stage 3.5)
+  const hasConfigSelectedPatents = configSelectedPatents.length > 0
+  
+  // Check if user has manual prior art text
+  const hasManualPriorArt = !!((manualPriorArt && typeof manualPriorArt === 'object' && manualPriorArt.manualPriorArtText) ||
+                               (typeof manualPriorArt === 'string' && manualPriorArt?.trim()))
+  
+  // Check if user has USER_SELECTED tagged patents in relatedArtSelections
+  const userSelectedPatents = (baseSession.relatedArtSelections || []).filter(
+    (sel: any) => Array.isArray(sel.tags) && sel.tags.includes('USER_SELECTED')
+  )
+  const hasUserSelectedPatents = userSelectedPatents.length > 0
+  
+  // Has prior art if ANY of the sources have data
+  const hasPriorArt = hasConfigSelectedPatents || hasManualPriorArt || hasUserSelectedPatents
 
   // Check figures availability
   const hasFigures = !!((baseSession.figurePlans && baseSession.figurePlans.length > 0) ||
