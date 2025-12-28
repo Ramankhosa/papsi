@@ -16,12 +16,11 @@ FROM "drafting_sessions" ds
 WHERE usi."session_id" = ds."id"
 AND usi."user_id" IS NULL;
 
--- Step 3: For any orphaned records (session deleted), try to get userId from patent owner
+-- Step 3: For any orphaned records (session deleted), try to get userId from patent owner via session
 UPDATE "user_section_instructions" usi
 SET "user_id" = (
-  SELECT p."userId" 
+  SELECT ds."userId" 
   FROM "drafting_sessions" ds
-  JOIN "patents" p ON ds."patentId" = p."id"
   WHERE ds."id" = usi."session_id"
   LIMIT 1
 )
@@ -62,4 +61,3 @@ ON "user_section_instructions"("user_id", "session_id", "jurisdiction");
 ALTER TABLE "user_section_instructions"
 ADD CONSTRAINT "user_section_instructions_user_id_fkey"
 FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-
