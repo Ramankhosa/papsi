@@ -214,12 +214,32 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
   }, [editableClaims, baseClaims, isEditMode])
 
   // Automatically unfreeze claims when entering claim refinement stage
+  // BUT skip auto-unfreeze if the user just manually froze claims in this session
   const hasAutoUnfrozenRef = useRef(false)
+  const userJustFrozeRef = useRef(false)
+  const initialFrozenStateRef = useRef<boolean | null>(null)
+  
+  // Capture the initial frozen state on first render
+  useEffect(() => {
+    if (initialFrozenStateRef.current === null) {
+      initialFrozenStateRef.current = isFrozen
+    }
+  }, [isFrozen])
+  
   useEffect(() => {
     const autoUnfreezeClaims = async () => {
-      // Only auto-unfreeze once, and only if claims are frozen
-      if (!hasAutoUnfrozenRef.current && isFrozen && session?.id && normalized) {
+      // CRITICAL: Skip auto-unfreeze if user manually froze claims in this component session
+      if (userJustFrozeRef.current) {
+        console.log('[ClaimRefinementStage] Skipping auto-unfreeze: user manually froze claims')
+        return
+      }
+      
+      // Only auto-unfreeze once, only if claims were already frozen when component FIRST mounted,
+      // and only if the user hasn't manually frozen claims
+      const wasInitiallyFrozen = initialFrozenStateRef.current === true
+      if (!hasAutoUnfrozenRef.current && isFrozen && wasInitiallyFrozen && session?.id && normalized) {
         hasAutoUnfrozenRef.current = true
+        console.log('[ClaimRefinementStage] Auto-unfreezing claims for editing')
         try {
           await onComplete({
             action: 'unfreeze_claims',
@@ -393,6 +413,11 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
     try {
       setFreezing(true)
       setError(null)
+      
+      // CRITICAL: Mark that user manually froze claims to prevent auto-unfreeze
+      userJustFrozeRef.current = true
+      console.log('[ClaimRefinementStage] User manually freezing claims - auto-unfreeze disabled')
+      
       await onComplete({
         action: 'freeze_claims',
         sessionId: session.id,
@@ -411,6 +436,8 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
     } catch (e) {
       console.error('Freeze failed', e)
       setError('Failed to freeze claims.')
+      // Reset the flag on failure so auto-unfreeze can work if needed
+      userJustFrozeRef.current = false
     } finally {
       setFreezing(false)
     }
@@ -421,6 +448,10 @@ export default function ClaimRefinementStage({ session, onComplete, onRefresh }:
     try {
       setUnfreezing(true)
       setError(null)
+      
+      // Reset the manual freeze flag when user explicitly unfreezes
+      userJustFrozeRef.current = false
+      
       await onComplete({
         action: 'unfreeze_claims',
         sessionId: session.id
