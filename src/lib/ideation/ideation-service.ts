@@ -965,7 +965,18 @@ Example move format:
   }
 
   // Process the new moves format
-  const moves = parsed.data.moves;
+  // Generate unique IDs to prevent collisions across multiple expansions
+  // LLM-generated IDs (move-{familyId}-{N}) can collide when expanding different nodes from same family
+  // Use parent nodeId + timestamp suffix for guaranteed uniqueness
+  const parentSlug = input.nodeId.replace(/[^a-zA-Z0-9]/g, '-').slice(0, 30);
+  const uniqueSuffix = Date.now().toString(36); // Base36 timestamp for shorter unique suffix
+  
+  const moves = parsed.data.moves.map((m, idx) => ({
+    ...m,
+    // Override LLM-generated ID with a unique one that includes parent nodeId
+    id: `${parentSlug}-${uniqueSuffix}-${idx}`,
+  }));
+  
   const existingNodeIds = session.nodes.map(n => n.nodeId);
   const newMoves = moves.filter(m => !existingNodeIds.includes(m.id));
 
@@ -1124,8 +1135,19 @@ async function processLegacyExpansion(
   node: any,
   data: DimensionGraph
 ): Promise<DimensionGraph> {
+  // Generate unique IDs to prevent collisions from LLM-generated IDs
+  // Use parent nodeId + timestamp suffix for guaranteed uniqueness
+  const parentSlug = input.nodeId.replace(/[^a-zA-Z0-9]/g, '-').slice(0, 30);
+  const uniqueSuffix = Date.now().toString(36); // Base36 timestamp for shorter unique suffix
+  
+  // Override LLM-generated IDs with unique ones
+  const nodesWithUniqueIds = data.nodes.map((n, idx) => ({
+    ...n,
+    id: `${parentSlug}-leg-${uniqueSuffix}-${idx}`,
+  }));
+  
   const existingNodeIds = session.nodes.map((n: any) => n.nodeId);
-  const newNodes = data.nodes.filter(n => !existingNodeIds.includes(n.id));
+  const newNodes = nodesWithUniqueIds.filter(n => !existingNodeIds.includes(n.id));
 
   const LEVEL_WIDTH = 480;
   const NODE_HEIGHT = 450; // Same generous spacing as new format
