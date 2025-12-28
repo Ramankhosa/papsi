@@ -6,7 +6,13 @@
  * 
  * 1. SupersetSection (database) - Base universal prompts
  * 2. CountrySectionPrompt (database) - Country-specific top-up prompts
- * 3. UserInstruction (database) - Per-session user instructions (HIGHEST PRIORITY)
+ * 3. UserInstruction (database) - User instructions (HIGHEST PRIORITY)
+ * 
+ * Instructions can be:
+ * - Session-level (sessionId = specific ID) - applies only to that draft
+ * - User-level persistent (sessionId = null) - applies to ALL user's drafts for that jurisdiction
+ * 
+ * Priority when fetching: Session-level > User-level persistent
  * 
  * Users can customize:
  * - Custom instruction text for any section
@@ -24,7 +30,8 @@ import { prisma } from './prisma'
 
 export interface UserSectionInstruction {
   id: string
-  sessionId: string
+  sessionId: string | null  // null = user-level persistent
+  userId: string
   jurisdiction: string // "*" = all jurisdictions, or specific like "IN", "US"
   sectionKey: string
   instruction: string
@@ -33,12 +40,14 @@ export interface UserSectionInstruction {
   style?: string
   wordCount?: number
   isActive: boolean
+  isPersistent: boolean // Computed: true if sessionId is null
   createdAt: Date
   updatedAt: Date
 }
 
 export interface CreateUserInstructionInput {
-  sessionId: string
+  sessionId?: string | null  // null = user-level persistent
+  userId: string
   jurisdiction?: string // Default "*" (all jurisdictions)
   sectionKey: string
   instruction: string
@@ -46,6 +55,7 @@ export interface CreateUserInstructionInput {
   avoid?: string
   style?: string
   wordCount?: number
+  isPersistent?: boolean // If true, saves as user-level (sessionId = null)
 }
 
 export interface UpdateUserInstructionInput {
@@ -63,33 +73,40 @@ export interface UserInstructionContext {
   avoid?: string
   style?: string
   wordCount?: number
+  isPersistent?: boolean // Indicates if this came from a persistent instruction
+  instructionId?: string // ID of the instruction for reference
 }
 
 // ============================================================================
 // Cache
 // ============================================================================
 
-// Session-level cache for user instructions
-const sessionInstructionCache = new Map<string, Map<string, UserSectionInstruction>>()
+// Cache key format: "session:{sessionId}" or "user:{userId}"
+const instructionCache = new Map<string, Map<string, UserSectionInstruction>>()
 const cacheTTL = 60 * 1000 // 1 minute
 const cacheTimestamps = new Map<string, number>()
 
-function getCachedInstructions(sessionId: string): Map<string, UserSectionInstruction> | null {
-  const timestamp = cacheTimestamps.get(sessionId)
+function getCachedInstructions(cacheKey: string): Map<string, UserSectionInstruction> | null {
+  const timestamp = cacheTimestamps.get(cacheKey)
   if (timestamp && Date.now() - timestamp < cacheTTL) {
-    return sessionInstructionCache.get(sessionId) || null
+    return instructionCache.get(cacheKey) || null
   }
   return null
 }
 
-function setCachedInstructions(sessionId: string, instructions: Map<string, UserSectionInstruction>): void {
-  sessionInstructionCache.set(sessionId, instructions)
-  cacheTimestamps.set(sessionId, Date.now())
+function setCachedInstructions(cacheKey: string, instructions: Map<string, UserSectionInstruction>): void {
+  instructionCache.set(cacheKey, instructions)
+  cacheTimestamps.set(cacheKey, Date.now())
 }
 
 export function invalidateSessionInstructionCache(sessionId: string): void {
-  sessionInstructionCache.delete(sessionId)
-  cacheTimestamps.delete(sessionId)
+  instructionCache.delete(`session:${sessionId}`)
+  cacheTimestamps.delete(`session:${sessionId}`)
+}
+
+export function invalidateUserInstructionCache(userId: string): void {
+  instructionCache.delete(`user:${userId}`)
+  cacheTimestamps.delete(`user:${userId}`)
 }
 
 /**
@@ -99,7 +116,8 @@ export function invalidateSessionInstructionCache(sessionId: string): void {
  */
 export async function cloneInstructionsBetweenSessions(
   sourceSessionId: string,
-  targetSessionId: string
+  targetSessionId: string,
+  userId: string
 ): Promise<number> {
   if (!sourceSessionId || !targetSessionId || sourceSessionId === targetSessionId) return 0
 
@@ -115,6 +133,7 @@ export async function cloneInstructionsBetweenSessions(
     .filter(i => !existingKeys.has(`${i.sectionKey}:${i.jurisdiction}`))
     .map(i => ({
       sessionId: targetSessionId,
+      userId,
       jurisdiction: i.jurisdiction,
       sectionKey: i.sectionKey,
       instruction: i.instruction,
@@ -137,72 +156,118 @@ export async function cloneInstructionsBetweenSessions(
 // ============================================================================
 
 /**
- * Get user instruction for a specific section in a session
- * Looks for jurisdiction-specific first, then falls back to wildcard "*"
+ * Get user instruction for a specific section
+ * Priority: Session-level > User-level persistent
  * 
- * @param sessionId - The drafting session ID
+ * @param sessionId - The drafting session ID (optional for user-level only lookup)
+ * @param userId - The user ID (required for user-level lookup)
  * @param sectionKey - The section key (canonical)
- * @param jurisdiction - Optional jurisdiction code (e.g., "IN", "US"). If provided, looks for jurisdiction-specific instruction first.
+ * @param jurisdiction - Optional jurisdiction code (e.g., "IN", "US")
  */
 export async function getUserInstruction(
-  sessionId: string,
+  sessionId: string | null,
   sectionKey: string,
-  jurisdiction?: string
+  jurisdiction?: string,
+  userId?: string
 ): Promise<UserInstructionContext | null> {
   const jurisdictionCode = jurisdiction?.toUpperCase() || '*'
-  const cacheKey = `${sectionKey}:${jurisdictionCode}`
   
-  // Check cache first
-  const cached = getCachedInstructions(sessionId)
-  if (cached) {
-    // Try jurisdiction-specific first
-    let instruction = cached.get(cacheKey)
-    // Fall back to wildcard if no jurisdiction-specific found
-    if (!instruction && jurisdictionCode !== '*') {
-      instruction = cached.get(`${sectionKey}:*`)
-    }
-    if (instruction && instruction.isActive) {
-      return {
-        instruction: instruction.instruction,
-        emphasis: instruction.emphasis || undefined,
-        avoid: instruction.avoid || undefined,
-        style: instruction.style || undefined,
-        wordCount: instruction.wordCount || undefined
-      }
-    }
-    return null
-  }
-
-  // Load from database - try jurisdiction-specific first, then wildcard
   try {
-    let instruction = await prisma.userSectionInstruction.findFirst({
-      where: {
-        sessionId,
-        sectionKey,
-        jurisdiction: jurisdictionCode,
-        isActive: true
-      }
-    })
-
-    // Fall back to wildcard if no jurisdiction-specific found
-    if (!instruction && jurisdictionCode !== '*') {
-      instruction = await prisma.userSectionInstruction.findFirst({
+    // 1. Check session-level first (if sessionId provided)
+    if (sessionId) {
+      const sessionInstruction = await prisma.userSectionInstruction.findFirst({
         where: {
           sessionId,
           sectionKey,
-          jurisdiction: '*',
+          jurisdiction: jurisdictionCode,
           isActive: true
         }
       })
+
+      if (sessionInstruction) {
+        return {
+          instruction: sessionInstruction.instruction,
+          emphasis: sessionInstruction.emphasis || undefined,
+          avoid: sessionInstruction.avoid || undefined,
+          style: sessionInstruction.style || undefined,
+          wordCount: sessionInstruction.wordCount || undefined,
+          isPersistent: false,
+          instructionId: sessionInstruction.id
+        }
+      }
+
+      // Fall back to wildcard jurisdiction at session level
+      if (jurisdictionCode !== '*') {
+        const wildcardSessionInstruction = await prisma.userSectionInstruction.findFirst({
+          where: {
+            sessionId,
+            sectionKey,
+            jurisdiction: '*',
+            isActive: true
+          }
+        })
+
+        if (wildcardSessionInstruction) {
+          return {
+            instruction: wildcardSessionInstruction.instruction,
+            emphasis: wildcardSessionInstruction.emphasis || undefined,
+            avoid: wildcardSessionInstruction.avoid || undefined,
+            style: wildcardSessionInstruction.style || undefined,
+            wordCount: wildcardSessionInstruction.wordCount || undefined,
+            isPersistent: false,
+            instructionId: wildcardSessionInstruction.id
+          }
+        }
+      }
     }
 
-    if (instruction) {
-      return {
-        instruction: instruction.instruction,
-        emphasis: instruction.emphasis || undefined,
-        avoid: instruction.avoid || undefined,
-        style: instruction.style || undefined,
-        wordCount: instruction.wordCount || undefined
+    // 2. Check user-level persistent (if userId provided)
+    if (userId) {
+      const userInstruction = await prisma.userSectionInstruction.findFirst({
+        where: {
+          userId,
+          sessionId: null, // User-level = no session
+          sectionKey,
+          jurisdiction: jurisdictionCode,
+          isActive: true
+        }
+      })
+
+      if (userInstruction) {
+        return {
+          instruction: userInstruction.instruction,
+          emphasis: userInstruction.emphasis || undefined,
+          avoid: userInstruction.avoid || undefined,
+          style: userInstruction.style || undefined,
+          wordCount: userInstruction.wordCount || undefined,
+          isPersistent: true,
+          instructionId: userInstruction.id
+        }
+      }
+
+      // Fall back to wildcard jurisdiction at user level
+      if (jurisdictionCode !== '*') {
+        const wildcardUserInstruction = await prisma.userSectionInstruction.findFirst({
+          where: {
+            userId,
+            sessionId: null,
+            sectionKey,
+            jurisdiction: '*',
+            isActive: true
+          }
+        })
+
+        if (wildcardUserInstruction) {
+          return {
+            instruction: wildcardUserInstruction.instruction,
+            emphasis: wildcardUserInstruction.emphasis || undefined,
+            avoid: wildcardUserInstruction.avoid || undefined,
+            style: wildcardUserInstruction.style || undefined,
+            wordCount: wildcardUserInstruction.wordCount || undefined,
+            isPersistent: true,
+            instructionId: wildcardUserInstruction.id
+          }
+        }
       }
     }
   } catch (error) {
@@ -213,14 +278,93 @@ export async function getUserInstruction(
 }
 
 /**
- * Get all user instructions for a session
+ * Get all user instructions (session-level + user-level merged)
+ * Session-level instructions override user-level for the same section/jurisdiction
  * 
- * @param sessionId - The drafting session ID
- * @param jurisdiction - Optional jurisdiction filter. If provided, returns only that jurisdiction + wildcard "*"
+ * @param sessionId - The drafting session ID (optional)
+ * @param userId - The user ID (required for user-level)
+ * @param jurisdiction - Optional jurisdiction filter
  * @param includeInactive - Include deactivated instructions
  */
 export async function getAllUserInstructions(
-  sessionId: string,
+  sessionId: string | null,
+  userId?: string,
+  jurisdiction?: string,
+  includeInactive: boolean = false
+): Promise<UserSectionInstruction[]> {
+  try {
+    const jurisdictionFilter = jurisdiction 
+      ? { jurisdiction: { in: [jurisdiction.toUpperCase(), '*'] } }
+      : {}
+    
+    const activeFilter = includeInactive ? {} : { isActive: true }
+
+    // Fetch both session-level and user-level instructions
+    const conditions: any[] = []
+    
+    if (sessionId) {
+      conditions.push({ sessionId })
+    }
+    
+    if (userId) {
+      conditions.push({ userId, sessionId: null }) // User-level persistent
+    }
+
+    if (conditions.length === 0) {
+      return []
+    }
+
+    const instructions = await prisma.userSectionInstruction.findMany({
+      where: {
+        OR: conditions,
+        ...jurisdictionFilter,
+        ...activeFilter
+      },
+      orderBy: [{ jurisdiction: 'asc' }, { sectionKey: 'asc' }]
+    })
+
+    // Merge: session-level takes precedence over user-level
+    const merged = new Map<string, UserSectionInstruction>()
+    
+    for (const i of instructions) {
+      const key = `${i.sectionKey}:${i.jurisdiction}`
+      const existing = merged.get(key)
+      
+      const mapped: UserSectionInstruction = {
+        id: i.id,
+        sessionId: i.sessionId,
+        userId: i.userId,
+        jurisdiction: i.jurisdiction,
+        sectionKey: i.sectionKey,
+        instruction: i.instruction,
+        emphasis: i.emphasis || undefined,
+        avoid: i.avoid || undefined,
+        style: i.style || undefined,
+        wordCount: i.wordCount || undefined,
+        isActive: i.isActive,
+        isPersistent: i.sessionId === null,
+        createdAt: i.createdAt,
+        updatedAt: i.updatedAt
+      }
+
+      // Session-level (sessionId not null) takes precedence
+      if (!existing || (i.sessionId !== null && existing.sessionId === null)) {
+        merged.set(key, mapped)
+      }
+    }
+
+    return Array.from(merged.values())
+  } catch (error) {
+    console.error(`[UserInstructionService] Failed to get all instructions:`, error)
+    return []
+  }
+}
+
+/**
+ * Get only user-level persistent instructions (no session context)
+ */
+export async function getUserPersistentInstructions(
+  userId: string,
   jurisdiction?: string,
   includeInactive: boolean = false
 ): Promise<UserSectionInstruction[]> {
@@ -231,56 +375,52 @@ export async function getAllUserInstructions(
     
     const instructions = await prisma.userSectionInstruction.findMany({
       where: {
-        sessionId,
+        userId,
+        sessionId: null, // Only persistent (user-level)
         ...jurisdictionFilter,
         ...(includeInactive ? {} : { isActive: true })
       },
       orderBy: [{ jurisdiction: 'asc' }, { sectionKey: 'asc' }]
     })
 
-    // Update cache with jurisdiction-aware keys
-    const instructionMap = new Map<string, UserSectionInstruction>()
-    const result = instructions.map(i => {
-      const mapped: UserSectionInstruction = {
-        id: i.id,
-        sessionId: i.sessionId,
-        jurisdiction: i.jurisdiction,
-        sectionKey: i.sectionKey,
-        instruction: i.instruction,
-        emphasis: i.emphasis || undefined,
-        avoid: i.avoid || undefined,
-        style: i.style || undefined,
-        wordCount: i.wordCount || undefined,
-        isActive: i.isActive,
-        createdAt: i.createdAt,
-        updatedAt: i.updatedAt
-      }
-      // Cache key includes jurisdiction
-      instructionMap.set(`${i.sectionKey}:${i.jurisdiction}`, mapped)
-      return mapped
-    })
-
-    setCachedInstructions(sessionId, instructionMap)
-    return result
+    return instructions.map(i => ({
+      id: i.id,
+      sessionId: null,
+      userId: i.userId,
+      jurisdiction: i.jurisdiction,
+      sectionKey: i.sectionKey,
+      instruction: i.instruction,
+      emphasis: i.emphasis || undefined,
+      avoid: i.avoid || undefined,
+      style: i.style || undefined,
+      wordCount: i.wordCount || undefined,
+      isActive: i.isActive,
+      isPersistent: true,
+      createdAt: i.createdAt,
+      updatedAt: i.updatedAt
+    }))
   } catch (error) {
-    console.error(`[UserInstructionService] Failed to get all instructions for ${sessionId}:`, error)
+    console.error(`[UserInstructionService] Failed to get persistent instructions for ${userId}:`, error)
     return []
   }
 }
 
 /**
  * Create or update user instruction for a section
- * Supports jurisdiction-specific instructions
+ * Supports both session-level and user-level persistent instructions
  */
 export async function upsertUserInstruction(
   input: CreateUserInstructionInput
 ): Promise<UserSectionInstruction> {
   const jurisdiction = input.jurisdiction?.toUpperCase() || '*'
+  const sessionId = input.isPersistent ? null : (input.sessionId || null)
   
   try {
+    // Find existing instruction
     const existing = await prisma.userSectionInstruction.findFirst({
       where: {
-        sessionId: input.sessionId,
+        userId: input.userId,
+        sessionId,
         jurisdiction,
         sectionKey: input.sectionKey
       }
@@ -302,7 +442,8 @@ export async function upsertUserInstruction(
     } else {
       result = await prisma.userSectionInstruction.create({
         data: {
-          sessionId: input.sessionId,
+          sessionId,
+          userId: input.userId,
           jurisdiction,
           sectionKey: input.sectionKey,
           instruction: input.instruction,
@@ -315,12 +456,16 @@ export async function upsertUserInstruction(
       })
     }
 
-    // Invalidate cache
-    invalidateSessionInstructionCache(input.sessionId)
+    // Invalidate appropriate cache
+    if (sessionId) {
+      invalidateSessionInstructionCache(sessionId)
+    }
+    invalidateUserInstructionCache(input.userId)
 
     return {
       id: result.id,
       sessionId: result.sessionId,
+      userId: result.userId,
       jurisdiction: result.jurisdiction,
       sectionKey: result.sectionKey,
       instruction: result.instruction,
@@ -329,6 +474,7 @@ export async function upsertUserInstruction(
       style: result.style || undefined,
       wordCount: result.wordCount || undefined,
       isActive: result.isActive,
+      isPersistent: result.sessionId === null,
       createdAt: result.createdAt,
       updatedAt: result.updatedAt
     }
@@ -358,12 +504,16 @@ export async function updateUserInstruction(
       }
     })
 
-    // Invalidate cache
-    invalidateSessionInstructionCache(result.sessionId)
+    // Invalidate caches
+    if (result.sessionId) {
+      invalidateSessionInstructionCache(result.sessionId)
+    }
+    invalidateUserInstructionCache(result.userId)
 
     return {
       id: result.id,
       sessionId: result.sessionId,
+      userId: result.userId,
       jurisdiction: result.jurisdiction,
       sectionKey: result.sectionKey,
       instruction: result.instruction,
@@ -372,6 +522,7 @@ export async function updateUserInstruction(
       style: result.style || undefined,
       wordCount: result.wordCount || undefined,
       isActive: result.isActive,
+      isPersistent: result.sessionId === null,
       createdAt: result.createdAt,
       updatedAt: result.updatedAt
     }
@@ -394,7 +545,10 @@ export async function deleteUserInstruction(id: string): Promise<void> {
       await prisma.userSectionInstruction.delete({
         where: { id }
       })
-      invalidateSessionInstructionCache(instruction.sessionId)
+      if (instruction.sessionId) {
+        invalidateSessionInstructionCache(instruction.sessionId)
+      }
+      invalidateUserInstructionCache(instruction.userId)
     }
   } catch (error) {
     console.error(`[UserInstructionService] Failed to delete instruction:`, error)
@@ -403,23 +557,37 @@ export async function deleteUserInstruction(id: string): Promise<void> {
 }
 
 /**
- * Deactivate all user instructions for a section (soft delete)
+ * Deactivate user instructions for a section (soft delete)
+ * Can target session-level, user-level, or both
  */
 export async function deactivateUserInstruction(
-  sessionId: string,
-  sectionKey: string
+  userId: string,
+  sectionKey: string,
+  sessionId?: string | null,
+  deactivatePersistent: boolean = false
 ): Promise<void> {
   try {
+    const conditions: any[] = []
+    
+    if (sessionId) {
+      conditions.push({ sessionId, sectionKey })
+    }
+    
+    if (deactivatePersistent) {
+      conditions.push({ userId, sessionId: null, sectionKey })
+    }
+
+    if (conditions.length === 0) return
+
     await prisma.userSectionInstruction.updateMany({
-      where: {
-        sessionId,
-        sectionKey
-      },
-      data: {
-        isActive: false
-      }
+      where: { OR: conditions },
+      data: { isActive: false }
     })
-    invalidateSessionInstructionCache(sessionId)
+
+    if (sessionId) {
+      invalidateSessionInstructionCache(sessionId)
+    }
+    invalidateUserInstructionCache(userId)
   } catch (error) {
     console.error(`[UserInstructionService] Failed to deactivate instruction:`, error)
     throw error
@@ -430,27 +598,31 @@ export async function deactivateUserInstruction(
  * Bulk save user instructions for multiple sections
  */
 export async function bulkSaveUserInstructions(
-  sessionId: string,
+  userId: string,
+  sessionId: string | null,
   instructions: Record<string, {
     instruction: string
     emphasis?: string
     avoid?: string
     style?: string
     wordCount?: number
-  }>
+  }>,
+  isPersistent: boolean = false
 ): Promise<UserSectionInstruction[]> {
   const results: UserSectionInstruction[] = []
 
   for (const [sectionKey, data] of Object.entries(instructions)) {
     if (data.instruction && data.instruction.trim()) {
       const result = await upsertUserInstruction({
-        sessionId,
+        sessionId: isPersistent ? null : sessionId,
+        userId,
         sectionKey,
         instruction: data.instruction,
         emphasis: data.emphasis,
         avoid: data.avoid,
         style: data.style,
-        wordCount: data.wordCount
+        wordCount: data.wordCount,
+        isPersistent
       })
       results.push(result)
     }
@@ -509,11 +681,13 @@ export function buildUserInstructionBlock(
 
 /**
  * Get all user instructions for a session as a map (for prompt building)
+ * Includes both session-level and user-level persistent instructions
  */
 export async function getUserInstructionsMap(
-  sessionId: string
+  sessionId: string,
+  userId?: string
 ): Promise<Record<string, UserInstructionContext>> {
-  const instructions = await getAllUserInstructions(sessionId)
+  const instructions = await getAllUserInstructions(sessionId, userId)
   const result: Record<string, UserInstructionContext> = {}
 
   for (const instruction of instructions) {
@@ -523,11 +697,12 @@ export async function getUserInstructionsMap(
         emphasis: instruction.emphasis,
         avoid: instruction.avoid,
         style: instruction.style,
-        wordCount: instruction.wordCount
+        wordCount: instruction.wordCount,
+        isPersistent: instruction.isPersistent,
+        instructionId: instruction.id
       }
     }
   }
 
   return result
 }
-

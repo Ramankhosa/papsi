@@ -12,6 +12,7 @@ interface UserInstruction {
   jurisdiction: string
   updatedAt?: string
   isActive?: boolean
+  isPersistent?: boolean // true = user-level (persists across drafts)
 }
 
 // Word limit for custom instructions to keep prompts manageable
@@ -53,6 +54,7 @@ export default function SectionInstructionPopover({
     existingInstruction?.jurisdiction === '*' ? 'global' : 'jurisdiction'
   )
   const [isActive, setIsActive] = useState(existingInstruction?.isActive !== false) // Default to active
+  const [isPersistent, setIsPersistent] = useState(existingInstruction?.isPersistent || false) // Save for future drafts
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const popoverRef = useRef<HTMLDivElement>(null)
@@ -103,7 +105,7 @@ export default function SectionInstructionPopover({
           'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
         },
         body: JSON.stringify({
-          sessionId,
+          sessionId: isPersistent ? null : sessionId, // null for persistent
           sectionKey,
           jurisdiction: scope === 'global' ? '*' : activeJurisdiction,
           instruction: instruction.trim(),
@@ -111,7 +113,8 @@ export default function SectionInstructionPopover({
           avoid: avoid.trim() || undefined,
           style: style || undefined,
           wordCount: wordCount || undefined,
-          isActive
+          isActive,
+          isPersistent
         })
       })
 
@@ -123,7 +126,8 @@ export default function SectionInstructionPopover({
       const data = await response.json()
       onSave({
         ...data.instruction,
-        jurisdiction: scope === 'global' ? '*' : activeJurisdiction
+        jurisdiction: scope === 'global' ? '*' : activeJurisdiction,
+        isPersistent: data.instruction.isPersistent
       })
       onClose()
     } catch (err) {
@@ -138,7 +142,15 @@ export default function SectionInstructionPopover({
     
     setSaving(true)
     try {
-      await fetch(`/api/patents/${patentId}/drafting/user-instructions?sessionId=${sessionId}&sectionKey=${sectionKey}&jurisdiction=${scope === 'global' ? '*' : activeJurisdiction}`, {
+      const deleteParams = new URLSearchParams({
+        sectionKey,
+        ...(existingInstruction?.isPersistent 
+          ? { isPersistent: 'true' }
+          : { sessionId }
+        )
+      })
+      
+      await fetch(`/api/patents/${patentId}/drafting/user-instructions?${deleteParams}`, {
         method: 'DELETE',
         headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
       })
@@ -147,6 +159,7 @@ export default function SectionInstructionPopover({
       setAvoid('')
       setStyle('')
       setWordCount('')
+      setIsPersistent(false)
       onSave({ instruction: '', jurisdiction: scope === 'global' ? '*' : activeJurisdiction })
     } catch (err) {
       setError('Failed to clear instruction')
@@ -159,10 +172,15 @@ export default function SectionInstructionPopover({
   const hasExistingJurisdiction = existingInstruction && existingInstruction.jurisdiction !== '*' && existingInstruction.instruction
 
   return (
-    <div 
+    <div
       ref={popoverRef}
-      className="absolute z-50 mt-1 w-96 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-4"
-      style={{ right: 0 }}
+      className="fixed z-50 mt-1 w-96 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-4"
+      style={{
+        // Fixed positioning ensures consistent placement regardless of section title length
+        right: '24px', // Margin from right edge to avoid scrollbars
+        // Ensure it doesn't exceed viewport bounds on small screens
+        maxWidth: 'calc(100vw - 48px)'
+      }}
     >
       {/* Header */}
       <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-700">
@@ -177,24 +195,37 @@ export default function SectionInstructionPopover({
         </button>
       </div>
 
+      {/* Show if this is a persistent instruction */}
+      {existingInstruction?.isPersistent && (
+        <div className="mb-3 p-2 bg-violet-500/10 border border-violet-500/30 rounded-lg">
+          <p className="text-xs text-violet-400 font-medium">
+            💾 This is a persistent instruction that applies to all your {existingInstruction.jurisdiction === '*' ? '' : existingInstruction.jurisdiction + ' '}drafts
+          </p>
+        </div>
+      )}
+
       {/* Show existing instructions if different scope */}
       {hasExistingGlobal && scope === 'jurisdiction' && (
         <div className="mb-3 p-2 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-          <p className="text-xs text-blue-400 font-medium mb-1">🌐 Global instruction exists:</p>
+          <p className="text-xs text-blue-400 font-medium mb-1">
+            🌐 Global instruction exists{globalInstruction.isPersistent ? ' (persistent)' : ''}:
+          </p>
           <p className="text-xs text-blue-300 line-clamp-2">{globalInstruction.instruction}</p>
         </div>
       )}
       
       {hasExistingJurisdiction && scope === 'global' && (
         <div className="mb-3 p-2 bg-amber-500/10 border border-amber-500/30 rounded-lg">
-          <p className="text-xs text-amber-400 font-medium mb-1">🎯 {activeJurisdiction} instruction exists:</p>
+          <p className="text-xs text-amber-400 font-medium mb-1">
+            🎯 {activeJurisdiction} instruction exists{existingInstruction.isPersistent ? ' (persistent)' : ''}:
+          </p>
           <p className="text-xs text-amber-300 line-clamp-2">{existingInstruction.instruction}</p>
         </div>
       )}
 
       {/* Scope selector */}
       <div className="mb-3">
-        <label className="block text-xs font-medium text-slate-400 mb-1">Apply to:</label>
+        <label className="block text-xs font-medium text-slate-400 mb-1">Apply to jurisdiction:</label>
         <div className="flex gap-2">
           <button
             onClick={() => setScope('jurisdiction')}
@@ -219,6 +250,27 @@ export default function SectionInstructionPopover({
         </div>
       </div>
 
+      {/* Persistence toggle - Save for future drafts */}
+      <div className="mb-3 p-2 bg-slate-800/50 rounded-lg border border-slate-700">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={isPersistent}
+            onChange={(e) => setIsPersistent(e.target.checked)}
+            className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-violet-500 focus:ring-violet-500 focus:ring-offset-0"
+          />
+          <span className="text-xs text-slate-300 font-medium">
+            💾 Save for all future drafts
+          </span>
+        </label>
+        <p className="text-[10px] text-slate-500 mt-1 ml-6">
+          {isPersistent 
+            ? `This instruction will automatically apply to all your new ${scope === 'global' ? '' : activeJurisdiction + ' '}patent drafts`
+            : 'This instruction will only apply to this draft'
+          }
+        </p>
+      </div>
+
       {/* Enable/Disable Toggle for existing instruction - immediate save */}
       {existingInstruction?.id && (
         <div className="mb-3 flex items-center justify-between p-2 bg-slate-800/50 rounded-lg border border-slate-700">
@@ -236,7 +288,7 @@ export default function SectionInstructionPopover({
                     'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
                   },
                   body: JSON.stringify({
-                    sessionId,
+                    sessionId: existingInstruction.isPersistent ? null : sessionId,
                     sectionKey,
                     jurisdiction: existingInstruction.jurisdiction,
                     instruction: existingInstruction.instruction,
@@ -244,7 +296,8 @@ export default function SectionInstructionPopover({
                     avoid: existingInstruction.avoid,
                     style: existingInstruction.style,
                     wordCount: existingInstruction.wordCount,
-                    isActive: newStatus
+                    isActive: newStatus,
+                    isPersistent: existingInstruction.isPersistent
                   })
                 })
                 // Update parent
@@ -377,11 +430,10 @@ export default function SectionInstructionPopover({
             disabled={saving || !instruction.trim() || isOverLimit}
             className="px-4 py-1.5 bg-violet-600 hover:bg-violet-500 text-white text-xs rounded-lg font-medium disabled:opacity-50"
           >
-            {saving ? 'Saving...' : 'Save'}
+            {saving ? 'Saving...' : (isPersistent ? 'Save for All Drafts' : 'Save')}
           </button>
         </div>
       </div>
     </div>
   )
 }
-

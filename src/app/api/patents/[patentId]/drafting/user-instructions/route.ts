@@ -4,10 +4,12 @@ import { prisma } from '@/lib/prisma'
 import {
   getUserInstruction,
   getAllUserInstructions,
+  getUserPersistentInstructions,
   deleteUserInstruction,
   deactivateUserInstruction,
   invalidateSessionInstructionCache,
-  cloneInstructionsBetweenSessions
+  invalidateUserInstructionCache,
+  upsertUserInstruction
 } from '@/lib/user-instruction-service'
 
 export const runtime = 'nodejs'
@@ -15,12 +17,13 @@ export const dynamic = 'force-dynamic'
 
 /**
  * GET /api/patents/[patentId]/drafting/user-instructions
- * Get user instructions for a session
+ * Get user instructions for a session (merged with user-level persistent)
  * 
  * Query params:
- * - sessionId: required
+ * - sessionId: optional (if not provided, returns only user-level persistent)
  * - jurisdiction: optional (filter by jurisdiction)
  * - sectionKey: optional (get specific section)
+ * - persistentOnly: optional (if "true", return only user-level persistent instructions)
  */
 export async function GET(
   request: NextRequest,
@@ -36,54 +39,64 @@ export async function GET(
     const sessionId = url.searchParams.get('sessionId')
     const jurisdiction = url.searchParams.get('jurisdiction')
     const sectionKey = url.searchParams.get('sectionKey')
+    const persistentOnly = url.searchParams.get('persistentOnly') === 'true'
 
-    if (!sessionId) {
-      return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
+    const userId = authResult.user.id
+
+    // If persistentOnly, return only user-level instructions
+    if (persistentOnly) {
+      const persistent = await getUserPersistentInstructions(userId, jurisdiction || undefined)
+      
+      const grouped: Record<string, Record<string, any>> = {}
+      for (const instr of persistent) {
+        if (!grouped[instr.jurisdiction]) {
+          grouped[instr.jurisdiction] = {}
+        }
+        grouped[instr.jurisdiction][instr.sectionKey] = {
+          id: instr.id,
+          instruction: instr.instruction,
+          emphasis: instr.emphasis,
+          avoid: instr.avoid,
+          style: instr.style,
+          wordCount: instr.wordCount,
+          isActive: instr.isActive,
+          isPersistent: true,
+          updatedAt: instr.updatedAt
+        }
+      }
+
+      return NextResponse.json({ 
+        instructions: persistent,
+        grouped,
+        userId,
+        jurisdiction: jurisdiction || 'all',
+        persistentOnly: true
+      })
     }
 
-    // Verify session belongs to user
-    const session = await prisma.draftingSession.findFirst({
-      where: {
-        id: sessionId,
-        patentId: params.patentId,
-        userId: authResult.user.id
-      }
-    })
+    // Verify session belongs to user (if sessionId provided)
+    if (sessionId) {
+      const session = await prisma.draftingSession.findFirst({
+        where: {
+          id: sessionId,
+          patentId: params.patentId,
+          userId
+        }
+      })
 
-    if (!session) {
-      return NextResponse.json({ error: 'Session not found' }, { status: 404 })
+      if (!session) {
+        return NextResponse.json({ error: 'Session not found' }, { status: 404 })
+      }
     }
 
     // Get specific section instruction
     if (sectionKey) {
-      const instruction = await getUserInstruction(sessionId, sectionKey, jurisdiction || undefined)
+      const instruction = await getUserInstruction(sessionId, sectionKey, jurisdiction || undefined, userId)
       return NextResponse.json({ instruction })
     }
 
-    // Get all instructions for session
-    let instructions = await getAllUserInstructions(sessionId, jurisdiction || undefined)
-
-    // If none exist for this session, attempt to clone from the latest prior session for this patent/user
-    if (!instructions.length) {
-      const fallbackSession = await prisma.draftingSession.findFirst({
-        where: {
-          patentId: params.patentId,
-          userId: authResult.user.id,
-          NOT: { id: sessionId },
-          userSectionInstructions: { some: {} }
-        },
-        orderBy: { createdAt: 'desc' },
-        select: { id: true }
-      })
-
-      if (fallbackSession?.id) {
-        const copied = await cloneInstructionsBetweenSessions(fallbackSession.id, sessionId)
-        if (copied > 0) {
-          instructions = await getAllUserInstructions(sessionId, jurisdiction || undefined)
-          console.log(`[UserInstructions:GET] Auto-copied ${copied} instructions from ${fallbackSession.id} to ${sessionId}`)
-        }
-      }
-    }
+    // Get all instructions (merged session + user-level)
+    const instructions = await getAllUserInstructions(sessionId, userId, jurisdiction || undefined)
     
     // Group by jurisdiction for easier frontend use
     const grouped: Record<string, Record<string, any>> = {}
@@ -99,6 +112,7 @@ export async function GET(
         style: instr.style,
         wordCount: instr.wordCount,
         isActive: instr.isActive,
+        isPersistent: instr.isPersistent,
         updatedAt: instr.updatedAt
       }
     }
@@ -107,6 +121,7 @@ export async function GET(
       instructions,
       grouped,
       sessionId,
+      userId,
       jurisdiction: jurisdiction || 'all'
     })
   } catch (error) {
@@ -118,6 +133,18 @@ export async function GET(
 /**
  * POST /api/patents/[patentId]/drafting/user-instructions
  * Create or update user instruction
+ * 
+ * Body:
+ * - sessionId: optional (null/omitted = user-level persistent)
+ * - jurisdiction: optional (default "*")
+ * - sectionKey: required
+ * - instruction: required
+ * - emphasis: optional
+ * - avoid: optional
+ * - style: optional
+ * - wordCount: optional
+ * - isActive: optional
+ * - isPersistent: optional (if true, saves as user-level regardless of sessionId)
  */
 export async function POST(
   request: NextRequest,
@@ -130,11 +157,24 @@ export async function POST(
     }
 
     const body = await request.json()
-    const { sessionId, jurisdiction, sectionKey, instruction, emphasis, avoid, style, wordCount, isActive } = body
+    const { 
+      sessionId, 
+      jurisdiction, 
+      sectionKey, 
+      instruction, 
+      emphasis, 
+      avoid, 
+      style, 
+      wordCount, 
+      isActive,
+      isPersistent 
+    } = body
 
-    if (!sessionId || !sectionKey) {
-      return NextResponse.json({ error: 'sessionId and sectionKey required' }, { status: 400 })
+    if (!sectionKey) {
+      return NextResponse.json({ error: 'sectionKey required' }, { status: 400 })
     }
+
+    const userId = authResult.user.id
 
     // Word limit validation (50 words max)
     const MAX_WORDS = 50
@@ -145,24 +185,30 @@ export async function POST(
       }, { status: 400 })
     }
 
-    // Verify session belongs to user
-    const session = await prisma.draftingSession.findFirst({
-      where: {
-        id: sessionId,
-        patentId: params.patentId,
-        userId: authResult.user.id
-      }
-    })
+    // Verify session belongs to user (if sessionId provided and not persistent)
+    if (sessionId && !isPersistent) {
+      const session = await prisma.draftingSession.findFirst({
+        where: {
+          id: sessionId,
+          patentId: params.patentId,
+          userId
+        }
+      })
 
-    if (!session) {
-      return NextResponse.json({ error: 'Session not found' }, { status: 404 })
+      if (!session) {
+        return NextResponse.json({ error: 'Session not found' }, { status: 404 })
+      }
     }
 
-    // Check if we need to update isActive for an existing record
+    // Determine the effective sessionId
+    const effectiveSessionId = isPersistent ? null : (sessionId || null)
     const jurisdictionCode = (jurisdiction || '*').toUpperCase()
+
+    // Check if updating an existing record's isActive status
     const existing = await prisma.userSectionInstruction.findFirst({
       where: {
-        sessionId,
+        userId,
+        sessionId: effectiveSessionId,
         jurisdiction: jurisdictionCode,
         sectionKey
       }
@@ -170,7 +216,7 @@ export async function POST(
 
     let result
     if (existing) {
-      // Update existing - include isActive if provided
+      // Update existing
       result = await prisma.userSectionInstruction.update({
         where: { id: existing.id },
         data: {
@@ -186,7 +232,8 @@ export async function POST(
       // Create new
       result = await prisma.userSectionInstruction.create({
         data: {
-          sessionId,
+          sessionId: effectiveSessionId,
+          userId,
           jurisdiction: jurisdictionCode,
           sectionKey,
           instruction: instruction || '',
@@ -199,13 +246,24 @@ export async function POST(
       })
     }
 
-    // Invalidate cache
-    invalidateSessionInstructionCache(sessionId)
+    // Invalidate caches
+    if (effectiveSessionId) {
+      invalidateSessionInstructionCache(effectiveSessionId)
+    }
+    invalidateUserInstructionCache(userId)
+
+    const savedAsPersistent = result.sessionId === null
+    const scopeDescription = savedAsPersistent 
+      ? `all future ${jurisdictionCode === '*' ? '' : jurisdictionCode + ' '}drafts`
+      : 'this draft only'
 
     return NextResponse.json({ 
       success: true, 
-      instruction: result,
-      message: `Instruction saved for ${sectionKey}${jurisdiction && jurisdiction !== '*' ? ` (${jurisdiction})` : ' (all jurisdictions)'}`
+      instruction: {
+        ...result,
+        isPersistent: savedAsPersistent
+      },
+      message: `Instruction saved for ${sectionKey} (${scopeDescription})`
     })
   } catch (error) {
     console.error('[UserInstructions:POST] error:', error)
@@ -216,6 +274,12 @@ export async function POST(
 /**
  * DELETE /api/patents/[patentId]/drafting/user-instructions
  * Delete or deactivate user instruction
+ * 
+ * Query params:
+ * - id: optional (delete by ID)
+ * - sessionId: optional (for session-level deactivation)
+ * - sectionKey: optional (deactivate by section)
+ * - isPersistent: optional (if "true", delete user-level persistent instruction)
  */
 export async function DELETE(
   request: NextRequest,
@@ -228,38 +292,57 @@ export async function DELETE(
     }
 
     const url = new URL(request.url)
-    const sessionId = url.searchParams.get('sessionId')
     const instructionId = url.searchParams.get('id')
+    const sessionId = url.searchParams.get('sessionId')
     const sectionKey = url.searchParams.get('sectionKey')
-    const jurisdiction = url.searchParams.get('jurisdiction')
+    const isPersistent = url.searchParams.get('isPersistent') === 'true'
 
-    if (!sessionId) {
-      return NextResponse.json({ error: 'sessionId required' }, { status: 400 })
-    }
-
-    // Verify session belongs to user
-    const session = await prisma.draftingSession.findFirst({
-      where: {
-        id: sessionId,
-        patentId: params.patentId,
-        userId: authResult.user.id
-      }
-    })
-
-    if (!session) {
-      return NextResponse.json({ error: 'Session not found' }, { status: 404 })
-    }
+    const userId = authResult.user.id
 
     // Delete by ID
     if (instructionId) {
+      // Verify the instruction belongs to the user
+      const instruction = await prisma.userSectionInstruction.findFirst({
+        where: { id: instructionId, userId }
+      })
+
+      if (!instruction) {
+        return NextResponse.json({ error: 'Instruction not found' }, { status: 404 })
+      }
+
       await deleteUserInstruction(instructionId)
-      return NextResponse.json({ success: true, message: 'Instruction deleted' })
+      return NextResponse.json({ 
+        success: true, 
+        message: instruction.sessionId === null 
+          ? 'Persistent instruction deleted' 
+          : 'Instruction deleted' 
+      })
     }
 
     // Deactivate by section key
     if (sectionKey) {
-      await deactivateUserInstruction(sessionId, sectionKey)
-      return NextResponse.json({ success: true, message: `Instruction deactivated for ${sectionKey}` })
+      // Verify session belongs to user (if sessionId provided)
+      if (sessionId) {
+        const session = await prisma.draftingSession.findFirst({
+          where: {
+            id: sessionId,
+            patentId: params.patentId,
+            userId
+          }
+        })
+
+        if (!session) {
+          return NextResponse.json({ error: 'Session not found' }, { status: 404 })
+        }
+      }
+
+      await deactivateUserInstruction(userId, sectionKey, sessionId || undefined, isPersistent)
+      
+      const scopeMsg = isPersistent ? 'persistent' : (sessionId ? 'session' : 'all')
+      return NextResponse.json({ 
+        success: true, 
+        message: `Instruction deactivated for ${sectionKey} (${scopeMsg})` 
+      })
     }
 
     return NextResponse.json({ error: 'id or sectionKey required' }, { status: 400 })
@@ -268,4 +351,3 @@ export async function DELETE(
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
-

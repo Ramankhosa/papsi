@@ -203,6 +203,9 @@ model User {
   // Ideation relations
   ideationSessions IdeationSession[]
 
+  // User-level section instructions (persistent across sessions)
+  sectionInstructions UserSectionInstruction[]
+
   @@map("users")
 }
 
@@ -2546,12 +2549,14 @@ model CountrySectionPromptHistory {
   @@map("country_section_prompt_history")
 }
 
-// User-specific section instructions per drafting session
-// This allows users to customize prompts for individual drafts
+// User-specific section instructions - can be session-level OR user-level (persistent)
+// - sessionId = null + userId = user-level (persists across all drafts for that jurisdiction)
+// - sessionId = X + userId = session-level (applies only to that specific draft)
 // Supports jurisdiction-specific instructions (different for IN vs US)
 model UserSectionInstruction {
   id           String   @id @default(cuid())
-  sessionId    String   @map("session_id")
+  sessionId    String?  @map("session_id") // NULL = user-level persistent instruction
+  userId       String   @map("user_id")    // Required - owner of the instruction
   jurisdiction String   @default("*") // "*" = all jurisdictions, or specific like "IN", "US"
   sectionKey   String   @map("section_key")
   instruction  String   @db.Text // User's custom instruction for this section
@@ -2563,14 +2568,18 @@ model UserSectionInstruction {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  // Relation to drafting session
-  session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  // Relation to drafting session (optional for user-level instructions)
+  session DraftingSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  // Relation to user
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // Unique per session + jurisdiction + section
-  // User can have different instructions for same section in different jurisdictions
-  @@unique([sessionId, jurisdiction, sectionKey])
+  // Unique per user + optional session + jurisdiction + section
+  // This allows both user-level (sessionId=null) and session-level instructions
+  @@unique([userId, sessionId, jurisdiction, sectionKey])
   @@index([sessionId])
-  @@index([sessionId, jurisdiction])
+  @@index([userId])
+  @@index([userId, jurisdiction])
+  @@index([userId, sessionId, jurisdiction])
   @@index([sectionKey])
   @@map("user_section_instructions")
 }

@@ -3442,7 +3442,7 @@ async function handleStartSession(user: any, patentId: string, data: any) {
     orderBy: { createdAt: 'desc' }
   })
   if (priorSession) {
-    const copied = await cloneInstructionsBetweenSessions(priorSession.id, session.id)
+    const copied = await cloneInstructionsBetweenSessions(priorSession.id, session.id, user.id)
     if (copied > 0) {
       console.log(`[StartSession] Cloned ${copied} user instructions from session ${priorSession.id} to ${session.id}`)
     }

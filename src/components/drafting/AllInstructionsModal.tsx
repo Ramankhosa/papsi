@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback } from 'react'
 
 interface UserInstruction {
   id: string
-  sessionId: string
+  sessionId: string | null
+  userId?: string
   jurisdiction: string
   sectionKey: string
   instruction: string
@@ -13,6 +14,7 @@ interface UserInstruction {
   style?: string
   wordCount?: number
   isActive: boolean
+  isPersistent: boolean // true = user-level (persists across drafts)
   updatedAt: string
 }
 
@@ -74,6 +76,7 @@ export default function AllInstructionsModal({
   const [instructions, setInstructions] = useState<UserInstruction[]>([])
   const [loading, setLoading] = useState(true)
   const [filterJurisdiction, setFilterJurisdiction] = useState<string>('all')
+  const [filterType, setFilterType] = useState<'all' | 'persistent' | 'session'>('all')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
   const [editEmphasis, setEditEmphasis] = useState('')
@@ -85,6 +88,7 @@ export default function AllInstructionsModal({
   const [newInstruction, setNewInstruction] = useState('')
   const [newEmphasis, setNewEmphasis] = useState('')
   const [newAvoid, setNewAvoid] = useState('')
+  const [newIsPersistent, setNewIsPersistent] = useState(false)
   const [togglingId, setTogglingId] = useState<string | null>(null)
   const [bulkOperating, setBulkOperating] = useState(false)
 
@@ -97,7 +101,12 @@ export default function AllInstructionsModal({
       )
       if (response.ok) {
         const data = await response.json()
-        setInstructions(data.instructions || [])
+        // Map the response to include isPersistent
+        const mapped = (data.instructions || []).map((i: any) => ({
+          ...i,
+          isPersistent: i.sessionId === null || i.isPersistent === true
+        }))
+        setInstructions(mapped)
       }
     } catch (err) {
       console.error('Failed to fetch instructions:', err)
@@ -116,13 +125,14 @@ export default function AllInstructionsModal({
   }, [activeJurisdiction])
 
   const handleDelete = async (instruction: UserInstruction) => {
-    if (!confirm(`Delete instruction for "${sectionLabels[instruction.sectionKey] || instruction.sectionKey}"?`)) {
+    const typeLabel = instruction.isPersistent ? 'persistent' : 'session'
+    if (!confirm(`Delete ${typeLabel} instruction for "${sectionLabels[instruction.sectionKey] || instruction.sectionKey}"?`)) {
       return
     }
 
     try {
       await fetch(
-        `/api/patents/${patentId}/drafting/user-instructions?sessionId=${sessionId}&id=${instruction.id}`,
+        `/api/patents/${patentId}/drafting/user-instructions?id=${instruction.id}`,
         {
           method: 'DELETE',
           headers: { 'Authorization': `Bearer ${localStorage.getItem('auth_token')}` }
@@ -145,7 +155,7 @@ export default function AllInstructionsModal({
           'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
         },
         body: JSON.stringify({
-          sessionId,
+          sessionId: instruction.isPersistent ? null : sessionId,
           sectionKey: instruction.sectionKey,
           jurisdiction: instruction.jurisdiction,
           instruction: instruction.instruction,
@@ -153,7 +163,8 @@ export default function AllInstructionsModal({
           avoid: instruction.avoid,
           style: instruction.style,
           wordCount: instruction.wordCount,
-          isActive: !instruction.isActive
+          isActive: !instruction.isActive,
+          isPersistent: instruction.isPersistent
         })
       })
 
@@ -183,12 +194,13 @@ export default function AllInstructionsModal({
           'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
         },
         body: JSON.stringify({
-          sessionId,
+          sessionId: newIsPersistent ? null : sessionId,
           sectionKey: newSectionKey,
           jurisdiction: newJurisdiction,
           instruction: newInstruction.trim(),
           emphasis: newEmphasis.trim() || undefined,
-          avoid: newAvoid.trim() || undefined
+          avoid: newAvoid.trim() || undefined,
+          isPersistent: newIsPersistent
         })
       })
 
@@ -198,6 +210,7 @@ export default function AllInstructionsModal({
         setNewInstruction('')
         setNewEmphasis('')
         setNewAvoid('')
+        setNewIsPersistent(false)
         setShowAddNew(false)
         fetchInstructions()
         onUpdate()
@@ -222,9 +235,7 @@ export default function AllInstructionsModal({
   const handleBulkToggle = async (enableAll: boolean) => {
     if (instructions.length === 0) return
     
-    const targetInstructions = filterJurisdiction === 'all' 
-      ? instructions 
-      : instructions.filter(i => i.jurisdiction === filterJurisdiction || i.jurisdiction === '*')
+    let targetInstructions = filteredInstructions
     
     if (targetInstructions.length === 0) return
     
@@ -240,7 +251,7 @@ export default function AllInstructionsModal({
               'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
             },
             body: JSON.stringify({
-              sessionId,
+              sessionId: instr.isPersistent ? null : sessionId,
               sectionKey: instr.sectionKey,
               jurisdiction: instr.jurisdiction,
               instruction: instr.instruction,
@@ -248,19 +259,18 @@ export default function AllInstructionsModal({
               avoid: instr.avoid,
               style: instr.style,
               wordCount: instr.wordCount,
-              isActive: enableAll
+              isActive: enableAll,
+              isPersistent: instr.isPersistent
             })
           })
         )
       )
       
       // Update local state
-      setInstructions(prev => prev.map(i => {
-        const isTarget = filterJurisdiction === 'all' || 
-          i.jurisdiction === filterJurisdiction || 
-          i.jurisdiction === '*'
-        return isTarget ? { ...i, isActive: enableAll } : i
-      }))
+      const targetIds = new Set(targetInstructions.map(i => i.id))
+      setInstructions(prev => prev.map(i => 
+        targetIds.has(i.id) ? { ...i, isActive: enableAll } : i
+      ))
       onUpdate()
     } catch (err) {
       console.error('Bulk operation failed:', err)
@@ -281,14 +291,15 @@ export default function AllInstructionsModal({
           'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
         },
         body: JSON.stringify({
-          sessionId,
+          sessionId: instruction.isPersistent ? null : sessionId,
           sectionKey: instruction.sectionKey,
           jurisdiction: instruction.jurisdiction,
           instruction: editText.trim(),
           emphasis: editEmphasis.trim() || undefined,
           avoid: editAvoid.trim() || undefined,
           style: instruction.style,
-          wordCount: instruction.wordCount
+          wordCount: instruction.wordCount,
+          isPersistent: instruction.isPersistent
         })
       })
 
@@ -321,20 +332,33 @@ export default function AllInstructionsModal({
     setEditAvoid(instr.avoid || '')
   }
 
-  const filteredInstructions = instructions.filter(i => 
-    filterJurisdiction === 'all' || 
-    i.jurisdiction === filterJurisdiction ||
-    i.jurisdiction === '*'
-  )
+  // Apply filters
+  const filteredInstructions = instructions.filter(i => {
+    // Jurisdiction filter
+    const jurisdictionMatch = filterJurisdiction === 'all' || 
+      i.jurisdiction === filterJurisdiction ||
+      i.jurisdiction === '*'
+    
+    // Type filter (persistent vs session)
+    const typeMatch = filterType === 'all' ||
+      (filterType === 'persistent' && i.isPersistent) ||
+      (filterType === 'session' && !i.isPersistent)
+    
+    return jurisdictionMatch && typeMatch
+  })
 
   // Count active/inactive for current filter
   const activeCount = filteredInstructions.filter(i => i.isActive).length
   const inactiveCount = filteredInstructions.length - activeCount
+  const persistentCount = instructions.filter(i => i.isPersistent).length
+  const sessionCount = instructions.filter(i => !i.isPersistent).length
 
-  // Group by jurisdiction
+  // Group by jurisdiction, then by persistent/session
   const grouped: Record<string, UserInstruction[]> = {}
   for (const instr of filteredInstructions) {
-    const key = instr.jurisdiction === '*' ? '🌐 All Jurisdictions' : `🎯 ${instr.jurisdiction}`
+    const persistentLabel = instr.isPersistent ? '💾 Persistent' : '📝 This Draft Only'
+    const jurisdictionLabel = instr.jurisdiction === '*' ? '🌐 All Jurisdictions' : `🎯 ${instr.jurisdiction}`
+    const key = `${persistentLabel} • ${jurisdictionLabel}`
     if (!grouped[key]) grouped[key] = []
     grouped[key].push(instr)
   }
@@ -347,7 +371,9 @@ export default function AllInstructionsModal({
           <div>
             <h2 className="text-xl font-bold text-white">📋 Custom Instructions</h2>
             <p className="text-sm text-slate-400">
-              {instructions.length} instruction{instructions.length !== 1 ? 's' : ''} saved
+              {instructions.length} instruction{instructions.length !== 1 ? 's' : ''} 
+              {persistentCount > 0 && <span className="text-violet-400"> • {persistentCount} persistent</span>}
+              {sessionCount > 0 && <span className="text-blue-400"> • {sessionCount} session-only</span>}
             </p>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-white p-2">
@@ -371,6 +397,17 @@ export default function AllInstructionsModal({
               {availableJurisdictions.map(j => (
                 <option key={j} value={j}>{j}</option>
               ))}
+            </select>
+            
+            {/* Type filter */}
+            <select
+              value={filterType}
+              onChange={(e) => setFilterType(e.target.value as any)}
+              className="px-3 py-1.5 bg-slate-700 border border-slate-600 rounded-lg text-sm text-white focus:border-violet-500 focus:outline-none"
+            >
+              <option value="all">All Types</option>
+              <option value="persistent">💾 Persistent Only</option>
+              <option value="session">📝 This Draft Only</option>
             </select>
             
             {/* Bulk Enable/Disable buttons */}
@@ -449,6 +486,27 @@ export default function AllInstructionsModal({
                 </div>
               </div>
 
+              {/* Persistent toggle */}
+              <div className="mb-3 p-2 bg-slate-700/50 rounded-lg">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={newIsPersistent}
+                    onChange={(e) => setNewIsPersistent(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-600 bg-slate-700 text-violet-500 focus:ring-violet-500 focus:ring-offset-0"
+                  />
+                  <span className="text-xs text-slate-300 font-medium">
+                    💾 Save for all future drafts
+                  </span>
+                </label>
+                <p className="text-[10px] text-slate-500 mt-1 ml-6">
+                  {newIsPersistent 
+                    ? `This instruction will automatically apply to all your new ${newJurisdiction === '*' ? '' : newJurisdiction + ' '}patent drafts`
+                    : 'This instruction will only apply to this draft'
+                  }
+                </p>
+              </div>
+
               <div className="mb-3">
                 <div className="flex items-center justify-between mb-1">
                   <label className="block text-xs text-slate-400">Instruction *</label>
@@ -507,7 +565,7 @@ export default function AllInstructionsModal({
                   disabled={saving || !newSectionKey || !newInstruction.trim() || countWords(newInstruction) > MAX_INSTRUCTION_WORDS}
                   className="px-4 py-2 bg-violet-600 hover:bg-violet-500 text-white text-sm rounded-lg font-medium disabled:opacity-50"
                 >
-                  {saving ? 'Adding...' : 'Add Instruction'}
+                  {saving ? 'Adding...' : (newIsPersistent ? 'Add Persistent' : 'Add Instruction')}
                 </button>
               </div>
             </div>
@@ -521,6 +579,7 @@ export default function AllInstructionsModal({
                 {ALL_SECTIONS.map(sectionKey => {
                   const hasInstruction = instructions.some(i => i.sectionKey === sectionKey)
                   const isActive = instructions.some(i => i.sectionKey === sectionKey && i.isActive)
+                  const hasPersistent = instructions.some(i => i.sectionKey === sectionKey && i.isPersistent)
                   const icon = SECTION_ICONS[sectionKey] || '📌'
                   
                   return (
@@ -533,12 +592,15 @@ export default function AllInstructionsModal({
                             : 'bg-slate-700 text-slate-500'
                           : 'bg-slate-800 text-slate-600'
                       }`}
-                      title={`${sectionLabels[sectionKey] || sectionKey}: ${hasInstruction ? (isActive ? 'Active' : 'Disabled') : 'No instruction'}`}
+                      title={`${sectionLabels[sectionKey] || sectionKey}: ${hasInstruction ? (isActive ? 'Active' : 'Disabled') : 'No instruction'}${hasPersistent ? ' (persistent)' : ''}`}
                     >
                       <span>{icon}</span>
                       <span className="hidden sm:inline">{sectionLabels[sectionKey]?.split(' ')[0] || sectionKey.substring(0, 8)}</span>
                       {hasInstruction && (
                         <span className={`w-1.5 h-1.5 rounded-full ${isActive ? 'bg-emerald-400' : 'bg-slate-500'}`} />
+                      )}
+                      {hasPersistent && (
+                        <span className="text-violet-400 text-[10px]">💾</span>
                       )}
                     </div>
                   )
@@ -548,6 +610,7 @@ export default function AllInstructionsModal({
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400 mr-1" /> Active
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-slate-500 mx-1 ml-3" /> Disabled
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-slate-700 mx-1 ml-3" /> No instruction
+                <span className="ml-3">💾 Persistent</span>
               </p>
             </div>
           )}
@@ -562,6 +625,8 @@ export default function AllInstructionsModal({
               <h3 className="text-lg font-medium text-white mb-2">No custom instructions yet</h3>
               <p className="text-sm text-slate-400 max-w-md mx-auto mb-4">
                 Add custom instructions to guide the AI when generating patent sections.
+                <br />
+                <span className="text-violet-400">💾 Persistent instructions</span> will apply to all your future drafts.
               </p>
               <button
                 onClick={() => setShowAddNew(true)}
@@ -576,10 +641,10 @@ export default function AllInstructionsModal({
             </div>
           ) : (
             <div className="space-y-6">
-              {Object.entries(grouped).map(([jurisdictionLabel, instrs]) => (
-                <div key={jurisdictionLabel}>
+              {Object.entries(grouped).map(([groupLabel, instrs]) => (
+                <div key={groupLabel}>
                   <h3 className="text-sm font-medium text-slate-400 mb-3 flex items-center gap-2">
-                    {jurisdictionLabel}
+                    {groupLabel}
                     <span className="px-2 py-0.5 bg-slate-800 rounded text-xs">
                       {instrs.length}
                     </span>
@@ -590,7 +655,9 @@ export default function AllInstructionsModal({
                         key={instr.id}
                         className={`bg-slate-800 rounded-lg p-4 border transition ${
                           instr.isActive 
-                            ? 'border-slate-700 hover:border-slate-600' 
+                            ? instr.isPersistent
+                              ? 'border-violet-500/30 hover:border-violet-500/50'
+                              : 'border-slate-700 hover:border-slate-600'
                             : 'border-slate-700/50 opacity-60'
                         }`}
                       >
@@ -604,6 +671,12 @@ export default function AllInstructionsModal({
                                 <span className="font-medium text-white">
                                   {sectionLabels[instr.sectionKey] || instr.sectionKey}
                                 </span>
+                                {/* Persistent badge */}
+                                {instr.isPersistent && (
+                                  <span className="text-xs px-2 py-0.5 bg-violet-500/20 text-violet-400 rounded font-medium">
+                                    💾 Persistent
+                                  </span>
+                                )}
                                 {/* Enable/Disable Toggle */}
                                 <button
                                   onClick={() => handleToggleActive(instr)}
@@ -704,6 +777,7 @@ export default function AllInstructionsModal({
                               
                               <p className="text-xs text-slate-500 mt-2">
                                 Updated {new Date(instr.updatedAt).toLocaleDateString()}
+                                {instr.isPersistent && <span className="text-violet-400"> • Applies to all drafts</span>}
                               </p>
                             </div>
                           </div>
@@ -745,7 +819,7 @@ export default function AllInstructionsModal({
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-4">
               <span className="text-xs text-slate-500">
-                💡 Instructions are applied with highest priority during generation
+                💡 <span className="text-violet-400">Persistent</span> instructions apply to all future drafts
               </span>
               {instructions.length > 0 && (
                 <span className="text-xs px-2 py-0.5 bg-slate-700 rounded text-slate-400">
@@ -775,4 +849,3 @@ export default function AllInstructionsModal({
     </div>
   )
 }
-
