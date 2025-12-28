@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 
 interface UserInstruction {
   id?: string
@@ -58,10 +59,17 @@ export default function SectionInstructionPopover({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const popoverRef = useRef<HTMLDivElement>(null)
+  const [mounted, setMounted] = useState(false)
 
   // Word count validation
   const instructionWordCount = countWords(instruction)
   const isOverLimit = instructionWordCount > MAX_INSTRUCTION_WORDS
+
+  // Mount check for portal
+  useEffect(() => {
+    setMounted(true)
+    return () => setMounted(false)
+  }, [])
 
   // Close on click outside
   useEffect(() => {
@@ -171,15 +179,16 @@ export default function SectionInstructionPopover({
   const hasExistingGlobal = globalInstruction && globalInstruction.instruction
   const hasExistingJurisdiction = existingInstruction && existingInstruction.jurisdiction !== '*' && existingInstruction.instruction
 
-  return (
+  const popoverContent = (
     <div
       ref={popoverRef}
-      className="fixed z-50 mt-1 w-96 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-4"
+      className="fixed z-[9999] w-96 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl p-4"
       style={{
-        // Fixed positioning ensures consistent placement regardless of section title length
-        right: '24px', // Margin from right edge to avoid scrollbars
-        // Ensure it doesn't exceed viewport bounds on small screens
-        maxWidth: 'calc(100vw - 48px)'
+        // Position in the center-right of the viewport for consistent visibility
+        top: '120px',
+        right: '24px',
+        maxHeight: 'calc(100vh - 140px)',
+        overflowY: 'auto'
       }}
     >
       {/* Header */}
@@ -435,5 +444,20 @@ export default function SectionInstructionPopover({
         </div>
       </div>
     </div>
+  )
+
+  // Render using portal to ensure it's always on top and positioned correctly
+  if (!mounted) return null
+
+  return createPortal(
+    <>
+      {/* Backdrop overlay */}
+      <div 
+        className="fixed inset-0 bg-black/20 z-[9998]" 
+        onClick={onClose}
+      />
+      {popoverContent}
+    </>,
+    document.body
   )
 }
