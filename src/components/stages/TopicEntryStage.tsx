@@ -1,0 +1,1516 @@
+'use client';
+
+import { useEffect, useMemo, useState, useCallback, useRef, TextareaHTMLAttributes } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import {
+  Sparkles,
+  Check,
+  X,
+  Loader2,
+  Lightbulb,
+  BookOpen,
+  Target,
+  FlaskConical,
+  Tags,
+  FileText,
+  ChevronDown,
+  ChevronRight,
+  Wand2,
+  GraduationCap,
+  Rocket,
+  HelpCircle,
+  Database,
+  Beaker,
+  Brain,
+  ArrowRight,
+  ArrowLeft,
+  MessageSquare,
+  CheckCircle2,
+  Circle,
+  PenLine,
+  Compass,
+  Users,
+  BarChart3
+} from 'lucide-react';
+
+// ============================================================================
+// Auto-Resize Textarea Component
+// ============================================================================
+
+interface AutoResizeTextareaProps extends Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, 'rows'> {
+  minRows?: number;
+  maxRows?: number;
+}
+
+function AutoResizeTextarea({ 
+  minRows = 2, 
+  maxRows = 12, 
+  value, 
+  className = '',
+  ...props 
+}: AutoResizeTextareaProps) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const adjustHeight = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    // Reset height to auto to get the correct scrollHeight
+    textarea.style.height = 'auto';
+    
+    // Calculate line height (approx 24px per line)
+    const lineHeight = 24;
+    const minHeight = minRows * lineHeight + 24; // +24 for padding
+    const maxHeight = maxRows * lineHeight + 24;
+    
+    // Set new height based on content
+    const newHeight = Math.min(Math.max(textarea.scrollHeight, minHeight), maxHeight);
+    textarea.style.height = `${newHeight}px`;
+  }, [minRows, maxRows]);
+
+  // Adjust height on value change
+  useEffect(() => {
+    adjustHeight();
+  }, [value, adjustHeight]);
+
+  // Adjust on mount
+  useEffect(() => {
+    adjustHeight();
+  }, [adjustHeight]);
+
+  return (
+    <textarea
+      ref={textareaRef}
+      value={value}
+      className={`${className} overflow-y-auto transition-[height] duration-200`}
+      style={{ minHeight: `${minRows * 24 + 24}px` }}
+      {...props}
+    />
+  );
+}
+
+// ============================================================================
+// Types & Constants
+// ============================================================================
+
+interface TopicEntryStageProps {
+  sessionId: string;
+  authToken: string | null;
+  onTopicSaved?: (topic: any) => void;
+}
+
+type UserMode = 'select' | 'expert' | 'guided';
+type GuidedStep = 'basics' | 'question' | 'methodology' | 'data' | 'review';
+
+interface ResearchSegments {
+  // Basic Info Segment
+  basics: {
+    title: string;
+    field: string;
+    subfield: string;
+    topicDescription: string;
+  };
+  // Research Question Segment
+  question: {
+    mainQuestion: string;
+    subQuestions: string[];
+    problemStatement: string;
+    researchGaps: string;
+  };
+  // Methodology Segment
+  methodology: {
+    type: string;
+    approach: string;
+    techniques: string[];
+    justification: string;
+  };
+  // Data & Experimentation Segment
+  data: {
+    datasetDescription: string;
+    dataCollection: string;
+    sampleSize: string;
+    tools: string[];
+    experiments: string;
+  };
+  // Expected Outcomes Segment
+  outcomes: {
+    hypothesis: string;
+    expectedResults: string;
+    contributionType: string;
+    novelty: string;
+    limitations: string;
+  };
+  // Keywords
+  keywords: string[];
+  // Abstract Draft
+  abstractDraft: string;
+}
+
+const EMPTY_SEGMENTS: ResearchSegments = {
+  basics: { title: '', field: '', subfield: '', topicDescription: '' },
+  question: { mainQuestion: '', subQuestions: [], problemStatement: '', researchGaps: '' },
+  methodology: { type: 'QUALITATIVE', approach: '', techniques: [], justification: '' },
+  data: { datasetDescription: '', dataCollection: '', sampleSize: '', tools: [], experiments: '' },
+  outcomes: { hypothesis: '', expectedResults: '', contributionType: 'EMPIRICAL', novelty: '', limitations: '' },
+  keywords: [],
+  abstractDraft: ''
+};
+
+const METHODOLOGIES = [
+  { value: 'QUALITATIVE', label: 'Qualitative', description: 'In-depth understanding through interviews, observations', icon: MessageSquare },
+  { value: 'QUANTITATIVE', label: 'Quantitative', description: 'Statistical analysis and measurable data', icon: BarChart3 },
+  { value: 'MIXED_METHODS', label: 'Mixed Methods', description: 'Combining qualitative and quantitative', icon: Compass },
+  { value: 'THEORETICAL', label: 'Theoretical', description: 'Conceptual frameworks and theory development', icon: Brain },
+  { value: 'CASE_STUDY', label: 'Case Study', description: 'In-depth investigation of specific cases', icon: Target },
+  { value: 'EXPERIMENTAL', label: 'Experimental', description: 'Controlled experiments with variables', icon: Beaker },
+  { value: 'SURVEY', label: 'Survey', description: 'Data collection through questionnaires', icon: Users },
+  { value: 'ACTION_RESEARCH', label: 'Action Research', description: 'Participatory research for social change', icon: Rocket }
+];
+
+const CONTRIBUTIONS = [
+  { value: 'THEORETICAL', label: 'Theoretical', description: 'New theories or conceptual frameworks' },
+  { value: 'EMPIRICAL', label: 'Empirical', description: 'Data-driven insights and findings' },
+  { value: 'METHODOLOGICAL', label: 'Methodological', description: 'New methods or techniques' },
+  { value: 'APPLIED', label: 'Applied', description: 'Practical applications and solutions' },
+  { value: 'REVIEW', label: 'Review', description: 'Synthesis of existing literature' },
+  { value: 'CONCEPTUAL', label: 'Conceptual', description: 'New conceptualizations or models' }
+];
+
+const RESEARCH_FIELDS = [
+  'Computer Science', 'Engineering', 'Medicine', 'Physics', 'Chemistry', 'Biology',
+  'Mathematics', 'Economics', 'Psychology', 'Sociology', 'Education', 'Law',
+  'Business', 'Arts & Humanities', 'Environmental Science', 'Other'
+];
+
+const GUIDED_STEPS: { key: GuidedStep; label: string; description: string; icon: any }[] = [
+  { key: 'basics', label: 'Basic Info', description: 'Topic and field', icon: Lightbulb },
+  { key: 'question', label: 'Research Question', description: 'What you want to find', icon: Target },
+  { key: 'methodology', label: 'Methodology', description: 'How you will research', icon: FlaskConical },
+  { key: 'data', label: 'Data & Tools', description: 'What you will use', icon: Database },
+  { key: 'review', label: 'Review', description: 'Confirm details', icon: CheckCircle2 }
+];
+
+// ============================================================================
+// Helper Components
+// ============================================================================
+
+function ModeSelector({ onSelect }: { onSelect: (mode: 'expert' | 'guided') => void }) {
+  return (
+    <div className="max-w-3xl mx-auto">
+      <div className="text-center mb-10">
+        <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 shadow-lg shadow-amber-500/30 mb-6">
+          <Lightbulb className="w-8 h-8 text-white" />
+        </div>
+        <h1 className="text-3xl font-bold text-slate-900 mb-3">
+          Define Your Research Topic
+        </h1>
+        <p className="text-lg text-slate-600 max-w-xl mx-auto">
+          Tell us about your research. Choose the path that best matches your current stage.
+        </p>
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-6">
+        {/* Expert Mode */}
+        <motion.button
+          whileHover={{ y: -4, scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          onClick={() => onSelect('expert')}
+          className="relative p-8 bg-white rounded-2xl border-2 border-slate-200 hover:border-emerald-400 hover:shadow-xl transition-all text-left group"
+        >
+          <div className="absolute top-4 right-4 px-3 py-1 bg-emerald-100 text-emerald-700 text-xs font-semibold rounded-full">
+            Recommended for experienced researchers
+          </div>
+          
+          <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-emerald-400 to-teal-500 flex items-center justify-center mb-5 group-hover:scale-110 transition-transform">
+            <Rocket className="w-7 h-7 text-white" />
+          </div>
+          
+          <h3 className="text-xl font-bold text-slate-900 mb-2">
+            I Know What I Need
+          </h3>
+          
+          <p className="text-slate-600 mb-4">
+            You have clear research questions, methodology plans, and know your datasets. 
+            Provide all details at once in a comprehensive form.
+          </p>
+          
+          <ul className="space-y-2 text-sm text-slate-500">
+            <li className="flex items-center gap-2">
+              <Check className="w-4 h-4 text-emerald-500" />
+              Complete form with all fields
+            </li>
+            <li className="flex items-center gap-2">
+              <Check className="w-4 h-4 text-emerald-500" />
+              AI refinement available
+            </li>
+            <li className="flex items-center gap-2">
+              <Check className="w-4 h-4 text-emerald-500" />
+              Fast, efficient entry
+            </li>
+          </ul>
+
+          <div className="mt-6 flex items-center gap-2 text-emerald-600 font-medium">
+            Get Started <ArrowRight className="w-4 h-4" />
+          </div>
+        </motion.button>
+
+        {/* Guided Mode */}
+        <motion.button
+          whileHover={{ y: -4, scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          onClick={() => onSelect('guided')}
+          className="relative p-8 bg-white rounded-2xl border-2 border-slate-200 hover:border-blue-400 hover:shadow-xl transition-all text-left group"
+        >
+          <div className="absolute top-4 right-4 px-3 py-1 bg-blue-100 text-blue-700 text-xs font-semibold rounded-full">
+            Ideal for those starting out
+          </div>
+          
+          <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center mb-5 group-hover:scale-110 transition-transform">
+            <HelpCircle className="w-7 h-7 text-white" />
+          </div>
+          
+          <h3 className="text-xl font-bold text-slate-900 mb-2">
+            I Need Some Guidance
+          </h3>
+          
+          <p className="text-slate-600 mb-4">
+            You have a topic idea but need help structuring your research. 
+            We'll guide you step by step with AI assistance.
+          </p>
+          
+          <ul className="space-y-2 text-sm text-slate-500">
+            <li className="flex items-center gap-2">
+              <Check className="w-4 h-4 text-blue-500" />
+              Step-by-step wizard
+            </li>
+            <li className="flex items-center gap-2">
+              <Check className="w-4 h-4 text-blue-500" />
+              AI suggestions at each step
+            </li>
+            <li className="flex items-center gap-2">
+              <Check className="w-4 h-4 text-blue-500" />
+              Clarifying questions
+            </li>
+          </ul>
+
+          <div className="mt-6 flex items-center gap-2 text-blue-600 font-medium">
+            Start Guided Flow <ArrowRight className="w-4 h-4" />
+          </div>
+        </motion.button>
+      </div>
+    </div>
+  );
+}
+
+function StepProgress({ currentStep, steps }: { currentStep: GuidedStep; steps: typeof GUIDED_STEPS }) {
+  const currentIndex = steps.findIndex(s => s.key === currentStep);
+
+  return (
+    <div className="flex items-center justify-center gap-2 mb-8">
+      {steps.map((step, index) => {
+        const isActive = step.key === currentStep;
+        const isCompleted = index < currentIndex;
+        const Icon = step.icon;
+
+        return (
+          <div key={step.key} className="flex items-center">
+            <div className={`
+              flex items-center gap-2 px-4 py-2 rounded-full transition-all
+              ${isActive 
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30' 
+                : isCompleted 
+                  ? 'bg-emerald-100 text-emerald-700' 
+                  : 'bg-slate-100 text-slate-400'
+              }
+            `}>
+              {isCompleted ? (
+                <Check className="w-4 h-4" />
+              ) : (
+                <Icon className="w-4 h-4" />
+              )}
+              <span className="text-sm font-medium hidden sm:inline">{step.label}</span>
+            </div>
+            {index < steps.length - 1 && (
+              <ChevronRight className={`w-4 h-4 mx-1 ${isCompleted ? 'text-emerald-400' : 'text-slate-300'}`} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AIAssistButton({ onClick, loading, label = 'Get AI Help' }: { onClick: () => void; loading: boolean; label?: string }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={loading}
+      className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl font-medium text-sm hover:from-violet-600 hover:to-purple-700 transition-all shadow-lg shadow-violet-500/30 disabled:opacity-50"
+    >
+      {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+      {label}
+    </button>
+  );
+}
+
+function KeywordInput({ keywords, onAdd, onRemove }: { keywords: string[]; onAdd: (kw: string) => void; onRemove: (kw: string) => void }) {
+  const [input, setInput] = useState('');
+
+  const handleAdd = () => {
+    if (input.trim()) {
+      onAdd(input.trim());
+      setInput('');
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-3">
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          placeholder="Type a keyword and press Enter"
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAdd(); } }}
+          className="flex-1 px-4 py-2.5 text-sm bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+        />
+        <button onClick={handleAdd} className="px-4 py-2.5 text-sm font-medium text-white bg-slate-800 rounded-xl hover:bg-slate-700">
+          Add
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <AnimatePresence>
+          {keywords.map(kw => (
+            <motion.span
+              key={kw}
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.8 }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium bg-blue-50 text-blue-700 border border-blue-200 rounded-full"
+            >
+              {kw}
+              <button onClick={() => onRemove(kw)} className="w-4 h-4 rounded-full bg-blue-200 hover:bg-red-400 hover:text-white flex items-center justify-center">
+                <X className="w-2.5 h-2.5" />
+              </button>
+            </motion.span>
+          ))}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Main Component
+// ============================================================================
+
+export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: TopicEntryStageProps) {
+  const [mode, setMode] = useState<UserMode>('select');
+  const [guidedStep, setGuidedStep] = useState<GuidedStep>('basics');
+  const [segments, setSegments] = useState<ResearchSegments>(EMPTY_SEGMENTS);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [aiSuggestions, setAiSuggestions] = useState<any>(null);
+  const [paperTypeCode, setPaperTypeCode] = useState<string | null>(null);
+
+  // ============================================================================
+  // Data Loading
+  // ============================================================================
+
+  useEffect(() => {
+    const loadData = async () => {
+      if (!sessionId || !authToken) return;
+      
+      try {
+        setLoading(true);
+        const [topicRes, sessionRes] = await Promise.all([
+          fetch(`/api/papers/${sessionId}/topic`, { headers: { Authorization: `Bearer ${authToken}` } }),
+          fetch(`/api/papers/${sessionId}`, { headers: { Authorization: `Bearer ${authToken}` } })
+        ]);
+
+        if (sessionRes.ok) {
+          const data = await sessionRes.json();
+          setPaperTypeCode(data.session?.paperType?.code || null);
+        }
+
+        if (topicRes.ok) {
+          const data = await topicRes.json();
+          const topic = data?.topic;
+          if (topic) {
+            // Map existing topic data to segments
+            setSegments({
+              basics: {
+                title: topic.title || '',
+                field: topic.field || '',
+                subfield: topic.subfield || '',
+                topicDescription: topic.topicDescription || ''
+              },
+              question: {
+                mainQuestion: topic.researchQuestion || '',
+                subQuestions: topic.subQuestions || [],
+                problemStatement: topic.problemStatement || '',
+                researchGaps: topic.researchGaps || ''
+              },
+              methodology: {
+                type: topic.methodology || 'QUALITATIVE',
+                approach: topic.methodologyApproach || '',
+                techniques: topic.techniques || [],
+                justification: topic.methodologyJustification || ''
+              },
+              data: {
+                datasetDescription: topic.datasetDescription || '',
+                dataCollection: topic.dataCollection || '',
+                sampleSize: topic.sampleSize || '',
+                tools: topic.tools || [],
+                experiments: topic.experiments || ''
+              },
+              outcomes: {
+                hypothesis: topic.hypothesis || '',
+                expectedResults: topic.expectedResults || '',
+                contributionType: topic.contributionType || 'EMPIRICAL',
+                novelty: topic.novelty || '',
+                limitations: topic.limitations || ''
+              },
+              keywords: topic.keywords || [],
+              abstractDraft: topic.abstractDraft || ''
+            });
+            // If data exists, skip mode selection
+            if (topic.researchQuestion || topic.title) {
+              setMode('expert');
+            }
+          }
+        }
+      } catch (err) {
+        setError('Failed to load topic data');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, [sessionId, authToken]);
+
+  // ============================================================================
+  // Handlers
+  // ============================================================================
+
+  const updateSegment = useCallback(<K extends keyof ResearchSegments>(
+    segment: K,
+    updates: Partial<ResearchSegments[K]>
+  ) => {
+    setSegments(prev => ({
+      ...prev,
+      [segment]: typeof prev[segment] === 'object' && !Array.isArray(prev[segment])
+        ? { ...prev[segment], ...updates }
+        : updates
+    }));
+  }, []);
+
+  const addKeyword = useCallback((keyword: string) => {
+    setSegments(prev => ({
+      ...prev,
+      keywords: Array.from(new Set([...prev.keywords, keyword]))
+    }));
+  }, []);
+
+  const removeKeyword = useCallback((keyword: string) => {
+    setSegments(prev => ({
+      ...prev,
+      keywords: prev.keywords.filter(k => k !== keyword)
+    }));
+  }, []);
+
+  const handleSave = async () => {
+    try {
+      setSaving(true);
+      setError(null);
+      setSuccess(null);
+
+      // Flatten segments for API
+      const payload = {
+        title: segments.basics.title,
+        field: segments.basics.field,
+        subfield: segments.basics.subfield,
+        topicDescription: segments.basics.topicDescription,
+        researchQuestion: segments.question.mainQuestion,
+        subQuestions: segments.question.subQuestions,
+        problemStatement: segments.question.problemStatement,
+        researchGaps: segments.question.researchGaps,
+        methodology: segments.methodology.type,
+        methodologyApproach: segments.methodology.approach,
+        techniques: segments.methodology.techniques,
+        methodologyJustification: segments.methodology.justification,
+        datasetDescription: segments.data.datasetDescription,
+        dataCollection: segments.data.dataCollection,
+        sampleSize: segments.data.sampleSize,
+        tools: segments.data.tools,
+        experiments: segments.data.experiments,
+        hypothesis: segments.outcomes.hypothesis,
+        expectedResults: segments.outcomes.expectedResults,
+        contributionType: segments.outcomes.contributionType,
+        novelty: segments.outcomes.novelty,
+        limitations: segments.outcomes.limitations,
+        keywords: segments.keywords,
+        abstractDraft: segments.abstractDraft
+      };
+
+      const response = await fetch(`/api/papers/${sessionId}/topic`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Failed to save topic');
+      }
+
+      const data = await response.json();
+      setSuccess('Research topic saved successfully!');
+      onTopicSaved?.(data.topic);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save topic');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const runAIAssist = async (action: string, context?: any) => {
+    if (!authToken) return;
+    
+    try {
+      setAiLoading(true);
+      setAiSuggestions(null);
+
+      // Flatten the segments structure for the API
+      // The API expects flat string fields, not nested objects
+      const flattenedData = {
+        action,
+        // Basic info
+        title: segments.basics.title,
+        field: segments.basics.field,
+        subfield: segments.basics.subfield,
+        topicDescription: segments.basics.topicDescription,
+        // Research question
+        researchQuestion: segments.question.mainQuestion,
+        problemStatement: segments.question.problemStatement,
+        researchGaps: segments.question.researchGaps,
+        // Methodology - flatten to strings
+        methodology: segments.methodology.type,
+        methodologyApproach: segments.methodology.approach,
+        // Data
+        datasetDescription: segments.data.datasetDescription,
+        // Outcomes
+        hypothesis: segments.outcomes.hypothesis,
+        expectedResults: segments.outcomes.expectedResults,
+        contributionType: segments.outcomes.contributionType,
+        novelty: segments.outcomes.novelty,
+        // Keywords and abstract
+        keywords: segments.keywords,
+        abstractDraft: segments.abstractDraft,
+        // Additional context
+        context: context || {}
+      };
+
+      const response = await fetch(`/api/papers/${sessionId}/topic/assist`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify(flattenedData)
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'AI request failed');
+
+      setAiSuggestions(data.result);
+
+      // Auto-apply suggestions based on action
+      if (action === 'suggest_keywords' && Array.isArray(data.result?.keywords)) {
+        data.result.keywords.forEach((kw: string) => addKeyword(kw));
+      }
+      if (action === 'refine_question' && data.result?.researchQuestion) {
+        updateSegment('question', { mainQuestion: data.result.researchQuestion });
+      }
+      if (action === 'generate_hypothesis' && data.result?.hypothesis) {
+        updateSegment('outcomes', { hypothesis: data.result.hypothesis });
+      }
+      if (action === 'draft_abstract' && data.result?.abstractDraft) {
+        setSegments(prev => ({ ...prev, abstractDraft: data.result.abstractDraft }));
+      }
+      // Handle suggest_all (AI Enhance All) - apply all returned suggestions
+      if (action === 'suggest_all' && data.result) {
+        const result = data.result;
+        setSegments(prev => {
+          const updated = { ...prev };
+          
+          // Update title if provided
+          if (result.title) {
+            updated.basics = { ...updated.basics, title: result.title };
+          }
+          
+          // Update research question if provided
+          if (result.researchQuestion) {
+            updated.question = { ...updated.question, mainQuestion: result.researchQuestion };
+          }
+          
+          // Update hypothesis if provided
+          if (result.hypothesis) {
+            updated.outcomes = { ...updated.outcomes, hypothesis: result.hypothesis };
+          }
+          
+          // Update keywords if provided (merge with existing)
+          if (Array.isArray(result.keywords) && result.keywords.length > 0) {
+            const existingKeywords = new Set(updated.keywords);
+            result.keywords.forEach((kw: string) => existingKeywords.add(kw));
+            updated.keywords = Array.from(existingKeywords);
+          }
+          
+          // Update methodology suggestions if provided
+          if (result.methodologySuggestions) {
+            updated.methodology = { 
+              ...updated.methodology, 
+              approach: updated.methodology.approach 
+                ? `${updated.methodology.approach}\n\n📝 AI Suggestions:\n${result.methodologySuggestions}`
+                : result.methodologySuggestions 
+            };
+          }
+          
+          // Update research gaps if provided
+          if (Array.isArray(result.gaps) && result.gaps.length > 0) {
+            const gapsText = result.gaps.join('\n• ');
+            updated.question = {
+              ...updated.question,
+              researchGaps: updated.question.researchGaps 
+                ? `${updated.question.researchGaps}\n\n📝 AI Identified Gaps:\n• ${gapsText}`
+                : `• ${gapsText}`
+            };
+          }
+          
+          return updated;
+        });
+        
+        // Show success notification for applied changes
+        const appliedFields: string[] = [];
+        if (result.title) appliedFields.push('title');
+        if (result.researchQuestion) appliedFields.push('research question');
+        if (result.hypothesis) appliedFields.push('hypothesis');
+        if (result.keywords?.length) appliedFields.push(`${result.keywords.length} keywords`);
+        if (result.methodologySuggestions) appliedFields.push('methodology suggestions');
+        if (result.gaps?.length) appliedFields.push(`${result.gaps.length} research gaps`);
+        
+        if (appliedFields.length > 0) {
+          console.log(`[AI Enhance] Applied: ${appliedFields.join(', ')}`);
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'AI request failed');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
+  const goToNextStep = () => {
+    const idx = GUIDED_STEPS.findIndex(s => s.key === guidedStep);
+    if (idx < GUIDED_STEPS.length - 1) {
+      setGuidedStep(GUIDED_STEPS[idx + 1].key);
+    }
+  };
+
+  const goToPrevStep = () => {
+    const idx = GUIDED_STEPS.findIndex(s => s.key === guidedStep);
+    if (idx > 0) {
+      setGuidedStep(GUIDED_STEPS[idx - 1].key);
+    }
+  };
+
+  // ============================================================================
+  // Validation
+  // ============================================================================
+
+  const isValid = useMemo(() => {
+    return segments.question.mainQuestion.length >= 20 && segments.keywords.length >= 3;
+  }, [segments]);
+
+  // ============================================================================
+  // Render
+  // ============================================================================
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-full border-4 border-slate-200 border-t-amber-500 animate-spin" />
+          <p className="text-slate-500 text-sm">Loading research topic...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 lg:p-8">
+      <AnimatePresence mode="wait">
+        {/* Mode Selection */}
+        {mode === 'select' && (
+          <motion.div
+            key="select"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+          >
+            <ModeSelector onSelect={(m) => setMode(m)} />
+          </motion.div>
+        )}
+
+        {/* Expert Mode - Comprehensive Form */}
+        {mode === 'expert' && (
+          <motion.div
+            key="expert"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="max-w-4xl mx-auto"
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between mb-8">
+              <div className="flex items-center gap-4">
+                <button onClick={() => setMode('select')} className="p-2 hover:bg-slate-100 rounded-lg">
+                  <ArrowLeft className="w-5 h-5 text-slate-600" />
+                </button>
+                <div>
+                  <h1 className="text-2xl font-bold text-slate-900">Research Topic Details</h1>
+                  <p className="text-slate-500">Provide comprehensive details about your research</p>
+                </div>
+              </div>
+              <AIAssistButton onClick={() => runAIAssist('suggest_all')} loading={aiLoading} label="AI Enhance All" />
+            </div>
+
+            <div className="space-y-8">
+              {/* Basic Information */}
+              <section className="bg-white rounded-2xl border border-slate-200 p-6">
+                <h2 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
+                  <Lightbulb className="w-5 h-5 text-amber-500" />
+                  Basic Information
+                </h2>
+                <div className="grid gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Paper Title</label>
+                    <input
+                      type="text"
+                      value={segments.basics.title}
+                      onChange={(e) => updateSegment('basics', { title: e.target.value })}
+                      placeholder="Enter your paper title"
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                    />
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Research Field</label>
+                      <select
+                        value={segments.basics.field}
+                        onChange={(e) => updateSegment('basics', { field: e.target.value })}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">Select field</option>
+                        {RESEARCH_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Subfield / Specialization</label>
+                      <input
+                        type="text"
+                        value={segments.basics.subfield}
+                        onChange={(e) => updateSegment('basics', { subfield: e.target.value })}
+                        placeholder="e.g., Machine Learning, Organic Chemistry"
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Topic Description</label>
+                    <AutoResizeTextarea
+                      value={segments.basics.topicDescription}
+                      onChange={(e) => updateSegment('basics', { topicDescription: e.target.value })}
+                      placeholder="Briefly describe what your research is about..."
+                      minRows={3}
+                      maxRows={10}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 resize-none"
+                    />
+                  </div>
+                </div>
+              </section>
+
+              {/* Research Question */}
+              <section className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-2xl border border-blue-200 p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
+                    <Target className="w-5 h-5 text-blue-600" />
+                    Research Question
+                    <span className="text-xs font-normal text-slate-500 ml-2">Required</span>
+                  </h2>
+                  <AIAssistButton onClick={() => runAIAssist('refine_question')} loading={aiLoading} label="Refine" />
+                </div>
+                <div className="grid gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Main Research Question</label>
+                    <AutoResizeTextarea
+                      value={segments.question.mainQuestion}
+                      onChange={(e) => updateSegment('question', { mainQuestion: e.target.value })}
+                      placeholder="What specific question does your research aim to answer?"
+                      minRows={3}
+                      maxRows={8}
+                      className="w-full px-4 py-3 bg-white border border-blue-200 rounded-xl focus:ring-2 focus:ring-blue-500 resize-none"
+                    />
+                    <p className={`text-xs mt-1 ${segments.question.mainQuestion.length >= 20 ? 'text-emerald-600' : 'text-slate-400'}`}>
+                      {segments.question.mainQuestion.length}/20 characters minimum
+                    </p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Problem Statement</label>
+                    <AutoResizeTextarea
+                      value={segments.question.problemStatement}
+                      onChange={(e) => updateSegment('question', { problemStatement: e.target.value })}
+                      placeholder="What problem are you trying to solve?"
+                      minRows={2}
+                      maxRows={8}
+                      className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 resize-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Research Gaps Identified</label>
+                    <AutoResizeTextarea
+                      value={segments.question.researchGaps}
+                      onChange={(e) => updateSegment('question', { researchGaps: e.target.value })}
+                      placeholder="What gaps in existing research does your study address?"
+                      minRows={2}
+                      maxRows={10}
+                      className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 resize-none"
+                    />
+                  </div>
+                </div>
+              </section>
+
+              {/* Methodology */}
+              <section className="bg-white rounded-2xl border border-slate-200 p-6">
+                <h2 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
+                  <FlaskConical className="w-5 h-5 text-teal-500" />
+                  Methodology
+                </h2>
+                <div className="grid gap-4">
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-2">Methodology Type</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {METHODOLOGIES.slice(0, 4).map(m => {
+                          const Icon = m.icon;
+                          const isSelected = segments.methodology.type === m.value;
+                          return (
+                            <button
+                              key={m.value}
+                              onClick={() => updateSegment('methodology', { type: m.value })}
+                              className={`p-3 rounded-xl border-2 text-left transition-all ${
+                                isSelected 
+                                  ? 'border-teal-500 bg-teal-50' 
+                                  : 'border-slate-200 hover:border-slate-300'
+                              }`}
+                            >
+                              <Icon className={`w-4 h-4 mb-1 ${isSelected ? 'text-teal-600' : 'text-slate-400'}`} />
+                              <div className={`text-sm font-medium ${isSelected ? 'text-teal-700' : 'text-slate-700'}`}>{m.label}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Research Approach</label>
+                      <AutoResizeTextarea
+                        value={segments.methodology.approach}
+                        onChange={(e) => updateSegment('methodology', { approach: e.target.value })}
+                        placeholder="Describe your research approach in detail..."
+                        minRows={4}
+                        maxRows={15}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-teal-500 resize-none"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Justification</label>
+                    <AutoResizeTextarea
+                      value={segments.methodology.justification}
+                      onChange={(e) => updateSegment('methodology', { justification: e.target.value })}
+                      placeholder="Why is this methodology appropriate for your research?"
+                      minRows={2}
+                      maxRows={8}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-teal-500 resize-none"
+                    />
+                  </div>
+                </div>
+              </section>
+
+              {/* Data & Experimentation */}
+              <section className="bg-white rounded-2xl border border-slate-200 p-6">
+                <h2 className="text-lg font-semibold text-slate-900 mb-4 flex items-center gap-2">
+                  <Database className="w-5 h-5 text-purple-500" />
+                  Data & Experimentation
+                </h2>
+                <div className="grid gap-4">
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Dataset Description</label>
+                      <AutoResizeTextarea
+                        value={segments.data.datasetDescription}
+                        onChange={(e) => updateSegment('data', { datasetDescription: e.target.value })}
+                        placeholder="Describe the datasets you will use..."
+                        minRows={3}
+                        maxRows={10}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl resize-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Data Collection Method</label>
+                      <AutoResizeTextarea
+                        value={segments.data.dataCollection}
+                        onChange={(e) => updateSegment('data', { dataCollection: e.target.value })}
+                        placeholder="How will you collect your data?"
+                        minRows={3}
+                        maxRows={10}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl resize-none"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Sample Size</label>
+                      <input
+                        type="text"
+                        value={segments.data.sampleSize}
+                        onChange={(e) => updateSegment('data', { sampleSize: e.target.value })}
+                        placeholder="e.g., 500 participants, 10,000 records"
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Experiments Planned</label>
+                      <input
+                        type="text"
+                        value={segments.data.experiments}
+                        onChange={(e) => updateSegment('data', { experiments: e.target.value })}
+                        placeholder="Describe experiments you will conduct..."
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {/* Expected Outcomes */}
+              <section className="bg-gradient-to-br from-amber-50 to-orange-50 rounded-2xl border border-amber-200 p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
+                    <BookOpen className="w-5 h-5 text-amber-600" />
+                    Expected Outcomes
+                  </h2>
+                  <AIAssistButton onClick={() => runAIAssist('generate_hypothesis')} loading={aiLoading} label="Generate Hypothesis" />
+                </div>
+                <div className="grid gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Hypothesis</label>
+                    <AutoResizeTextarea
+                      value={segments.outcomes.hypothesis}
+                      onChange={(e) => updateSegment('outcomes', { hypothesis: e.target.value })}
+                      placeholder="What do you expect to find? State a testable hypothesis..."
+                      minRows={3}
+                      maxRows={10}
+                      className="w-full px-4 py-3 bg-white border border-amber-200 rounded-xl resize-none"
+                    />
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Contribution Type</label>
+                      <select
+                        value={segments.outcomes.contributionType}
+                        onChange={(e) => updateSegment('outcomes', { contributionType: e.target.value })}
+                        className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl"
+                      >
+                        {CONTRIBUTIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">Novelty / Innovation</label>
+                      <input
+                        type="text"
+                        value={segments.outcomes.novelty}
+                        onChange={(e) => updateSegment('outcomes', { novelty: e.target.value })}
+                        placeholder="What makes your research novel?"
+                        className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {/* Keywords */}
+              <section className="bg-white rounded-2xl border border-slate-200 p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
+                    <Tags className="w-5 h-5 text-purple-500" />
+                    Keywords
+                    <span className={`text-xs ml-2 ${segments.keywords.length >= 3 ? 'text-emerald-600' : 'text-slate-400'}`}>
+                      {segments.keywords.length}/3 minimum
+                    </span>
+                  </h2>
+                  <AIAssistButton onClick={() => runAIAssist('suggest_keywords')} loading={aiLoading} label="Suggest Keywords" />
+                </div>
+                <KeywordInput keywords={segments.keywords} onAdd={addKeyword} onRemove={removeKeyword} />
+              </section>
+
+              {/* Save Section */}
+              {(error || success) && (
+                <div className={`p-4 rounded-xl ${error ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                  {error || success}
+                </div>
+              )}
+
+              <div className="flex items-center justify-between p-6 bg-slate-50 rounded-2xl">
+                <div className="flex items-center gap-4">
+                  <div className={`flex items-center gap-2 ${segments.question.mainQuestion.length >= 20 ? 'text-emerald-600' : 'text-slate-400'}`}>
+                    {segments.question.mainQuestion.length >= 20 ? <CheckCircle2 className="w-5 h-5" /> : <Circle className="w-5 h-5" />}
+                    Research Question
+                  </div>
+                  <div className={`flex items-center gap-2 ${segments.keywords.length >= 3 ? 'text-emerald-600' : 'text-slate-400'}`}>
+                    {segments.keywords.length >= 3 ? <CheckCircle2 className="w-5 h-5" /> : <Circle className="w-5 h-5" />}
+                    Keywords (3+)
+                  </div>
+                </div>
+                <button
+                  onClick={handleSave}
+                  disabled={saving || !isValid}
+                  className={`px-8 py-3 rounded-xl font-semibold transition-all ${
+                    isValid 
+                      ? 'bg-slate-900 text-white hover:bg-slate-800 shadow-lg' 
+                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                  }`}
+                >
+                  {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Save Research Topic'}
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {/* Guided Mode - Step by Step */}
+        {mode === 'guided' && (
+          <motion.div
+            key="guided"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="max-w-3xl mx-auto"
+          >
+            {/* Header */}
+            <div className="flex items-center gap-4 mb-6">
+              <button onClick={() => setMode('select')} className="p-2 hover:bg-slate-100 rounded-lg">
+                <ArrowLeft className="w-5 h-5 text-slate-600" />
+              </button>
+              <div>
+                <h1 className="text-2xl font-bold text-slate-900">Guided Research Setup</h1>
+                <p className="text-slate-500">Let's build your research topic step by step</p>
+              </div>
+            </div>
+
+            {/* Step Progress */}
+            <StepProgress currentStep={guidedStep} steps={GUIDED_STEPS} />
+
+            {/* Step Content */}
+            <AnimatePresence mode="wait">
+              {/* Step 1: Basics */}
+              {guidedStep === 'basics' && (
+                <motion.div
+                  key="basics"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                  className="bg-white rounded-2xl border border-slate-200 p-8"
+                >
+                  <div className="text-center mb-8">
+                    <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center mb-4">
+                      <Lightbulb className="w-8 h-8 text-white" />
+                    </div>
+                    <h2 className="text-xl font-bold text-slate-900 mb-2">Let's Start with the Basics</h2>
+                    <p className="text-slate-500">Tell us about your research topic in simple terms</p>
+                  </div>
+
+                  <div className="space-y-6">
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                        What is your paper about? <span className="text-slate-400 font-normal">(Working title)</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={segments.basics.title}
+                        onChange={(e) => updateSegment('basics', { title: e.target.value })}
+                        placeholder="e.g., Impact of Social Media on Student Mental Health"
+                        className="w-full px-4 py-4 text-lg bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                        What field is this in?
+                      </label>
+                      <select
+                        value={segments.basics.field}
+                        onChange={(e) => updateSegment('basics', { field: e.target.value })}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl"
+                      >
+                        <option value="">Select your research field</option>
+                        {RESEARCH_FIELDS.map(f => <option key={f} value={f}>{f}</option>)}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                        Describe your topic in a few sentences
+                      </label>
+                      <AutoResizeTextarea
+                        value={segments.basics.topicDescription}
+                        onChange={(e) => updateSegment('basics', { topicDescription: e.target.value })}
+                        placeholder="Just tell us what you're interested in researching. Don't worry about being formal yet..."
+                        minRows={4}
+                        maxRows={12}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl resize-none"
+                      />
+                      <p className="text-xs text-slate-400 mt-2">💡 Tip: Write as if you're explaining to a friend</p>
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Step 2: Research Question */}
+              {guidedStep === 'question' && (
+                <motion.div
+                  key="question"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                  className="bg-white rounded-2xl border border-slate-200 p-8"
+                >
+                  <div className="text-center mb-8">
+                    <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-blue-400 to-indigo-500 flex items-center justify-center mb-4">
+                      <Target className="w-8 h-8 text-white" />
+                    </div>
+                    <h2 className="text-xl font-bold text-slate-900 mb-2">What Do You Want to Find Out?</h2>
+                    <p className="text-slate-500">Transform your topic into a clear research question</p>
+                  </div>
+
+                  <div className="flex justify-end mb-4">
+                    <AIAssistButton onClick={() => runAIAssist('help_formulate_question')} loading={aiLoading} label="Help Me Formulate" />
+                  </div>
+
+                  <div className="space-y-6">
+                    <div className="bg-blue-50 rounded-xl p-4 mb-6">
+                      <p className="text-sm text-blue-800">
+                        <strong>Based on your topic:</strong> "{segments.basics.topicDescription || segments.basics.title || 'Your topic'}"
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                        Your Main Research Question
+                      </label>
+                      <AutoResizeTextarea
+                        value={segments.question.mainQuestion}
+                        onChange={(e) => updateSegment('question', { mainQuestion: e.target.value })}
+                        placeholder="Start with: How does..., What is the impact of..., Why do..., To what extent..."
+                        minRows={4}
+                        maxRows={10}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl resize-none"
+                      />
+                      <p className={`text-xs mt-2 ${segments.question.mainQuestion.length >= 20 ? 'text-emerald-600' : 'text-slate-400'}`}>
+                        {segments.question.mainQuestion.length >= 20 ? '✓ Good question!' : `${segments.question.mainQuestion.length}/20 characters minimum`}
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                        What problem are you trying to solve?
+                      </label>
+                      <textarea
+                        value={segments.question.problemStatement}
+                        onChange={(e) => updateSegment('question', { problemStatement: e.target.value })}
+                        placeholder="Describe the problem or gap you've identified..."
+                        rows={3}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl resize-none"
+                      />
+                    </div>
+                  </div>
+
+                  {aiSuggestions?.clarifyingQuestions && (
+                    <div className="mt-6 p-4 bg-violet-50 rounded-xl">
+                      <p className="text-sm font-semibold text-violet-800 mb-2">🤔 Consider these questions:</p>
+                      <ul className="space-y-1">
+                        {aiSuggestions.clarifyingQuestions.map((q: string, i: number) => (
+                          <li key={i} className="text-sm text-violet-700 flex items-start gap-2">
+                            <span>•</span> {q}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </motion.div>
+              )}
+
+              {/* Step 3: Methodology */}
+              {guidedStep === 'methodology' && (
+                <motion.div
+                  key="methodology"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                  className="bg-white rounded-2xl border border-slate-200 p-8"
+                >
+                  <div className="text-center mb-8">
+                    <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-teal-400 to-emerald-500 flex items-center justify-center mb-4">
+                      <FlaskConical className="w-8 h-8 text-white" />
+                    </div>
+                    <h2 className="text-xl font-bold text-slate-900 mb-2">How Will You Research This?</h2>
+                    <p className="text-slate-500">Choose the approach that fits your research question</p>
+                  </div>
+
+                  <div className="space-y-6">
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-3">
+                        Select your methodology type
+                      </label>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        {METHODOLOGIES.map(m => {
+                          const Icon = m.icon;
+                          const isSelected = segments.methodology.type === m.value;
+                          return (
+                            <button
+                              key={m.value}
+                              onClick={() => updateSegment('methodology', { type: m.value })}
+                              className={`p-4 rounded-xl border-2 text-center transition-all ${
+                                isSelected 
+                                  ? 'border-teal-500 bg-teal-50 shadow-lg' 
+                                  : 'border-slate-200 hover:border-teal-300'
+                              }`}
+                            >
+                              <Icon className={`w-6 h-6 mx-auto mb-2 ${isSelected ? 'text-teal-600' : 'text-slate-400'}`} />
+                              <div className={`text-sm font-medium ${isSelected ? 'text-teal-700' : 'text-slate-700'}`}>{m.label}</div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-sm text-slate-500 mt-3 text-center">
+                        {METHODOLOGIES.find(m => m.value === segments.methodology.type)?.description}
+                      </p>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                        Describe your approach
+                      </label>
+                      <textarea
+                        value={segments.methodology.approach}
+                        onChange={(e) => updateSegment('methodology', { approach: e.target.value })}
+                        placeholder="How will you conduct your research? What steps will you take?"
+                        rows={4}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl resize-none"
+                      />
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Step 4: Data */}
+              {guidedStep === 'data' && (
+                <motion.div
+                  key="data"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                  className="bg-white rounded-2xl border border-slate-200 p-8"
+                >
+                  <div className="text-center mb-8">
+                    <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-purple-400 to-pink-500 flex items-center justify-center mb-4">
+                      <Database className="w-8 h-8 text-white" />
+                    </div>
+                    <h2 className="text-xl font-bold text-slate-900 mb-2">What Data Will You Use?</h2>
+                    <p className="text-slate-500">Tell us about your data sources and tools</p>
+                  </div>
+
+                  <div className="space-y-6">
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                        Describe your data or dataset
+                      </label>
+                      <textarea
+                        value={segments.data.datasetDescription}
+                        onChange={(e) => updateSegment('data', { datasetDescription: e.target.value })}
+                        placeholder="What kind of data will you collect or use? Surveys, experiments, existing datasets..."
+                        rows={3}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl resize-none"
+                      />
+                    </div>
+
+                    <div className="grid md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-2">
+                          How will you collect data?
+                        </label>
+                        <input
+                          type="text"
+                          value={segments.data.dataCollection}
+                          onChange={(e) => updateSegment('data', { dataCollection: e.target.value })}
+                          placeholder="e.g., Online surveys, interviews, web scraping"
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-2">
+                          Expected sample size
+                        </label>
+                        <input
+                          type="text"
+                          value={segments.data.sampleSize}
+                          onChange={(e) => updateSegment('data', { sampleSize: e.target.value })}
+                          placeholder="e.g., 200 participants, 5000 records"
+                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-2">
+                        Any specific experiments planned?
+                      </label>
+                      <textarea
+                        value={segments.data.experiments}
+                        onChange={(e) => updateSegment('data', { experiments: e.target.value })}
+                        placeholder="Describe any experiments or tests you plan to conduct... (optional)"
+                        rows={2}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl resize-none"
+                      />
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+
+              {/* Step 5: Review */}
+              {guidedStep === 'review' && (
+                <motion.div
+                  key="review"
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  exit={{ opacity: 0, x: -20 }}
+                  className="bg-white rounded-2xl border border-slate-200 p-8"
+                >
+                  <div className="text-center mb-8">
+                    <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-emerald-400 to-green-500 flex items-center justify-center mb-4">
+                      <CheckCircle2 className="w-8 h-8 text-white" />
+                    </div>
+                    <h2 className="text-xl font-bold text-slate-900 mb-2">Review Your Research Topic</h2>
+                    <p className="text-slate-500">Let's add the finishing touches</p>
+                  </div>
+
+                  {/* Summary */}
+                  <div className="space-y-4 mb-8">
+                    <div className="p-4 bg-slate-50 rounded-xl">
+                      <div className="text-xs font-semibold text-slate-500 uppercase mb-1">Title</div>
+                      <div className="text-lg font-semibold text-slate-900">{segments.basics.title || 'Not set'}</div>
+                    </div>
+                    <div className="p-4 bg-blue-50 rounded-xl">
+                      <div className="text-xs font-semibold text-blue-600 uppercase mb-1">Research Question</div>
+                      <div className="text-slate-800">{segments.question.mainQuestion || 'Not set'}</div>
+                    </div>
+                    <div className="grid md:grid-cols-2 gap-4">
+                      <div className="p-4 bg-teal-50 rounded-xl">
+                        <div className="text-xs font-semibold text-teal-600 uppercase mb-1">Methodology</div>
+                        <div className="text-slate-800">{METHODOLOGIES.find(m => m.value === segments.methodology.type)?.label}</div>
+                      </div>
+                      <div className="p-4 bg-purple-50 rounded-xl">
+                        <div className="text-xs font-semibold text-purple-600 uppercase mb-1">Field</div>
+                        <div className="text-slate-800">{segments.basics.field || 'Not set'}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Keywords */}
+                  <div className="mb-6">
+                    <div className="flex items-center justify-between mb-3">
+                      <label className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                        <Tags className="w-4 h-4" />
+                        Keywords 
+                        <span className={segments.keywords.length >= 3 ? 'text-emerald-600' : 'text-slate-400'}>
+                          ({segments.keywords.length}/3 min)
+                        </span>
+                      </label>
+                      <AIAssistButton onClick={() => runAIAssist('suggest_keywords')} loading={aiLoading} label="Suggest" />
+                    </div>
+                    <KeywordInput keywords={segments.keywords} onAdd={addKeyword} onRemove={removeKeyword} />
+                  </div>
+
+                  {/* Hypothesis */}
+                  <div className="mb-6">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-sm font-semibold text-slate-700">Expected Outcome / Hypothesis</label>
+                      <AIAssistButton onClick={() => runAIAssist('generate_hypothesis')} loading={aiLoading} label="Generate" />
+                    </div>
+                    <textarea
+                      value={segments.outcomes.hypothesis}
+                      onChange={(e) => updateSegment('outcomes', { hypothesis: e.target.value })}
+                      placeholder="What do you expect to find?"
+                      rows={3}
+                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl resize-none"
+                    />
+                  </div>
+
+                  {(error || success) && (
+                    <div className={`p-4 rounded-xl mb-4 ${error ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                      {error || success}
+                    </div>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            {/* Navigation */}
+            <div className="flex items-center justify-between mt-6">
+              <button
+                onClick={goToPrevStep}
+                disabled={guidedStep === 'basics'}
+                className="flex items-center gap-2 px-6 py-3 text-slate-600 hover:bg-slate-100 rounded-xl disabled:opacity-30"
+              >
+                <ArrowLeft className="w-4 h-4" /> Back
+              </button>
+
+              {guidedStep === 'review' ? (
+                <button
+                  onClick={handleSave}
+                  disabled={saving || !isValid}
+                  className={`flex items-center gap-2 px-8 py-3 rounded-xl font-semibold transition-all ${
+                    isValid 
+                      ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-lg' 
+                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                  }`}
+                >
+                  {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Check className="w-5 h-5" />}
+                  Save Research Topic
+                </button>
+              ) : (
+                <button
+                  onClick={goToNextStep}
+                  className="flex items-center gap-2 px-8 py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 shadow-lg"
+                >
+                  Continue <ArrowRight className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}

@@ -69,14 +69,16 @@ const PROVIDER_COLORS: Record<string, string> = {
   groq: 'bg-pink-100 text-pink-800 border-pink-200'
 }
 
+// Paper-only mode: Only show paper drafting stages
+// Patent features are disabled but kept in DB for potential future use
 const FEATURE_LABELS: Record<string, string> = {
-  PATENT_DRAFTING: 'Patent Drafting',
-  PRIOR_ART_SEARCH: 'Novelty Search',
-  DIAGRAM_GENERATION: 'Diagram Generation',
-  IDEA_BANK: 'Idea Bank',
-  IDEATION: 'Ideation Engine'
-  // Note: Content Generation was removed - all superset section stages
-  // (DRAFT_ANNEXURE_*) are now under PATENT_DRAFTING feature
+  PAPER_DRAFTING: 'Paper Drafting',  // Primary feature for this app
+  // Hidden/disabled patent features (uncomment to enable):
+  // PATENT_DRAFTING: 'Patent Drafting',
+  // PRIOR_ART_SEARCH: 'Novelty Search',
+  // DIAGRAM_GENERATION: 'Diagram Generation',
+  // IDEA_BANK: 'Idea Bank',
+  // IDEATION: 'Ideation Engine'
 }
 
 // Stages that DO NOT use LLMs (excluded from LLM control)
@@ -119,51 +121,77 @@ const IDEATION_STAGE_INFO: Record<string, { complexity: 'lightweight' | 'advance
   }
 }
 
-// Superset sections that use LLMs for content generation
-// These correspond to the superset sections defined in MasterSeed.js
-// All section stages are under PATENT_DRAFTING feature (DRAFT_ANNEXURE_* stages)
-// The admin can configure which LLM model to use for each section per plan
-// Jurisdiction-specific sections map to these via CountrySectionMapping
-const SUPERSET_SECTION_STAGES = [
-  'title',                      // Title of the Invention
-  'preamble',                   // Legal Preamble
-  'fieldOfInvention',           // Field of the Invention
-  'background',                 // Background of the Invention
-  'objectsOfInvention',         // Objects of the Invention
-  'summary',                    // Summary of the Invention
-  'technicalProblem',           // Technical Problem (EP/JP)
-  'technicalSolution',          // Technical Solution (EP/JP)
-  'advantageousEffects',        // Advantageous Effects (JP)
-  'briefDescriptionOfDrawings', // Brief Description of Drawings
-  'detailedDescription',        // Detailed Description
-  'bestMethod',                 // Best Mode (AU)
-  'industrialApplicability',    // Industrial Applicability (PCT/JP)
-  'claims',                     // Claims
-  'abstract',                   // Abstract
-  'listOfNumerals',             // List of Reference Numerals
-  'crossReference'              // Cross-Reference to Related Applications
-]
+// ============================================================================
+// PAPER SECTION TO STAGE MAPPING
+// Maps paper sections (from PaperTypeDefinition) to generic workflow stages
+// This allows a single set of 4 stages to serve ALL paper types
+// ============================================================================
 
-// Mapping from superset section keys to workflow stage codes
-// Used to look up the correct model configuration for a section
-const SECTION_TO_STAGE_MAP: Record<string, string> = {
-  'title': 'DRAFT_ANNEXURE_TITLE',
-  'preamble': 'DRAFT_ANNEXURE_PREAMBLE',
-  'fieldOfInvention': 'DRAFT_ANNEXURE_FIELD',
-  'background': 'DRAFT_ANNEXURE_BACKGROUND',
-  'objectsOfInvention': 'DRAFT_ANNEXURE_OBJECTS',
-  'summary': 'DRAFT_ANNEXURE_SUMMARY',
-  'technicalProblem': 'DRAFT_ANNEXURE_TECHNICAL_PROBLEM',
-  'technicalSolution': 'DRAFT_ANNEXURE_TECHNICAL_SOLUTION',
-  'advantageousEffects': 'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS',
-  'briefDescriptionOfDrawings': 'DRAFT_ANNEXURE_DRAWINGS',
-  'detailedDescription': 'DRAFT_ANNEXURE_DESCRIPTION',
-  'bestMethod': 'DRAFT_ANNEXURE_BEST_MODE',
-  'industrialApplicability': 'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY',
-  'claims': 'DRAFT_ANNEXURE_CLAIMS',
-  'abstract': 'DRAFT_ANNEXURE_ABSTRACT',
-  'listOfNumerals': 'DRAFT_ANNEXURE_NUMERALS',
-  'crossReference': 'DRAFT_ANNEXURE_CROSS_REFERENCE'
+// Paper section categories - maps any section to one of the 4 generic stages
+const PAPER_SECTION_TO_STAGE_MAP: Record<string, string> = {
+  // Abstract & Title stage - short-form, high-precision content
+  'TITLE': 'PAPER_ABSTRACT_TITLE',
+  'ABSTRACT': 'PAPER_ABSTRACT_TITLE',
+  'KEYWORDS': 'PAPER_ABSTRACT_TITLE',
+  
+  // Content Generation stage - all main sections
+  'INTRODUCTION': 'PAPER_CONTENT_GENERATION',
+  'BACKGROUND': 'PAPER_CONTENT_GENERATION',
+  'METHODOLOGY': 'PAPER_CONTENT_GENERATION',
+  'METHODS': 'PAPER_CONTENT_GENERATION',
+  'RESULTS': 'PAPER_CONTENT_GENERATION',
+  'DISCUSSION': 'PAPER_CONTENT_GENERATION',
+  'CONCLUSION': 'PAPER_CONTENT_GENERATION',
+  'CONCLUSIONS': 'PAPER_CONTENT_GENERATION',
+  'ANALYSIS': 'PAPER_CONTENT_GENERATION',
+  'FINDINGS': 'PAPER_CONTENT_GENERATION',
+  'THEORETICAL_FRAMEWORK': 'PAPER_CONTENT_GENERATION',
+  'CASE_STUDY': 'PAPER_CONTENT_GENERATION',
+  'IMPLICATIONS': 'PAPER_CONTENT_GENERATION',
+  'LIMITATIONS': 'PAPER_CONTENT_GENERATION',
+  'FUTURE_WORK': 'PAPER_CONTENT_GENERATION',
+  'ACKNOWLEDGMENTS': 'PAPER_CONTENT_GENERATION',
+  
+  // Literature Analysis stage - for synthesizing sources
+  'LITERATURE_REVIEW': 'PAPER_LITERATURE_ANALYSIS',
+  'RELATED_WORK': 'PAPER_LITERATURE_ANALYSIS',
+  'STATE_OF_THE_ART': 'PAPER_LITERATURE_ANALYSIS',
+  'PRIOR_WORK': 'PAPER_LITERATURE_ANALYSIS',
+  
+  // Citation & References stage - bibliography handling
+  'REFERENCES': 'PAPER_CITATION_FORMATTING',
+  'BIBLIOGRAPHY': 'PAPER_CITATION_FORMATTING',
+  'CITATIONS': 'PAPER_CITATION_FORMATTING',
+}
+
+// Helper function to get the stage code for any paper section (local to this page)
+function getPaperStageForSectionLocal(sectionCode: string): string {
+  const normalized = sectionCode.toUpperCase().replace(/-/g, '_')
+  return PAPER_SECTION_TO_STAGE_MAP[normalized] || 'PAPER_CONTENT_GENERATION'
+}
+
+// Paper stage info for UI display
+const PAPER_STAGE_INFO: Record<string, { icon: string; description: string; tip: string }> = {
+  'PAPER_ABSTRACT_TITLE': {
+    icon: '📝',
+    description: 'Titles, abstracts, and keywords',
+    tip: 'Short-form content requiring precision. Higher quality models improve clarity and impact.'
+  },
+  'PAPER_CONTENT_GENERATION': {
+    icon: '📄',
+    description: 'All main sections (Introduction, Methods, Results, Discussion, etc.)',
+    tip: 'Long-form academic writing. Benefit from models with strong reasoning and writing capabilities.'
+  },
+  'PAPER_CITATION_FORMATTING': {
+    icon: '📚',
+    description: 'References, bibliography, and in-text citations',
+    tip: 'Structured output requiring consistency. Cost-effective models work well here.'
+  },
+  'PAPER_LITERATURE_ANALYSIS': {
+    icon: '🔍',
+    description: 'Literature review, related work synthesis',
+    tip: 'Requires large context windows for analyzing multiple sources. Pro models recommended.'
+  }
 }
 
 export default function LLMConfigPage() {
@@ -185,7 +213,7 @@ export default function LLMConfigPage() {
 
   // Selection states
   const [selectedPlan, setSelectedPlan] = useState<string>('')
-  const [selectedFeature, setSelectedFeature] = useState<string>('PATENT_DRAFTING')
+  const [selectedFeature, setSelectedFeature] = useState<string>('PAPER_DRAFTING')
 
   // Edit states
   const [editingConfig, setEditingConfig] = useState<{
@@ -715,7 +743,14 @@ export default function LLMConfigPage() {
                           {stage.description && (
                             <div className="text-sm text-slate-400 mt-1">{stage.description}</div>
                           )}
-                          {/* Show model recommendation for ideation stages */}
+                          {/* Show paper stage recommendations */}
+                          {PAPER_STAGE_INFO[stage.code] && (
+                            <div className="text-xs mt-2 px-2 py-1 rounded inline-flex items-center gap-1 bg-cyan-900/30 text-cyan-400 border border-cyan-700/50">
+                              <span>{PAPER_STAGE_INFO[stage.code].icon}</span>
+                              <span>{PAPER_STAGE_INFO[stage.code].tip}</span>
+                            </div>
+                          )}
+                          {/* Show model recommendation for ideation stages (if enabled) */}
                           {IDEATION_STAGE_INFO[stage.code] && (
                             <div className={`text-xs mt-2 px-2 py-1 rounded inline-flex items-center gap-1 ${
                               IDEATION_STAGE_INFO[stage.code].complexity === 'lightweight' 

@@ -27,6 +27,10 @@ import {
   buildAntiHallucinationGuards
 } from '@/lib/section-injection-config';
 import crypto from 'crypto';
+import { featureFlags, isPaperWritingMode, isPatentDraftingMode } from './feature-flags';
+import { citationService, type CitationWithUsage } from './services/citation-service';
+import { citationStyleService, type CitationData } from './services/citation-style-service';
+import { paperTypeService } from './services/paper-type-service';
 
 // NOTE: Legacy SUPERSET_PROMPTS removed - all prompts now come from database
 // Base prompts are stored in SupersetSection table
@@ -196,6 +200,14 @@ export class DraftingService {
         return { success: false, error: 'User not found' };
       }
 
+      // Feature flag check: Allow gradual migration to paper writing
+      if (!isPatentDraftingMode()) {
+        return {
+          success: false,
+          error: 'Patent drafting is currently disabled. Use paper writing features instead.'
+        };
+      }
+
       // Verify patent access
       const patent = await prisma.patent.findFirst({
         where: {
@@ -319,7 +331,335 @@ export class DraftingService {
   }
 
   /**
-   * Normalize raw invention idea using LLM
+   * Build citation context for section generation
+   * Gathers relevant citations and formats them for LLM prompts
+   */
+  static async buildCitationContext(sessionId: string, sectionKey: string): Promise<{
+    availableCitations: CitationData[];
+    citationInstructions: string;
+    relevantCitations: CitationData[];
+  }> {
+    const citations = await citationService.getCitationsForSession(sessionId);
+    const availableCitations = citations.map(citation => ({
+      id: citation.id,
+      title: citation.title,
+      authors: citation.authors,
+      year: citation.year ?? undefined,
+      venue: citation.venue ?? undefined,
+      volume: citation.volume ?? undefined,
+      issue: citation.issue ?? undefined,
+      pages: citation.pages ?? undefined,
+      doi: citation.doi ?? undefined,
+      url: citation.url ?? undefined,
+      isbn: citation.isbn ?? undefined,
+      publisher: citation.publisher ?? undefined,
+      edition: citation.edition ?? undefined,
+      citationKey: citation.citationKey
+    }));
+
+    // Get relevant citations for this section type
+    const relevantCitations = this.filterRelevantCitations(availableCitations, sectionKey);
+
+    // Build citation instructions for LLM
+    const citationInstructions = this.buildCitationInstructions(relevantCitations, sectionKey);
+
+    return {
+      availableCitations,
+      citationInstructions,
+      relevantCitations
+    };
+  }
+
+  /**
+   * Filter citations relevant to a specific section
+   */
+  private static filterRelevantCitations(citations: CitationData[], sectionKey: string): CitationData[] {
+    // Simple relevance filtering based on section type
+    switch (sectionKey.toLowerCase()) {
+      case 'abstract':
+      case 'acknowledgments':
+        return [];
+      case 'literature_review':
+        // All citations are relevant for literature review
+        return citations;
+      case 'introduction':
+        // Recent citations (last 5 years) for introduction
+        const currentYear = new Date().getFullYear();
+        return citations.filter(c => c.year && (currentYear - c.year) <= 5);
+      case 'methodology':
+        // Citations related to methods, tools, or empirical studies
+        return citations.filter(c =>
+          c.title.toLowerCase().includes('method') ||
+          c.title.toLowerCase().includes('approach') ||
+          c.title.toLowerCase().includes('framework') ||
+          c.venue?.toLowerCase().includes('method')
+        );
+      case 'discussion':
+        // Citations that might be relevant for discussion/comparison
+        return citations.filter(c => c.year && c.year >= 2015); // Recent works
+      default:
+        // Return all citations for other sections
+        return citations.slice(0, 10); // Limit to prevent token overflow
+    }
+  }
+
+  /**
+   * Build citation instructions for LLM prompts
+   */
+  private static buildCitationInstructions(citations: CitationData[], sectionKey: string): string {
+    const noCitationSections = new Set(['abstract', 'acknowledgments']);
+    if (noCitationSections.has(sectionKey.toLowerCase())) {
+      return 'Do not include citations in this section.';
+    }
+
+    if (citations.length === 0) {
+      return "No citations are available for this section.";
+    }
+
+    const maxList = 30;
+    const citationsToList = citations.slice(0, maxList);
+    const citationList = citationsToList.map(citation =>
+      `[${citation.citationKey}] ${citation.title} by ${citation.authors.join(', ')} (${citation.year || 'n.d.'})`
+    ).join('\n');
+    const overflowNote = citations.length > maxList
+      ? `\n(${citations.length - maxList} additional citations available but omitted for brevity.)`
+      : '';
+
+    const sectionGuidance = this.getSectionCitationGuidance(sectionKey);
+
+    return `Available Citations for this section:
+${citationList}${overflowNote}
+
+Citation Instructions:
+- Use citations to support your claims and arguments
+- Reference relevant work that supports or contrasts with your approach
+- Use the format [CITE:CitationKey] in your response where you want to cite a source
+- Do not invent citations. Use only the citation keys provided above
+- Ensure each major claim is supported by at least one citation unless it is a novel contribution
+- ${sectionGuidance}
+- Aim for 3-8 citations per section depending on section length and importance`;
+  }
+
+  /**
+   * Get section-specific citation guidance
+   */
+  private static getSectionCitationGuidance(sectionKey: string): string {
+    switch (sectionKey.toLowerCase()) {
+      case 'introduction':
+        return "Cite 2-4 key papers that establish the problem context and show why this research is needed";
+      case 'literature_review':
+        return "Cite extensively (8-15 papers) to show comprehensive knowledge of the field and identify gaps";
+      case 'methodology':
+        return "Cite methods, tools, or frameworks you build upon or compare against";
+      case 'results':
+        return "Cite baseline methods or datasets you compare against";
+      case 'discussion':
+        return "Cite related work to interpret your findings and compare with existing literature";
+      case 'conclusion':
+        return "Cite your own contributions and future work directions";
+      default:
+        return "Cite relevant work that supports your statements";
+    }
+  }
+
+  /**
+   * Post-process section content to replace citation placeholders
+   */
+  static async postProcessSection(
+    content: string,
+    sessionId: string,
+    citationStyle: string = 'APA7'
+  ): Promise<{
+    processedContent: string;
+    citationsUsed: string[];
+    warnings: string[];
+  }> {
+    const warnings: string[] = [];
+    const citationsUsed: string[] = [];
+
+    // Find all citation placeholders
+    const citePattern = /\[CITE:([^\]]+)\]/g;
+    const foundCitations = new Set<string>();
+
+    // Extract citation keys from placeholders
+    let match;
+    while ((match = citePattern.exec(content)) !== null) {
+      foundCitations.add(match[1]);
+    }
+
+    // Get citation data for formatting
+    const sessionCitations = await citationService.getCitationsForSession(sessionId);
+    const citationMap = new Map(sessionCitations.map(c => [c.citationKey, c]));
+
+    // Replace placeholders with formatted citations
+    let processedContent = content;
+    const replacements = new Map<string, string>();
+
+    for (const key of foundCitations) {
+      const citation = citationMap.get(key);
+      if (citation) {
+        try {
+          const formatted = await citationStyleService.formatInTextCitation({
+            id: citation.id,
+            title: citation.title,
+            authors: citation.authors,
+            year: citation.year ?? undefined,
+            venue: citation.venue ?? undefined,
+            volume: citation.volume ?? undefined,
+            issue: citation.issue ?? undefined,
+            pages: citation.pages ?? undefined,
+            doi: citation.doi ?? undefined,
+            url: citation.url ?? undefined,
+            isbn: citation.isbn ?? undefined,
+            publisher: citation.publisher ?? undefined,
+            edition: citation.edition ?? undefined,
+            citationKey: citation.citationKey
+          }, citationStyle);
+
+          replacements.set(`[CITE:${key}]`, formatted);
+          citationsUsed.push(key);
+
+          // Mark citation as used (we'll need section context for this)
+          // await citationService.markCitationUsed(citation.id, sectionKey);
+
+        } catch (error) {
+          warnings.push(`Failed to format citation ${key}: ${error}`);
+          replacements.set(`[CITE:${key}]`, `[${key}]`); // Fallback
+        }
+      } else {
+        warnings.push(`Citation key not found: ${key}`);
+        replacements.set(`[CITE:${key}]`, `[${key}]`); // Fallback
+      }
+    }
+
+    // Apply all replacements
+    for (const [placeholder, formatted] of replacements) {
+      processedContent = processedContent.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), formatted);
+    }
+
+    return {
+      processedContent,
+      citationsUsed,
+      warnings
+    };
+  }
+
+  /**
+   * Normalize research topic for academic papers
+   */
+  static async normalizeResearchTopic(
+    sessionId: string,
+    rawTopic: string,
+    title: string,
+    researchQuestion?: string,
+    methodology?: string,
+    contributionType?: string,
+    keywords?: string[],
+    tenantId?: string,
+    requestHeaders?: Record<string, string>
+  ): Promise<IdeaNormalizationResult> {
+    try {
+      // Feature flag check: Only allow in paper writing mode
+      if (!featureFlags.isEnabled('ENABLE_NEW_PAPER_TYPES')) {
+        return {
+          success: false,
+          error: 'Research topic normalization is not enabled. Use patent idea processing instead.'
+        };
+      }
+
+      // Debug logging
+      console.log('DraftingService.normalizeResearchTopic called with:', {
+        sessionId,
+        rawTopicLength: rawTopic.length,
+        title,
+        researchQuestion
+      });
+
+      // Validate input length
+      if (rawTopic.length > 5000) {
+        return {
+          success: false,
+          error: 'Topic description exceeds maximum length of 5,000 characters. Please shorten your description.'
+        };
+      }
+
+      const domainExpertise = methodology ? ` with expertise in ${methodology}` : '';
+      const contributionContext = contributionType ? ` aiming for ${contributionType} contribution` : '';
+
+      const prompt = `You are an expert academic research consultant specializing in research design and topic refinement across all disciplines (social sciences, STEM, humanities, etc.)${domainExpertise}.
+
+Analyze the research topic and return ONLY one JSON object with the fields defined below.
+
+Rules (must follow strictly):
+- Output MUST be a single JSON object, no code fences, no backticks, no prose.
+- Use academic language suitable for research proposals and paper writing.
+- Include research question, methodology, and contribution type if provided by user.
+- Keywords should be academic and searchable terms.
+- Each field as a single string (no arrays), except "keywords" (array of strings), "methodology" (array of suitable approaches), "contributionType" (array of contribution types).
+
+Research Topic Analysis:
+${rawTopic}
+
+Respond in this exact JSON shape:
+{
+  "title": "refined academic title (max 15 words)",
+  "researchQuestion": "${researchQuestion || 'concise, focused research question'}",
+  "hypothesis": "testable hypothesis or research proposition (if applicable, otherwise null)",
+  "objectives": "clear research objectives and aims",
+  "keywords": ["academic", "keyword", "terms", "for", "search"],
+  "methodology": ["${methodology || 'QUALITATIVE'}", "additional approaches"],
+  "contributionType": ["${contributionType || 'EMPIRICAL'}", "additional types"],
+  "literatureGap": "specific gap in existing literature this research addresses",
+  "expectedOutcomes": "anticipated contributions and findings",
+  "searchQuery": "effective search query for literature review (academic databases)",
+  "abstract": "150-word abstract summarizing the research topic, problem, and approach"
+}`;
+
+      const normalizedData = await this.callLLMForNormalization(prompt, requestHeaders);
+
+      // Validate the response structure
+      if (!normalizedData || typeof normalizedData !== 'object') {
+        return {
+          success: false,
+          error: 'Invalid response from AI service'
+        };
+      }
+
+      // Ensure arrays are properly formatted
+      const processedData = {
+        ...normalizedData,
+        keywords: Array.isArray(normalizedData.keywords) ? normalizedData.keywords : [],
+        methodology: Array.isArray(normalizedData.methodology) ? normalizedData.methodology : ['QUALITATIVE'],
+        contributionType: Array.isArray(normalizedData.contributionType) ? normalizedData.contributionType : ['EMPIRICAL']
+      };
+
+      return {
+        success: true,
+        normalizedData: processedData,
+        extractedFields: {
+          title: processedData.title,
+          researchQuestion: processedData.researchQuestion,
+          hypothesis: processedData.hypothesis,
+          keywords: processedData.keywords,
+          methodology: processedData.methodology,
+          contributionType: processedData.contributionType,
+          abstract: processedData.abstract
+        }
+      };
+
+    } catch (error) {
+      console.error('Error in normalizeResearchTopic:', error);
+      return {
+        success: false,
+        error: `Failed to normalize research topic: ${error instanceof Error ? error.message : 'Unknown error'}`
+      };
+    }
+  }
+
+  /**
+   * Normalize raw invention idea using LLM (Patent mode)
+   * OR
+   * Route to research topic normalization (Paper mode)
    */
   static async normalizeIdea(
     rawIdea: string,
@@ -330,6 +670,14 @@ export class DraftingService {
     allowRefine: boolean = true
   ): Promise<IdeaNormalizationResult> {
     try {
+      // Feature flag check: Allow gradual migration to paper writing
+      if (!isPatentDraftingMode()) {
+        return {
+          success: false,
+          error: 'Patent-specific idea normalization is currently disabled. Use paper topic processing instead.'
+        };
+      }
+
       // Debug logging
       console.log('DraftingService.normalizeIdea called with:', {
         rawIdeaLength: rawIdea.length,
@@ -662,6 +1010,28 @@ Respond in this exact JSON shape:
 
       const crossSectionChecks = countryProfile?.profileData?.validation?.crossSectionChecks || []
       const claimsRules = countryProfile?.profileData?.rules?.claims || null
+
+      // Paper writing mode: Build citation context
+      let citationContext: Awaited<ReturnType<typeof DraftingService.buildCitationContext>> | null = null;
+      if (featureFlags.isEnabled('ENABLE_CITATIONS') && session?.id) {
+        try {
+          // For now, use the first section to determine citation context
+          // In a full implementation, this would be section-specific
+          const primarySection = sections[0] || 'introduction';
+          citationContext = await this.buildCitationContext(session.id, primarySection);
+          debugSteps.push({
+            step: 'citation_context',
+            status: 'ok',
+            meta: { citationsCount: citationContext.relevantCitations.length }
+          });
+        } catch (error) {
+          debugSteps.push({
+            step: 'citation_context',
+            status: 'fail',
+            meta: { error: error instanceof Error ? error.message : 'Unknown error' }
+          });
+        }
+      }
 
       // Note: Legacy importFiguresDirectly bypass was removed; figures now always flow through LLM prompts.
       const sectionResources: Record<string, { prompt: any; rules: any; meta: any; altKeys: string[]; checks?: any[]; cross?: any[]; claimsRules?: any }> = {}
@@ -1072,7 +1442,7 @@ Respond in this exact JSON shape:
           userId: session?.userId,
           usePersonaStyle,
           contextRequirements // Pass database-driven context requirements
-        })
+        }, citationContext?.citationInstructions)
         // Add debug info about prompt injection (B+T+U)
         const promptDebug = sectionResources[s]?.prompt?.debug
         
@@ -1372,6 +1742,46 @@ Respond in this exact JSON shape:
         } else {
           generated[s] = val
           debugSteps.push({ step: `guard_${s}`, status: 'ok' })
+
+          // Post-process citations if in paper writing mode
+          if (citationContext && featureFlags.isEnabled('ENABLE_CITATIONS') && session?.id) {
+            try {
+              const citationStyle = session.citationStyleId ? await prisma.citationStyleDefinition.findUnique({
+                where: { id: session.citationStyleId },
+                select: { code: true }
+              }).then(style => style?.code || 'APA7') : 'APA7';
+
+              const postProcessed = await this.postProcessSection(
+                generated[s],
+                session.id,
+                citationStyle
+              );
+
+              generated[s] = postProcessed.processedContent;
+
+              if (postProcessed.warnings.length > 0) {
+                debugSteps.push({
+                  step: `citation_postprocess_${s}`,
+                  status: 'warning',
+                  meta: { warnings: postProcessed.warnings }
+                });
+              }
+
+              if (postProcessed.citationsUsed.length > 0) {
+                debugSteps.push({
+                  step: `citations_used_${s}`,
+                  status: 'ok',
+                  meta: { count: postProcessed.citationsUsed.length, citations: postProcessed.citationsUsed }
+                });
+              }
+            } catch (error) {
+              debugSteps.push({
+                step: `citation_postprocess_${s}`,
+                status: 'fail',
+                meta: { error: error instanceof Error ? error.message : 'Unknown error' }
+              });
+            }
+          }
           // Enforce section hard word limits post-guard
           try {
             const enforced = this.enforceMaxWords(s, generated[s], sectionResources[s]?.checks, sectionResources[s]?.rules)
@@ -1702,7 +2112,7 @@ Respond in this exact JSON shape:
     }
   }
 
-  private static buildSectionPrompt(section: string, payload: any, ctx: SectionPromptContext): string {
+  private static buildSectionPrompt(section: string, payload: any, ctx: SectionPromptContext, citationContext?: string): string {
     const { idea, referenceMap, figures, approved, instructions, manualPriorArt, selectedPriorArtPatents } = payload
 
     // Priority: 1. Manually confirmed types (array/string) -> 2. Normalized data -> 3. Auto-detected (regex)
@@ -2016,6 +2426,15 @@ ${additionalContext}`)
       // Anti-hallucination guards
       if (antiHallucinationBlock) {
         promptParts.push(antiHallucinationBlock)
+      }
+
+      // Citation context (for paper writing mode)
+      if (citationContext && citationContext.trim()) {
+        promptParts.push(`
+────────────────────────────────────────
+CITATION CONTEXT (ACADEMIC WRITING)
+────────────────────────────────────────
+${citationContext}`)
       }
 
       // Output control

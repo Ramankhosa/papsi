@@ -14,9 +14,9 @@ async function createATIAnalyst() {
     console.log('🔧 Creating ATI-based analyst user...\n')
 
     // Test credentials
-    const testEmail = 'ati-analyst@test.com'
-    const testPassword = 'ATITest123!'
-    const testName = 'ATI Analyst'
+    const testEmail = 'analyst@papsi.com'
+    const testPassword = 'AnalystPass123!'
+    const testName = 'Papsi Analyst'
 
     // Hash the password
     console.log('🔒 Hashing password...')
@@ -82,7 +82,7 @@ async function createATIAnalyst() {
       update: {
         passwordHash,
         name: testName,
-        role: 'ANALYST',
+        roles: ['ANALYST'],
         tenantId: testTenant.id,
         signupAtiTokenId: atiToken.id,
         status: 'ACTIVE'
@@ -91,7 +91,7 @@ async function createATIAnalyst() {
         email: testEmail,
         passwordHash,
         name: testName,
-        role: 'ANALYST',
+        roles: ['ANALYST'],
         tenantId: testTenant.id,
         signupAtiTokenId: atiToken.id,
         status: 'ACTIVE'

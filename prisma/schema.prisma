@@ -4,7 +4,7 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = "postgresql://postgres:123@localhost:5432/spotipr"
+  url      = "postgresql://postgres:123@localhost:5432/papsi"
 }
 
 enum TenantStatus {
@@ -159,6 +159,10 @@ model User {
   noveltySearchRuns       NoveltySearchRun[]
   draftingSessions        DraftingSession[]
   draftingHistory         DraftingHistory[]
+
+  // Reference Library (Mendeley-like personal library)
+  referenceLibrary     ReferenceLibrary[]
+  referenceCollections ReferenceCollection[]
 
   // Auth tokens
   emailVerificationTokens EmailVerificationToken[]
@@ -503,6 +507,7 @@ enum FeatureCode {
   PERSONA_SYNC
   PATENT_REVIEW // AI-powered patent draft review (Pro tier)
   IDEATION // Mind-map patent ideation engine
+  PAPER_DRAFTING // Academic paper drafting (all paper types)
 }
 
 enum TaskCode {
@@ -525,6 +530,8 @@ enum TaskCode {
   IDEATION_OBVIOUSNESS_FILTER // Stage 3.5: Check combination novelty before generation
   IDEATION_GENERATE // Idea frame generation
   IDEATION_NOVELTY // Novelty gate reasoning
+  // Paper writing tasks
+  LITERATURE_RELEVANCE // AI-assisted literature relevance analysis
 }
 
 enum ModelClass {
@@ -1701,12 +1708,27 @@ model DraftingSession {
   // Per-jurisdiction draft status (e.g., {"IN":{status:"done",latestVersion:2}})
   jurisdictionDraftStatus Json?
 
+  // Paper writing fields (new)
+  paperTypeId            String? // Reference to PaperTypeDefinition
+  citationStyleId        String? // Reference to CitationStyleDefinition
+  publicationVenueId     String? // Reference to PublicationVenue
+  literatureReviewStatus LiteratureReviewStatus @default(NOT_STARTED)
+  targetWordCount        Int? // Target total word count
+  currentWordCount       Int? // Computed current word count
+
   // Relations
-  patent                  Patent                   @relation(fields: [patentId], references: [id], onDelete: Cascade)
-  user                    User                     @relation(fields: [userId], references: [id])
-  tenant                  Tenant?                  @relation(fields: [tenantId], references: [id], onDelete: SetNull)
-  ideaRecord              IdeaRecord?
-  referenceMap            ReferenceMap?
+  patent        Patent         @relation(fields: [patentId], references: [id], onDelete: Cascade)
+  user          User           @relation(fields: [userId], references: [id])
+  tenant        Tenant?        @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  ideaRecord    IdeaRecord?
+  researchTopic ResearchTopic? // New: replaces IdeaRecord for paper writing
+  referenceMap  ReferenceMap?
+
+  // Paper writing relations
+  paperType               PaperTypeDefinition?     @relation(fields: [paperTypeId], references: [id])
+  citationStyle           CitationStyleDefinition? @relation(fields: [citationStyleId], references: [id])
+  publicationVenue        PublicationVenue?        @relation(fields: [publicationVenueId], references: [id])
+  citations               Citation[]
   figurePlans             FigurePlan[]
   diagramSources          DiagramSource[]
   annexureDrafts          AnnexureDraft[]
@@ -1727,6 +1749,9 @@ model DraftingSession {
 
   // Sketch records
   sketchRecords SketchRecord[]
+
+  // Literature search runs (persisted for AI analysis)
+  literatureSearchRuns LiteratureSearchRun[]
 
   // Figure sequence for unified ordering of diagrams + sketches
   // Array of { type: 'diagram'|'sketch', sourceId: string, finalFigNo: number }
@@ -2556,7 +2581,7 @@ model CountrySectionPromptHistory {
 model UserSectionInstruction {
   id           String   @id @default(cuid())
   sessionId    String?  @map("session_id") // NULL = user-level persistent instruction
-  userId       String   @map("user_id")    // Required - owner of the instruction
+  userId       String   @map("user_id") // Required - owner of the instruction
   jurisdiction String   @default("*") // "*" = all jurisdictions, or specific like "IN", "US"
   sectionKey   String   @map("section_key")
   instruction  String   @db.Text // User's custom instruction for this section
@@ -3370,47 +3395,47 @@ model TrialCampaign {
 
   // Campaign details
   name        String
-  description String? @db.Text
+  description String?             @db.Text
   status      TrialCampaignStatus @default(DRAFT)
 
   // Email template settings
-  emailSubject    String  @default("You're Invited to Try Our Patent Platform")
-  emailTemplate   String? @db.Text // Custom HTML template (uses default if null)
-  senderName      String  @default("Patent Platform Team")
-  replyToEmail    String?
+  emailSubject  String  @default("You're Invited to Try Our Patent Platform")
+  emailTemplate String? @db.Text // Custom HTML template (uses default if null)
+  senderName    String  @default("Patent Platform Team")
+  replyToEmail  String?
 
   // Campaign settings
-  trialDurationDays Int      @default(14) // How long trial lasts after signup
-  inviteExpiryDays  Int      @default(30) // How long invite link is valid
-  autoExpireInvites Boolean  @default(true)
+  trialDurationDays Int     @default(14) // How long trial lasts after signup
+  inviteExpiryDays  Int     @default(30) // How long invite link is valid
+  autoExpireInvites Boolean @default(true)
 
   // ATI Token settings
   trialAtiTokenId String? // Link to a specific trial ATI token (optional)
-  maxSignups      Int?    // Max total signups for this campaign
+  maxSignups      Int? // Max total signups for this campaign
 
   // Trial Plan Limits (per-user limits for this campaign's trial users)
   // NULL means use the default TRIAL plan limits
-  patentDraftLimit     Int? // Max patents a trial user can draft
-  noveltySearchLimit   Int? // Max novelty searches
-  ideationRunLimit     Int? // Max ideation runs
-  priorArtSearchLimit  Int? // Max prior art searches
-  diagramLimit         Int? // Max diagram generations
-  
+  patentDraftLimit    Int? // Max patents a trial user can draft
+  noveltySearchLimit  Int? // Max novelty searches
+  ideationRunLimit    Int? // Max ideation runs
+  priorArtSearchLimit Int? // Max prior art searches
+  diagramLimit        Int? // Max diagram generations
+
   // Token budget for trial users (optional)
-  totalTokenBudget     Int? // Max total tokens for all features combined
+  totalTokenBudget Int? // Max total tokens for all features combined
 
   // Scheduling
   defaultSendTime String? // Default time to send scheduled emails (HH:MM format)
   timezone        String  @default("UTC")
 
   // Stats (denormalized for quick access)
-  totalInvites    Int @default(0)
-  sentCount       Int @default(0)
-  deliveredCount  Int @default(0)
-  openedCount     Int @default(0)
-  clickedCount    Int @default(0)
-  signedUpCount   Int @default(0)
-  bouncedCount    Int @default(0)
+  totalInvites   Int @default(0)
+  sentCount      Int @default(0)
+  deliveredCount Int @default(0)
+  openedCount    Int @default(0)
+  clickedCount   Int @default(0)
+  signedUpCount  Int @default(0)
+  bouncedCount   Int @default(0)
 
   // Metadata
   createdBy String // Super admin who created
@@ -3433,22 +3458,22 @@ model TrialInvite {
   campaignId String
 
   // Recipient info
-  email       String
-  firstName   String?
-  lastName    String?
-  country     String?
-  company     String?
-  jobTitle    String?
-  customData  Json?  // Any additional custom fields from CSV
+  email      String
+  firstName  String?
+  lastName   String?
+  country    String?
+  company    String?
+  jobTitle   String?
+  customData Json? // Any additional custom fields from CSV
 
   // Invite status
   status TrialInviteStatus @default(PENDING)
 
   // Email-locked ATI token (unique per invite)
-  inviteToken       String  @unique // Unique token for this invite
-  inviteTokenHash   String  @unique // Hashed version for security
-  allowedEmail      String  // Email that can use this token (prevents sharing)
-  tokenExpiresAt    DateTime?
+  inviteToken     String    @unique // Unique token for this invite
+  inviteTokenHash String    @unique // Hashed version for security
+  allowedEmail    String // Email that can use this token (prevents sharing)
+  tokenExpiresAt  DateTime?
 
   // Scheduling
   scheduledSendAt DateTime? // When to send (null = send immediately when triggered)
@@ -3463,7 +3488,7 @@ model TrialInvite {
   lastClickedAt  DateTime?
   clickCount     Int       @default(0)
   signedUpAt     DateTime?
-  signedUpUserId String?   // Link to User if they signed up
+  signedUpUserId String? // Link to User if they signed up
   bouncedAt      DateTime?
   bounceReason   String?
   unsubscribedAt DateTime?
@@ -3473,16 +3498,16 @@ model TrialInvite {
   mailjetStatus    String? // Last status from Mailjet
 
   // Resend tracking
-  resendCount     Int       @default(0)
-  lastResendAt    DateTime?
-  resendReason    String?
+  resendCount  Int       @default(0)
+  lastResendAt DateTime?
+  resendReason String?
 
   // Metadata
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   // Relations
-  campaign TrialCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaign TrialCampaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   events   TrialInviteEvent[]
 
   @@unique([campaignId, email]) // One invite per email per campaign
@@ -3504,14 +3529,14 @@ model TrialInviteEvent {
 
   // Event details
   eventType String // CREATED, SCHEDULED, SENT, DELIVERED, OPENED, CLICKED, SIGNED_UP, BOUNCED, FAILED, RESENT, UNSUBSCRIBED
-  eventData Json?  // Additional event data (e.g., IP, user agent, bounce reason)
+  eventData Json? // Additional event data (e.g., IP, user agent, bounce reason)
 
   // Source
   source String? // "mailjet_webhook", "tracking_pixel", "link_click", "signup", "manual"
 
   // IP tracking (for opens/clicks)
-  ipAddress String?
-  userAgent String?
+  ipAddress  String?
+  userAgent  String?
   geoCountry String?
   geoCity    String?
 
@@ -3533,7 +3558,7 @@ model TrialEmailTemplate {
   name        String
   description String?
   subject     String
-  htmlContent String @db.Text
+  htmlContent String  @db.Text
   textContent String? @db.Text // Plain text fallback
 
   // Variables available: {{firstName}}, {{lastName}}, {{inviteLink}}, {{expiryDate}}, {{companyName}}
@@ -3551,9 +3576,465 @@ model TrialUnsubscribe {
   id        String   @id @default(cuid())
   email     String   @unique
   reason    String?
-  source    String?  // Which campaign/invite triggered unsubscribe
+  source    String? // Which campaign/invite triggered unsubscribe
   createdAt DateTime @default(now())
 
   @@index([email])
   @@map("trial_unsubscribes")
+}
+
+// ============================================================================
+// RESEARCH PAPER WRITING MODELS
+// ============================================================================
+
+model PaperTypeDefinition {
+  id          String  @id @default(cuid())
+  code        String  @unique // e.g., "JOURNAL_ARTICLE", "CONFERENCE_PAPER"
+  name        String // Display name: "Journal Article", "Conference Paper"
+  description String? // Optional description of the paper type
+
+  // Section configuration as JSON
+  requiredSections Json // Array of required section keys: ["abstract", "introduction", "methodology"]
+  optionalSections Json // Array of optional section keys: ["literature_review", "acknowledgments"]
+  sectionOrder     Json // Ordered array of all sections: ["abstract", "introduction", ...]
+
+  // Word limits per section as JSON object
+  defaultWordLimits Json // { "abstract": 250, "introduction": 1000, "methodology": 1500 }
+
+  // Default citation style preference
+  defaultCitationStyle String? // e.g., "APA7", "IEEE", "CHICAGO"
+
+  // Status and metadata
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0) // For UI ordering
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  sessions DraftingSession[] // Sessions using this paper type
+  // papers      Paper[] // Papers using this type (when Paper model is created)
+
+  @@index([code])
+  @@index([isActive])
+  @@index([sortOrder])
+  @@map("paper_type_definitions")
+}
+
+model CitationStyleDefinition {
+  id   String @id @default(cuid())
+  code String @unique // e.g., "APA7", "IEEE", "CHICAGO"
+  name String // Display name: "APA 7th Edition", "IEEE"
+
+  // In-text citation format template
+  // Examples: "(Author, Year)" for APA, "[1]" for IEEE
+  inTextFormatTemplate String
+
+  // Bibliography format rules as JSON
+  // Complex rules for different source types (book, journal, website, etc.)
+  bibliographyRules Json
+
+  // Sorting rules for bibliography
+  // "alphabetical" or "order_of_appearance"
+  bibliographySortOrder String @default("alphabetical")
+
+  // Whether to use Ibid. or short titles for repeated citations (Chicago style)
+  supportsShortTitles Boolean @default(false)
+
+  // Maximum number of authors before "et al."
+  maxAuthorsBeforeEtAl Int @default(3)
+
+  // Status and metadata
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0) // For UI ordering
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  sessions DraftingSession[] // Sessions using this citation style
+  // papers      Paper[]
+  venues   PublicationVenue[]
+
+  @@index([code])
+  @@index([isActive])
+  @@index([sortOrder])
+  @@map("citation_style_definitions")
+}
+
+model PublicationVenue {
+  id   String @id @default(cuid())
+  code String @unique // e.g., "NATURE", "IEEE_TRANS_SOFT_ENG", "ACM_CONFERENCE"
+  name String // Display name: "Nature", "IEEE Transactions on Software Engineering"
+
+  // Venue classification
+  venueType VenueType // journal, conference, book_publisher
+
+  // Associated citation style (required)
+  citationStyleId String
+  citationStyle   CitationStyleDefinition @relation(fields: [citationStyleId], references: [id])
+
+  // Paper type restrictions (optional - which paper types this venue accepts)
+  acceptedPaperTypes String[] // Array of PaperTypeDefinition codes, empty means all accepted
+
+  // Section requirements override (JSON)
+  sectionOverrides Json? // Override default section requirements for specific venues
+
+  // Word limit overrides (JSON)
+  wordLimitOverrides Json? // Override default word limits: { "abstract": 200, "introduction": 800 }
+
+  // Formatting guidelines (JSON)
+  formattingGuidelines Json? // Specific formatting rules, templates, etc.
+
+  // Additional metadata
+  impactFactor  Float? // Journal impact factor
+  ranking       Int? // Alternative ranking system
+  website       String? // Official website URL
+  submissionUrl String? // Submission system URL
+
+  // Status and metadata
+  isActive  Boolean  @default(true)
+  sortOrder Int      @default(0) // For UI ordering
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  sessions DraftingSession[] // Sessions targeting this venue
+  // papers      Paper[]
+
+  @@index([code])
+  @@index([venueType])
+  @@index([citationStyleId])
+  @@index([isActive])
+  @@index([sortOrder])
+  @@map("publication_venues")
+}
+
+model ResearchTopic {
+  id String @id @default(cuid())
+
+  // Session relationship (replaces IdeaRecord.sessionId)
+  sessionId String          @unique
+  session   DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  // Core research elements
+  title            String // Research title
+  researchQuestion String // Main research question (required)
+  hypothesis       String? // Research hypothesis (optional)
+
+  // Keywords and classification
+  keywords         String[] // Research keywords/tags
+  methodology      MethodologyType // Research methodology
+  contributionType ContributionType // Type of contribution
+
+  // Additional context
+  datasetDescription String? // Description of dataset (if applicable)
+  abstractDraft      String? // Draft abstract/summary
+
+  // LLM metadata (for debugging and improvement)
+  llmPromptUsed String? // The prompt that generated this topic
+  llmResponse   String? // Raw LLM response
+  llmTokensUsed Int? // Token usage for billing/analytics
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations (will be added when Paper model is created)
+  // paper        Paper?
+
+  @@index([sessionId])
+  @@index([methodology])
+  @@index([contributionType])
+  @@map("research_topics")
+}
+
+model Citation {
+  id String @id @default(cuid())
+
+  // Session relationship
+  sessionId String
+  session   DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  // Source classification
+  sourceType CitationSourceType
+
+  // Core bibliographic fields
+  title     String
+  authors   String[] // Array of author names
+  year      Int?
+  venue     String? // Journal name, conference name, book title, etc.
+  volume    String?
+  issue     String?
+  pages     String?
+  doi       String?
+  url       String?
+  isbn      String?
+  publisher String?
+  edition   String?
+  abstract  String?  @db.Text // Full abstract from source
+
+  // Citation management
+  citationKey String // Auto-generated unique key (e.g., "Smith2023a")
+  bibtex      String? // Full BibTeX representation
+
+  // Import metadata
+  importSource CitationImportSource @default(MANUAL)
+  importDate   DateTime             @default(now())
+
+  // User annotations
+  notes String?
+  tags  String[] @default([]) // User-defined tags for organization
+
+  // Status
+  isActive Boolean @default(true)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  usages CitationUsage[]
+
+  @@unique([sessionId, doi]) // Prevent duplicate DOIs per session
+  @@index([sessionId])
+  @@index([citationKey])
+  @@index([doi])
+  @@index([sourceType])
+  @@index([importSource])
+  @@index([isActive])
+  @@map("citations")
+}
+
+model CitationUsage {
+  id String @id @default(cuid())
+
+  // Citation relationship
+  citationId String
+  citation   Citation @relation(fields: [citationId], references: [id], onDelete: Cascade)
+
+  // Usage context
+  sectionKey     String // Section where citation is used (e.g., "introduction", "literature_review")
+  position       Int? // Position in the text (optional)
+  contextSnippet String? // Snippet of surrounding text
+
+  // Citation format used
+  inTextFormat String // The actual formatted citation text used (e.g., "(Smith et al., 2023)")
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([citationId])
+  @@index([sectionKey])
+  @@map("citation_usages")
+}
+
+enum VenueType {
+  JOURNAL
+  CONFERENCE
+  BOOK_PUBLISHER
+}
+
+enum MethodologyType {
+  QUALITATIVE
+  QUANTITATIVE
+  MIXED_METHODS
+  THEORETICAL
+  CASE_STUDY
+  ACTION_RESEARCH
+  EXPERIMENTAL
+  SURVEY
+  OTHER
+}
+
+enum ContributionType {
+  THEORETICAL // New theory or theoretical framework
+  EMPIRICAL // New empirical findings
+  METHODOLOGICAL // New methods or methodological improvements
+  APPLIED // Practical applications or solutions
+  REVIEW // Synthesis of existing knowledge
+  CONCEPTUAL // Conceptual models or frameworks
+}
+
+enum CitationSourceType {
+  JOURNAL_ARTICLE
+  CONFERENCE_PAPER
+  BOOK
+  BOOK_CHAPTER
+  THESIS
+  WORKING_PAPER
+  REPORT
+  WEBSITE
+  PATENT
+  OTHER
+}
+
+enum CitationImportSource {
+  MANUAL // User manually entered
+  DOI_LOOKUP // Imported via DOI
+  SCHOLAR_SEARCH // From Google Scholar
+  CROSSREF_API // From CrossRef API
+  BIBTEX_IMPORT // From BibTeX file/string
+  SEMANTIC_SCHOLAR // From Semantic Scholar API
+  OPENALEX // From OpenAlex API
+  MENDELEY_IMPORT // From Mendeley export
+  ZOTERO_IMPORT // From Zotero export (RIS/BibTeX)
+  ENDNOTE_IMPORT // From EndNote export (RIS/XML)
+  RIS_IMPORT // From RIS format file
+  LIBRARY_IMPORT // From user's reference library
+}
+
+enum LiteratureReviewStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  COMPLETED
+}
+
+// ============================================================================
+// USER REFERENCE LIBRARY (Mendeley-like personal library)
+// ============================================================================
+
+// Literature Search Run - Persists search results with AI analysis
+model LiteratureSearchRun {
+  id        String @id @default(cuid())
+  sessionId String
+
+  // Search parameters
+  query    String
+  sources  String[] // Which providers were searched
+  yearFrom Int?
+  yearTo   Int?
+
+  // Search results (full result objects)
+  results Json // Array of SearchResult objects
+
+  // AI Analysis (populated when user clicks "Help Me Find Relevant")
+  aiAnalysis       Json? // { suggestions: [{ paperId, isRelevant, score, reasoning }] }
+  aiAnalyzedAt     DateTime?
+  aiModelUsed      String?
+  aiTokensUsed     Int?
+  researchQuestion String? // The research question used for analysis
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@index([createdAt])
+  @@map("literature_search_runs")
+}
+
+model ReferenceLibrary {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+
+  // Core bibliographic fields (same as Citation)
+  title     String
+  authors   String[] // Array of author names
+  year      Int?
+  venue     String? // Journal name, conference name, book title, etc.
+  volume    String?
+  issue     String?
+  pages     String?
+  doi       String?
+  url       String?
+  isbn      String?
+  publisher String?
+  edition   String?
+  abstract  String?  @db.Text // Full abstract
+
+  // Source classification
+  sourceType CitationSourceType @default(OTHER)
+
+  // Reference management
+  citationKey String? // Auto-generated unique key (e.g., "Smith2023a")
+  bibtex      String? @db.Text // Full BibTeX representation
+
+  // Import metadata
+  importSource CitationImportSource @default(MANUAL)
+  importDate   DateTime             @default(now())
+  externalId   String? // External reference ID (e.g., Mendeley UUID)
+
+  // User annotations
+  notes String?  @db.Text
+  tags  String[] @default([]) // User-defined tags for organization
+
+  // File attachments (PDF paths/URLs)
+  pdfUrl String?
+
+  // Reading status
+  isRead     Boolean @default(false)
+  isFavorite Boolean @default(false)
+
+  // Status
+  isActive Boolean @default(true)
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user        User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  collections ReferenceCollectionItem[]
+
+  @@unique([userId, doi]) // Prevent duplicate DOIs per user
+  @@index([userId])
+  @@index([doi])
+  @@index([sourceType])
+  @@index([isFavorite])
+  @@index([isRead])
+  @@map("reference_library")
+}
+
+model ReferenceCollection {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+
+  // Collection metadata
+  name        String
+  description String?
+  color       String? // Hex color for UI display
+  icon        String? // Icon name for UI display
+
+  // Visibility
+  isDefault Boolean @default(false) // "All References" collection
+  isShared  Boolean @default(false) // Can be shared with collaborators
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user  User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items ReferenceCollectionItem[]
+
+  @@unique([userId, name]) // Unique collection names per user
+  @@index([userId])
+  @@map("reference_collections")
+}
+
+model ReferenceCollectionItem {
+  id           String @id @default(cuid())
+  collectionId String @map("collection_id")
+  referenceId  String @map("reference_id")
+
+  // Order within collection
+  sortOrder Int @default(0)
+
+  // Additional per-collection notes
+  collectionNotes String?
+
+  // Timestamps
+  addedAt DateTime @default(now())
+
+  // Relations
+  collection ReferenceCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  reference  ReferenceLibrary    @relation(fields: [referenceId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, referenceId]) // Prevent duplicates in same collection
+  @@index([collectionId])
+  @@index([referenceId])
+  @@map("reference_collection_items")
 }

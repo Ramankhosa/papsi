@@ -35,6 +35,7 @@ export interface RichTextEditorRef {
   getHTML: () => string
   getText: () => string
   setContent: (content: string) => void
+  insertContent: (content: string) => void
   focus: () => void
   isEmpty: () => boolean
 }
@@ -270,6 +271,10 @@ const RichTextEditor = forwardRef<RichTextEditorRef, RichTextEditorProps>(
       setContent: (content: string) => {
         // Avoid firing change handlers when imperatively setting content
         editor?.commands.setContent(content, { emitUpdate: false })
+      },
+      insertContent: (content: string) => {
+        if (!editor) return
+        editor.chain().focus().insertContent(content).run()
       },
       focus: () => {
         editor?.commands.focus()

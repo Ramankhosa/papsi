@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { useAuth } from '@/lib/auth-context'
+import { isFeatureEnabled } from '@/lib/feature-flags'
 
 interface ATIToken {
   id: string
@@ -33,6 +34,21 @@ interface SignupUser {
   }
 }
 
+interface PaperAnalytics {
+  totalPapers: number
+  papersThisMonth: number
+  papersThisWeek: number
+  averagePapersPerUser: number
+  paperTypes: Array<{ type: string; count: number }>
+  citationStyles: Array<{ style: string; count: number }>
+  topVenues: Array<{ venue: string; count: number }>
+}
+
+interface PaperUserMetrics extends SignupUser {
+  papersCount: number
+  lastPaperActivity?: string
+}
+
 export default function TenantAdminDashboard() {
   const { user, logout } = useAuth()
   const [tokens, setTokens] = useState<ATIToken[]>([])
@@ -59,8 +75,14 @@ export default function TenantAdminDashboard() {
   const [isLoadingUsers, setIsLoadingUsers] = useState(false)
   const [usersError, setUsersError] = useState<string | null>(null)
 
+  // Paper analytics state
+  const [paperAnalytics, setPaperAnalytics] = useState<PaperAnalytics | null>(null)
+  const [paperUsers, setPaperUsers] = useState<PaperUserMetrics[]>([])
+  const [isLoadingPapers, setIsLoadingPapers] = useState(false)
+
   useEffect(() => {
     fetchTokens()
+    fetchPaperAnalytics()
   }, [])
 
   const fetchTokens = async () => {
@@ -86,6 +108,42 @@ export default function TenantAdminDashboard() {
       setTokens([])
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const fetchPaperAnalytics = async () => {
+    if (!isFeatureEnabled('ENABLE_PAPER_WRITING_UI')) return
+
+    try {
+      setIsLoadingPapers(true)
+
+      // Fetch paper analytics
+      const analyticsResponse = await fetch('/api/admin/analytics/papers', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+        }
+      })
+
+      if (analyticsResponse.ok) {
+        const analyticsData = await analyticsResponse.json()
+        setPaperAnalytics(analyticsData)
+      }
+
+      // Fetch users with paper metrics
+      const usersResponse = await fetch('/api/admin/analytics/users-papers', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+        }
+      })
+
+      if (usersResponse.ok) {
+        const usersData = await usersResponse.json()
+        setPaperUsers(usersData.users || [])
+      }
+    } catch (error) {
+      console.error('Failed to fetch paper analytics:', error)
+    } finally {
+      setIsLoadingPapers(false)
     }
   }
 
@@ -446,6 +504,149 @@ export default function TenantAdminDashboard() {
           </div>
         </div>
 
+        {/* Paper Analytics (when feature enabled) */}
+        {isFeatureEnabled('ENABLE_PAPER_WRITING_UI') && (
+          <>
+            <div className="mb-8">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Paper Writing Analytics</h2>
+              <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-5">
+                <div className="bg-white overflow-hidden shadow rounded-lg">
+                  <div className="p-5">
+                    <div className="flex items-center">
+                      <div className="flex-shrink-0">
+                        <div className="w-8 h-8 bg-purple-500 rounded-full flex items-center justify-center">
+                          <span className="text-white text-sm font-bold">P</span>
+                        </div>
+                      </div>
+                      <div className="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt className="text-sm font-medium text-gray-500 truncate">Total Papers</dt>
+                          <dd className="text-lg font-medium text-gray-900">
+                            {isLoadingPapers ? '...' : (paperAnalytics?.totalPapers || 0)}
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white overflow-hidden shadow rounded-lg">
+                  <div className="p-5">
+                    <div className="flex items-center">
+                      <div className="flex-shrink-0">
+                        <div className="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center">
+                          <span className="text-white text-sm font-bold">M</span>
+                        </div>
+                      </div>
+                      <div className="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt className="text-sm font-medium text-gray-500 truncate">Papers This Month</dt>
+                          <dd className="text-lg font-medium text-gray-900">
+                            {isLoadingPapers ? '...' : (paperAnalytics?.papersThisMonth || 0)}
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white overflow-hidden shadow rounded-lg">
+                  <div className="p-5">
+                    <div className="flex items-center">
+                      <div className="flex-shrink-0">
+                        <div className="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center">
+                          <span className="text-white text-sm font-bold">W</span>
+                        </div>
+                      </div>
+                      <div className="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt className="text-sm font-medium text-gray-500 truncate">Papers This Week</dt>
+                          <dd className="text-lg font-medium text-gray-900">
+                            {isLoadingPapers ? '...' : (paperAnalytics?.papersThisWeek || 0)}
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white overflow-hidden shadow rounded-lg">
+                  <div className="p-5">
+                    <div className="flex items-center">
+                      <div className="flex-shrink-0">
+                        <div className="w-8 h-8 bg-yellow-500 rounded-full flex items-center justify-center">
+                          <span className="text-white text-sm font-bold">A</span>
+                        </div>
+                      </div>
+                      <div className="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt className="text-sm font-medium text-gray-500 truncate">Avg Papers/User</dt>
+                          <dd className="text-lg font-medium text-gray-900">
+                            {isLoadingPapers ? '...' : (paperAnalytics?.averagePapersPerUser || 0).toFixed(1)}
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white overflow-hidden shadow rounded-lg">
+                  <div className="p-5">
+                    <div className="flex items-center">
+                      <div className="flex-shrink-0">
+                        <div className="w-8 h-8 bg-indigo-500 rounded-full flex items-center justify-center">
+                          <span className="text-white text-sm font-bold">T</span>
+                        </div>
+                      </div>
+                      <div className="ml-5 w-0 flex-1">
+                        <dl>
+                          <dt className="text-sm font-medium text-gray-500 truncate">Paper Types</dt>
+                          <dd className="text-lg font-medium text-gray-900">
+                            {isLoadingPapers ? '...' : (paperAnalytics?.paperTypes?.length || 0)}
+                          </dd>
+                        </dl>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Paper Types and Citation Styles */}
+            {paperAnalytics && (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+                <div className="bg-white shadow rounded-lg">
+                  <div className="px-4 py-5 sm:p-6">
+                    <h3 className="text-lg leading-6 font-medium text-gray-900 mb-4">Paper Types Distribution</h3>
+                    <div className="space-y-3">
+                      {paperAnalytics.paperTypes?.slice(0, 5).map((type) => (
+                        <div key={type.type} className="flex items-center justify-between">
+                          <span className="text-sm text-gray-600">{type.type}</span>
+                          <span className="text-sm font-medium text-gray-900">{type.count}</span>
+                        </div>
+                      )) || <p className="text-sm text-gray-500">No paper types data available</p>}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white shadow rounded-lg">
+                  <div className="px-4 py-5 sm:p-6">
+                    <h3 className="text-lg leading-6 font-medium text-gray-900 mb-4">Citation Styles Usage</h3>
+                    <div className="space-y-3">
+                      {paperAnalytics.citationStyles?.slice(0, 5).map((style) => (
+                        <div key={style.style} className="flex items-center justify-between">
+                          <span className="text-sm text-gray-600">{style.style}</span>
+                          <span className="text-sm font-medium text-gray-900">{style.count}</span>
+                        </div>
+                      )) || <p className="text-sm text-gray-500">No citation styles data available</p>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
         {/* Create Token Section */}
         <div className="bg-white shadow rounded-lg mb-8">
           <div className="px-4 py-5 sm:p-6">
@@ -753,6 +954,15 @@ export default function TenantAdminDashboard() {
                                   {m && (
                                     <div className="text-[10px] text-gray-500 mt-0.5">
                                       Patents: {m.patentsDrafted} · Novelty: {m.noveltySearches} · Tokens (in/out): {m.totalInputTokens}/{m.totalOutputTokens}
+                                    </div>
+                                  )}
+                                  {/* Paper metrics */}
+                                  {isFeatureEnabled('ENABLE_PAPER_WRITING_UI') && 'papersCount' in user && (
+                                    <div className="text-[10px] text-purple-600 mt-0.5">
+                                      Papers: {(user as PaperUserMetrics).papersCount}
+                                      {(user as PaperUserMetrics).lastPaperActivity && (
+                                        <span> · Last: {new Date((user as PaperUserMetrics).lastPaperActivity!).toLocaleDateString()}</span>
+                                      )}
                                     </div>
                                   )}
                                 </div>

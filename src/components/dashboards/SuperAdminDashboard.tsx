@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { useAuth } from '@/lib/auth-context'
+import { isFeatureEnabled } from '@/lib/feature-flags'
 
 interface Tenant {
   id: string
@@ -26,6 +27,18 @@ interface NavGroup {
   title: string
   icon: string
   items: NavItem[]
+}
+
+interface PlatformPaperAnalytics {
+  totalPapers: number
+  papersTrend: Array<{ month: string; count: number }>
+  paperTypesPopularity: Array<{ type: string; count: number }>
+  citationStylesUsage: Array<{ style: string; count: number }>
+  literatureSearchUsage: {
+    totalSearches: number
+    apiUsage: Record<string, number>
+  }
+  averageCitationsByType: Array<{ type: string; averageCitations: number }>
 }
 
 export default function SuperAdminDashboard() {
@@ -60,10 +73,15 @@ export default function SuperAdminDashboard() {
     analytics: true,
     ai: true,
     jurisdiction: false,
+    paper: true,
     access: true
   })
   const [showUserMenu, setShowUserMenu] = useState(false)
   const userMenuRef = useRef<HTMLDivElement>(null)
+
+  // Paper analytics state
+  const [paperAnalytics, setPaperAnalytics] = useState<PlatformPaperAnalytics | null>(null)
+  const [isLoadingPapers, setIsLoadingPapers] = useState(false)
 
   // Handle clicks outside user menu to close it
   useEffect(() => {
@@ -86,6 +104,7 @@ export default function SuperAdminDashboard() {
 
   useEffect(() => {
     fetchTenants()
+    fetchPaperAnalytics()
   }, [])
 
   const fetchTenants = async () => {
@@ -104,6 +123,28 @@ export default function SuperAdminDashboard() {
       console.error('Failed to fetch tenants:', error)
     } finally {
       setIsLoading(false)
+    }
+  }
+
+  const fetchPaperAnalytics = async () => {
+    if (!isFeatureEnabled('ENABLE_PAPER_WRITING_UI')) return
+
+    try {
+      setIsLoadingPapers(true)
+      const response = await fetch('/api/super-admin/analytics/papers', {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+        }
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setPaperAnalytics(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch paper analytics:', error)
+    } finally {
+      setIsLoadingPapers(false)
     }
   }
 
@@ -287,6 +328,15 @@ export default function SuperAdminDashboard() {
         { label: 'Section Prompts', icon: '📝', href: '/super-admin/section-prompts' },
         { label: 'Jurisdiction Styles', icon: '🎨', href: '/super-admin/jurisdiction-styles' },
         { label: 'Superset Sections', icon: '📚', href: '/super-admin/superset-sections' }
+      ]
+    },
+    {
+      title: 'Paper Writing',
+      icon: '📄',
+      items: [
+        { label: 'Paper Types', icon: '📑', href: '/admin/paper-types' },
+        { label: 'Citation Styles', icon: '📚', href: '/admin/citation-styles' },
+        { label: 'Publication Venues', icon: '🏛️', href: '/admin/publication-venues' }
       ]
     },
     {
@@ -527,6 +577,79 @@ export default function SuperAdminDashboard() {
             </div>
           </div>
 
+          {/* Paper Analytics (when feature enabled) */}
+          {isFeatureEnabled('ENABLE_PAPER_WRITING_UI') && (
+            <>
+              <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-purple-500/10 to-purple-600/5 border border-purple-500/20 p-5">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/10 rounded-full -translate-y-1/2 translate-x-1/2 blur-2xl"></div>
+                <div className="relative">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-10 h-10 rounded-xl bg-purple-500/20 flex items-center justify-center">
+                      <span className="text-xl">📄</span>
+                    </div>
+                    <span className="text-sm font-medium text-purple-300">Total Papers</span>
+                  </div>
+                  <div className="text-3xl font-bold text-white">
+                    {isLoadingPapers ? '...' : (paperAnalytics?.totalPapers || 0)}
+                  </div>
+                  <div className="text-sm text-slate-400 mt-1">Across all tenants</div>
+                </div>
+              </div>
+
+              <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-cyan-500/10 to-cyan-600/5 border border-cyan-500/20 p-5">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/10 rounded-full -translate-y-1/2 translate-x-1/2 blur-2xl"></div>
+                <div className="relative">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-10 h-10 rounded-xl bg-cyan-500/20 flex items-center justify-center">
+                      <span className="text-xl">🔍</span>
+                    </div>
+                    <span className="text-sm font-medium text-cyan-300">Literature Searches</span>
+                  </div>
+                  <div className="text-3xl font-bold text-white">
+                    {isLoadingPapers ? '...' : (paperAnalytics?.literatureSearchUsage?.totalSearches || 0)}
+                  </div>
+                  <div className="text-sm text-slate-400 mt-1">Academic database queries</div>
+                </div>
+              </div>
+
+              <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-pink-500/10 to-pink-600/5 border border-pink-500/20 p-5">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-pink-500/10 rounded-full -translate-y-1/2 translate-x-1/2 blur-2xl"></div>
+                <div className="relative">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-10 h-10 rounded-xl bg-pink-500/20 flex items-center justify-center">
+                      <span className="text-xl">📊</span>
+                    </div>
+                    <span className="text-sm font-medium text-pink-300">Citation Styles</span>
+                  </div>
+                  <div className="text-3xl font-bold text-white">
+                    {isLoadingPapers ? '...' : (paperAnalytics?.citationStylesUsage?.length || 0)}
+                  </div>
+                  <div className="text-sm text-slate-400 mt-1">Styles in use</div>
+                </div>
+              </div>
+
+              <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-500/10 to-indigo-600/5 border border-indigo-500/20 p-5">
+                <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/10 rounded-full -translate-y-1/2 translate-x-1/2 blur-2xl"></div>
+                <div className="relative">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center">
+                      <span className="text-xl">📈</span>
+                    </div>
+                    <span className="text-sm font-medium text-indigo-300">Avg Citations/Paper</span>
+                  </div>
+                  <div className="text-3xl font-bold text-white">
+                    {isLoadingPapers ? '...' : (
+                      paperAnalytics?.averageCitationsByType?.length
+                        ? (paperAnalytics.averageCitationsByType.reduce((sum, item) => sum + item.averageCitations, 0) / paperAnalytics.averageCitationsByType.length).toFixed(1)
+                        : '0.0'
+                    )}
+                  </div>
+                  <div className="text-sm text-slate-400 mt-1">Platform average</div>
+                </div>
+              </div>
+            </>
+          )}
+
           {/* Expiry Notifications */}
           {notificationStatus && (
             <div className="rounded-2xl bg-slate-800/50 border border-slate-700/50 overflow-hidden">
@@ -573,6 +696,99 @@ export default function SuperAdminDashboard() {
                 </div>
               )}
             </div>
+          )}
+
+          {/* Paper Analytics Details (when feature enabled) */}
+          {isFeatureEnabled('ENABLE_PAPER_WRITING_UI') && paperAnalytics && (
+            <>
+              {/* Paper Types and Citation Styles */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="rounded-2xl bg-slate-800/50 border border-slate-700/50 overflow-hidden">
+                  <div className="px-6 py-4 border-b border-slate-700/50">
+                    <h3 className="font-semibold text-white flex items-center gap-2">
+                      <span className="text-xl">📄</span>
+                      Paper Types Popularity
+                    </h3>
+                    <p className="text-sm text-slate-400">Most used paper types across the platform</p>
+                  </div>
+                  <div className="p-6">
+                    <div className="space-y-3">
+                      {paperAnalytics.paperTypesPopularity?.slice(0, 5).map((type, index) => (
+                        <div key={type.type} className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium ${
+                              index === 0 ? 'bg-yellow-500/20 text-yellow-400' :
+                              index === 1 ? 'bg-slate-500/20 text-slate-400' :
+                              index === 2 ? 'bg-orange-500/20 text-orange-400' :
+                              'bg-slate-600/20 text-slate-500'
+                            }`}>
+                              {index + 1}
+                            </div>
+                            <span className="text-sm text-slate-300">{type.type}</span>
+                          </div>
+                          <span className="text-sm font-medium text-white">{type.count}</span>
+                        </div>
+                      )) || <p className="text-sm text-slate-500">No data available</p>}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl bg-slate-800/50 border border-slate-700/50 overflow-hidden">
+                  <div className="px-6 py-4 border-b border-slate-700/50">
+                    <h3 className="font-semibold text-white flex items-center gap-2">
+                      <span className="text-xl">📝</span>
+                      Citation Styles Usage
+                    </h3>
+                    <p className="text-sm text-slate-400">Citation formatting preferences</p>
+                  </div>
+                  <div className="p-6">
+                    <div className="space-y-3">
+                      {paperAnalytics.citationStylesUsage?.slice(0, 5).map((style, index) => (
+                        <div key={style.style} className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-medium ${
+                              index === 0 ? 'bg-blue-500/20 text-blue-400' :
+                              index === 1 ? 'bg-green-500/20 text-green-400' :
+                              index === 2 ? 'bg-purple-500/20 text-purple-400' :
+                              'bg-slate-600/20 text-slate-500'
+                            }`}>
+                              {index + 1}
+                            </div>
+                            <span className="text-sm text-slate-300">{style.style}</span>
+                          </div>
+                          <span className="text-sm font-medium text-white">{style.count}</span>
+                        </div>
+                      )) || <p className="text-sm text-slate-500">No data available</p>}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Literature Search API Usage */}
+              <div className="rounded-2xl bg-slate-800/50 border border-slate-700/50 overflow-hidden">
+                <div className="px-6 py-4 border-b border-slate-700/50">
+                  <h3 className="font-semibold text-white flex items-center gap-2">
+                    <span className="text-xl">🔍</span>
+                    Literature Search API Usage
+                  </h3>
+                  <p className="text-sm text-slate-400">Academic database API consumption</p>
+                </div>
+                <div className="p-6">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {paperAnalytics.literatureSearchUsage?.apiUsage && Object.entries(paperAnalytics.literatureSearchUsage.apiUsage).map(([api, count]) => (
+                      <div key={api} className="text-center p-4 rounded-xl bg-slate-900/50 border border-slate-700/50">
+                        <div className="text-2xl font-bold text-white">{count.toLocaleString()}</div>
+                        <div className="text-sm text-slate-400 capitalize">{api.replace('_', ' ')}</div>
+                      </div>
+                    )) || (
+                      <div className="col-span-full text-center text-slate-500 py-8">
+                        No API usage data available
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </>
           )}
 
           {/* Tenants List */}

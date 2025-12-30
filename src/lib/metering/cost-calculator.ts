@@ -275,16 +275,26 @@ export function generateCostLogMessage(
     taskCode?: string
     stageCode?: string
     patentId?: string
+    paperId?: string
     userId?: string
     tenantId?: string
     duration?: number
+    module?: string
+    action?: string
   }
 ): string {
   const divider = '═'.repeat(70)
   const thinDivider = '─'.repeat(70)
   
+  // Determine module label for the header
+  const moduleLabel = metadata?.module === 'publication_ideation' 
+    ? '📝 PAPER WRITING' 
+    : metadata?.module === 'patent_drafting'
+    ? '📜 PATENT DRAFTING'
+    : '🤖 LLM'
+  
   let message = `\n${divider}\n`
-  message += `💰 LLM OPERATION COST REPORT: ${operationType}\n`
+  message += `💰 ${moduleLabel} COST REPORT: ${operationType}\n`
   message += `${thinDivider}\n`
   
   // Model & Provider Info
@@ -296,7 +306,15 @@ export function generateCostLogMessage(
     message += '\n'
   }
   
-  if (metadata?.patentId) {
+  // Show action for paper writing operations
+  if (metadata?.action) {
+    message += `📋 Action: ${metadata.action}\n`
+  }
+  
+  // Show relevant document ID
+  if (metadata?.paperId) {
+    message += `📄 Paper: ${metadata.paperId}\n`
+  } else if (metadata?.patentId) {
     message += `📄 Patent: ${metadata.patentId}\n`
   }
   
@@ -339,9 +357,12 @@ export function logLLMCost(
     taskCode?: string
     stageCode?: string
     patentId?: string
+    paperId?: string
     userId?: string
     tenantId?: string
     duration?: number
+    module?: string
+    action?: string
   }
 ): CostBreakdown {
   const costBreakdown = calculateCost(modelCode, inputTokens, outputTokens, thoughtTokens)

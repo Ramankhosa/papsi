@@ -558,7 +558,9 @@ export class LLMGateway {
       IDEATION_EXPAND: 'IDEATION',
       IDEATION_OBVIOUSNESS_FILTER: 'IDEATION',
       IDEATION_GENERATE: 'IDEATION',
-      IDEATION_NOVELTY: 'IDEATION'
+      IDEATION_NOVELTY: 'IDEATION',
+      // Paper writing tasks
+      LITERATURE_RELEVANCE: 'PAPER_DRAFTING'
     }
     return taskToFeatureMap[taskCode]
   }

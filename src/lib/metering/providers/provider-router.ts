@@ -456,9 +456,12 @@ export class LLMProviderRouter {
           taskCode: request.taskCode,
           stageCode: (request as any).stageCode,
           patentId: request.metadata?.patentId,
+          paperId: request.metadata?.paperId,
           userId: request.metadata?.userId,
           tenantId: request.metadata?.tenantId,
-          duration
+          duration,
+          module: request.metadata?.module,
+          action: request.metadata?.action
         }
       )
       

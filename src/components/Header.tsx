@@ -4,6 +4,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import Link from 'next/link'
 import { useAuth } from '@/lib/auth-context'
 import AnimatedLogo from '@/components/ui/animated-logo'
+import { isFeatureEnabled } from '@/lib/feature-flags'
+import { BookOpen, Plus, FileText, Bell, Library } from 'lucide-react'
 
 export default function Header() {
   const { user, logout, isLoading } = useAuth()
@@ -150,7 +152,7 @@ export default function Header() {
           <div className="flex items-center space-x-3">
             <AnimatedLogo size="sm" autoPlayDuration={2000} className="flex-shrink-0" useKishoFallback={true} />
             <Link href="/" className="text-xl font-bold text-gpt-gray-900">
-              PatentNest
+              PaperNest
             </Link>
           </div>
 
@@ -171,6 +173,35 @@ export default function Header() {
                 >
                   🔍 Search
                 </Link>
+
+                {/* Paper Writing Navigation (when feature enabled) */}
+                {isFeatureEnabled('ENABLE_PAPER_WRITING_UI') && (
+                  <>
+                    <Link
+                      href="/papers"
+                      className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
+                    >
+                      <BookOpen className="w-4 h-4 mr-1" />
+                      Papers
+                    </Link>
+
+                    <Link
+                      href="/library"
+                      className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-gpt-gray-700 bg-white hover:bg-gpt-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gpt-blue-500 transition-all duration-200"
+                    >
+                      <Library className="w-4 h-4 mr-1" />
+                      Library
+                    </Link>
+
+                    <button
+                      onClick={() => window.location.href = '/papers/new'}
+                      className="inline-flex items-center px-3 py-2 border border-transparent text-sm font-medium rounded-lg text-white bg-violet-600 hover:bg-violet-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-violet-500 transition-all duration-200"
+                    >
+                      <Plus className="w-4 h-4 mr-1" />
+                      New Paper
+                    </button>
+                  </>
+                )}
 
                 {/* Compact User Dropdown */}
                 <button
@@ -234,6 +265,36 @@ export default function Header() {
                       <span>📁</span>
                       <span>Projects</span>
                     </Link>
+
+                    {/* Paper Writing Links (when feature enabled) */}
+                    {isFeatureEnabled('ENABLE_PAPER_WRITING_UI') && (
+                      <>
+                        <Link
+                          href="/papers"
+                          className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                          onClick={closeMenu}
+                        >
+                          <span>📄</span>
+                          <span>My Papers</span>
+                        </Link>
+                        <Link
+                          href="/library"
+                          className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                          onClick={closeMenu}
+                        >
+                          <span>📚</span>
+                          <span>Reference Library</span>
+                        </Link>
+                        <Link
+                          href="/papers/new"
+                          className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                          onClick={closeMenu}
+                        >
+                          <span>✨</span>
+                          <span>New Paper</span>
+                        </Link>
+                      </>
+                    )}
 
                     {/* Tenant Admin Links - for OWNER and ADMIN */}
                     {(user.roles?.includes('OWNER') || user.roles?.includes('ADMIN')) && (
@@ -315,6 +376,34 @@ export default function Header() {
                         >
                           <span>🤖</span>
                           <span>LLM Model Control</span>
+                        </Link>
+                        <div className="border-t border-gpt-gray-200 my-1"></div>
+                        <div className="px-3 py-1 text-xs font-semibold text-gpt-gray-500 uppercase">
+                          Paper Writing Admin
+                        </div>
+                        <Link
+                          href="/admin/paper-types"
+                          className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                          onClick={closeMenu}
+                        >
+                          <span>📑</span>
+                          <span>Paper Types</span>
+                        </Link>
+                        <Link
+                          href="/admin/citation-styles"
+                          className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                          onClick={closeMenu}
+                        >
+                          <span>📚</span>
+                          <span>Citation Styles</span>
+                        </Link>
+                        <Link
+                          href="/admin/publication-venues"
+                          className="w-full px-3 py-2 text-left text-sm text-gpt-gray-700 hover:bg-gpt-gray-50 flex items-center space-x-2"
+                          onClick={closeMenu}
+                        >
+                          <span>🏛️</span>
+                          <span>Publication Venues</span>
                         </Link>
                       </>
                     )}
