@@ -79,7 +79,7 @@ const SimpleDialog: React.FC<SimpleDialogProps> = ({ open, onOpenChange, childre
 const SimpleDialogContent: React.FC<SimpleDialogContentProps> = ({ className, children }) => (
   <div
     className={cn(
-      "relative z-50 grid w-full max-w-lg gap-4 border bg-background p-6 shadow-lg sm:rounded-lg",
+      "relative z-50 grid w-full max-w-lg gap-4 border border-gray-200 bg-white p-6 shadow-2xl sm:rounded-lg",
       className
     )}
   >

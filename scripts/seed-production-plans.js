@@ -34,7 +34,8 @@ async function seedProductionPlans() {
       { code: 'DIAGRAM_GENERATION', name: 'Technical Diagram Generation', unit: 'diagrams' },
       { code: 'IDEA_BANK', name: 'Idea Bank Access', unit: 'reservations' },
       { code: 'PERSONA_SYNC', name: 'PersonaSync Style Learning', unit: 'trainings' },
-      { code: 'IDEATION', name: 'Patent Ideation Engine', unit: 'sessions' }
+      { code: 'IDEATION', name: 'Patent Ideation Engine', unit: 'sessions' },
+      { code: 'PAPER_DRAFTING', name: 'Academic Paper Drafting', unit: 'tokens' }
     ]
 
     const featuresByCode = {}
@@ -69,7 +70,9 @@ async function seedProductionPlans() {
       { code: 'IDEATION_EXPAND', name: 'Dimension Expansion', linkedFeature: 'IDEATION' },
       { code: 'IDEATION_OBVIOUSNESS_FILTER', name: 'Obviousness Filter', linkedFeature: 'IDEATION' },
       { code: 'IDEATION_GENERATE', name: 'Idea Frame Generation', linkedFeature: 'IDEATION' },
-      { code: 'IDEATION_NOVELTY', name: 'Novelty Assessment', linkedFeature: 'IDEATION' }
+      { code: 'IDEATION_NOVELTY', name: 'Novelty Assessment', linkedFeature: 'IDEATION' },
+      // PAPER_DRAFTING tasks (academic paper writing)
+      { code: 'LITERATURE_RELEVANCE', name: 'Literature Relevance Analysis', linkedFeature: 'PAPER_DRAFTING' }
     ]
 
     for (const def of taskDefs) {
@@ -158,13 +161,15 @@ async function seedProductionPlans() {
       // BASIC PLAN (FREE_PLAN) - Patent drafting + novelty search (no Idea Bank, no Ideation)
       { planCode: 'FREE_PLAN', featureCode: 'PRIOR_ART_SEARCH', monthlyQuota: 50, dailyQuota: 10 },
       { planCode: 'FREE_PLAN', featureCode: 'PATENT_DRAFTING', monthlyQuota: 1000, dailyQuota: 100 },
+      { planCode: 'FREE_PLAN', featureCode: 'PAPER_DRAFTING', monthlyQuota: 1000, dailyQuota: 100 },
 
-      // PRO PLAN - Basic services + Idea Bank + Diagram generation + Ideation
+      // PRO PLAN - Basic services + Idea Bank + Diagram generation + Ideation + Paper Drafting
       { planCode: 'PRO_PLAN', featureCode: 'PRIOR_ART_SEARCH', monthlyQuota: 1000, dailyQuota: 100 },
       { planCode: 'PRO_PLAN', featureCode: 'PATENT_DRAFTING', monthlyQuota: 10000, dailyQuota: 1000 },
       { planCode: 'PRO_PLAN', featureCode: 'DIAGRAM_GENERATION', monthlyQuota: 200, dailyQuota: 40 },
       { planCode: 'PRO_PLAN', featureCode: 'IDEA_BANK', monthlyQuota: 50, dailyQuota: 10 },
       { planCode: 'PRO_PLAN', featureCode: 'IDEATION', monthlyQuota: 500, dailyQuota: 50, monthlyTokenLimit: 5000000, dailyTokenLimit: 500000 },
+      { planCode: 'PRO_PLAN', featureCode: 'PAPER_DRAFTING', monthlyQuota: 10000, dailyQuota: 1000, monthlyTokenLimit: 10000000, dailyTokenLimit: 1000000 },
 
       // ENTERPRISE PLAN - Everything (all features)
       { planCode: 'ENTERPRISE_PLAN', featureCode: 'PRIOR_ART_SEARCH', monthlyQuota: 5000, dailyQuota: 500 },
@@ -172,7 +177,8 @@ async function seedProductionPlans() {
       { planCode: 'ENTERPRISE_PLAN', featureCode: 'DIAGRAM_GENERATION', monthlyQuota: 500, dailyQuota: 100 },
       { planCode: 'ENTERPRISE_PLAN', featureCode: 'IDEA_BANK', monthlyQuota: 200, dailyQuota: 50 },
       { planCode: 'ENTERPRISE_PLAN', featureCode: 'PERSONA_SYNC', monthlyQuota: 50, dailyQuota: 10 },
-      { planCode: 'ENTERPRISE_PLAN', featureCode: 'IDEATION', monthlyQuota: 2000, dailyQuota: 200, monthlyTokenLimit: 20000000, dailyTokenLimit: 2000000 }
+      { planCode: 'ENTERPRISE_PLAN', featureCode: 'IDEATION', monthlyQuota: 2000, dailyQuota: 200, monthlyTokenLimit: 20000000, dailyTokenLimit: 2000000 },
+      { planCode: 'ENTERPRISE_PLAN', featureCode: 'PAPER_DRAFTING', monthlyQuota: 50000, dailyQuota: 5000, monthlyTokenLimit: 50000000, dailyTokenLimit: 5000000 }
     ]
 
     for (const def of planFeatureDefs) {
@@ -215,12 +221,14 @@ async function seedProductionPlans() {
     // 6. Plan LLM access
     console.log('\n6. Ensuring plan LLM access rules...')
     const llmAccessDefs = [
-      // BASIC PLAN (FREE_PLAN) - Patent drafting + novelty search
+      // BASIC PLAN (FREE_PLAN) - Patent drafting + novelty search + Paper drafting
       { planCode: 'FREE_PLAN', taskCode: 'LLM1_PRIOR_ART', allowedClasses: ['BASE_S'], defaultClass: 'BASE_S' },
       { planCode: 'FREE_PLAN', taskCode: 'LLM2_DRAFT', allowedClasses: ['BASE_S'], defaultClass: 'BASE_S' },
       { planCode: 'FREE_PLAN', taskCode: 'LLM4_NOVELTY_SCREEN', allowedClasses: ['BASE_S'], defaultClass: 'BASE_S' },
       { planCode: 'FREE_PLAN', taskCode: 'LLM5_NOVELTY_ASSESS', allowedClasses: ['BASE_S'], defaultClass: 'BASE_S' },
       { planCode: 'FREE_PLAN', taskCode: 'LLM6_REPORT_GENERATION', allowedClasses: ['BASE_S'], defaultClass: 'BASE_S' },
+      // FREE PLAN - Paper drafting tasks
+      { planCode: 'FREE_PLAN', taskCode: 'LITERATURE_RELEVANCE', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_S' },
 
       // PRO PLAN - Basic services + Idea Bank + Diagram generation
       { planCode: 'PRO_PLAN', taskCode: 'LLM1_PRIOR_ART', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M'], defaultClass: 'PRO_M' },
@@ -240,6 +248,8 @@ async function seedProductionPlans() {
       { planCode: 'PRO_PLAN', taskCode: 'IDEATION_OBVIOUSNESS_FILTER', allowedClasses: ['BASE_S', 'BASE_M'], defaultClass: 'BASE_M' },
       { planCode: 'PRO_PLAN', taskCode: 'IDEATION_GENERATE', allowedClasses: ['BASE_M', 'PRO_M'], defaultClass: 'PRO_M' },
       { planCode: 'PRO_PLAN', taskCode: 'IDEATION_NOVELTY', allowedClasses: ['BASE_M', 'PRO_M'], defaultClass: 'PRO_M' },
+      // PRO PLAN - Paper drafting tasks
+      { planCode: 'PRO_PLAN', taskCode: 'LITERATURE_RELEVANCE', allowedClasses: ['BASE_M', 'PRO_M'], defaultClass: 'PRO_M' },
 
       // ENTERPRISE PLAN - All access (everything)
       { planCode: 'ENTERPRISE_PLAN', taskCode: 'LLM1_PRIOR_ART', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' },
@@ -259,7 +269,9 @@ async function seedProductionPlans() {
       { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEATION_EXPAND', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M', 'PRO_L'], defaultClass: 'PRO_M' },
       { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEATION_OBVIOUSNESS_FILTER', allowedClasses: ['BASE_S', 'BASE_M', 'PRO_M', 'PRO_L'], defaultClass: 'PRO_M' },
       { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEATION_GENERATE', allowedClasses: ['BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' },
-      { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEATION_NOVELTY', allowedClasses: ['BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' }
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'IDEATION_NOVELTY', allowedClasses: ['BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' },
+      // ENTERPRISE PLAN - Paper drafting tasks
+      { planCode: 'ENTERPRISE_PLAN', taskCode: 'LITERATURE_RELEVANCE', allowedClasses: ['BASE_M', 'PRO_M', 'PRO_L', 'ADVANCED'], defaultClass: 'ADVANCED' }
     ]
 
     for (const def of llmAccessDefs) {

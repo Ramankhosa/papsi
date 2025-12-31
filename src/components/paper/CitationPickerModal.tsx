@@ -122,7 +122,7 @@ export default function CitationPickerModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl">
+      <DialogContent className="max-w-3xl bg-white border-gray-200 shadow-2xl">
         <DialogHeader>
           <DialogTitle>Insert citations</DialogTitle>
           <DialogDescription>Select one or more citations to insert at the cursor.</DialogDescription>

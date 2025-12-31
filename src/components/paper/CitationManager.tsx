@@ -365,7 +365,7 @@ export default function CitationManager({
       </div>
 
       <Dialog open={!!editing} onOpenChange={() => setEditing(null)}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-2xl bg-white border-gray-200 shadow-2xl">
           <DialogHeader>
             <DialogTitle>Edit citation</DialogTitle>
             <DialogDescription>Update the bibliographic details below.</DialogDescription>

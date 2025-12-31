@@ -296,6 +296,22 @@ class LiteratureSearchService {
 
 class GoogleScholarProvider implements SearchProvider {
   name = 'google_scholar';
+  private readonly FETCH_TIMEOUT_MS = 30000; // 30 second timeout
+
+  private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+    
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
 
   async search(query: string, options: SearchOptions): Promise<SearchResult[]> {
     // Use Serp_API_KEY (user's env variable name)
@@ -321,7 +337,7 @@ class GoogleScholarProvider implements SearchProvider {
         params.set('as_yhi', options.yearTo.toString());
       }
 
-      const response = await fetch(`https://serpapi.com/search.json?${params}`);
+      const response = await this.fetchWithTimeout(`https://serpapi.com/search.json?${params}`);
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => '');
@@ -422,6 +438,22 @@ class SemanticScholarProvider implements SearchProvider {
   name = 'semantic_scholar';
   private lastRequestTime = 0;
   private readonly MIN_REQUEST_INTERVAL_MS = 1000; // 1 second between requests
+  private readonly FETCH_TIMEOUT_MS = 30000; // 30 second timeout
+
+  private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+    
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
 
   async search(query: string, options: SearchOptions): Promise<SearchResult[]> {
     // Add delay between requests to avoid rate limiting
@@ -445,7 +477,7 @@ class SemanticScholarProvider implements SearchProvider {
         if (options.yearTo) params.set('yearTo', options.yearTo.toString());
 
         this.lastRequestTime = Date.now();
-        const response = await fetch(`https://api.semanticscholar.org/graph/v1/paper/search?${params}`, {
+        const response = await this.fetchWithTimeout(`https://api.semanticscholar.org/graph/v1/paper/search?${params}`, {
           headers: {
             'User-Agent': 'Research-Paper-Writing-App/1.0'
           }
@@ -508,7 +540,7 @@ class SemanticScholarProvider implements SearchProvider {
       try {
         this.lastRequestTime = Date.now();
         // Try DOI first
-        const response = await fetch(`https://api.semanticscholar.org/graph/v1/paper/DOI:${identifier}`, {
+        const response = await this.fetchWithTimeout(`https://api.semanticscholar.org/graph/v1/paper/DOI:${identifier}`, {
           headers: {
             'User-Agent': 'Research-Paper-Writing-App/1.0'
           }
@@ -545,9 +577,16 @@ class SemanticScholarProvider implements SearchProvider {
         // Non-429 error, don't retry
         return null;
       } catch (error) {
+        // Check if it's a timeout/abort error
+        const isTimeout = error instanceof Error && (
+          error.name === 'AbortError' || 
+          error.message.includes('timeout') ||
+          error.message.includes('CONNECT_TIMEOUT')
+        );
+        
         if (attempt < maxRetries - 1) {
           const backoffMs = Math.min(1000 * Math.pow(2, attempt + 1), 30000);
-          console.warn(`Semantic Scholar identifier lookup attempt ${attempt + 1} failed, retrying in ${backoffMs}ms...`);
+          console.warn(`Semantic Scholar identifier lookup attempt ${attempt + 1} failed${isTimeout ? ' (timeout)' : ''}, retrying in ${backoffMs}ms...`);
           await new Promise(resolve => setTimeout(resolve, backoffMs));
         } else {
           console.error('Semantic Scholar identifier lookup failed:', error);
@@ -564,6 +603,22 @@ class SemanticScholarProvider implements SearchProvider {
 
 class CrossRefProvider implements SearchProvider {
   name = 'crossref';
+  private readonly FETCH_TIMEOUT_MS = 30000; // 30 second timeout
+
+  private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+    
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
 
   /**
    * Sanitize query for CrossRef API
@@ -585,97 +640,133 @@ class CrossRefProvider implements SearchProvider {
   }
 
   async search(query: string, options: SearchOptions): Promise<SearchResult[]> {
-    try {
-      const email = process.env.CROSSREF_EMAIL;
-      const userAgent = email ? `Research-Paper-Writing-App/1.0 (${email})` : 'Research-Paper-Writing-App/1.0';
+    const maxRetries = 2;
+    let lastError: Error | null = null;
 
-      // Sanitize query to avoid 400 errors
-      const sanitizedQuery = this.sanitizeQuery(query);
-      if (!sanitizedQuery) {
-        console.warn('CrossRef: Query empty after sanitization, skipping search');
-        return [];
-      }
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const email = process.env.CROSSREF_EMAIL;
+        const userAgent = email ? `Research-Paper-Writing-App/1.0 (${email})` : 'Research-Paper-Writing-App/1.0';
 
-      const params = new URLSearchParams({
-        query: sanitizedQuery,
-        rows: (options.limit || 20).toString(),
-        'sort': 'relevance'
-      });
-
-      if (options.yearFrom) params.set('from-pub-date', `${options.yearFrom}-01-01`);
-      if (options.yearTo) params.set('until-pub-date', `${options.yearTo}-12-31`);
-
-      const response = await fetch(`https://api.crossref.org/works?${params}`, {
-        headers: {
-          'User-Agent': userAgent
+        // Sanitize query to avoid 400 errors
+        const sanitizedQuery = this.sanitizeQuery(query);
+        if (!sanitizedQuery) {
+          console.warn('CrossRef: Query empty after sanitization, skipping search');
+          return [];
         }
-      });
 
-      if (!response.ok) {
-        // Log more details for debugging 400 errors
-        if (response.status === 400) {
-          const errorText = await response.text().catch(() => 'Unable to read error');
-          console.error(`CrossRef API 400 error. Query: "${sanitizedQuery}", Response: ${errorText}`);
+        const params = new URLSearchParams({
+          query: sanitizedQuery,
+          rows: (options.limit || 20).toString(),
+          'sort': 'relevance'
+        });
+
+        if (options.yearFrom) params.set('from-pub-date', `${options.yearFrom}-01-01`);
+        if (options.yearTo) params.set('until-pub-date', `${options.yearTo}-12-31`);
+
+        const response = await this.fetchWithTimeout(`https://api.crossref.org/works?${params}`, {
+          headers: {
+            'User-Agent': userAgent
+          }
+        });
+
+        if (!response.ok) {
+          // Log more details for debugging 400 errors
+          if (response.status === 400) {
+            const errorText = await response.text().catch(() => 'Unable to read error');
+            console.error(`CrossRef API 400 error. Query: "${sanitizedQuery}", Response: ${errorText}`);
+          }
+          throw new Error(`CrossRef API error: ${response.status}`);
         }
-        throw new Error(`CrossRef API error: ${response.status}`);
+
+        const data = await response.json();
+
+        return (data.message?.items || []).map((work: any) => ({
+          id: `cr_${work.DOI || work.URL || crypto.randomUUID()}`,
+          title: work.title?.[0] || '',
+          authors: (work.author || []).map((author: any) => `${author.family || ''}, ${author.given || ''}`.trim()),
+          year: work.issued?.['date-parts']?.[0]?.[0],
+          venue: work['container-title']?.[0] || work.publisher,
+          abstract: work.abstract,
+          doi: work.DOI,
+          url: work.URL,
+          citationCount: work['is-referenced-by-count'],
+          source: 'crossref',
+          rawData: work
+        }));
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        
+        // Check if it's a timeout/abort error
+        const isTimeout = lastError.name === 'AbortError' || 
+          lastError.message.includes('timeout') ||
+          lastError.message.includes('CONNECT_TIMEOUT') ||
+          lastError.message.includes('fetch failed');
+        
+        if (attempt < maxRetries - 1 && isTimeout) {
+          const backoffMs = Math.min(2000 * Math.pow(2, attempt), 10000);
+          console.warn(`CrossRef search attempt ${attempt + 1} failed (timeout), retrying in ${backoffMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, backoffMs));
+        }
       }
-
-      const data = await response.json();
-
-      return (data.message?.items || []).map((work: any) => ({
-        id: `cr_${work.DOI || work.URL || crypto.randomUUID()}`,
-        title: work.title?.[0] || '',
-        authors: (work.author || []).map((author: any) => `${author.family || ''}, ${author.given || ''}`.trim()),
-        year: work.issued?.['date-parts']?.[0]?.[0],
-        venue: work['container-title']?.[0] || work.publisher,
-        abstract: work.abstract,
-        doi: work.DOI,
-        url: work.URL,
-        citationCount: work['is-referenced-by-count'],
-        source: 'crossref',
-        rawData: work
-      }));
-    } catch (error) {
-      console.error('CrossRef search failed:', error);
-      return [];
     }
+
+    console.error('CrossRef search failed:', lastError);
+    return [];
   }
 
   async getByIdentifier(identifier: string): Promise<SearchResult | null> {
-    try {
-      const email = process.env.CROSSREF_EMAIL;
-      const userAgent = email ? `Research-Paper-Writing-App/1.0 (${email})` : 'Research-Paper-Writing-App/1.0';
+    const maxRetries = 2;
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const email = process.env.CROSSREF_EMAIL;
+        const userAgent = email ? `Research-Paper-Writing-App/1.0 (${email})` : 'Research-Paper-Writing-App/1.0';
 
-      const response = await fetch(`https://api.crossref.org/works/${identifier}`, {
-        headers: {
-          'User-Agent': userAgent
+        const response = await this.fetchWithTimeout(`https://api.crossref.org/works/${identifier}`, {
+          headers: {
+            'User-Agent': userAgent
+          }
+        });
+
+        if (!response.ok) {
+          return null;
         }
-      });
 
-      if (!response.ok) {
-        return null;
+        const data = await response.json();
+        const work = data.message;
+
+        return {
+          id: `cr_${work.DOI || work.URL || crypto.randomUUID()}`,
+          title: work.title?.[0] || '',
+          authors: (work.author || []).map((author: any) => `${author.family || ''}, ${author.given || ''}`.trim()),
+          year: work.issued?.['date-parts']?.[0]?.[0],
+          venue: work['container-title']?.[0] || work.publisher,
+          abstract: work.abstract,
+          doi: work.DOI,
+          url: work.URL,
+          citationCount: work['is-referenced-by-count'],
+          source: 'crossref',
+          rawData: work
+        };
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        const isTimeout = err.name === 'AbortError' || 
+          err.message.includes('timeout') ||
+          err.message.includes('CONNECT_TIMEOUT') ||
+          err.message.includes('fetch failed');
+        
+        if (attempt < maxRetries - 1 && isTimeout) {
+          const backoffMs = Math.min(2000 * Math.pow(2, attempt), 10000);
+          console.warn(`CrossRef identifier lookup attempt ${attempt + 1} failed (timeout), retrying in ${backoffMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, backoffMs));
+        } else {
+          console.error('CrossRef identifier lookup failed:', error);
+          return null;
+        }
       }
-
-      const data = await response.json();
-      const work = data.message;
-
-      return {
-        id: `cr_${work.DOI || work.URL || crypto.randomUUID()}`,
-        title: work.title?.[0] || '',
-        authors: (work.author || []).map((author: any) => `${author.family || ''}, ${author.given || ''}`.trim()),
-        year: work.issued?.['date-parts']?.[0]?.[0],
-        venue: work['container-title']?.[0] || work.publisher,
-        abstract: work.abstract,
-        doi: work.DOI,
-        url: work.URL,
-        citationCount: work['is-referenced-by-count'],
-        source: 'crossref',
-        rawData: work
-      };
-    } catch (error) {
-      console.error('CrossRef identifier lookup failed:', error);
-      return null;
     }
+    return null;
   }
 
   getRateLimit() {
@@ -685,6 +776,22 @@ class CrossRefProvider implements SearchProvider {
 
 class OpenAlexProvider implements SearchProvider {
   name = 'openalex';
+  private readonly FETCH_TIMEOUT_MS = 30000; // 30 second timeout
+
+  private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+    
+    try {
+      const response = await fetch(url, {
+        ...options,
+        signal: controller.signal
+      });
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
 
   async search(query: string, options: SearchOptions): Promise<SearchResult[]> {
     try {
@@ -697,7 +804,7 @@ class OpenAlexProvider implements SearchProvider {
       if (options.yearFrom) params.set('from_publication_year', options.yearFrom.toString());
       if (options.yearTo) params.set('to_publication_year', options.yearTo.toString());
 
-      const response = await fetch(`https://api.openalex.org/works?${params}`, {
+      const response = await this.fetchWithTimeout(`https://api.openalex.org/works?${params}`, {
         headers: {
           'User-Agent': 'Research-Paper-Writing-App/1.0'
         }
@@ -732,7 +839,7 @@ class OpenAlexProvider implements SearchProvider {
     try {
       // Try DOI lookup
       const doiParam = identifier.startsWith('10.') ? identifier : `https://doi.org/${identifier}`;
-      const response = await fetch(`https://api.openalex.org/works/doi:${doiParam}`, {
+      const response = await this.fetchWithTimeout(`https://api.openalex.org/works/doi:${doiParam}`, {
         headers: {
           'User-Agent': 'Research-Paper-Writing-App/1.0'
         }

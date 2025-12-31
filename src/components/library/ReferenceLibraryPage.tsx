@@ -933,7 +933,7 @@ export default function ReferenceLibraryPage({
 
         {/* Import Modal */}
         <Dialog open={importModalOpen} onOpenChange={setImportModalOpen}>
-          <DialogContent className="max-w-2xl">
+          <DialogContent className="max-w-2xl bg-white border-gray-200 shadow-2xl">
             <DialogHeader>
               <DialogTitle>Import References</DialogTitle>
               <DialogDescription>
@@ -1020,7 +1020,7 @@ export default function ReferenceLibraryPage({
 
         {/* Create Collection Modal */}
         <Dialog open={createCollectionModalOpen} onOpenChange={setCreateCollectionModalOpen}>
-          <DialogContent>
+          <DialogContent className="bg-white border-gray-200 shadow-2xl">
             <DialogHeader>
               <DialogTitle>Create Collection</DialogTitle>
             </DialogHeader>
@@ -1269,7 +1269,7 @@ function ManualReferenceModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl bg-white border-gray-200 shadow-2xl">
         <DialogHeader>
           <DialogTitle>Add Reference Manually</DialogTitle>
           <DialogDescription>Enter the bibliographic details</DialogDescription>

@@ -257,6 +257,68 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     }
   }, [sessionId, authToken]);
 
+  // Load most recent search run and AI analysis on mount (persist across refresh)
+  useEffect(() => {
+    const loadExistingSearchRuns = async () => {
+      if (!sessionId || !authToken) return;
+      
+      try {
+        const response = await fetch(`/api/papers/${sessionId}/literature/select-relevant`, {
+          headers: { Authorization: `Bearer ${authToken}` }
+        });
+        
+        if (!response.ok) return;
+        
+        const data = await response.json();
+        const searchRuns = data.searchRuns || [];
+        
+        // Load the most recent search run if available
+        if (searchRuns.length > 0) {
+          const mostRecent = searchRuns[0];
+          
+          // Fetch full details including results
+          const detailResponse = await fetch(
+            `/api/papers/${sessionId}/literature/select-relevant?searchRunId=${mostRecent.id}`,
+            { headers: { Authorization: `Bearer ${authToken}` } }
+          );
+          
+          if (detailResponse.ok) {
+            const detailData = await detailResponse.json();
+            const searchRun = detailData.searchRun;
+            
+            if (searchRun) {
+              // Restore search results
+              setResults(searchRun.results || []);
+              setSearchRunId(searchRun.id);
+              setQuery(searchRun.query || '');
+              
+              // Restore AI analysis if available
+              if (searchRun.aiAnalysis) {
+                const analysis = searchRun.aiAnalysis as { suggestions?: Array<{ paperId: string; isRelevant: boolean; relevanceScore: number; reasoning: string }>; summary?: string };
+                const suggestionsMap = new Map<string, { isRelevant: boolean; score: number; reasoning: string }>();
+                
+                for (const suggestion of (analysis.suggestions || [])) {
+                  suggestionsMap.set(suggestion.paperId, {
+                    isRelevant: suggestion.isRelevant,
+                    score: suggestion.relevanceScore,
+                    reasoning: suggestion.reasoning
+                  });
+                }
+                
+                setAiSuggestions(suggestionsMap);
+                setAiSummary(analysis.summary || null);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load existing search runs:', err);
+      }
+    };
+    
+    loadExistingSearchRuns();
+  }, [sessionId, authToken]);
+
   useEffect(() => {
     const loadSession = async () => {
       try {
@@ -1085,9 +1147,9 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                 ? 'bg-emerald-50/50 border-emerald-200' 
                                 : isAiSuggested
                                   ? 'bg-violet-50/70 border-violet-300 ring-1 ring-violet-200 shadow-sm'
-                                  : hasAbstract 
-                                    ? 'bg-white hover:shadow-sm border-gray-200' 
-                                    : 'bg-amber-50/30 border-amber-200 hover:shadow-sm'
+                                : hasAbstract 
+                                  ? 'bg-white hover:shadow-sm border-gray-200' 
+                                  : 'bg-amber-50/30 border-amber-200 hover:shadow-sm'
                             }`}
                           >
                             <div className="flex gap-3">
@@ -1421,7 +1483,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
 
       {/* Gap Analysis Modal */}
       <Dialog open={gapModalOpen} onOpenChange={setGapModalOpen}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto bg-white border-gray-200 shadow-2xl">
           <DialogHeader>
             <DialogTitle>Literature Gap Analysis</DialogTitle>
             <DialogDescription>
@@ -2497,7 +2559,7 @@ function ManualCitationModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl bg-white border-gray-200 shadow-2xl">
         <DialogHeader>
           <DialogTitle>Add Citation Manually</DialogTitle>
           <DialogDescription>Enter the bibliographic details</DialogDescription>

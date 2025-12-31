@@ -7,9 +7,12 @@ export const runtime = 'nodejs';
 
 const createSchema = z.object({
   title: z.string().min(1),
-  caption: z.string().min(1),
+  caption: z.string().optional().default(''),
   figureType: z.string().min(1),
-  notes: z.string().optional()
+  category: z.enum(['DATA_CHART', 'DIAGRAM', 'STATISTICAL_PLOT', 'ILLUSTRATION', 'CUSTOM']).optional(),
+  notes: z.string().optional(),
+  figureNo: z.number().optional(),
+  status: z.enum(['PLANNED', 'GENERATING', 'GENERATED', 'FAILED']).optional()
 });
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
@@ -24,24 +27,67 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
 
 function toResponse(plan: any) {
   const meta = typeof plan.nodes === 'object' && plan.nodes !== null ? plan.nodes : {};
+  
+  // Image path is stored in nodes JSON (not a separate field)
+  const imagePath = meta.imagePath || null;
+  
+  // Determine status based on whether image exists or explicit status
+  let status: 'PLANNED' | 'GENERATING' | 'GENERATED' | 'FAILED' = 'PLANNED';
+  if (meta.status) {
+    status = meta.status;
+  } else if (imagePath) {
+    status = 'GENERATED';
+  }
+  
+  // Map figureType to category
+  const typeToCategory: Record<string, string> = {
+    'bar': 'DATA_CHART',
+    'line': 'DATA_CHART',
+    'pie': 'DATA_CHART',
+    'scatter': 'DATA_CHART',
+    'radar': 'DATA_CHART',
+    'doughnut': 'DATA_CHART',
+    'horizontalBar': 'DATA_CHART',
+    'flowchart': 'DIAGRAM',
+    'sequence': 'DIAGRAM',
+    'class': 'DIAGRAM',
+    'er': 'DIAGRAM',
+    'gantt': 'DIAGRAM',
+    'state': 'DIAGRAM',
+    'architecture': 'DIAGRAM',
+    'plantuml': 'DIAGRAM',
+    'histogram': 'STATISTICAL_PLOT',
+    'boxplot': 'STATISTICAL_PLOT',
+    'heatmap': 'STATISTICAL_PLOT',
+    'custom': 'CUSTOM'
+  };
+  
+  const figureType = meta.figureType || 'flowchart';
+  const category = meta.category || typeToCategory[figureType] || 'DIAGRAM';
+  
   return {
     id: plan.id,
     figureNo: plan.figureNo,
     title: plan.title,
     caption: meta.caption || plan.description || '',
-    figureType: meta.figureType || 'OTHER',
-    notes: meta.notes || ''
+    figureType,
+    category,
+    notes: meta.notes || '',
+    status,
+    imagePath,
+    generatedCode: meta.generatedCode || null
   };
 }
 
-export async function GET(request: NextRequest, context: { params: { paperId: string } }) {
+export async function GET(request: NextRequest, context: { params: Promise<{ paperId: string }> }) {
   try {
     const { user, error } = await authenticateUser(request);
     if (error || !user) {
       return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 });
     }
 
-    const sessionId = context.params.paperId;
+    // Await params for Next.js 15 compatibility
+    const { paperId: sessionId } = await context.params;
     const session = await getSessionForUser(sessionId, user);
     if (!session) {
       return NextResponse.json({ error: 'Paper session not found' }, { status: 404 });
@@ -59,14 +105,15 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
   }
 }
 
-export async function POST(request: NextRequest, context: { params: { paperId: string } }) {
+export async function POST(request: NextRequest, context: { params: Promise<{ paperId: string }> }) {
   try {
     const { user, error } = await authenticateUser(request);
     if (error || !user) {
       return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 });
     }
 
-    const sessionId = context.params.paperId;
+    // Await params for Next.js 15 compatibility
+    const { paperId: sessionId } = await context.params;
     const session = await getSessionForUser(sessionId, user);
     if (!session) {
       return NextResponse.json({ error: 'Paper session not found' }, { status: 404 });
@@ -79,11 +126,14 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       where: { sessionId },
       orderBy: { figureNo: 'desc' }
     });
-    const nextFigureNo = (latest?.figureNo || 0) + 1;
+    const nextFigureNo = data.figureNo || (latest?.figureNo || 0) + 1;
+    
     const meta = {
       figureType: data.figureType,
-      caption: data.caption,
-      notes: data.notes || ''
+      category: data.category || 'DIAGRAM',
+      caption: data.caption || '',
+      notes: data.notes || '',
+      status: data.status || 'PLANNED'
     };
 
     const plan = await prisma.figurePlan.create({
@@ -91,7 +141,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         sessionId,
         figureNo: nextFigureNo,
         title: data.title,
-        description: data.caption,
+        description: data.caption || '',
         nodes: meta,
         edges: []
       }
