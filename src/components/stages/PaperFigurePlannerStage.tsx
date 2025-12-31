@@ -24,7 +24,16 @@ import {
   Check,
   X,
   RefreshCw,
-  Zap
+  Zap,
+  Network,
+  Clock,
+  Boxes,
+  Activity,
+  LayoutGrid,
+  ArrowRightLeft,
+  MessageSquare,
+  Send,
+  Pencil
 } from 'lucide-react';
 
 interface PaperFigurePlannerStageProps {
@@ -49,15 +58,32 @@ type FigurePlan = {
   generatedCode?: string;
 };
 
-// Simplified figure types grouped by category
+// Figure types with descriptions and visual examples
 const FIGURE_OPTIONS = [
-  { value: 'bar', label: 'Bar Chart', icon: BarChart3, category: 'DATA_CHART' },
-  { value: 'line', label: 'Line Chart', icon: LineChart, category: 'DATA_CHART' },
-  { value: 'pie', label: 'Pie Chart', icon: PieChart, category: 'DATA_CHART' },
-  { value: 'scatter', label: 'Scatter Plot', icon: PieChart, category: 'DATA_CHART' },
-  { value: 'flowchart', label: 'Flowchart', icon: GitBranch, category: 'DIAGRAM' },
-  { value: 'sequence', label: 'Sequence Diagram', icon: GitBranch, category: 'DIAGRAM' },
-  { value: 'architecture', label: 'Architecture', icon: GitBranch, category: 'DIAGRAM' },
+  // Data Charts
+  { value: 'bar', label: 'Bar Chart', icon: BarChart3, category: 'DATA_CHART', 
+    desc: 'Compare values across categories', example: '📊 ▐▐▐ ▐▐ ▐▐▐▐' },
+  { value: 'line', label: 'Line Chart', icon: LineChart, category: 'DATA_CHART',
+    desc: 'Show trends over time', example: '📈 ╱╲╱╲╱' },
+  { value: 'pie', label: 'Pie Chart', icon: PieChart, category: 'DATA_CHART',
+    desc: 'Show proportions of a whole', example: '🥧 ◔◔◔' },
+  { value: 'scatter', label: 'Scatter Plot', icon: Activity, category: 'DATA_CHART',
+    desc: 'Show correlations between variables', example: '⚬ · ⚬ · ⚬' },
+  { value: 'radar', label: 'Radar Chart', icon: Network, category: 'DATA_CHART',
+    desc: 'Compare multiple variables', example: '◇ ◆ ◇' },
+  // Diagrams  
+  { value: 'flowchart', label: 'Flowchart', icon: GitBranch, category: 'DIAGRAM',
+    desc: 'Process flows & decision trees', example: '□ → ◇ → □' },
+  { value: 'sequence', label: 'Sequence Diagram', icon: ArrowRightLeft, category: 'DIAGRAM',
+    desc: 'Interactions over time', example: '│→│→│' },
+  { value: 'architecture', label: 'Architecture', icon: Boxes, category: 'DIAGRAM',
+    desc: 'System components & connections', example: '⬡―⬡―⬡' },
+  { value: 'class', label: 'Class Diagram', icon: LayoutGrid, category: 'DIAGRAM',
+    desc: 'Object-oriented structure', example: '┌─┐┌─┐' },
+  { value: 'er', label: 'ER Diagram', icon: Network, category: 'DIAGRAM',
+    desc: 'Entity relationships', example: '○─◇─○' },
+  { value: 'gantt', label: 'Gantt Chart', icon: Clock, category: 'DIAGRAM',
+    desc: 'Project timeline', example: '▬▬▬ ▬▬' },
 ];
 
 const CATEGORY_COLORS: Record<FigureCategory, string> = {
@@ -83,6 +109,11 @@ export default function PaperFigurePlannerStage({
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   
+  // Modification request state
+  const [modificationRequest, setModificationRequest] = useState('');
+  const [isModifying, setIsModifying] = useState(false);
+  const [showModifyInput, setShowModifyInput] = useState(false);
+  
   // Simple form state
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -101,12 +132,12 @@ export default function PaperFigurePlannerStage({
   const loadFigures = useCallback(async () => {
     if (!authToken || !sessionId) return;
     try {
-      const response = await fetch(`/api/papers/${sessionId}/figures`, {
-        headers: { Authorization: `Bearer ${authToken}` }
-      });
-      if (!response.ok) return;
-      const data = await response.json();
-      setFigures(data.figures || []);
+    const response = await fetch(`/api/papers/${sessionId}/figures`, {
+      headers: { Authorization: `Bearer ${authToken}` }
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    setFigures(data.figures || []);
     } catch (error) {
       console.error('Failed to load figures:', error);
     }
@@ -204,9 +235,9 @@ export default function PaperFigurePlannerStage({
     if (!authToken) return;
     try {
       await fetch(`/api/papers/${sessionId}/figures/${figureId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${authToken}` }
-      });
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${authToken}` }
+    });
       setFigures(prev => prev.filter(f => f.id !== figureId));
     } catch (error) {
       console.error('Failed to delete:', error);
@@ -222,19 +253,19 @@ export default function PaperFigurePlannerStage({
     try {
       const response = await fetch(`/api/papers/${sessionId}/figures/suggest`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`
-        },
-        body: JSON.stringify({
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`
+      },
+      body: JSON.stringify({
           paperTitle: session?.researchTopic?.title || '',
           paperAbstract: session?.researchTopic?.abstract || '',
           sections: session?.annexureDrafts?.[0]?.extraSections || {},
           useLLM: true
-        })
-      });
+      })
+    });
       
-      const data = await response.json();
+    const data = await response.json();
       if (response.ok) {
         setSuggestions(data.suggestions || []);
       }
@@ -252,6 +283,72 @@ export default function PaperFigurePlannerStage({
     setFigureType(suggestion.suggestedType || 'flowchart');
     setCategory(suggestion.category || 'DIAGRAM');
     setShowSuggestions(false);
+  };
+
+  // Handle modification request - regenerate with user feedback
+  const handleModify = async (figure: FigurePlan) => {
+    if (!authToken || !modificationRequest.trim()) return;
+    
+    setIsModifying(true);
+    setFigures(prev => prev.map(f => 
+      f.id === figure.id ? { ...f, status: 'GENERATING' as const } : f
+    ));
+
+    try {
+      // Combine original description with modification request
+      const enhancedDescription = `
+Original request: ${figure.notes || figure.caption || figure.title}
+
+User modification request: ${modificationRequest}
+
+Please regenerate the figure incorporating the user's feedback and corrections.
+`.trim();
+
+      const response = await fetch(`/api/papers/${sessionId}/figures/${figure.id}/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          figureType: figure.figureType,
+          category: figure.category,
+          title: figure.title,
+          caption: figure.caption,
+          description: enhancedDescription,
+          modificationRequest: modificationRequest, // Pass explicitly for logging
+          theme: 'academic',
+          useLLM: true
+        })
+      });
+
+      const data = await response.json();
+      
+      if (!response.ok) throw new Error(data.error);
+
+      setFigures(prev => prev.map(f => 
+        f.id === figure.id 
+          ? { ...f, status: 'GENERATED' as const, imagePath: data.imagePath } 
+          : f
+      ));
+      
+      // Update preview with new image
+      setPreviewFigure(prev => prev?.id === figure.id 
+        ? { ...prev, status: 'GENERATED' as const, imagePath: data.imagePath }
+        : prev
+      );
+      
+      // Clear modification input
+      setModificationRequest('');
+      setShowModifyInput(false);
+    } catch (err) {
+      console.error('Modification failed:', err);
+      setFigures(prev => prev.map(f => 
+        f.id === figure.id ? { ...f, status: 'FAILED' as const } : f
+      ));
+    } finally {
+      setIsModifying(false);
+    }
   };
 
   // Handle type selection
@@ -278,7 +375,7 @@ export default function PaperFigurePlannerStage({
                 Create beautiful charts and diagrams for your paper
               </p>
             </div>
-            
+
             {/* AI Suggestions Button */}
             <Button 
               variant="outline" 
@@ -317,11 +414,11 @@ export default function PaperFigurePlannerStage({
               <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
                 <Plus className="w-5 h-5 text-white" />
               </div>
-              <div>
+                    <div>
                 <h2 className="font-semibold text-slate-900">New Figure</h2>
                 <p className="text-sm text-slate-500">Describe what you want to visualize</p>
-              </div>
-            </div>
+                      </div>
+                    </div>
 
             <div className="space-y-4">
               {/* Type Selector */}
@@ -333,10 +430,16 @@ export default function PaperFigurePlannerStage({
                   <div className="flex items-center gap-3">
                     {selectedType && (
                       <>
-                        <div className={`w-8 h-8 rounded-lg ${CATEGORY_COLORS[category]} flex items-center justify-center`}>
+                        <div className={`w-9 h-9 rounded-lg ${CATEGORY_COLORS[category]} flex items-center justify-center`}>
                           <selectedType.icon className="w-4 h-4 text-white" />
                         </div>
-                        <span className="font-medium text-slate-700">{selectedType.label}</span>
+                        <div className="text-left">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-slate-800">{selectedType.label}</span>
+                            <span className="text-slate-400 text-sm font-mono">{selectedType.example}</span>
+                          </div>
+                          <span className="text-xs text-slate-500">{selectedType.desc}</span>
+                    </div>
                       </>
                     )}
                   </div>
@@ -351,21 +454,60 @@ export default function PaperFigurePlannerStage({
                       exit={{ opacity: 0, y: -10 }}
                       className="absolute z-20 w-full mt-2 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden"
                     >
-                      {FIGURE_OPTIONS.map((option) => (
-                        <button
-                          key={option.value}
-                          onClick={() => selectType(option)}
-                          className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors ${figureType === option.value ? 'bg-blue-50' : ''}`}
-                        >
-                          <div className={`w-8 h-8 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center`}>
-                            <option.icon className="w-4 h-4 text-white" />
-                          </div>
-                          <span className="font-medium text-slate-700">{option.label}</span>
-                          {figureType === option.value && (
-                            <Check className="w-4 h-4 text-blue-600 ml-auto" />
-                          )}
-                        </button>
-                      ))}
+                      {/* Scrollable dropdown container */}
+                      <div className="max-h-72 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent">
+                        {/* Charts Section */}
+                        <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 sticky top-0">
+                          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Data Charts</span>
+                        </div>
+                        {FIGURE_OPTIONS.filter(o => o.category === 'DATA_CHART').map((option) => (
+                          <button
+                            key={option.value}
+                            onClick={() => selectType(option)}
+                            className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-blue-50' : ''}`}
+                          >
+                            <div className={`w-9 h-9 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
+                              <option.icon className="w-4 h-4 text-white" />
+                            </div>
+                            <div className="flex-1 text-left min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-slate-800">{option.label}</span>
+                                <span className="text-slate-400 text-xs font-mono">{option.example}</span>
+                </div>
+                              <span className="text-xs text-slate-500">{option.desc}</span>
+          </div>
+                            {figureType === option.value && (
+                              <Check className="w-4 h-4 text-blue-600 shrink-0" />
+                            )}
+                          </button>
+                        ))}
+                        
+                        {/* Diagrams Section */}
+                        <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 sticky top-0">
+                          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Diagrams</span>
+                        </div>
+                        {FIGURE_OPTIONS.filter(o => o.category === 'DIAGRAM').map((option) => (
+                          <button
+                            key={option.value}
+                            onClick={() => selectType(option)}
+                            className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-violet-50' : ''}`}
+                          >
+                            <div className={`w-9 h-9 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
+                              <option.icon className="w-4 h-4 text-white" />
+                            </div>
+                            <div className="flex-1 text-left min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-slate-800">{option.label}</span>
+                                <span className="text-slate-400 text-xs font-mono">{option.example}</span>
+                              </div>
+                              <span className="text-xs text-slate-500">{option.desc}</span>
+                            </div>
+                            {figureType === option.value && (
+                              <Check className="w-4 h-4 text-violet-600 shrink-0" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -485,14 +627,28 @@ export default function PaperFigurePlannerStage({
                                   variant="ghost"
                                   onClick={() => setPreviewFigure(figure)}
                                   className="rounded-lg"
+                                  title="View"
                                 >
                                   <Eye className="w-4 h-4" />
                                 </Button>
                                 <Button
                                   size="sm"
                                   variant="ghost"
+                                  onClick={() => {
+                                    setPreviewFigure(figure);
+                                    setShowModifyInput(true);
+                                  }}
+                                  className="rounded-lg text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                                  title="Request modifications"
+                                >
+                                  <Pencil className="w-4 h-4" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
                                   onClick={() => handleGenerate(figure)}
                                   className="rounded-lg"
+                                  title="Regenerate"
                                 >
                                   <RefreshCw className="w-4 h-4" />
                                 </Button>
@@ -516,7 +672,7 @@ export default function PaperFigurePlannerStage({
                               className="rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50"
                             >
                               <Trash2 className="w-4 h-4" />
-                            </Button>
+                </Button>
                           </div>
                         </div>
                       </div>
@@ -612,8 +768,14 @@ export default function PaperFigurePlannerStage({
         </DialogContent>
       </Dialog>
 
-      {/* Preview Dialog */}
-      <Dialog open={!!previewFigure} onOpenChange={() => setPreviewFigure(null)}>
+      {/* Preview Dialog with Modification Feature */}
+      <Dialog open={!!previewFigure} onOpenChange={(open) => {
+        if (!open) {
+          setPreviewFigure(null);
+          setShowModifyInput(false);
+          setModificationRequest('');
+        }
+      }}>
         <DialogContent className="max-w-3xl bg-white border-0 shadow-2xl rounded-2xl">
           <DialogHeader className="pb-4">
             <DialogTitle className="text-xl">
@@ -622,8 +784,16 @@ export default function PaperFigurePlannerStage({
             <p className="text-slate-500 text-sm mt-1">{previewFigure?.caption}</p>
           </DialogHeader>
           
+          {/* Figure Preview */}
           {previewFigure?.imagePath && (
-            <div className="bg-slate-50 rounded-xl p-6">
+            <div className="bg-slate-50 rounded-xl p-6 relative">
+              {isModifying && (
+                <div className="absolute inset-0 bg-white/80 rounded-xl flex flex-col items-center justify-center z-10">
+                  <Loader2 className="w-8 h-8 animate-spin text-blue-500 mb-3" />
+                  <p className="text-slate-600 font-medium">Regenerating with your changes...</p>
+                  <p className="text-slate-400 text-sm">This may take a moment</p>
+                </div>
+              )}
               <img 
                 src={previewFigure.imagePath} 
                 alt={previewFigure.title}
@@ -632,9 +802,84 @@ export default function PaperFigurePlannerStage({
             </div>
           )}
           
+          {/* Modification Request Section */}
+          <div className="border-t border-slate-100 pt-4">
+            {!showModifyInput ? (
+              <button
+                onClick={() => setShowModifyInput(true)}
+                className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl border-2 border-dashed border-slate-200 hover:border-blue-300 hover:bg-blue-50 text-slate-500 hover:text-blue-600 transition-colors group"
+              >
+                <Pencil className="w-4 h-4" />
+                <span className="font-medium">Request modifications</span>
+                <span className="text-slate-400 group-hover:text-blue-400 text-sm">(AI will regenerate based on your feedback)</span>
+              </button>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-sm text-slate-600">
+                  <MessageSquare className="w-4 h-4 text-blue-500" />
+                  <span className="font-medium">What would you like to change?</span>
+                </div>
+                <Textarea
+                  value={modificationRequest}
+                  onChange={e => setModificationRequest(e.target.value)}
+                  placeholder="E.g., Make the bars blue instead of green, add a legend on the right side, increase font size for labels, change the title to..."
+                  rows={3}
+                  className="rounded-xl border-slate-200 focus:border-blue-400 focus:ring-blue-400 resize-none"
+                  autoFocus
+                />
+                <div className="flex items-center gap-2">
+                  <Button
+                    onClick={() => previewFigure && handleModify(previewFigure)}
+                    disabled={isModifying || !modificationRequest.trim()}
+                    className="flex-1 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white gap-2"
+                  >
+                    {isModifying ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Regenerating...
+                      </>
+                    ) : (
+                      <>
+                        <Send className="w-4 h-4" />
+                        Apply Changes
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => {
+                      setShowModifyInput(false);
+                      setModificationRequest('');
+                    }}
+                    disabled={isModifying}
+                    className="rounded-xl"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+                <p className="text-xs text-slate-400 text-center">
+                  AI will regenerate the figure incorporating your feedback
+                </p>
+              </div>
+            )}
+          </div>
+          
           <DialogFooter className="pt-4 border-t border-slate-100">
-            <Button variant="outline" onClick={() => setPreviewFigure(null)} className="rounded-lg">
+            <Button variant="outline" onClick={() => {
+              setPreviewFigure(null);
+              setShowModifyInput(false);
+              setModificationRequest('');
+            }} className="rounded-lg">
               Close
+            </Button>
+            <Button 
+              variant="outline"
+              onClick={() => previewFigure && handleGenerate(previewFigure)}
+              disabled={isModifying}
+              className="rounded-lg gap-2"
+            >
+              <RefreshCw className="w-4 h-4" />
+              Regenerate
             </Button>
             <Button asChild className="rounded-lg bg-slate-900 hover:bg-slate-800">
               <a href={previewFigure?.imagePath} download className="gap-2">

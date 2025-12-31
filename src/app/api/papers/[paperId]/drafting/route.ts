@@ -9,6 +9,7 @@ import { citationStyleService, type CitationData } from '@/lib/services/citation
 import { paperTypeService } from '@/lib/services/paper-type-service';
 import { sectionTemplateService } from '@/lib/services/section-template-service';
 import { DraftingService } from '@/lib/drafting-service';
+import { getWritingSample, buildWritingSampleBlock } from '@/lib/writing-sample-service';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,7 +23,9 @@ const actionSchema = z.object({
     'check_citations',
     'generate_bibliography',
     'analyze_structure',
-    'word_count'
+    'word_count',
+    'run_ai_review',
+    'apply_ai_fix'
   ])
 });
 
@@ -30,7 +33,15 @@ const generateSchema = z.object({
   sectionKey: z.string().min(1),
   instructions: z.string().max(5000).optional(),
   temperature: z.number().min(0).max(1).optional(),
-  maxOutputTokens: z.number().int().positive().optional()
+  maxOutputTokens: z.number().int().positive().optional(),
+  // Persona style support (borrowed from patent drafting)
+  usePersonaStyle: z.boolean().optional(),
+  personaSelection: z.object({
+    primaryPersonaId: z.string().optional(),
+    primaryPersonaName: z.string().optional(),
+    secondaryPersonaIds: z.array(z.string()).optional(),
+    secondaryPersonaNames: z.array(z.string()).optional()
+  }).optional()
 });
 
 const saveSchema = z.object({
@@ -52,6 +63,32 @@ const checkCitationsSchema = z.object({
 const bibliographySchema = z.object({
   citationKeys: z.array(z.string().min(1)).optional(),
   sortOrder: z.enum(['alphabetical', 'order_of_appearance']).optional()
+});
+
+const aiReviewSchema = z.object({
+  sessionId: z.string().min(1),
+  draft: z.record(z.string())
+});
+
+const aiFixSchema = z.object({
+  sessionId: z.string().min(1),
+  sectionKey: z.string().min(1),
+  issue: z.object({
+    id: z.string(),
+    sectionKey: z.string(),
+    sectionLabel: z.string(),
+    type: z.enum(['error', 'warning', 'suggestion']),
+    category: z.string(),
+    title: z.string(),
+    description: z.string(),
+    suggestion: z.string(),
+    fixPrompt: z.string(),
+    relatedSections: z.array(z.string()).optional(),
+    severity: z.number()
+  }),
+  currentContent: z.string(),
+  relatedContent: z.record(z.string()).optional(),
+  previewOnly: z.boolean().optional()
 });
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
@@ -201,7 +238,8 @@ async function buildPrompt(
   paperTypeCode: string,
   context: any,
   citationInstructions: string,
-  userInstructions?: string
+  userInstructions?: string,
+  writingSampleBlock?: string
 ): Promise<string> {
   const basePrompt = await sectionTemplateService.getPromptForSection(sectionKey, paperTypeCode, context);
   const topic = context?.researchTopic;
@@ -219,8 +257,9 @@ async function buildPrompt(
 
   const citationsBlock = citationInstructions ? `\n\n${citationInstructions}` : '';
   const userBlock = userInstructions ? `\n\nUSER INSTRUCTIONS:\n${userInstructions}` : '';
+  const styleBlock = writingSampleBlock ? `\n\n${writingSampleBlock}` : '';
 
-  return `${basePrompt}${topicBlock}${citationsBlock}${userBlock}\n\nReturn ONLY the section content, without headings.`;
+  return `${basePrompt}${topicBlock}${citationsBlock}${styleBlock}${userBlock}\n\nReturn ONLY the section content, without headings.`;
 }
 
 function extractCitationKeys(content: string): string[] {
@@ -268,6 +307,26 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         const draft = await getOrCreatePaperDraft(sessionId, researchTopic?.title || 'Untitled Paper');
         const extraSections = normalizeExtraSections(draft.extraSections);
 
+        // Fetch writing sample if persona style is enabled
+        let writingSampleBlock = '';
+        if (payload.usePersonaStyle && user.id) {
+          try {
+            // Use 'PAPER' as jurisdiction for paper writing (universal style)
+            const writingSample = await getWritingSample(
+              user.id, 
+              sectionKey, 
+              'PAPER', 
+              payload.personaSelection
+            );
+            if (writingSample) {
+              writingSampleBlock = buildWritingSampleBlock(writingSample, sectionKey);
+            }
+          } catch (err) {
+            console.warn('[PaperDrafting] Failed to fetch writing sample:', err);
+            // Continue without persona style
+          }
+        }
+
         const prompt = await buildPrompt(
           sectionKey,
           paperTypeCode,
@@ -278,7 +337,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             previousSections: extraSections
           },
           citationContext.citationInstructions,
-          payload.instructions
+          payload.instructions,
+          writingSampleBlock
         );
 
         const llmRequest = {
@@ -477,6 +537,221 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         }
 
         return NextResponse.json({ total, perSection });
+      }
+
+      case 'run_ai_review': {
+        const payload = aiReviewSchema.parse(body);
+        const draft = payload.draft;
+        
+        // Build review prompt
+        const sectionContents = Object.entries(draft)
+          .filter(([_, content]) => content && content.trim())
+          .map(([key, content]) => `## ${key.replace(/_/g, ' ').toUpperCase()}\n${content}`)
+          .join('\n\n');
+
+        if (!sectionContents) {
+          return NextResponse.json({
+            success: true,
+            issues: [],
+            summary: {
+              totalIssues: 0,
+              errors: 0,
+              warnings: 0,
+              suggestions: 0,
+              overallScore: 100,
+              recommendation: 'No content to review. Generate sections first.'
+            }
+          });
+        }
+
+        const reviewPrompt = `You are an academic paper reviewer. Analyze the following paper draft and identify issues.
+
+PAPER CONTENT:
+${sectionContents}
+
+For each issue found, provide a JSON object with these fields:
+- id: unique identifier (e.g., "issue-1")
+- sectionKey: which section contains the issue (e.g., "introduction", "methodology")
+- sectionLabel: human-readable section name
+- type: "error" | "warning" | "suggestion"
+- category: "consistency" | "citation" | "completeness" | "academic" | "clarity" | "structure"
+- title: brief issue title
+- description: detailed description of the issue
+- suggestion: how to fix it
+- fixPrompt: specific instruction for AI to fix this issue
+- severity: 1-5 (5 being most severe)
+
+Return a JSON object with this structure:
+{
+  "issues": [...],
+  "summary": {
+    "totalIssues": number,
+    "errors": number,
+    "warnings": number,
+    "suggestions": number,
+    "overallScore": number (0-100),
+    "recommendation": "overall assessment string"
+  }
+}
+
+Focus on:
+1. Logical consistency between sections
+2. Citation usage and coverage
+3. Academic writing standards
+4. Structural completeness
+5. Clarity and readability
+
+Return ONLY valid JSON, no other text.`;
+
+        const llmRequest = {
+          taskCode: 'LLM2_DRAFT' as const,
+          stageCode: 'PAPER_AI_REVIEW',
+          prompt: reviewPrompt,
+          parameters: {
+            temperature: 0.3,
+            maxOutputTokens: 4000
+          },
+          idempotencyKey: crypto.randomUUID(),
+          metadata: {
+            sessionId,
+            paperId: sessionId,
+            action: 'ai_review',
+            module: 'publication_ideation',
+            purpose: 'paper_ai_review'
+          }
+        };
+
+        const headers = Object.fromEntries(request.headers.entries());
+        const result = await llmGateway.executeLLMOperation({ headers }, llmRequest);
+
+        if (!result.success || !result.response) {
+          return NextResponse.json({ 
+            success: false, 
+            error: result.error?.message || 'AI Review failed' 
+          }, { status: 500 });
+        }
+
+        try {
+          const output = result.response.output || '';
+          // Extract JSON from response (handle markdown code blocks)
+          const jsonMatch = output.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || [null, output];
+          const jsonStr = jsonMatch[1] || output;
+          const parsed = JSON.parse(jsonStr.trim());
+          
+          return NextResponse.json({
+            success: true,
+            issues: parsed.issues || [],
+            summary: parsed.summary || {
+              totalIssues: (parsed.issues || []).length,
+              errors: (parsed.issues || []).filter((i: any) => i.type === 'error').length,
+              warnings: (parsed.issues || []).filter((i: any) => i.type === 'warning').length,
+              suggestions: (parsed.issues || []).filter((i: any) => i.type === 'suggestion').length,
+              overallScore: 75,
+              recommendation: 'Review complete.'
+            },
+            reviewId: crypto.randomUUID()
+          });
+        } catch (parseError) {
+          console.error('[PaperDrafting] Failed to parse AI review response:', parseError);
+          return NextResponse.json({
+            success: true,
+            issues: [],
+            summary: {
+              totalIssues: 0,
+              errors: 0,
+              warnings: 0,
+              suggestions: 0,
+              overallScore: 80,
+              recommendation: 'Unable to parse review results. Please try again.'
+            },
+            reviewId: crypto.randomUUID()
+          });
+        }
+      }
+
+      case 'apply_ai_fix': {
+        const payload = aiFixSchema.parse(body);
+        const { sectionKey, issue, currentContent, relatedContent } = payload;
+
+        const fixPrompt = `You are an academic writing assistant. Fix the following issue in a paper section.
+
+ISSUE:
+Type: ${issue.type}
+Category: ${issue.category}
+Title: ${issue.title}
+Description: ${issue.description}
+Suggestion: ${issue.suggestion}
+Fix Instructions: ${issue.fixPrompt}
+
+CURRENT CONTENT OF "${sectionKey.replace(/_/g, ' ').toUpperCase()}":
+${currentContent}
+
+${relatedContent && Object.keys(relatedContent).length > 0 ? `
+RELATED SECTIONS FOR CONTEXT:
+${Object.entries(relatedContent).map(([k, v]) => `## ${k.replace(/_/g, ' ').toUpperCase()}\n${v}`).join('\n\n')}
+` : ''}
+
+Provide the COMPLETE revised section content that addresses the issue while preserving:
+- Academic tone and style
+- Existing citations and references
+- Overall structure and flow
+
+Return ONLY the revised section content, no explanations or markdown formatting.`;
+
+        const llmRequest = {
+          taskCode: 'LLM2_DRAFT' as const,
+          stageCode: 'PAPER_AI_FIX',
+          prompt: fixPrompt,
+          parameters: {
+            temperature: 0.2,
+            maxOutputTokens: 3000
+          },
+          idempotencyKey: crypto.randomUUID(),
+          metadata: {
+            sessionId,
+            paperId: sessionId,
+            sectionKey,
+            issueId: issue.id,
+            action: 'ai_fix',
+            module: 'publication_ideation',
+            purpose: 'paper_ai_fix'
+          }
+        };
+
+        const headers = Object.fromEntries(request.headers.entries());
+        const result = await llmGateway.executeLLMOperation({ headers }, llmRequest);
+
+        if (!result.success || !result.response) {
+          return NextResponse.json({ 
+            success: false, 
+            error: result.error?.message || 'AI Fix failed' 
+          }, { status: 500 });
+        }
+
+        const fixedContent = (result.response.output || '').trim();
+
+        // If preview only, return without saving
+        if (payload.previewOnly) {
+          return NextResponse.json({
+            success: true,
+            fixedContent,
+            previewOnly: true
+          });
+        }
+
+        // Otherwise, save the fix
+        const researchTopic = await prisma.researchTopic.findUnique({
+          where: { sessionId }
+        });
+
+        const existingDraft = await getOrCreatePaperDraft(sessionId, researchTopic?.title || 'Untitled Paper');
+        await updateDraftContent(existingDraft.id, sectionKey, fixedContent, paperTypeCode);
+
+        return NextResponse.json({
+          success: true,
+          fixedContent,
+          saved: true
+        });
       }
 
       default:

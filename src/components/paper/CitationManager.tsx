@@ -278,28 +278,15 @@ export default function CitationManager({
         {filtered.map(citation => {
           const hasAbstract = citation.abstract && citation.abstract.length > 50
           return (
-            <Card key={citation.id} className={!hasAbstract ? 'border-amber-200 bg-amber-50/30' : ''}>
+            <Card key={citation.id}>
               <CardContent className="p-4 space-y-2">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-semibold text-gray-900">{citation.title}</div>
                     <div className="text-xs text-gray-500">
-                      {(citation.authors || []).join(', ')} - {citation.year || 'n.d.'}
+                      {(citation.authors || []).slice(0, 3).join(', ')}{citation.authors?.length > 3 ? ' et al.' : ''} • {citation.year || 'n.d.'}
                     </div>
-                    <div className="text-xs text-gray-500">{citation.preview?.inText || citation.citationKey}</div>
-                    
-                    {/* Abstract status badge */}
-                    <div className="flex items-center gap-2 mt-1">
-                      {hasAbstract ? (
-                        <Badge className="bg-emerald-100 text-emerald-700 text-[10px]">
-                          📄 Has Abstract ({citation.abstract.length} chars)
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="text-amber-600 border-amber-300 text-[10px]">
-                          ⚠️ Missing Abstract
-                        </Badge>
-                      )}
-                    </div>
+                    <div className="text-xs text-gray-400 mt-0.5">{citation.preview?.inText || citation.citationKey}</div>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     {allowSelection && (
@@ -308,7 +295,7 @@ export default function CitationManager({
                         onCheckedChange={() => toggleSelected(citation.id)}
                       />
                     )}
-                    {citation.usageCount > 0 && <Badge>{citation.usageCount} uses</Badge>}
+                    {citation.usageCount > 0 && <Badge variant="secondary" className="text-[10px]">{citation.usageCount} uses</Badge>}
                   </div>
                 </div>
 
