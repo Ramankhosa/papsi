@@ -170,9 +170,60 @@ function getDraftReadyStatus(session: any): SubStageStatus {
 // ============================================================================
 
 export const STAGE_DEFINITIONS: StageDefinition[] = [
+  // Stage 1: Paper Foundation (OUTLINE_PLANNING) - Configure paper type & structure first
+  {
+    key: 'OUTLINE_PLANNING',
+    label: 'Paper Foundation',
+    icon: ListOrdered,
+    description: 'Configure paper type & structure',
+    weight: 15,
+    subStages: [
+      {
+        key: 'paper_type',
+        label: 'Paper Type',
+        icon: FileText,
+        description: 'Select a paper type',
+        required: true,
+        getStatus: (session) => {
+          return session?.paperType?.code || session?.paperTypeId ? 'completed' : 'pending'
+        }
+      },
+      {
+        key: 'citation_style',
+        label: 'Citation Style',
+        icon: FileText,
+        description: 'Choose a citation style',
+        required: true,
+        getStatus: (session) => {
+          return session?.citationStyle?.code || session?.citationStyleId ? 'completed' : 'pending'
+        }
+      },
+      {
+        key: 'venue',
+        label: 'Publication Venue',
+        icon: FileText,
+        description: 'Optional venue selection',
+        required: false,
+        getStatus: (session) => {
+          return session?.publicationVenue?.code || session?.publicationVenueId ? 'completed' : 'pending'
+        }
+      },
+      {
+        key: 'word_target',
+        label: 'Target Word Count',
+        icon: FileText,
+        description: 'Set a word count target',
+        required: false,
+        getStatus: (session) => {
+          return session?.targetWordCount ? 'completed' : 'pending'
+        }
+      }
+    ]
+  },
+  // Stage 2: Research Topic (TOPIC_ENTRY) - Define research question
   {
     key: 'TOPIC_ENTRY',
-    label: 'Topic Entry',
+    label: 'Research Topic',
     icon: Lightbulb,
     description: 'Define your research topic',
     weight: 15,
@@ -229,9 +280,10 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
       }
     ]
   },
+  // Stage 3: Literature Review (LITERATURE_SEARCH) - Search and import citations
   {
     key: 'LITERATURE_SEARCH',
-    label: 'Literature Search',
+    label: 'Literature Review',
     icon: Search,
     description: 'Search and import citations',
     weight: 15,
@@ -264,58 +316,10 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
       }
     ]
   },
-  {
-    key: 'OUTLINE_PLANNING',
-    label: 'Outline Planning',
-    icon: ListOrdered,
-    description: 'Configure paper structure',
-    weight: 15,
-    subStages: [
-      {
-        key: 'paper_type',
-        label: 'Paper Type',
-        icon: FileText,
-        description: 'Select a paper type',
-        required: true,
-        getStatus: (session) => {
-          return session?.paperType?.code || session?.paperTypeId ? 'completed' : 'pending'
-        }
-      },
-      {
-        key: 'citation_style',
-        label: 'Citation Style',
-        icon: FileText,
-        description: 'Choose a citation style',
-        required: true,
-        getStatus: (session) => {
-          return session?.citationStyle?.code || session?.citationStyleId ? 'completed' : 'pending'
-        }
-      },
-      {
-        key: 'venue',
-        label: 'Publication Venue',
-        icon: FileText,
-        description: 'Optional venue selection',
-        required: false,
-        getStatus: (session) => {
-          return session?.publicationVenue?.code || session?.publicationVenueId ? 'completed' : 'pending'
-        }
-      },
-      {
-        key: 'word_target',
-        label: 'Target Word Count',
-        icon: FileText,
-        description: 'Set a word count target',
-        required: false,
-        getStatus: (session) => {
-          return session?.targetWordCount ? 'completed' : 'pending'
-        }
-      }
-    ]
-  },
+  // Stage 4: Figure Planning (FIGURE_PLANNER) - Plan figures and tables
   {
     key: 'FIGURE_PLANNER',
-    label: 'Figure Planner',
+    label: 'Figure Planning',
     icon: PenTool,
     description: 'Plan figures and tables',
     weight: 10,
@@ -333,6 +337,7 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
       }
     ]
   },
+  // Stage 5: Section Drafting (SECTION_DRAFTING) - Write the paper
   {
     key: 'SECTION_DRAFTING',
     label: 'Section Drafting',
@@ -342,6 +347,7 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
     subStages: [],
     getSubStages: getDraftSectionSubStages
   },
+  // Stage 6: Review & Export (REVIEW_EXPORT) - Finalize and export
   {
     key: 'REVIEW_EXPORT',
     label: 'Review & Export',
@@ -373,7 +379,15 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
 // Stage Order
 // ============================================================================
 
-export const STAGE_ORDER = STAGE_DEFINITIONS.map(stage => stage.key)
+// Paper drafting stage order - Paper Foundation (OUTLINE_PLANNING) comes first
+export const STAGE_ORDER = [
+  'OUTLINE_PLANNING',  // Paper Foundation - configure paper type & structure first
+  'TOPIC_ENTRY',       // Research Topic - define research question
+  'LITERATURE_SEARCH', // Literature Review - search and import citations
+  'FIGURE_PLANNER',    // Figure Planning - plan figures and tables
+  'SECTION_DRAFTING',  // Section Drafting - write the paper
+  'REVIEW_EXPORT'      // Review & Export - finalize and export
+]
 
 // ============================================================================
 // Helpers for Navigation

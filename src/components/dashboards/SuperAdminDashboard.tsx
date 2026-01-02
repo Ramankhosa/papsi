@@ -72,7 +72,6 @@ export default function SuperAdminDashboard() {
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({
     analytics: true,
     ai: true,
-    jurisdiction: false,
     paper: true,
     access: true
   })
@@ -320,20 +319,10 @@ export default function SuperAdminDashboard() {
       ]
     },
     {
-      title: 'Jurisdiction & Content',
-      icon: '🌍',
-      items: [
-        { label: 'Jurisdiction Config', icon: '🏗️', href: '/super-admin/jurisdiction-config' },
-        { label: 'Country Profiles', icon: '🗺️', href: '/super-admin/countries' },
-        { label: 'Section Prompts', icon: '📝', href: '/super-admin/section-prompts' },
-        { label: 'Jurisdiction Styles', icon: '🎨', href: '/super-admin/jurisdiction-styles' },
-        { label: 'Superset Sections', icon: '📚', href: '/super-admin/superset-sections' }
-      ]
-    },
-    {
       title: 'Paper Writing',
       icon: '📄',
       items: [
+        { label: 'Section Prompts', icon: '📝', href: '/super-admin/paper-prompts', badge: 'NEW' },
         { label: 'Paper Types', icon: '📑', href: '/admin/paper-types' },
         { label: 'Citation Styles', icon: '📚', href: '/admin/citation-styles' },
         { label: 'Publication Venues', icon: '🏛️', href: '/admin/publication-venues' }
@@ -348,6 +337,10 @@ export default function SuperAdminDashboard() {
         { label: 'Service Control', icon: '🎛️', href: '/super-admin/service-control' }
       ]
     }
+    // Patent-specific settings hidden - use direct URLs if needed:
+    // /super-admin/jurisdiction-config, /super-admin/countries, 
+    // /super-admin/section-prompts, /super-admin/jurisdiction-styles,
+    // /super-admin/superset-sections
   ]
 
   return (
@@ -393,18 +386,18 @@ export default function SuperAdminDashboard() {
                 {!sidebarCollapsed ? (
                   <>
                     <button
-                      onClick={() => toggleGroup(['analytics', 'ai', 'jurisdiction', 'access'][groupIndex])}
+                      onClick={() => toggleGroup(['analytics', 'ai', 'paper', 'access'][groupIndex])}
                       className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-slate-400 uppercase tracking-wider hover:text-slate-300 transition-colors"
                     >
                       <span className="flex items-center gap-2">
                         <span>{group.icon}</span>
                         <span>{group.title}</span>
                       </span>
-                      <svg className={`w-4 h-4 transition-transform ${expandedGroups[['analytics', 'ai', 'jurisdiction', 'access'][groupIndex]] ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <svg className={`w-4 h-4 transition-transform ${expandedGroups[['analytics', 'ai', 'paper', 'access'][groupIndex]] ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                       </svg>
                     </button>
-                    {expandedGroups[['analytics', 'ai', 'jurisdiction', 'access'][groupIndex]] && (
+                    {expandedGroups[['analytics', 'ai', 'paper', 'access'][groupIndex]] && (
                       <div className="mt-1 space-y-0.5">
                         {group.items.map((item) => (
                           <button

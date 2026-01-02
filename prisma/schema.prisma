@@ -99,6 +99,10 @@ model Tenant {
   teams           Team[]
   writingSamples  WritingSample[]
   writingPersonas WritingPersona[]
+  
+  // Paper Writing (academic papers)
+  paperWritingSamples  PaperWritingSample[]
+  paperWritingPersonas PaperWritingPersona[]
 
   // Style configuration overrides
   userDiagramStyles UserDiagramStyle[]
@@ -188,6 +192,10 @@ model User {
   // Writing Samples for example-based style mimicry
   writingSamples  WritingSample[]
   createdPersonas WritingPersona[] @relation("PersonaCreator")
+  
+  // Paper Writing Samples for academic style mimicry
+  paperWritingSamples  PaperWritingSample[]
+  createdPaperPersonas PaperWritingPersona[] @relation("PaperPersonaCreator")
 
   // Team membership and service quotas
   teamMemberships TeamMember[]
@@ -1758,6 +1766,10 @@ model DraftingSession {
   figureSequence          Json?
   figureSequenceFinalized Boolean @default(false) @map("figure_sequence_finalized")
 
+  // Paper Blueprint and Sections (new coherence system)
+  paperBlueprint PaperBlueprint?
+  paperSections  PaperSection[]
+
   @@map("drafting_sessions")
 }
 
@@ -2575,38 +2587,107 @@ model CountrySectionPromptHistory {
 }
 
 // User-specific section instructions - can be session-level OR user-level (persistent)
-// - sessionId = null + userId = user-level (persists across all drafts for that jurisdiction)
+// - sessionId = null + userId = user-level (persists across all drafts for that paper type)
 // - sessionId = X + userId = session-level (applies only to that specific draft)
-// Supports jurisdiction-specific instructions (different for IN vs US)
+// Supports paper-type-specific instructions (different for JOURNAL vs CONFERENCE)
 model UserSectionInstruction {
-  id           String   @id @default(cuid())
-  sessionId    String?  @map("session_id") // NULL = user-level persistent instruction
-  userId       String   @map("user_id") // Required - owner of the instruction
-  jurisdiction String   @default("*") // "*" = all jurisdictions, or specific like "IN", "US"
-  sectionKey   String   @map("section_key")
-  instruction  String   @db.Text // User's custom instruction for this section
-  emphasis     String?  @db.Text // What to emphasize/focus on
-  avoid        String?  @db.Text // What to avoid/exclude
-  style        String? // "formal", "technical", "concise", etc.
-  wordCount    Int?     @map("word_count") // Target word count override
-  isActive     Boolean  @default(true) @map("is_active")
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  id            String   @id @default(cuid())
+  sessionId     String?  @map("session_id") // NULL = user-level persistent instruction
+  userId        String   @map("user_id") // Required - owner of the instruction
+  jurisdiction  String   @default("*") // "*" = all (legacy for patents)
+  paperTypeCode String?  @map("paper_type_code") // For papers: JOURNAL_ARTICLE, CONFERENCE_PAPER, etc.
+  sectionKey    String   @map("section_key")
+  instruction   String   @db.Text // User's custom instruction for this section
+  emphasis      String?  @db.Text // What to emphasize/focus on
+  avoid         String?  @db.Text // What to avoid/exclude
+  style         String? // "formal", "technical", "concise", etc.
+  wordCount     Int?     @map("word_count") // Target word count override
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
 
   // Relation to drafting session (optional for user-level instructions)
   session DraftingSession? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   // Relation to user
   user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  // Unique per user + optional session + jurisdiction + section
+  // Unique per user + optional session + jurisdiction/paperType + section
   // This allows both user-level (sessionId=null) and session-level instructions
   @@unique([userId, sessionId, jurisdiction, sectionKey])
   @@index([sessionId])
   @@index([userId])
   @@index([userId, jurisdiction])
   @@index([userId, sessionId, jurisdiction])
+  @@index([userId, paperTypeCode, sectionKey])
   @@index([sectionKey])
   @@map("user_section_instructions")
+}
+
+// ============================================================================
+// PAPER WRITING PERSONAS (Example-based style mimicry for papers)
+// ============================================================================
+
+// Paper Writing Persona - Reusable style profiles for academic writing
+model PaperWritingPersona {
+  id        String @id @default(cuid())
+  tenantId  String @map("tenant_id")
+  createdBy String @map("created_by") // User who created this persona
+
+  name        String // "Journal Style", "Conference Style", "Formal Academic"
+  description String? @db.Text // "Concise, active voice, data-driven"
+
+  visibility PersonaVisibility @default(PRIVATE)
+  isTemplate Boolean           @default(false) // Org-wide templates marked by admin
+  allowCopy  Boolean           @default(true) // Others can copy to their own
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  tenant  Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  creator User                @relation("PaperPersonaCreator", fields: [createdBy], references: [id])
+  samples PaperWritingSample[]
+
+  // A user can have multiple personas, but names must be unique per user
+  @@unique([createdBy, name])
+  @@index([tenantId, visibility])
+  @@index([createdBy])
+  @@map("paper_writing_personas")
+}
+
+// Paper Writing Sample - Example text for style mimicry
+model PaperWritingSample {
+  id          String  @id @default(cuid())
+  userId      String  @map("user_id")
+  tenantId    String  @map("tenant_id")
+  personaId   String? @map("persona_id") // Reference to PaperWritingPersona
+  personaName String  @default("Default") @map("persona_name") // For backward compat
+
+  paperTypeCode String @map("paper_type_code") // "JOURNAL_ARTICLE", "CONFERENCE_PAPER", "*" (universal)
+  sectionKey    String @map("section_key") // "abstract", "introduction", "methodology", etc.
+
+  sampleText String  @map("sample_text") @db.Text // User's writing sample (100-300 words)
+  notes      String? @db.Text // Optional notes: "My preferred intro style for journals"
+
+  isShared  Boolean @default(false) @map("is_shared") // Deprecated: use persona.visibility
+  isActive  Boolean @default(true) @map("is_active")
+  wordCount Int     @default(0) @map("word_count") // Computed word count for validation
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  user    User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenant  Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  persona PaperWritingPersona? @relation(fields: [personaId], references: [id], onDelete: SetNull)
+
+  // Unique per user per paper type per persona per section
+  @@unique([userId, paperTypeCode, personaId, sectionKey])
+  @@index([tenantId, userId])
+  @@index([userId, paperTypeCode])
+  @@index([personaId])
+  @@map("paper_writing_samples")
 }
 
 // ============================================================================
@@ -3715,36 +3796,268 @@ model ResearchTopic {
   sessionId String          @unique
   session   DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
-  // Core research elements
-  title            String // Research title
-  researchQuestion String // Main research question (required)
-  hypothesis       String? // Research hypothesis (optional)
+  // ============================================================================
+  // BASIC INFO SEGMENT
+  // ============================================================================
+  title            String   // Research/paper title
+  field            String?  // Research field (e.g., "Computer Science")
+  subfield         String?  // Subfield/specialization
+  topicDescription String?  @db.Text // Brief topic description
 
-  // Keywords and classification
-  keywords         String[] // Research keywords/tags
-  methodology      MethodologyType // Research methodology
+  // ============================================================================
+  // RESEARCH QUESTION SEGMENT
+  // ============================================================================
+  researchQuestion  String   @db.Text // Main research question (required)
+  subQuestions      String[] // Sub-questions to investigate
+  problemStatement  String?  @db.Text // Problem being addressed
+  researchGaps      String?  @db.Text // Identified gaps in literature
+
+  // ============================================================================
+  // METHODOLOGY SEGMENT
+  // ============================================================================
+  methodology            MethodologyType // Research methodology type
+  methodologyApproach    String?  @db.Text // Detailed approach description
+  techniques             String[] // Research techniques to use
+  methodologyJustification String? @db.Text // Why this methodology
+
+  // ============================================================================
+  // DATA & EXPERIMENTATION SEGMENT
+  // ============================================================================
+  datasetDescription String?  @db.Text // Description of dataset
+  dataCollection     String?  @db.Text // Data collection method
+  sampleSize         String?  // Expected sample size
+  tools              String[] // Tools/software to use
+  experiments        String?  @db.Text // Planned experiments
+
+  // ============================================================================
+  // EXPECTED OUTCOMES SEGMENT
+  // ============================================================================
+  hypothesis       String?  @db.Text // Research hypothesis
+  expectedResults  String?  @db.Text // Expected findings
   contributionType ContributionType // Type of contribution
+  novelty          String?  @db.Text // What makes this novel
+  limitations      String?  @db.Text // Known limitations
 
-  // Additional context
-  datasetDescription String? // Description of dataset (if applicable)
-  abstractDraft      String? // Draft abstract/summary
+  // ============================================================================
+  // KEYWORDS & ABSTRACT
+  // ============================================================================
+  keywords      String[] // Research keywords/tags
+  abstractDraft String?  @db.Text // Draft abstract/summary
 
-  // LLM metadata (for debugging and improvement)
-  llmPromptUsed String? // The prompt that generated this topic
-  llmResponse   String? // Raw LLM response
-  llmTokensUsed Int? // Token usage for billing/analytics
+  // ============================================================================
+  // LLM METADATA
+  // ============================================================================
+  llmPromptUsed String? @db.Text // The prompt that generated this topic
+  llmResponse   String? @db.Text // Raw LLM response
+  llmTokensUsed Int?    // Token usage for billing/analytics
 
   // Timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Relations (will be added when Paper model is created)
-  // paper        Paper?
-
   @@index([sessionId])
   @@index([methodology])
   @@index([contributionType])
   @@map("research_topics")
+}
+
+// ============================================================================
+// PAPER BLUEPRINT SYSTEM (Coherence by Construction)
+// ============================================================================
+
+// Paper Blueprint - Frozen plan that governs all section generation
+model PaperBlueprint {
+  id        String @id @default(cuid())
+  sessionId String @unique
+  session   DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  // Core thesis elements (synthesized from ResearchTopic)
+  thesisStatement  String  @db.Text // Single sentence central claim
+  centralObjective String  @db.Text // 1-2 sentences: what the paper will achieve
+  keyContributions String[] // 3-7 testable outcomes/deliverables
+
+  // Section plan - methodology-aware structure
+  // JSON array of: { sectionKey, purpose, mustCover[], mustAvoid[], wordBudget?, dependencies[] }
+  sectionPlan Json
+
+  // Terminology policy (simplified)
+  // JSON object: { "preferredTerm": "definition", ... }
+  preferredTerms Json?
+
+  // Narrative arc (optional guidance)
+  narrativeArc String? @db.Text // gap → approach → result → implication
+
+  // Paper type context (for methodology-specific constraints)
+  paperTypeCode   String? // e.g., "JOURNAL_ARTICLE", "REVIEW_ARTICLE"
+  methodologyType String? // e.g., "QUANTITATIVE", "QUALITATIVE", "REVIEW"
+
+  // Freeze state
+  status   BlueprintStatus @default(DRAFT)
+  frozenAt DateTime?
+
+  // Versioning
+  version   Int    @default(1)
+  changeLog Json?  // Array of { version, changedAt, changes[] }
+
+  // LLM metadata
+  llmPromptUsed String? @db.Text
+  llmResponse   String? @db.Text
+  llmTokensUsed Int?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sessionId])
+  @@index([status])
+  @@map("paper_blueprints")
+}
+
+// Paper Section - Generated content with inline memory
+model PaperSection {
+  id        String @id @default(cuid())
+  sessionId String
+  session   DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  // Section identification
+  sectionKey   String // e.g., "introduction", "methodology", "results"
+  displayName  String // Human-readable name
+
+  // Generated content
+  content   String  @db.Text
+  wordCount Int?
+
+  // Inline memory (key innovation - passed to subsequent sections)
+  // JSON: { keyPoints[], termsIntroduced[], mainClaims[], forwardReferences[] }
+  memory Json?
+
+  // Generation metadata
+  blueprintVersion Int? // Which blueprint version was used
+  promptUsed       String? @db.Text
+  llmResponse      String? @db.Text
+  tokensUsed       Int?
+
+  // Status
+  status    PaperSectionStatus @default(DRAFT)
+  isStale   Boolean            @default(false) // Marked stale if blueprint changes
+
+  // Versioning
+  version Int @default(1)
+
+  // Timestamps
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  generatedAt DateTime @default(now())
+
+  @@unique([sessionId, sectionKey])
+  @@index([sessionId])
+  @@index([sectionKey])
+  @@index([status])
+  @@map("paper_sections")
+}
+
+enum BlueprintStatus {
+  DRAFT // Editable, not yet frozen
+  FROZEN // Locked, governs all section generation
+  REVISION_PENDING // User requested changes, needs re-freeze
+}
+
+enum PaperSectionStatus {
+  DRAFT // Initial generation
+  REVIEWED // User has reviewed
+  APPROVED // User approved final
+  REGENERATING // Currently being regenerated
+}
+
+// ============================================================================
+// PAPER SUPERSET SECTION SYSTEM (Admin-Configurable Prompts)
+// Mirrors SupersetSection/CountrySectionPrompt pattern for papers
+// ============================================================================
+
+// Base section definitions for academic papers (like SupersetSection for patents)
+model PaperSupersetSection {
+  id           String   @id @default(cuid())
+  sectionKey   String   @unique @map("section_key") // e.g., "abstract", "introduction", "methodology"
+  displayOrder Int      @map("display_order") // Order in the drafting flow
+  label        String // Display label: "Abstract", "Introduction", etc.
+  description  String?  @db.Text // Description of what this section contains
+  instruction  String   @db.Text // Base prompt instruction for LLM
+  constraints  Json     @default("{}") // { wordLimit, citationRequirements, tenseRequirements, styleRequirements }
+  isRequired   Boolean  @default(true) @map("is_required") // Default required status
+  isActive     Boolean  @default(true) @map("is_active") // Can be disabled without deleting
+
+  // Context injection flags for papers
+  requiresBlueprint        Boolean @default(true) @map("requires_blueprint") // Inject blueprint context
+  requiresPreviousSections Boolean @default(true) @map("requires_previous_sections") // Inject previous section memory
+  requiresCitations        Boolean @default(false) @map("requires_citations") // Inject citation list
+
+  createdBy String?  @map("created_by")
+  updatedBy String?  @map("updated_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  paperTypePrompts PaperTypeSectionPrompt[]
+
+  @@index([displayOrder])
+  @@index([isActive])
+  @@map("paper_superset_sections")
+}
+
+// Paper-type-specific prompt overrides (like CountrySectionPrompt for patents)
+// New paper types automatically inherit base prompts from PaperSupersetSection
+model PaperTypeSectionPrompt {
+  id              String                       @id @default(cuid())
+  paperTypeCode   String                       @map("paper_type_code") // e.g., "JOURNAL_ARTICLE", "CONFERENCE_PAPER"
+  sectionKey      String                       @map("section_key") // canonical key: "abstract", "introduction", etc.
+  instruction     String                       @db.Text // Override instruction (merged with base prompt)
+  constraints     Json                         @default("{}") // Override constraints (merged with base)
+  additions       Json?                        @default("[]") // Array of additional guidance strings
+  version         Int                          @default(1)
+  status          PaperTypeSectionPromptStatus @default(ACTIVE)
+  createdBy       String?                      @map("created_by")
+  updatedBy       String?                      @map("updated_by")
+  createdAt       DateTime                     @default(now()) @map("created_at")
+  updatedAt       DateTime                     @updatedAt @map("updated_at")
+
+  // Relations
+  supersetSection PaperSupersetSection          @relation(fields: [sectionKey], references: [sectionKey])
+  history         PaperTypeSectionPromptHistory[]
+
+  @@unique([paperTypeCode, sectionKey], name: "paper_type_section_unique")
+  @@index([paperTypeCode])
+  @@index([sectionKey])
+  @@index([status])
+  @@map("paper_type_section_prompts")
+}
+
+enum PaperTypeSectionPromptStatus {
+  ACTIVE
+  DRAFT
+  ARCHIVED
+}
+
+// Audit trail for paper prompt changes
+model PaperTypeSectionPromptHistory {
+  id            String   @id @default(cuid())
+  promptId      String   @map("prompt_id")
+  paperTypeCode String   @map("paper_type_code")
+  sectionKey    String   @map("section_key")
+  instruction   String   @db.Text
+  constraints   Json     @default("{}")
+  additions     Json?    @default("[]")
+  version       Int
+  changeType    String   @map("change_type") // CREATE, UPDATE, ARCHIVE, RESTORE
+  changeReason  String?  @map("change_reason")
+  changedBy     String?  @map("changed_by")
+  changedAt     DateTime @default(now()) @map("changed_at")
+
+  // Relation to parent prompt
+  prompt PaperTypeSectionPrompt @relation(fields: [promptId], references: [id], onDelete: Cascade)
+
+  @@index([promptId])
+  @@index([paperTypeCode, sectionKey])
+  @@map("paper_type_section_prompt_history")
 }
 
 model Citation {

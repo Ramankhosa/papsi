@@ -197,6 +197,49 @@ const PAPER_TYPES = [
     },
     defaultCitationStyle: 'APA7',
     sortOrder: 8
+  },
+  {
+    code: 'BOOK_CHAPTER',
+    name: 'Book Chapter',
+    description: 'Scholarly contribution to an edited volume or textbook. Emphasizes depth, conceptual clarity, and pedagogical value over novelty.',
+    requiredSections: ['abstract', 'introduction', 'literature_review', 'main_content', 'discussion', 'conclusion', 'references'],
+    optionalSections: ['methodology', 'case_studies', 'acknowledgments', 'further_reading', 'appendix'],
+    sectionOrder: ['abstract', 'introduction', 'literature_review', 'methodology', 'main_content', 'case_studies', 'discussion', 'conclusion', 'acknowledgments', 'references', 'further_reading', 'appendix'],
+    defaultWordLimits: {
+      abstract: 300,
+      introduction: 2500,
+      literature_review: 4000,
+      methodology: 3000,
+      main_content: 6000,
+      case_studies: 3000,
+      discussion: 2500,
+      conclusion: 800,
+      acknowledgments: 200,
+      references: null,
+      further_reading: null,
+      appendix: null
+    },
+    defaultCitationStyle: 'APA7',
+    sortOrder: 9
+  },
+  {
+    code: 'SHORT_COMMUNICATION',
+    name: 'Short Communication',
+    description: 'Brief report of significant findings, typically with strict length limits.',
+    requiredSections: ['abstract', 'introduction', 'methodology', 'results', 'conclusion', 'references'],
+    optionalSections: ['acknowledgments'],
+    sectionOrder: ['abstract', 'introduction', 'methodology', 'results', 'conclusion', 'acknowledgments', 'references'],
+    defaultWordLimits: {
+      abstract: 150,
+      introduction: 400,
+      methodology: 400,
+      results: 600,
+      conclusion: 300,
+      acknowledgments: 50,
+      references: null
+    },
+    defaultCitationStyle: 'APA7',
+    sortOrder: 10
   }
 ]
 

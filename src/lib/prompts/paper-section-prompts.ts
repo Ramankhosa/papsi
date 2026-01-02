@@ -37,12 +37,46 @@ const abstractBase = buildPrompt(
   'Do not include citations.'
 );
 
-const abstractThesis = buildPrompt(
+const abstractConference = buildPrompt(
   'Abstract',
   [
-    'Summarize the dissertation scope, research question, method, and main findings.',
-    'Mention the primary contribution and significance.',
-    'Keep the language accessible to a broad academic audience.'
+    'Write a concise abstract (150-200 words) suitable for conference proceedings.',
+    'Lead with the problem and your novel contribution.',
+    'Briefly mention the approach and key results.',
+    'End with the significance and implications.'
+  ].join('\n'),
+  'Do not include citations.'
+);
+
+const abstractReview = buildPrompt(
+  'Abstract',
+  [
+    'Summarize the scope, methodology, and key findings of this review.',
+    'State the number of studies reviewed and the synthesis approach.',
+    'Highlight major themes, gaps, and implications for the field.',
+    'Emphasize the value and timeliness of this review.'
+  ].join('\n'),
+  'Do not include citations.'
+);
+
+const abstractCaseStudy = buildPrompt(
+  'Abstract',
+  [
+    'Briefly describe the case context and its significance.',
+    'State the research question or objective.',
+    'Summarize the analytical approach and key findings.',
+    'Highlight practical implications and lessons learned.'
+  ].join('\n'),
+  'Do not include citations.'
+);
+
+const abstractBookChapter = buildPrompt(
+  'Abstract',
+  [
+    'Summarize the chapter scope and its position within the book.',
+    'State the main argument or contribution of this chapter.',
+    'Preview key concepts and takeaways.',
+    'Indicate the intended audience.'
   ].join('\n'),
   'Do not include citations.'
 );
@@ -68,17 +102,6 @@ const introductionConference = buildPrompt(
     'Provide a brief structure overview in the final paragraph.'
   ].join('\n'),
   'Use citations for background and related work. Use [CITE:key] only from the provided list. Do not invent citations.'
-);
-
-const introductionThesis = buildPrompt(
-  'Introduction',
-  [
-    'Provide a detailed background and motivation for the research problem.',
-    'Define the research objectives and scope.',
-    'State the research question and, if applicable, hypotheses.',
-    'Summarize contributions and outline the thesis structure.'
-  ].join('\n'),
-  'Use citations for background and foundational work. Use [CITE:key] only from the provided list. Do not invent citations.'
 );
 
 const introductionReview = buildPrompt(
@@ -206,6 +229,29 @@ const resultsShortComm = buildPrompt(
   'Use citations only if essential. Use [CITE:key] only from the provided list.'
 );
 
+const resultsReview = buildPrompt(
+  'Results',
+  [
+    'Present the synthesized findings organized by theme or taxonomy.',
+    'Summarize the number and types of studies included.',
+    'Highlight key patterns, trends, and areas of consensus.',
+    'Identify contradictions and gaps in the literature.',
+    'Use tables or structured summaries where appropriate.'
+  ].join('\n'),
+  'Use citations to support each finding. Use [CITE:key] only from the provided list. Do not invent citations.'
+);
+
+const resultsConference = buildPrompt(
+  'Results',
+  [
+    'Present results concisely with focus on key metrics.',
+    'Use tables and figures effectively.',
+    'Compare with baselines directly.',
+    'Highlight statistically significant findings.'
+  ].join('\n'),
+  'Use citations for baseline comparisons. Use [CITE:key] only from the provided list.'
+);
+
 const discussionBase = buildPrompt(
   'Discussion',
   [
@@ -217,12 +263,80 @@ const discussionBase = buildPrompt(
   'Use citations for comparisons and implications. Use [CITE:key] only from the provided list. Do not invent citations.'
 );
 
+const discussionConference = buildPrompt(
+  'Discussion',
+  [
+    'Keep the discussion concise and focused on key insights.',
+    'Compare your results directly with the most relevant baselines.',
+    'Acknowledge limitations briefly.',
+    'Emphasize the novelty and practical implications.'
+  ].join('\n'),
+  'Use citations for comparisons. Use [CITE:key] only from the provided list. Do not invent citations.'
+);
+
+const discussionReview = buildPrompt(
+  'Discussion',
+  [
+    'Synthesize the overall patterns and themes from the reviewed literature.',
+    'Discuss conflicting findings and potential explanations.',
+    'Identify the most significant gaps and their implications.',
+    'Connect findings to theoretical frameworks and practical applications.',
+    'Discuss limitations of the review methodology.'
+  ].join('\n'),
+  'Use citations to support synthesis. Use [CITE:key] only from the provided list. Do not invent citations.'
+);
+
+const discussionCaseStudy = buildPrompt(
+  'Discussion',
+  [
+    'Interpret the case findings in light of the research question.',
+    'Connect observations to broader theory and literature.',
+    'Discuss transferability and boundary conditions.',
+    'Identify practical lessons and implications.',
+    'Acknowledge limitations of the case study approach.'
+  ].join('\n'),
+  'Use citations for theoretical connections. Use [CITE:key] only from the provided list. Do not invent citations.'
+);
+
 const conclusionBase = buildPrompt(
   'Conclusion',
   [
     'Summarize the core findings and contributions.',
     'Emphasize implications and key takeaways.',
     'Avoid introducing new information.'
+  ].join('\n'),
+  'Citations are optional. If used, rely on [CITE:key] only from the provided list.'
+);
+
+const conclusionConference = buildPrompt(
+  'Conclusion',
+  [
+    'Provide a brief (1-2 paragraph) conclusion.',
+    'Restate the main contribution concisely.',
+    'Mention one or two key implications or future directions.',
+    'End with a strong closing statement.'
+  ].join('\n'),
+  'Citations are optional. If used, rely on [CITE:key] only from the provided list.'
+);
+
+const conclusionReview = buildPrompt(
+  'Conclusion',
+  [
+    'Summarize the main findings of the review.',
+    'Restate the key gaps identified in the literature.',
+    'Provide recommendations for future research.',
+    'Discuss implications for practitioners and researchers.'
+  ].join('\n'),
+  'Citations are optional. If used, rely on [CITE:key] only from the provided list.'
+);
+
+const conclusionCaseStudy = buildPrompt(
+  'Conclusion',
+  [
+    'Summarize the case findings and their significance.',
+    'Restate the practical lessons learned.',
+    'Discuss broader applicability and limitations.',
+    'Suggest directions for future research or practice.'
   ].join('\n'),
   'Citations are optional. If used, rely on [CITE:key] only from the provided list.'
 );
@@ -329,7 +443,7 @@ const appendixBase = buildPrompt(
 const publicationsBase = buildPrompt(
   'Publications',
   [
-    'List publications related to this thesis or project if provided.',
+    'List publications related to this research project if provided.',
     'If no publication data is provided, state "No publications reported."'
   ].join('\n'),
   'Do not invent citations.'
@@ -352,8 +466,10 @@ export const paperSectionTemplates: SectionTemplate[] = [
     description: 'Concise summary of the entire paper',
     defaultPrompt: abstractBase,
     promptsByPaperType: {
-      THESIS_MASTERS: abstractThesis,
-      THESIS_PHD: abstractThesis
+      CONFERENCE_PAPER: abstractConference,
+      REVIEW_ARTICLE: abstractReview,
+      CASE_STUDY: abstractCaseStudy,
+      BOOK_CHAPTER: abstractBookChapter
     },
     constraints: {
       wordLimit: 250,
@@ -372,8 +488,6 @@ export const paperSectionTemplates: SectionTemplate[] = [
     defaultPrompt: introductionBase,
     promptsByPaperType: {
       CONFERENCE_PAPER: introductionConference,
-      THESIS_MASTERS: introductionThesis,
-      THESIS_PHD: introductionThesis,
       REVIEW_ARTICLE: introductionReview,
       BOOK_CHAPTER: introductionBookChapter,
       SHORT_COMMUNICATION: introductionShortComm,
@@ -396,8 +510,7 @@ export const paperSectionTemplates: SectionTemplate[] = [
     defaultPrompt: literatureReviewBase,
     promptsByPaperType: {
       REVIEW_ARTICLE: literatureReviewReview,
-      THESIS_MASTERS: literatureReviewBase,
-      THESIS_PHD: literatureReviewBase
+      BOOK_CHAPTER: literatureReviewBase
     },
     constraints: {
       wordLimit: 2000,
@@ -433,8 +546,7 @@ export const paperSectionTemplates: SectionTemplate[] = [
       REVIEW_ARTICLE: methodologyReview,
       CONFERENCE_PAPER: methodologyConference,
       CASE_STUDY: methodologyCaseStudy,
-      THESIS_MASTERS: methodologyBase,
-      THESIS_PHD: methodologyBase
+      BOOK_CHAPTER: methodologyBase
     },
     constraints: {
       wordLimit: 1500,
@@ -452,7 +564,9 @@ export const paperSectionTemplates: SectionTemplate[] = [
     description: 'Presentation of research findings',
     defaultPrompt: resultsBase,
     promptsByPaperType: {
-      SHORT_COMMUNICATION: resultsShortComm
+      SHORT_COMMUNICATION: resultsShortComm,
+      REVIEW_ARTICLE: resultsReview,
+      CONFERENCE_PAPER: resultsConference
     },
     constraints: {
       wordLimit: 1200,
@@ -469,6 +583,11 @@ export const paperSectionTemplates: SectionTemplate[] = [
     displayName: 'Discussion',
     description: 'Interpretation of results and implications',
     defaultPrompt: discussionBase,
+    promptsByPaperType: {
+      CONFERENCE_PAPER: discussionConference,
+      REVIEW_ARTICLE: discussionReview,
+      CASE_STUDY: discussionCaseStudy
+    },
     constraints: {
       wordLimit: 1500,
       citationRequirements: { minimum: 6, recommended: 15 },
@@ -484,6 +603,11 @@ export const paperSectionTemplates: SectionTemplate[] = [
     displayName: 'Conclusion',
     description: 'Summary of contributions and final thoughts',
     defaultPrompt: conclusionBase,
+    promptsByPaperType: {
+      CONFERENCE_PAPER: conclusionConference,
+      REVIEW_ARTICLE: conclusionReview,
+      CASE_STUDY: conclusionCaseStudy
+    },
     constraints: {
       wordLimit: 600,
       citationRequirements: { minimum: 0, recommended: 3 },
@@ -526,7 +650,7 @@ export const paperSectionTemplates: SectionTemplate[] = [
   {
     sectionKey: 'future_work',
     displayName: 'Future Work',
-    description: 'Future work section for theses',
+    description: 'Future work and research extensions',
     defaultPrompt: futureWorkBase,
     constraints: {
       wordLimit: 800,

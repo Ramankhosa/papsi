@@ -33,7 +33,11 @@ import {
   ArrowRightLeft,
   MessageSquare,
   Send,
-  Pencil
+  Pencil,
+  Upload,
+  Paintbrush,
+  FileImage,
+  Lightbulb
 } from 'lucide-react';
 
 interface PaperFigurePlannerStageProps {
@@ -43,7 +47,7 @@ interface PaperFigurePlannerStageProps {
   session?: any;
 }
 
-type FigureCategory = 'DATA_CHART' | 'DIAGRAM' | 'STATISTICAL_PLOT' | 'ILLUSTRATION' | 'CUSTOM';
+type FigureCategory = 'DATA_CHART' | 'DIAGRAM' | 'STATISTICAL_PLOT' | 'ILLUSTRATION' | 'SKETCH' | 'CUSTOM';
 
 type FigurePlan = {
   id: string;
@@ -84,6 +88,13 @@ const FIGURE_OPTIONS = [
     desc: 'Entity relationships', example: '○─◇─○' },
   { value: 'gantt', label: 'Gantt Chart', icon: Clock, category: 'DIAGRAM',
     desc: 'Project timeline', example: '▬▬▬ ▬▬' },
+  // AI Sketches & Illustrations
+  { value: 'sketch-auto', label: 'AI Sketch (Auto)', icon: Sparkles, category: 'SKETCH',
+    desc: 'AI generates based on paper context', example: '✨ 🎨 Auto' },
+  { value: 'sketch-guided', label: 'AI Sketch (Guided)', icon: Paintbrush, category: 'SKETCH',
+    desc: 'AI generates from your description', example: '🖌️ ✏️ Guided' },
+  { value: 'sketch-refine', label: 'Refine Image', icon: Upload, category: 'SKETCH',
+    desc: 'AI refines your uploaded/hand-drawn sketch', example: '📤 → 🎨' },
 ];
 
 const CATEGORY_COLORS: Record<FigureCategory, string> = {
@@ -91,6 +102,7 @@ const CATEGORY_COLORS: Record<FigureCategory, string> = {
   DIAGRAM: 'bg-violet-500',
   STATISTICAL_PLOT: 'bg-emerald-500',
   ILLUSTRATION: 'bg-amber-500',
+  SKETCH: 'bg-rose-500',
   CUSTOM: 'bg-slate-500'
 };
 
@@ -113,6 +125,12 @@ export default function PaperFigurePlannerStage({
   const [modificationRequest, setModificationRequest] = useState('');
   const [isModifying, setIsModifying] = useState(false);
   const [showModifyInput, setShowModifyInput] = useState(false);
+  
+  // Sketch-specific state
+  const [sketchUploadFile, setSketchUploadFile] = useState<File | null>(null);
+  const [sketchUploadPreview, setSketchUploadPreview] = useState<string | null>(null);
+  const [sketchStyle, setSketchStyle] = useState<'academic' | 'scientific' | 'conceptual' | 'technical'>('academic');
+  const [isGeneratingSketch, setIsGeneratingSketch] = useState(false);
   
   // Simple form state
   const [title, setTitle] = useState('');
@@ -295,8 +313,26 @@ export default function PaperFigurePlannerStage({
     ));
 
     try {
-      // Combine original description with modification request
-      const enhancedDescription = `
+      let response: Response;
+      
+      // Check if this is a sketch - use sketch endpoint
+      const isSketch = figure.category === 'SKETCH' || figure.figureType?.startsWith('sketch-');
+      
+      if (isSketch) {
+        // Use sketch modification endpoint
+        response = await fetch(`/api/papers/${sessionId}/figures/${figure.id}/sketch`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            modificationRequest: modificationRequest
+          })
+        });
+      } else {
+        // Use regular generate endpoint for charts/diagrams
+        const enhancedDescription = `
 Original request: ${figure.notes || figure.caption || figure.title}
 
 User modification request: ${modificationRequest}
@@ -304,23 +340,24 @@ User modification request: ${modificationRequest}
 Please regenerate the figure incorporating the user's feedback and corrections.
 `.trim();
 
-      const response = await fetch(`/api/papers/${sessionId}/figures/${figure.id}/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`
-        },
-        body: JSON.stringify({
-          figureType: figure.figureType,
-          category: figure.category,
-          title: figure.title,
-          caption: figure.caption,
-          description: enhancedDescription,
-          modificationRequest: modificationRequest, // Pass explicitly for logging
-          theme: 'academic',
-          useLLM: true
-        })
-      });
+        response = await fetch(`/api/papers/${sessionId}/figures/${figure.id}/generate`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            figureType: figure.figureType,
+            category: figure.category,
+            title: figure.title,
+            caption: figure.caption,
+            description: enhancedDescription,
+            modificationRequest: modificationRequest,
+            theme: 'academic',
+            useLLM: true
+          })
+        });
+      }
 
       const data = await response.json();
       
@@ -356,6 +393,88 @@ Please regenerate the figure incorporating the user's feedback and corrections.
     setFigureType(option.value);
     setCategory(option.category as FigureCategory);
     setShowTypeDropdown(false);
+    // Clear sketch file when switching types
+    if (!option.value.startsWith('sketch-')) {
+      setSketchUploadFile(null);
+      setSketchUploadPreview(null);
+    }
+  };
+
+  // Handle sketch file upload
+  const handleSketchFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      setSketchUploadFile(file);
+      const reader = new FileReader();
+      reader.onload = () => setSketchUploadPreview(reader.result as string);
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // Generate sketch using AI
+  const handleGenerateSketch = async () => {
+    if (!authToken || !title.trim()) return;
+    
+    // Validate based on sketch mode
+    const sketchMode = figureType.replace('sketch-', '').toUpperCase();
+    
+    if (sketchMode === 'GUIDED' && (!description || description.length < 10)) {
+      alert('Please provide at least 10 characters of instructions for guided mode');
+      return;
+    }
+    
+    if (sketchMode === 'REFINE' && !sketchUploadFile) {
+      alert('Please upload an image to refine');
+      return;
+    }
+
+    setIsGeneratingSketch(true);
+    
+    try {
+      // Prepare request body
+      const body: any = {
+        mode: sketchMode,
+        title,
+        userPrompt: description,
+        style: sketchStyle
+      };
+      
+      // Add uploaded image for REFINE mode
+      if (sketchMode === 'REFINE' && sketchUploadFile && sketchUploadPreview) {
+        // Extract base64 from data URL
+        const base64 = sketchUploadPreview.split(',')[1];
+        body.uploadedImageBase64 = base64;
+        body.uploadedImageMimeType = sketchUploadFile.type || 'image/png';
+      }
+
+      const response = await fetch(`/api/papers/${sessionId}/figures/new/sketch`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify(body)
+      });
+
+      const data = await response.json();
+      
+      if (!response.ok) throw new Error(data.error);
+
+      // Reload figures to get the new sketch
+      loadFigures();
+      
+      // Clear form
+      setTitle('');
+      setDescription('');
+      setSketchUploadFile(null);
+      setSketchUploadPreview(null);
+      
+    } catch (err: any) {
+      console.error('Sketch generation failed:', err);
+      alert(`Failed to generate sketch: ${err.message}`);
+    } finally {
+      setIsGeneratingSketch(false);
+    }
   };
 
   const plannedFigures = figures.filter(f => f.status === 'PLANNED' || f.status === 'FAILED');
@@ -507,6 +626,34 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                             )}
                           </button>
                         ))}
+                        
+                        {/* AI Sketches Section */}
+                        <div className="px-3 py-2 bg-gradient-to-r from-rose-50 to-pink-50 border-b border-rose-100 sticky top-0">
+                          <span className="text-xs font-semibold text-rose-600 uppercase tracking-wider flex items-center gap-1">
+                            <Sparkles className="w-3 h-3" /> AI Sketches & Illustrations
+                          </span>
+                        </div>
+                        {FIGURE_OPTIONS.filter(o => o.category === 'SKETCH').map((option) => (
+                          <button
+                            key={option.value}
+                            onClick={() => selectType(option)}
+                            className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-rose-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-rose-50' : ''}`}
+                          >
+                            <div className={`w-9 h-9 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
+                              <option.icon className="w-4 h-4 text-white" />
+                            </div>
+                            <div className="flex-1 text-left min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-slate-800">{option.label}</span>
+                                <span className="text-slate-400 text-xs font-mono">{option.example}</span>
+                              </div>
+                              <span className="text-xs text-slate-500">{option.desc}</span>
+                            </div>
+                            {figureType === option.value && (
+                              <Check className="w-4 h-4 text-rose-600 shrink-0" />
+                            )}
+                          </button>
+                        ))}
                       </div>
                     </motion.div>
                   )}
@@ -517,7 +664,9 @@ Please regenerate the figure incorporating the user's feedback and corrections.
               <Input
                 value={title}
                 onChange={e => setTitle(e.target.value)}
-                placeholder="Figure title (e.g., Performance Comparison)"
+                placeholder={figureType.startsWith('sketch-') 
+                  ? "Sketch title (e.g., System Architecture Illustration)" 
+                  : "Figure title (e.g., Performance Comparison)"}
                 className="h-12 rounded-xl border-slate-200 focus:border-blue-400 focus:ring-blue-400"
               />
 
@@ -525,26 +674,140 @@ Please regenerate the figure incorporating the user's feedback and corrections.
               <Textarea
                 value={description}
                 onChange={e => setDescription(e.target.value)}
-                placeholder="Describe what you want to show... (AI will generate the figure based on this)"
+                placeholder={
+                  figureType === 'sketch-auto' 
+                    ? "Optional: Add any specific details you want AI to focus on..."
+                    : figureType === 'sketch-guided'
+                    ? "Describe in detail what you want AI to illustrate (minimum 10 characters)..."
+                    : figureType === 'sketch-refine'
+                    ? "Describe how you want AI to refine/improve your uploaded image..."
+                    : "Describe what you want to show... (AI will generate the figure based on this)"
+                }
                 rows={3}
                 className="rounded-xl border-slate-200 focus:border-blue-400 focus:ring-blue-400 resize-none"
               />
 
+              {/* Sketch-Specific Options */}
+              {figureType.startsWith('sketch-') && (
+                <div className="space-y-4 p-4 bg-gradient-to-r from-rose-50 to-pink-50 rounded-xl border border-rose-100">
+                  <div className="flex items-center gap-2 text-rose-700">
+                    <Sparkles className="w-4 h-4" />
+                    <span className="font-medium text-sm">AI Sketch Options</span>
+                  </div>
+                  
+                  {/* Style Selector */}
+                  <div>
+                    <label className="text-sm text-slate-600 mb-2 block">Illustration Style</label>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                      {(['academic', 'scientific', 'conceptual', 'technical'] as const).map(style => (
+                        <button
+                          key={style}
+                          onClick={() => setSketchStyle(style)}
+                          className={`px-3 py-2 rounded-lg text-sm font-medium capitalize transition-all ${
+                            sketchStyle === style 
+                              ? 'bg-rose-600 text-white shadow-md' 
+                              : 'bg-white text-slate-600 hover:bg-rose-100 border border-slate-200'
+                          }`}
+                        >
+                          {style}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  
+                  {/* File Upload for Refine Mode */}
+                  {figureType === 'sketch-refine' && (
+                    <div>
+                      <label className="text-sm text-slate-600 mb-2 block">Upload Image to Refine</label>
+                      <div className="relative">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleSketchFileUpload}
+                          className="hidden"
+                          id="sketch-file-upload"
+                        />
+                        <label
+                          htmlFor="sketch-file-upload"
+                          className={`flex items-center justify-center gap-3 p-6 rounded-xl border-2 border-dashed cursor-pointer transition-colors ${
+                            sketchUploadFile 
+                              ? 'border-rose-300 bg-rose-50' 
+                              : 'border-slate-300 hover:border-rose-400 hover:bg-rose-50'
+                          }`}
+                        >
+                          {sketchUploadPreview ? (
+                            <div className="flex items-center gap-4">
+                              <img 
+                                src={sketchUploadPreview} 
+                                alt="Preview" 
+                                className="w-16 h-16 object-cover rounded-lg shadow-md"
+                              />
+                              <div className="text-left">
+                                <p className="font-medium text-slate-800">{sketchUploadFile?.name}</p>
+                                <p className="text-sm text-slate-500">Click to change</p>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <Upload className="w-6 h-6 text-slate-400" />
+                              <div className="text-center">
+                                <p className="font-medium text-slate-600">Upload your sketch</p>
+                                <p className="text-sm text-slate-400">Hand-drawn, rough sketch, or existing image</p>
+                              </div>
+                            </>
+                          )}
+                        </label>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Mode-specific hints */}
+                  <div className="flex items-start gap-2 text-xs text-rose-600 bg-white p-3 rounded-lg">
+                    <Lightbulb className="w-4 h-4 shrink-0 mt-0.5" />
+                    <span>
+                      {figureType === 'sketch-auto' && "AI will analyze your paper content and generate a relevant illustration automatically."}
+                      {figureType === 'sketch-guided' && "Provide detailed instructions for exactly what you want AI to illustrate."}
+                      {figureType === 'sketch-refine' && "Upload a rough sketch or existing image, and AI will refine it for academic use."}
+                    </span>
+                  </div>
+                </div>
+              )}
+
               {/* Create Button */}
-              <Button 
-                onClick={handleCreate}
-                disabled={isCreating || !title.trim()}
-                className="w-full h-12 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-medium shadow-lg shadow-blue-500/25"
-              >
-                {isCreating ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : (
-                  <>
-                    <Plus className="w-5 h-5 mr-2" />
-                    Add Figure
-                  </>
-                )}
-              </Button>
+              {figureType.startsWith('sketch-') ? (
+                <Button 
+                  onClick={handleGenerateSketch}
+                  disabled={isGeneratingSketch || !title.trim() || (figureType === 'sketch-refine' && !sketchUploadFile)}
+                  className="w-full h-12 rounded-xl bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-700 hover:to-pink-700 text-white font-medium shadow-lg shadow-rose-500/25"
+                >
+                  {isGeneratingSketch ? (
+                    <>
+                      <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                      Generating Sketch...
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-5 h-5 mr-2" />
+                      Generate AI Sketch
+                    </>
+                  )}
+                </Button>
+              ) : (
+                <Button 
+                  onClick={handleCreate}
+                  disabled={isCreating || !title.trim()}
+                  className="w-full h-12 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-medium shadow-lg shadow-blue-500/25"
+                >
+                  {isCreating ? (
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : (
+                    <>
+                      <Plus className="w-5 h-5 mr-2" />
+                      Add Figure
+                    </>
+                  )}
+                </Button>
+              )}
             </div>
           </div>
         </div>

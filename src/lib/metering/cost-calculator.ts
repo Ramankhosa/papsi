@@ -18,6 +18,9 @@ const DEFAULT_PRICING = { input: 0.000001, output: 0.000004 }
 // Contingency multiplier (10%)
 export const CONTINGENCY_MULTIPLIER = 1.10
 
+// USD to INR conversion rate
+export const USD_TO_INR = 95
+
 // Cache for database-loaded pricing (per-token costs in USD)
 let dbPricingCache: Map<string, { input: number; output: number }> | null = null
 let dbPricingLoadedAt: number = 0
@@ -331,9 +334,16 @@ export function generateCostLogMessage(
   message += `📊 TOTAL TOKENS:   ${costBreakdown.totalTokens.toLocaleString().padStart(10)}\n`
   message += `${thinDivider}\n`
   
-  // Cost Summary
+  // Cost Summary (USD)
   message += `💵 ACTUAL COST:      ${formatCost(costBreakdown.actualCost).padStart(15)}\n`
   message += `💵 WITH 10% BUFFER:  ${formatCost(costBreakdown.contingencyCost).padStart(15)} ← Use for billing\n`
+  message += `${thinDivider}\n`
+  
+  // Cost Summary (INR)
+  const actualCostINR = costBreakdown.actualCost * USD_TO_INR
+  const contingencyCostINR = costBreakdown.contingencyCost * USD_TO_INR
+  message += `🇮🇳 ACTUAL COST (INR):     ₹${actualCostINR.toFixed(4).padStart(10)}\n`
+  message += `🇮🇳 WITH BUFFER (INR):     ₹${contingencyCostINR.toFixed(4).padStart(10)} ← Use for billing\n`
   
   if (metadata?.duration) {
     message += `⏱️  DURATION:         ${(metadata.duration / 1000).toFixed(2)}s\n`

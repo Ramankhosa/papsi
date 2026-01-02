@@ -34,6 +34,7 @@ interface OutlinePlanningStageProps {
   sessionId: string;
   authToken: string | null;
   onSessionUpdated?: (session: any) => void;
+  onNavigateToStage?: (stage: string) => void;
 }
 
 interface PaperTypeItem {
@@ -311,7 +312,7 @@ function SectionItem({ sectionKey, isRequired, wordLimit, onWordLimitChange, onR
 // Main Component
 // ============================================================================
 
-export default function OutlinePlanningStage({ sessionId, authToken, onSessionUpdated }: OutlinePlanningStageProps) {
+export default function OutlinePlanningStage({ sessionId, authToken, onSessionUpdated, onNavigateToStage }: OutlinePlanningStageProps) {
   // Data state
   const [paperTypes, setPaperTypes] = useState<PaperTypeItem[]>([]);
   const [citationStyles, setCitationStyles] = useState<CitationStyleItem[]>([]);
@@ -534,7 +535,7 @@ export default function OutlinePlanningStage({ sessionId, authToken, onSessionUp
     setWordLimits((prev) => ({ ...prev, [sectionKey]: value }));
   }, []);
 
-  const saveSectionConfig = useCallback(() => {
+  const saveSectionConfig = useCallback((navigateAfterSave = false) => {
     if (typeof window === 'undefined' || !selectedType) return;
     
     const payload = {
@@ -546,8 +547,21 @@ export default function OutlinePlanningStage({ sessionId, authToken, onSessionUp
     };
     localStorage.setItem(storageKey, JSON.stringify(payload));
     setMessage({ type: 'success', text: 'Section configuration saved' });
-    setTimeout(() => setMessage(null), 3000);
-  }, [selectedType, sectionOrder, requiredSections, optionalSections, wordLimits, storageKey]);
+    
+    if (navigateAfterSave && onNavigateToStage) {
+      // Navigate to next stage after a brief delay to show the success message
+      setTimeout(() => {
+        onNavigateToStage('TOPIC_ENTRY');
+      }, 500);
+    } else {
+      setTimeout(() => setMessage(null), 3000);
+    }
+  }, [selectedType, sectionOrder, requiredSections, optionalSections, wordLimits, storageKey, onNavigateToStage]);
+
+  const handleContinueToResearchTopic = useCallback(() => {
+    // Save configuration first, then navigate
+    saveSectionConfig(true);
+  }, [saveSectionConfig]);
 
   // ============================================================================
   // Render
@@ -899,13 +913,13 @@ export default function OutlinePlanningStage({ sessionId, authToken, onSessionUp
                   
                   <div className="flex items-center gap-3">
                     <button
-                      onClick={saveSectionConfig}
+                      onClick={() => saveSectionConfig(false)}
                       disabled={saving}
-                      className="flex items-center gap-2 px-6 py-3 bg-slate-900 text-white rounded-xl font-medium hover:bg-slate-800 transition-colors disabled:opacity-50"
+                      className="flex items-center gap-2 px-6 py-3 bg-slate-200 text-slate-700 rounded-xl font-medium hover:bg-slate-300 transition-colors disabled:opacity-50"
                     >
                       {saving ? (
                         <>
-                          <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          <div className="w-4 h-4 border-2 border-slate-500 border-t-transparent rounded-full animate-spin" />
                           Saving...
                         </>
                       ) : (
@@ -914,6 +928,14 @@ export default function OutlinePlanningStage({ sessionId, authToken, onSessionUp
                           Save Configuration
                         </>
                       )}
+                    </button>
+                    <button
+                      onClick={handleContinueToResearchTopic}
+                      disabled={saving}
+                      className="flex items-center gap-2 px-6 py-3 bg-slate-900 text-white rounded-xl font-medium hover:bg-slate-800 transition-colors disabled:opacity-50"
+                    >
+                      Save & Continue
+                      <ArrowRight className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -941,11 +963,7 @@ export default function OutlinePlanningStage({ sessionId, authToken, onSessionUp
               </p>
             </div>
             <button
-              onClick={() => {
-                // Trigger navigation to next stage - this would be handled by parent
-                const event = new CustomEvent('navigateToStage', { detail: 'TOPIC_ENTRY' });
-                window.dispatchEvent(event);
-              }}
+              onClick={handleContinueToResearchTopic}
               className="px-6 py-3 bg-emerald-600 text-white rounded-xl font-medium hover:bg-emerald-700 transition-colors flex items-center gap-2"
             >
               Continue to Research Topic

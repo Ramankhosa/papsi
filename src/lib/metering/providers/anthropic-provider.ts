@@ -9,10 +9,15 @@ import type { LLMProvider, ProviderConfig } from './llm-provider'
 export class AnthropicProvider implements LLMProvider {
   name = 'anthropic'
   supportedModels = [
-    // Claude 3.5 models - use the stable aliases that Anthropic actually supports
+    // Claude 4 models (latest)
+    'claude-sonnet-4',
+    'claude-opus-4',
+    // Claude 3.7 models
+    'claude-3-7-sonnet',
+    // Claude 3.5 models
     'claude-3-5-sonnet',
     'claude-3-5-haiku', 
-    // Claude 3 models
+    // Legacy Claude 3 models
     'claude-3-opus',
     'claude-3-sonnet',
     'claude-3-haiku',
@@ -49,26 +54,35 @@ export class AnthropicProvider implements LLMProvider {
     }
 
     const startTime = Date.now()
-    const modelToUse = request.modelClass || this.config.model || 'claude-3-5-sonnet'
+    const modelToUse = request.modelClass || this.config.model || 'claude-sonnet-4'
     
     // Map friendly model names to Anthropic's required exact model IDs
     // Anthropic API requires dated versions - aliases don't work
+    // Updated Jan 2026 with latest available models
     const modelMap: Record<string, string> = {
-      // Claude 3.5 Sonnet variations -> latest dated version
-      'claude-3.5-sonnet': 'claude-3-5-sonnet-20241022',
-      'claude-3-5-sonnet': 'claude-3-5-sonnet-20241022',
-      'claude-3-5-sonnet-latest': 'claude-3-5-sonnet-20241022',
-      'claude-sonnet-3.5': 'claude-3-5-sonnet-20241022',
-      // Claude 3.5 Haiku variations
+      // Claude 4 models (latest - Jan 2026)
+      'claude-sonnet-4': 'claude-sonnet-4-20250514',
+      'claude-4-sonnet': 'claude-sonnet-4-20250514',
+      'claude-opus-4': 'claude-opus-4-20250514',
+      'claude-4-opus': 'claude-opus-4-20250514',
+      // Claude 3.7 Sonnet
+      'claude-3-7-sonnet': 'claude-3-7-sonnet-20250219',
+      'claude-3.7-sonnet': 'claude-3-7-sonnet-20250219',
+      // Claude 3.5 Sonnet variations -> use Claude 3.7 as replacement
+      'claude-3.5-sonnet': 'claude-3-7-sonnet-20250219',
+      'claude-3-5-sonnet': 'claude-3-7-sonnet-20250219',
+      'claude-3-5-sonnet-latest': 'claude-3-7-sonnet-20250219',
+      'claude-sonnet-3.5': 'claude-3-7-sonnet-20250219',
+      // Claude 3.5 Haiku variations -> use latest haiku
       'claude-3.5-haiku': 'claude-3-5-haiku-20241022',
       'claude-3-5-haiku': 'claude-3-5-haiku-20241022',
       'claude-3-5-haiku-latest': 'claude-3-5-haiku-20241022',
-      // Claude 3 Opus variations
-      'claude-3-opus': 'claude-3-opus-20240229',
-      'claude-3-opus-latest': 'claude-3-opus-20240229',
-      // Claude 3 Sonnet/Haiku
-      'claude-3-sonnet': 'claude-3-sonnet-20240229',
-      'claude-3-haiku': 'claude-3-haiku-20240307',
+      // Claude 3 Opus variations -> use Claude Opus 4
+      'claude-3-opus': 'claude-opus-4-20250514',
+      'claude-3-opus-latest': 'claude-opus-4-20250514',
+      // Legacy Claude 3 models (fallback to newer versions)
+      'claude-3-sonnet': 'claude-3-7-sonnet-20250219',
+      'claude-3-haiku': 'claude-3-5-haiku-20241022',
     }
     
     const actualModel = modelMap[modelToUse] || modelToUse
@@ -145,22 +159,36 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   getTokenLimits(modelName: string): { input: number; output: number } {
-    // Claude 3.5 models have 200K context
+    // Claude models context windows (updated Jan 2026)
     const limits: Record<string, { input: number; output: number }> = {
+      // Claude 4 models
+      'claude-sonnet-4': { input: 200000, output: 16384 },
+      'claude-opus-4': { input: 200000, output: 16384 },
+      // Claude 3.7 models
+      'claude-3-7-sonnet': { input: 200000, output: 16384 },
+      // Claude 3.5 models
       'claude-3-5-sonnet': { input: 200000, output: 8192 },
       'claude-3-5-haiku': { input: 200000, output: 8192 },
+      // Legacy Claude 3 models
       'claude-3-opus': { input: 200000, output: 4096 },
       'claude-3-sonnet': { input: 200000, output: 4096 },
       'claude-3-haiku': { input: 200000, output: 4096 }
     }
-    return limits[modelName] || { input: 200000, output: 4096 }
+    return limits[modelName] || { input: 200000, output: 8192 }
   }
 
   getCostPerToken(modelName: string): { input: number; output: number } {
-    // Cost per token in USD (approximate as of Dec 2024)
+    // Cost per token in USD (approximate as of Jan 2026)
     const costs: Record<string, { input: number; output: number }> = {
+      // Claude 4 models
+      'claude-sonnet-4': { input: 0.000003, output: 0.000015 },
+      'claude-opus-4': { input: 0.000015, output: 0.000075 },
+      // Claude 3.7 models
+      'claude-3-7-sonnet': { input: 0.000003, output: 0.000015 },
+      // Claude 3.5 models
       'claude-3-5-sonnet': { input: 0.000003, output: 0.000015 },
       'claude-3-5-haiku': { input: 0.0000008, output: 0.000004 },
+      // Legacy Claude 3 models
       'claude-3-opus': { input: 0.000015, output: 0.000075 },
       'claude-3-sonnet': { input: 0.000003, output: 0.000015 },
       'claude-3-haiku': { input: 0.00000025, output: 0.00000125 }

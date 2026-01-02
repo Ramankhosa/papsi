@@ -367,7 +367,42 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           return NextResponse.json({ error: result.error?.message || 'Generation failed' }, { status: 500 });
         }
 
-        const rawContent = (result.response.output || '').trim();
+        const rawOutput = (result.response.output || '').trim();
+        
+        // Parse JSON output if the LLM returned JSON format (new blueprint-based prompts)
+        // Extract only the 'content' field, discard 'memory' which is for internal coherence tracking
+        let rawContent = rawOutput;
+        try {
+          // Check if output looks like JSON
+          if (rawOutput.startsWith('{') || rawOutput.includes('"content"')) {
+            let jsonText = rawOutput;
+            
+            // Remove code fences if present
+            const fenceMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
+            if (fenceMatch) {
+              jsonText = fenceMatch[1].trim();
+            }
+            
+            // Find JSON object boundaries
+            const start = jsonText.indexOf('{');
+            const end = jsonText.lastIndexOf('}');
+            
+            if (start !== -1 && end !== -1 && end > start) {
+              jsonText = jsonText.slice(start, end + 1);
+              const parsed = JSON.parse(jsonText);
+              
+              // Extract only the content field
+              if (parsed.content && typeof parsed.content === 'string') {
+                rawContent = parsed.content;
+                console.log(`[PaperDrafting] Extracted content from JSON (${rawContent.length} chars), discarded memory`);
+              }
+            }
+          }
+        } catch (parseErr) {
+          // If JSON parsing fails, use raw output as-is
+          console.warn('[PaperDrafting] Could not parse JSON output, using raw:', parseErr);
+        }
+        
         const styleCode = getStyleCode(session);
         const postProcessed = await DraftingService.postProcessSection(rawContent, sessionId, styleCode);
 

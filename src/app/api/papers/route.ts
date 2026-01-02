@@ -18,9 +18,10 @@ export async function GET(request: NextRequest) {
   const search = url.searchParams.get('search');
 
   // Build where clause
+  // Papers are identified by having a researchTopic (created for all papers but not patents)
   const where: any = {
     userId: user.id,
-    paperTypeId: { not: null } // Only paper sessions (not patent sessions)
+    researchTopic: { isNot: null } // Only paper sessions (have research topic, patents don't)
   };
 
   if (status) where.status = status;
@@ -113,27 +114,34 @@ export async function POST(request: NextRequest) {
   const body = await request.json();
   const { title, paperTypeCode, citationStyleCode, venueCode, researchTopic } = body;
 
-  // Validate required fields
-  if (!title || !paperTypeCode || !citationStyleCode) {
+  // Validate required fields - only title is required at creation
+  // Paper type and citation style can be configured later in Paper Foundation stage
+  if (!title) {
     return NextResponse.json({
-      error: 'Missing required fields: title, paperTypeCode, citationStyleCode'
+      error: 'Missing required field: title'
     }, { status: 400 });
   }
 
-  // Lookup paper type
-  const paperType = await prisma.paperTypeDefinition.findUnique({
-    where: { code: paperTypeCode.toUpperCase() }
-  });
-  if (!paperType) {
-    return NextResponse.json({ error: 'Paper type not found' }, { status: 404 });
+  // Optionally lookup paper type (can be set later)
+  let paperType = null;
+  if (paperTypeCode) {
+    paperType = await prisma.paperTypeDefinition.findUnique({
+      where: { code: paperTypeCode.toUpperCase() }
+    });
+    if (!paperType) {
+      return NextResponse.json({ error: 'Paper type not found' }, { status: 404 });
+    }
   }
 
-  // Lookup citation style
-  const citationStyle = await prisma.citationStyleDefinition.findUnique({
-    where: { code: citationStyleCode.toUpperCase() }
-  });
-  if (!citationStyle) {
-    return NextResponse.json({ error: 'Citation style not found' }, { status: 404 });
+  // Optionally lookup citation style (can be set later)
+  let citationStyle = null;
+  if (citationStyleCode) {
+    citationStyle = await prisma.citationStyleDefinition.findUnique({
+      where: { code: citationStyleCode.toUpperCase() }
+    });
+    if (!citationStyle) {
+      return NextResponse.json({ error: 'Citation style not found' }, { status: 404 });
+    }
   }
 
   // Optionally lookup venue
@@ -158,6 +166,9 @@ export async function POST(request: NextRequest) {
     }
   });
 
+  // Determine citation style ID: prefer explicit selection, then venue default, else null
+  const citationStyleId = citationStyle?.id || venue?.citationStyleId || null;
+
   // Create paper session with optional research topic
   // Note: status uses IDEA_ENTRY (first stage in DraftingSessionStatus enum)
   const paper = await prisma.draftingSession.create({
@@ -165,9 +176,9 @@ export async function POST(request: NextRequest) {
       patentId: placeholderPatent.id, // Required by schema - uses placeholder
       userId: user.id,
       tenantId: user.tenantId,
-      paperTypeId: paperType.id,
-      citationStyleId: venue?.citationStyleId || citationStyle.id,
-      publicationVenueId: venue?.id,
+      paperTypeId: paperType?.id || null, // Optional - can be set in Paper Foundation stage
+      citationStyleId, // Optional - can be set in Paper Foundation stage
+      publicationVenueId: venue?.id || null,
       status: 'IDEA_ENTRY', // Initial stage for papers
       literatureReviewStatus: 'NOT_STARTED',
       researchTopic: {
@@ -196,7 +207,7 @@ export async function POST(request: NextRequest) {
       action: 'PAPER_CREATED',
       userId: user.id,
       stage: 'IDEA_ENTRY',
-      newData: { paperTypeCode, citationStyleCode, title }
+      newData: { paperTypeCode: paperTypeCode || null, citationStyleCode: citationStyleCode || null, title }
     }
   });
 

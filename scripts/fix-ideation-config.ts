@@ -7,7 +7,8 @@ async function fixIdeationConfig() {
 
   // 1. Find and fix invalid models in LLMModel table
   console.log('1. Checking LLMModel table for invalid models...')
-  const invalidModelCodes = ['gpt-5.1-thinking', 'gpt-5.1', 'gpt-5', 'claude-3.5-sonnet']
+  // Note: claude-3.5-sonnet is deprecated, use claude-sonnet-4 or claude-3-7-sonnet instead
+  const invalidModelCodes = ['gpt-5.1-thinking', 'gpt-5.1', 'gpt-5', 'claude-3.5-sonnet', 'claude-3-5-sonnet-20241022']
   
   for (const code of invalidModelCodes) {
     const model = await prisma.lLMModel.findFirst({
@@ -56,12 +57,12 @@ async function fixIdeationConfig() {
   // 4. Check and fix model assignments
   console.log('\n4. Checking model assignments...')
   
-  // Get valid models
+  // Get valid models (updated Jan 2026)
   const validModels = await prisma.lLMModel.findMany({
     where: {
       isActive: true,
       code: {
-        in: ['gpt-4o', 'gpt-4-turbo', 'gemini-2.0-flash', 'gemini-1.5-pro', 'claude-3-5-sonnet']
+        in: ['gpt-4o', 'gpt-4-turbo', 'gemini-2.0-flash', 'gemini-2.5-pro', 'claude-sonnet-4', 'claude-3-7-sonnet']
       }
     }
   })

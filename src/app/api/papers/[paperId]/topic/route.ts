@@ -5,11 +5,24 @@ import { authenticateUser } from '@/lib/auth-middleware';
 
 export const runtime = 'nodejs';
 
+// ============================================================================
+// Validation Schema - All Research Topic Fields
+// ============================================================================
+
 const topicSchema = z.object({
-  title: z.string().min(1).max(200),
-  researchQuestion: z.string().min(10).max(2000),
-  hypothesis: z.string().max(2000).optional().nullable(),
-  keywords: z.array(z.string().min(1)).default([]),
+  // Basic Info
+  title: z.string().min(1).max(500),
+  field: z.string().max(200).optional().nullable(),
+  subfield: z.string().max(200).optional().nullable(),
+  topicDescription: z.string().max(5000).optional().nullable(),
+
+  // Research Question
+  researchQuestion: z.string().min(10).max(5000),
+  subQuestions: z.array(z.string()).default([]),
+  problemStatement: z.string().max(5000).optional().nullable(),
+  researchGaps: z.string().max(5000).optional().nullable(),
+
+  // Methodology
   methodology: z.enum([
     'QUALITATIVE',
     'QUANTITATIVE',
@@ -20,7 +33,21 @@ const topicSchema = z.object({
     'EXPERIMENTAL',
     'SURVEY',
     'OTHER'
-  ]),
+  ]).default('QUALITATIVE'),
+  methodologyApproach: z.string().max(5000).optional().nullable(),
+  techniques: z.array(z.string()).default([]),
+  methodologyJustification: z.string().max(5000).optional().nullable(),
+
+  // Data & Experimentation
+  datasetDescription: z.string().max(5000).optional().nullable(),
+  dataCollection: z.string().max(5000).optional().nullable(),
+  sampleSize: z.string().max(200).optional().nullable(),
+  tools: z.array(z.string()).default([]),
+  experiments: z.string().max(5000).optional().nullable(),
+
+  // Expected Outcomes
+  hypothesis: z.string().max(5000).optional().nullable(),
+  expectedResults: z.string().max(5000).optional().nullable(),
   contributionType: z.enum([
     'THEORETICAL',
     'EMPIRICAL',
@@ -28,9 +55,13 @@ const topicSchema = z.object({
     'APPLIED',
     'REVIEW',
     'CONCEPTUAL'
-  ]),
-  datasetDescription: z.string().max(2000).optional().nullable(),
-  abstractDraft: z.string().max(5000).optional().nullable()
+  ]).default('EMPIRICAL'),
+  novelty: z.string().max(5000).optional().nullable(),
+  limitations: z.string().max(5000).optional().nullable(),
+
+  // Keywords & Abstract
+  keywords: z.array(z.string()).default([]),
+  abstractDraft: z.string().max(10000).optional().nullable()
 });
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
@@ -57,6 +88,19 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
       return NextResponse.json({ error: 'Paper session not found' }, { status: 404 });
     }
 
+    // Debug: Log what we're returning
+    const topic = session.researchTopic;
+    if (topic) {
+      console.log('[ResearchTopic] GET returning:', {
+        id: topic.id,
+        field: topic.field,
+        subfield: topic.subfield,
+        topicDescription: topic.topicDescription?.substring(0, 30),
+        problemStatement: topic.problemStatement?.substring(0, 30),
+        researchGaps: topic.researchGaps?.substring(0, 30),
+      });
+    }
+
     return NextResponse.json({ topic: session.researchTopic });
   } catch (error) {
     console.error('[ResearchTopic] GET error:', error);
@@ -78,31 +122,84 @@ export async function PUT(request: NextRequest, context: { params: { paperId: st
     }
 
     const body = await request.json();
+    
+    // Debug: Log what we received
+    console.log('[ResearchTopic] PUT received fields:', {
+      title: body.title?.substring(0, 30),
+      field: body.field,
+      subfield: body.subfield,
+      topicDescription: body.topicDescription?.substring(0, 30),
+      researchQuestion: body.researchQuestion?.substring(0, 30),
+      problemStatement: body.problemStatement?.substring(0, 30),
+      researchGaps: body.researchGaps?.substring(0, 30),
+      methodology: body.methodology,
+    });
+    
     const data = topicSchema.parse(body);
+
+    // Helper to convert empty strings to null
+    const emptyToNull = (val: string | null | undefined): string | null => {
+      if (val === null || val === undefined) return null;
+      const trimmed = val.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    };
+
+    // Build the data object for all fields
+    const topicData = {
+      // Basic Info
+      title: data.title.trim(),
+      field: emptyToNull(data.field),
+      subfield: emptyToNull(data.subfield),
+      topicDescription: emptyToNull(data.topicDescription),
+
+      // Research Question
+      researchQuestion: data.researchQuestion.trim(),
+      subQuestions: (data.subQuestions || []).filter(q => q.trim().length > 0),
+      problemStatement: emptyToNull(data.problemStatement),
+      researchGaps: emptyToNull(data.researchGaps),
+
+      // Methodology
+      methodology: data.methodology,
+      methodologyApproach: emptyToNull(data.methodologyApproach),
+      techniques: (data.techniques || []).filter(t => t.trim().length > 0),
+      methodologyJustification: emptyToNull(data.methodologyJustification),
+
+      // Data & Experimentation
+      datasetDescription: emptyToNull(data.datasetDescription),
+      dataCollection: emptyToNull(data.dataCollection),
+      sampleSize: emptyToNull(data.sampleSize),
+      tools: (data.tools || []).filter(t => t.trim().length > 0),
+      experiments: emptyToNull(data.experiments),
+
+      // Expected Outcomes
+      hypothesis: emptyToNull(data.hypothesis),
+      expectedResults: emptyToNull(data.expectedResults),
+      contributionType: data.contributionType,
+      novelty: emptyToNull(data.novelty),
+      limitations: emptyToNull(data.limitations),
+
+      // Keywords & Abstract
+      keywords: (data.keywords || []).filter(k => k.trim().length > 0),
+      abstractDraft: emptyToNull(data.abstractDraft)
+    };
 
     const topic = await prisma.researchTopic.upsert({
       where: { sessionId },
-      update: {
-        title: data.title,
-        researchQuestion: data.researchQuestion,
-        hypothesis: data.hypothesis ?? null,
-        keywords: data.keywords,
-        methodology: data.methodology,
-        contributionType: data.contributionType,
-        datasetDescription: data.datasetDescription ?? null,
-        abstractDraft: data.abstractDraft ?? null
-      },
+      update: topicData,
       create: {
         sessionId,
-        title: data.title,
-        researchQuestion: data.researchQuestion,
-        hypothesis: data.hypothesis ?? null,
-        keywords: data.keywords,
-        methodology: data.methodology,
-        contributionType: data.contributionType,
-        datasetDescription: data.datasetDescription ?? null,
-        abstractDraft: data.abstractDraft ?? null
+        ...topicData
       }
+    });
+
+    // Debug: Log what was saved
+    console.log('[ResearchTopic] Saved to DB:', {
+      id: topic.id,
+      field: topic.field,
+      subfield: topic.subfield,
+      topicDescription: topic.topicDescription?.substring(0, 30),
+      problemStatement: topic.problemStatement?.substring(0, 30),
+      researchGaps: topic.researchGaps?.substring(0, 30),
     });
 
     await prisma.draftingHistory.create({
@@ -113,11 +210,11 @@ export async function PUT(request: NextRequest, context: { params: { paperId: st
         stage: session.status,
         newData: {
           title: topic.title,
+          field: topic.field,
           researchQuestion: topic.researchQuestion,
-          hypothesis: topic.hypothesis,
-          keywords: topic.keywords,
           methodology: topic.methodology,
-          contributionType: topic.contributionType
+          contributionType: topic.contributionType,
+          keywordsCount: topic.keywords.length
         }
       }
     });

@@ -11,9 +11,14 @@ import {
   Check,
   RefreshCw,
   Plus,
+  Image as ImageIcon,
+  X,
+  Eye,
+  ExternalLink,
 } from 'lucide-react';
 import CitationPickerModal from '@/components/paper/CitationPickerModal';
 import CitationManager from '@/components/paper/CitationManager';
+import MarkdownRenderer from '@/components/paper/MarkdownRenderer';
 
 // Import shared components from patent drafting
 import BackendActivityPanel from '@/components/drafting/BackendActivityPanel';
@@ -22,6 +27,7 @@ import PersonaManager, { type PersonaSelection } from '@/components/drafting/Per
 // Paper-specific components
 import PaperInstructionsModal from './PaperInstructionsModal';
 import PaperSectionInstructionPopover from './PaperSectionInstructionPopover';
+import FloatingWritingPanel from '@/components/paper/FloatingWritingPanel';
 
 // ============================================================================
 // Types
@@ -675,9 +681,33 @@ export default function SectionDraftingStage({
   const [bibliographyContent, setBibliographyContent] = useState<string>('');
   const [generatingBibliography, setGeneratingBibliography] = useState(false);
 
+  // Floating Panel State
+  const [figures, setFigures] = useState<Array<{
+    id: string;
+    figureNo: number;
+    title: string;
+    caption?: string;
+    description?: string;
+    imagePath?: string;
+    status: 'PLANNED' | 'GENERATING' | 'GENERATED' | 'FAILED';
+    category?: string;
+    figureType?: string;
+  }>>([]);
+  const [selectedText, setSelectedText] = useState<{ text: string; start: number; end: number } | null>(null);
+  const [previewFigure, setPreviewFigure] = useState<{
+    id: string;
+    figureNo: number;
+    title: string;
+    imagePath?: string;
+    description?: string;
+  } | null>(null);
+
   // Regeneration
   const [regenOpen, setRegenOpen] = useState<Record<string, boolean>>({});
   const [regenRemarks, setRegenRemarks] = useState<Record<string, string>>({});
+
+  // View mode: 'edit' shows textarea, 'preview' shows formatted markdown
+  const [viewMode, setViewMode] = useState<Record<string, 'edit' | 'preview'>>({});
 
   // Messages
   const [message, setMessage] = useState<string | null>(null);
@@ -688,6 +718,23 @@ export default function SectionDraftingStage({
     setMessageType(type);
     setTimeout(() => setMessage(null), 4000);
   };
+
+  // Helper: Extract figure references from content
+  const getReferencedFigures = useCallback((sectionContent: string) => {
+    if (!sectionContent || figures.length === 0) return [];
+    
+    // Match patterns like [Figure 1], [Figure 2], etc.
+    const figurePattern = /\[Figure\s+(\d+)\]/gi;
+    const matches = sectionContent.matchAll(figurePattern);
+    const figureNos = new Set<number>();
+    
+    for (const match of matches) {
+      figureNos.add(parseInt(match[1], 10));
+    }
+    
+    // Return matching figures
+    return figures.filter(f => figureNos.has(f.figureNo) && f.status === 'GENERATED');
+  }, [figures]);
 
   // ============================================================================
   // Data Loading
@@ -770,7 +817,50 @@ export default function SectionDraftingStage({
     }
   }, [sessionId, authToken]);
 
-  useEffect(() => { loadSession(); loadCitations(); }, [loadSession, loadCitations]);
+  const loadFigures = useCallback(async () => {
+    if (!sessionId || !authToken) return;
+    try {
+      const res = await fetch(`/api/papers/${sessionId}/figures`, { headers: { Authorization: `Bearer ${authToken}` } });
+      if (res.ok) {
+        const data = await res.json();
+        const figs = (data.figures || []).map((f: any) => ({
+          id: f.id,
+          figureNo: f.figureNo,
+          title: f.title,
+          caption: f.nodes?.caption || f.description,
+          description: f.description,
+          imagePath: f.nodes?.imagePath || f.imagePath,
+          status: f.nodes?.status || 'PLANNED',
+          category: f.nodes?.category || 'CHART',
+          figureType: f.nodes?.figureType || 'auto'
+        }));
+        setFigures(figs);
+      }
+    } catch (err) {
+      console.error('Load figures error:', err);
+    }
+  }, [sessionId, authToken]);
+
+  useEffect(() => { loadSession(); loadCitations(); loadFigures(); }, [loadSession, loadCitations, loadFigures]);
+
+  // Set sections with content to preview mode by default
+  useEffect(() => {
+    const sectionsWithContent = Object.entries(content)
+      .filter(([, value]) => value && value.trim().length > 0)
+      .map(([key]) => key);
+    
+    if (sectionsWithContent.length > 0) {
+      setViewMode(prev => {
+        const updated = { ...prev };
+        sectionsWithContent.forEach(key => {
+          if (updated[key] === undefined) {
+            updated[key] = 'preview';
+          }
+        });
+        return updated;
+      });
+    }
+  }, [content]);
 
   const refreshSession = useCallback(async () => {
     if (!onSessionUpdated) return;
@@ -834,6 +924,168 @@ export default function SectionDraftingStage({
       saveSection(sectionKey, content[sectionKey] || '');
     }
   }, [pendingChanges, content, saveSection]);
+
+  // ============================================================================
+  // Floating Panel Handlers
+  // ============================================================================
+
+  const handleInsertFigure = useCallback((figureId: string) => {
+    const figure = figures.find(f => f.id === figureId);
+    if (!figure) return;
+
+    const figureRef = `[Figure ${figure.figureNo}]`;
+    
+    // Insert at cursor position if available
+    if (cursorPositionRef.current) {
+      const { section, position } = cursorPositionRef.current;
+      const currentContent = content[section] || '';
+      const newContent = currentContent.slice(0, position) + figureRef + currentContent.slice(position);
+      handleContentChange(section, newContent);
+      showMsg(`Inserted Figure ${figure.figureNo}`, 'success');
+    } else if (focusedSection) {
+      // Append to focused section
+      const currentContent = content[focusedSection] || '';
+      handleContentChange(focusedSection, currentContent + ' ' + figureRef);
+      showMsg(`Inserted Figure ${figure.figureNo}`, 'success');
+    } else {
+      showMsg('Please click in a section first to insert the figure', 'warning');
+    }
+  }, [figures, content, focusedSection, handleContentChange]);
+
+  const handleTextAction = useCallback(async (
+    action: 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple',
+    text: string,
+    customInstructions?: string
+  ): Promise<string> => {
+    if (!authToken || !text.trim()) {
+      throw new Error('Missing required parameters');
+    }
+
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/text-action`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          action,
+          selectedText: text,
+          context: focusedSection ? content[focusedSection]?.slice(0, 500) : '',
+          sectionKey: focusedSection,
+          customInstructions
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Text action failed');
+      }
+
+      // Replace the selected text in the focused section
+      if (focusedSection && cursorPositionRef.current?.section === focusedSection && selectedText) {
+        const currentContent = content[focusedSection] || '';
+        const beforeSelection = currentContent.slice(0, selectedText.start);
+        const afterSelection = currentContent.slice(selectedText.end);
+        const newContent = beforeSelection + data.transformedText + afterSelection;
+        handleContentChange(focusedSection, newContent);
+        setSelectedText(null);
+        showMsg(`Text ${action}d successfully`, 'success');
+      }
+
+      return data.transformedText;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Action failed';
+      showMsg(message, 'error');
+      throw err;
+    }
+  }, [authToken, sessionId, focusedSection, content, selectedText, handleContentChange]);
+
+  const handleGenerateFigure = useCallback(async (description: string) => {
+    if (!authToken || !description.trim()) {
+      throw new Error('Missing required parameters');
+    }
+
+    try {
+      // First create the figure plan
+      const createRes = await fetch(`/api/papers/${sessionId}/figures`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          title: description.slice(0, 100),
+          description,
+          category: 'AUTO',
+          figureType: 'auto'
+        })
+      });
+
+      const createData = await createRes.json();
+      if (!createRes.ok) {
+        throw new Error(createData.error || 'Failed to create figure');
+      }
+
+      // Then generate the figure
+      const generateRes = await fetch(
+        `/api/papers/${sessionId}/figures/${createData.figure.id}/generate`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            description,
+            useLLM: true,
+            theme: 'academic'
+          })
+        }
+      );
+
+      const generateData = await generateRes.json();
+      if (!generateRes.ok) {
+        throw new Error(generateData.error || 'Failed to generate figure');
+      }
+
+      // Refresh figures list
+      await loadFigures();
+      showMsg('Figure generated successfully', 'success');
+
+      return generateData;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Figure generation failed';
+      showMsg(message, 'error');
+      throw err;
+    }
+  }, [authToken, sessionId, loadFigures]);
+
+  const handleOpenCitationPicker = useCallback(() => {
+    setPickerOpen(true);
+  }, []);
+
+  // Track text selection in textareas
+  useEffect(() => {
+    const handleSelectionChange = () => {
+      if (focusedSection && textareaRefs.current[focusedSection]) {
+        const textarea = textareaRefs.current[focusedSection];
+        if (textarea && textarea.selectionStart !== textarea.selectionEnd) {
+          const text = textarea.value.slice(textarea.selectionStart, textarea.selectionEnd);
+          setSelectedText({
+            text,
+            start: textarea.selectionStart,
+            end: textarea.selectionEnd
+          });
+        } else {
+          setSelectedText(null);
+        }
+      }
+    };
+
+    document.addEventListener('selectionchange', handleSelectionChange);
+    return () => document.removeEventListener('selectionchange', handleSelectionChange);
+  }, [focusedSection]);
 
   // ============================================================================
   // Generation
@@ -910,6 +1162,7 @@ export default function SectionDraftingStage({
         setSectionLoading(prev => ({ ...prev, [sectionKey]: false }));
         if (result.success && result.content) {
           setContent(prev => ({ ...prev, [sectionKey]: result.content! }));
+          setViewMode(prev => ({ ...prev, [sectionKey]: 'preview' })); // Auto-switch to preview
           successCount++;
         } else {
           showMsg(`Failed at ${displayName[sectionKey] || sectionKey}`, 'error');
@@ -941,6 +1194,7 @@ export default function SectionDraftingStage({
       const data = await res.json();
       if (res.ok && data.content) {
         setContent(prev => ({ ...prev, [sectionKey]: data.content }));
+        setViewMode(prev => ({ ...prev, [sectionKey]: 'preview' })); // Auto-switch to preview
         setRegenOpen(prev => ({ ...prev, [sectionKey]: false }));
         setRegenRemarks(prev => ({ ...prev, [sectionKey]: '' }));
         showMsg('Section regenerated', 'success');
@@ -1107,6 +1361,7 @@ export default function SectionDraftingStage({
   // Handle AI fix
   const handleFix = useCallback((sectionKey: string, fixedContent: string) => {
     setContent(prev => ({ ...prev, [sectionKey]: fixedContent }));
+    setViewMode(prev => ({ ...prev, [sectionKey]: 'preview' })); // Auto-switch to preview
     saveSection(sectionKey, fixedContent);
   }, [saveSection]);
 
@@ -1429,6 +1684,34 @@ export default function SectionDraftingStage({
                           
                           {/* Section Toolbar */}
                           <div className="flex items-center justify-end gap-1 mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            {/* Edit/Preview Toggle */}
+                            {content[keyName] && (
+                              <div className="flex items-center gap-0.5 mr-2 bg-gray-100 rounded-lg p-0.5">
+                                <button 
+                                  onClick={() => setViewMode(prev => ({ ...prev, [keyName]: 'edit' }))}
+                                  className={`px-2 py-1 text-xs rounded-md transition-all ${
+                                    (viewMode[keyName] || 'edit') === 'edit' 
+                                      ? 'bg-white text-gray-900 shadow-sm' 
+                                      : 'text-gray-500 hover:text-gray-700'
+                                  }`}
+                                  title="Edit mode"
+                                >
+                                  Edit
+                                </button>
+                                <button 
+                                  onClick={() => setViewMode(prev => ({ ...prev, [keyName]: 'preview' }))}
+                                  className={`px-2 py-1 text-xs rounded-md transition-all ${
+                                    viewMode[keyName] === 'preview' 
+                                      ? 'bg-white text-gray-900 shadow-sm' 
+                                      : 'text-gray-500 hover:text-gray-700'
+                                  }`}
+                                  title="Preview formatted content"
+                                >
+                                  <Eye className="w-3 h-3 inline mr-1" />
+                                  Preview
+                                </button>
+                              </div>
+                            )}
                             <button onClick={() => { 
                                 // Capture current cursor position from the textarea
                                 const textarea = textareaRefs.current[keyName];
@@ -1455,31 +1738,151 @@ export default function SectionDraftingStage({
                             )}
                           </div>
 
-                          {/* Editable Textarea - Always in edit mode, auto-resizes to fit content */}
-                          <AutoResizeTextarea
-                            ref={(el) => { textareaRefs.current[keyName] = el; }}
-                            value={content[keyName] || ''}
-                            onChange={(e) => handleContentChange(keyName, e.target.value)}
-                            onBlur={() => handleBlur(keyName)}
-                            onFocus={() => setFocusedSection(keyName)}
-                            onSelect={(e) => {
-                              const target = e.target as HTMLTextAreaElement;
-                              cursorPositionRef.current = { section: keyName, position: target.selectionStart };
-                            }}
-                            onKeyUp={(e) => {
-                              const target = e.target as HTMLTextAreaElement;
-                              cursorPositionRef.current = { section: keyName, position: target.selectionStart };
-                            }}
-                            onClick={(e) => {
-                              const target = e.target as HTMLTextAreaElement;
-                              cursorPositionRef.current = { section: keyName, position: target.selectionStart };
-                            }}
-                            placeholder={isWorking ? 'Generating...' : 'Start typing or click Generate to create content...'}
-                            className="w-full border-0 bg-transparent p-0 text-gray-800 focus:ring-0 focus:outline-none placeholder-gray-300 text-justify"
-                            style={{ fontFamily, fontSize, lineHeight }}
-                            disabled={isWorking}
-                            minHeight={content[keyName] ? 50 : 100}
-                          />
+                          {/* Selection Indicator - Shows when text is selected in this section */}
+                          <AnimatePresence>
+                            {selectedText && focusedSection === keyName && selectedText.text.length > 0 && (
+                              <motion.div
+                                initial={{ opacity: 0, y: -10, scale: 0.95 }}
+                                animate={{ opacity: 1, y: 0, scale: 1 }}
+                                exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                                className="mb-2 p-2 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-sm"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <div className="flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                                    <span className="text-xs font-medium text-blue-700">
+                                      {selectedText.text.length} characters selected
+                                    </span>
+                                    <span className="text-[10px] text-blue-500">
+                                      ({selectedText.text.split(/\s+/).filter(Boolean).length} words)
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <span className="text-[10px] text-blue-500 bg-blue-100 px-2 py-0.5 rounded-full">
+                                      Ready for AI actions →
+                                    </span>
+                                  </div>
+                                </div>
+                                <p className="mt-1.5 text-[11px] text-blue-600/80 line-clamp-1 italic">
+                                  &ldquo;{selectedText.text.slice(0, 80)}{selectedText.text.length > 80 ? '...' : ''}&rdquo;
+                                </p>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+
+                          {/* Content Area - Edit mode (textarea) or Preview mode (formatted) */}
+                          {viewMode[keyName] === 'preview' && content[keyName] ? (
+                            // Preview Mode - Formatted Markdown (Elsevier/Academic Style)
+                            <div 
+                              className="relative p-6 bg-white rounded-lg border border-gray-200 min-h-[100px] cursor-pointer hover:border-gray-300 transition-colors shadow-sm"
+                              onClick={() => setViewMode(prev => ({ ...prev, [keyName]: 'edit' }))}
+                              title="Click to edit"
+                            >
+                              <MarkdownRenderer 
+                                content={content[keyName]} 
+                                className="text-gray-800"
+                              />
+                              <div className="absolute top-2 right-2 text-[10px] text-gray-400 flex items-center gap-1 bg-gray-50 px-2 py-1 rounded">
+                                <Eye className="w-3 h-3" />
+                                Preview
+                              </div>
+                            </div>
+                          ) : (
+                            // Edit Mode - Textarea
+                            <div className={`relative transition-all duration-200 rounded-lg ${
+                              selectedText && focusedSection === keyName && selectedText.text.length > 0
+                                ? 'ring-2 ring-blue-300 ring-offset-2 bg-blue-50/30'
+                                : ''
+                            }`}>
+                            <AutoResizeTextarea
+                              ref={(el) => { textareaRefs.current[keyName] = el; }}
+                              value={content[keyName] || ''}
+                              onChange={(e) => handleContentChange(keyName, e.target.value)}
+                              onBlur={() => {
+                                handleBlur(keyName);
+                                // Switch back to preview mode after editing if there's content
+                                if (content[keyName]) {
+                                  setTimeout(() => setViewMode(prev => ({ ...prev, [keyName]: 'preview' })), 100);
+                                }
+                              }}
+                              onFocus={() => setFocusedSection(keyName)}
+                                onSelect={(e) => {
+                                  const target = e.target as HTMLTextAreaElement;
+                                  cursorPositionRef.current = { section: keyName, position: target.selectionStart };
+                                }}
+                                onKeyUp={(e) => {
+                                  const target = e.target as HTMLTextAreaElement;
+                                  cursorPositionRef.current = { section: keyName, position: target.selectionStart };
+                                }}
+                                onClick={(e) => {
+                                  const target = e.target as HTMLTextAreaElement;
+                                  cursorPositionRef.current = { section: keyName, position: target.selectionStart };
+                                }}
+                                placeholder={isWorking ? 'Generating...' : 'Start typing or click Generate to create content...\n\nTip: Use ### for subsections and - for bullet points'}
+                                className={`w-full border-0 bg-transparent p-0 text-gray-800 focus:ring-0 focus:outline-none placeholder-gray-300 text-justify ${
+                                  selectedText && focusedSection === keyName && selectedText.text.length > 0 ? 'selection:bg-blue-200 selection:text-blue-900' : ''
+                                }`}
+                                style={{ fontFamily, fontSize, lineHeight }}
+                                disabled={isWorking}
+                                minHeight={content[keyName] ? 50 : 100}
+                              />
+                            </div>
+                          )}
+
+                          {/* Referenced Figures Bar - Shows clickable thumbnails */}
+                          {(() => {
+                            const referencedFigs = getReferencedFigures(content[keyName] || '');
+                            if (referencedFigs.length === 0) return null;
+                            
+                            return (
+                              <div className="mt-3 p-2 bg-gradient-to-r from-violet-50 to-indigo-50 rounded-lg border border-violet-100">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <ImageIcon className="w-3.5 h-3.5 text-violet-600" />
+                                  <span className="text-xs font-medium text-violet-700">
+                                    Referenced Figures ({referencedFigs.length})
+                                  </span>
+                                  <span className="text-[10px] text-violet-500">• Click to preview</span>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                  {referencedFigs.map(fig => (
+                                    <button
+                                      key={fig.id}
+                                      onClick={() => setPreviewFigure({
+                                        id: fig.id,
+                                        figureNo: fig.figureNo,
+                                        title: fig.title,
+                                        imagePath: fig.imagePath,
+                                        description: fig.description
+                                      })}
+                                      className="group relative flex items-center gap-2 px-2 py-1.5 bg-white rounded-lg border border-violet-200 hover:border-violet-400 hover:shadow-md transition-all"
+                                    >
+                                      {/* Thumbnail */}
+                                      <div className="w-10 h-10 rounded overflow-hidden bg-slate-100 flex-shrink-0">
+                                        {fig.imagePath ? (
+                                          <img 
+                                            src={fig.imagePath} 
+                                            alt={fig.title}
+                                            className="w-full h-full object-cover"
+                                          />
+                                        ) : (
+                                          <div className="w-full h-full flex items-center justify-center">
+                                            <ImageIcon className="w-4 h-4 text-slate-300" />
+                                          </div>
+                                        )}
+                                      </div>
+                                      {/* Label */}
+                                      <div className="text-left">
+                                        <p className="text-xs font-medium text-slate-700">Figure {fig.figureNo}</p>
+                                        <p className="text-[10px] text-slate-500 max-w-[120px] truncate">{fig.title}</p>
+                                      </div>
+                                      {/* Hover Icon */}
+                                      <Eye className="w-3.5 h-3.5 text-violet-500 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })()}
 
                           {/* Regeneration Dialog */}
                           {regenOpen[keyName] && (
@@ -1537,6 +1940,111 @@ export default function SectionDraftingStage({
       <PaperInstructionsModal isOpen={showAllInstructionsModal} onClose={() => setShowAllInstructionsModal(false)}
         sections={(sectionConfigs || fallbackSections).flatMap(s => s.keys.map(k => ({ key: k, label: displayName[k] || formatSectionLabel(k) })))}
         instructions={userInstructions} onSaveAll={(newInstr) => setUserInstructions(newInstr)} />
+
+      {/* Figure Preview Modal */}
+      <AnimatePresence>
+        {previewFigure && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setPreviewFigure(null)}
+          >
+            <motion.div
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="p-4 border-b border-slate-100 flex items-start justify-between bg-gradient-to-r from-violet-50 to-white">
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="px-2 py-0.5 bg-violet-100 text-violet-700 text-xs font-semibold rounded">
+                      Figure {previewFigure.figureNo}
+                    </span>
+                  </div>
+                  <h3 className="font-semibold text-slate-800 text-lg">{previewFigure.title}</h3>
+                  {previewFigure.description && (
+                    <p className="text-sm text-slate-500 mt-1 max-w-lg">{previewFigure.description}</p>
+                  )}
+                </div>
+                <button
+                  onClick={() => setPreviewFigure(null)}
+                  className="w-8 h-8 rounded-lg hover:bg-slate-100 flex items-center justify-center transition-colors"
+                >
+                  <X className="w-5 h-5 text-slate-500" />
+                </button>
+              </div>
+              
+              {/* Image */}
+              <div className="p-6 bg-slate-50 flex items-center justify-center min-h-[300px] max-h-[60vh] overflow-auto">
+                {previewFigure.imagePath ? (
+                  <img
+                    src={previewFigure.imagePath}
+                    alt={previewFigure.title}
+                    className="max-w-full h-auto rounded-lg shadow-lg"
+                  />
+                ) : (
+                  <div className="text-center py-12">
+                    <ImageIcon className="w-16 h-16 text-slate-300 mx-auto mb-3" />
+                    <p className="text-slate-500">Image not available</p>
+                  </div>
+                )}
+              </div>
+              
+              {/* Footer */}
+              <div className="p-4 border-t border-slate-100 flex items-center justify-between bg-white">
+                <p className="text-xs text-slate-500">
+                  Reference in text: <code className="px-1.5 py-0.5 bg-slate-100 rounded text-violet-600">[Figure {previewFigure.figureNo}]</code>
+                </p>
+                <div className="flex gap-2">
+                  {previewFigure.imagePath && (
+                    <a
+                      href={previewFigure.imagePath}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-3 py-1.5 text-sm text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors flex items-center gap-1"
+                    >
+                      <ExternalLink className="w-4 h-4" />
+                      Open Full Size
+                    </a>
+                  )}
+                  <button
+                    onClick={() => setPreviewFigure(null)}
+                    className="px-4 py-1.5 text-sm font-medium text-white bg-violet-600 hover:bg-violet-700 rounded-lg transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Floating Writing Assistant Panel */}
+      <FloatingWritingPanel
+        sessionId={sessionId}
+        authToken={authToken}
+        currentSection={focusedSection || undefined}
+        currentContent={focusedSection ? content[focusedSection] : undefined}
+        figures={figures}
+        onInsertFigure={handleInsertFigure}
+        onInsertCitation={(citation) => {
+          // Directly insert citation without opening modal
+          if (citation.citationKey) {
+            handleInsertSingleCitation(citation.citationKey);
+          }
+        }}
+        onTextAction={handleTextAction}
+        onGenerateFigure={handleGenerateFigure}
+        selectedText={selectedText}
+        onRefreshFigures={loadFigures}
+        isVisible={true}
+      />
     </div>
   );
 }

@@ -30,8 +30,14 @@ import {
   PenLine,
   Compass,
   Users,
-  BarChart3
+  BarChart3,
+  Upload,
+  FileUp,
+  File,
+  AlertCircle,
+  ScrollText
 } from 'lucide-react';
+import BlueprintApprovalPanel from './BlueprintApprovalPanel';
 
 // ============================================================================
 // Auto-Resize Textarea Component
@@ -194,9 +200,127 @@ const GUIDED_STEPS: { key: GuidedStep; label: string; description: string; icon:
 // Helper Components
 // ============================================================================
 
-function ModeSelector({ onSelect }: { onSelect: (mode: 'expert' | 'guided') => void }) {
+interface ModeSelectorProps {
+  onSelect: (mode: 'expert' | 'guided') => void;
+  onFileExtracted: (extracted: any) => void;
+  sessionId: string;
+  authToken: string | null;
+}
+
+function ModeSelector({ onSelect, onFileExtracted, sessionId, authToken }: ModeSelectorProps) {
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileUpload = useCallback(async (file: File) => {
+    if (!authToken) {
+      setUploadError('Not authenticated. Please refresh the page.');
+      return;
+    }
+
+    // Validate file type
+    const allowedTypes = [
+      'text/plain',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'text/markdown'
+    ];
+    const allowedExtensions = ['.txt', '.docx', '.md'];
+    const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
+
+    if (!allowedTypes.includes(file.type) && !allowedExtensions.includes(fileExt)) {
+      setUploadError('Please upload a .txt, .docx, or .md file.');
+      return;
+    }
+
+    // Validate file size (10MB max)
+    if (file.size > 10 * 1024 * 1024) {
+      setUploadError('File size must be less than 10MB.');
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadError(null);
+    setUploadProgress('Reading file...');
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      setUploadProgress('Extracting research information with AI...');
+
+      const response = await fetch(`/api/papers/${sessionId}/topic/extract`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${authToken}`
+        },
+        body: formData
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to extract information from file');
+      }
+
+      setUploadProgress('Populating form fields...');
+
+      // Short delay to show the success state
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      // Pass extracted data to parent
+      onFileExtracted(data.extracted);
+
+    } catch (err) {
+      console.error('File upload error:', err);
+      setUploadError(err instanceof Error ? err.message : 'Failed to process file');
+    } finally {
+      setIsUploading(false);
+      setUploadProgress(null);
+    }
+  }, [authToken, sessionId, onFileExtracted]);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isUploading) {
+      setIsDragOver(true);
+    }
+  }, [isUploading]);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+
+    if (isUploading) return;
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      handleFileUpload(files[0]);
+    }
+  }, [isUploading, handleFileUpload]);
+
+  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      handleFileUpload(file);
+    }
+    // Reset input so same file can be selected again
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  }, [handleFileUpload]);
+
   return (
-    <div className="max-w-3xl mx-auto">
+    <div className="max-w-4xl mx-auto">
       <div className="text-center mb-10">
         <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 shadow-lg shadow-amber-500/30 mb-6">
           <Lightbulb className="w-8 h-8 text-white" />
@@ -205,8 +329,126 @@ function ModeSelector({ onSelect }: { onSelect: (mode: 'expert' | 'guided') => v
           Define Your Research Topic
         </h1>
         <p className="text-lg text-slate-600 max-w-xl mx-auto">
-          Tell us about your research. Choose the path that best matches your current stage.
+          Tell us about your research. Upload an existing document or choose your preferred entry method.
         </p>
+      </div>
+
+      {/* File Upload Zone */}
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="mb-8"
+      >
+        <div
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          onClick={() => !isUploading && fileInputRef.current?.click()}
+          className={`
+            relative cursor-pointer rounded-2xl border-2 border-dashed p-8 transition-all
+            ${isDragOver 
+              ? 'border-violet-400 bg-violet-50 scale-[1.02]' 
+              : 'border-slate-300 bg-gradient-to-br from-slate-50 to-white hover:border-violet-300 hover:bg-violet-50/50'
+            }
+            ${isUploading ? 'pointer-events-none' : ''}
+          `}
+        >
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".txt,.docx,.md"
+            onChange={handleFileInputChange}
+            className="hidden"
+            disabled={isUploading}
+          />
+
+          <div className="flex flex-col items-center text-center">
+            {isUploading ? (
+              <>
+                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500 to-purple-600 flex items-center justify-center mb-4 animate-pulse">
+                  <Sparkles className="w-8 h-8 text-white animate-spin" />
+                </div>
+                <h3 className="text-lg font-semibold text-violet-700 mb-2">
+                  {uploadProgress || 'Processing...'}
+                </h3>
+                <p className="text-sm text-violet-600">
+                  AI is analyzing your document to extract research information
+                </p>
+                <div className="mt-4 w-48 h-2 bg-violet-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-violet-500 to-purple-500 animate-pulse rounded-full w-3/4" />
+                </div>
+              </>
+            ) : (
+              <>
+                <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-4 transition-all ${
+                  isDragOver 
+                    ? 'bg-gradient-to-br from-violet-500 to-purple-600 scale-110' 
+                    : 'bg-gradient-to-br from-violet-400 to-purple-500'
+                }`}>
+                  <FileUp className="w-8 h-8 text-white" />
+                </div>
+                <h3 className="text-lg font-semibold text-slate-800 mb-2">
+                  Upload an Existing Document
+                </h3>
+                <p className="text-sm text-slate-600 mb-3 max-w-md">
+                  Have a research proposal, draft, or notes? Upload it and we'll automatically extract 
+                  the research topic, methodology, keywords, and more.
+                </p>
+                <div className="flex items-center gap-4 text-xs text-slate-500">
+                  <span className="flex items-center gap-1">
+                    <File className="w-3.5 h-3.5" />
+                    .txt
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <File className="w-3.5 h-3.5" />
+                    .docx
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <File className="w-3.5 h-3.5" />
+                    .md
+                  </span>
+                  <span className="text-slate-400">|</span>
+                  <span>Max 10MB</span>
+                </div>
+                <button
+                  type="button"
+                  className="mt-4 px-6 py-2.5 bg-gradient-to-r from-violet-500 to-purple-600 text-white rounded-xl font-medium text-sm hover:from-violet-600 hover:to-purple-700 transition-all shadow-lg shadow-violet-500/30"
+                >
+                  <span className="flex items-center gap-2">
+                    <Upload className="w-4 h-4" />
+                    Choose File or Drag & Drop
+                  </span>
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        {uploadError && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mt-3 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3"
+          >
+            <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-medium text-red-700">{uploadError}</p>
+              <button
+                onClick={() => setUploadError(null)}
+                className="text-xs text-red-600 hover:text-red-800 mt-1"
+              >
+                Dismiss
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </motion.div>
+
+      {/* Divider */}
+      <div className="flex items-center gap-4 mb-8">
+        <div className="flex-1 h-px bg-slate-200" />
+        <span className="text-sm font-medium text-slate-400">or choose how to enter manually</span>
+        <div className="flex-1 h-px bg-slate-200" />
       </div>
 
       <div className="grid md:grid-cols-2 gap-6">
@@ -415,6 +657,9 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
   const [success, setSuccess] = useState<string | null>(null);
   const [aiSuggestions, setAiSuggestions] = useState<any>(null);
   const [paperTypeCode, setPaperTypeCode] = useState<string | null>(null);
+  const [extractionConfidence, setExtractionConfidence] = useState<number | null>(null);
+  const [extractionNotes, setExtractionNotes] = useState<string | null>(null);
+  const [topicSaved, setTopicSaved] = useState<boolean>(false);
 
   // ============================================================================
   // Data Loading
@@ -480,6 +725,10 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
             // If data exists, skip mode selection
             if (topic.researchQuestion || topic.title) {
               setMode('expert');
+              // Mark as saved if we have minimum valid data
+              if (topic.researchQuestion && topic.researchQuestion.length >= 20) {
+                setTopicSaved(true);
+              }
             }
           }
         }
@@ -570,6 +819,7 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
 
       const data = await response.json();
       setSuccess('Research topic saved successfully!');
+      setTopicSaved(true);
       onTopicSaved?.(data.topic);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save topic');
@@ -624,62 +874,129 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'AI request failed');
 
-      setAiSuggestions(data.result);
+      const result = data.result;
+      setAiSuggestions(result);
+
+      // Ensure we have a valid result object
+      if (!result || typeof result !== 'object') {
+        console.warn('[AI Assist] Invalid result format:', result);
+        return;
+      }
+
+      console.log('[AI Assist] Action:', action, 'Result:', JSON.stringify(result, null, 2));
+
+      // Helper to safely get array from result
+      const safeGetArray = (value: unknown): string[] => {
+        if (Array.isArray(value)) {
+          return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+        }
+        return [];
+      };
+
+      // Helper to safely get string from result
+      const safeGetString = (value: unknown): string | null => {
+        if (typeof value === 'string' && value.trim().length > 0) {
+          return value.trim();
+        }
+        return null;
+      };
 
       // Auto-apply suggestions based on action
-      if (action === 'suggest_keywords' && Array.isArray(data.result?.keywords)) {
-        data.result.keywords.forEach((kw: string) => addKeyword(kw));
+      if (action === 'suggest_keywords') {
+        const keywords = safeGetArray(result.keywords);
+        if (keywords.length > 0) {
+          // Batch add all keywords at once to avoid multiple re-renders
+          setSegments(prev => ({
+            ...prev,
+            keywords: Array.from(new Set([...prev.keywords, ...keywords]))
+          }));
+          setSuccess(`Added ${keywords.length} keywords: ${keywords.slice(0, 3).join(', ')}${keywords.length > 3 ? '...' : ''}`);
+          console.log(`[AI Assist] Added ${keywords.length} keywords:`, keywords);
+        } else {
+          console.warn('[AI Assist] No valid keywords in response');
+          setError('AI did not return valid keywords. Try again or add manually.');
+        }
       }
-      if (action === 'refine_question' && data.result?.researchQuestion) {
-        updateSegment('question', { mainQuestion: data.result.researchQuestion });
+      
+      if (action === 'refine_question') {
+        const question = safeGetString(result.researchQuestion);
+        if (question) {
+          updateSegment('question', { mainQuestion: question });
+        }
       }
-      if (action === 'generate_hypothesis' && data.result?.hypothesis) {
-        updateSegment('outcomes', { hypothesis: data.result.hypothesis });
+      
+      if (action === 'generate_hypothesis') {
+        const hypothesis = safeGetString(result.hypothesis);
+        if (hypothesis) {
+          updateSegment('outcomes', { hypothesis });
+          setSuccess('Hypothesis generated successfully!');
+          console.log('[AI Assist] Generated hypothesis:', hypothesis.substring(0, 100) + '...');
+        } else {
+          console.warn('[AI Assist] No hypothesis in response, result:', result);
+        }
       }
-      if (action === 'draft_abstract' && data.result?.abstractDraft) {
-        setSegments(prev => ({ ...prev, abstractDraft: data.result.abstractDraft }));
+      
+      if (action === 'draft_abstract') {
+        const abstract = safeGetString(result.abstractDraft);
+        if (abstract) {
+          setSegments(prev => ({ ...prev, abstractDraft: abstract }));
+        }
       }
+      
+      // Handle help_formulate_question (Guided mode)
+      if (action === 'help_formulate_question') {
+        const question = safeGetString(result.researchQuestion);
+        if (question) {
+          updateSegment('question', { mainQuestion: question });
+        }
+        // Result also contains questionType, clarifyingQuestions, and suggestions 
+        // which are displayed via aiSuggestions state
+      }
+      
       // Handle suggest_all (AI Enhance All) - apply all returned suggestions
-      if (action === 'suggest_all' && data.result) {
-        const result = data.result;
+      if (action === 'suggest_all') {
         setSegments(prev => {
           const updated = { ...prev };
           
           // Update title if provided
-          if (result.title) {
-            updated.basics = { ...updated.basics, title: result.title };
+          const title = safeGetString(result.title);
+          if (title) {
+            updated.basics = { ...updated.basics, title };
           }
           
           // Update research question if provided
-          if (result.researchQuestion) {
-            updated.question = { ...updated.question, mainQuestion: result.researchQuestion };
+          const researchQuestion = safeGetString(result.researchQuestion);
+          if (researchQuestion) {
+            updated.question = { ...updated.question, mainQuestion: researchQuestion };
           }
           
           // Update hypothesis if provided
-          if (result.hypothesis) {
-            updated.outcomes = { ...updated.outcomes, hypothesis: result.hypothesis };
+          const hypothesis = safeGetString(result.hypothesis);
+          if (hypothesis) {
+            updated.outcomes = { ...updated.outcomes, hypothesis };
           }
           
           // Update keywords if provided (merge with existing)
-          if (Array.isArray(result.keywords) && result.keywords.length > 0) {
-            const existingKeywords = new Set(updated.keywords);
-            result.keywords.forEach((kw: string) => existingKeywords.add(kw));
-            updated.keywords = Array.from(existingKeywords);
+          const keywords = safeGetArray(result.keywords);
+          if (keywords.length > 0) {
+            updated.keywords = Array.from(new Set([...updated.keywords, ...keywords]));
           }
           
           // Update methodology suggestions if provided
-          if (result.methodologySuggestions) {
+          const methodologySuggestions = safeGetString(result.methodologySuggestions);
+          if (methodologySuggestions) {
             updated.methodology = { 
               ...updated.methodology, 
               approach: updated.methodology.approach 
-                ? `${updated.methodology.approach}\n\n📝 AI Suggestions:\n${result.methodologySuggestions}`
-                : result.methodologySuggestions 
+                ? `${updated.methodology.approach}\n\n📝 AI Suggestions:\n${methodologySuggestions}`
+                : methodologySuggestions 
             };
           }
           
           // Update research gaps if provided
-          if (Array.isArray(result.gaps) && result.gaps.length > 0) {
-            const gapsText = result.gaps.join('\n• ');
+          const gaps = safeGetArray(result.gaps);
+          if (gaps.length > 0) {
+            const gapsText = gaps.join('\n• ');
             updated.question = {
               ...updated.question,
               researchGaps: updated.question.researchGaps 
@@ -693,14 +1010,17 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
         
         // Show success notification for applied changes
         const appliedFields: string[] = [];
-        if (result.title) appliedFields.push('title');
-        if (result.researchQuestion) appliedFields.push('research question');
-        if (result.hypothesis) appliedFields.push('hypothesis');
-        if (result.keywords?.length) appliedFields.push(`${result.keywords.length} keywords`);
-        if (result.methodologySuggestions) appliedFields.push('methodology suggestions');
-        if (result.gaps?.length) appliedFields.push(`${result.gaps.length} research gaps`);
+        if (safeGetString(result.title)) appliedFields.push('title');
+        if (safeGetString(result.researchQuestion)) appliedFields.push('research question');
+        if (safeGetString(result.hypothesis)) appliedFields.push('hypothesis');
+        const keywordCount = safeGetArray(result.keywords).length;
+        if (keywordCount > 0) appliedFields.push(`${keywordCount} keywords`);
+        if (safeGetString(result.methodologySuggestions)) appliedFields.push('methodology suggestions');
+        const gapCount = safeGetArray(result.gaps).length;
+        if (gapCount > 0) appliedFields.push(`${gapCount} research gaps`);
         
         if (appliedFields.length > 0) {
+          setSuccess(`AI applied: ${appliedFields.join(', ')}`);
           console.log(`[AI Enhance] Applied: ${appliedFields.join(', ')}`);
         }
       }
@@ -724,6 +1044,83 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
       setGuidedStep(GUIDED_STEPS[idx - 1].key);
     }
   };
+
+  // ============================================================================
+  // File Extraction Handler
+  // ============================================================================
+
+  const handleFileExtracted = useCallback((extracted: any) => {
+    if (!extracted) return;
+
+    console.log('[TopicEntry] File extraction received:', extracted);
+
+    // Map extracted data to segments structure
+    setSegments(prev => ({
+      basics: {
+        title: extracted.title || prev.basics.title,
+        field: extracted.field || prev.basics.field,
+        subfield: extracted.subfield || prev.basics.subfield,
+        topicDescription: extracted.topicDescription || prev.basics.topicDescription
+      },
+      question: {
+        mainQuestion: extracted.researchQuestion || prev.question.mainQuestion,
+        subQuestions: Array.isArray(extracted.subQuestions) && extracted.subQuestions.length > 0 
+          ? extracted.subQuestions 
+          : prev.question.subQuestions,
+        problemStatement: extracted.problemStatement || prev.question.problemStatement,
+        researchGaps: extracted.researchGaps || prev.question.researchGaps
+      },
+      methodology: {
+        type: extracted.methodology || prev.methodology.type,
+        approach: extracted.methodologyApproach || prev.methodology.approach,
+        techniques: Array.isArray(extracted.techniques) && extracted.techniques.length > 0 
+          ? extracted.techniques 
+          : prev.methodology.techniques,
+        justification: prev.methodology.justification
+      },
+      data: {
+        datasetDescription: extracted.datasetDescription || prev.data.datasetDescription,
+        dataCollection: extracted.dataCollection || prev.data.dataCollection,
+        sampleSize: extracted.sampleSize || prev.data.sampleSize,
+        tools: Array.isArray(extracted.tools) && extracted.tools.length > 0 
+          ? extracted.tools 
+          : prev.data.tools,
+        experiments: extracted.experiments || prev.data.experiments
+      },
+      outcomes: {
+        hypothesis: extracted.hypothesis || prev.outcomes.hypothesis,
+        expectedResults: extracted.expectedResults || prev.outcomes.expectedResults,
+        contributionType: extracted.contributionType || prev.outcomes.contributionType,
+        novelty: extracted.novelty || prev.outcomes.novelty,
+        limitations: extracted.limitations || prev.outcomes.limitations
+      },
+      keywords: Array.isArray(extracted.keywords) && extracted.keywords.length > 0 
+        ? Array.from(new Set([...prev.keywords, ...extracted.keywords]))
+        : prev.keywords,
+      abstractDraft: prev.abstractDraft
+    }));
+
+    // Store extraction metadata
+    if (typeof extracted.confidence === 'number') {
+      setExtractionConfidence(extracted.confidence);
+    }
+    if (extracted.extractionNotes) {
+      setExtractionNotes(extracted.extractionNotes);
+    }
+
+    // Count how many fields were extracted
+    const extractedFieldCount = Object.entries(extracted).filter(([key, value]) => {
+      if (key === 'confidence' || key === 'extractionNotes') return false;
+      if (Array.isArray(value)) return value.length > 0;
+      return value !== null && value !== '';
+    }).length;
+
+    // Show success message
+    setSuccess(`Successfully extracted ${extractedFieldCount} fields from your document. Please review and complete any missing information.`);
+
+    // Switch to expert mode to show the populated form
+    setMode('expert');
+  }, []);
 
   // ============================================================================
   // Validation
@@ -759,7 +1156,12 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
           >
-            <ModeSelector onSelect={(m) => setMode(m)} />
+            <ModeSelector 
+              onSelect={(m) => setMode(m)} 
+              onFileExtracted={handleFileExtracted}
+              sessionId={sessionId}
+              authToken={authToken}
+            />
           </motion.div>
         )}
 
@@ -785,6 +1187,60 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
               </div>
               <AIAssistButton onClick={() => runAIAssist('suggest_all')} loading={aiLoading} label="AI Enhance All" />
             </div>
+
+            {/* Extraction Confidence Banner */}
+            {extractionConfidence !== null && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                className={`mb-6 p-4 rounded-xl border flex items-start gap-3 ${
+                  extractionConfidence >= 0.7 
+                    ? 'bg-emerald-50 border-emerald-200' 
+                    : extractionConfidence >= 0.4 
+                      ? 'bg-amber-50 border-amber-200' 
+                      : 'bg-orange-50 border-orange-200'
+                }`}
+              >
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
+                  extractionConfidence >= 0.7 
+                    ? 'bg-emerald-100' 
+                    : extractionConfidence >= 0.4 
+                      ? 'bg-amber-100' 
+                      : 'bg-orange-100'
+                }`}>
+                  <FileText className={`w-5 h-5 ${
+                    extractionConfidence >= 0.7 
+                      ? 'text-emerald-600' 
+                      : extractionConfidence >= 0.4 
+                        ? 'text-amber-600' 
+                        : 'text-orange-600'
+                  }`} />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="font-semibold text-slate-800">Document Extracted</span>
+                    <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                      extractionConfidence >= 0.7 
+                        ? 'bg-emerald-200 text-emerald-800' 
+                        : extractionConfidence >= 0.4 
+                          ? 'bg-amber-200 text-amber-800' 
+                          : 'bg-orange-200 text-orange-800'
+                    }`}>
+                      {Math.round(extractionConfidence * 100)}% confidence
+                    </span>
+                  </div>
+                  <p className="text-sm text-slate-600">
+                    {extractionNotes || 'Fields have been pre-filled from your uploaded document. Please review and complete any missing information.'}
+                  </p>
+                  <button 
+                    onClick={() => { setExtractionConfidence(null); setExtractionNotes(null); }}
+                    className="text-xs text-slate-500 hover:text-slate-700 mt-2"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </motion.div>
+            )}
 
             <div className="space-y-8">
               {/* Basic Information */}
@@ -1095,6 +1551,30 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
                   {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Save Research Topic'}
                 </button>
               </div>
+
+              {/* Blueprint Section */}
+              <section className="mt-8">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
+                    <ScrollText className="w-6 h-6 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-slate-900">Paper Blueprint</h2>
+                    <p className="text-sm text-slate-500">Generate and approve your paper structure</p>
+                  </div>
+                </div>
+                <BlueprintApprovalPanel
+                  sessionId={sessionId}
+                  authToken={authToken}
+                  hasResearchTopic={topicSaved || (segments.question.mainQuestion.length >= 20 && segments.keywords.length >= 3)}
+                  onBlueprintApproved={(blueprint) => {
+                    console.log('Blueprint approved:', blueprint);
+                  }}
+                  onBlueprintUpdated={(blueprint) => {
+                    console.log('Blueprint updated:', blueprint);
+                  }}
+                />
+              </section>
             </div>
           </motion.div>
         )}
@@ -1465,7 +1945,24 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
                       rows={3}
                       className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl resize-none"
                     />
+                    {segments.outcomes.hypothesis && (
+                      <p className="text-xs text-emerald-600 mt-1">✓ Hypothesis set ({segments.outcomes.hypothesis.length} chars)</p>
+                    )}
                   </div>
+
+                  {/* AI Suggestions Display */}
+                  {aiSuggestions?.clarifyingQuestions && aiSuggestions.clarifyingQuestions.length > 0 && (
+                    <div className="mb-6 p-4 bg-violet-50 rounded-xl">
+                      <p className="text-sm font-semibold text-violet-800 mb-2">🤔 Consider these questions:</p>
+                      <ul className="space-y-1">
+                        {aiSuggestions.clarifyingQuestions.map((q: string, i: number) => (
+                          <li key={i} className="text-sm text-violet-700 flex items-start gap-2">
+                            <span>•</span> {q}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
 
                   {(error || success) && (
                     <div className={`p-4 rounded-xl mb-4 ${error ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
