@@ -34,6 +34,18 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutM
 // Maximum abstract length to prevent memory issues
 const MAX_ABSTRACT_LENGTH = 10000;
 
+// Helper to get Semantic Scholar headers with optional API key
+const getSemanticScholarHeaders = (): Record<string, string> => {
+  const headers: Record<string, string> = {
+    'User-Agent': 'Research-Paper-Writing-App/1.0'
+  };
+  const apiKey = process.env.SEMANTIC_SCHOLAR_API_KEY;
+  if (apiKey) {
+    headers['x-api-key'] = apiKey;
+  }
+  return headers;
+};
+
 class AbstractEnrichmentService {
   /**
    * Search for abstract using DOI
@@ -202,7 +214,7 @@ class AbstractEnrichmentService {
     try {
       const response = await fetchWithTimeout(
         `https://api.semanticscholar.org/graph/v1/paper/DOI:${encodeURIComponent(doi)}?fields=abstract,title`,
-        { headers: { 'User-Agent': 'Research-Paper-Writing-App/1.0' } },
+        { headers: getSemanticScholarHeaders() },
         8000 // 8 second timeout
       );
 
@@ -304,7 +316,7 @@ class AbstractEnrichmentService {
     try {
       const response = await fetchWithTimeout(
         `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(title)}&limit=3&fields=abstract,title,doi`,
-        { headers: { 'User-Agent': 'Research-Paper-Writing-App/1.0' } },
+        { headers: getSemanticScholarHeaders() },
         8000
       );
 

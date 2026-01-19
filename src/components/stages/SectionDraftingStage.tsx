@@ -611,8 +611,11 @@ const fallbackSections: SectionConfig[] = [
   { keys: ['references'], label: 'References' }
 ];
 
-// Auto-save debounce delay in ms
-const AUTO_SAVE_DELAY = 2000;
+// Auto-save debounce delay in ms - increased for stability
+const AUTO_SAVE_DELAY = 3000;
+
+// Selection change debounce delay
+const SELECTION_CHANGE_DELAY = 150;
 
 // ============================================================================
 // Main Component
@@ -706,8 +709,8 @@ export default function SectionDraftingStage({
   const [regenOpen, setRegenOpen] = useState<Record<string, boolean>>({});
   const [regenRemarks, setRegenRemarks] = useState<Record<string, string>>({});
 
-  // View mode: 'edit' shows textarea, 'preview' shows formatted markdown
-  const [viewMode, setViewMode] = useState<Record<string, 'edit' | 'preview'>>({});
+  // REMOVED: View mode toggle - always in edit mode for stability
+  // const [viewMode, setViewMode] = useState<Record<string, 'edit' | 'preview'>>({});
 
   // Messages
   const [message, setMessage] = useState<string | null>(null);
@@ -843,24 +846,7 @@ export default function SectionDraftingStage({
 
   useEffect(() => { loadSession(); loadCitations(); loadFigures(); }, [loadSession, loadCitations, loadFigures]);
 
-  // Set sections with content to preview mode by default
-  useEffect(() => {
-    const sectionsWithContent = Object.entries(content)
-      .filter(([, value]) => value && value.trim().length > 0)
-      .map(([key]) => key);
-    
-    if (sectionsWithContent.length > 0) {
-      setViewMode(prev => {
-        const updated = { ...prev };
-        sectionsWithContent.forEach(key => {
-          if (updated[key] === undefined) {
-            updated[key] = 'preview';
-          }
-        });
-        return updated;
-      });
-    }
-  }, [content]);
+  // REMOVED: Auto-switch to preview mode - always stay in edit mode for stability
 
   const refreshSession = useCallback(async () => {
     if (!onSessionUpdated) return;
@@ -1065,26 +1051,36 @@ export default function SectionDraftingStage({
     setPickerOpen(true);
   }, []);
 
-  // Track text selection in textareas
+  // Track text selection in textareas - debounced for stability
   useEffect(() => {
+    let selectionTimer: NodeJS.Timeout | null = null;
+    
     const handleSelectionChange = () => {
-      if (focusedSection && textareaRefs.current[focusedSection]) {
-        const textarea = textareaRefs.current[focusedSection];
-        if (textarea && textarea.selectionStart !== textarea.selectionEnd) {
-          const text = textarea.value.slice(textarea.selectionStart, textarea.selectionEnd);
-          setSelectedText({
-            text,
-            start: textarea.selectionStart,
-            end: textarea.selectionEnd
-          });
-        } else {
-          setSelectedText(null);
+      // Debounce selection changes to prevent excessive updates
+      if (selectionTimer) clearTimeout(selectionTimer);
+      
+      selectionTimer = setTimeout(() => {
+        if (focusedSection && textareaRefs.current[focusedSection]) {
+          const textarea = textareaRefs.current[focusedSection];
+          if (textarea && textarea.selectionStart !== textarea.selectionEnd) {
+            const text = textarea.value.slice(textarea.selectionStart, textarea.selectionEnd);
+            setSelectedText({
+              text,
+              start: textarea.selectionStart,
+              end: textarea.selectionEnd
+            });
+          } else {
+            setSelectedText(null);
+          }
         }
-      }
+      }, SELECTION_CHANGE_DELAY);
     };
 
     document.addEventListener('selectionchange', handleSelectionChange);
-    return () => document.removeEventListener('selectionchange', handleSelectionChange);
+    return () => {
+      document.removeEventListener('selectionchange', handleSelectionChange);
+      if (selectionTimer) clearTimeout(selectionTimer);
+    };
   }, [focusedSection]);
 
   // ============================================================================
@@ -1162,7 +1158,7 @@ export default function SectionDraftingStage({
         setSectionLoading(prev => ({ ...prev, [sectionKey]: false }));
         if (result.success && result.content) {
           setContent(prev => ({ ...prev, [sectionKey]: result.content! }));
-          setViewMode(prev => ({ ...prev, [sectionKey]: 'preview' })); // Auto-switch to preview
+          // REMOVED: Auto-switch to preview - stay in edit mode
           successCount++;
         } else {
           showMsg(`Failed at ${displayName[sectionKey] || sectionKey}`, 'error');
@@ -1194,7 +1190,7 @@ export default function SectionDraftingStage({
       const data = await res.json();
       if (res.ok && data.content) {
         setContent(prev => ({ ...prev, [sectionKey]: data.content }));
-        setViewMode(prev => ({ ...prev, [sectionKey]: 'preview' })); // Auto-switch to preview
+        // REMOVED: Auto-switch to preview - stay in edit mode
         setRegenOpen(prev => ({ ...prev, [sectionKey]: false }));
         setRegenRemarks(prev => ({ ...prev, [sectionKey]: '' }));
         showMsg('Section regenerated', 'success');
@@ -1361,7 +1357,7 @@ export default function SectionDraftingStage({
   // Handle AI fix
   const handleFix = useCallback((sectionKey: string, fixedContent: string) => {
     setContent(prev => ({ ...prev, [sectionKey]: fixedContent }));
-    setViewMode(prev => ({ ...prev, [sectionKey]: 'preview' })); // Auto-switch to preview
+    // REMOVED: Auto-switch to preview - stay in edit mode
     saveSection(sectionKey, fixedContent);
   }, [saveSection]);
 
@@ -1684,34 +1680,7 @@ export default function SectionDraftingStage({
                           
                           {/* Section Toolbar */}
                           <div className="flex items-center justify-end gap-1 mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            {/* Edit/Preview Toggle */}
-                            {content[keyName] && (
-                              <div className="flex items-center gap-0.5 mr-2 bg-gray-100 rounded-lg p-0.5">
-                                <button 
-                                  onClick={() => setViewMode(prev => ({ ...prev, [keyName]: 'edit' }))}
-                                  className={`px-2 py-1 text-xs rounded-md transition-all ${
-                                    (viewMode[keyName] || 'edit') === 'edit' 
-                                      ? 'bg-white text-gray-900 shadow-sm' 
-                                      : 'text-gray-500 hover:text-gray-700'
-                                  }`}
-                                  title="Edit mode"
-                                >
-                                  Edit
-                                </button>
-                                <button 
-                                  onClick={() => setViewMode(prev => ({ ...prev, [keyName]: 'preview' }))}
-                                  className={`px-2 py-1 text-xs rounded-md transition-all ${
-                                    viewMode[keyName] === 'preview' 
-                                      ? 'bg-white text-gray-900 shadow-sm' 
-                                      : 'text-gray-500 hover:text-gray-700'
-                                  }`}
-                                  title="Preview formatted content"
-                                >
-                                  <Eye className="w-3 h-3 inline mr-1" />
-                                  Preview
-                                </button>
-                              </div>
-                            )}
+                            {/* REMOVED: Edit/Preview Toggle - always in edit mode for stability */}
                             <button onClick={() => { 
                                 // Capture current cursor position from the textarea
                                 const textarea = textareaRefs.current[keyName];
@@ -1738,96 +1707,42 @@ export default function SectionDraftingStage({
                             )}
                           </div>
 
-                          {/* Selection Indicator - Shows when text is selected in this section */}
-                          <AnimatePresence>
-                            {selectedText && focusedSection === keyName && selectedText.text.length > 0 && (
-                              <motion.div
-                                initial={{ opacity: 0, y: -10, scale: 0.95 }}
-                                animate={{ opacity: 1, y: 0, scale: 1 }}
-                                exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                                className="mb-2 p-2 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg shadow-sm"
-                              >
-                                <div className="flex items-center justify-between">
-                                  <div className="flex items-center gap-2">
-                                    <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                                    <span className="text-xs font-medium text-blue-700">
-                                      {selectedText.text.length} characters selected
-                                    </span>
-                                    <span className="text-[10px] text-blue-500">
-                                      ({selectedText.text.split(/\s+/).filter(Boolean).length} words)
-                                    </span>
-                                  </div>
-                                  <div className="flex items-center gap-1">
-                                    <span className="text-[10px] text-blue-500 bg-blue-100 px-2 py-0.5 rounded-full">
-                                      Ready for AI actions →
-                                    </span>
-                                  </div>
-                                </div>
-                                <p className="mt-1.5 text-[11px] text-blue-600/80 line-clamp-1 italic">
-                                  &ldquo;{selectedText.text.slice(0, 80)}{selectedText.text.length > 80 ? '...' : ''}&rdquo;
-                                </p>
-                              </motion.div>
-                            )}
-                          </AnimatePresence>
+                          {/* Selection Indicator - Simple inline badge, no layout shift */}
 
-                          {/* Content Area - Edit mode (textarea) or Preview mode (formatted) */}
-                          {viewMode[keyName] === 'preview' && content[keyName] ? (
-                            // Preview Mode - Formatted Markdown (Elsevier/Academic Style)
-                            <div 
-                              className="relative p-6 bg-white rounded-lg border border-gray-200 min-h-[100px] cursor-pointer hover:border-gray-300 transition-colors shadow-sm"
-                              onClick={() => setViewMode(prev => ({ ...prev, [keyName]: 'edit' }))}
-                              title="Click to edit"
-                            >
-                              <MarkdownRenderer 
-                                content={content[keyName]} 
-                                className="text-gray-800"
-                              />
-                              <div className="absolute top-2 right-2 text-[10px] text-gray-400 flex items-center gap-1 bg-gray-50 px-2 py-1 rounded">
-                                <Eye className="w-3 h-3" />
-                                Preview
-                              </div>
-                            </div>
-                          ) : (
-                            // Edit Mode - Textarea
-                            <div className={`relative transition-all duration-200 rounded-lg ${
-                              selectedText && focusedSection === keyName && selectedText.text.length > 0
-                                ? 'ring-2 ring-blue-300 ring-offset-2 bg-blue-50/30'
-                                : ''
-                            }`}>
+                          {/* Content Area - Always in edit mode for stability */}
+                          <div className="relative">
                             <AutoResizeTextarea
                               ref={(el) => { textareaRefs.current[keyName] = el; }}
                               value={content[keyName] || ''}
                               onChange={(e) => handleContentChange(keyName, e.target.value)}
-                              onBlur={() => {
-                                handleBlur(keyName);
-                                // Switch back to preview mode after editing if there's content
-                                if (content[keyName]) {
-                                  setTimeout(() => setViewMode(prev => ({ ...prev, [keyName]: 'preview' })), 100);
-                                }
-                              }}
+                              onBlur={() => handleBlur(keyName)}
                               onFocus={() => setFocusedSection(keyName)}
-                                onSelect={(e) => {
-                                  const target = e.target as HTMLTextAreaElement;
-                                  cursorPositionRef.current = { section: keyName, position: target.selectionStart };
-                                }}
-                                onKeyUp={(e) => {
-                                  const target = e.target as HTMLTextAreaElement;
-                                  cursorPositionRef.current = { section: keyName, position: target.selectionStart };
-                                }}
-                                onClick={(e) => {
-                                  const target = e.target as HTMLTextAreaElement;
-                                  cursorPositionRef.current = { section: keyName, position: target.selectionStart };
-                                }}
-                                placeholder={isWorking ? 'Generating...' : 'Start typing or click Generate to create content...\n\nTip: Use ### for subsections and - for bullet points'}
-                                className={`w-full border-0 bg-transparent p-0 text-gray-800 focus:ring-0 focus:outline-none placeholder-gray-300 text-justify ${
-                                  selectedText && focusedSection === keyName && selectedText.text.length > 0 ? 'selection:bg-blue-200 selection:text-blue-900' : ''
-                                }`}
-                                style={{ fontFamily, fontSize, lineHeight }}
-                                disabled={isWorking}
-                                minHeight={content[keyName] ? 50 : 100}
-                              />
-                            </div>
-                          )}
+                              onSelect={(e) => {
+                                const target = e.target as HTMLTextAreaElement;
+                                cursorPositionRef.current = { section: keyName, position: target.selectionStart };
+                              }}
+                              onKeyUp={(e) => {
+                                const target = e.target as HTMLTextAreaElement;
+                                cursorPositionRef.current = { section: keyName, position: target.selectionStart };
+                              }}
+                              onClick={(e) => {
+                                const target = e.target as HTMLTextAreaElement;
+                                cursorPositionRef.current = { section: keyName, position: target.selectionStart };
+                              }}
+                              placeholder={isWorking ? 'Generating...' : 'Start typing or click Generate to create content...\n\nTip: Use ### for subsections and - for bullet points'}
+                              className="w-full border-0 bg-transparent p-0 text-gray-800 focus:ring-0 focus:outline-none placeholder-gray-300 text-justify selection:bg-blue-100 selection:text-blue-900"
+                              style={{ fontFamily, fontSize, lineHeight }}
+                              disabled={isWorking}
+                              minHeight={content[keyName] ? 50 : 100}
+                            />
+                            {/* Simple selection indicator - absolute positioned, no layout shift */}
+                            {selectedText && focusedSection === keyName && selectedText.text.length > 0 && (
+                              <div className="absolute top-0 right-0 flex items-center gap-1.5 px-2 py-1 bg-blue-500 text-white text-[10px] font-medium rounded-bl-lg rounded-tr-lg shadow-sm">
+                                <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
+                                {selectedText.text.length} chars selected • AI ready
+                              </div>
+                            )}
+                          </div>
 
                           {/* Referenced Figures Bar - Shows clickable thumbnails */}
                           {(() => {

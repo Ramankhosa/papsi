@@ -516,6 +516,7 @@ enum FeatureCode {
   PATENT_REVIEW // AI-powered patent draft review (Pro tier)
   IDEATION // Mind-map patent ideation engine
   PAPER_DRAFTING // Academic paper drafting (all paper types)
+  SEARCH_STRATEGY // AI-powered systematic search query generation (Pro tier)
 }
 
 enum TaskCode {
@@ -540,6 +541,7 @@ enum TaskCode {
   IDEATION_NOVELTY // Novelty gate reasoning
   // Paper writing tasks
   LITERATURE_RELEVANCE // AI-assisted literature relevance analysis
+  SEARCH_STRATEGY_GEN // AI-powered search strategy generation (Pro tier)
 }
 
 enum ModelClass {
@@ -1760,6 +1762,9 @@ model DraftingSession {
 
   // Literature search runs (persisted for AI analysis)
   literatureSearchRuns LiteratureSearchRun[]
+  
+  // Citation search strategy (systematic query generation)
+  citationSearchStrategy CitationSearchStrategy?
 
   // Figure sequence for unified ordering of diagrams + sketches
   // Array of { type: 'diagram'|'sketch', sourceId: string, finalFigNo: number }
@@ -4097,6 +4102,11 @@ model Citation {
   notes String?
   tags  String[] @default([]) // User-defined tags for organization
 
+  // AI-generated citation metadata for section generation
+  // Contains: keyContribution, keyFindings, methodologicalApproach, 
+  // relevanceToResearch, limitationsOrGaps, usage (intro/litReview/methodology/comparison)
+  aiMeta Json?
+
   // Status
   isActive Boolean @default(true)
 
@@ -4227,6 +4237,10 @@ model LiteratureSearchRun {
   aiTokensUsed     Int?
   researchQuestion String? // The research question used for analysis
 
+  // Link to search strategy query (if executed from strategy)
+  strategyQueryId String?
+  strategyQuery   CitationSearchQuery? @relation(fields: [strategyQueryId], references: [id])
+
   // Timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -4236,7 +4250,115 @@ model LiteratureSearchRun {
 
   @@index([sessionId])
   @@index([createdAt])
+  @@index([strategyQueryId])
   @@map("literature_search_runs")
+}
+
+// ============================================================================
+// CITATION SEARCH STRATEGY
+// Systematic search query generation for comprehensive literature coverage
+// ============================================================================
+
+model CitationSearchStrategy {
+  id        String @id @default(cuid())
+  sessionId String @unique
+
+  // Source information for generation
+  paperTitle       String?
+  paperAbstract    String?  @db.Text
+  keywords         String[]
+  researchFocus    String?  @db.Text // Main focus/objective of the research
+
+  // Generation metadata
+  generatedAt DateTime  @default(now())
+  aiModelUsed String?
+  
+  // Strategy overview
+  summary          String?  @db.Text // AI-generated overview of the search strategy
+  estimatedPapers  Int?     // Estimated total papers to find
+  
+  // Status
+  status           SearchStrategyStatus @default(DRAFT)
+  completedAt      DateTime?
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  session DraftingSession       @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  queries CitationSearchQuery[]
+
+  @@index([sessionId])
+  @@index([status])
+  @@map("citation_search_strategies")
+}
+
+model CitationSearchQuery {
+  id         String @id @default(cuid())
+  strategyId String
+  
+  // Query details
+  queryText    String   // The actual search query
+  category     SearchQueryCategory
+  description  String   // Why this query is included / what it covers
+  priority     Int      // Execution order (1 = first)
+  
+  // Search suggestions
+  suggestedSources   String[]  // Recommended sources for this query
+  suggestedYearFrom  Int?      // Suggested year range
+  suggestedYearTo    Int?
+  suggestedFilters   Json?     // Additional filter suggestions
+  
+  // Execution status
+  status        SearchQueryStatus @default(PENDING)
+  searchedAt    DateTime?
+  resultsCount  Int?              // Total results from search
+  importedCount Int?              // Papers imported from this query
+  
+  // Notes
+  userNotes     String?  @db.Text
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  strategy   CitationSearchStrategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  searchRuns LiteratureSearchRun[]
+
+  @@index([strategyId])
+  @@index([category])
+  @@index([status])
+  @@index([priority])
+  @@map("citation_search_queries")
+}
+
+enum SearchStrategyStatus {
+  DRAFT       // Being generated
+  READY       // Ready to use
+  IN_PROGRESS // Some queries executed
+  COMPLETED   // All queries done
+}
+
+enum SearchQueryCategory {
+  CORE_CONCEPTS         // Main topic keywords
+  DOMAIN_APPLICATION    // Field-specific papers
+  METHODOLOGY           // Methods and techniques
+  THEORETICAL_FOUNDATION // Foundational/seminal works
+  SURVEYS_REVIEWS       // Existing reviews and surveys
+  COMPETING_APPROACHES  // Alternative methods/baselines
+  RECENT_ADVANCES       // Latest papers
+  GAP_IDENTIFICATION    // Papers highlighting gaps
+  CUSTOM                // User-added queries
+}
+
+enum SearchQueryStatus {
+  PENDING     // Not yet searched
+  SEARCHING   // Currently searching
+  SEARCHED    // Search completed, reviewing results
+  COMPLETED   // Done - papers imported
+  SKIPPED     // User chose to skip this query
 }
 
 model ReferenceLibrary {

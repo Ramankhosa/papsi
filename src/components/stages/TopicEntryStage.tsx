@@ -1049,56 +1049,114 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
   // File Extraction Handler
   // ============================================================================
 
-  const handleFileExtracted = useCallback((extracted: any) => {
+  // Helper function to save topic data directly (used for auto-save after extraction)
+  const saveTopicData = useCallback(async (topicSegments: ResearchSegments) => {
+    if (!sessionId || !authToken) return false;
+
+    try {
+      // Check if data meets minimum requirements
+      const hasQuestion = topicSegments.question.mainQuestion.length >= 10;
+      const hasKeywords = topicSegments.keywords.length >= 1;
+      const hasTitle = topicSegments.basics.title.length > 0;
+      
+      // Need at least some valid data to save
+      if (!hasQuestion && !hasTitle) {
+        console.log('[TopicEntry] Auto-save skipped: insufficient data');
+        return false;
+      }
+
+      // Flatten segments for API
+      const payload = {
+        title: topicSegments.basics.title || 'Untitled Research',
+        field: topicSegments.basics.field,
+        subfield: topicSegments.basics.subfield,
+        topicDescription: topicSegments.basics.topicDescription,
+        researchQuestion: topicSegments.question.mainQuestion || 'Research question to be defined',
+        subQuestions: topicSegments.question.subQuestions,
+        problemStatement: topicSegments.question.problemStatement,
+        researchGaps: topicSegments.question.researchGaps,
+        methodology: topicSegments.methodology.type,
+        methodologyApproach: topicSegments.methodology.approach,
+        techniques: topicSegments.methodology.techniques,
+        methodologyJustification: topicSegments.methodology.justification,
+        datasetDescription: topicSegments.data.datasetDescription,
+        dataCollection: topicSegments.data.dataCollection,
+        sampleSize: topicSegments.data.sampleSize,
+        tools: topicSegments.data.tools,
+        experiments: topicSegments.data.experiments,
+        hypothesis: topicSegments.outcomes.hypothesis,
+        expectedResults: topicSegments.outcomes.expectedResults,
+        contributionType: topicSegments.outcomes.contributionType,
+        novelty: topicSegments.outcomes.novelty,
+        limitations: topicSegments.outcomes.limitations,
+        keywords: topicSegments.keywords,
+        abstractDraft: topicSegments.abstractDraft
+      };
+
+      const response = await fetch(`/api/papers/${sessionId}/topic`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify(payload)
+      });
+
+      if (response.ok) {
+        console.log('[TopicEntry] Auto-saved extracted data successfully');
+        return true;
+      } else {
+        console.warn('[TopicEntry] Auto-save failed:', await response.text());
+        return false;
+      }
+    } catch (err) {
+      console.warn('[TopicEntry] Auto-save error:', err);
+      return false;
+    }
+  }, [sessionId, authToken]);
+
+  const handleFileExtracted = useCallback(async (extracted: any) => {
     if (!extracted) return;
 
     console.log('[TopicEntry] File extraction received:', extracted);
 
-    // Map extracted data to segments structure
-    setSegments(prev => ({
+    // Build the new segments from extracted data
+    const newSegments: ResearchSegments = {
       basics: {
-        title: extracted.title || prev.basics.title,
-        field: extracted.field || prev.basics.field,
-        subfield: extracted.subfield || prev.basics.subfield,
-        topicDescription: extracted.topicDescription || prev.basics.topicDescription
+        title: extracted.title || '',
+        field: extracted.field || '',
+        subfield: extracted.subfield || '',
+        topicDescription: extracted.topicDescription || ''
       },
       question: {
-        mainQuestion: extracted.researchQuestion || prev.question.mainQuestion,
-        subQuestions: Array.isArray(extracted.subQuestions) && extracted.subQuestions.length > 0 
-          ? extracted.subQuestions 
-          : prev.question.subQuestions,
-        problemStatement: extracted.problemStatement || prev.question.problemStatement,
-        researchGaps: extracted.researchGaps || prev.question.researchGaps
+        mainQuestion: extracted.researchQuestion || '',
+        subQuestions: Array.isArray(extracted.subQuestions) ? extracted.subQuestions : [],
+        problemStatement: extracted.problemStatement || '',
+        researchGaps: extracted.researchGaps || ''
       },
       methodology: {
-        type: extracted.methodology || prev.methodology.type,
-        approach: extracted.methodologyApproach || prev.methodology.approach,
-        techniques: Array.isArray(extracted.techniques) && extracted.techniques.length > 0 
-          ? extracted.techniques 
-          : prev.methodology.techniques,
-        justification: prev.methodology.justification
+        type: extracted.methodology || 'QUALITATIVE',
+        approach: extracted.methodologyApproach || '',
+        techniques: Array.isArray(extracted.techniques) ? extracted.techniques : [],
+        justification: ''
       },
       data: {
-        datasetDescription: extracted.datasetDescription || prev.data.datasetDescription,
-        dataCollection: extracted.dataCollection || prev.data.dataCollection,
-        sampleSize: extracted.sampleSize || prev.data.sampleSize,
-        tools: Array.isArray(extracted.tools) && extracted.tools.length > 0 
-          ? extracted.tools 
-          : prev.data.tools,
-        experiments: extracted.experiments || prev.data.experiments
+        datasetDescription: extracted.datasetDescription || '',
+        dataCollection: extracted.dataCollection || '',
+        sampleSize: extracted.sampleSize || '',
+        tools: Array.isArray(extracted.tools) ? extracted.tools : [],
+        experiments: extracted.experiments || ''
       },
       outcomes: {
-        hypothesis: extracted.hypothesis || prev.outcomes.hypothesis,
-        expectedResults: extracted.expectedResults || prev.outcomes.expectedResults,
-        contributionType: extracted.contributionType || prev.outcomes.contributionType,
-        novelty: extracted.novelty || prev.outcomes.novelty,
-        limitations: extracted.limitations || prev.outcomes.limitations
+        hypothesis: extracted.hypothesis || '',
+        expectedResults: extracted.expectedResults || '',
+        contributionType: extracted.contributionType || 'EMPIRICAL',
+        novelty: extracted.novelty || '',
+        limitations: extracted.limitations || ''
       },
-      keywords: Array.isArray(extracted.keywords) && extracted.keywords.length > 0 
-        ? Array.from(new Set([...prev.keywords, ...extracted.keywords]))
-        : prev.keywords,
-      abstractDraft: prev.abstractDraft
-    }));
+      keywords: Array.isArray(extracted.keywords) ? extracted.keywords : [],
+      abstractDraft: ''
+    };
+
+    // Update state with extracted data
+    setSegments(newSegments);
 
     // Store extraction metadata
     if (typeof extracted.confidence === 'number') {
@@ -1115,12 +1173,27 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
       return value !== null && value !== '';
     }).length;
 
-    // Show success message
-    setSuccess(`Successfully extracted ${extractedFieldCount} fields from your document. Please review and complete any missing information.`);
+    // Auto-save the extracted data to database immediately
+    // This ensures data persists when user navigates to other stages
+    const saved = await saveTopicData(newSegments);
+    
+    if (saved) {
+      setTopicSaved(true);
+      setSuccess(`Successfully extracted ${extractedFieldCount} fields from your document and saved automatically. You can review and edit the information below.`);
+      // Notify parent component that topic was saved
+      onTopicSaved?.({
+        title: newSegments.basics.title,
+        researchQuestion: newSegments.question.mainQuestion,
+        keywords: newSegments.keywords,
+        methodology: newSegments.methodology.type
+      });
+    } else {
+      setSuccess(`Successfully extracted ${extractedFieldCount} fields from your document. Please review and click "Save Research Topic" to persist your changes.`);
+    }
 
     // Switch to expert mode to show the populated form
     setMode('expert');
-  }, []);
+  }, [saveTopicData, onTopicSaved]);
 
   // ============================================================================
   // Validation

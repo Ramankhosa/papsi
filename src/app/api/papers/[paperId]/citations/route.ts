@@ -36,9 +36,26 @@ const manualCitationSchema = z.object({
   tags: z.array(z.string()).optional()
 });
 
+// Schema for AI-generated citation metadata
+const citationMetaSchema = z.object({
+  keyContribution: z.string().optional(),
+  keyFindings: z.string().optional(),
+  methodologicalApproach: z.string().nullable().optional(),
+  relevanceToResearch: z.string().optional(),
+  limitationsOrGaps: z.string().nullable().optional(),
+  usage: z.object({
+    introduction: z.boolean().optional(),
+    literatureReview: z.boolean().optional(),
+    methodology: z.boolean().optional(),
+    comparison: z.boolean().optional()
+  }).optional(),
+  relevanceScore: z.number().optional()
+}).optional().nullable();
+
 const createCitationSchema = z.object({
   citation: manualCitationSchema.optional(),
-  searchResult: z.any().optional()
+  searchResult: z.any().optional(),
+  citationMeta: citationMetaSchema // AI-generated metadata for section generation
 });
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
@@ -144,7 +161,12 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
     let citation;
     if (data.searchResult) {
-      citation = await citationService.importFromSearchResult(sessionId, data.searchResult);
+      // Pass AI-generated citation metadata if available
+      citation = await citationService.importFromSearchResult(
+        sessionId, 
+        data.searchResult,
+        data.citationMeta || undefined
+      );
     } else if (data.citation) {
       citation = await citationService.addManualCitation(sessionId, data.citation);
     } else {

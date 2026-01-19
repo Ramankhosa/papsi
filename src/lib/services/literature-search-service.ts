@@ -5,6 +5,34 @@
 
 import crypto from 'crypto';
 
+// Publication types supported across providers
+export type PublicationType = 
+  | 'journal-article'
+  | 'conference-paper'
+  | 'book-chapter'
+  | 'book'
+  | 'preprint'
+  | 'review'
+  | 'thesis'
+  | 'dataset'
+  | 'other';
+
+// Field of study categories
+export type FieldOfStudy =
+  | 'computer-science'
+  | 'medicine'
+  | 'biology'
+  | 'physics'
+  | 'chemistry'
+  | 'mathematics'
+  | 'engineering'
+  | 'economics'
+  | 'psychology'
+  | 'sociology'
+  | 'environmental-science'
+  | 'materials-science'
+  | 'other';
+
 // Search result interface
 export interface SearchResult {
   id: string;
@@ -17,17 +45,97 @@ export interface SearchResult {
   url?: string;
   citationCount?: number;
   source: string; // Which provider returned this result
+  publicationType?: PublicationType;
+  isOpenAccess?: boolean;
+  fieldsOfStudy?: string[];
   rawData?: any; // Original API response for debugging
 }
 
-// Search options
+// Search options with enhanced filters
 export interface SearchOptions {
   yearFrom?: number;
   yearTo?: number;
   limit?: number;
   sources?: string[]; // Which providers to search
   includeAbstract?: boolean;
+  
+  // Enhanced filters
+  publicationTypes?: PublicationType[]; // Filter by publication type
+  openAccessOnly?: boolean; // Only return open access papers
+  minCitations?: number; // Minimum citation count
+  fieldsOfStudy?: FieldOfStudy[]; // Filter by field of study
+  hasAbstract?: boolean; // Only return papers with abstracts
 }
+
+// Provider filter support - indicates which filters each provider supports
+export interface ProviderFilterSupport {
+  publicationTypes: boolean;
+  openAccessOnly: boolean;
+  minCitations: boolean;
+  fieldsOfStudy: boolean;
+  hasAbstract: boolean;
+  yearRange: boolean;
+}
+
+// Export filter support map for UI to use
+export const PROVIDER_FILTER_SUPPORT: Record<string, ProviderFilterSupport> = {
+  google_scholar: {
+    publicationTypes: false,
+    openAccessOnly: false,
+    minCitations: false,
+    fieldsOfStudy: false,
+    hasAbstract: false,
+    yearRange: true
+  },
+  semantic_scholar: {
+    publicationTypes: true,
+    openAccessOnly: true,
+    minCitations: true,
+    fieldsOfStudy: true,
+    hasAbstract: false,
+    yearRange: true
+  },
+  crossref: {
+    publicationTypes: true,
+    openAccessOnly: false,
+    minCitations: false,
+    fieldsOfStudy: false,
+    hasAbstract: true,
+    yearRange: true
+  },
+  openalex: {
+    publicationTypes: true,
+    openAccessOnly: true,
+    minCitations: true,
+    fieldsOfStudy: true,
+    hasAbstract: true,
+    yearRange: true
+  },
+  pubmed: {
+    publicationTypes: true,
+    openAccessOnly: true,
+    minCitations: false,
+    fieldsOfStudy: true,
+    hasAbstract: true,
+    yearRange: true
+  },
+  arxiv: {
+    publicationTypes: false, // All are preprints
+    openAccessOnly: false, // All are open access
+    minCitations: false,
+    fieldsOfStudy: true, // Categories
+    hasAbstract: true,
+    yearRange: true
+  },
+  core: {
+    publicationTypes: true,
+    openAccessOnly: false, // All are open access
+    minCitations: false,
+    fieldsOfStudy: true,
+    hasAbstract: true,
+    yearRange: true
+  }
+};
 
 // Provider interface
 export interface SearchProvider {
@@ -188,6 +296,9 @@ class LiteratureSearchService {
     this.providers.set('semantic_scholar', new SemanticScholarProvider());
     this.providers.set('crossref', new CrossRefProvider());
     this.providers.set('openalex', new OpenAlexProvider());
+    this.providers.set('pubmed', new PubMedProvider());
+    this.providers.set('arxiv', new ArXivProvider());
+    this.providers.set('core', new COREProvider());
   }
 
   private generateCacheKey(query: string, options: SearchOptions): string {
@@ -440,6 +551,20 @@ class SemanticScholarProvider implements SearchProvider {
   private readonly MIN_REQUEST_INTERVAL_MS = 1000; // 1 second between requests
   private readonly FETCH_TIMEOUT_MS = 30000; // 30 second timeout
 
+  private getHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'User-Agent': 'Research-Paper-Writing-App/1.0'
+    };
+    
+    // Add API key if configured (enables higher rate limits)
+    const apiKey = process.env.SEMANTIC_SCHOLAR_API_KEY;
+    if (apiKey) {
+      headers['x-api-key'] = apiKey;
+    }
+    
+    return headers;
+  }
+
   private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
@@ -469,18 +594,80 @@ class SemanticScholarProvider implements SearchProvider {
       try {
         const params = new URLSearchParams({
           query: query,
-          limit: (options.limit || 20).toString(),
-          fields: 'title,authors,year,venue,abstract,citationCount,doi,url'
+          limit: Math.min(options.limit || 20, 100).toString(), // Max 100 per request
+          fields: 'title,authors,year,venue,abstract,citationCount,externalIds,url,publicationTypes,isOpenAccess,fieldsOfStudy,openAccessPdf'
         });
 
-        if (options.yearFrom) params.set('yearFrom', options.yearFrom.toString());
-        if (options.yearTo) params.set('yearTo', options.yearTo.toString());
+        // Semantic Scholar uses 'year' parameter with range format: "2020-2023" or single year "2023"
+        if (options.yearFrom || options.yearTo) {
+          const fromYear = options.yearFrom || 1900;
+          const toYear = options.yearTo || new Date().getFullYear();
+          params.set('year', `${fromYear}-${toYear}`);
+        }
+
+        // Publication type filter
+        if (options.publicationTypes && options.publicationTypes.length > 0) {
+          // Map our types to Semantic Scholar types
+          const ssTypes = options.publicationTypes.map(t => {
+            const typeMap: Record<string, string> = {
+              'journal-article': 'JournalArticle',
+              'conference-paper': 'Conference',
+              'book-chapter': 'BookSection',
+              'book': 'Book',
+              'preprint': 'Preprint',
+              'review': 'Review',
+              'thesis': 'Thesis',
+              'dataset': 'Dataset'
+            };
+            return typeMap[t] || null;
+          }).filter(Boolean);
+          
+          if (ssTypes.length > 0) {
+            params.set('publicationTypes', ssTypes.join(','));
+          }
+        }
+
+        // Open access filter
+        if (options.openAccessOnly) {
+          params.set('openAccessPdf', '');
+        }
+
+        // Minimum citations filter
+        if (options.minCitations && options.minCitations > 0) {
+          params.set('minCitationCount', options.minCitations.toString());
+        }
+
+        // Fields of study filter
+        if (options.fieldsOfStudy && options.fieldsOfStudy.length > 0) {
+          const ssFields = options.fieldsOfStudy.map(f => {
+            const fieldMap: Record<string, string> = {
+              'computer-science': 'Computer Science',
+              'medicine': 'Medicine',
+              'biology': 'Biology',
+              'physics': 'Physics',
+              'chemistry': 'Chemistry',
+              'mathematics': 'Mathematics',
+              'engineering': 'Engineering',
+              'economics': 'Economics',
+              'psychology': 'Psychology',
+              'sociology': 'Sociology',
+              'environmental-science': 'Environmental Science',
+              'materials-science': 'Materials Science'
+            };
+            return fieldMap[f] || null;
+          }).filter(Boolean);
+          
+          if (ssFields.length > 0) {
+            params.set('fieldsOfStudy', ssFields.join(','));
+          }
+        }
 
         this.lastRequestTime = Date.now();
-        const response = await this.fetchWithTimeout(`https://api.semanticscholar.org/graph/v1/paper/search?${params}`, {
-          headers: {
-            'User-Agent': 'Research-Paper-Writing-App/1.0'
-          }
+        const url = `https://api.semanticscholar.org/graph/v1/paper/search?${params}`;
+        console.log(`[SemanticScholar] Searching: ${url.substring(0, 200)}...`);
+        
+        const response = await this.fetchWithTimeout(url, {
+          headers: this.getHeaders()
         });
 
         if (response.status === 429) {
@@ -495,6 +682,9 @@ class SemanticScholarProvider implements SearchProvider {
         }
 
         if (!response.ok) {
+          // Log the actual error for debugging
+          const errorBody = await response.text().catch(() => 'Unable to read error body');
+          console.error(`[SemanticScholar] API error ${response.status}:`, errorBody.substring(0, 500));
           throw new Error(`Semantic Scholar API error: ${response.status}`);
         }
 
@@ -507,10 +697,13 @@ class SemanticScholarProvider implements SearchProvider {
           year: paper.year,
           venue: paper.venue,
           abstract: paper.abstract,
-          doi: paper.doi,
+          doi: paper.externalIds?.DOI || null,
           url: paper.url,
           citationCount: paper.citationCount,
           source: 'semantic_scholar',
+          publicationType: this.mapPublicationType(paper.publicationTypes),
+          isOpenAccess: paper.isOpenAccess || !!paper.openAccessPdf?.url,
+          fieldsOfStudy: (paper.fieldsOfStudy || []).map((f: any) => f.category || f),
           rawData: paper
         }));
       } catch (error) {
@@ -541,9 +734,7 @@ class SemanticScholarProvider implements SearchProvider {
         this.lastRequestTime = Date.now();
         // Try DOI first
         const response = await this.fetchWithTimeout(`https://api.semanticscholar.org/graph/v1/paper/DOI:${identifier}`, {
-          headers: {
-            'User-Agent': 'Research-Paper-Writing-App/1.0'
-          }
+          headers: this.getHeaders()
         });
 
         if (response.status === 429) {
@@ -598,6 +789,26 @@ class SemanticScholarProvider implements SearchProvider {
 
   getRateLimit() {
     return { requests: 100, period: 300 }; // 100 requests per 5 minutes (unauthenticated)
+  }
+
+  private mapPublicationType(types: string[] | undefined): PublicationType | undefined {
+    if (!types || types.length === 0) return undefined;
+    
+    const typeMap: Record<string, PublicationType> = {
+      'JournalArticle': 'journal-article',
+      'Conference': 'conference-paper',
+      'BookSection': 'book-chapter',
+      'Book': 'book',
+      'Preprint': 'preprint',
+      'Review': 'review',
+      'Thesis': 'thesis',
+      'Dataset': 'dataset'
+    };
+
+    for (const t of types) {
+      if (typeMap[t]) return typeMap[t];
+    }
+    return 'other';
   }
 }
 
@@ -661,8 +872,39 @@ class CrossRefProvider implements SearchProvider {
           'sort': 'relevance'
         });
 
-        if (options.yearFrom) params.set('from-pub-date', `${options.yearFrom}-01-01`);
-        if (options.yearTo) params.set('until-pub-date', `${options.yearTo}-12-31`);
+        // CrossRef uses 'filter' parameter for date filtering, not separate parameters
+        const filters: string[] = [];
+        if (options.yearFrom) filters.push(`from-pub-date:${options.yearFrom}`);
+        if (options.yearTo) filters.push(`until-pub-date:${options.yearTo}`);
+        if (filters.length > 0) params.set('filter', filters.join(','));
+
+        // Publication type filter
+        if (options.publicationTypes && options.publicationTypes.length > 0) {
+          const crTypes = options.publicationTypes.map(t => {
+            const typeMap: Record<string, string> = {
+              'journal-article': 'journal-article',
+              'conference-paper': 'proceedings-article',
+              'book-chapter': 'book-chapter',
+              'book': 'book',
+              'preprint': 'posted-content',
+              'review': 'journal-article', // CrossRef doesn't have specific review type
+              'thesis': 'dissertation',
+              'dataset': 'dataset'
+            };
+            return typeMap[t] || null;
+          }).filter(Boolean);
+          
+          if (crTypes.length > 0) {
+            params.set('filter', `type:${crTypes.join(',type:')}`);
+          }
+        }
+
+        // Has abstract filter
+        if (options.hasAbstract) {
+          const currentFilter = params.get('filter');
+          const abstractFilter = 'has-abstract:true';
+          params.set('filter', currentFilter ? `${currentFilter},${abstractFilter}` : abstractFilter);
+        }
 
         const response = await this.fetchWithTimeout(`https://api.crossref.org/works?${params}`, {
           headers: {
@@ -801,16 +1043,91 @@ class OpenAlexProvider implements SearchProvider {
         'sort': 'relevance_score:desc'
       });
 
-      if (options.yearFrom) params.set('from_publication_year', options.yearFrom.toString());
-      if (options.yearTo) params.set('to_publication_year', options.yearTo.toString());
+      // Build filter string for OpenAlex
+      const filters: string[] = [];
 
-      const response = await this.fetchWithTimeout(`https://api.openalex.org/works?${params}`, {
+      if (options.yearFrom) filters.push(`publication_year:>=${options.yearFrom}`);
+      if (options.yearTo) filters.push(`publication_year:<=${options.yearTo}`);
+
+      // Publication type filter
+      if (options.publicationTypes && options.publicationTypes.length > 0) {
+        const oaTypes = options.publicationTypes.map(t => {
+          const typeMap: Record<string, string> = {
+            'journal-article': 'article',
+            'conference-paper': 'proceedings-article',
+            'book-chapter': 'book-chapter',
+            'book': 'book',
+            'preprint': 'preprint',
+            'review': 'review',
+            'thesis': 'dissertation',
+            'dataset': 'dataset'
+          };
+          return typeMap[t] || null;
+        }).filter(Boolean);
+        
+        if (oaTypes.length > 0) {
+          filters.push(`type:${oaTypes.join('|')}`);
+        }
+      }
+
+      // Open access filter
+      if (options.openAccessOnly) {
+        filters.push('is_oa:true');
+      }
+
+      // Minimum citations filter
+      if (options.minCitations && options.minCitations > 0) {
+        filters.push(`cited_by_count:>=${options.minCitations}`);
+      }
+
+      // Has abstract filter
+      if (options.hasAbstract) {
+        filters.push('has_abstract:true');
+      }
+
+      // Fields of study filter (OpenAlex uses concepts)
+      if (options.fieldsOfStudy && options.fieldsOfStudy.length > 0) {
+        // OpenAlex uses concept IDs, but we can search by display_name
+        const fieldNames = options.fieldsOfStudy.map(f => {
+          const fieldMap: Record<string, string> = {
+            'computer-science': 'Computer science',
+            'medicine': 'Medicine',
+            'biology': 'Biology',
+            'physics': 'Physics',
+            'chemistry': 'Chemistry',
+            'mathematics': 'Mathematics',
+            'engineering': 'Engineering',
+            'economics': 'Economics',
+            'psychology': 'Psychology',
+            'sociology': 'Sociology',
+            'environmental-science': 'Environmental science',
+            'materials-science': 'Materials science'
+          };
+          return fieldMap[f] || null;
+        }).filter(Boolean);
+        
+        // Note: OpenAlex concept filtering requires concept IDs which we don't have
+        // For now, we'll add concepts to the search query instead
+        if (fieldNames.length > 0) {
+          params.set('search', `${query} ${fieldNames.join(' ')}`);
+        }
+      }
+
+      // Apply filters
+      if (filters.length > 0) {
+        params.set('filter', filters.join(','));
+      }
+
+      const url = `https://api.openalex.org/works?${params}`;
+      const response = await this.fetchWithTimeout(url, {
         headers: {
-          'User-Agent': 'Research-Paper-Writing-App/1.0'
+          'User-Agent': 'Research-Paper-Writing-App/1.0 (mailto:support@papsi.com)'
         }
       });
 
       if (!response.ok) {
+        const errorBody = await response.text().catch(() => 'Unable to read error body');
+        console.error(`[OpenAlex] API error ${response.status}:`, errorBody.substring(0, 500));
         throw new Error(`OpenAlex API error: ${response.status}`);
       }
 
@@ -827,12 +1144,32 @@ class OpenAlexProvider implements SearchProvider {
         url: work.primary_location?.landing_page_url || work.doi,
         citationCount: work.cited_by_count,
         source: 'openalex',
+        publicationType: this.mapPublicationType(work.type),
+        isOpenAccess: work.is_oa,
+        fieldsOfStudy: (work.concepts || []).slice(0, 5).map((c: any) => c.display_name),
         rawData: work
       }));
     } catch (error) {
       console.error('OpenAlex search failed:', error);
       return [];
     }
+  }
+
+  private mapPublicationType(type: string | undefined): PublicationType | undefined {
+    if (!type) return undefined;
+    
+    const typeMap: Record<string, PublicationType> = {
+      'article': 'journal-article',
+      'proceedings-article': 'conference-paper',
+      'book-chapter': 'book-chapter',
+      'book': 'book',
+      'preprint': 'preprint',
+      'review': 'review',
+      'dissertation': 'thesis',
+      'dataset': 'dataset'
+    };
+
+    return typeMap[type] || 'other';
   }
 
   async getByIdentifier(identifier: string): Promise<SearchResult | null> {
@@ -889,6 +1226,606 @@ class OpenAlexProvider implements SearchProvider {
     }
 
     return words.join(' ');
+  }
+}
+
+// ============================================================================
+// PUBMED/NCBI PROVIDER (Biomedical literature - free, no API key required)
+// ============================================================================
+
+class PubMedProvider implements SearchProvider {
+  name = 'pubmed';
+  private lastRequestTime = 0;
+  private readonly MIN_REQUEST_INTERVAL_MS = 350; // NCBI allows ~3 req/sec without key
+  private readonly FETCH_TIMEOUT_MS = 30000;
+
+  private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+    
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async search(query: string, options: SearchOptions): Promise<SearchResult[]> {
+    // Rate limiting
+    const timeSinceLastRequest = Date.now() - this.lastRequestTime;
+    if (timeSinceLastRequest < this.MIN_REQUEST_INTERVAL_MS) {
+      await new Promise(resolve => setTimeout(resolve, this.MIN_REQUEST_INTERVAL_MS - timeSinceLastRequest));
+    }
+
+    try {
+      // Build enhanced query with filters
+      let enhancedQuery = query;
+      
+      // Publication type filter using PubMed syntax
+      if (options.publicationTypes && options.publicationTypes.length > 0) {
+        const pubTypeFilters = options.publicationTypes.map(t => {
+          const typeMap: Record<string, string> = {
+            'journal-article': 'Journal Article[pt]',
+            'conference-paper': 'Congress[pt]',
+            'book-chapter': 'Book Chapter[pt]',
+            'book': 'Book[pt]',
+            'review': 'Review[pt]',
+            'thesis': 'Thesis[pt]'
+          };
+          return typeMap[t] || null;
+        }).filter(Boolean);
+        
+        if (pubTypeFilters.length > 0) {
+          enhancedQuery = `(${query}) AND (${pubTypeFilters.join(' OR ')})`;
+        }
+      }
+
+      // Open access filter
+      if (options.openAccessOnly) {
+        enhancedQuery = `(${enhancedQuery}) AND free full text[filter]`;
+      }
+
+      // Has abstract filter
+      if (options.hasAbstract) {
+        enhancedQuery = `(${enhancedQuery}) AND hasabstract[text]`;
+      }
+
+      // Field of study filter (using MeSH terms for common fields)
+      if (options.fieldsOfStudy && options.fieldsOfStudy.length > 0) {
+        const meshTerms = options.fieldsOfStudy.map(f => {
+          const fieldMap: Record<string, string> = {
+            'medicine': 'Medicine[MeSH]',
+            'biology': 'Biology[MeSH]',
+            'chemistry': 'Chemistry[MeSH]',
+            'physics': 'Physics[MeSH]',
+            'psychology': 'Psychology[MeSH]',
+            'computer-science': 'Computer Science[MeSH]',
+            'engineering': 'Biomedical Engineering[MeSH]',
+            'environmental-science': 'Environmental Health[MeSH]'
+          };
+          return fieldMap[f] || null;
+        }).filter(Boolean);
+        
+        if (meshTerms.length > 0) {
+          enhancedQuery = `(${enhancedQuery}) AND (${meshTerms.join(' OR ')})`;
+        }
+      }
+
+      // Build search URL with optional API key for higher rate limits
+      const apiKey = process.env.NCBI_API_KEY;
+      const baseParams = new URLSearchParams({
+        db: 'pubmed',
+        term: enhancedQuery,
+        retmax: (options.limit || 20).toString(),
+        retmode: 'json',
+        usehistory: 'n'
+      });
+
+      if (apiKey) {
+        baseParams.set('api_key', apiKey);
+      }
+
+      // Add date filters if provided
+      if (options.yearFrom || options.yearTo) {
+        const minDate = options.yearFrom ? `${options.yearFrom}/01/01` : '1900/01/01';
+        const maxDate = options.yearTo ? `${options.yearTo}/12/31` : '3000/12/31';
+        baseParams.set('mindate', minDate);
+        baseParams.set('maxdate', maxDate);
+        baseParams.set('datetype', 'pdat'); // Publication date
+      }
+
+      this.lastRequestTime = Date.now();
+
+      // Step 1: Search for PMIDs
+      const searchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?${baseParams}`;
+      const searchResponse = await this.fetchWithTimeout(searchUrl);
+
+      if (!searchResponse.ok) {
+        throw new Error(`PubMed search error: ${searchResponse.status}`);
+      }
+
+      const searchData = await searchResponse.json();
+      const pmids: string[] = searchData.esearchresult?.idlist || [];
+
+      if (pmids.length === 0) {
+        return [];
+      }
+
+      // Step 2: Fetch details for PMIDs
+      const fetchParams = new URLSearchParams({
+        db: 'pubmed',
+        id: pmids.join(','),
+        retmode: 'xml',
+        rettype: 'abstract'
+      });
+
+      if (apiKey) {
+        fetchParams.set('api_key', apiKey);
+      }
+
+      // Small delay between requests
+      await new Promise(resolve => setTimeout(resolve, 100));
+      this.lastRequestTime = Date.now();
+
+      const fetchUrl = `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?${fetchParams}`;
+      const fetchResponse = await this.fetchWithTimeout(fetchUrl);
+
+      if (!fetchResponse.ok) {
+        throw new Error(`PubMed fetch error: ${fetchResponse.status}`);
+      }
+
+      const xmlText = await fetchResponse.text();
+      return this.parseXMLResponse(xmlText);
+
+    } catch (error) {
+      console.error('PubMed search failed:', error);
+      return [];
+    }
+  }
+
+  private parseXMLResponse(xml: string): SearchResult[] {
+    const results: SearchResult[] = [];
+
+    // Simple XML parsing for PubMed articles
+    const articleMatches = xml.matchAll(/<PubmedArticle>([\s\S]*?)<\/PubmedArticle>/g);
+
+    for (const match of articleMatches) {
+      try {
+        const articleXml = match[1];
+
+        // Extract PMID
+        const pmidMatch = articleXml.match(/<PMID[^>]*>(\d+)<\/PMID>/);
+        const pmid = pmidMatch ? pmidMatch[1] : null;
+
+        // Extract title
+        const titleMatch = articleXml.match(/<ArticleTitle>([^<]+)<\/ArticleTitle>/);
+        const title = titleMatch ? this.decodeXmlEntities(titleMatch[1]) : '';
+
+        // Extract abstract
+        const abstractMatch = articleXml.match(/<AbstractText[^>]*>([^<]+)<\/AbstractText>/g);
+        const abstract = abstractMatch 
+          ? abstractMatch.map(m => this.decodeXmlEntities(m.replace(/<[^>]+>/g, ''))).join(' ')
+          : undefined;
+
+        // Extract authors
+        const authorMatches = articleXml.matchAll(/<Author[^>]*>[\s\S]*?<LastName>([^<]+)<\/LastName>[\s\S]*?(?:<ForeName>([^<]+)<\/ForeName>)?[\s\S]*?<\/Author>/g);
+        const authors: string[] = [];
+        for (const authorMatch of authorMatches) {
+          const lastName = authorMatch[1];
+          const foreName = authorMatch[2] || '';
+          authors.push(`${foreName} ${lastName}`.trim());
+        }
+
+        // Extract year
+        const yearMatch = articleXml.match(/<PubDate>[\s\S]*?<Year>(\d{4})<\/Year>/);
+        const year = yearMatch ? parseInt(yearMatch[1], 10) : undefined;
+
+        // Extract journal
+        const journalMatch = articleXml.match(/<Title>([^<]+)<\/Title>/);
+        const venue = journalMatch ? this.decodeXmlEntities(journalMatch[1]) : undefined;
+
+        // Extract DOI
+        const doiMatch = articleXml.match(/<ArticleId IdType="doi">([^<]+)<\/ArticleId>/);
+        const doi = doiMatch ? doiMatch[1] : undefined;
+
+        if (pmid && title) {
+          results.push({
+            id: `pm_${pmid}`,
+            title,
+            authors,
+            year,
+            venue,
+            abstract,
+            doi,
+            url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
+            source: 'pubmed',
+            rawData: { pmid }
+          });
+        }
+      } catch (err) {
+        console.warn('Failed to parse PubMed article:', err);
+      }
+    }
+
+    return results;
+  }
+
+  private decodeXmlEntities(text: string): string {
+    return text
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'");
+  }
+
+  async getByIdentifier(identifier: string): Promise<SearchResult | null> {
+    try {
+      // Handle PMID or DOI
+      let pmid = identifier;
+      
+      if (identifier.startsWith('10.')) {
+        // Search by DOI to get PMID
+        const searchResults = await this.search(`${identifier}[doi]`, { limit: 1 });
+        return searchResults[0] || null;
+      }
+
+      // Direct PMID lookup
+      const results = await this.search(`${pmid}[pmid]`, { limit: 1 });
+      return results[0] || null;
+    } catch (error) {
+      console.error('PubMed identifier lookup failed:', error);
+      return null;
+    }
+  }
+
+  getRateLimit() {
+    // With API key: 10 req/sec, without: 3 req/sec
+    const hasKey = !!process.env.NCBI_API_KEY;
+    return { requests: hasKey ? 10 : 3, period: 1 };
+  }
+}
+
+// ============================================================================
+// ARXIV PROVIDER (Preprints - free, no API key required)
+// ============================================================================
+
+class ArXivProvider implements SearchProvider {
+  name = 'arxiv';
+  private lastRequestTime = 0;
+  private readonly MIN_REQUEST_INTERVAL_MS = 3000; // arXiv asks for 3 second delay
+  private readonly FETCH_TIMEOUT_MS = 30000;
+
+  private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+    
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async search(query: string, options: SearchOptions): Promise<SearchResult[]> {
+    // Rate limiting - arXiv asks for 3 second delay between requests
+    const timeSinceLastRequest = Date.now() - this.lastRequestTime;
+    if (timeSinceLastRequest < this.MIN_REQUEST_INTERVAL_MS) {
+      await new Promise(resolve => setTimeout(resolve, this.MIN_REQUEST_INTERVAL_MS - timeSinceLastRequest));
+    }
+
+    try {
+      // Build arXiv API query
+      // arXiv uses a specific query syntax
+      let searchQuery = `all:${encodeURIComponent(query)}`;
+
+      // Add category filter for fields of study
+      if (options.fieldsOfStudy && options.fieldsOfStudy.length > 0) {
+        const arxivCategories = options.fieldsOfStudy.map(f => {
+          const categoryMap: Record<string, string[]> = {
+            'computer-science': ['cs.AI', 'cs.LG', 'cs.CL', 'cs.CV', 'cs.NE', 'cs.SE', 'cs.DB', 'cs.IR'],
+            'physics': ['physics', 'quant-ph', 'hep-th', 'hep-ph', 'cond-mat', 'astro-ph'],
+            'mathematics': ['math'],
+            'biology': ['q-bio'],
+            'economics': ['econ', 'q-fin'],
+            'engineering': ['eess']
+          };
+          return categoryMap[f] || [];
+        }).flat();
+        
+        if (arxivCategories.length > 0) {
+          // Combine with OR for categories
+          const catQuery = arxivCategories.map(c => `cat:${c}*`).join('+OR+');
+          searchQuery = `(${searchQuery})+AND+(${catQuery})`;
+        }
+      }
+
+      const params = new URLSearchParams({
+        search_query: searchQuery,
+        start: '0',
+        max_results: (options.limit || 20).toString(),
+        sortBy: 'relevance',
+        sortOrder: 'descending'
+      });
+
+      this.lastRequestTime = Date.now();
+
+      const url = `https://export.arxiv.org/api/query?${params}`;
+      const response = await this.fetchWithTimeout(url);
+
+      if (!response.ok) {
+        throw new Error(`arXiv API error: ${response.status}`);
+      }
+
+      const xmlText = await response.text();
+      return this.parseAtomResponse(xmlText, options);
+
+    } catch (error) {
+      console.error('arXiv search failed:', error);
+      return [];
+    }
+  }
+
+  private parseAtomResponse(xml: string, options: SearchOptions): SearchResult[] {
+    const results: SearchResult[] = [];
+
+    // Parse Atom feed entries
+    const entryMatches = xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g);
+
+    for (const match of entryMatches) {
+      try {
+        const entryXml = match[1];
+
+        // Extract ID (arXiv identifier)
+        const idMatch = entryXml.match(/<id>([^<]+)<\/id>/);
+        const fullId = idMatch ? idMatch[1] : null;
+        const arxivId = fullId?.replace('http://arxiv.org/abs/', '') || null;
+
+        // Extract title
+        const titleMatch = entryXml.match(/<title>([^<]+)<\/title>/);
+        const title = titleMatch ? titleMatch[1].replace(/\s+/g, ' ').trim() : '';
+
+        // Extract abstract (summary)
+        const summaryMatch = entryXml.match(/<summary>([^<]+)<\/summary>/);
+        const abstract = summaryMatch ? summaryMatch[1].replace(/\s+/g, ' ').trim() : undefined;
+
+        // Extract authors
+        const authorMatches = entryXml.matchAll(/<author>[\s\S]*?<name>([^<]+)<\/name>[\s\S]*?<\/author>/g);
+        const authors: string[] = [];
+        for (const authorMatch of authorMatches) {
+          authors.push(authorMatch[1].trim());
+        }
+
+        // Extract published date
+        const publishedMatch = entryXml.match(/<published>(\d{4})-\d{2}-\d{2}/);
+        const year = publishedMatch ? parseInt(publishedMatch[1], 10) : undefined;
+
+        // Filter by year if specified
+        if (options.yearFrom && year && year < options.yearFrom) continue;
+        if (options.yearTo && year && year > options.yearTo) continue;
+
+        // Extract DOI if available
+        const doiMatch = entryXml.match(/<arxiv:doi[^>]*>([^<]+)<\/arxiv:doi>/);
+        const doi = doiMatch ? doiMatch[1] : undefined;
+
+        // Extract categories for venue
+        const categoryMatches = entryXml.matchAll(/<category[^>]*term="([^"]+)"/g);
+        const categories: string[] = [];
+        for (const catMatch of categoryMatches) {
+          categories.push(catMatch[1]);
+        }
+        const venue = categories.length > 0 ? `arXiv:${categories[0]}` : 'arXiv';
+
+        // Extract PDF link
+        const pdfMatch = entryXml.match(/<link[^>]*title="pdf"[^>]*href="([^"]+)"/);
+        const pdfUrl = pdfMatch ? pdfMatch[1] : undefined;
+
+        if (arxivId && title) {
+          results.push({
+            id: `arxiv_${arxivId.replace(/[/.]/g, '_')}`,
+            title,
+            authors,
+            year,
+            venue,
+            abstract,
+            doi,
+            url: `https://arxiv.org/abs/${arxivId}`,
+            source: 'arxiv',
+            rawData: { arxivId, pdfUrl, categories }
+          });
+        }
+      } catch (err) {
+        console.warn('Failed to parse arXiv entry:', err);
+      }
+    }
+
+    return results;
+  }
+
+  async getByIdentifier(identifier: string): Promise<SearchResult | null> {
+    try {
+      // Handle arXiv ID or DOI
+      let arxivId = identifier;
+
+      // Clean up arXiv ID if needed
+      arxivId = arxivId.replace('arXiv:', '').replace('arxiv:', '');
+
+      if (identifier.startsWith('10.')) {
+        // Search by DOI
+        const results = await this.search(`doi:${identifier}`, { limit: 1 });
+        return results[0] || null;
+      }
+
+      // Direct arXiv ID lookup
+      const params = new URLSearchParams({
+        id_list: arxivId,
+        max_results: '1'
+      });
+
+      const url = `https://export.arxiv.org/api/query?${params}`;
+      const response = await this.fetchWithTimeout(url);
+
+      if (!response.ok) {
+        return null;
+      }
+
+      const xmlText = await response.text();
+      const results = this.parseAtomResponse(xmlText, {});
+      return results[0] || null;
+    } catch (error) {
+      console.error('arXiv identifier lookup failed:', error);
+      return null;
+    }
+  }
+
+  getRateLimit() {
+    return { requests: 1, period: 3 }; // 1 request per 3 seconds (arXiv policy)
+  }
+}
+
+// ============================================================================
+// CORE PROVIDER (Open Access research - API key recommended for better limits)
+// ============================================================================
+
+class COREProvider implements SearchProvider {
+  name = 'core';
+  private lastRequestTime = 0;
+  private readonly MIN_REQUEST_INTERVAL_MS = 1000;
+  private readonly FETCH_TIMEOUT_MS = 30000;
+
+  private getHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'User-Agent': 'Research-Paper-Writing-App/1.0',
+      'Content-Type': 'application/json'
+    };
+
+    // Add API key if configured
+    const apiKey = process.env.CORE_API_KEY;
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+
+    return headers;
+  }
+
+  private async fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.FETCH_TIMEOUT_MS);
+    
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      return response;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  async search(query: string, options: SearchOptions): Promise<SearchResult[]> {
+    const apiKey = process.env.CORE_API_KEY;
+
+    // CORE requires API key for search
+    if (!apiKey) {
+      console.warn('CORE API key not configured (set CORE_API_KEY), skipping CORE search');
+      return [];
+    }
+
+    // Rate limiting
+    const timeSinceLastRequest = Date.now() - this.lastRequestTime;
+    if (timeSinceLastRequest < this.MIN_REQUEST_INTERVAL_MS) {
+      await new Promise(resolve => setTimeout(resolve, this.MIN_REQUEST_INTERVAL_MS - timeSinceLastRequest));
+    }
+
+    try {
+      this.lastRequestTime = Date.now();
+
+      // Build request body for CORE API v3
+      const requestBody: any = {
+        q: query,
+        limit: options.limit || 20,
+        offset: 0
+      };
+
+      // Add year filters
+      if (options.yearFrom || options.yearTo) {
+        const filters: string[] = [];
+        if (options.yearFrom) {
+          filters.push(`yearPublished>=${options.yearFrom}`);
+        }
+        if (options.yearTo) {
+          filters.push(`yearPublished<=${options.yearTo}`);
+        }
+        if (filters.length > 0) {
+          requestBody.q = `(${query}) AND ${filters.join(' AND ')}`;
+        }
+      }
+
+      const response = await this.fetchWithTimeout('https://api.core.ac.uk/v3/search/works', {
+        method: 'POST',
+        headers: this.getHeaders(),
+        body: JSON.stringify(requestBody)
+      });
+
+      if (!response.ok) {
+        if (response.status === 401) {
+          console.warn('CORE API key invalid or expired');
+          return [];
+        }
+        throw new Error(`CORE API error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const results: SearchResult[] = [];
+
+      for (const work of (data.results || [])) {
+        try {
+          results.push({
+            id: `core_${work.id || crypto.randomUUID()}`,
+            title: work.title || '',
+            authors: (work.authors || []).map((a: any) => a.name || '').filter(Boolean),
+            year: work.yearPublished,
+            venue: work.publisher || work.journals?.[0]?.title,
+            abstract: work.abstract,
+            doi: work.doi,
+            url: work.downloadUrl || work.sourceFulltextUrls?.[0] || (work.doi ? `https://doi.org/${work.doi}` : undefined),
+            citationCount: work.citationCount,
+            source: 'core',
+            rawData: work
+          });
+        } catch (err) {
+          console.warn('Failed to parse CORE result:', err);
+        }
+      }
+
+      return results;
+
+    } catch (error) {
+      console.error('CORE search failed:', error);
+      return [];
+    }
+  }
+
+  async getByIdentifier(identifier: string): Promise<SearchResult | null> {
+    const apiKey = process.env.CORE_API_KEY;
+
+    if (!apiKey) {
+      return null;
+    }
+
+    try {
+      // Search by DOI
+      const results = await this.search(`doi:"${identifier}"`, { limit: 1 });
+      return results[0] || null;
+    } catch (error) {
+      console.error('CORE identifier lookup failed:', error);
+      return null;
+    }
+  }
+
+  getRateLimit() {
+    // CORE: 10 requests/second with API key
+    return { requests: 10, period: 1 };
   }
 }
 

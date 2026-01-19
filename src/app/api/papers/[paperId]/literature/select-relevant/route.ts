@@ -14,12 +14,29 @@ const requestSchema = z.object({
   maxSuggestions: z.number().int().min(1).max(20).optional().default(10),
 });
 
-// Response structure from LLM
+// Enhanced response structure from LLM with citation metadata
+interface CitationUsage {
+  introduction: boolean;      // Cite for background/context
+  literatureReview: boolean;  // Cite for detailed analysis
+  methodology: boolean;       // Reference their method
+  comparison: boolean;        // Use as baseline/comparison
+}
+
+interface CitationMeta {
+  keyContribution: string;         // Main contribution (1 sentence)
+  keyFindings: string;             // Main results/findings (1 sentence)
+  methodologicalApproach: string | null;  // Their method (if relevant)
+  relevanceToResearch: string;     // How it relates to user's research
+  limitationsOrGaps: string | null;       // What they didn't address
+  usage: CitationUsage;
+}
+
 interface PaperRelevanceAnalysis {
   paperId: string;
   isRelevant: boolean;
   relevanceScore: number; // 0-100
   reasoning: string;
+  citationMeta: CitationMeta;  // Enhanced metadata for section generation
 }
 
 interface LLMResponse {
@@ -57,7 +74,7 @@ function buildPrompt(
    Authors: ${authorStr}${yearStr}${abstractStr}`;
   }).join('\n\n');
 
-  return `You are a research assistant helping identify the most relevant papers for a literature review.
+  return `You are a research assistant helping identify relevant papers for academic writing. Your analysis will be used to generate Introduction, Literature Review, and Methodology sections.
 
 RESEARCH QUESTION:
 ${researchQuestion}
@@ -66,18 +83,26 @@ CANDIDATE PAPERS:
 ${paperList}
 
 TASK:
-Analyze these papers and identify the TOP ${maxSuggestions} most relevant papers for the research question above.
+Analyze these papers and identify the TOP ${maxSuggestions} most relevant papers. For EACH selected paper, extract detailed citation metadata that will help when writing different sections of the manuscript.
 
-For each selected paper, provide:
-1. Why it's relevant (1-2 sentences)
-2. A relevance score (0-100)
+For each paper, determine:
+1. Key contribution (1 sentence - what's new/important about this paper)
+2. Key findings (1 sentence - main results or conclusions)
+3. Methodological approach (if relevant to the research question)
+4. How it relates to the research question
+5. Limitations or gaps (what they didn't address - useful for positioning your work)
+6. WHERE to cite this paper:
+   - Introduction: Good for background/context/motivation?
+   - Literature Review: Needs detailed analysis/comparison?
+   - Methodology: Reference their method/approach?
+   - Comparison: Use as baseline/competing approach?
 
 IMPORTANT CRITERIA:
-- Papers with abstracts should be preferred as they provide more context
-- Consider methodological alignment with the research question
-- Consider theoretical/conceptual relevance
-- Consider recency and citation potential
-- Avoid papers that seem tangentially related
+- Papers with abstracts provide more context - prefer them
+- Include foundational/seminal works even if older
+- Include papers showing contrasting viewpoints
+- Consider methodological relevance
+- Identify papers useful for different sections
 
 Respond in the following JSON format ONLY (no markdown, no explanation outside JSON):
 {
@@ -86,10 +111,23 @@ Respond in the following JSON format ONLY (no markdown, no explanation outside J
       "paperId": "<exact paper ID from the list>",
       "isRelevant": true,
       "relevanceScore": <0-100>,
-      "reasoning": "<1-2 sentence explanation>"
+      "reasoning": "<1-2 sentence explanation of overall relevance>",
+      "citationMeta": {
+        "keyContribution": "<main contribution in 1 sentence>",
+        "keyFindings": "<main results/findings in 1 sentence>",
+        "methodologicalApproach": "<their method, or null if not relevant>",
+        "relevanceToResearch": "<how it connects to the research question>",
+        "limitationsOrGaps": "<what they didn't address, or null>",
+        "usage": {
+          "introduction": <true/false - cite in intro for background>,
+          "literatureReview": <true/false - analyze in detail in lit review>,
+          "methodology": <true/false - reference their method>,
+          "comparison": <true/false - use as baseline/comparison>
+        }
+      }
     }
   ],
-  "summary": "<brief 1-sentence summary of your selection strategy>"
+  "summary": "<1-2 sentence summary of the selected papers and how they cover the research topic>"
 }
 
 Return ONLY papers you recommend. Order by relevance score (highest first).`;
@@ -123,11 +161,34 @@ function parseAndValidateLLMResponse(output: string, validPaperIds: Set<string>)
       continue;
     }
     
+    // Parse citation metadata with defaults
+    const rawMeta = suggestion.citationMeta || {};
+    const usage = rawMeta.usage || {};
+    
+    const citationMeta: CitationMeta = {
+      keyContribution: String(rawMeta.keyContribution || 'Not specified').slice(0, 300),
+      keyFindings: String(rawMeta.keyFindings || 'Not specified').slice(0, 300),
+      methodologicalApproach: rawMeta.methodologicalApproach 
+        ? String(rawMeta.methodologicalApproach).slice(0, 300) 
+        : null,
+      relevanceToResearch: String(rawMeta.relevanceToResearch || suggestion.reasoning || 'Relevant to research').slice(0, 300),
+      limitationsOrGaps: rawMeta.limitationsOrGaps 
+        ? String(rawMeta.limitationsOrGaps).slice(0, 300) 
+        : null,
+      usage: {
+        introduction: Boolean(usage.introduction),
+        literatureReview: Boolean(usage.literatureReview !== false), // Default true for relevant papers
+        methodology: Boolean(usage.methodology),
+        comparison: Boolean(usage.comparison),
+      }
+    };
+    
     validatedSuggestions.push({
       paperId: suggestion.paperId,
       isRelevant: suggestion.isRelevant !== false,
       relevanceScore: Math.min(100, Math.max(0, Number(suggestion.relevanceScore) || 50)),
       reasoning: String(suggestion.reasoning || 'No reasoning provided').slice(0, 500),
+      citationMeta,
     });
   }
 

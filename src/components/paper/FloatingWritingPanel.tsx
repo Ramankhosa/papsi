@@ -1383,34 +1383,27 @@ export default function FloatingWritingPanel({
                       exit={{ opacity: 0, y: -10 }}
                       className="p-3 space-y-3"
                     >
-                      {/* Selection indicator */}
+                      {/* Selection indicator - simplified, no animation for stability */}
                       {selectedText?.text ? (
-                        <motion.div 
-                          initial={{ scale: 0.95, opacity: 0 }}
-                          animate={{ scale: 1, opacity: 1 }}
-                          className="p-3 bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl border-2 border-blue-200 shadow-sm"
-                        >
+                        <div className="p-3 bg-blue-50 rounded-xl border border-blue-200">
                           <div className="flex items-center justify-between mb-2">
                             <div className="flex items-center gap-2">
-                              <div className="w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse" />
+                              <div className="w-2 h-2 rounded-full bg-blue-500" />
                               <p className="text-xs text-blue-700 font-semibold">Text Selected</p>
                             </div>
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] font-medium text-blue-600 bg-blue-100 px-2 py-0.5 rounded-full">
-                                {selectedText.text.length} chars
-                              </span>
-                              <HelpTooltip text="Select text in your paper to transform it using AI. The selected text will be replaced with the improved version." />
-                            </div>
+                            <span className="text-[10px] font-medium text-blue-600 bg-blue-100 px-2 py-0.5 rounded-full">
+                              {selectedText.text.length} chars
+                            </span>
                           </div>
                           <div className="p-2 bg-white/80 rounded-lg border border-blue-100">
-                            <p className="text-xs text-slate-700 line-clamp-3 leading-relaxed">&ldquo;{selectedText.text}&rdquo;</p>
+                            <p className="text-xs text-slate-700 line-clamp-2 leading-relaxed">&ldquo;{selectedText.text.slice(0, 100)}{selectedText.text.length > 100 ? '...' : ''}&rdquo;</p>
                           </div>
-                          <p className="mt-2 text-[10px] text-blue-600 text-center">
-                            ✨ Choose an action below to transform this text
+                          <p className="mt-1.5 text-[10px] text-blue-600 text-center">
+                            Choose an action below
                           </p>
-                        </motion.div>
+                        </div>
                       ) : (
-                        <div className="p-3 bg-gradient-to-br from-amber-50 to-orange-50 rounded-xl border border-amber-200 flex items-start gap-2">
+                        <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 flex items-start gap-2">
                           <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
                           <div>
                             <p className="text-xs font-medium text-amber-700">No text selected</p>

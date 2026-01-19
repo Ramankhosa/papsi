@@ -13,11 +13,44 @@ const searchSchema = z.object({
   sources: z.array(z.string().min(1)).optional(),
   yearFrom: z.number().int().optional(),
   yearTo: z.number().int().optional(),
-  limit: z.number().int().positive().max(50).optional()
+  limit: z.number().int().positive().max(50).optional(),
+  // Enhanced filters
+  publicationTypes: z.array(z.enum([
+    'journal-article', 'conference-paper', 'book-chapter', 'book', 
+    'preprint', 'review', 'thesis', 'dataset', 'other'
+  ])).optional(),
+  openAccessOnly: z.boolean().optional(),
+  minCitations: z.number().int().nonnegative().optional(),
+  fieldsOfStudy: z.array(z.enum([
+    'computer-science', 'medicine', 'biology', 'physics', 'chemistry',
+    'mathematics', 'engineering', 'economics', 'psychology', 'sociology',
+    'environmental-science', 'materials-science', 'other'
+  ])).optional(),
+  hasAbstract: z.boolean().optional()
 });
 
 const recentRequests = new Map<string, { timestamp: number; response: any }>();
 const DEDUP_WINDOW_MS = 5000;
+
+// Sanitize string to remove null characters that PostgreSQL can't handle
+function sanitizeForPostgres(obj: any): any {
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') {
+    // Remove null characters (\u0000)
+    return obj.replace(/\u0000/g, '');
+  }
+  if (Array.isArray(obj)) {
+    return obj.map(sanitizeForPostgres);
+  }
+  if (typeof obj === 'object') {
+    const sanitized: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      sanitized[key] = sanitizeForPostgres(value);
+    }
+    return sanitized;
+  }
+  return obj;
+}
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
   if (user.roles?.includes('SUPER_ADMIN')) {
@@ -57,7 +90,12 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       sources: data.sources?.slice().sort() || [],
       yearFrom: data.yearFrom,
       yearTo: data.yearTo,
-      limit: data.limit
+      limit: data.limit,
+      publicationTypes: data.publicationTypes?.slice().sort() || [],
+      openAccessOnly: data.openAccessOnly,
+      minCitations: data.minCitations,
+      fieldsOfStudy: data.fieldsOfStudy?.slice().sort() || [],
+      hasAbstract: data.hasAbstract
     });
 
     const now = Date.now();
@@ -70,10 +108,19 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       sources: data.sources,
       yearFrom: data.yearFrom,
       yearTo: data.yearTo,
-      limit: data.limit
+      limit: data.limit,
+      // Enhanced filters
+      publicationTypes: data.publicationTypes,
+      openAccessOnly: data.openAccessOnly,
+      minCitations: data.minCitations,
+      fieldsOfStudy: data.fieldsOfStudy,
+      hasAbstract: data.hasAbstract
     });
 
     // Persist search run for AI analysis feature
+    // Sanitize results to remove null characters that PostgreSQL can't handle
+    const sanitizedResults = sanitizeForPostgres(result.results);
+    
     const searchRun = await prisma.literatureSearchRun.create({
       data: {
         sessionId,
@@ -81,7 +128,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         sources: data.sources || result.sources,
         yearFrom: data.yearFrom,
         yearTo: data.yearTo,
-        results: result.results,
+        results: sanitizedResults,
       }
     });
 
@@ -106,6 +153,10 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           yearFrom: data.yearFrom,
           yearTo: data.yearTo,
           limit: data.limit,
+          publicationTypes: data.publicationTypes,
+          openAccessOnly: data.openAccessOnly,
+          minCitations: data.minCitations,
+          fieldsOfStudy: data.fieldsOfStudy,
           results: result.totalFound
         }
       }

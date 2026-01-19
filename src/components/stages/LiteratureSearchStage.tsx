@@ -23,14 +23,61 @@ const SOURCE_OPTIONS = [
   { value: 'google_scholar', label: 'Google Scholar', description: 'Broad academic search' },
   { value: 'semantic_scholar', label: 'Semantic Scholar', description: 'Rich abstracts & citations' },
   { value: 'crossref', label: 'CrossRef', description: 'Authoritative DOI data' },
-  { value: 'openalex', label: 'OpenAlex', description: 'Open academic graph' }
+  { value: 'openalex', label: 'OpenAlex', description: 'Open academic graph' },
+  { value: 'pubmed', label: 'PubMed', description: 'Biomedical literature (NCBI)' },
+  { value: 'arxiv', label: 'arXiv', description: 'Preprints & open access' },
+  { value: 'core', label: 'CORE', description: 'Open access aggregator' }
 ];
 
 const SOURCE_ABSTRACT_SUPPORT: Record<string, boolean> = {
   google_scholar: false, // Only snippets
   semantic_scholar: true, // Full abstracts
   crossref: true, // Sometimes has abstracts
+  pubmed: true, // Full abstracts
+  arxiv: true, // Full abstracts
+  core: true, // Full abstracts
   openalex: true, // Full abstracts (reconstructed)
+};
+
+// Publication type options for filtering
+const PUBLICATION_TYPE_OPTIONS = [
+  { value: 'journal-article', label: 'Journal Article', icon: '📄' },
+  { value: 'conference-paper', label: 'Conference Paper', icon: '🎤' },
+  { value: 'preprint', label: 'Preprint', icon: '📝' },
+  { value: 'book-chapter', label: 'Book Chapter', icon: '📖' },
+  { value: 'book', label: 'Book', icon: '📚' },
+  { value: 'review', label: 'Review', icon: '🔍' },
+  { value: 'thesis', label: 'Thesis/Dissertation', icon: '🎓' },
+];
+
+// Field of study options
+const FIELD_OF_STUDY_OPTIONS = [
+  { value: 'computer-science', label: 'Computer Science' },
+  { value: 'medicine', label: 'Medicine' },
+  { value: 'biology', label: 'Biology' },
+  { value: 'physics', label: 'Physics' },
+  { value: 'chemistry', label: 'Chemistry' },
+  { value: 'mathematics', label: 'Mathematics' },
+  { value: 'engineering', label: 'Engineering' },
+  { value: 'economics', label: 'Economics' },
+  { value: 'psychology', label: 'Psychology' },
+  { value: 'environmental-science', label: 'Environmental Science' },
+];
+
+// Provider filter support mapping - which filters each source supports
+const PROVIDER_FILTER_SUPPORT: Record<string, {
+  publicationTypes: boolean;
+  openAccessOnly: boolean;
+  minCitations: boolean;
+  fieldsOfStudy: boolean;
+}> = {
+  google_scholar: { publicationTypes: false, openAccessOnly: false, minCitations: false, fieldsOfStudy: false },
+  semantic_scholar: { publicationTypes: true, openAccessOnly: true, minCitations: true, fieldsOfStudy: true },
+  crossref: { publicationTypes: true, openAccessOnly: false, minCitations: false, fieldsOfStudy: false },
+  openalex: { publicationTypes: true, openAccessOnly: true, minCitations: true, fieldsOfStudy: true },
+  pubmed: { publicationTypes: true, openAccessOnly: true, minCitations: false, fieldsOfStudy: true },
+  arxiv: { publicationTypes: false, openAccessOnly: false, minCitations: false, fieldsOfStudy: true },
+  core: { publicationTypes: true, openAccessOnly: false, minCitations: false, fieldsOfStudy: true },
 };
 
 // Intelligent loading messages that rotate while searching
@@ -67,6 +114,13 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   const [gapLoading, setGapLoading] = useState(false);
   const [gapError, setGapError] = useState<string | null>(null);
   
+  // Enhanced filter state
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
+  const [publicationTypes, setPublicationTypes] = useState<string[]>([]);
+  const [openAccessOnly, setOpenAccessOnly] = useState(false);
+  const [minCitations, setMinCitations] = useState('');
+  const [fieldsOfStudy, setFieldsOfStudy] = useState<string[]>([]);
+  
   // Expandable abstracts
   const [expandedAbstracts, setExpandedAbstracts] = useState<Set<string>>(new Set());
   
@@ -87,14 +141,130 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   const [libraries, setLibraries] = useState<Array<{ id: string; name: string; color?: string; referenceCount: number }>>([]);
   const [saveToLibraryResult, setSaveToLibraryResult] = useState<{ resultId: string; success: boolean; libraryName: string } | null>(null);
 
-  // AI Relevance Suggestion feature
+  // Track all search run IDs for accumulated results
+  const [searchRunIds, setSearchRunIds] = useState<string[]>([]);
+  
+  // AI Relevance Suggestion feature with enhanced citation metadata
   const [searchRunId, setSearchRunId] = useState<string | null>(null);
-  const [aiSuggestions, setAiSuggestions] = useState<Map<string, { isRelevant: boolean; score: number; reasoning: string }>>(new Map());
+  const [aiSuggestions, setAiSuggestions] = useState<Map<string, { 
+    isRelevant: boolean; 
+    score: number; 
+    reasoning: string;
+    citationMeta?: {
+      keyContribution: string;
+      keyFindings: string;
+      methodologicalApproach: string | null;
+      relevanceToResearch: string;
+      limitationsOrGaps: string | null;
+      usage: {
+        introduction: boolean;
+        literatureReview: boolean;
+        methodology: boolean;
+        comparison: boolean;
+      };
+    };
+  }>>(new Map());
   const [aiAnalyzing, setAiAnalyzing] = useState(false);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
+  
+  // Hide non-relevant papers feature
+  const [hideNonRelevant, setHideNonRelevant] = useState(false);
+  
+  // Multi-select and filter for search results
+  const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set());
+  const [removedResults, setRemovedResults] = useState<Set<string>>(new Set());
+  const [resultFilters, setResultFilters] = useState<{
+    hasAbstract: boolean | null;
+    source: string | null;
+    yearFrom: string;
+    yearTo: string;
+    aiRelevantOnly: boolean;
+  }>({
+    hasAbstract: null,
+    source: null,
+    yearFrom: '',
+    yearTo: '',
+    aiRelevantOnly: false
+  });
+  const [showResultFilters, setShowResultFilters] = useState(false);
 
   const importedKeys = useMemo(() => new Set(citations.map(c => c.doi || c.title)), [citations]);
+  
+  // Filtered results (applying all filters)
+  const filteredResults = useMemo(() => {
+    return results.filter(r => {
+      // Skip removed results
+      if (removedResults.has(r.id)) return false;
+      
+      // Hide non-relevant if toggle is on
+      if (hideNonRelevant && aiSuggestions.size > 0 && !aiSuggestions.has(r.id)) return false;
+      
+      // AI relevant only filter
+      if (resultFilters.aiRelevantOnly && !aiSuggestions.has(r.id)) return false;
+      
+      // Has abstract filter
+      if (resultFilters.hasAbstract === true && !r.abstract) return false;
+      if (resultFilters.hasAbstract === false && r.abstract) return false;
+      
+      // Source filter
+      if (resultFilters.source && r.source !== resultFilters.source) return false;
+      
+      // Year filter
+      if (resultFilters.yearFrom && r.year && r.year < parseInt(resultFilters.yearFrom)) return false;
+      if (resultFilters.yearTo && r.year && r.year > parseInt(resultFilters.yearTo)) return false;
+      
+      return true;
+    });
+  }, [results, removedResults, hideNonRelevant, aiSuggestions, resultFilters]);
+  
+  // Get unique sources from results for filter dropdown
+  const availableSources = useMemo(() => {
+    const sources = new Set(results.map(r => r.source));
+    return Array.from(sources);
+  }, [results]);
+  
+  // Selection handlers
+  const toggleResultSelection = (id: string) => {
+    setSelectedResults(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(id)) {
+        newSet.delete(id);
+      } else {
+        newSet.add(id);
+      }
+      return newSet;
+    });
+  };
+  
+  const selectAllVisible = () => {
+    const visibleIds = filteredResults.map(r => r.id);
+    setSelectedResults(new Set(visibleIds));
+  };
+  
+  const clearSelection = () => {
+    setSelectedResults(new Set());
+  };
+  
+  const removeSelected = () => {
+    setRemovedResults(prev => {
+      const newSet = new Set(prev);
+      selectedResults.forEach(id => newSet.add(id));
+      return newSet;
+    });
+    setSelectedResults(new Set());
+  };
+  
+  const restoreAllRemoved = () => {
+    setRemovedResults(new Set());
+  };
+  
+  // Clear removed results when new search is performed
+  const handleSearchWithReset = async () => {
+    setRemovedResults(new Set());
+    setSelectedResults(new Set());
+    await handleSearch();
+  };
   
   // Load libraries for "Save to Library" feature
   const loadLibraries = useCallback(async () => {
@@ -287,9 +457,12 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
             const searchRun = detailData.searchRun;
             
             if (searchRun) {
-              // Restore search results
+              // Restore search results from most recent run
+              // Note: On restore, we start with just the last search run
+              // User can accumulate more by executing additional searches
               setResults(searchRun.results || []);
               setSearchRunId(searchRun.id);
+              setSearchRunIds([searchRun.id]);
               setQuery(searchRun.query || '');
               
               // Restore AI analysis if available
@@ -367,6 +540,52 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     reader.readAsText(file);
   };
 
+  // Deduplicate results by DOI or title (case-insensitive)
+  const deduplicateResults = (existingResults: any[], newResults: any[], sourceQuery: string): any[] => {
+    const seen = new Map<string, any>();
+    
+    // Add existing results first (they take priority)
+    for (const result of existingResults) {
+      const key = result.doi?.toLowerCase() || result.title?.toLowerCase()?.substring(0, 100);
+      if (key && !seen.has(key)) {
+        seen.set(key, result);
+      }
+    }
+    
+    // Add new results, tagging with source query
+    let addedCount = 0;
+    for (const result of newResults) {
+      const key = result.doi?.toLowerCase() || result.title?.toLowerCase()?.substring(0, 100);
+      if (key && !seen.has(key)) {
+        seen.set(key, { 
+          ...result, 
+          _sourceQuery: sourceQuery,
+          _addedAt: Date.now()
+        });
+        addedCount++;
+      }
+    }
+    
+    console.log(`[Search] Added ${addedCount} new unique results from query: "${sourceQuery.substring(0, 50)}..."`);
+    return Array.from(seen.values());
+  };
+
+  // Clear all accumulated results
+  const clearAllResults = () => {
+    setResults([]);
+    setSearchRunIds([]);
+    setSearchRunId(null);
+    setAiSuggestions(new Map());
+    setAiSummary(null);
+    setAiError(null);
+    showToast({
+      type: 'info',
+      title: 'Results Cleared',
+      message: 'All accumulated search results have been cleared',
+      duration: 3000
+    });
+  };
+
   const handleSearch = async () => {
     try {
       setLoading(true);
@@ -381,7 +600,12 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
           query,
           sources,
           yearFrom: yearFrom ? parseInt(yearFrom, 10) : undefined,
-          yearTo: yearTo ? parseInt(yearTo, 10) : undefined
+          yearTo: yearTo ? parseInt(yearTo, 10) : undefined,
+          // Enhanced filters
+          publicationTypes: publicationTypes.length > 0 ? publicationTypes : undefined,
+          openAccessOnly: openAccessOnly || undefined,
+          minCitations: minCitations ? parseInt(minCitations, 10) : undefined,
+          fieldsOfStudy: fieldsOfStudy.length > 0 ? fieldsOfStudy : undefined
         })
       });
 
@@ -390,18 +614,67 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         throw new Error(data.error || 'Search failed');
       }
 
-      setResults(data.results || []);
-      setSearchRunId(data.searchRunId || null); // Store for AI analysis
-      // Clear previous AI suggestions on new search
-      setAiSuggestions(new Map());
-      setAiSummary(null);
-      setAiError(null);
+      const newResults = data.results || [];
+      const previousCount = results.length;
+      
+      // ACCUMULATE results instead of replacing
+      const accumulatedResults = deduplicateResults(results, newResults, query);
+      setResults(accumulatedResults);
+      
+      // Track search run ID for this batch
+      if (data.searchRunId) {
+        setSearchRunId(data.searchRunId);
+        setSearchRunIds(prev => [...prev, data.searchRunId]);
+      }
+      
+      // Show feedback about accumulation
+      const addedCount = accumulatedResults.length - previousCount;
+      if (previousCount > 0) {
+        showToast({
+          type: 'success',
+          title: 'Results Accumulated',
+          message: `Added ${addedCount} new papers (${newResults.length - addedCount} duplicates skipped). Total: ${accumulatedResults.length}`,
+          duration: 4000
+        });
+      }
+      
+      // Update strategy query status if this search was from a strategy query
+      if (currentStrategyQueryId) {
+        await updateQueryStatus(currentStrategyQueryId, 'SEARCHED', newResults.length, addedCount);
+        setCurrentStrategyQueryId(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed');
+      // Reset strategy query tracking on error
+      if (currentStrategyQueryId) {
+        await updateQueryStatus(currentStrategyQueryId, 'PENDING');
+        setCurrentStrategyQueryId(null);
+      }
     } finally {
       setLoading(false);
     }
   };
+
+  // Helper to check if a filter is supported by any selected source
+  const isFilterSupported = (filterName: keyof typeof PROVIDER_FILTER_SUPPORT['semantic_scholar']) => {
+    return sources.some(source => PROVIDER_FILTER_SUPPORT[source]?.[filterName]);
+  };
+
+  // Get sources that support a specific filter
+  const getSourcesSupportingFilter = (filterName: keyof typeof PROVIDER_FILTER_SUPPORT['semantic_scholar']) => {
+    return sources.filter(source => PROVIDER_FILTER_SUPPORT[source]?.[filterName]);
+  };
+
+  // Count active filters
+  const activeFilterCount = useMemo(() => {
+    let count = 0;
+    if (yearFrom || yearTo) count++;
+    if (publicationTypes.length > 0) count++;
+    if (openAccessOnly) count++;
+    if (minCitations) count++;
+    if (fieldsOfStudy.length > 0) count++;
+    return count;
+  }, [yearFrom, yearTo, publicationTypes, openAccessOnly, minCitations, fieldsOfStudy]);
 
   // AI Relevance Analysis - batch all papers in single LLM call
   const handleAiRelevanceAnalysis = async () => {
@@ -428,13 +701,31 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         throw new Error(data.error || 'AI analysis failed');
       }
 
-      // Build suggestions map from response
-      const suggestionsMap = new Map<string, { isRelevant: boolean; score: number; reasoning: string }>();
+      // Build suggestions map from response with enhanced citation metadata
+      const suggestionsMap = new Map<string, { 
+        isRelevant: boolean; 
+        score: number; 
+        reasoning: string;
+        citationMeta?: {
+          keyContribution: string;
+          keyFindings: string;
+          methodologicalApproach: string | null;
+          relevanceToResearch: string;
+          limitationsOrGaps: string | null;
+          usage: {
+            introduction: boolean;
+            literatureReview: boolean;
+            methodology: boolean;
+            comparison: boolean;
+          };
+        };
+      }>();
       for (const suggestion of data.analysis?.suggestions || []) {
         suggestionsMap.set(suggestion.paperId, {
           isRelevant: suggestion.isRelevant,
           score: suggestion.relevanceScore,
-          reasoning: suggestion.reasoning
+          reasoning: suggestion.reasoning,
+          citationMeta: suggestion.citationMeta
         });
       }
       
@@ -491,13 +782,30 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   const handleImport = async (result: any) => {
     try {
       setImportMessage(null);
+      
+      // Include AI citation metadata if available
+      const aiSuggestion = aiSuggestions.get(result.id);
+      const citationMeta = aiSuggestion?.citationMeta || null;
+      
       const response = await fetch(`/api/papers/${sessionId}/citations`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`
         },
-        body: JSON.stringify({ searchResult: result })
+        body: JSON.stringify({ 
+          searchResult: result,
+          // Include AI-generated citation metadata for section generation
+          citationMeta: citationMeta ? {
+            keyContribution: citationMeta.keyContribution,
+            keyFindings: citationMeta.keyFindings,
+            methodologicalApproach: citationMeta.methodologicalApproach,
+            relevanceToResearch: citationMeta.relevanceToResearch,
+            limitationsOrGaps: citationMeta.limitationsOrGaps,
+            usage: citationMeta.usage,
+            relevanceScore: aiSuggestion?.score
+          } : null
+        })
       });
 
       const data = await response.json();
@@ -649,6 +957,134 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   // Main tab state
   const [mainTab, setMainTab] = useState<'find' | 'citations'>('find');
   
+  // Search Strategy state
+  const [searchStrategy, setSearchStrategy] = useState<any | null>(null);
+  const [strategyLoading, setStrategyLoading] = useState(false);
+  const [strategyExpanded, setStrategyExpanded] = useState(true);
+  const [generatingStrategy, setGeneratingStrategy] = useState(false);
+  
+  // Fetch search strategy
+  const fetchSearchStrategy = useCallback(async () => {
+    if (!authToken) return;
+    try {
+      setStrategyLoading(true);
+      const response = await fetch(`/api/papers/${sessionId}/search-strategy`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setSearchStrategy(data.strategy);
+      }
+    } catch (err) {
+      console.error('Failed to fetch search strategy:', err);
+    } finally {
+      setStrategyLoading(false);
+    }
+  }, [sessionId, authToken]);
+  
+  // Generate search strategy
+  const generateSearchStrategy = async (regenerate = false) => {
+    if (!authToken) return;
+    try {
+      setGeneratingStrategy(true);
+      const response = await fetch(`/api/papers/${sessionId}/search-strategy`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ regenerate })
+      });
+      
+      const data = await response.json();
+      if (response.ok) {
+        setSearchStrategy(data.strategy);
+        showToast({
+          type: 'success',
+          title: 'Search Strategy Generated',
+          message: `Created ${data.strategy.queries.length} systematic search queries`,
+          duration: 4000
+        });
+      } else {
+        // Handle Pro plan requirement
+        if (data.code === 'PRO_REQUIRED') {
+          showToast({
+            type: 'info',
+            title: '✨ Pro Feature',
+            message: 'AI Search Strategy is a Pro feature. Upgrade your plan to access systematic search query generation.',
+            duration: 6000
+          });
+        } else {
+          showToast({
+            type: 'error',
+            title: 'Generation Failed',
+            message: data.error || 'Could not generate search strategy',
+            duration: 5000
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Failed to generate search strategy:', err);
+    } finally {
+      setGeneratingStrategy(false);
+    }
+  };
+  
+  // Update query status
+  const updateQueryStatus = async (queryId: string, status: string, resultsCount?: number, importedCount?: number) => {
+    if (!authToken) return;
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/search-strategy`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ queryId, status, resultsCount, importedCount })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        // Refresh strategy to get updated progress
+        await fetchSearchStrategy();
+      }
+    } catch (err) {
+      console.error('Failed to update query status:', err);
+    }
+  };
+  
+  // Track current strategy query being executed
+  const [currentStrategyQueryId, setCurrentStrategyQueryId] = useState<string | null>(null);
+  
+  // Execute a strategy query - fills search box and triggers search
+  const executeStrategyQuery = async (query: any) => {
+    // Track which strategy query we're executing
+    setCurrentStrategyQueryId(query.id);
+    
+    // Fill the search box
+    setQuery(query.queryText);
+    
+    // Set suggested sources
+    if (query.suggestedSources && query.suggestedSources.length > 0) {
+      setSources(query.suggestedSources);
+    }
+    
+    // Set year filters if suggested
+    if (query.suggestedYearFrom) setYearFrom(query.suggestedYearFrom.toString());
+    if (query.suggestedYearTo) setYearTo(query.suggestedYearTo.toString());
+    
+    // Update query status to searching
+    await updateQueryStatus(query.id, 'SEARCHING');
+    
+    // Switch to search mode
+    setAddMode('search');
+  };
+  
+  // Load search strategy on mount
+  useEffect(() => {
+    fetchSearchStrategy();
+  }, [fetchSearchStrategy]);
+  
   // Fetch abstract for a search result
   const [fetchingAbstract, setFetchingAbstract] = useState<string | null>(null);
   
@@ -720,6 +1156,216 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
 
         {/* FIND & ADD TAB */}
         <TabsContent value="find" className="space-y-4">
+          
+          {/* Search Strategy Panel */}
+          <Card className="border-indigo-200 bg-gradient-to-r from-indigo-50/50 to-violet-50/50">
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setStrategyExpanded(!strategyExpanded)}
+                    className="flex items-center gap-2 hover:text-indigo-700 transition-colors"
+                  >
+                    <svg 
+                      className={`w-4 h-4 text-indigo-600 transition-transform ${strategyExpanded ? 'rotate-90' : ''}`} 
+                      fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                    >
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                    <CardTitle className="text-base text-indigo-900">📋 Search Strategy</CardTitle>
+                  </button>
+                  {searchStrategy && (
+                    <Badge 
+                      className={`text-xs ${
+                        searchStrategy.status === 'COMPLETED' 
+                          ? 'bg-emerald-100 text-emerald-700' 
+                          : searchStrategy.status === 'IN_PROGRESS'
+                            ? 'bg-amber-100 text-amber-700'
+                            : 'bg-indigo-100 text-indigo-700'
+                      }`}
+                    >
+                      {searchStrategy.progress}% complete
+                    </Badge>
+                  )}
+                </div>
+                {!searchStrategy ? (
+                  <Button
+                    size="sm"
+                    onClick={() => generateSearchStrategy(false)}
+                    disabled={generatingStrategy}
+                    className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white"
+                  >
+                    {generatingStrategy ? (
+                      <>
+                        <svg className="w-4 h-4 mr-1 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Generating...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        <span className="mr-1">✨ Generate Strategy</span>
+                        <Badge className="bg-amber-400/90 text-amber-900 text-[9px] px-1 py-0">PRO</Badge>
+                      </>
+                    )}
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => generateSearchStrategy(true)}
+                    disabled={generatingStrategy}
+                    className="text-indigo-600 border-indigo-300"
+                  >
+                    {generatingStrategy ? 'Regenerating...' : '🔄 Regenerate'}
+                  </Button>
+                )}
+              </div>
+              {!searchStrategy && (
+                <CardDescription className="text-xs text-indigo-700/70">
+                  Generate AI-powered search queries for systematic literature coverage
+                </CardDescription>
+              )}
+            </CardHeader>
+            
+            <AnimatePresence>
+              {strategyExpanded && searchStrategy && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden"
+                >
+                  <CardContent className="pt-0 pb-3">
+                    {/* Strategy Summary */}
+                    {searchStrategy.summary && (
+                      <p className="text-xs text-indigo-800 mb-3 p-2 bg-white/50 rounded border border-indigo-100">
+                        💡 {searchStrategy.summary}
+                      </p>
+                    )}
+                    
+                    {/* Progress Bar */}
+                    <div className="mb-3">
+                      <div className="flex justify-between text-xs text-indigo-700 mb-1">
+                        <span>{searchStrategy.completedQueries} of {searchStrategy.totalQueries} queries completed</span>
+                        <span>~{searchStrategy.estimatedPapers} papers estimated</span>
+                      </div>
+                      <div className="h-2 bg-indigo-100 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-500"
+                          style={{ width: `${searchStrategy.progress}%` }}
+                        />
+                      </div>
+                    </div>
+                    
+                    {/* Query List */}
+                    <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
+                      {searchStrategy.queries.map((query: any, idx: number) => {
+                        const categoryIcons: Record<string, string> = {
+                          'CORE_CONCEPTS': '🎯',
+                          'DOMAIN_APPLICATION': '🏭',
+                          'METHODOLOGY': '⚙️',
+                          'THEORETICAL_FOUNDATION': '📚',
+                          'SURVEYS_REVIEWS': '📊',
+                          'COMPETING_APPROACHES': '⚔️',
+                          'RECENT_ADVANCES': '🚀',
+                          'GAP_IDENTIFICATION': '🔍',
+                          'CUSTOM': '✏️'
+                        };
+                        
+                        const statusColors: Record<string, string> = {
+                          'PENDING': 'bg-gray-100 text-gray-600 border-gray-200',
+                          'SEARCHING': 'bg-amber-100 text-amber-700 border-amber-200 animate-pulse',
+                          'SEARCHED': 'bg-blue-100 text-blue-700 border-blue-200',
+                          'COMPLETED': 'bg-emerald-100 text-emerald-700 border-emerald-200',
+                          'SKIPPED': 'bg-gray-100 text-gray-400 border-gray-200 line-through'
+                        };
+                        
+                        return (
+                          <div 
+                            key={query.id}
+                            className={`flex items-center gap-2 p-2 rounded-lg border transition-all ${
+                              query.status === 'COMPLETED' || query.status === 'SKIPPED'
+                                ? 'bg-gray-50/50'
+                                : 'bg-white hover:shadow-sm cursor-pointer'
+                            }`}
+                          >
+                            <span className="text-sm shrink-0">{categoryIcons[query.category] || '📄'}</span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className={`text-xs font-medium ${
+                                  query.status === 'SKIPPED' ? 'text-gray-400 line-through' : 'text-gray-900'
+                                }`}>
+                                  {query.queryText}
+                                </span>
+                                <Badge variant="outline" className={`text-[9px] px-1 py-0 ${statusColors[query.status]}`}>
+                                  {query.status === 'COMPLETED' && query.importedCount !== null 
+                                    ? `✓ ${query.importedCount} imported`
+                                    : query.status.toLowerCase().replace('_', ' ')
+                                  }
+                                </Badge>
+                              </div>
+                              <p className="text-[10px] text-gray-500 truncate">{query.description}</p>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {query.status === 'PENDING' && (
+                                <Button
+                                  size="sm"
+                                  onClick={() => executeStrategyQuery(query)}
+                                  className="h-6 text-[10px] px-2 bg-indigo-600 hover:bg-indigo-700"
+                                >
+                                  Search →
+                                </Button>
+                              )}
+                              {query.status === 'SEARCHING' && (
+                                <span className="text-[10px] text-amber-600 animate-pulse">Searching...</span>
+                              )}
+                              {query.status === 'SEARCHED' && (
+                                <>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => updateQueryStatus(query.id, 'COMPLETED', query.resultsCount, citations.length)}
+                                    className="h-6 text-[10px] px-2 text-emerald-600 border-emerald-300"
+                                  >
+                                    ✓ Done
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => updateQueryStatus(query.id, 'SKIPPED')}
+                                    className="h-6 text-[10px] px-1 text-gray-400"
+                                  >
+                                    Skip
+                                  </Button>
+                                </>
+                              )}
+                              {(query.status === 'COMPLETED' || query.status === 'SKIPPED') && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => executeStrategyQuery(query)}
+                                  className="h-6 text-[10px] px-1 text-gray-400"
+                                  title="Search again"
+                                >
+                                  🔄
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </CardContent>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </Card>
+          
           <Card className="overflow-hidden">
             {/* Sub-tabs for different add methods */}
             <div className="border-b bg-gray-50/50">
@@ -781,7 +1427,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                       />
                       <Button 
                         size="sm" 
-                        onClick={handleSearch} 
+                        onClick={handleSearchWithReset} 
                         disabled={loading || !query.trim()}
                         className="absolute right-1 top-1 h-7"
                       >
@@ -789,52 +1435,238 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                       </Button>
                     </div>
                     
-                    {suggestions.length > 0 && (
-                      <div className="flex flex-wrap gap-1">
-                        <span className="text-xs text-gray-400">Suggestions:</span>
-                        {suggestions.slice(0, 3).map(suggestion => (
-                          <button
-                            key={suggestion}
-                            onClick={() => setQuery(suggestion)}
-                            className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-600 hover:bg-indigo-100"
-                          >
-                            {suggestion}
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                    {/* Research question suggestions removed - use Search Strategy for systematic queries */}
                   </div>
 
-                  {/* Compact filters */}
-                  <div className="flex flex-wrap items-center gap-2 text-xs">
-                    <span className="text-gray-500">Year:</span>
-                    <Input
-                      type="number"
-                      value={yearFrom}
-                      onChange={e => setYearFrom(e.target.value)}
-                      placeholder="From"
-                      className="w-20 h-7 text-xs"
-                    />
-                    <span className="text-gray-400">-</span>
-                    <Input
-                      type="number"
-                      value={yearTo}
-                      onChange={e => setYearTo(e.target.value)}
-                      placeholder="To"
-                      className="w-20 h-7 text-xs"
-                    />
-                    <div className="flex-1" />
-                    {SOURCE_OPTIONS.map(source => (
-                      <label key={source.value} className="flex items-center gap-1 text-gray-600 cursor-pointer">
-                        <Checkbox
-                          checked={sources.includes(source.value)}
-                          onCheckedChange={() => toggleSource(source.value)}
-                          className="w-3.5 h-3.5"
+                  {/* Compact inline filter bar */}
+                  <div className="flex items-center gap-3 text-xs bg-slate-50/80 rounded-lg px-3 py-2 border border-slate-200">
+                    {/* Year Range - Compact */}
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-slate-500 font-medium">Year</span>
+                      <div className="flex items-center bg-white rounded border border-slate-200">
+                        <Input
+                          type="number"
+                          value={yearFrom}
+                          onChange={e => setYearFrom(e.target.value)}
+                          placeholder="From"
+                          className="w-16 h-6 text-xs border-0 bg-transparent focus-visible:ring-0 text-center"
                         />
-                        <span>{source.label.split(' ')[0]}</span>
-                      </label>
-                    ))}
+                        <span className="text-slate-300 px-1">–</span>
+                        <Input
+                          type="number"
+                          value={yearTo}
+                          onChange={e => setYearTo(e.target.value)}
+                          placeholder="To"
+                          className="w-16 h-6 text-xs border-0 bg-transparent focus-visible:ring-0 text-center"
+                        />
+                      </div>
+                    </div>
+                    
+                    {/* Divider */}
+                    <div className="h-4 w-px bg-slate-300" />
+                    
+                    {/* Sources - Compact badges */}
+                    <div className="flex items-center gap-1.5 flex-1">
+                      <span className="text-slate-500 font-medium">Sources</span>
+                      <div className="flex flex-wrap gap-1">
+                        {SOURCE_OPTIONS.map(source => {
+                          const isSelected = sources.includes(source.value);
+                          const shortLabel = source.label.split(' ')[0];
+                          return (
+                            <button
+                              key={source.value}
+                              type="button"
+                              onClick={() => toggleSource(source.value)}
+                              className={`px-2 py-0.5 rounded text-[11px] font-medium transition-all ${
+                                isSelected
+                                  ? 'bg-indigo-600 text-white shadow-sm'
+                                  : 'bg-white text-slate-500 border border-slate-200 hover:border-indigo-300 hover:text-indigo-600'
+                              }`}
+                            >
+                              {shortLabel}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    
+                    {/* Divider */}
+                    <div className="h-4 w-px bg-slate-300" />
+                    
+                    {/* Advanced Filters Toggle */}
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}
+                      className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+                        showAdvancedFilters || activeFilterCount > 0
+                          ? 'bg-indigo-100 text-indigo-700'
+                          : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+                      </svg>
+                      More{activeFilterCount > 0 && <Badge className="ml-1 bg-indigo-600 text-white text-[9px] px-1 py-0 h-4">{activeFilterCount}</Badge>}
+                    </button>
                   </div>
+
+                  {/* Advanced Filters Panel */}
+                  <AnimatePresence>
+                    {showAdvancedFilters && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        className="overflow-hidden"
+                      >
+                        <div className="mt-3 p-4 bg-gray-50 rounded-lg border border-gray-200 space-y-4">
+                          {/* Publication Type Filter */}
+                          <div>
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="text-xs font-medium text-gray-700">Publication Type</span>
+                              {!isFilterSupported('publicationTypes') && (
+                                <span className="text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
+                                  Not supported by selected sources
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              {PUBLICATION_TYPE_OPTIONS.map(type => (
+                                <label
+                                  key={type.value}
+                                  className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs cursor-pointer transition-colors ${
+                                    publicationTypes.includes(type.value)
+                                      ? 'bg-indigo-100 text-indigo-700 border border-indigo-300'
+                                      : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-100'
+                                  } ${!isFilterSupported('publicationTypes') ? 'opacity-50' : ''}`}
+                                >
+                                  <Checkbox
+                                    checked={publicationTypes.includes(type.value)}
+                                    onCheckedChange={() => {
+                                      setPublicationTypes(prev =>
+                                        prev.includes(type.value)
+                                          ? prev.filter(t => t !== type.value)
+                                          : [...prev, type.value]
+                                      );
+                                    }}
+                                    disabled={!isFilterSupported('publicationTypes')}
+                                    className="w-3 h-3"
+                                  />
+                                  <span>{type.icon}</span>
+                                  <span>{type.label}</span>
+                                </label>
+                              ))}
+                            </div>
+                            {isFilterSupported('publicationTypes') && publicationTypes.length > 0 && (
+                              <p className="text-[10px] text-gray-500 mt-1">
+                                Supported by: {getSourcesSupportingFilter('publicationTypes').map(s => 
+                                  SOURCE_OPTIONS.find(o => o.value === s)?.label.split(' ')[0]
+                                ).join(', ')}
+                              </p>
+                            )}
+                          </div>
+
+                          {/* Field of Study Filter */}
+                          <div>
+                            <div className="flex items-center gap-2 mb-2">
+                              <span className="text-xs font-medium text-gray-700">Field of Study</span>
+                              {!isFilterSupported('fieldsOfStudy') && (
+                                <span className="text-[10px] text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded">
+                                  Not supported by selected sources
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {FIELD_OF_STUDY_OPTIONS.map(field => (
+                                <label
+                                  key={field.value}
+                                  className={`px-2 py-1 rounded text-xs cursor-pointer transition-colors ${
+                                    fieldsOfStudy.includes(field.value)
+                                      ? 'bg-emerald-100 text-emerald-700 border border-emerald-300'
+                                      : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-100'
+                                  } ${!isFilterSupported('fieldsOfStudy') ? 'opacity-50' : ''}`}
+                                >
+                                  <Checkbox
+                                    checked={fieldsOfStudy.includes(field.value)}
+                                    onCheckedChange={() => {
+                                      setFieldsOfStudy(prev =>
+                                        prev.includes(field.value)
+                                          ? prev.filter(f => f !== field.value)
+                                          : [...prev, field.value]
+                                      );
+                                    }}
+                                    disabled={!isFilterSupported('fieldsOfStudy')}
+                                    className="hidden"
+                                  />
+                                  {field.label}
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Additional Filters Row */}
+                          <div className="flex flex-wrap items-center gap-4">
+                            {/* Open Access Filter */}
+                            <label className={`flex items-center gap-2 text-xs cursor-pointer ${
+                              !isFilterSupported('openAccessOnly') ? 'opacity-50' : ''
+                            }`}>
+                              <Checkbox
+                                checked={openAccessOnly}
+                                onCheckedChange={(checked) => setOpenAccessOnly(!!checked)}
+                                disabled={!isFilterSupported('openAccessOnly')}
+                                className="w-4 h-4"
+                              />
+                              <span className="text-gray-700">🔓 Open Access Only</span>
+                              {!isFilterSupported('openAccessOnly') && (
+                                <span className="text-[10px] text-amber-600">(not supported)</span>
+                              )}
+                            </label>
+
+                            {/* Minimum Citations Filter */}
+                            <div className={`flex items-center gap-2 ${
+                              !isFilterSupported('minCitations') ? 'opacity-50' : ''
+                            }`}>
+                              <span className="text-xs text-gray-700">📊 Min Citations:</span>
+                              <Input
+                                type="number"
+                                value={minCitations}
+                                onChange={e => setMinCitations(e.target.value)}
+                                placeholder="0"
+                                min="0"
+                                disabled={!isFilterSupported('minCitations')}
+                                className="w-20 h-7 text-xs"
+                              />
+                              {!isFilterSupported('minCitations') && (
+                                <span className="text-[10px] text-amber-600">(not supported)</span>
+                              )}
+                            </div>
+
+                            {/* Clear Filters */}
+                            {activeFilterCount > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPublicationTypes([]);
+                                  setOpenAccessOnly(false);
+                                  setMinCitations('');
+                                  setFieldsOfStudy([]);
+                                }}
+                                className="text-xs text-red-600 hover:text-red-700 hover:underline"
+                              >
+                                Clear all filters
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Filter Support Info */}
+                          <div className="text-[10px] text-gray-400 pt-2 border-t border-gray-200">
+                            💡 Some filters only work with specific sources. Unsupported filters are dimmed.
+                            Sources with most filter support: Semantic Scholar, OpenAlex
+                          </div>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
 
                   {error && <div className="text-sm text-red-600 bg-red-50 p-2 rounded">{error}</div>}
                 </div>
@@ -942,16 +1774,238 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
             <Card>
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base">Search Results</CardTitle>
                   <div className="flex items-center gap-2">
-                    {!loading && <span className="text-sm text-gray-500">{results.length} found</span>}
+                    <CardTitle className="text-base">Search Results</CardTitle>
+                    {searchRunIds.length > 1 && (
+                      <Badge className="bg-indigo-100 text-indigo-700 text-[10px]">
+                        {searchRunIds.length} searches
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {!loading && (
+                      <span className="text-sm text-gray-500">
+                        {filteredResults.length} of {results.length} 
+                        {removedResults.size > 0 && ` (${removedResults.size} hidden)`}
+                      </span>
+                    )}
                     {results.some(r => !r.abstract) && results.length > 0 && !loading && (
                       <Badge variant="outline" className="text-xs text-amber-600 border-amber-300">
                         Some missing abstracts
                       </Badge>
                     )}
+                    {/* Clear All Results Button */}
+                    {results.length > 0 && !loading && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={clearAllResults}
+                        className="h-7 text-xs text-red-600 hover:text-red-700 hover:bg-red-50"
+                      >
+                        <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                        Clear All
+                      </Button>
+                    )}
+                    {/* Filter Toggle */}
+                    {results.length > 0 && !loading && (
+                      <Button
+                        size="sm"
+                        variant={showResultFilters ? "default" : "outline"}
+                        onClick={() => setShowResultFilters(!showResultFilters)}
+                        className="h-7 text-xs"
+                      >
+                        <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                        </svg>
+                        Filter
+                      </Button>
+                    )}
                   </div>
                 </div>
+                
+                {/* Result Filters Panel */}
+                <AnimatePresence>
+                  {showResultFilters && results.length > 0 && !loading && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="mt-2 p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-3">
+                        <div className="flex flex-wrap items-center gap-3">
+                          {/* Source filter */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-gray-600">Source:</span>
+                            <select
+                              value={resultFilters.source || ''}
+                              onChange={e => setResultFilters(prev => ({ ...prev, source: e.target.value || null }))}
+                              className="h-7 text-xs border border-gray-300 rounded px-2"
+                            >
+                              <option value="">All</option>
+                              {availableSources.map(source => (
+                                <option key={source} value={source}>
+                                  {SOURCE_OPTIONS.find(s => s.value === source)?.label || source}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          
+                          {/* Has Abstract filter */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-gray-600">Abstract:</span>
+                            <select
+                              value={resultFilters.hasAbstract === null ? '' : resultFilters.hasAbstract.toString()}
+                              onChange={e => setResultFilters(prev => ({ 
+                                ...prev, 
+                                hasAbstract: e.target.value === '' ? null : e.target.value === 'true' 
+                              }))}
+                              className="h-7 text-xs border border-gray-300 rounded px-2"
+                            >
+                              <option value="">Any</option>
+                              <option value="true">Has Abstract</option>
+                              <option value="false">No Abstract</option>
+                            </select>
+                          </div>
+                          
+                          {/* Year range filter */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-gray-600">Year:</span>
+                            <Input
+                              type="number"
+                              value={resultFilters.yearFrom}
+                              onChange={e => setResultFilters(prev => ({ ...prev, yearFrom: e.target.value }))}
+                              placeholder="From"
+                              className="w-16 h-7 text-xs"
+                            />
+                            <span className="text-gray-400">-</span>
+                            <Input
+                              type="number"
+                              value={resultFilters.yearTo}
+                              onChange={e => setResultFilters(prev => ({ ...prev, yearTo: e.target.value }))}
+                              placeholder="To"
+                              className="w-16 h-7 text-xs"
+                            />
+                          </div>
+                          
+                          {/* AI Relevant Only */}
+                          {aiSuggestions.size > 0 && (
+                            <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                              <Checkbox
+                                checked={resultFilters.aiRelevantOnly}
+                                onCheckedChange={(checked) => setResultFilters(prev => ({ ...prev, aiRelevantOnly: !!checked }))}
+                                className="w-3.5 h-3.5"
+                              />
+                              <span className="text-violet-700">🤖 AI Picks Only</span>
+                            </label>
+                          )}
+                          
+                          {/* Clear Filters */}
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setResultFilters({ hasAbstract: null, source: null, yearFrom: '', yearTo: '', aiRelevantOnly: false })}
+                            className="h-7 text-xs text-gray-500 hover:text-gray-700"
+                          >
+                            Clear
+                          </Button>
+                          
+                          {/* Restore Removed */}
+                          {removedResults.size > 0 && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={restoreAllRemoved}
+                              className="h-7 text-xs text-amber-600 border-amber-300 hover:bg-amber-50"
+                            >
+                              Restore {removedResults.size} hidden
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+                
+                {/* Selection Toolbar - Shows when items are selected */}
+                <AnimatePresence>
+                  {selectedResults.size > 0 && (
+                    <motion.div
+                      initial={{ height: 0, opacity: 0 }}
+                      animate={{ height: 'auto', opacity: 1 }}
+                      exit={{ height: 0, opacity: 0 }}
+                      className="overflow-hidden"
+                    >
+                      <div className="mt-2 p-2 bg-indigo-50 rounded-lg border border-indigo-200 flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-indigo-700">
+                            {selectedResults.size} selected
+                          </span>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={clearSelection}
+                            className="h-6 text-xs text-indigo-600 hover:text-indigo-700"
+                          >
+                            Clear
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={selectAllVisible}
+                            className="h-6 text-xs text-indigo-600 hover:text-indigo-700"
+                          >
+                            Select All ({filteredResults.length})
+                          </Button>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {/* Add Selected */}
+                          <Button
+                            size="sm"
+                            onClick={async () => {
+                              const toImport = filteredResults.filter(r => 
+                                selectedResults.has(r.id) && !importedKeys.has(r.doi || r.title)
+                              );
+                              for (const result of toImport) {
+                                await handleImport(result);
+                              }
+                              setSelectedResults(new Set());
+                            }}
+                            className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700"
+                          >
+                            <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                            </svg>
+                            Add Selected
+                          </Button>
+                          {/* Remove Selected */}
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={removeSelected}
+                            className="h-7 text-xs text-red-600 border-red-300 hover:bg-red-50"
+                          >
+                            <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                            Remove Selected
+                          </Button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+                
+                {/* Accumulation info when multiple searches done */}
+                {searchRunIds.length > 1 && results.length > 0 && (
+                  <div className="mb-2 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg text-xs text-indigo-700">
+                    <span className="font-medium">📚 Accumulated Results:</span> {results.length} unique papers from {searchRunIds.length} searches. 
+                    <span className="text-indigo-500 ml-1">Duplicates are automatically removed.</span>
+                  </div>
+                )}
+                
                 <CardDescription className="text-xs">
                   💡 Tip: Add citations with abstracts for better literature analysis
                 </CardDescription>
@@ -995,6 +2049,35 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                             </svg>
                             Add All Suggested ({aiSuggestions.size})
+                          </Button>
+                        )}
+                        {/* Hide non-relevant toggle */}
+                        {aiSuggestions.size > 0 && (
+                          <Button
+                            onClick={() => setHideNonRelevant(!hideNonRelevant)}
+                            size="sm"
+                            variant={hideNonRelevant ? "default" : "outline"}
+                            className={hideNonRelevant 
+                              ? "bg-gray-700 hover:bg-gray-800 text-white"
+                              : "text-gray-600 border-gray-300 hover:bg-gray-50"
+                            }
+                          >
+                            {hideNonRelevant ? (
+                              <>
+                                <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                </svg>
+                                Show All ({results.length})
+                              </>
+                            ) : (
+                              <>
+                                <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
+                                </svg>
+                                Hide Others ({results.length - aiSuggestions.size})
+                              </>
+                            )}
                           </Button>
                         )}
                       </div>
@@ -1111,11 +2194,41 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                     </div>
                   )}
                   
+                  {/* Filtered Empty State - when all results are filtered out */}
+                  {!loading && results.length > 0 && filteredResults.length === 0 && (
+                    <div className="text-center py-8 text-gray-400">
+                      <svg className="w-10 h-10 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+                      </svg>
+                      <p className="text-sm mb-2">No results match your filters</p>
+                      <div className="flex items-center justify-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setResultFilters({ hasAbstract: null, source: null, yearFrom: '', yearTo: '', aiRelevantOnly: false })}
+                          className="text-xs"
+                        >
+                          Clear Filters
+                        </Button>
+                        {removedResults.size > 0 && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={restoreAllRemoved}
+                            className="text-xs text-amber-600 border-amber-300"
+                          >
+                            Restore {removedResults.size} Hidden
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  
                   {/* Results - only show when not loading */}
-                  {/* Sort results: AI-suggested first, then by original order */}
+                  {/* Sort results: AI-suggested first, use filteredResults with all filters applied */}
                   {!loading && (
                     <AnimatePresence mode="popLayout">
-                      {[...results]
+                      {[...filteredResults]
                         .sort((a, b) => {
                           const aIsSuggested = aiSuggestions.has(a.id);
                           const bIsSuggested = aiSuggestions.has(b.id);
@@ -1131,6 +2244,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                         const isImported = importedKeys.has(result.doi || result.title);
                         const hasAbstract = !!result.abstract;
                         const isExpanded = expandedAbstracts.has(result.id);
+                        const isSelected = selectedResults.has(result.id);
                         const isFetchingThis = fetchingAbstract === result.id;
                         const aiSuggestion = aiSuggestions.get(result.id);
                         const isAiSuggested = !!aiSuggestion;
@@ -1143,19 +2257,32 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                             exit={{ opacity: 0, scale: 0.95 }}
                             transition={{ delay: index * 0.02 }}
                             className={`border rounded-lg p-3 transition-all ${
-                              isImported 
-                                ? 'bg-emerald-50/50 border-emerald-200' 
-                                : isAiSuggested
-                                  ? 'bg-violet-50/70 border-violet-300 ring-1 ring-violet-200 shadow-sm'
-                                : hasAbstract 
-                                  ? 'bg-white hover:shadow-sm border-gray-200' 
-                                  : 'bg-amber-50/30 border-amber-200 hover:shadow-sm'
+                              isSelected
+                                ? 'bg-indigo-50 border-indigo-300 ring-2 ring-indigo-200'
+                                : isImported 
+                                  ? 'bg-emerald-50/50 border-emerald-200' 
+                                  : isAiSuggested
+                                    ? 'bg-violet-50/70 border-violet-300 ring-1 ring-violet-200 shadow-sm'
+                                  : hasAbstract 
+                                    ? 'bg-white hover:shadow-sm border-gray-200' 
+                                    : 'bg-amber-50/30 border-amber-200 hover:shadow-sm'
                             }`}
                           >
                             <div className="flex gap-3">
+                            {/* Selection Checkbox */}
+                            <div className="shrink-0 pt-0.5">
+                              <Checkbox
+                                checked={isSelected}
+                                onCheckedChange={() => toggleResultSelection(result.id)}
+                                className="w-4 h-4"
+                              />
+                            </div>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-start gap-2">
-                                <h4 className="font-medium text-sm text-gray-900 leading-tight flex-1">
+                                <h4 
+                                  className="font-medium text-sm text-gray-900 leading-tight flex-1 cursor-pointer hover:text-indigo-700"
+                                  onClick={() => toggleResultSelection(result.id)}
+                                >
                                   {result.title}
                                 </h4>
                                 {/* AI Suggested Badge */}
@@ -1163,6 +2290,31 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                   <Badge className="shrink-0 text-[10px] bg-gradient-to-r from-violet-500 to-indigo-500 text-white border-0 shadow-sm">
                                     🤖 AI Pick
                                   </Badge>
+                                )}
+                                {/* Usage Badges (I/L/M/C) */}
+                                {isAiSuggested && aiSuggestion?.citationMeta?.usage && (
+                                  <div className="flex gap-0.5 shrink-0">
+                                    {aiSuggestion.citationMeta.usage.introduction && (
+                                      <Badge variant="outline" className="text-[9px] px-1 py-0 bg-blue-50 text-blue-700 border-blue-300" title="Cite in Introduction">
+                                        I
+                                      </Badge>
+                                    )}
+                                    {aiSuggestion.citationMeta.usage.literatureReview && (
+                                      <Badge variant="outline" className="text-[9px] px-1 py-0 bg-purple-50 text-purple-700 border-purple-300" title="Cite in Literature Review">
+                                        L
+                                      </Badge>
+                                    )}
+                                    {aiSuggestion.citationMeta.usage.methodology && (
+                                      <Badge variant="outline" className="text-[9px] px-1 py-0 bg-emerald-50 text-emerald-700 border-emerald-300" title="Reference in Methodology">
+                                        M
+                                      </Badge>
+                                    )}
+                                    {aiSuggestion.citationMeta.usage.comparison && (
+                                      <Badge variant="outline" className="text-[9px] px-1 py-0 bg-amber-50 text-amber-700 border-amber-300" title="Use for Comparison">
+                                        C
+                                      </Badge>
+                                    )}
+                                  </div>
                                 )}
                                 {hasAbstract ? (
                                   <Badge variant="secondary" className="shrink-0 text-[10px] bg-blue-50 text-blue-600">
@@ -1174,12 +2326,46 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                   </Badge>
                                 )}
                               </div>
-                              <p className="text-xs text-gray-500 mt-1">
-                                {(result.authors || []).slice(0, 3).join(', ')}
-                                {result.authors?.length > 3 && ' et al.'}
-                                {result.year && ` • ${result.year}`}
-                                {result.venue && ` • ${result.venue}`}
-                              </p>
+                              <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+                                <p className="text-xs text-gray-500">
+                                  {(result.authors || []).slice(0, 3).join(', ')}
+                                  {result.authors?.length > 3 && ' et al.'}
+                                  {result.year && ` • ${result.year}`}
+                                  {result.venue && ` • ${result.venue}`}
+                                </p>
+                                {/* Publication Type Badge */}
+                                {result.publicationType && (
+                                  <Badge 
+                                    variant="outline" 
+                                    className={`text-[9px] px-1.5 py-0 ${
+                                      result.publicationType === 'journal-article' 
+                                        ? 'bg-blue-50 text-blue-700 border-blue-200' 
+                                        : result.publicationType === 'conference-paper'
+                                          ? 'bg-purple-50 text-purple-700 border-purple-200'
+                                          : result.publicationType === 'preprint'
+                                            ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                            : result.publicationType === 'review'
+                                              ? 'bg-green-50 text-green-700 border-green-200'
+                                              : 'bg-gray-50 text-gray-600 border-gray-200'
+                                    }`}
+                                  >
+                                    {PUBLICATION_TYPE_OPTIONS.find(t => t.value === result.publicationType)?.icon || '📄'}{' '}
+                                    {PUBLICATION_TYPE_OPTIONS.find(t => t.value === result.publicationType)?.label || result.publicationType}
+                                  </Badge>
+                                )}
+                                {/* Open Access Badge */}
+                                {result.isOpenAccess && (
+                                  <Badge variant="outline" className="text-[9px] px-1.5 py-0 bg-emerald-50 text-emerald-700 border-emerald-200">
+                                    🔓 Open Access
+                                  </Badge>
+                                )}
+                                {/* Citation Count */}
+                                {result.citationCount !== undefined && result.citationCount > 0 && (
+                                  <span className="text-[10px] text-gray-400">
+                                    📊 {result.citationCount.toLocaleString()} citations
+                                  </span>
+                                )}
+                              </div>
                               
                               {/* Abstract section */}
                               {hasAbstract ? (
@@ -1234,7 +2420,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                 </a>
                               )}
                               
-                              {/* AI Reasoning - Show why this paper was suggested */}
+                              {/* AI Reasoning & Citation Metadata - Show why this paper was suggested */}
                               {isAiSuggested && aiSuggestion && (
                                 <motion.div
                                   initial={{ opacity: 0, height: 0 }}
@@ -1243,7 +2429,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                 >
                                   <div className="flex items-start gap-2">
                                     <span className="text-violet-500 text-sm shrink-0">🤖</span>
-                                    <div className="flex-1 min-w-0">
+                                    <div className="flex-1 min-w-0 space-y-2">
+                                      {/* Score and relevance */}
                                       <div className="flex items-center gap-2 mb-1">
                                         <span className="text-[10px] font-semibold text-violet-700 uppercase tracking-wide">
                                           Why it's relevant
@@ -1258,6 +2445,58 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                       <p className="text-xs text-violet-800 leading-relaxed">
                                         {aiSuggestion.reasoning}
                                       </p>
+                                      
+                                      {/* Enhanced Citation Metadata */}
+                                      {aiSuggestion.citationMeta && (
+                                        <div className="mt-2 pt-2 border-t border-violet-200/50 space-y-1.5">
+                                          {/* Key Contribution */}
+                                          <div className="flex items-start gap-1.5">
+                                            <span className="text-[10px] font-medium text-violet-600 shrink-0 w-20">💡 Contribution:</span>
+                                            <span className="text-[11px] text-violet-900">{aiSuggestion.citationMeta.keyContribution}</span>
+                                          </div>
+                                          
+                                          {/* Key Findings */}
+                                          <div className="flex items-start gap-1.5">
+                                            <span className="text-[10px] font-medium text-violet-600 shrink-0 w-20">📊 Findings:</span>
+                                            <span className="text-[11px] text-violet-900">{aiSuggestion.citationMeta.keyFindings}</span>
+                                          </div>
+                                          
+                                          {/* Methodological Approach */}
+                                          {aiSuggestion.citationMeta.methodologicalApproach && (
+                                            <div className="flex items-start gap-1.5">
+                                              <span className="text-[10px] font-medium text-violet-600 shrink-0 w-20">⚙️ Method:</span>
+                                              <span className="text-[11px] text-violet-900">{aiSuggestion.citationMeta.methodologicalApproach}</span>
+                                            </div>
+                                          )}
+                                          
+                                          {/* Limitations/Gaps */}
+                                          {aiSuggestion.citationMeta.limitationsOrGaps && (
+                                            <div className="flex items-start gap-1.5">
+                                              <span className="text-[10px] font-medium text-amber-600 shrink-0 w-20">⚠️ Gap:</span>
+                                              <span className="text-[11px] text-amber-900">{aiSuggestion.citationMeta.limitationsOrGaps}</span>
+                                            </div>
+                                          )}
+                                          
+                                          {/* Usage Guidance */}
+                                          <div className="flex items-center gap-1.5 pt-1">
+                                            <span className="text-[10px] font-medium text-violet-600">📝 Cite in:</span>
+                                            <div className="flex gap-1">
+                                              {aiSuggestion.citationMeta.usage.introduction && (
+                                                <span className="text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">Introduction</span>
+                                              )}
+                                              {aiSuggestion.citationMeta.usage.literatureReview && (
+                                                <span className="text-[10px] px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded">Lit Review</span>
+                                              )}
+                                              {aiSuggestion.citationMeta.usage.methodology && (
+                                                <span className="text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded">Methodology</span>
+                                              )}
+                                              {aiSuggestion.citationMeta.usage.comparison && (
+                                                <span className="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded">Comparison</span>
+                                              )}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      )}
                                     </div>
                                   </div>
                                 </motion.div>

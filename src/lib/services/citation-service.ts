@@ -8,6 +8,23 @@ import { literatureSearchService, SearchResult } from './literature-search-servi
 import { citationStyleService, CitationData } from './citation-style-service';
 import type { Citation, CitationUsage, CitationImportSource, CitationSourceType } from '@prisma/client';
 
+// AI-generated citation metadata for section generation
+export interface CitationAIMeta {
+  keyContribution?: string;
+  keyFindings?: string;
+  methodologicalApproach?: string | null;
+  relevanceToResearch?: string;
+  limitationsOrGaps?: string | null;
+  usage?: {
+    introduction?: boolean;
+    literatureReview?: boolean;
+    methodology?: boolean;
+    comparison?: boolean;
+  };
+  relevanceScore?: number;
+  analyzedAt?: string;
+}
+
 export interface CreateCitationInput {
   sessionId: string;
   sourceType: CitationSourceType;
@@ -26,6 +43,7 @@ export interface CreateCitationInput {
   importSource: CitationImportSource;
   notes?: string;
   tags?: string[];
+  aiMeta?: CitationAIMeta; // AI-generated metadata for section generation
 }
 
 export interface UpdateCitationInput {
@@ -144,9 +162,26 @@ class CitationService {
   }
 
   /**
-   * Import citation from search result
+   * Import citation from search result with optional AI-generated metadata
    */
-  async importFromSearchResult(sessionId: string, searchResult: SearchResult): Promise<Citation> {
+  async importFromSearchResult(
+    sessionId: string, 
+    searchResult: SearchResult,
+    citationMeta?: {
+      keyContribution?: string;
+      keyFindings?: string;
+      methodologicalApproach?: string | null;
+      relevanceToResearch?: string;
+      limitationsOrGaps?: string | null;
+      usage?: {
+        introduction?: boolean;
+        literatureReview?: boolean;
+        methodology?: boolean;
+        comparison?: boolean;
+      };
+      relevanceScore?: number;
+    }
+  ): Promise<Citation> {
     // Check for duplicates
     const existingCitation = await this.findDuplicate(sessionId, searchResult);
     if (existingCitation) {
@@ -163,7 +198,18 @@ class CitationService {
       doi: searchResult.doi,
       url: searchResult.url,
       notes: searchResult.abstract,
-      importSource: this.mapSearchSourceToImportSource(searchResult.source)
+      importSource: this.mapSearchSourceToImportSource(searchResult.source),
+      // Store AI-generated citation metadata for section generation
+      aiMeta: citationMeta ? {
+        keyContribution: citationMeta.keyContribution,
+        keyFindings: citationMeta.keyFindings,
+        methodologicalApproach: citationMeta.methodologicalApproach,
+        relevanceToResearch: citationMeta.relevanceToResearch,
+        limitationsOrGaps: citationMeta.limitationsOrGaps,
+        usage: citationMeta.usage || {},
+        relevanceScore: citationMeta.relevanceScore,
+        analyzedAt: new Date().toISOString()
+      } : undefined
     });
   }
 
@@ -602,7 +648,8 @@ class CitationService {
         citationKey: citationData.citationKey,
         importSource: input.importSource,
         notes: input.notes,
-        tags: input.tags || []
+        tags: input.tags || [],
+        aiMeta: input.aiMeta || undefined
       }
     });
   }
