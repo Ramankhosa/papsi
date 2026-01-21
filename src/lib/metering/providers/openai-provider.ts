@@ -65,6 +65,7 @@ export class OpenAIProvider implements LLMProvider {
     
     // Apply enforcement limits - some models use max_completion_tokens instead of max_tokens
     const maxTokens = limits.maxTokensOut || 4096
+    console.log(`[OpenAIProvider] Token limits: admin=${limits.maxTokensOut || 'not set'}, using=${maxTokens}`)
 
     try {
       // Build message content for OpenAI

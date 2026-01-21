@@ -6,6 +6,7 @@ import { useAuth } from '@/lib/auth-context';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import TopicEntryStage from '@/components/stages/TopicEntryStage';
+import BlueprintStage from '@/components/stages/BlueprintStage';
 import LiteratureSearchStage from '@/components/stages/LiteratureSearchStage';
 import OutlinePlanningStage from '@/components/stages/OutlinePlanningStage';
 import PaperFigurePlannerStage from '@/components/stages/PaperFigurePlannerStage';
@@ -17,6 +18,7 @@ import { STAGE_ORDER } from '@/lib/stage-navigation-config';
 const STAGES = [
   { key: 'OUTLINE_PLANNING', label: 'Paper Foundation', description: 'Set up paper type & structure' },
   { key: 'TOPIC_ENTRY', label: 'Research Topic', description: 'Define your research question' },
+  { key: 'BLUEPRINT', label: 'Paper Blueprint', description: 'Define paper structure & dimensions' },
   { key: 'LITERATURE_SEARCH', label: 'Literature Review', description: 'Search and import citations' },
   { key: 'FIGURE_PLANNER', label: 'Figure Planning', description: 'Plan figures and tables' },
   { key: 'SECTION_DRAFTING', label: 'Section Drafting', description: 'Generate and edit sections' },
@@ -37,6 +39,7 @@ type StageComponent = (props: StageProps) => JSX.Element;
 
 const STAGE_COMPONENTS: Record<StageKey, StageComponent> = {
   TOPIC_ENTRY: TopicEntryStage as any,
+  BLUEPRINT: BlueprintStage as any,
   LITERATURE_SEARCH: LiteratureSearchStage as any,
   OUTLINE_PLANNING: OutlinePlanningStage as any,
   FIGURE_PLANNER: PaperFigurePlannerStage as any,
@@ -47,7 +50,7 @@ const STAGE_COMPONENTS: Record<StageKey, StageComponent> = {
 export default function PaperDraftingPage() {
   const params = useParams();
   const paperId = params?.paperId as string;
-  const { isLoading: authLoading } = useAuth() as any;
+  const { isLoading: authLoading, token: authToken } = useAuth() as any;
   const [session, setSession] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -64,13 +67,14 @@ export default function PaperDraftingPage() {
     }
   }, []);
 
-  const authToken = useMemo(() => {
-    if (typeof window === 'undefined') return null;
-    return localStorage.getItem('auth_token');
-  }, []);
-
   const loadSession = useCallback(async () => {
-    if (!paperId || !authToken) return;
+    if (!paperId || !authToken) {
+      // If no auth token, stop loading state but don't error (user may need to login)
+      if (!authLoading && !authToken) {
+        setLoading(false);
+      }
+      return;
+    }
     try {
       setLoading(true);
       const response = await fetch(`/api/papers/${paperId}`, {
@@ -89,7 +93,7 @@ export default function PaperDraftingPage() {
     } finally {
       setLoading(false);
     }
-  }, [paperId, authToken]);
+  }, [paperId, authToken, authLoading]);
 
   useEffect(() => {
     if (!paperId) return;

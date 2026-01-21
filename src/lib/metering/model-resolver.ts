@@ -44,7 +44,7 @@ export interface ModelInfo {
 
 // Cache for model resolutions (cleared on config updates)
 const resolutionCache = new Map<string, { result: ModelResolutionResult; timestamp: number }>()
-const CACHE_TTL = 60000 // 1 minute
+const CACHE_TTL = 30000 // 30 seconds (reduced from 1 minute for faster admin config changes)
 
 // Maximum fallback depth to prevent infinite loops
 const MAX_FALLBACK_DEPTH = 3

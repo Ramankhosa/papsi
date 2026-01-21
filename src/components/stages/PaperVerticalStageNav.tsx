@@ -19,7 +19,8 @@ import {
   ListOrdered,
   PenTool,
   CheckCircle,
-  BookOpen
+  BookOpen,
+  Target
 } from 'lucide-react'
 
 // ============================================================================
@@ -288,6 +289,37 @@ const STAGE_DEFINITIONS: StageDefinition[] = [
         required: true,
         getStatus: (session) => {
           return session?.researchTopic?.methodology ? 'completed' : 'pending'
+        }
+      }
+    ]
+  },
+  {
+    key: 'BLUEPRINT',
+    label: 'Paper Blueprint',
+    icon: Target,
+    description: 'Define paper structure & dimensions',
+    weight: 12,
+    subStages: [
+      {
+        key: 'blueprint_generated',
+        label: 'Blueprint Generated',
+        icon: Target,
+        description: 'Generate a blueprint from your topic',
+        required: true,
+        getStatus: (session) => {
+          const hasBlueprint = !!session?.paperBlueprint?.id
+          return hasBlueprint ? 'completed' : 'pending'
+        }
+      },
+      {
+        key: 'blueprint_frozen',
+        label: 'Blueprint Frozen',
+        icon: FileText,
+        description: 'Freeze blueprint to proceed',
+        required: true,
+        getStatus: (session) => {
+          const isFrozen = session?.paperBlueprint?.status === 'FROZEN'
+          return isFrozen ? 'completed' : 'pending'
         }
       }
     ]

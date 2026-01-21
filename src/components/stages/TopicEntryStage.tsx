@@ -15,8 +15,6 @@ import {
   FileText,
   ChevronDown,
   ChevronRight,
-  Wand2,
-  GraduationCap,
   Rocket,
   HelpCircle,
   Database,
@@ -27,17 +25,14 @@ import {
   MessageSquare,
   CheckCircle2,
   Circle,
-  PenLine,
   Compass,
   Users,
   BarChart3,
   Upload,
   FileUp,
   File,
-  AlertCircle,
-  ScrollText
+  AlertCircle
 } from 'lucide-react';
-import BlueprintApprovalPanel from './BlueprintApprovalPanel';
 
 // ============================================================================
 // Auto-Resize Textarea Component
@@ -1624,30 +1619,6 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
                   {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Save Research Topic'}
                 </button>
               </div>
-
-              {/* Blueprint Section */}
-              <section className="mt-8">
-                <div className="flex items-center gap-3 mb-6">
-                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center shadow-lg shadow-indigo-500/30">
-                    <ScrollText className="w-6 h-6 text-white" />
-                  </div>
-                  <div>
-                    <h2 className="text-xl font-bold text-slate-900">Paper Blueprint</h2>
-                    <p className="text-sm text-slate-500">Generate and approve your paper structure</p>
-                  </div>
-                </div>
-                <BlueprintApprovalPanel
-                  sessionId={sessionId}
-                  authToken={authToken}
-                  hasResearchTopic={topicSaved || (segments.question.mainQuestion.length >= 20 && segments.keywords.length >= 3)}
-                  onBlueprintApproved={(blueprint) => {
-                    console.log('Blueprint approved:', blueprint);
-                  }}
-                  onBlueprintUpdated={(blueprint) => {
-                    console.log('Blueprint updated:', blueprint);
-                  }}
-                />
-              </section>
             </div>
           </motion.div>
         )}

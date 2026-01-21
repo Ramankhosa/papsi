@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { isFeatureEnabled } from '@/lib/feature-flags'
 import TopicEntryStage from '@/components/stages/TopicEntryStage'
+import BlueprintStage from '@/components/stages/BlueprintStage'
 import LiteratureSearchStage from '@/components/stages/LiteratureSearchStage'
 import OutlinePlanningStage from '@/components/stages/OutlinePlanningStage'
 import PaperFigurePlannerStage from '@/components/stages/PaperFigurePlannerStage'
@@ -27,6 +28,7 @@ import PaperVerticalStageNav from '@/components/stages/PaperVerticalStageNav'
 const STAGES = [
   { key: 'OUTLINE_PLANNING', label: 'Paper Foundation', description: 'Set up paper type & structure' },
   { key: 'TOPIC_ENTRY', label: 'Research Topic', description: 'Define your research question' },
+  { key: 'BLUEPRINT', label: 'Paper Blueprint', description: 'Define paper structure & dimensions' },
   { key: 'LITERATURE_SEARCH', label: 'Literature Review', description: 'Search and import citations' },
   { key: 'FIGURE_PLANNER', label: 'Figure Planning', description: 'Plan figures and tables' },
   { key: 'SECTION_DRAFTING', label: 'Section Drafting', description: 'Generate and edit sections' },
@@ -40,6 +42,7 @@ type StageProps = {
   authToken: string | null
   onSessionUpdated?: (session: any) => void
   onTopicSaved?: (topic: any) => void
+  onNavigateToStage?: (stage: string) => void
   // For Section Drafting
   selectedSection?: string
   onSectionSelect?: (sectionKey: string) => void
@@ -49,6 +52,7 @@ type StageComponent = (props: StageProps) => JSX.Element
 
 const STAGE_COMPONENTS: Record<StageKey, StageComponent> = {
   TOPIC_ENTRY: TopicEntryStage as any,
+  BLUEPRINT: BlueprintStage as any,
   LITERATURE_SEARCH: LiteratureSearchStage as any,
   OUTLINE_PLANNING: OutlinePlanningStage as any,
   FIGURE_PLANNER: PaperFigurePlannerStage as any,
@@ -59,6 +63,7 @@ const STAGE_COMPONENTS: Record<StageKey, StageComponent> = {
 const STAGE_ORDER: StageKey[] = [
   'OUTLINE_PLANNING',
   'TOPIC_ENTRY',
+  'BLUEPRINT',
   'LITERATURE_SEARCH',
   'FIGURE_PLANNER',
   'SECTION_DRAFTING',
@@ -413,6 +418,7 @@ export default function PaperSessionPage() {
                   onTopicSaved={(topic) => {
                     setSession(prev => prev ? { ...prev, researchTopic: topic } : null)
                   }}
+                  onNavigateToStage={handleNavigateToStage}
                   selectedSection={selectedSection}
                   onSectionSelect={setSelectedSection}
                 />

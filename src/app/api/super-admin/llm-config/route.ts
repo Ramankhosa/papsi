@@ -12,7 +12,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyJWT } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
-import { clearModelCache, clearPlanCache } from '@/lib/metering/model-resolver'
+import { clearModelCache } from '@/lib/metering/model-resolver'
 
 // ============================================================================
 // Auth Helper
@@ -418,7 +418,8 @@ async function setStageModel(body: any) {
     }
   })
 
-  clearPlanCache(planId)
+  // Clear ALL model cache to ensure changes take effect immediately
+  clearModelCache()
   return NextResponse.json({ success: true, config })
 }
 
@@ -486,7 +487,9 @@ async function setTaskModel(body: any) {
     }
   })
 
-  clearPlanCache(planId)
+  // Clear ALL model cache to ensure changes take effect immediately
+  // (clearPlanCache might miss entries if user is on a different plan)
+  clearModelCache()
   return NextResponse.json({ success: true, config })
 }
 
@@ -522,7 +525,8 @@ async function bulkSetPlanModels(body: any) {
     results.push(config)
   }
 
-  clearPlanCache(planId)
+  // Clear ALL model cache for bulk updates
+  clearModelCache()
   return NextResponse.json({ success: true, count: results.length })
 }
 
@@ -567,7 +571,8 @@ async function copyPlanConfig(body: any) {
     copied++
   }
 
-  clearPlanCache(targetPlanId)
+  // Clear ALL model cache when copying configs
+  clearModelCache()
   return NextResponse.json({ success: true, copied })
 }
 
@@ -619,13 +624,13 @@ export async function DELETE(request: NextRequest) {
         break
 
       case 'stage_config':
-        const config = await prisma.planStageModelConfig.delete({ where: { id } })
-        clearPlanCache(config.planId)
+        await prisma.planStageModelConfig.delete({ where: { id } })
+        clearModelCache() // Clear all cache
         break
 
       case 'task_config':
-        const taskConfig = await prisma.planTaskModelConfig.delete({ where: { id } })
-        clearPlanCache(taskConfig.planId)
+        await prisma.planTaskModelConfig.delete({ where: { id } })
+        clearModelCache() // Clear all cache
         break
 
       default:

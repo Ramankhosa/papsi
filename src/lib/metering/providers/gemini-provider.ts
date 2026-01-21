@@ -101,12 +101,16 @@ export class GeminiProvider implements LLMProvider {
       console.log(`[GeminiProvider] Using model: ${modelClass}`)
     }
 
-    // Use enforcement limits, with provider limits as fallback
+    // Use enforcement limits from admin config, with provider limits as fallback
+    // Admin-configured limits take priority to allow flexibility for high-output tasks
     const providerLimits = this.getTokenLimits(modelClass)
     const requested = limits.maxTokensOut || providerLimits.output
-    const maxTokens = Math.min(requested, providerLimits.output)
+    // Allow admin to configure higher limits than provider defaults (up to model's actual max)
+    const maxTokens = limits.maxTokensOut ? requested : Math.min(requested, providerLimits.output)
     const temperature = request.parameters?.temperature ?? 0.7 // Default temperature 0.7 if not specified
     const topP = request.parameters?.topP ?? 0.95 // Default topP 0.95
+    
+    console.log(`[GeminiProvider] Token limits: admin=${limits.maxTokensOut || 'not set'}, provider=${providerLimits.output}, using=${maxTokens}`)
 
     try {
       // Gemini 3 "thinking_level" is expressed in the REST request schema.
@@ -235,6 +239,8 @@ export class GeminiProvider implements LLMProvider {
 
   getTokenLimits(modelName: string): { input: number, output: number } {
     const normalized = this.modelAliasMap[modelName] || modelName
+    // Updated limits based on Google's official documentation (Jan 2025)
+    // Note: Thinking models need extra headroom as thinking tokens count toward output limit
     const limits: Record<string, { input: number, output: number }> = {
       // Flash Lite models
       'gemini-2.0-flash-lite': { input: 1048576, output: 8192 },
@@ -244,21 +250,22 @@ export class GeminiProvider implements LLMProvider {
       'gemini-2.0-flash': { input: 1048576, output: 8192 },
       'gemini-2.0-flash-001': { input: 1048576, output: 8192 },
       'gemini-2.0-flash-exp': { input: 1048576, output: 8192 },            // Experimental - best image output
-      'gemini-2.0-flash-thinking-exp': { input: 1048576, output: 16384 },  // Thinking model - higher output
+      'gemini-2.0-flash-thinking-exp': { input: 1048576, output: 65536 },  // Thinking model - needs more output for thinking tokens
       'gemini-exp-1206': { input: 2097152, output: 8192 },                 // Experimental model
-      // Pro models
-      'gemini-2.5-pro': { input: 2097152, output: 16384 },
-      'gemini-1.5-pro': { input: 2097152, output: 16384 }, // legacy config
-      'gemini-1.5-pro-002': { input: 2097152, output: 16384 },
-      'gemini-1.5-flash': { input: 1048576, output: 8192 }, // legacy config
+      // Pro models - Gemini 2.5 Pro supports up to 65K output tokens
+      'gemini-2.5-pro': { input: 2097152, output: 65536 },                 // Updated: supports 65K output (includes thinking tokens)
+      'gemini-2.5-pro-preview': { input: 2097152, output: 65536 },         // Preview variant
+      'gemini-1.5-pro': { input: 2097152, output: 8192 },                  // 1.5 Pro has lower output limit
+      'gemini-1.5-pro-002': { input: 2097152, output: 8192 },
+      'gemini-1.5-flash': { input: 1048576, output: 8192 },
       'gemini-1.5-flash-002': { input: 1048576, output: 8192 },
       // Legacy image generation models (backwards compatibility)
       'gemini-3.0-nano-banana': { input: 128000, output: 8192 },
-      'gemini-3-pro-preview': { input: 2097152, output: 16384 },
+      'gemini-3-pro-preview': { input: 2097152, output: 65536 },
       'gemini-3-pro-image-preview': { input: 128000, output: 8192 }
     }
     
-    return limits[normalized] || { input: 2097152, output: 16384 }
+    return limits[normalized] || { input: 2097152, output: 65536 }  // Default to 65K output for newer models
   }
 
   getCostPerToken(modelName: string): { input: number, output: number } {

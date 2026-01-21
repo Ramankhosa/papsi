@@ -78,11 +78,11 @@ export class DeepSeekProvider implements LLMProvider {
         throw new Error('No valid content provided for DeepSeek request')
       }
 
-      // Apply token limits
-      const maxTokens = Math.min(
-        limits.maxTokensOut || 4096,
-        8192 // DeepSeek's typical max
-      )
+      // Apply token limits - admin config takes priority
+      // DeepSeek models support up to 64K output tokens
+      const defaultMax = 8192
+      const maxTokens = limits.maxTokensOut || defaultMax
+      console.log(`[DeepSeekProvider] Token limits: admin=${limits.maxTokensOut || 'not set'}, using=${maxTokens}`)
 
       const response = await this.client.chat.completions.create({
         model: actualModel,

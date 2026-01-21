@@ -12,6 +12,7 @@ import {
   ListOrdered,
   PenTool,
   Search,
+  Target,
   type LucideIcon
 } from 'lucide-react'
 
@@ -280,7 +281,39 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
       }
     ]
   },
-  // Stage 3: Literature Review (LITERATURE_SEARCH) - Search and import citations
+  // Stage 3: Paper Blueprint (BLUEPRINT) - Define paper structure & dimensions
+  {
+    key: 'BLUEPRINT',
+    label: 'Paper Blueprint',
+    icon: Target,
+    description: 'Define paper structure & dimensions',
+    weight: 12,
+    subStages: [
+      {
+        key: 'blueprint_generated',
+        label: 'Blueprint Generated',
+        icon: Target,
+        description: 'Generate a blueprint from your topic',
+        required: true,
+        getStatus: (session) => {
+          const hasBlueprint = !!session?.paperBlueprint?.id
+          return hasBlueprint ? 'completed' : 'pending'
+        }
+      },
+      {
+        key: 'blueprint_frozen',
+        label: 'Blueprint Frozen',
+        icon: FileText,
+        description: 'Freeze blueprint to proceed',
+        required: true,
+        getStatus: (session) => {
+          const isFrozen = session?.paperBlueprint?.status === 'FROZEN'
+          return isFrozen ? 'completed' : 'pending'
+        }
+      }
+    ]
+  },
+  // Stage 4: Literature Review (LITERATURE_SEARCH) - Search and import citations
   {
     key: 'LITERATURE_SEARCH',
     label: 'Literature Review',
@@ -316,7 +349,7 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
       }
     ]
   },
-  // Stage 4: Figure Planning (FIGURE_PLANNER) - Plan figures and tables
+  // Stage 5: Figure Planning (FIGURE_PLANNER) - Plan figures and tables
   {
     key: 'FIGURE_PLANNER',
     label: 'Figure Planning',
@@ -337,7 +370,7 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
       }
     ]
   },
-  // Stage 5: Section Drafting (SECTION_DRAFTING) - Write the paper
+  // Stage 6: Section Drafting (SECTION_DRAFTING) - Write the paper
   {
     key: 'SECTION_DRAFTING',
     label: 'Section Drafting',
@@ -347,7 +380,7 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
     subStages: [],
     getSubStages: getDraftSectionSubStages
   },
-  // Stage 6: Review & Export (REVIEW_EXPORT) - Finalize and export
+  // Stage 7: Review & Export (REVIEW_EXPORT) - Finalize and export
   {
     key: 'REVIEW_EXPORT',
     label: 'Review & Export',
@@ -383,6 +416,7 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
 export const STAGE_ORDER = [
   'OUTLINE_PLANNING',  // Paper Foundation - configure paper type & structure first
   'TOPIC_ENTRY',       // Research Topic - define research question
+  'BLUEPRINT',         // Paper Blueprint - define paper structure & dimensions
   'LITERATURE_SEARCH', // Literature Review - search and import citations
   'FIGURE_PLANNER',    // Figure Planning - plan figures and tables
   'SECTION_DRAFTING',  // Section Drafting - write the paper

@@ -4,14 +4,16 @@ import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { llmGateway } from '@/lib/metering/gateway';
 import { featureFlags } from '@/lib/feature-flags';
+import { blueprintService, type BlueprintWithSectionPlan, type SectionPlanItem } from '@/lib/services/blueprint-service';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60; // Allow up to 60s for LLM processing
+export const maxDuration = 120; // Allow up to 120s for LLM processing with blueprint
 
 const requestSchema = z.object({
   searchRunId: z.string().min(1),
   maxSuggestions: z.number().int().min(1).max(20).optional().default(10),
+  includeBlueprint: z.boolean().optional().default(true), // Include blueprint dimension mapping
 });
 
 // Enhanced response structure from LLM with citation metadata
@@ -20,6 +22,14 @@ interface CitationUsage {
   literatureReview: boolean;  // Cite for detailed analysis
   methodology: boolean;       // Reference their method
   comparison: boolean;        // Use as baseline/comparison
+}
+
+// Dimension mapping for blueprint integration
+interface DimensionMapping {
+  sectionKey: string;
+  dimension: string;
+  remark: string;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
 }
 
 interface CitationMeta {
@@ -37,11 +47,34 @@ interface PaperRelevanceAnalysis {
   relevanceScore: number; // 0-100
   reasoning: string;
   citationMeta: CitationMeta;  // Enhanced metadata for section generation
+  dimensionMappings?: DimensionMapping[];  // Blueprint dimension mappings
+  recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';  // Import recommendation
+}
+
+// Coverage analysis for blueprint gaps
+interface BlueprintCoverage {
+  totalDimensions: number;
+  coveredDimensions: number;
+  gaps: Array<{
+    sectionKey: string;
+    sectionTitle: string;
+    dimension: string;
+  }>;
+  sectionCoverage: Record<string, {
+    total: number;
+    covered: number;
+    dimensions: Array<{
+      dimension: string;
+      paperCount: number;
+      papers: string[];
+    }>;
+  }>;
 }
 
 interface LLMResponse {
   suggestions: PaperRelevanceAnalysis[];
   summary: string;
+  blueprintCoverage?: BlueprintCoverage;
 }
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
@@ -58,10 +91,114 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
   });
 }
 
+/**
+ * Attempt to salvage a truncated JSON response
+ * This handles cases where the LLM output was cut off due to token limits
+ */
+function attemptJsonSalvage(truncatedJson: string): { suggestions: any[]; summary: string } | null {
+  try {
+    // Find the suggestions array start
+    const suggestionsMatch = truncatedJson.match(/"suggestions"\s*:\s*\[/);
+    if (!suggestionsMatch) return null;
+    
+    const suggestionsStart = suggestionsMatch.index! + suggestionsMatch[0].length;
+    
+    // Try to find complete suggestion objects by looking for closing braces
+    // Each suggestion ends with }] or }, 
+    let lastCompleteIndex = -1;
+    let braceDepth = 0;
+    let inString = false;
+    let escapeNext = false;
+    
+    for (let i = suggestionsStart; i < truncatedJson.length; i++) {
+      const char = truncatedJson[i];
+      
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+      
+      if (char === '\\') {
+        escapeNext = true;
+        continue;
+      }
+      
+      if (char === '"' && !escapeNext) {
+        inString = !inString;
+        continue;
+      }
+      
+      if (inString) continue;
+      
+      if (char === '{') {
+        braceDepth++;
+      } else if (char === '}') {
+        braceDepth--;
+        if (braceDepth === 0) {
+          // Found a complete top-level object in suggestions array
+          lastCompleteIndex = i;
+        }
+      }
+    }
+    
+    if (lastCompleteIndex === -1) return null;
+    
+    // Extract the valid portion up to the last complete suggestion
+    const validSuggestions = truncatedJson.substring(suggestionsStart, lastCompleteIndex + 1);
+    
+    // Construct a valid JSON object
+    const reconstructed = `{"suggestions":[${validSuggestions}],"summary":"Analysis partially completed (response was truncated)"}`;
+    
+    const parsed = JSON.parse(reconstructed);
+    
+    // Verify we have at least one suggestion
+    if (!parsed.suggestions || parsed.suggestions.length === 0) {
+      return null;
+    }
+    
+    console.log(`[LiteratureRelevance] Salvaged ${parsed.suggestions.length} complete suggestion(s) from truncated response`);
+    return parsed;
+  } catch (error) {
+    console.error('[LiteratureRelevance] JSON salvage failed:', error);
+    return null;
+  }
+}
+
+// Sections that should be included in dimension mapping for non-review papers
+const LITERATURE_MAPPING_SECTIONS = [
+  'introduction',
+  'literature_review', 'literature-review', 'literaturereview',
+  'background',
+  'related_work', 'related-work', 'relatedwork',
+  'theoretical_framework', 'theoretical-framework', 'theoreticalframework',
+  'methodology', 'methods', 'research_methodology', 'research-methodology',
+  'materials_and_methods', 'materials-and-methods'
+];
+
+// Check if a section key matches literature mapping sections
+function isLiteratureMappingSection(sectionKey: string): boolean {
+  const normalized = sectionKey.toLowerCase().replace(/[\s_-]+/g, '_');
+  return LITERATURE_MAPPING_SECTIONS.some(s => 
+    normalized.includes(s.replace(/[\s_-]+/g, '_')) ||
+    s.replace(/[\s_-]+/g, '_').includes(normalized)
+  );
+}
+
+// Check if paper type is a review paper
+function isReviewPaper(paperTypeCode?: string): boolean {
+  if (!paperTypeCode) return false;
+  const normalized = paperTypeCode.toLowerCase();
+  return normalized.includes('review') || 
+         normalized.includes('survey') || 
+         normalized.includes('meta-analysis') ||
+         normalized.includes('systematic');
+}
+
 function buildPrompt(
   researchQuestion: string,
   papers: Array<{ id: string; title: string; abstract?: string; authors?: string[]; year?: number }>,
-  maxSuggestions: number
+  maxSuggestions: number,
+  blueprint?: BlueprintWithSectionPlan | null
 ): string {
   const paperList = papers.map((p, idx) => {
     const authorStr = p.authors?.slice(0, 3).join(', ') || 'Unknown';
@@ -74,17 +211,55 @@ function buildPrompt(
    Authors: ${authorStr}${yearStr}${abstractStr}`;
   }).join('\n\n');
 
-  return `You are a research assistant helping identify relevant papers for academic writing. Your analysis will be used to generate Introduction, Literature Review, and Methodology sections.
+  // Build blueprint sections string if available
+  let blueprintSection = '';
+  let dimensionMappingInstructions = '';
+  
+  if (blueprint && blueprint.sectionPlan && blueprint.sectionPlan.length > 0) {
+    // Filter sections for dimension mapping:
+    // - For review papers: include all sections
+    // - For other papers: only Introduction, Literature Review, and Methodology
+    const isReview = isReviewPaper(blueprint.paperTypeCode);
+    const sectionsForMapping = isReview 
+      ? blueprint.sectionPlan 
+      : blueprint.sectionPlan.filter(s => isLiteratureMappingSection(s.sectionKey));
+    
+    console.log(`[LiteratureRelevance] Paper type: ${blueprint.paperTypeCode || 'unknown'}, isReview: ${isReview}, sections for mapping: ${sectionsForMapping.map(s => s.sectionKey).join(', ')}`);
+    
+    const sectionsText = sectionsForMapping.map((section, idx) => {
+      const dimensions = section.mustCover && section.mustCover.length > 0
+        ? section.mustCover.map((dim, i) => `    ${i + 1}. "${dim}"`).join('\n')
+        : '    (No specific dimensions defined)';
+      return `${idx + 1}. ${section.sectionKey} - "${section.sectionTitle}"
+   Must Cover Dimensions:
+${dimensions}`;
+    }).join('\n\n');
 
-RESEARCH QUESTION:
-${researchQuestion}
+    blueprintSection = `
+PAPER BLUEPRINT (Frozen Structure):
+Central Objective: ${blueprint.centralObjective || 'Not specified'}
 
-CANDIDATE PAPERS:
-${paperList}
+SECTIONS AND DIMENSIONS TO COVER:
+${sectionsText}
+`;
 
-TASK:
-Analyze these papers and identify the TOP ${maxSuggestions} most relevant papers. For EACH selected paper, extract detailed citation metadata that will help when writing different sections of the manuscript.
+    dimensionMappingInstructions = `
+7. DIMENSION MAPPINGS (CRITICAL):
+   For each paper, identify which blueprint dimensions it supports:
+   - Map to EXACT dimension text from the blueprint above
+   - Provide a grounded remark (1-2 sentences from abstract) explaining how it supports the dimension
+   - Assign confidence: HIGH (directly addresses), MEDIUM (partially relevant), LOW (tangentially related)
+   - A paper can map to multiple dimensions across different sections
+   - Only map if there's concrete evidence in the abstract
 
+8. RECOMMENDATION:
+   - "IMPORT" if paper maps to 2+ dimensions with HIGH/MEDIUM confidence
+   - "MAYBE" if paper maps to 1 dimension or has only LOW confidence mappings
+   - "SKIP" if paper doesn't map to any blueprint dimensions (but might still be useful for background)
+`;
+  }
+
+  const baseTasks = `
 For each paper, determine:
 1. Key contribution (1 sentence - what's new/important about this paper)
 2. Key findings (1 sentence - main results or conclusions)
@@ -95,17 +270,42 @@ For each paper, determine:
    - Introduction: Good for background/context/motivation?
    - Literature Review: Needs detailed analysis/comparison?
    - Methodology: Reference their method/approach?
-   - Comparison: Use as baseline/competing approach?
+   - Comparison: Use as baseline/competing approach?`;
 
-IMPORTANT CRITERIA:
-- Papers with abstracts provide more context - prefer them
-- Include foundational/seminal works even if older
-- Include papers showing contrasting viewpoints
-- Consider methodological relevance
-- Identify papers useful for different sections
-
-Respond in the following JSON format ONLY (no markdown, no explanation outside JSON):
-{
+  // Build JSON schema based on whether blueprint exists
+  const jsonSchema = blueprint ? `{
+  "suggestions": [
+    {
+      "paperId": "<exact paper ID from the list>",
+      "isRelevant": true,
+      "relevanceScore": <0-100>,
+      "reasoning": "<1-2 sentence explanation of overall relevance>",
+      "recommendation": "<IMPORT|MAYBE|SKIP>",
+      "dimensionMappings": [
+        {
+          "sectionKey": "<exact section key from blueprint>",
+          "dimension": "<exact dimension text from blueprint>",
+          "remark": "<1-2 sentence grounded explanation from abstract>",
+          "confidence": "<HIGH|MEDIUM|LOW>"
+        }
+      ],
+      "citationMeta": {
+        "keyContribution": "<main contribution in 1 sentence>",
+        "keyFindings": "<main results/findings in 1 sentence>",
+        "methodologicalApproach": "<their method, or null if not relevant>",
+        "relevanceToResearch": "<how it connects to the research question>",
+        "limitationsOrGaps": "<what they didn't address, or null>",
+        "usage": {
+          "introduction": <true/false>,
+          "literatureReview": <true/false>,
+          "methodology": <true/false>,
+          "comparison": <true/false>
+        }
+      }
+    }
+  ],
+  "summary": "<2-3 sentence summary of coverage analysis>"
+}` : `{
   "suggestions": [
     {
       "paperId": "<exact paper ID from the list>",
@@ -119,21 +319,49 @@ Respond in the following JSON format ONLY (no markdown, no explanation outside J
         "relevanceToResearch": "<how it connects to the research question>",
         "limitationsOrGaps": "<what they didn't address, or null>",
         "usage": {
-          "introduction": <true/false - cite in intro for background>,
-          "literatureReview": <true/false - analyze in detail in lit review>,
-          "methodology": <true/false - reference their method>,
-          "comparison": <true/false - use as baseline/comparison>
+          "introduction": <true/false>,
+          "literatureReview": <true/false>,
+          "methodology": <true/false>,
+          "comparison": <true/false>
         }
       }
     }
   ],
-  "summary": "<1-2 sentence summary of the selected papers and how they cover the research topic>"
-}
+  "summary": "<1-2 sentence summary of the selected papers>"
+}`;
+
+  return `You are a research assistant helping identify relevant papers for academic writing.${blueprint ? ' You will map papers to a structured blueprint with specific dimensions to cover.' : ''}
+
+RESEARCH QUESTION:
+${researchQuestion}
+${blueprintSection}
+CANDIDATE PAPERS:
+${paperList}
+
+TASK:
+Analyze these papers and identify the TOP ${maxSuggestions} most relevant papers.${blueprint ? ' Map each paper to the blueprint dimensions it supports.' : ''}
+${baseTasks}${dimensionMappingInstructions}
+
+IMPORTANT CRITERIA:
+- Papers with abstracts provide more context - prefer them
+- Include foundational/seminal works even if older
+- Include papers showing contrasting viewpoints
+- Consider methodological relevance${blueprint ? `
+- Prioritize papers that cover uncovered dimensions
+- A paper covering multiple dimensions is more valuable
+- Be precise with dimension mapping - only map if abstract provides evidence` : ''}
+
+Respond in the following JSON format ONLY (no markdown, no explanation outside JSON):
+${jsonSchema}
 
 Return ONLY papers you recommend. Order by relevance score (highest first).`;
 }
 
-function parseAndValidateLLMResponse(output: string, validPaperIds: Set<string>): LLMResponse {
+function parseAndValidateLLMResponse(
+  output: string, 
+  validPaperIds: Set<string>,
+  blueprint?: BlueprintWithSectionPlan | null
+): LLMResponse {
   // Clean up response - remove markdown code blocks if present
   let cleaned = output.trim();
   if (cleaned.startsWith('```json')) {
@@ -146,10 +374,38 @@ function parseAndValidateLLMResponse(output: string, validPaperIds: Set<string>)
   }
   cleaned = cleaned.trim();
 
-  const parsed = JSON.parse(cleaned);
+  // Handle truncated JSON responses (common when output token limit is hit)
+  // Try to salvage partial results by fixing common truncation issues
+  let parsed: any;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (parseError) {
+    console.warn('[LiteratureRelevance] Initial JSON parse failed, attempting to salvage truncated response...');
+    
+    // Try to fix truncated JSON by finding the last complete suggestion
+    const salvaged = attemptJsonSalvage(cleaned);
+    if (salvaged) {
+      console.log('[LiteratureRelevance] Successfully salvaged partial JSON response');
+      parsed = salvaged;
+    } else {
+      // Re-throw if salvage failed
+      throw parseError;
+    }
+  }
   
   if (!parsed.suggestions || !Array.isArray(parsed.suggestions)) {
     throw new Error('Invalid response format: missing suggestions array');
+  }
+
+  // Build valid section keys and dimensions from blueprint
+  const validSectionKeys = new Set<string>();
+  const validDimensions = new Map<string, Set<string>>(); // sectionKey -> dimensions
+  
+  if (blueprint?.sectionPlan) {
+    for (const section of blueprint.sectionPlan) {
+      validSectionKeys.add(section.sectionKey);
+      validDimensions.set(section.sectionKey, new Set(section.mustCover || []));
+    }
   }
 
   // Validate and filter suggestions
@@ -183,18 +439,151 @@ function parseAndValidateLLMResponse(output: string, validPaperIds: Set<string>)
       }
     };
     
+    // Parse dimension mappings if blueprint exists
+    let dimensionMappings: DimensionMapping[] | undefined;
+    if (blueprint && suggestion.dimensionMappings && Array.isArray(suggestion.dimensionMappings)) {
+      dimensionMappings = [];
+      for (const dm of suggestion.dimensionMappings) {
+        // Validate section key
+        if (!dm.sectionKey || !validSectionKeys.has(dm.sectionKey)) {
+          console.warn(`Skipping invalid sectionKey: ${dm.sectionKey}`);
+          continue;
+        }
+        
+        // Validate dimension exists in that section (fuzzy match for minor variations)
+        const sectionDimensions = validDimensions.get(dm.sectionKey);
+        let matchedDimension = dm.dimension;
+        
+        if (sectionDimensions) {
+          // Try exact match first
+          if (!sectionDimensions.has(dm.dimension)) {
+            // Try fuzzy match (lowercase, trimmed)
+            const normalizedInput = String(dm.dimension).toLowerCase().trim();
+            for (const validDim of sectionDimensions) {
+              if (validDim.toLowerCase().trim() === normalizedInput) {
+                matchedDimension = validDim; // Use the canonical dimension text
+                break;
+              }
+            }
+          }
+        }
+        
+        dimensionMappings.push({
+          sectionKey: dm.sectionKey,
+          dimension: String(matchedDimension).slice(0, 500),
+          remark: String(dm.remark || 'No remark provided').slice(0, 500),
+          confidence: ['HIGH', 'MEDIUM', 'LOW'].includes(dm.confidence) 
+            ? dm.confidence 
+            : 'MEDIUM'
+        });
+      }
+    }
+    
+    // Determine recommendation based on dimension mappings
+    let recommendation: 'IMPORT' | 'MAYBE' | 'SKIP' | undefined;
+    if (blueprint) {
+      if (suggestion.recommendation && ['IMPORT', 'MAYBE', 'SKIP'].includes(suggestion.recommendation)) {
+        recommendation = suggestion.recommendation;
+      } else if (dimensionMappings && dimensionMappings.length > 0) {
+        const highMediumCount = dimensionMappings.filter(
+          dm => dm.confidence === 'HIGH' || dm.confidence === 'MEDIUM'
+        ).length;
+        recommendation = highMediumCount >= 2 ? 'IMPORT' : highMediumCount >= 1 ? 'MAYBE' : 'SKIP';
+      } else {
+        recommendation = 'SKIP';
+      }
+    }
+    
     validatedSuggestions.push({
       paperId: suggestion.paperId,
       isRelevant: suggestion.isRelevant !== false,
       relevanceScore: Math.min(100, Math.max(0, Number(suggestion.relevanceScore) || 50)),
       reasoning: String(suggestion.reasoning || 'No reasoning provided').slice(0, 500),
       citationMeta,
+      dimensionMappings,
+      recommendation,
     });
+  }
+
+  // Calculate blueprint coverage if blueprint exists
+  let blueprintCoverage: BlueprintCoverage | undefined;
+  if (blueprint?.sectionPlan) {
+    blueprintCoverage = calculateBlueprintCoverage(blueprint, validatedSuggestions);
   }
 
   return {
     suggestions: validatedSuggestions,
     summary: String(parsed.summary || 'AI analysis completed'),
+    blueprintCoverage,
+  };
+}
+
+// Calculate coverage of blueprint dimensions
+function calculateBlueprintCoverage(
+  blueprint: BlueprintWithSectionPlan,
+  suggestions: PaperRelevanceAnalysis[]
+): BlueprintCoverage {
+  const sectionCoverage: BlueprintCoverage['sectionCoverage'] = {};
+  const gaps: BlueprintCoverage['gaps'] = [];
+  let totalDimensions = 0;
+  let coveredDimensions = 0;
+
+  // Filter sections for coverage calculation (same logic as prompt building)
+  const isReview = isReviewPaper(blueprint.paperTypeCode);
+  const sectionsForCoverage = isReview 
+    ? blueprint.sectionPlan 
+    : blueprint.sectionPlan.filter(s => isLiteratureMappingSection(s.sectionKey));
+
+  for (const section of sectionsForCoverage) {
+    const dimensions = section.mustCover || [];
+    const dimensionData: BlueprintCoverage['sectionCoverage'][string]['dimensions'] = [];
+    
+    for (const dimension of dimensions) {
+      totalDimensions++;
+      
+      // Find papers that map to this dimension
+      const matchingPapers: string[] = [];
+      for (const suggestion of suggestions) {
+        if (suggestion.dimensionMappings) {
+          const hasMapping = suggestion.dimensionMappings.some(
+            dm => dm.sectionKey === section.sectionKey && 
+                  dm.dimension.toLowerCase().trim() === dimension.toLowerCase().trim()
+          );
+          if (hasMapping) {
+            matchingPapers.push(suggestion.paperId);
+          }
+        }
+      }
+      
+      dimensionData.push({
+        dimension,
+        paperCount: matchingPapers.length,
+        papers: matchingPapers
+      });
+      
+      if (matchingPapers.length > 0) {
+        coveredDimensions++;
+      } else {
+        gaps.push({
+          sectionKey: section.sectionKey,
+          sectionTitle: section.sectionTitle,
+          dimension
+        });
+      }
+    }
+    
+    sectionCoverage[section.sectionKey] = {
+      total: dimensions.length,
+      covered: dimensionData.filter(d => d.paperCount > 0).length,
+      dimensions: dimensionData
+    };
+  }
+
+  return {
+    totalDimensions,
+    coveredDimensions,
+    gaps,
+    sectionCoverage
   };
 }
 
@@ -220,7 +609,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
     // Parse request
     const body = await request.json();
-    const { searchRunId, maxSuggestions } = requestSchema.parse(body);
+    const { searchRunId, maxSuggestions, includeBlueprint } = requestSchema.parse(body);
 
     // Get the search run
     const searchRun = await prisma.literatureSearchRun.findFirst({
@@ -231,8 +620,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       return NextResponse.json({ error: 'Search run not found' }, { status: 404 });
     }
 
-    // Get research question from session
-    const researchQuestion = session.researchTopic?.researchQuestion 
+    // Fetch blueprint if requested and available
+    let blueprint: BlueprintWithSectionPlan | null = null;
+    if (includeBlueprint) {
+      blueprint = await blueprintService.getBlueprint(sessionId);
+    }
+
+    // Get research question from session or blueprint
+    const researchQuestion = blueprint?.centralObjective
+      || session.researchTopic?.researchQuestion 
       || session.ideaRecord?.title 
       || session.ideaRecord?.problem
       || 'General research topic';
@@ -244,16 +640,18 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     }
 
     // Filter to papers with abstracts for better analysis (but include all if few have abstracts)
+    // Limit batch size to avoid output token truncation - blueprint analysis needs more output tokens
+    const maxPapersToAnalyze = blueprint ? 15 : 25; // Fewer papers when blueprint mapping is included
     const papersWithAbstracts = results.filter(r => r.abstract);
     const papersToAnalyze = papersWithAbstracts.length >= 5 
-      ? papersWithAbstracts 
-      : results.slice(0, 30); // Limit to 30 to avoid token limits
+      ? papersWithAbstracts.slice(0, maxPapersToAnalyze)
+      : results.slice(0, maxPapersToAnalyze);
 
     // Build valid paper ID set for validation
     const validPaperIds = new Set(papersToAnalyze.map(p => p.id));
 
-    // Build prompt (batch all papers in single call)
-    const prompt = buildPrompt(researchQuestion, papersToAnalyze, maxSuggestions);
+    // Build prompt (batch all papers in single call) - include blueprint if available
+    const prompt = buildPrompt(researchQuestion, papersToAnalyze, maxSuggestions, blueprint);
 
     // Get auth headers for LLM gateway
     const authHeader = request.headers.get('authorization') || '';
@@ -274,6 +672,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           sessionId,
           searchRunId,
           paperCount: papersToAnalyze.length,
+          blueprintId: blueprint?.id || null,
         }
       }
     );
@@ -285,16 +684,38 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       }, { status: 500 });
     }
 
-    // Parse and validate LLM response
+    // Parse and validate LLM response (pass blueprint for validation)
     let analysis: LLMResponse;
     try {
-      analysis = parseAndValidateLLMResponse(llmResult.response.output, validPaperIds);
+      analysis = parseAndValidateLLMResponse(llmResult.response.output, validPaperIds, blueprint);
     } catch (parseError) {
       console.error('[LiteratureRelevance] Failed to parse LLM response:', parseError);
-      console.error('Raw output:', llmResult.response.output);
-      return NextResponse.json({ 
-        error: 'Failed to parse AI response' 
-      }, { status: 500 });
+      console.error('Raw output preview:', llmResult.response.output?.slice(0, 500));
+      
+      // Return partial success with empty analysis rather than failing completely
+      // This allows users to still see their search results even if AI analysis fails
+      return NextResponse.json({
+        success: true,
+        searchRunId,
+        analysis: {
+          suggestions: [],
+          summary: 'AI analysis completed but results could not be parsed. You can still manually review papers.',
+          blueprintCoverage: blueprint ? {
+            totalDimensions: blueprint.sectionPlan.reduce((acc, s) => acc + (s.mustCover?.length || 0), 0),
+            coveredDimensions: 0,
+            gaps: blueprint.sectionPlan.flatMap(s => (s.mustCover || []).map(d => ({
+              sectionKey: s.sectionKey,
+              sectionTitle: s.sectionTitle,
+              dimension: d
+            }))),
+            sectionCoverage: {}
+          } : undefined,
+          analyzedAt: new Date().toISOString(),
+          papersAnalyzed: papersToAnalyze.length,
+          blueprintIncluded: !!blueprint,
+          parseError: true
+        }
+      });
     }
 
     // Update search run with AI analysis
@@ -321,6 +742,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           papersAnalyzed: papersToAnalyze.length,
           suggestionsReturned: analysis.suggestions.length,
           tokensUsed: llmResult.response.outputTokens,
+          blueprintIncluded: !!blueprint,
+          dimensionsCovered: analysis.blueprintCoverage?.coveredDimensions || 0,
         }
       }
     });
@@ -331,8 +754,10 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       analysis: {
         suggestions: analysis.suggestions,
         summary: analysis.summary,
+        blueprintCoverage: analysis.blueprintCoverage,
         analyzedAt: new Date().toISOString(),
         papersAnalyzed: papersToAnalyze.length,
+        blueprintIncluded: !!blueprint,
       }
     });
 
@@ -385,11 +810,11 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
       });
     }
 
-    // Get all search runs for session
+    // Get all search runs for session (increased limit to preserve accumulated results across refresh)
     const searchRuns = await prisma.literatureSearchRun.findMany({
       where: { sessionId },
       orderBy: { createdAt: 'desc' },
-      take: 10,
+      take: 20, // Increased to preserve more accumulated results
       select: {
         id: true,
         query: true,

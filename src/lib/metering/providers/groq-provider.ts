@@ -93,12 +93,10 @@ export class GroqProvider implements LLMProvider {
         throw new Error('No valid content provided for Groq request')
       }
 
-      // Apply token limits - Groq has different limits per model
+      // Apply token limits - admin config takes priority over model defaults
       const modelLimits = this.getTokenLimits(actualModel)
-      const maxTokens = Math.min(
-        limits.maxTokensOut || 4096,
-        modelLimits.output
-      )
+      const maxTokens = limits.maxTokensOut || modelLimits.output
+      console.log(`[GroqProvider] Token limits: admin=${limits.maxTokensOut || 'not set'}, model=${modelLimits.output}, using=${maxTokens}`)
 
       const response = await this.client.chat.completions.create({
         model: actualModel,

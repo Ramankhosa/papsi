@@ -27,7 +27,8 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
       researchTopic: true,
       citations: true,
       annexureDrafts: true,
-      figurePlans: true
+      figurePlans: true,
+      paperBlueprint: true
     }
   });
 }

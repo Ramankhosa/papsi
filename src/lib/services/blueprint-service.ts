@@ -18,11 +18,21 @@ import type {
   BlueprintStatus,
   MethodologyType 
 } from '@prisma/client';
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 
 // ============================================================================
 // Types
 // ============================================================================
+
+/**
+ * Dimension type for citation mapping - indicates what kind of evidence is needed
+ */
+export type DimensionType = 
+  | 'foundational'   // Seminal/historical papers establishing concepts
+  | 'methodological' // Papers describing techniques/approaches used
+  | 'empirical'      // Papers providing evidence/data for claims
+  | 'comparative'    // Papers comparing alternative approaches
+  | 'gap';           // Papers identifying limitations or research gaps
 
 export interface SectionPlanItem {
   sectionKey: string;
@@ -32,6 +42,10 @@ export interface SectionPlanItem {
   wordBudget?: number;
   dependencies: string[]; // Which sections must come before
   outputsPromised: string[]; // What this section will provide for later sections
+  
+  // Citation mapping support (Part B integration)
+  mustCoverTyping?: Record<string, DimensionType>; // Maps each mustCover dimension to its type
+  suggestedCitationCount?: number; // Minimum citations expected for this section
 }
 
 export interface BlueprintGenerationInput {
@@ -55,6 +69,8 @@ export interface SectionContext {
   mustAvoid: string[];
   wordBudget?: number;
   dependencies: string[];
+  mustCoverTyping?: Record<string, DimensionType>;
+  suggestedCitationCount?: number;
 }
 
 export interface BlueprintContext {
@@ -230,7 +246,7 @@ class BlueprintService {
         thesisStatement: blueprintData.thesisStatement,
         centralObjective: blueprintData.centralObjective,
         keyContributions: blueprintData.keyContributions,
-        sectionPlan: blueprintData.sectionPlan,
+        sectionPlan: blueprintData.sectionPlan as any,
         preferredTerms: blueprintData.preferredTerms || {},
         narrativeArc: blueprintData.narrativeArc,
         paperTypeCode,
@@ -369,7 +385,7 @@ class BlueprintService {
         ...(updates.thesisStatement && { thesisStatement: updates.thesisStatement }),
         ...(updates.centralObjective && { centralObjective: updates.centralObjective }),
         ...(updates.keyContributions && { keyContributions: updates.keyContributions }),
-        ...(updates.sectionPlan && { sectionPlan: updates.sectionPlan }),
+        ...(updates.sectionPlan && { sectionPlan: updates.sectionPlan as any }),
         ...(updates.preferredTerms && { preferredTerms: updates.preferredTerms }),
         status: 'DRAFT',
         version: { increment: 1 },
@@ -404,7 +420,9 @@ class BlueprintService {
         mustCover: sectionPlan.mustCover,
         mustAvoid: sectionPlan.mustAvoid,
         wordBudget: sectionPlan.wordBudget,
-        dependencies: sectionPlan.dependencies
+        dependencies: sectionPlan.dependencies,
+        mustCoverTyping: sectionPlan.mustCoverTyping,
+        suggestedCitationCount: sectionPlan.suggestedCitationCount
       },
       preferredTerms: blueprint.preferredTerms || {}
     };
@@ -457,10 +475,10 @@ class BlueprintService {
     const methodologyPattern = METHODOLOGY_SECTION_PATTERNS[methodologyKey] || METHODOLOGY_SECTION_PATTERNS.QUANTITATIVE;
     
     // Merge paper type sections with methodology requirements
-    const requiredSections = [...new Set([
+    const requiredSections = Array.from(new Set([
       ...paperType.requiredSections,
       ...methodologyPattern.requiredSections
-    ])];
+    ]));
 
     return `You are an expert academic writing advisor. Generate a comprehensive paper blueprint based on the research topic below.
 
@@ -503,15 +521,57 @@ Generate a paper blueprint with:
 4. SECTION PLAN: For each required section, provide:
    - sectionKey: the section identifier
    - purpose: one sentence describing what this section achieves
-   - mustCover: 3-6 specific points this section MUST address
+   - mustCover: 4-8 CITATION-MAPPABLE dimensions (see rules below)
+   - mustCoverTyping: (ADVISORY METADATA) For each mustCover item, indicate its likely evidence type:
+     * "foundational" - seminal/historical papers establishing concepts
+     * "methodological" - papers describing techniques/approaches used
+     * "empirical" - papers providing evidence/data for claims
+     * "comparative" - papers comparing alternative approaches
+     * "gap" - papers identifying limitations or research gaps
    - mustAvoid: 2-4 things this section should NOT include (to prevent overlap)
    - wordBudget: suggested word count
    - dependencies: which sections must come before this one
    - outputsPromised: what this section provides for later sections
+   - suggestedCitationCount: (OPTIONAL, NON-BINDING) estimated citations for this section
 
 5. PREFERRED TERMS: Key terminology that should be used consistently throughout.
 
 6. NARRATIVE ARC: Brief description of the paper's flow (gap → approach → result → implication).
+
+═══════════════════════════════════════════════════════════════════════════════
+CITATION-MAPPABLE DIMENSION RULES (MANDATORY)
+═══════════════════════════════════════════════════════════════════════════════
+Each mustCover dimension MUST be:
+
+1. A CONCRETE, EVIDENCE-REQUIRING TOPIC OR CLAIM
+   - GOOD: "effectiveness of attention mechanisms in reducing sequence modeling errors"
+   - BAD: "overview of attention" (editorial task, not evidence-requiring)
+
+2. CONTAIN AT LEAST ONE NOUN PHRASE LIKELY TO APPEAR IN PAPER TITLES/ABSTRACTS
+   - GOOD: "transformer architecture self-attention for machine translation"
+   - BAD: "modern approaches" (no searchable noun phrase)
+
+3. SPECIFIC ENOUGH TO BE SUPPORTED BY MULTIPLE INDEPENDENT PAPERS
+   - GOOD: "benchmark performance of BERT-based models on sentiment analysis"
+   - BAD: "Devlin et al. BERT paper" (too narrow - only one paper)
+   - BAD: "deep learning methods" (too broad - matches everything)
+
+4. NOT AN EDITORIAL TASK
+   - AVOID these words in dimensions: overview, discussion, synthesis, coverage, summary, introduction
+   - GOOD: "computational complexity of quadratic attention in long sequences"
+   - BAD: "discussion of attention complexity" (editorial framing)
+
+EXAMPLES OF WELL-FORMED DIMENSIONS:
+✓ "recurrent neural network vanishing gradient problem mitigation techniques"
+✓ "pre-training corpus size impact on downstream task generalization"
+✓ "positional encoding strategies for sequence order preservation"
+✓ "multi-head attention parallelization for training efficiency"
+
+EXAMPLES OF POORLY-FORMED DIMENSIONS (DO NOT USE):
+✗ "literature review of transformers"
+✗ "methodology overview"
+✗ "comparison and analysis"
+✗ "background and context"
 
 ═══════════════════════════════════════════════════════════════════════════════
 OUTPUT FORMAT (Return ONLY valid JSON)
@@ -522,13 +582,27 @@ OUTPUT FORMAT (Return ONLY valid JSON)
   "keyContributions": ["...", "...", "..."],
   "sectionPlan": [
     {
-      "sectionKey": "introduction",
-      "purpose": "...",
-      "mustCover": ["...", "..."],
-      "mustAvoid": ["...", "..."],
-      "wordBudget": 1000,
-      "dependencies": [],
-      "outputsPromised": ["research gap", "objectives"]
+      "sectionKey": "literature_review",
+      "purpose": "Establish theoretical foundations and identify the research gap",
+      "mustCover": [
+        "foundational deep learning architectures for sequence modeling",
+        "attention mechanism evolution from RNNs to transformers",
+        "pre-training and transfer learning effectiveness in NLP",
+        "benchmark datasets and evaluation metrics for language tasks",
+        "computational efficiency challenges in large language models"
+      ],
+      "mustCoverTyping": {
+        "foundational deep learning architectures for sequence modeling": "foundational",
+        "attention mechanism evolution from RNNs to transformers": "foundational",
+        "pre-training and transfer learning effectiveness in NLP": "empirical",
+        "benchmark datasets and evaluation metrics for language tasks": "methodological",
+        "computational efficiency challenges in large language models": "gap"
+      },
+      "mustAvoid": ["methodology details", "results interpretation", "future work"],
+      "wordBudget": 1500,
+      "dependencies": ["introduction"],
+      "outputsPromised": ["research gap", "theoretical framework", "key terminology"],
+      "suggestedCitationCount": 15
     }
   ],
   "preferredTerms": {
@@ -541,7 +615,10 @@ CRITICAL RULES:
 - Output ONLY raw JSON, no markdown code fences
 - Ensure mustAvoid prevents duplication between sections
 - Make thesis statement specific and testable
-- Key contributions should be concrete and verifiable`;
+- Key contributions should be concrete and verifiable
+- Each mustCover dimension MUST follow the citation-mappable rules above
+- mustCoverTyping is ADVISORY metadata only (include for all items, but it will not be enforced as a filter)
+- suggestedCitationCount is INFORMATIONAL only (will not be used to drive search or validate completeness)`;
   }
 
   private parseBlueprintResponse(output: string): {
@@ -591,15 +668,38 @@ CRITICAL RULES:
       }
 
       // Validate and normalize section plan items
-      const sectionPlan: SectionPlanItem[] = parsed.sectionPlan.map((item: any) => ({
-        sectionKey: item.sectionKey || 'unknown',
-        purpose: item.purpose || '',
-        mustCover: Array.isArray(item.mustCover) ? item.mustCover : [],
-        mustAvoid: Array.isArray(item.mustAvoid) ? item.mustAvoid : [],
-        wordBudget: typeof item.wordBudget === 'number' ? item.wordBudget : undefined,
-        dependencies: Array.isArray(item.dependencies) ? item.dependencies : [],
-        outputsPromised: Array.isArray(item.outputsPromised) ? item.outputsPromised : []
-      }));
+      const sectionPlan: SectionPlanItem[] = parsed.sectionPlan.map((item: any) => {
+        const mustCover = Array.isArray(item.mustCover) ? item.mustCover : [];
+        
+        // Validate and normalize mustCoverTyping
+        let mustCoverTyping: Record<string, DimensionType> | undefined;
+        if (item.mustCoverTyping && typeof item.mustCoverTyping === 'object') {
+          const validTypes = ['foundational', 'methodological', 'empirical', 'comparative', 'gap'];
+          mustCoverTyping = {};
+          for (const [dimension, type] of Object.entries(item.mustCoverTyping)) {
+            if (validTypes.includes(type as string)) {
+              mustCoverTyping[dimension] = type as DimensionType;
+            } else {
+              // Default to 'empirical' if invalid type
+              mustCoverTyping[dimension] = 'empirical';
+            }
+          }
+        }
+        
+        return {
+          sectionKey: item.sectionKey || 'unknown',
+          purpose: item.purpose || '',
+          mustCover,
+          mustAvoid: Array.isArray(item.mustAvoid) ? item.mustAvoid : [],
+          wordBudget: typeof item.wordBudget === 'number' ? item.wordBudget : undefined,
+          dependencies: Array.isArray(item.dependencies) ? item.dependencies : [],
+          outputsPromised: Array.isArray(item.outputsPromised) ? item.outputsPromised : [],
+          mustCoverTyping,
+          suggestedCitationCount: typeof item.suggestedCitationCount === 'number' 
+            ? item.suggestedCitationCount 
+            : undefined
+        };
+      });
 
       return {
         thesisStatement: parsed.thesisStatement,
@@ -629,7 +729,7 @@ CRITICAL RULES:
       throw new Error('At least 2 key contributions are required');
     }
 
-    const sectionPlan = blueprint.sectionPlan as SectionPlanItem[];
+    const sectionPlan = blueprint.sectionPlan as unknown as SectionPlanItem[];
     if (!sectionPlan || sectionPlan.length < 3) {
       throw new Error('Section plan must have at least 3 sections');
     }
@@ -683,7 +783,7 @@ CRITICAL RULES:
         const set2 = new Set(section2.mustCover.map(c => c.toLowerCase()));
 
         let overlap = 0;
-        for (const item of set1) {
+        for (const item of Array.from(set1)) {
           if (set2.has(item)) overlap++;
         }
 
@@ -698,7 +798,7 @@ CRITICAL RULES:
   private transformBlueprint(blueprint: PaperBlueprint): BlueprintWithSectionPlan {
     return {
       ...blueprint,
-      sectionPlan: (blueprint.sectionPlan as SectionPlanItem[]) || [],
+      sectionPlan: (blueprint.sectionPlan as unknown as SectionPlanItem[]) || [],
       preferredTerms: (blueprint.preferredTerms as Record<string, string>) || null,
       changeLog: (blueprint.changeLog as Array<{ version: number; changedAt: string; changes: string[] }>) || null
     };

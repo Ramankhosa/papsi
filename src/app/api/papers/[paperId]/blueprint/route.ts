@@ -28,6 +28,8 @@ const generateBlueprintSchema = z.object({
   targetWordCount: z.number().min(500).max(50000).optional()
 });
 
+const dimensionTypeEnum = z.enum(['foundational', 'methodological', 'empirical', 'comparative', 'gap']);
+
 const updateBlueprintSchema = z.object({
   action: z.literal('update'),
   thesisStatement: z.string().min(20).max(500).optional(),
@@ -36,11 +38,13 @@ const updateBlueprintSchema = z.object({
   sectionPlan: z.array(z.object({
     sectionKey: z.string(),
     purpose: z.string(),
-    mustCover: z.array(z.string()),
+    mustCover: z.array(z.string().min(10).max(200)), // Citation-mappable dimensions
+    mustCoverTyping: z.record(z.string(), dimensionTypeEnum).optional(),
     mustAvoid: z.array(z.string()),
     wordBudget: z.number().optional(),
     dependencies: z.array(z.string()),
-    outputsPromised: z.array(z.string())
+    outputsPromised: z.array(z.string()),
+    suggestedCitationCount: z.number().min(1).max(50).optional()
   })).optional(),
   preferredTerms: z.record(z.string(), z.string()).optional()
 });

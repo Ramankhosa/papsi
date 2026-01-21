@@ -117,11 +117,12 @@ export class AnthropicProvider implements LLMProvider {
         messages.push({ role: 'user', content: request.prompt })
       }
 
-      // Apply token limits
-      const maxTokens = Math.min(
-        limits.maxTokensOut || 4096,
-        8192 // Claude's max output tokens
-      )
+      // Apply token limits - admin config takes priority
+      // Claude 3.5 Sonnet supports 8192, Claude 3 Opus supports 4096
+      // Allow admin to override with higher limits for newer models
+      const defaultMax = 8192
+      const maxTokens = limits.maxTokensOut || defaultMax
+      console.log(`[AnthropicProvider] Token limits: admin=${limits.maxTokensOut || 'not set'}, using=${maxTokens}`)
 
       const response = await this.client.messages.create({
         model: actualModel,

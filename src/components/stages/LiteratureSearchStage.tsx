@@ -180,14 +180,25 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     yearFrom: string;
     yearTo: string;
     aiRelevantOnly: boolean;
+    publicationType: string | null;  // For Review filter
+    minCitations: string;            // Citation count filter
+    openAccessOnly: boolean;         // Open Access filter
   }>({
     hasAbstract: null,
     source: null,
     yearFrom: '',
     yearTo: '',
-    aiRelevantOnly: false
+    aiRelevantOnly: false,
+    publicationType: null,
+    minCitations: '',
+    openAccessOnly: false
   });
   const [showResultFilters, setShowResultFilters] = useState(false);
+  
+  // Pagination for search results
+  const [resultsCurrentPage, setResultsCurrentPage] = useState(1);
+  const [resultsPerPage, setResultsPerPage] = useState(50);
+  const RESULTS_PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
   const importedKeys = useMemo(() => new Set(citations.map(c => c.doi || c.title)), [citations]);
   
@@ -214,9 +225,33 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       if (resultFilters.yearFrom && r.year && r.year < parseInt(resultFilters.yearFrom)) return false;
       if (resultFilters.yearTo && r.year && r.year > parseInt(resultFilters.yearTo)) return false;
       
+      // Publication Type filter (for Review papers)
+      if (resultFilters.publicationType && r.publicationType !== resultFilters.publicationType) return false;
+      
+      // Minimum Citation Count filter
+      if (resultFilters.minCitations) {
+        const minCitations = parseInt(resultFilters.minCitations);
+        if (!isNaN(minCitations) && (r.citationCount === undefined || r.citationCount < minCitations)) return false;
+      }
+      
+      // Open Access Only filter
+      if (resultFilters.openAccessOnly && !r.isOpenAccess) return false;
+      
       return true;
     });
   }, [results, removedResults, hideNonRelevant, aiSuggestions, resultFilters]);
+  
+  // Paginated results
+  const totalResultPages = Math.ceil(filteredResults.length / resultsPerPage);
+  const paginatedResults = useMemo(() => {
+    const startIndex = (resultsCurrentPage - 1) * resultsPerPage;
+    return filteredResults.slice(startIndex, startIndex + resultsPerPage);
+  }, [filteredResults, resultsCurrentPage, resultsPerPage]);
+  
+  // Reset to page 1 when filters or page size change
+  useEffect(() => {
+    setResultsCurrentPage(1);
+  }, [resultFilters, results.length, resultsPerPage]);
   
   // Get unique sources from results for filter dropdown
   const availableSources = useMemo(() => {
@@ -238,31 +273,77 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   };
   
   const selectAllVisible = () => {
-    const visibleIds = filteredResults.map(r => r.id);
+    // Select all on current page
+    const visibleIds = paginatedResults.map(r => r.id);
     setSelectedResults(new Set(visibleIds));
+  };
+  
+  const selectAllFiltered = () => {
+    // Select all filtered results across all pages
+    const allFilteredIds = filteredResults.map(r => r.id);
+    setSelectedResults(new Set(allFilteredIds));
   };
   
   const clearSelection = () => {
     setSelectedResults(new Set());
   };
   
+  // Show confirmation dialog before permanently deleting
   const removeSelected = () => {
+    if (selectedResults.size === 0) return;
+    setPendingDeleteIds(new Set(selectedResults));
+    setDeleteConfirmOpen(true);
+  };
+  
+  // Confirm and permanently delete selected results
+  const confirmDeleteSelected = () => {
+    // Permanently remove from results array
+    setResults(prev => prev.filter(r => !pendingDeleteIds.has(r.id)));
+    // Also clean up from removedResults set if they were there
     setRemovedResults(prev => {
       const newSet = new Set(prev);
-      selectedResults.forEach(id => newSet.add(id));
+      pendingDeleteIds.forEach(id => newSet.delete(id));
       return newSet;
     });
+    // Clear AI suggestions for deleted items
+    setAiSuggestions(prev => {
+      const newMap = new Map(prev);
+      pendingDeleteIds.forEach(id => newMap.delete(id));
+      return newMap;
+    });
+    // Clear selection and close dialog
     setSelectedResults(new Set());
+    setPendingDeleteIds(new Set());
+    setDeleteConfirmOpen(false);
+    
+    showToast({
+      title: 'Results deleted',
+      description: `${pendingDeleteIds.size} result(s) permanently removed.`,
+      variant: 'default'
+    });
+  };
+  
+  // Cancel delete operation
+  const cancelDeleteSelected = () => {
+    setPendingDeleteIds(new Set());
+    setDeleteConfirmOpen(false);
   };
   
   const restoreAllRemoved = () => {
     setRemovedResults(new Set());
   };
   
-  // Clear removed results when new search is performed
+  // Clear removed results and coverage data when new search is performed
   const handleSearchWithReset = async () => {
     setRemovedResults(new Set());
     setSelectedResults(new Set());
+    // Clear AI analysis data for fresh search
+    setAiSuggestions(new Map());
+    setPaperDimensionMappings(new Map());
+    setPaperRecommendations(new Map());
+    setBlueprintCoverage(null);
+    setAiSummary(null);
+    setSearchViewMode('results');
     await handleSearch();
   };
   
@@ -427,7 +508,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     }
   }, [sessionId, authToken]);
 
-  // Load most recent search run and AI analysis on mount (persist across refresh)
+  // Load ALL search runs and merge their results on mount (persist across refresh)
   useEffect(() => {
     const loadExistingSearchRuns = async () => {
       if (!sessionId || !authToken) return;
@@ -442,46 +523,112 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         const data = await response.json();
         const searchRuns = data.searchRuns || [];
         
-        // Load the most recent search run if available
-        if (searchRuns.length > 0) {
-          const mostRecent = searchRuns[0];
-          
-          // Fetch full details including results
-          const detailResponse = await fetch(
-            `/api/papers/${sessionId}/literature/select-relevant?searchRunId=${mostRecent.id}`,
+        if (searchRuns.length === 0) return;
+        
+        // Fetch ALL search runs and merge their results
+        const allRunIds: string[] = [];
+        const allResults: any[] = [];
+        const allAiSuggestions = new Map<string, { isRelevant: boolean; score: number; reasoning: string; citationMeta?: any }>();
+        let latestAiSummary: string | null = null;
+        let latestQuery = '';
+        let mostRecentRunId: string | null = null;
+        
+        // Load all search runs in parallel for efficiency
+        const detailPromises = searchRuns.map((run: any) => 
+          fetch(
+            `/api/papers/${sessionId}/literature/select-relevant?searchRunId=${run.id}`,
             { headers: { Authorization: `Bearer ${authToken}` } }
-          );
+          ).then(res => res.ok ? res.json() : null)
+        );
+        
+        const detailResponses = await Promise.all(detailPromises);
+        
+        // Process each search run - from oldest to newest to maintain order
+        for (let i = detailResponses.length - 1; i >= 0; i--) {
+          const detailData = detailResponses[i];
+          if (!detailData?.searchRun) continue;
           
-          if (detailResponse.ok) {
-            const detailData = await detailResponse.json();
             const searchRun = detailData.searchRun;
+          allRunIds.push(searchRun.id);
+          
+          // Add results from this run (will be deduplicated)
+          const runResults = searchRun.results || [];
+          for (const result of runResults) {
+            // Check for duplicate by DOI or title
+            const key = result.doi?.toLowerCase() || result.title?.toLowerCase()?.substring(0, 100);
+            const isDuplicate = allResults.some(r => {
+              const existingKey = r.doi?.toLowerCase() || r.title?.toLowerCase()?.substring(0, 100);
+              return existingKey && existingKey === key;
+            });
             
-            if (searchRun) {
-              // Restore search results from most recent run
-              // Note: On restore, we start with just the last search run
-              // User can accumulate more by executing additional searches
-              setResults(searchRun.results || []);
-              setSearchRunId(searchRun.id);
-              setSearchRunIds([searchRun.id]);
-              setQuery(searchRun.query || '');
-              
-              // Restore AI analysis if available
+            if (!isDuplicate) {
+              allResults.push({
+                ...result,
+                _sourceQuery: searchRun.query,
+                _searchRunId: searchRun.id
+              });
+            }
+          }
+          
+          // Merge AI analysis if available
               if (searchRun.aiAnalysis) {
-                const analysis = searchRun.aiAnalysis as { suggestions?: Array<{ paperId: string; isRelevant: boolean; relevanceScore: number; reasoning: string }>; summary?: string };
-                const suggestionsMap = new Map<string, { isRelevant: boolean; score: number; reasoning: string }>();
+            const analysis = searchRun.aiAnalysis as { 
+              suggestions?: Array<{ 
+                paperId: string; 
+                isRelevant: boolean; 
+                relevanceScore: number; 
+                reasoning: string;
+                citationMeta?: any;
+              }>; 
+              summary?: string 
+            };
                 
                 for (const suggestion of (analysis.suggestions || [])) {
-                  suggestionsMap.set(suggestion.paperId, {
+              // Keep the most recent AI suggestion for each paper
+              allAiSuggestions.set(suggestion.paperId, {
                     isRelevant: suggestion.isRelevant,
                     score: suggestion.relevanceScore,
-                    reasoning: suggestion.reasoning
-                  });
-                }
-                
-                setAiSuggestions(suggestionsMap);
-                setAiSummary(analysis.summary || null);
-              }
+                reasoning: suggestion.reasoning,
+                citationMeta: suggestion.citationMeta
+              });
             }
+            
+            // Keep most recent summary
+            if (analysis.summary) {
+              latestAiSummary = analysis.summary;
+            }
+          }
+          
+          // Update query from most recent run (first in original array)
+          if (i === 0) {
+            latestQuery = searchRun.query || '';
+            mostRecentRunId = searchRun.id;
+          }
+        }
+        
+        // Set all accumulated state
+        if (allResults.length > 0) {
+          setResults(allResults);
+          setSearchRunIds(allRunIds);
+          setSearchRunId(mostRecentRunId);
+          setQuery(latestQuery);
+          
+          if (allAiSuggestions.size > 0) {
+            setAiSuggestions(allAiSuggestions);
+          }
+          if (latestAiSummary) {
+            setAiSummary(latestAiSummary);
+          }
+          
+          console.log(`[LiteratureSearch] Restored ${allResults.length} results from ${allRunIds.length} search run(s)`);
+          
+          // Show toast notification about restored results
+          if (allRunIds.length > 1) {
+            showToast({
+              title: 'Search Results Restored',
+              description: `Loaded ${allResults.length} papers from ${allRunIds.length} previous searches.`,
+              variant: 'default'
+            });
           }
         }
       } catch (err) {
@@ -676,7 +823,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     return count;
   }, [yearFrom, yearTo, publicationTypes, openAccessOnly, minCitations, fieldsOfStudy]);
 
-  // AI Relevance Analysis - batch all papers in single LLM call
+  // AI Relevance Analysis - batch all papers in single LLM call with blueprint mapping
   const handleAiRelevanceAnalysis = async () => {
     if (!searchRunId || !authToken || results.length === 0) return;
     
@@ -692,7 +839,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         },
         body: JSON.stringify({
           searchRunId,
-          maxSuggestions: 10
+          maxSuggestions: 15, // Increased to capture more papers for blueprint coverage
+          includeBlueprint: true // Include blueprint dimension mapping
         })
       });
 
@@ -720,6 +868,16 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
           };
         };
       }>();
+      
+      // Build dimension mappings and recommendations maps
+      const dimensionMappingsMap = new Map<string, Array<{
+        sectionKey: string;
+        dimension: string;
+        remark: string;
+        confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+      }>>();
+      const recommendationsMap = new Map<string, 'IMPORT' | 'MAYBE' | 'SKIP'>();
+      
       for (const suggestion of data.analysis?.suggestions || []) {
         suggestionsMap.set(suggestion.paperId, {
           isRelevant: suggestion.isRelevant,
@@ -727,16 +885,37 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
           reasoning: suggestion.reasoning,
           citationMeta: suggestion.citationMeta
         });
+        
+        // Store dimension mappings if available
+        if (suggestion.dimensionMappings && suggestion.dimensionMappings.length > 0) {
+          dimensionMappingsMap.set(suggestion.paperId, suggestion.dimensionMappings);
+        }
+        
+        // Store recommendation if available
+        if (suggestion.recommendation) {
+          recommendationsMap.set(suggestion.paperId, suggestion.recommendation);
+        }
       }
       
       setAiSuggestions(suggestionsMap);
+      setPaperDimensionMappings(dimensionMappingsMap);
+      setPaperRecommendations(recommendationsMap);
       setAiSummary(data.analysis?.summary || null);
       
+      // Store blueprint coverage if available
+      if (data.analysis?.blueprintCoverage) {
+        setBlueprintCoverage(data.analysis.blueprintCoverage);
+      }
+      
+      // Show appropriate toast based on whether blueprint was included
+      const hasBlueprintData = data.analysis?.blueprintIncluded && data.analysis?.blueprintCoverage;
       showToast({
         type: 'success',
-        title: 'AI Analysis Complete',
-        message: `Found ${suggestionsMap.size} relevant papers`,
-        duration: 4000
+        title: hasBlueprintData ? 'Blueprint Analysis Complete' : 'AI Analysis Complete',
+        message: hasBlueprintData 
+          ? `Analyzed ${suggestionsMap.size} papers against ${data.analysis?.blueprintCoverage?.totalDimensions || 0} blueprint dimensions`
+          : `Found ${suggestionsMap.size} relevant papers${!data.analysis?.blueprintIncluded ? ' (no blueprint found - generate one first for dimension mapping)' : ''}`,
+        duration: hasBlueprintData ? 4000 : 5000
       });
     } catch (err) {
       console.error('AI analysis failed:', err);
@@ -779,9 +958,157 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     });
   };
 
+  // Analyze unanalyzed citations against blueprint dimensions
+  const handleAnalyzeUnanalyzedCitations = async () => {
+    if (!authToken || citations.length === 0) return;
+    
+    // Filter to citations without blueprint analysis
+    const unanalyzedCitations = citations.filter(c => !analyzedCitationIds.has(c.id));
+    
+    if (unanalyzedCitations.length === 0) {
+      showToast({
+        type: 'info',
+        title: 'All Citations Analyzed',
+        message: 'All imported citations have already been analyzed against the blueprint.',
+        duration: 3000
+      });
+      return;
+    }
+    
+    // Check how many have abstracts
+    const withAbstracts = unanalyzedCitations.filter((c: any) => c.abstract);
+    if (withAbstracts.length === 0) {
+      showToast({
+        type: 'warning',
+        title: 'No Abstracts Available',
+        message: 'Citations without abstracts will have limited analysis. Consider adding abstracts for better results.',
+        duration: 4000
+      });
+    } else if (withAbstracts.length < unanalyzedCitations.length) {
+      showToast({
+        type: 'info',
+        title: 'Partial Abstract Coverage',
+        message: `${withAbstracts.length}/${unanalyzedCitations.length} citations have abstracts. Analysis will be more accurate for papers with abstracts.`,
+        duration: 3000
+      });
+    }
+    
+    try {
+      setCitationAnalyzing(true);
+      
+      // Create a virtual search run with the unanalyzed citations
+      // We'll convert citations to the same format as search results
+      const citationsAsResults = unanalyzedCitations.map((c: any) => ({
+        id: c.id,
+        title: c.title,
+        abstract: c.abstract || null,
+        authors: c.authors || [],
+        year: c.year || null,
+        doi: c.doi || null
+      }));
+      
+      // We need to create a temporary search run or use a different endpoint
+      // For now, we'll use the mapping endpoint directly
+      const response = await fetch(`/api/papers/${sessionId}/literature/mapping`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          citations: citationsAsResults,
+          includeBlueprint: true
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Citation analysis failed');
+      }
+
+      // Update analyzed citations set
+      const newAnalyzedIds = new Set(analyzedCitationIds);
+      unanalyzedCitations.forEach(c => newAnalyzedIds.add(c.id));
+      setAnalyzedCitationIds(newAnalyzedIds);
+      
+      // Update dimension mappings
+      if (data.analysis?.suggestions) {
+        const newMappings = new Map(citationDimensionMappings);
+        for (const suggestion of data.analysis.suggestions) {
+          if (suggestion.dimensionMappings && suggestion.dimensionMappings.length > 0) {
+            newMappings.set(suggestion.paperId, suggestion.dimensionMappings);
+          }
+        }
+        setCitationDimensionMappings(newMappings);
+      }
+      
+      // Update coverage
+      if (data.analysis?.blueprintCoverage) {
+        setCitationBlueprintCoverage(data.analysis.blueprintCoverage);
+      }
+      
+      showToast({
+        type: 'success',
+        title: 'Citation Analysis Complete',
+        message: `Analyzed ${unanalyzedCitations.length} citations against blueprint dimensions`,
+        duration: 4000
+      });
+    } catch (err) {
+      console.error('Citation analysis failed:', err);
+      showToast({
+        type: 'error',
+        title: 'Analysis Failed',
+        message: err instanceof Error ? err.message : 'Could not analyze citations',
+        duration: 5000
+      });
+    } finally {
+      setCitationAnalyzing(false);
+    }
+  };
+
   const handleImport = async (result: any) => {
     try {
       setImportMessage(null);
+      
+      // Auto-fetch abstract if missing
+      let resultWithAbstract = result;
+      if (!result.abstract && result.doi) {
+        try {
+          setFetchingAbstract(result.id);
+          const abstractResponse = await fetch(`https://api.semanticscholar.org/graph/v1/paper/DOI:${result.doi}?fields=abstract`);
+          if (abstractResponse.ok) {
+            const abstractData = await abstractResponse.json();
+            if (abstractData.abstract) {
+              resultWithAbstract = { ...result, abstract: abstractData.abstract };
+              // Update the results array with the fetched abstract
+              setResults(prev => prev.map(r => 
+                r.id === result.id ? { ...r, abstract: abstractData.abstract } : r
+              ));
+            } else {
+              // Auto-fetch failed - mark it
+              setFetchAbstractFailed(prev => new Set(prev).add(result.id));
+              showToast({
+                title: 'Abstract not found',
+                description: 'Auto-fetch failed. You can add the abstract manually.',
+                variant: 'default'
+              });
+            }
+          } else {
+            // API call failed - mark as failed
+            setFetchAbstractFailed(prev => new Set(prev).add(result.id));
+            showToast({
+              title: 'Abstract auto-fetch failed',
+              description: 'Could not fetch abstract automatically. You can add it manually.',
+              variant: 'default'
+            });
+          }
+        } catch (abstractErr) {
+          console.error('Failed to auto-fetch abstract:', abstractErr);
+          setFetchAbstractFailed(prev => new Set(prev).add(result.id));
+        } finally {
+          setFetchingAbstract(null);
+        }
+      }
       
       // Include AI citation metadata if available
       const aiSuggestion = aiSuggestions.get(result.id);
@@ -794,7 +1121,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
           Authorization: `Bearer ${authToken}`
         },
         body: JSON.stringify({ 
-          searchResult: result,
+          searchResult: resultWithAbstract,
           // Include AI-generated citation metadata for section generation
           citationMeta: citationMeta ? {
             keyContribution: citationMeta.keyContribution,
@@ -1087,10 +1414,89 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   
   // Fetch abstract for a search result
   const [fetchingAbstract, setFetchingAbstract] = useState<string | null>(null);
+  const [fetchAbstractFailed, setFetchAbstractFailed] = useState<Set<string>>(new Set());
+  
+  // Manual abstract entry modal
+  const [manualAbstractModalOpen, setManualAbstractModalOpen] = useState(false);
+  const [manualAbstractResultId, setManualAbstractResultId] = useState<string | null>(null);
+  const [manualAbstractText, setManualAbstractText] = useState('');
+  const [manualAbstractResultTitle, setManualAbstractResultTitle] = useState('');
+  
+  // Delete confirmation modal
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<string>>(new Set());
+  
+  // Toggle view: 'results' | 'coverage' for blueprint dimension coverage view
+  const [searchViewMode, setSearchViewMode] = useState<'results' | 'coverage'>('results');
+  
+  // Blueprint coverage data from AI analysis
+  const [blueprintCoverage, setBlueprintCoverage] = useState<{
+    totalDimensions: number;
+    coveredDimensions: number;
+    gaps: Array<{
+      sectionKey: string;
+      sectionTitle: string;
+      dimension: string;
+    }>;
+    sectionCoverage: Record<string, {
+      total: number;
+      covered: number;
+      dimensions: Array<{
+        dimension: string;
+        paperCount: number;
+        papers: string[];
+      }>;
+    }>;
+  } | null>(null);
+  
+  // Dimension mappings for papers (from AI analysis)
+  const [paperDimensionMappings, setPaperDimensionMappings] = useState<Map<string, Array<{
+    sectionKey: string;
+    dimension: string;
+    remark: string;
+    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  }>>>(new Map());
+  
+  // Import recommendation from AI
+  const [paperRecommendations, setPaperRecommendations] = useState<Map<string, 'IMPORT' | 'MAYBE' | 'SKIP'>>(new Map());
+  
+  // Citation analysis state (for analyzing imported citations against blueprint)
+  const [citationAnalyzing, setCitationAnalyzing] = useState(false);
+  const [analyzedCitationIds, setAnalyzedCitationIds] = useState<Set<string>>(new Set());
+  const [citationDimensionMappings, setCitationDimensionMappings] = useState<Map<string, Array<{
+    sectionKey: string;
+    dimension: string;
+    remark: string;
+    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  }>>>(new Map());
+  const [citationBlueprintCoverage, setCitationBlueprintCoverage] = useState<{
+    totalDimensions: number;
+    coveredDimensions: number;
+    gaps: Array<{
+      sectionKey: string;
+      sectionTitle: string;
+      dimension: string;
+    }>;
+    sectionCoverage: Record<string, {
+      total: number;
+      covered: number;
+      dimensions: Array<{
+        dimension: string;
+        paperCount: number;
+        papers: string[];
+      }>;
+    }>;
+  } | null>(null);
   
   const handleFetchAbstract = async (resultId: string, doi?: string) => {
     if (!doi) return;
     setFetchingAbstract(resultId);
+    // Clear any previous failure for this result
+    setFetchAbstractFailed(prev => {
+      const next = new Set(prev);
+      next.delete(resultId);
+      return next;
+    });
     try {
       // Try to fetch abstract from Semantic Scholar or CrossRef
       const response = await fetch(`https://api.semanticscholar.org/graph/v1/paper/DOI:${doi}?fields=abstract`);
@@ -1100,13 +1506,63 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
           setResults(prev => prev.map(r => 
             r.id === resultId ? { ...r, abstract: data.abstract } : r
           ));
+          return; // Success, no need to mark as failed
         }
       }
+      // If we get here, fetch didn't return an abstract - mark as failed
+      setFetchAbstractFailed(prev => new Set(prev).add(resultId));
+      showToast({
+        title: 'Abstract not found',
+        description: 'Auto-fetch failed. You can add the abstract manually.',
+        variant: 'default'
+      });
     } catch (err) {
       console.error('Failed to fetch abstract:', err);
+      setFetchAbstractFailed(prev => new Set(prev).add(resultId));
+      showToast({
+        title: 'Fetch failed',
+        description: 'Could not fetch abstract. You can add it manually.',
+        variant: 'destructive'
+      });
     } finally {
       setFetchingAbstract(null);
     }
+  };
+  
+  // Open manual abstract entry modal
+  const openManualAbstractModal = (resultId: string, title: string) => {
+    setManualAbstractResultId(resultId);
+    setManualAbstractResultTitle(title);
+    setManualAbstractText('');
+    setManualAbstractModalOpen(true);
+  };
+  
+  // Save manually entered abstract
+  const saveManualAbstract = () => {
+    if (!manualAbstractResultId || !manualAbstractText.trim()) return;
+    
+    setResults(prev => prev.map(r => 
+      r.id === manualAbstractResultId ? { ...r, abstract: manualAbstractText.trim() } : r
+    ));
+    
+    // Clear the failed state for this result
+    setFetchAbstractFailed(prev => {
+      const next = new Set(prev);
+      next.delete(manualAbstractResultId);
+      return next;
+    });
+    
+    showToast({
+      title: 'Abstract saved',
+      description: 'The abstract has been added to this paper.',
+      variant: 'default'
+    });
+    
+    // Close modal and reset
+    setManualAbstractModalOpen(false);
+    setManualAbstractResultId(null);
+    setManualAbstractText('');
+    setManualAbstractResultTitle('');
   };
 
   return (
@@ -1785,7 +2241,15 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                   <div className="flex items-center gap-2">
                     {!loading && (
                       <span className="text-sm text-gray-500">
+                        {filteredResults.length > resultsPerPage ? (
+                          <>
+                            Page {resultsCurrentPage} of {totalResultPages} • {filteredResults.length} results
+                          </>
+                        ) : (
+                          <>
                         {filteredResults.length} of {results.length} 
+                          </>
+                        )}
                         {removedResults.size > 0 && ` (${removedResults.size} hidden)`}
                       </span>
                     )}
@@ -1835,6 +2299,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                       className="overflow-hidden"
                     >
                       <div className="mt-2 p-3 bg-gray-50 rounded-lg border border-gray-200 space-y-3">
+                        {/* First row of filters */}
                         <div className="flex flex-wrap items-center gap-3">
                           {/* Source filter */}
                           <div className="flex items-center gap-1.5">
@@ -1848,6 +2313,23 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                               {availableSources.map(source => (
                                 <option key={source} value={source}>
                                   {SOURCE_OPTIONS.find(s => s.value === source)?.label || source}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          
+                          {/* Publication Type filter (Review, etc.) */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-gray-600">Type:</span>
+                            <select
+                              value={resultFilters.publicationType || ''}
+                              onChange={e => setResultFilters(prev => ({ ...prev, publicationType: e.target.value || null }))}
+                              className="h-7 text-xs border border-gray-300 rounded px-2"
+                            >
+                              <option value="">All Types</option>
+                              {PUBLICATION_TYPE_OPTIONS.map(type => (
+                                <option key={type.value} value={type.value}>
+                                  {type.icon} {type.label}
                                 </option>
                               ))}
                             </select>
@@ -1889,6 +2371,32 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                               className="w-16 h-7 text-xs"
                             />
                           </div>
+                          </div>
+                        
+                        {/* Second row of filters */}
+                        <div className="flex flex-wrap items-center gap-3 pt-1 border-t border-gray-200">
+                          {/* Min Citations filter */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-gray-600">Min Citations:</span>
+                            <Input
+                              type="number"
+                              value={resultFilters.minCitations}
+                              onChange={e => setResultFilters(prev => ({ ...prev, minCitations: e.target.value }))}
+                              placeholder="0"
+                              className="w-20 h-7 text-xs"
+                              min={0}
+                            />
+                          </div>
+                          
+                          {/* Open Access Only filter */}
+                          <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                            <Checkbox
+                              checked={resultFilters.openAccessOnly}
+                              onCheckedChange={(checked) => setResultFilters(prev => ({ ...prev, openAccessOnly: !!checked }))}
+                              className="w-3.5 h-3.5"
+                            />
+                            <span className="text-emerald-700">🔓 Open Access Only</span>
+                          </label>
                           
                           {/* AI Relevant Only */}
                           {aiSuggestions.size > 0 && (
@@ -1906,10 +2414,19 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                           <Button
                             size="sm"
                             variant="ghost"
-                            onClick={() => setResultFilters({ hasAbstract: null, source: null, yearFrom: '', yearTo: '', aiRelevantOnly: false })}
+                            onClick={() => setResultFilters({ 
+                              hasAbstract: null, 
+                              source: null, 
+                              yearFrom: '', 
+                              yearTo: '', 
+                              aiRelevantOnly: false,
+                              publicationType: null,
+                              minCitations: '',
+                              openAccessOnly: false
+                            })}
                             className="h-7 text-xs text-gray-500 hover:text-gray-700"
                           >
-                            Clear
+                            Clear All
                           </Button>
                           
                           {/* Restore Removed */}
@@ -1928,6 +2445,82 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                     </motion.div>
                   )}
                 </AnimatePresence>
+                
+                {/* Top Pagination Bar - Quick access to navigation */}
+                {!loading && filteredResults.length > 0 && (
+                  <div className="flex items-center justify-between gap-2 py-2 px-3 bg-gray-50 rounded-lg border border-gray-200 mt-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-600">Show:</span>
+                      <select
+                        value={resultsPerPage}
+                        onChange={(e) => setResultsPerPage(Number(e.target.value))}
+                        className="h-7 text-xs border border-gray-300 rounded px-2 bg-white"
+                      >
+                        {RESULTS_PER_PAGE_OPTIONS.map(option => (
+                          <option key={option} value={option}>{option}</option>
+                        ))}
+                      </select>
+                    </div>
+                    
+                    <div className="flex items-center gap-1">
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setResultsCurrentPage(1)} 
+                        disabled={resultsCurrentPage === 1}
+                        className="h-7 px-2 text-xs"
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+                        </svg>
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setResultsCurrentPage(p => Math.max(1, p - 1))} 
+                        disabled={resultsCurrentPage === 1}
+                        className="h-7 px-2 text-xs"
+                      >
+                        <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                        Prev
+                      </Button>
+                      
+                      <span className="text-xs text-gray-600 px-2">
+                        Page {resultsCurrentPage} of {totalResultPages || 1}
+                      </span>
+                      
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setResultsCurrentPage(p => Math.min(totalResultPages, p + 1))} 
+                        disabled={resultsCurrentPage === totalResultPages || totalResultPages === 0}
+                        className="h-7 px-2 text-xs"
+                      >
+                        Next
+                        <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                      </Button>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        onClick={() => setResultsCurrentPage(totalResultPages)} 
+                        disabled={resultsCurrentPage === totalResultPages || totalResultPages === 0}
+                        className="h-7 px-2 text-xs"
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                        </svg>
+                      </Button>
+                    </div>
+                    
+                    <span className="text-xs text-gray-500">
+                      {((resultsCurrentPage - 1) * resultsPerPage) + 1}-{Math.min(resultsCurrentPage * resultsPerPage, filteredResults.length)} of {filteredResults.length}
+                    </span>
+                  </div>
+                )}
                 
                 {/* Selection Toolbar - Shows when items are selected */}
                 <AnimatePresence>
@@ -1957,8 +2550,18 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                             onClick={selectAllVisible}
                             className="h-6 text-xs text-indigo-600 hover:text-indigo-700"
                           >
+                            Select Page ({paginatedResults.length})
+                          </Button>
+                          {totalResultPages > 1 && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={selectAllFiltered}
+                            className="h-6 text-xs text-indigo-600 hover:text-indigo-700"
+                          >
                             Select All ({filteredResults.length})
                           </Button>
+                          )}
                         </div>
                         <div className="flex items-center gap-2">
                           {/* Add Selected */}
@@ -1980,7 +2583,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                             </svg>
                             Add Selected
                           </Button>
-                          {/* Remove Selected */}
+                          {/* Delete Selected */}
                           <Button
                             size="sm"
                             variant="outline"
@@ -1990,7 +2593,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                             <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                             </svg>
-                            Remove Selected
+                            Delete Selected
                           </Button>
                         </div>
                       </div>
@@ -2013,8 +2616,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                 {/* AI Relevance Analysis Section */}
                 {results.length > 0 && !loading && (
                   <div className="mt-3 pt-3 border-t border-gray-100">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex items-center gap-2">
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <Button
                           onClick={handleAiRelevanceAnalysis}
                           disabled={aiAnalyzing || !searchRunId}
@@ -2027,14 +2630,14 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                               </svg>
-                              Analyzing...
+                              Analyzing with Blueprint...
                             </>
                           ) : (
                             <>
                               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
                               </svg>
-                              🤖 Help Me Find Relevant Papers
+                              🤖 Analyze & Map to Blueprint
                             </>
                           )}
                         </Button>
@@ -2081,11 +2684,53 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                           </Button>
                         )}
                       </div>
+                      <div className="flex items-center gap-2">
                       {aiSuggestions.size > 0 && (
                         <Badge className="bg-violet-100 text-violet-700 border-0">
                           {aiSuggestions.size} AI suggestions
                         </Badge>
                       )}
+                        {/* Toggle View: Results / Coverage */}
+                        {blueprintCoverage && (
+                          <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
+                            <Button
+                              size="sm"
+                              variant={searchViewMode === 'results' ? 'default' : 'ghost'}
+                              onClick={() => setSearchViewMode('results')}
+                              className={`h-7 px-3 text-xs rounded-md ${
+                                searchViewMode === 'results' 
+                                  ? 'bg-white shadow-sm text-gray-900' 
+                                  : 'text-gray-600 hover:text-gray-900'
+                              }`}
+                            >
+                              <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                              </svg>
+                              Results
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant={searchViewMode === 'coverage' ? 'default' : 'ghost'}
+                              onClick={() => setSearchViewMode('coverage')}
+                              className={`h-7 px-3 text-xs rounded-md ${
+                                searchViewMode === 'coverage' 
+                                  ? 'bg-white shadow-sm text-gray-900' 
+                                  : 'text-gray-600 hover:text-gray-900'
+                              }`}
+                            >
+                              <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+                              </svg>
+                              Coverage
+                              {blueprintCoverage.gaps.length > 0 && (
+                                <Badge className="ml-1 h-4 px-1 text-[10px] bg-amber-500 text-white">
+                                  {blueprintCoverage.gaps.length}
+                                </Badge>
+                              )}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
                     </div>
                     
                     {/* AI Summary */}
@@ -2111,8 +2756,9 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                   </div>
                 )}
               </CardHeader>
-              <CardContent>
-                <div className="space-y-3 max-h-[600px] overflow-y-auto">
+              <CardContent className="flex flex-col">
+                {/* Scrollable Results Area */}
+                <div className="space-y-3 flex-1">
                   {/* Loading State with Intelligent Messages */}
                   {loading && (
                     <motion.div 
@@ -2205,7 +2851,16 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => setResultFilters({ hasAbstract: null, source: null, yearFrom: '', yearTo: '', aiRelevantOnly: false })}
+                          onClick={() => setResultFilters({ 
+                            hasAbstract: null, 
+                            source: null, 
+                            yearFrom: '', 
+                            yearTo: '', 
+                            aiRelevantOnly: false,
+                            publicationType: null,
+                            minCitations: '',
+                            openAccessOnly: false
+                          })}
                           className="text-xs"
                         >
                           Clear Filters
@@ -2224,11 +2879,204 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                     </div>
                   )}
                   
-                  {/* Results - only show when not loading */}
-                  {/* Sort results: AI-suggested first, use filteredResults with all filters applied */}
-                  {!loading && (
+                  {/* Coverage View - Show blueprint dimension coverage */}
+                  {!loading && searchViewMode === 'coverage' && blueprintCoverage && (
+                    <div className="space-y-4">
+                      {/* Coverage Summary */}
+                      <div className="bg-gradient-to-r from-violet-50 to-indigo-50 rounded-xl p-4 border border-violet-200">
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                            <svg className="w-5 h-5 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+                            </svg>
+                            Blueprint Coverage Analysis
+                          </h3>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-gray-600">
+                              {blueprintCoverage.coveredDimensions} / {blueprintCoverage.totalDimensions} dimensions
+                            </span>
+                            <div className="w-20 h-2 bg-gray-200 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full bg-gradient-to-r from-emerald-500 to-green-500 rounded-full transition-all"
+                                style={{ width: `${blueprintCoverage.totalDimensions > 0 ? (blueprintCoverage.coveredDimensions / blueprintCoverage.totalDimensions) * 100 : 0}%` }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                        
+                        {blueprintCoverage.gaps.length > 0 && (
+                          <div className="mt-2 p-2 bg-amber-50 rounded-lg border border-amber-200">
+                            <p className="text-xs font-medium text-amber-800 flex items-center gap-1">
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                              </svg>
+                              {blueprintCoverage.gaps.length} dimension{blueprintCoverage.gaps.length > 1 ? 's' : ''} still need coverage
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* Empty Section Coverage State */}
+                      {(!blueprintCoverage.sectionCoverage || Object.keys(blueprintCoverage.sectionCoverage).length === 0) && (
+                        <div className="text-center py-8 text-gray-400">
+                          <svg className="w-10 h-10 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+                          </svg>
+                          <p className="text-sm">No blueprint sections found</p>
+                          <p className="text-xs mt-1">Generate a blueprint first in the Blueprint stage</p>
+                        </div>
+                      )}
+                      
+                      {/* Section by Section Coverage */}
+                      {blueprintCoverage.sectionCoverage && Object.keys(blueprintCoverage.sectionCoverage).length > 0 && (
+                      <div className="space-y-3">
+                        {Object.entries(blueprintCoverage.sectionCoverage).map(([sectionKey, section]) => {
+                          const coveragePercent = section.total > 0 ? (section.covered / section.total) * 100 : 0;
+                          const sectionGaps = blueprintCoverage.gaps.filter(g => g.sectionKey === sectionKey);
+                          
+                          return (
+                            <div key={sectionKey} className="border rounded-lg overflow-hidden bg-white">
+                              {/* Section Header */}
+                              <div className={`px-4 py-2.5 flex items-center justify-between ${
+                                coveragePercent === 100 
+                                  ? 'bg-emerald-50 border-b border-emerald-200' 
+                                  : coveragePercent > 0 
+                                    ? 'bg-blue-50 border-b border-blue-200' 
+                                    : 'bg-gray-50 border-b border-gray-200'
+                              }`}>
+                                <div className="flex items-center gap-2">
+                                  <span className={`font-medium text-sm ${
+                                    coveragePercent === 100 ? 'text-emerald-900' : 'text-gray-900'
+                                  }`}>
+                                    {sectionKey}
+                                  </span>
+                                  {coveragePercent === 100 && (
+                                    <Badge className="bg-emerald-500 text-white text-[10px]">
+                                      ✓ Complete
+                                    </Badge>
+                                  )}
+                                </div>
+                                <span className="text-xs text-gray-500">
+                                  {section.covered}/{section.total} dimensions
+                                </span>
+                              </div>
+                              
+                              {/* Dimensions List */}
+                              <div className="divide-y divide-gray-100">
+                                {section.dimensions.map((dim, idx) => {
+                                  const isCovered = dim.paperCount > 0;
+                                  // Get papers that cover this dimension
+                                  const coveringPapers = dim.papers
+                                    .map(paperId => results.find(r => r.id === paperId))
+                                    .filter(Boolean);
+                                  
+                                  return (
+                                    <div key={idx} className={`px-4 py-2 ${isCovered ? 'bg-white' : 'bg-amber-50/50'}`}>
+                                      <div className="flex items-start gap-2">
+                                        <span className={`mt-0.5 text-sm ${isCovered ? 'text-emerald-500' : 'text-amber-500'}`}>
+                                          {isCovered ? '✓' : '○'}
+                                        </span>
+                                        <div className="flex-1 min-w-0">
+                                          <p className={`text-sm ${isCovered ? 'text-gray-700' : 'text-amber-800'}`}>
+                                            {dim.dimension}
+                                          </p>
+                                          {isCovered && coveringPapers.length > 0 && (
+                                            <div className="mt-1 flex flex-wrap gap-1">
+                                              {coveringPapers.slice(0, 3).map((paper: any) => {
+                                                const mapping = paperDimensionMappings.get(paper.id)?.find(
+                                                  m => m.sectionKey === sectionKey && m.dimension.toLowerCase().trim() === dim.dimension.toLowerCase().trim()
+                                                );
+                                                return (
+                                                  <div
+                                                    key={paper.id}
+                                                    className="group relative"
+                                                  >
+                                                    <Badge 
+                                                      variant="outline" 
+                                                      className={`text-[10px] cursor-help ${
+                                                        mapping?.confidence === 'HIGH' 
+                                                          ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                                                          : mapping?.confidence === 'MEDIUM'
+                                                            ? 'bg-blue-50 text-blue-700 border-blue-300'
+                                                            : 'bg-gray-50 text-gray-700 border-gray-300'
+                                                      }`}
+                                                    >
+                                                      {paper.title?.slice(0, 40)}...
+                                                      {mapping?.confidence && (
+                                                        <span className="ml-1 opacity-70">
+                                                          ({mapping.confidence[0]})
+                                                        </span>
+                                                      )}
+                                                    </Badge>
+                                                    {/* Tooltip with remark */}
+                                                    {mapping?.remark && (
+                                                      <div className="absolute left-0 bottom-full mb-1 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg">
+                                                        <p className="font-medium mb-1">{paper.title}</p>
+                                                        <p className="text-gray-300">{mapping.remark}</p>
+                                                      </div>
+                                                    )}
+                                                  </div>
+                                                );
+                                              })}
+                                              {coveringPapers.length > 3 && (
+                                                <Badge variant="outline" className="text-[10px] bg-gray-50 text-gray-600">
+                                                  +{coveringPapers.length - 3} more
+                                                </Badge>
+                                              )}
+                                            </div>
+                                          )}
+                                          {!isCovered && (
+                                            <p className="text-[10px] text-amber-600 mt-1">
+                                              No papers found covering this dimension - consider searching for more specific papers
+                                            </p>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      )}
+                      
+                      {/* Gaps Summary */}
+                      {blueprintCoverage.gaps.length > 0 && (
+                        <div className="bg-amber-50 rounded-xl p-4 border border-amber-200">
+                          <h4 className="font-medium text-amber-900 mb-2 flex items-center gap-2">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            </svg>
+                            Search Suggestions for Uncovered Dimensions
+                          </h4>
+                          <div className="flex flex-wrap gap-2">
+                            {blueprintCoverage.gaps.slice(0, 5).map((gap, idx) => (
+                              <Button
+                                key={idx}
+                                size="sm"
+                                variant="outline"
+                                className="text-xs text-amber-700 border-amber-300 hover:bg-amber-100"
+                                onClick={() => {
+                                  setQuery(gap.dimension.slice(0, 50));
+                                  setSearchViewMode('results');
+                                }}
+                              >
+                                🔍 {gap.dimension.slice(0, 40)}...
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* Results - only show when not loading and in results view */}
+                  {/* Sort results: AI-suggested first, use paginatedResults with pagination applied */}
+                  {!loading && searchViewMode === 'results' && (
                     <AnimatePresence mode="popLayout">
-                      {[...filteredResults]
+                      {[...paginatedResults]
                         .sort((a, b) => {
                           const aIsSuggested = aiSuggestions.has(a.id);
                           const bIsSuggested = aiSuggestions.has(b.id);
@@ -2316,6 +3164,25 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                     )}
                                   </div>
                                 )}
+                                {/* Import Recommendation Badge */}
+                                {paperRecommendations.has(result.id) && (
+                                  <Badge 
+                                    className={`shrink-0 text-[10px] ${
+                                      paperRecommendations.get(result.id) === 'IMPORT'
+                                        ? 'bg-emerald-500 text-white'
+                                        : paperRecommendations.get(result.id) === 'MAYBE'
+                                          ? 'bg-amber-500 text-white'
+                                          : 'bg-gray-400 text-white'
+                                    }`}
+                                    title={paperRecommendations.get(result.id) === 'IMPORT' 
+                                      ? 'Strongly recommended for import - maps to multiple dimensions'
+                                      : paperRecommendations.get(result.id) === 'MAYBE'
+                                        ? 'Consider importing - maps to some dimensions'
+                                        : 'Low blueprint coverage - might be useful for background'}
+                                  >
+                                    {paperRecommendations.get(result.id)}
+                                  </Badge>
+                                )}
                                 {hasAbstract ? (
                                   <Badge variant="secondary" className="shrink-0 text-[10px] bg-blue-50 text-blue-600">
                                     📄 Abstract
@@ -2367,6 +3234,36 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                 )}
                               </div>
                               
+                              {/* Dimension Mappings - Show which blueprint dimensions this paper covers */}
+                              {paperDimensionMappings.has(result.id) && (
+                                <div className="mt-1.5 flex flex-wrap gap-1">
+                                  {paperDimensionMappings.get(result.id)?.map((mapping, idx) => (
+                                    <div key={idx} className="group relative">
+                                      <Badge 
+                                        variant="outline" 
+                                        className={`text-[9px] cursor-help ${
+                                          mapping.confidence === 'HIGH'
+                                            ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                                            : mapping.confidence === 'MEDIUM'
+                                              ? 'bg-blue-50 text-blue-700 border-blue-300'
+                                              : 'bg-gray-50 text-gray-600 border-gray-300'
+                                        }`}
+                                      >
+                                        <span className="font-medium">{mapping.sectionKey}:</span>{' '}
+                                        {mapping.dimension.slice(0, 30)}{mapping.dimension.length > 30 ? '...' : ''}
+                                      </Badge>
+                                      {/* Tooltip with full remark */}
+                                      <div className="absolute left-0 bottom-full mb-1 hidden group-hover:block z-50 w-72 p-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg">
+                                        <p className="font-medium text-emerald-400 mb-1">{mapping.sectionKey}</p>
+                                        <p className="text-gray-300 mb-1">{mapping.dimension}</p>
+                                        <p className="text-gray-400 italic">"{mapping.remark}"</p>
+                                        <p className="mt-1 text-[10px] text-gray-500">Confidence: {mapping.confidence}</p>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              
                               {/* Abstract section */}
                               {hasAbstract ? (
                                 <>
@@ -2383,30 +3280,73 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                   )}
                                 </>
                               ) : result.doi ? (
-                                <button
-                                  onClick={() => handleFetchAbstract(result.id, result.doi)}
-                                  disabled={isFetchingThis}
-                                  className="text-xs text-amber-600 mt-1 hover:underline flex items-center gap-1"
-                                >
-                                  {isFetchingThis ? (
-                                    <>
-                                      <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
-                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                                      </svg>
-                                      Fetching...
-                                    </>
-                                  ) : (
-                                    <>
-                                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                      </svg>
-                                      Fetch abstract
-                                    </>
+                                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                  {/* Fetch abstract button */}
+                                  <button
+                                    onClick={() => handleFetchAbstract(result.id, result.doi)}
+                                    disabled={isFetchingThis}
+                                    className="text-xs text-amber-600 hover:underline flex items-center gap-1"
+                                  >
+                                    {isFetchingThis ? (
+                                      <>
+                                        <svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                                        </svg>
+                                        Fetching...
+                                      </>
+                                    ) : fetchAbstractFailed.has(result.id) ? (
+                                      <>
+                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                        </svg>
+                                        Retry fetch
+                                      </>
+                                    ) : (
+                                      <>
+                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                        </svg>
+                                        Fetch abstract
+                                      </>
+                                    )}
+                                  </button>
+                                  
+                                  {/* Separator */}
+                                  <span className="text-gray-300">|</span>
+                                  
+                                  {/* Add manually button */}
+                                  <button
+                                    onClick={() => openManualAbstractModal(result.id, result.title)}
+                                    className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                                  >
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                    </svg>
+                                    Add manually
+                                  </button>
+                                  
+                                  {/* Show fetch failed message */}
+                                  {fetchAbstractFailed.has(result.id) && (
+                                    <span className="text-[10px] text-red-500 italic">
+                                      (auto-fetch failed)
+                                    </span>
                                   )}
-                                </button>
+                                </div>
                               ) : (
-                                <span className="text-xs text-gray-400 mt-1 block">No DOI to fetch abstract</span>
+                                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                  <span className="text-xs text-gray-400">No DOI available</span>
+                                  <span className="text-gray-300">|</span>
+                                  <button
+                                    onClick={() => openManualAbstractModal(result.id, result.title)}
+                                    className="text-xs text-blue-600 hover:underline flex items-center gap-1"
+                                  >
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                    </svg>
+                                    Add abstract manually
+                                  </button>
+                                </div>
                               )}
                               
                               {result.doi && (
@@ -2546,6 +3486,116 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                     </AnimatePresence>
                   )}
                 </div>
+                
+                {/* Pagination Controls - Always visible at bottom, outside scrollable area */}
+                {!loading && filteredResults.length > 0 && (
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-4 mt-4 border-t border-gray-200 bg-white sticky bottom-0">
+                      {/* Page size selector */}
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-gray-600">Show:</span>
+                        <select
+                          value={resultsPerPage}
+                          onChange={(e) => setResultsPerPage(Number(e.target.value))}
+                          className="h-8 text-sm border border-gray-300 rounded px-2 bg-white"
+                        >
+                          {RESULTS_PER_PAGE_OPTIONS.map(option => (
+                            <option key={option} value={option}>{option}</option>
+                          ))}
+                        </select>
+                        <span className="text-sm text-gray-600">per page</span>
+                      </div>
+                      
+                      {/* Navigation controls */}
+                      <div className="flex items-center gap-1">
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={() => setResultsCurrentPage(1)} 
+                          disabled={resultsCurrentPage === 1}
+                          className="h-8 px-2"
+                          title="First page"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7m8 14l-7-7 7-7" />
+                          </svg>
+                        </Button>
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={() => setResultsCurrentPage(p => Math.max(1, p - 1))} 
+                          disabled={resultsCurrentPage === 1}
+                          className="h-8 px-3"
+                          title="Previous page"
+                        >
+                          <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                          </svg>
+                          Prev
+                        </Button>
+                        
+                        {/* Page numbers */}
+                        {totalResultPages > 1 && (
+                          <div className="flex items-center gap-1 mx-1">
+                            {Array.from({ length: Math.min(5, totalResultPages) }, (_, i) => {
+                              let pageNum: number;
+                              if (totalResultPages <= 5) {
+                                pageNum = i + 1;
+                              } else if (resultsCurrentPage <= 3) {
+                                pageNum = i + 1;
+                              } else if (resultsCurrentPage >= totalResultPages - 2) {
+                                pageNum = totalResultPages - 4 + i;
+                              } else {
+                                pageNum = resultsCurrentPage - 2 + i;
+                              }
+                              
+                              return (
+                                <Button
+                                  key={pageNum}
+                                  variant={resultsCurrentPage === pageNum ? "default" : "outline"}
+                                  size="sm"
+                                  onClick={() => setResultsCurrentPage(pageNum)}
+                                  className={`h-8 w-8 p-0 ${resultsCurrentPage === pageNum ? 'bg-indigo-600' : ''}`}
+                                >
+                                  {pageNum}
+                                </Button>
+                              );
+                            })}
+                          </div>
+                        )}
+                        
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={() => setResultsCurrentPage(p => Math.min(totalResultPages, p + 1))} 
+                          disabled={resultsCurrentPage === totalResultPages || totalResultPages === 0}
+                          className="h-8 px-3"
+                          title="Next page"
+                        >
+                          Next
+                          <svg className="w-4 h-4 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
+                        </Button>
+                        <Button 
+                          variant="outline" 
+                          size="sm" 
+                          onClick={() => setResultsCurrentPage(totalResultPages)} 
+                          disabled={resultsCurrentPage === totalResultPages || totalResultPages === 0}
+                          className="h-8 px-2"
+                          title="Last page"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 5l7 7-7 7M5 5l7 7-7 7" />
+                          </svg>
+                        </Button>
+                      </div>
+                      
+                      {/* Results info */}
+                      <div className="text-sm text-gray-500">
+                        Showing {((resultsCurrentPage - 1) * resultsPerPage) + 1}-{Math.min(resultsCurrentPage * resultsPerPage, filteredResults.length)} of {filteredResults.length}
+                      </div>
+                    </div>
+                  )}
               </CardContent>
             </Card>
           )}
@@ -2589,7 +3639,61 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                   </svg>
                 </Button>
+                <Button
+                  size="sm"
+                  onClick={handleAnalyzeUnanalyzedCitations}
+                  disabled={citations.length === 0 || citationAnalyzing}
+                  className="shrink-0 h-8 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white"
+                  title="Analyze citations against blueprint dimensions"
+                >
+                  {citationAnalyzing ? (
+                    <>
+                      <svg className="w-4 h-4 mr-1 animate-spin" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                      </svg>
+                      Analyzing...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+                      </svg>
+                      Map to Blueprint
+                    </>
+                  )}
+                </Button>
               </div>
+              
+              {/* Citation Blueprint Coverage Summary */}
+              {citationBlueprintCoverage && (
+                <div className="bg-gradient-to-r from-violet-50 to-indigo-50 rounded-lg p-3 border border-violet-200">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-900 flex items-center gap-2">
+                      <svg className="w-4 h-4 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+                      </svg>
+                      Blueprint Coverage
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-gray-600">
+                        {citationBlueprintCoverage.coveredDimensions}/{citationBlueprintCoverage.totalDimensions} dimensions
+                      </span>
+                      <div className="w-16 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                        <div 
+                          className="h-full bg-gradient-to-r from-emerald-500 to-green-500 rounded-full"
+                          style={{ width: `${citationBlueprintCoverage.totalDimensions > 0 ? (citationBlueprintCoverage.coveredDimensions / citationBlueprintCoverage.totalDimensions) * 100 : 0}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  {citationBlueprintCoverage.gaps.length > 0 && (
+                    <p className="text-xs text-amber-700 mt-1">
+                      ⚠️ {citationBlueprintCoverage.gaps.length} uncovered dimension{citationBlueprintCoverage.gaps.length > 1 ? 's' : ''} - search for more papers
+                    </p>
+                  )}
+                </div>
+              )}
 
               {/* Selection actions */}
               {selectedCitations.size > 0 && (
@@ -2779,6 +3883,126 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                 )}
               </div>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Manual Abstract Entry Modal */}
+      <Dialog open={manualAbstractModalOpen} onOpenChange={(open) => {
+        if (!open) {
+          setManualAbstractModalOpen(false);
+          setManualAbstractResultId(null);
+          setManualAbstractText('');
+          setManualAbstractResultTitle('');
+        }
+      }}>
+        <DialogContent className="max-w-xl bg-white border-gray-200 shadow-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <svg className="w-5 h-5 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              Add Abstract Manually
+            </DialogTitle>
+            <DialogDescription>
+              Paste the abstract content for this paper
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            {/* Paper title for context */}
+            <div className="p-3 bg-gray-50 rounded-lg border border-gray-200">
+              <p className="text-xs text-gray-500 mb-1">Paper:</p>
+              <p className="text-sm font-medium text-gray-900 line-clamp-2">{manualAbstractResultTitle}</p>
+            </div>
+            
+            {/* Abstract textarea */}
+            <div>
+              <label className="text-sm font-medium text-gray-700 mb-2 block">
+                Abstract Content
+              </label>
+              <Textarea
+                value={manualAbstractText}
+                onChange={(e) => setManualAbstractText(e.target.value)}
+                placeholder="Paste the paper's abstract here..."
+                className="min-h-[200px] resize-y text-sm"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                💡 Tip: You can copy the abstract from the paper's PDF or the publisher's website
+              </p>
+            </div>
+            
+            {/* Actions */}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setManualAbstractModalOpen(false);
+                  setManualAbstractResultId(null);
+                  setManualAbstractText('');
+                  setManualAbstractResultTitle('');
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={saveManualAbstract}
+                disabled={!manualAbstractText.trim()}
+                className="bg-amber-600 hover:bg-amber-700"
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                Save Abstract
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation Modal */}
+      <Dialog open={deleteConfirmOpen} onOpenChange={(open) => {
+        if (!open) {
+          cancelDeleteSelected();
+        }
+      }}>
+        <DialogContent className="max-w-md bg-white border-gray-200 shadow-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              Permanently Delete Results
+            </DialogTitle>
+            <DialogDescription className="text-gray-600">
+              Are you sure you want to permanently delete {pendingDeleteIds.size} selected search result(s)? 
+              This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          
+          <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+            <p className="text-sm text-red-700">
+              <strong>Warning:</strong> These results will be permanently removed from your search results. 
+              You will need to perform a new search to find them again.
+            </p>
+          </div>
+          
+          <div className="flex justify-end gap-2 pt-4">
+            <Button
+              variant="outline"
+              onClick={cancelDeleteSelected}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={confirmDeleteSelected}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              Delete Permanently
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
