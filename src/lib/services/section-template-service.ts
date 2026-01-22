@@ -450,7 +450,7 @@ ${typeAdditions}`;
       const dbTemplates: SectionTemplate[] = [];
       const dbSectionKeys = new Set<string>();
       
-      for (const ss of this.dbSupersetSections.values()) {
+      for (const ss of Array.from(this.dbSupersetSections.values())) {
         const constraints = (ss.constraints || {}) as SectionConstraints;
         dbTemplates.push({
           sectionKey: ss.sectionKey,

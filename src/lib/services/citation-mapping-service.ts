@@ -746,7 +746,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
         // First, fetch existing citation to get current aiMeta
         const existingCitation = await prisma.citation.findUnique({
           where: { id: mapping.paperId },
-          select: { aiMeta: true }
+          select: { aiMeta: true } as any
         });
 
         if (!existingCitation) {
@@ -769,7 +769,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
         await prisma.citation.update({
           where: { id: mapping.paperId },
           data: {
-            aiMeta: mergedMeta
+            aiMeta: mergedMeta as any
           }
         });
 
@@ -820,7 +820,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
         where: {
           citationId,
           sectionKey,
-          dimension: dim.dimension
+          dimension: dim.dimension as any
         }
       });
 
@@ -834,7 +834,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
           data: {
             citationId,
             sectionKey,
-            dimension: dim.dimension,
+            dimension: dim.dimension as any,
             ...usageData
           }
         });
@@ -849,7 +849,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
           where: {
             citationId,
             sectionKey,
-            dimension: dim.dimension
+            dimension: dim.dimension as any
           }
         });
         
@@ -1003,15 +1003,15 @@ Return ONLY the JSON array, no additional text or explanation.`;
       select: {
         id: true,
         citationKey: true,
-        aiMeta: true,
+            aiMeta: true as any,
         usages: {
           where: {
-            dimension: { not: null },
+            dimension: { not: null } as any,
             mappingSource: 'auto'
           },
           select: {
             sectionKey: true,
-            dimension: true,
+            dimension: true as any,
             remark: true,
             confidence: true
           }
@@ -1026,7 +1026,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
         
         // Build dimension mappings from CitationUsage records
         const dimensionMappings: DimensionMapping[] = c.usages.map(u => ({
-          dimension: u.dimension || '',
+          dimension: (u as any).dimension || '',
           remark: u.remark || '',
           confidence: (u.confidence as 'HIGH' | 'MEDIUM' | 'LOW') || 'MEDIUM'
         }));
@@ -1103,17 +1103,17 @@ Return ONLY the JSON array, no additional text or explanation.`;
       
       // STRICT: Exact match only - no substring/fuzzy matching
       const matchingUsages = usages.filter(u =>
-        u.dimension &&
-        this.normalizeDimensionString(u.dimension) === normalizedBlueprintDim
+        (u as any).dimension &&
+        this.normalizeDimensionString((u as any).dimension) === normalizedBlueprintDim
       );
 
       result.push({
         dimension,
         citations: matchingUsages.map(u => ({
           paperId: u.citationId,
-          citationKey: u.citation.citationKey,
-          remark: u.remark || '',
-          confidence: u.confidence || 'MEDIUM'
+          citationKey: (u as any).citation?.citationKey || '',
+          remark: (u as any).remark || '',
+          confidence: (u as any).confidence || 'MEDIUM'
         }))
       });
     }
@@ -1128,7 +1128,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
     // Clear aiMeta blueprintMapping from all citations
     const citations = await prisma.citation.findMany({
       where: { sessionId, isActive: true },
-      select: { id: true, aiMeta: true }
+      select: { id: true, aiMeta: true as any }
     });
 
     for (const c of citations) {
@@ -1137,7 +1137,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
         const { blueprintMapping, ...rest } = aiMeta;
         await prisma.citation.update({
           where: { id: c.id },
-          data: { aiMeta: Object.keys(rest).length > 0 ? rest : undefined }
+          data: { aiMeta: Object.keys(rest).length > 0 ? rest : undefined as any }
         });
       }
     }

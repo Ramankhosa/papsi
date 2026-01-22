@@ -270,11 +270,11 @@ class PaperSectionService {
       // Log LLM result if debug is enabled
       if (isDebugEnabled()) {
         const llmDebugInfo = buildLLMDebugInfo(
-          result.response?.model || 'unknown',
-          result.response?.inputTokens || 0,
+          result.response?.modelClass || 'unknown',
+          (result.response?.metadata as any)?.inputTokens || 0,
           result.response?.outputTokens || 0,
-          result.response?.inputCostPer1M || 0,
-          result.response?.outputCostPer1M || 0,
+          (result.response?.metadata as any)?.inputCostPer1M || 0,
+          (result.response?.metadata as any)?.outputCostPer1M || 0,
           llmLatencyMs,
           result.success,
           result.error?.message
@@ -302,8 +302,7 @@ class PaperSectionService {
       // Parse the response
       const parsed = this.parseSectionResponse(result.response.output);
 
-      // Get blueprint version
-      const blueprint = await blueprintService.getBlueprint(sessionId);
+      // Get blueprint version (reuse existing blueprint)
       const blueprintVersion = blueprint?.version || 1;
 
       // Upsert section
@@ -312,7 +311,7 @@ class PaperSectionService {
         displayName: SECTION_DISPLAY_NAMES[sectionKey] || sectionKey,
         content: parsed.content,
         wordCount: this.countWords(parsed.content),
-        memory: parsed.memory,
+        memory: parsed.memory as any,
         blueprintVersion,
         promptUsed: prompt,
         llmResponse: result.response.output,
@@ -460,7 +459,7 @@ class PaperSectionService {
 
     const updated = await prisma.paperSection.update({
       where: { sessionId_sectionKey: { sessionId, sectionKey } },
-      data: { memory }
+      data: { memory: memory as any }
     });
 
     return this.transformSection(updated);
@@ -686,7 +685,7 @@ class PaperSectionService {
       where: {
         sessionId,
         sectionKey: { in: previousKeys },
-        memory: { not: null }
+        memory: { not: null as any }
       }
     });
 
@@ -698,7 +697,7 @@ class PaperSectionService {
     return sortedSections.map(s => ({
       sectionKey: s.sectionKey,
       displayName: SECTION_DISPLAY_NAMES[s.sectionKey] || s.sectionKey,
-      memory: s.memory as SectionMemory
+      memory: s.memory as any as SectionMemory
     }));
   }
 

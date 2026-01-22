@@ -1388,7 +1388,7 @@ class PubMedProvider implements SearchProvider {
     const results: SearchResult[] = [];
 
     // Simple XML parsing for PubMed articles
-    const articleMatches = xml.matchAll(/<PubmedArticle>([\s\S]*?)<\/PubmedArticle>/g);
+    const articleMatches = Array.from(xml.matchAll(/<PubmedArticle>([\s\S]*?)<\/PubmedArticle>/g));
 
     for (const match of articleMatches) {
       try {
@@ -1572,7 +1572,7 @@ class ArXivProvider implements SearchProvider {
     const results: SearchResult[] = [];
 
     // Parse Atom feed entries
-    const entryMatches = xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g);
+    const entryMatches = Array.from(xml.matchAll(/<entry>([\s\S]*?)<\/entry>/g));
 
     for (const match of entryMatches) {
       try {

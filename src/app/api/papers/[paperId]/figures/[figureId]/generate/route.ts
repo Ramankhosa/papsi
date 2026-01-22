@@ -130,7 +130,7 @@ export async function POST(
             result = {
               success: false,
               error: llmResult.error || 'Failed to generate chart configuration',
-              errorCode: 'LLM_ERROR'
+              errorCode: 'API_ERROR'
             };
           }
         } else if (data.data?.labels && data.data?.datasets) {
@@ -291,7 +291,7 @@ export async function POST(
             result = {
               success: false,
               error: llmResult.error || 'Failed to generate statistical plot',
-              errorCode: 'LLM_ERROR'
+              errorCode: 'API_ERROR'
             };
           }
         } else if (data.data) {

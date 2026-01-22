@@ -462,7 +462,7 @@ class CitationService {
     }
 
     // Find DOI duplicates
-    for (const [doi, citationGroup] of byDOI) {
+    for (const [doi, citationGroup] of Array.from(byDOI.entries())) {
       if (citationGroup.length > 1) {
         duplicates.push({
           citations: citationGroup,
@@ -484,7 +484,7 @@ class CitationService {
     }
 
     // Find title/author duplicates
-    for (const [key, citationGroup] of byTitleAuthor) {
+    for (const [key, citationGroup] of Array.from(byTitleAuthor.entries())) {
       if (citationGroup.length > 1) {
         duplicates.push({
           citations: citationGroup,
@@ -649,7 +649,7 @@ class CitationService {
         importSource: input.importSource,
         notes: input.notes,
         tags: input.tags || [],
-        aiMeta: input.aiMeta || undefined
+        aiMeta: input.aiMeta || undefined as any
       }
     });
   }

@@ -239,8 +239,7 @@ async function main() {
       },
     }) || await prisma.lLMModel.findFirst({
       where: {
-        code: { contains: 'gemini-2' },
-        code: { contains: 'pro' },
+        code: { contains: 'gemini-2.5-pro' },
         isActive: true,
       },
     }) || advancedModel

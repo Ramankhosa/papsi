@@ -219,7 +219,7 @@ function buildPrompt(
     // Filter sections for dimension mapping:
     // - For review papers: include all sections
     // - For other papers: only Introduction, Literature Review, and Methodology
-    const isReview = isReviewPaper(blueprint.paperTypeCode);
+    const isReview = isReviewPaper(blueprint.paperTypeCode ?? undefined);
     const sectionsForMapping = isReview 
       ? blueprint.sectionPlan 
       : blueprint.sectionPlan.filter(s => isLiteratureMappingSection(s.sectionKey));
@@ -230,7 +230,7 @@ function buildPrompt(
       const dimensions = section.mustCover && section.mustCover.length > 0
         ? section.mustCover.map((dim, i) => `    ${i + 1}. "${dim}"`).join('\n')
         : '    (No specific dimensions defined)';
-      return `${idx + 1}. ${section.sectionKey} - "${section.sectionTitle}"
+      return `${idx + 1}. ${section.sectionKey} - "${section.purpose}"
    Must Cover Dimensions:
 ${dimensions}`;
     }).join('\n\n');
@@ -459,7 +459,7 @@ function parseAndValidateLLMResponse(
           if (!sectionDimensions.has(dm.dimension)) {
             // Try fuzzy match (lowercase, trimmed)
             const normalizedInput = String(dm.dimension).toLowerCase().trim();
-            for (const validDim of sectionDimensions) {
+            for (const validDim of Array.from(sectionDimensions)) {
               if (validDim.toLowerCase().trim() === normalizedInput) {
                 matchedDimension = validDim; // Use the canonical dimension text
                 break;
@@ -529,7 +529,7 @@ function calculateBlueprintCoverage(
   let coveredDimensions = 0;
 
   // Filter sections for coverage calculation (same logic as prompt building)
-  const isReview = isReviewPaper(blueprint.paperTypeCode);
+  const isReview = isReviewPaper(blueprint.paperTypeCode ?? undefined);
   const sectionsForCoverage = isReview 
     ? blueprint.sectionPlan 
     : blueprint.sectionPlan.filter(s => isLiteratureMappingSection(s.sectionKey));
@@ -566,7 +566,7 @@ function calculateBlueprintCoverage(
       } else {
         gaps.push({
           sectionKey: section.sectionKey,
-          sectionTitle: section.sectionTitle,
+          sectionTitle: section.purpose,
           dimension
         });
       }
@@ -705,7 +705,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             coveredDimensions: 0,
             gaps: blueprint.sectionPlan.flatMap(s => (s.mustCover || []).map(d => ({
               sectionKey: s.sectionKey,
-              sectionTitle: s.sectionTitle,
+              sectionTitle: s.purpose,
               dimension: d
             }))),
             sectionCoverage: {}
@@ -722,7 +722,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     await prisma.literatureSearchRun.update({
       where: { id: searchRunId },
       data: {
-        aiAnalysis: analysis,
+        aiAnalysis: analysis as any,
         aiAnalyzedAt: new Date(),
         aiModelUsed: llmResult.response.modelClass || 'unknown',
         aiTokensUsed: llmResult.response.outputTokens || 0,

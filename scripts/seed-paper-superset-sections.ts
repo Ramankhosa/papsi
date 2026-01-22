@@ -973,7 +973,7 @@ async function seedTypeOverrides() {
   }
 
   // Show warnings for missing paper types
-  const uniqueWarnings = [...new Set(warnings)]
+  const uniqueWarnings = Array.from(new Set(warnings))
   if (uniqueWarnings.length > 0) {
     console.log(`\n⚠️  Warning: The following paper types don't exist in PaperTypeDefinition:`)
     console.log(`   ${uniqueWarnings.join(', ')}`)

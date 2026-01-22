@@ -13,6 +13,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
+import type { CitationSearchQuery } from '@prisma/client';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { featureFlags } from '@/lib/feature-flags';
 import { searchStrategyService } from '@/lib/services/search-strategy-service';
@@ -122,7 +123,7 @@ export async function GET(
     // Calculate coverage
     const byCategory: Record<string, number> = {};
     const intents = new Set<string>();
-    for (const q of strategy.queries) {
+    for (const q of strategy.queries as CitationSearchQuery[]) {
       byCategory[q.category] = (byCategory[q.category] || 0) + 1;
       const filters = q.suggestedFilters as { searchIntent?: string } | null;
       if (filters?.searchIntent) {
@@ -141,7 +142,7 @@ export async function GET(
         createdAt: strategy.createdAt,
         completedAt: strategy.completedAt
       },
-      queries: strategy.queries.map(q => ({
+      queries: strategy.queries.map((q: CitationSearchQuery) => ({
         id: q.id,
         queryText: q.queryText,
         category: q.category,
@@ -159,10 +160,10 @@ export async function GET(
       coverage: {
         totalQueries: strategy.queries.length,
         byCategory,
-        completedQueries: strategy.queries.filter(q => 
+        completedQueries: strategy.queries.filter((q: CitationSearchQuery) =>
           q.status === 'COMPLETED' || q.status === 'SKIPPED'
         ).length,
-        pendingQueries: strategy.queries.filter(q => 
+        pendingQueries: strategy.queries.filter((q: CitationSearchQuery) =>
           q.status === 'PENDING'
         ).length
       }
@@ -338,7 +339,7 @@ async function handleGenerateStrategy(
       summary: result.strategy.summary,
       estimatedPapers: result.strategy.estimatedPapers
     },
-    queries: result.queries.map(q => ({
+    queries: result.queries.map((q: CitationSearchQuery) => ({
       id: q.id,
       queryText: q.queryText,
       category: q.category,

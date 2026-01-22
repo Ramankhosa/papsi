@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { generateFigureSuggestions } from '@/lib/figure-generation/llm-figure-service';
+import { FigureSuggestion, FigureCategory } from '@/lib/figure-generation/types';
 
 export const runtime = 'nodejs';
 
@@ -15,17 +16,6 @@ const suggestSchema = z.object({
   useLLM: z.boolean().optional().default(true)
 });
 
-type FigureCategory = 'DATA_CHART' | 'DIAGRAM' | 'STATISTICAL_PLOT' | 'ILLUSTRATION';
-
-interface FigureSuggestion {
-  title: string;
-  description: string;
-  category: FigureCategory;
-  suggestedType: string;
-  relevantSection: string;
-  importance: 'required' | 'recommended' | 'optional';
-  dataNeeded?: string;
-}
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
   const where = user.roles?.includes('SUPER_ADMIN')
@@ -75,7 +65,7 @@ export async function POST(
       type: (f.nodes as any)?.figureType || 'unknown'
     }));
 
-    let suggestions: FigureSuggestion[];
+    let suggestions: import('@/lib/figure-generation/types').FigureSuggestion[];
     let llmMetadata: { tokensUsed?: number; model?: string } = {};
 
     // Check if we should use LLM for suggestions

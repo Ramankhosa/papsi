@@ -184,7 +184,7 @@ class SearchStrategyService {
     console.log(`🔍 Generating search strategy for session ${sessionId}`);
 
     // Check if strategy already exists
-    const existingStrategy = await prisma.citationSearchStrategy.findUnique({
+    const existingStrategy = await (prisma as any).citationSearchStrategy.findUnique({
       where: { sessionId },
       include: { queries: true }
     });
@@ -559,12 +559,12 @@ Return ONLY the JSON array.`;
   ): Promise<CitationSearchStrategy & { queries: CitationSearchQuery[] }> {
     
     // Delete existing draft strategy if any
-    await prisma.citationSearchStrategy.deleteMany({
+    await (prisma as any).citationSearchStrategy.deleteMany({
       where: { sessionId, status: 'DRAFT' }
     });
 
     // Create strategy with queries
-    const strategy = await prisma.citationSearchStrategy.create({
+    const strategy = await (prisma as any).citationSearchStrategy.create({
       data: {
         sessionId,
         paperTitle: researchTopic.title,
@@ -602,7 +602,7 @@ Return ONLY the JSON array.`;
    * Get existing strategy for a session
    */
   async getStrategy(sessionId: string): Promise<(CitationSearchStrategy & { queries: CitationSearchQuery[] }) | null> {
-    return prisma.citationSearchStrategy.findUnique({
+    return (prisma as any).citationSearchStrategy.findUnique({
       where: { sessionId },
       include: {
         queries: {
@@ -621,7 +621,7 @@ Return ONLY the JSON array.`;
     resultsCount?: number,
     importedCount?: number
   ): Promise<CitationSearchQuery> {
-    return prisma.citationSearchQuery.update({
+    return (prisma as any).citationSearchQuery.update({
       where: { id: queryId },
       data: {
         status,
@@ -636,7 +636,7 @@ Return ONLY the JSON array.`;
    * Mark strategy as completed when all queries are done
    */
   async checkAndUpdateStrategyStatus(strategyId: string): Promise<void> {
-    const strategy = await prisma.citationSearchStrategy.findUnique({
+    const strategy = await (prisma as any).citationSearchStrategy.findUnique({
       where: { id: strategyId },
       include: { queries: true }
     });
@@ -648,7 +648,7 @@ Return ONLY the JSON array.`;
     );
 
     if (allCompleted) {
-      await prisma.citationSearchStrategy.update({
+      await (prisma as any).citationSearchStrategy.update({
         where: { id: strategyId },
         data: {
           status: 'COMPLETED',
@@ -661,7 +661,7 @@ Return ONLY the JSON array.`;
       );
       
       if (anyInProgress && strategy.status === 'READY') {
-        await prisma.citationSearchStrategy.update({
+        await (prisma as any).citationSearchStrategy.update({
           where: { id: strategyId },
           data: { status: 'IN_PROGRESS' }
         });

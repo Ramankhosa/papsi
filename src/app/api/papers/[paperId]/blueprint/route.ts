@@ -201,7 +201,7 @@ export async function POST(
     const paperTypeCode = session.paperType?.code || 'JOURNAL_ARTICLE';
 
     // Fetch tenant's active plan for LLM metering
-    const tenant = await prisma.tenant.findUnique({
+    const tenant = session.tenantId ? await prisma.tenant.findUnique({
       where: { id: session.tenantId },
       include: {
         tenantPlans: {
@@ -217,7 +217,7 @@ export async function POST(
           take: 1
         }
       }
-    });
+    }) : null;
 
     if (!tenant) {
       return NextResponse.json(
@@ -236,7 +236,7 @@ export async function POST(
 
     // Build tenant context for LLM metering
     const tenantContext = {
-      tenantId: session.tenantId,
+      tenantId: session.tenantId!,
       planId: activePlan.planId,
       userId: user.id
     };

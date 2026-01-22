@@ -7,7 +7,7 @@
 
 import { NextResponse, NextRequest } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { authOptions } from '@/lib/auth-config';
 import { prisma } from '@/lib/prisma';
 import { invalidatePaperWritingSampleCache } from '@/lib/paper-writing-sample-service';
 import { z } from 'zod';
