@@ -101,6 +101,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   const [yearTo, setYearTo] = useState('');
   const [sources, setSources] = useState<string[]>(['semantic_scholar', 'crossref', 'openalex']);
   const [results, setResults] = useState<any[]>([]);
+  const [deletedResultIds, setDeletedResultIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [loadingMessageIndex, setLoadingMessageIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -165,6 +166,12 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     };
   }>>(new Map());
   const [aiAnalyzing, setAiAnalyzing] = useState(false);
+  const [aiReviewStatus, setAiReviewStatus] = useState<{
+    total: number;
+    reviewed: number;
+    inProcess: number;
+    retry: number;
+  } | null>(null);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
   
@@ -296,7 +303,18 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   };
   
   // Confirm and permanently delete selected results
-  const confirmDeleteSelected = () => {
+  const confirmDeleteSelected = async () => {
+    const deletedIds = Array.from(pendingDeleteIds);
+    const resultsById = new Map(results.map(r => [r.id, r]));
+    const removedByRun = new Map<string, string[]>();
+
+    for (const id of deletedIds) {
+      const runId = resultsById.get(id)?._searchRunId || searchRunId;
+      if (!runId) continue;
+      if (!removedByRun.has(runId)) removedByRun.set(runId, []);
+      removedByRun.get(runId)!.push(id);
+    }
+
     // Permanently remove from results array
     setResults(prev => prev.filter(r => !pendingDeleteIds.has(r.id)));
     // Also clean up from removedResults set if they were there
@@ -311,10 +329,48 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       pendingDeleteIds.forEach(id => newMap.delete(id));
       return newMap;
     });
+    // Track deleted results to avoid re-adding on new searches
+    setDeletedResultIds(prev => {
+      const next = new Set(prev);
+      deletedIds.forEach(id => next.add(id));
+      return next;
+    });
     // Clear selection and close dialog
     setSelectedResults(new Set());
     setPendingDeleteIds(new Set());
     setDeleteConfirmOpen(false);
+
+    if (authToken && removedByRun.size > 0) {
+      const updatePromises = Array.from(removedByRun.entries()).map(async ([runId, ids]) => {
+        const res = await fetch(`/api/papers/${sessionId}/literature/select-relevant`, {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            searchRunId: runId,
+            removedResultIds: ids
+          })
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || 'Failed to persist deletions');
+        }
+      });
+
+      const results = await Promise.allSettled(updatePromises);
+      const failed = results.filter(r => r.status === 'rejected').length;
+      if (failed > 0) {
+        console.warn(`[LiteratureSearch] Failed to persist ${failed} deletion batch(es)`);
+        showToast({
+          type: 'warning',
+          title: 'Deletion Not Fully Saved',
+          message: 'Some deletions may return after refresh. Please try again.',
+          duration: 4000
+        });
+      }
+    }
     
     showToast({
       title: 'Results deleted',
@@ -508,6 +564,52 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     }
   }, [sessionId, authToken]);
 
+  const normalizePaperKey = (value?: string) => value?.toLowerCase().trim();
+  // Normalize DOI to handle different formats (with/without URL prefix)
+  const normalizeDoiKey = (doi?: string) => {
+    if (!doi) return undefined;
+    let normalized = doi.toLowerCase().trim();
+    // Remove common DOI URL prefixes
+    normalized = normalized
+      .replace(/^https?:\/\/doi\.org\//i, '')
+      .replace(/^https?:\/\/dx\.doi\.org\//i, '')
+      .replace(/^doi:/i, '');
+    return normalized || undefined;
+  };
+  const titleKey = (title?: string) => normalizePaperKey(title)?.substring(0, 100);
+
+  const buildResultLookup = (list: any[]) => {
+    const byId = new Set<string>();
+    const byDoi = new Map<string, string>();
+    const byTitle = new Map<string, string>();
+    for (const result of list) {
+      if (result?.id) byId.add(result.id);
+      const doiKey = normalizeDoiKey(result?.doi);
+      if (doiKey && !byDoi.has(doiKey)) byDoi.set(doiKey, result.id);
+      const tKey = titleKey(result?.title);
+      if (tKey && !byTitle.has(tKey)) byTitle.set(tKey, result.id);
+    }
+    return { byId, byDoi, byTitle };
+  };
+
+  const resolveSuggestionResultId = (
+    suggestion: any,
+    lookup: ReturnType<typeof buildResultLookup>
+  ) => {
+    if (suggestion?.paperId && lookup.byId.has(suggestion.paperId)) {
+      return suggestion.paperId as string;
+    }
+    const doiKey = normalizeDoiKey(suggestion?.paperDoi);
+    if (doiKey && lookup.byDoi.has(doiKey)) {
+      return lookup.byDoi.get(doiKey) as string;
+    }
+    const tKey = titleKey(suggestion?.paperTitle);
+    if (tKey && lookup.byTitle.has(tKey)) {
+      return lookup.byTitle.get(tKey) as string;
+    }
+    return null;
+  };
+
   // Load ALL search runs and merge their results on mount (persist across refresh)
   useEffect(() => {
     const loadExistingSearchRuns = async () => {
@@ -528,8 +630,33 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         // Fetch ALL search runs and merge their results
         const allRunIds: string[] = [];
         const allResults: any[] = [];
+        const removedIds = new Set<string>();
         const allAiSuggestions = new Map<string, { isRelevant: boolean; score: number; reasoning: string; citationMeta?: any }>();
+        const allDimensionMappings = new Map<string, Array<{
+          sectionKey: string;
+          dimension: string;
+          remark: string;
+          confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+        }>>();
+        const allRecommendations = new Map<string, 'IMPORT' | 'MAYBE' | 'SKIP'>();
+        const rawSuggestions: Array<{
+          paperId: string;
+          paperTitle?: string;
+          paperDoi?: string;
+          isRelevant: boolean;
+          relevanceScore: number;
+          reasoning: string;
+          citationMeta?: any;
+          dimensionMappings?: Array<{
+            sectionKey: string;
+            dimension: string;
+            remark: string;
+            confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+          }>;
+          recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';
+        }> = [];
         let latestAiSummary: string | null = null;
+        let latestBlueprintCoverage: any = null;
         let latestQuery = '';
         let mostRecentRunId: string | null = null;
         
@@ -551,9 +678,18 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
             const searchRun = detailData.searchRun;
           allRunIds.push(searchRun.id);
           
+          const runRemoved = new Set<string>(
+            Array.isArray((searchRun.aiAnalysis as any)?.removedResultIds)
+              ? (searchRun.aiAnalysis as any).removedResultIds
+              : []
+          );
+          runRemoved.forEach(id => removedIds.add(id));
+
           // Add results from this run (will be deduplicated)
           const runResults = searchRun.results || [];
+          const runResultsById = new Map<string, any>(runResults.map((r: any) => [r.id, r]));
           for (const result of runResults) {
+            if (removedIds.has(result.id)) continue;
             // Check for duplicate by DOI or title
             const key = result.doi?.toLowerCase() || result.title?.toLowerCase()?.substring(0, 100);
             const isDuplicate = allResults.some(r => {
@@ -575,27 +711,46 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
             const analysis = searchRun.aiAnalysis as { 
               suggestions?: Array<{ 
                 paperId: string; 
+                paperTitle?: string;
+                paperDoi?: string;
                 isRelevant: boolean; 
                 relevanceScore: number; 
                 reasoning: string;
                 citationMeta?: any;
+                dimensionMappings?: Array<{
+                  sectionKey: string;
+                  dimension: string;
+                  remark: string;
+                  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+                }>;
+                recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';
               }>; 
-              summary?: string 
+              summary?: string;
+              blueprintCoverage?: {
+                totalDimensions: number;
+                coveredDimensions: number;
+                gaps: Array<{ sectionKey: string; sectionTitle: string; dimension: string }>;
+                sectionCoverage: Record<string, { total: number; covered: number; dimensions: Array<{ dimension: string; covered: boolean; papers: any[] }> }>;
+              };
             };
                 
-                for (const suggestion of (analysis.suggestions || [])) {
-              // Keep the most recent AI suggestion for each paper
-              allAiSuggestions.set(suggestion.paperId, {
-                    isRelevant: suggestion.isRelevant,
-                    score: suggestion.relevanceScore,
-                reasoning: suggestion.reasoning,
-                citationMeta: suggestion.citationMeta
+            for (const suggestion of (analysis.suggestions || [])) {
+              const paper = runResultsById.get(suggestion.paperId);
+              rawSuggestions.push({
+                ...suggestion,
+                paperTitle: suggestion.paperTitle ?? paper?.title,
+                paperDoi: suggestion.paperDoi ?? paper?.doi
               });
             }
             
             // Keep most recent summary
             if (analysis.summary) {
               latestAiSummary = analysis.summary;
+            }
+            
+            // Keep most recent blueprint coverage
+            if (analysis.blueprintCoverage) {
+              latestBlueprintCoverage = analysis.blueprintCoverage;
             }
           }
           
@@ -606,7 +761,64 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
           }
         }
         
+        if (rawSuggestions.length > 0 && allResults.length > 0) {
+          const lookup = buildResultLookup(allResults);
+          
+          // Build a search-run-ID → accumulated-result-ID map for papers that were
+          // deduplicated (run result ID differs from the ID kept in allResults).
+          // This mirrors the searchRunIdMap approach in handleAiRelevanceAnalysis.
+          const searchRunIdToAccumulated = new Map<string, string>();
+          for (const detailData of detailResponses) {
+            if (!detailData?.searchRun?.results) continue;
+            for (const runResult of detailData.searchRun.results) {
+              if (!runResult?.id) continue;
+              // If this ID is already in accumulated results, map to itself
+              if (lookup.byId.has(runResult.id)) {
+                searchRunIdToAccumulated.set(runResult.id, runResult.id);
+                continue;
+              }
+              // Otherwise try DOI/title match against accumulated results
+              const doiKey = normalizeDoiKey(runResult.doi);
+              const tKey = titleKey(runResult.title);
+              const matchedId = (doiKey && lookup.byDoi.get(doiKey)) || (tKey && lookup.byTitle.get(tKey));
+              if (matchedId) {
+                searchRunIdToAccumulated.set(runResult.id, matchedId);
+              }
+            }
+          }
+          
+          for (const suggestion of rawSuggestions) {
+            // Prefer direct ID map (handles deduplicated results), then fall back to DOI/title
+            const resolvedId = searchRunIdToAccumulated.get(suggestion.paperId) 
+              || resolveSuggestionResultId(suggestion, lookup);
+            if (!resolvedId) continue;
+            allAiSuggestions.set(resolvedId, {
+              isRelevant: suggestion.isRelevant,
+              score: suggestion.relevanceScore,
+              reasoning: suggestion.reasoning,
+              citationMeta: suggestion.citationMeta
+            });
+            
+            // Extract dimension mappings if available
+            if (suggestion.dimensionMappings && suggestion.dimensionMappings.length > 0) {
+              allDimensionMappings.set(resolvedId, suggestion.dimensionMappings);
+            }
+            
+            // Extract recommendation if available
+            if (suggestion.recommendation) {
+              allRecommendations.set(resolvedId, suggestion.recommendation);
+            }
+          }
+          
+          const unresolvedCount = rawSuggestions.length - allAiSuggestions.size;
+          if (unresolvedCount > 0) {
+            console.warn(`[LiteratureSearch] ${unresolvedCount}/${rawSuggestions.length} AI suggestions could not be matched to accumulated results`);
+          }
+        }
+
         // Set all accumulated state
+        setDeletedResultIds(removedIds);
+
         if (allResults.length > 0) {
           setResults(allResults);
           setSearchRunIds(allRunIds);
@@ -620,7 +832,18 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
             setAiSummary(latestAiSummary);
           }
           
-          console.log(`[LiteratureSearch] Restored ${allResults.length} results from ${allRunIds.length} search run(s)`);
+          // Restore dimension mappings, recommendations, and blueprint coverage
+          if (allDimensionMappings.size > 0) {
+            setPaperDimensionMappings(allDimensionMappings);
+          }
+          if (allRecommendations.size > 0) {
+            setPaperRecommendations(allRecommendations);
+          }
+          if (latestBlueprintCoverage) {
+            setBlueprintCoverage(latestBlueprintCoverage);
+          }
+          
+          console.log(`[LiteratureSearch] Restored ${allResults.length} results from ${allRunIds.length} search run(s), ${allDimensionMappings.size} dimension mappings, ${allRecommendations.size} recommendations, blueprintCoverage: ${latestBlueprintCoverage ? 'yes' : 'no'}`);
           
           // Show toast notification about restored results
           if (allRunIds.length > 1) {
@@ -688,7 +911,13 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   };
 
   // Deduplicate results by DOI or title (case-insensitive)
-  const deduplicateResults = (existingResults: any[], newResults: any[], sourceQuery: string): any[] => {
+  const deduplicateResults = (
+    existingResults: any[],
+    newResults: any[],
+    sourceQuery: string,
+    searchRunId: string | null,
+    deletedIds: Set<string>
+  ): any[] => {
     const seen = new Map<string, any>();
     
     // Add existing results first (they take priority)
@@ -702,12 +931,14 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     // Add new results, tagging with source query
     let addedCount = 0;
     for (const result of newResults) {
+      if (deletedIds.has(result.id)) continue;
       const key = result.doi?.toLowerCase() || result.title?.toLowerCase()?.substring(0, 100);
       if (key && !seen.has(key)) {
         seen.set(key, { 
           ...result, 
           _sourceQuery: sourceQuery,
-          _addedAt: Date.now()
+          _addedAt: Date.now(),
+          _searchRunId: searchRunId || undefined
         });
         addedCount++;
       }
@@ -733,10 +964,21 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     });
   };
 
-  const handleSearch = async () => {
+  const handleSearch = async (overrides?: {
+    query?: string;
+    sources?: string[];
+    yearFrom?: string;
+    yearTo?: string;
+    strategyQueryId?: string | null;
+  }) => {
     try {
       setLoading(true);
       setError(null);
+      const searchQuery = overrides?.query ?? query;
+      const searchSources = overrides?.sources ?? sources;
+      const searchYearFrom = overrides?.yearFrom ?? yearFrom;
+      const searchYearTo = overrides?.yearTo ?? yearTo;
+      const strategyId = overrides?.strategyQueryId ?? currentStrategyQueryId;
       const response = await fetch(`/api/papers/${sessionId}/literature/search`, {
         method: 'POST',
         headers: {
@@ -744,10 +986,10 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
           Authorization: `Bearer ${authToken}`
         },
         body: JSON.stringify({
-          query,
-          sources,
-          yearFrom: yearFrom ? parseInt(yearFrom, 10) : undefined,
-          yearTo: yearTo ? parseInt(yearTo, 10) : undefined,
+          query: searchQuery,
+          sources: searchSources,
+          yearFrom: searchYearFrom ? parseInt(searchYearFrom, 10) : undefined,
+          yearTo: searchYearTo ? parseInt(searchYearTo, 10) : undefined,
           // Enhanced filters
           publicationTypes: publicationTypes.length > 0 ? publicationTypes : undefined,
           openAccessOnly: openAccessOnly || undefined,
@@ -765,7 +1007,13 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       const previousCount = results.length;
       
       // ACCUMULATE results instead of replacing
-      const accumulatedResults = deduplicateResults(results, newResults, query);
+      const accumulatedResults = deduplicateResults(
+        results,
+        newResults,
+        searchQuery,
+        data.searchRunId || null,
+        deletedResultIds
+      );
       setResults(accumulatedResults);
       
       // Track search run ID for this batch
@@ -786,15 +1034,16 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       }
       
       // Update strategy query status if this search was from a strategy query
-      if (currentStrategyQueryId) {
-        await updateQueryStatus(currentStrategyQueryId, 'SEARCHED', newResults.length, addedCount);
+      if (strategyId) {
+        await updateQueryStatus(strategyId, 'SEARCHED', newResults.length, addedCount);
         setCurrentStrategyQueryId(null);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed');
       // Reset strategy query tracking on error
-      if (currentStrategyQueryId) {
-        await updateQueryStatus(currentStrategyQueryId, 'PENDING');
+      const strategyId = overrides?.strategyQueryId ?? currentStrategyQueryId;
+      if (strategyId) {
+        await updateQueryStatus(strategyId, 'PENDING');
         setCurrentStrategyQueryId(null);
       }
     } finally {
@@ -830,6 +1079,15 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     try {
       setAiAnalyzing(true);
       setAiError(null);
+
+      const resultsWithAbstracts = results.filter(r => r.abstract);
+      const totalTarget = resultsWithAbstracts.length >= 5 ? resultsWithAbstracts.length : results.length;
+      setAiReviewStatus({
+        total: totalTarget,
+        reviewed: 0,
+        inProcess: totalTarget,
+        retry: 0
+      });
       
       const response = await fetch(`/api/papers/${sessionId}/literature/select-relevant`, {
         method: 'POST',
@@ -847,6 +1105,23 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       const data = await response.json();
       if (!response.ok) {
         throw new Error(data.error || 'AI analysis failed');
+      }
+
+      // Fetch the search run's results to ensure we have the correct papers for matching
+      // This handles the case where accumulated results have different IDs due to deduplication
+      let searchRunResults: any[] = [];
+      try {
+        const searchRunResponse = await fetch(
+          `/api/papers/${sessionId}/literature/select-relevant?searchRunId=${searchRunId}`,
+          { headers: { Authorization: `Bearer ${authToken}` } }
+        );
+        if (searchRunResponse.ok) {
+          const searchRunData = await searchRunResponse.json();
+          searchRunResults = searchRunData.searchRun?.results || [];
+          console.log('[AI Analysis] Fetched search run results:', searchRunResults.length);
+        }
+      } catch (err) {
+        console.warn('[AI Analysis] Could not fetch search run results:', err);
       }
 
       // Build suggestions map from response with enhanced citation metadata
@@ -878,8 +1153,88 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       }>>();
       const recommendationsMap = new Map<string, 'IMPORT' | 'MAYBE' | 'SKIP'>();
       
+      // Build lookup from accumulated results only (these are the IDs rendered in UI)
+      // We map search-run IDs -> accumulated IDs separately to avoid storing suggestions under hidden IDs.
+      const lookup = buildResultLookup(results);
+      
+      // Build a direct map from the search run's result IDs to accumulated result IDs (via DOI/title)
+      const searchRunIdMap = new Map<string, string>();
+      for (const srResult of searchRunResults) {
+        const doiKey = normalizeDoiKey(srResult.doi);
+        const title = titleKey(srResult.title);
+        const byDoi = doiKey ? lookup.byDoi.get(doiKey) : undefined;
+        const byTitle = title ? lookup.byTitle.get(title) : undefined;
+        const mappedId = byDoi || byTitle;
+        if (mappedId) {
+          searchRunIdMap.set(srResult.id, mappedId);
+        }
+      }
+      console.log('[AI Analysis] Search run ID mappings created:', searchRunIdMap.size);
+      
+      // Debug: log matching info with actual values
+      const sampleResults = results.slice(0, 5).map(r => ({ 
+        id: r.id, 
+        doi: r.doi,
+        normalizedDoi: normalizeDoiKey(r.doi),
+        title: r.title?.substring(0, 40) 
+      }));
+      const sampleSuggestions = data.analysis?.suggestions?.slice(0, 3).map((s: any) => ({ 
+        paperId: s.paperId, 
+        paperDoi: s.paperDoi,
+        normalizedDoi: normalizeDoiKey(s.paperDoi),
+        paperTitle: s.paperTitle?.substring(0, 40)
+      })) || [];
+      
+      console.log('[AI Analysis] Results count:', results.length);
+      console.log('[AI Analysis] Suggestions count:', data.analysis?.suggestions?.length || 0);
+      console.log('[AI Analysis] Lookup sizes - byId:', lookup.byId.size, 'byDoi:', lookup.byDoi.size, 'byTitle:', lookup.byTitle.size);
+      console.log('[AI Analysis] Sample results (stringified):', JSON.stringify(sampleResults, null, 2));
+      console.log('[AI Analysis] Sample suggestions (stringified):', JSON.stringify(sampleSuggestions, null, 2));
+      console.log('[AI Analysis] Lookup DOIs (first 5):', JSON.stringify(Array.from(lookup.byDoi.keys()).slice(0, 5)));
+      
+      // Check if any suggestion DOI exists in lookup
+      for (const s of sampleSuggestions) {
+        const doiKey = normalizeDoiKey(s.paperDoi);
+        console.log(`[AI Analysis] DOI check: "${doiKey}" found in lookup:`, doiKey ? lookup.byDoi.has(doiKey) : 'N/A');
+      }
+      
       for (const suggestion of data.analysis?.suggestions || []) {
-        suggestionsMap.set(suggestion.paperId, {
+        let resolvedId: string | null = null;
+
+        // Prefer mapping search-run IDs to accumulated IDs (when dedup kept older results)
+        if (suggestion.paperId && searchRunIdMap.has(suggestion.paperId)) {
+          resolvedId = searchRunIdMap.get(suggestion.paperId) || null;
+          if (resolvedId) {
+            console.log('[AI Analysis] Resolved via ID map:', suggestion.paperId, '->', resolvedId);
+          }
+        }
+
+        // Fall back to matching against accumulated results (ID, DOI, title)
+        if (!resolvedId) {
+          resolvedId = resolveSuggestionResultId(suggestion, lookup);
+        }
+        
+        if (!resolvedId) {
+          // Debug: check WHY matching failed
+          const normalizedSuggestionDoi = normalizeDoiKey(suggestion.paperDoi);
+          const normalizedSuggestionTitle = titleKey(suggestion.paperTitle);
+          const doiMatch = normalizedSuggestionDoi ? lookup.byDoi.get(normalizedSuggestionDoi) : undefined;
+          const titleMatch = normalizedSuggestionTitle ? lookup.byTitle.get(normalizedSuggestionTitle) : undefined;
+          
+          console.warn('[AI Analysis] Failed to resolve suggestion:', {
+            paperId: suggestion.paperId,
+            paperTitle: suggestion.paperTitle?.substring(0, 50),
+            paperDoi: suggestion.paperDoi,
+            normalizedDoi: normalizedSuggestionDoi,
+            normalizedTitle: normalizedSuggestionTitle,
+            doiFoundInLookup: !!doiMatch,
+            titleFoundInLookup: !!titleMatch,
+            lookupDoiSample: Array.from(lookup.byDoi.keys()).slice(0, 3),
+            lookupTitleSample: Array.from(lookup.byTitle.keys()).slice(0, 2)
+          });
+          continue;
+        }
+        suggestionsMap.set(resolvedId, {
           isRelevant: suggestion.isRelevant,
           score: suggestion.relevanceScore,
           reasoning: suggestion.reasoning,
@@ -888,14 +1243,17 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         
         // Store dimension mappings if available
         if (suggestion.dimensionMappings && suggestion.dimensionMappings.length > 0) {
-          dimensionMappingsMap.set(suggestion.paperId, suggestion.dimensionMappings);
+          dimensionMappingsMap.set(resolvedId, suggestion.dimensionMappings);
         }
         
         // Store recommendation if available
         if (suggestion.recommendation) {
-          recommendationsMap.set(suggestion.paperId, suggestion.recommendation);
+          recommendationsMap.set(resolvedId, suggestion.recommendation);
         }
       }
+      
+      console.log('[AI Analysis] Resolved suggestions count:', suggestionsMap.size);
+      console.log('[AI Analysis] Resolved dimension mappings count:', dimensionMappingsMap.size);
       
       setAiSuggestions(suggestionsMap);
       setPaperDimensionMappings(dimensionMappingsMap);
@@ -906,20 +1264,35 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       if (data.analysis?.blueprintCoverage) {
         setBlueprintCoverage(data.analysis.blueprintCoverage);
       }
+
+      const meta = data.analysis?.analysisMeta;
+      const skippedCount = meta?.skippedNoAbstractCount || 0;
+      if (meta && typeof meta.totalPapers === 'number') {
+        setAiReviewStatus({
+          total: meta.totalPapers + skippedCount, // include skipped in total so user sees the full picture
+          reviewed: meta.reviewedPapers ?? Math.max(0, meta.totalPapers - (meta.failedPapers || 0)),
+          inProcess: 0,
+          retry: meta.failedPapers || 0
+        });
+      } else {
+        setAiReviewStatus(prev => prev ? { ...prev, reviewed: suggestionsMap.size, inProcess: 0 } : null);
+      }
       
       // Show appropriate toast based on whether blueprint was included
       const hasBlueprintData = data.analysis?.blueprintIncluded && data.analysis?.blueprintCoverage;
+      const skippedSuffix = skippedCount > 0 ? ` (${skippedCount} skipped — no abstract)` : '';
       showToast({
         type: 'success',
         title: hasBlueprintData ? 'Blueprint Analysis Complete' : 'AI Analysis Complete',
         message: hasBlueprintData 
-          ? `Analyzed ${suggestionsMap.size} papers against ${data.analysis?.blueprintCoverage?.totalDimensions || 0} blueprint dimensions`
-          : `Found ${suggestionsMap.size} relevant papers${!data.analysis?.blueprintIncluded ? ' (no blueprint found - generate one first for dimension mapping)' : ''}`,
+          ? `Analyzed ${suggestionsMap.size} papers against ${data.analysis?.blueprintCoverage?.totalDimensions || 0} blueprint dimensions${skippedSuffix}`
+          : `Found ${suggestionsMap.size} relevant papers${!data.analysis?.blueprintIncluded ? ' (no blueprint found - generate one first for dimension mapping)' : ''}${skippedSuffix}`,
         duration: hasBlueprintData ? 4000 : 5000
       });
     } catch (err) {
       console.error('AI analysis failed:', err);
       setAiError(err instanceof Error ? err.message : 'AI analysis failed');
+      setAiReviewStatus(prev => prev ? { ...prev, inProcess: 0 } : null);
       showToast({
         type: 'error',
         title: 'Analysis Failed',
@@ -962,33 +1335,57 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   const handleAnalyzeUnanalyzedCitations = async () => {
     if (!authToken || citations.length === 0) return;
     
-    // Filter to citations without blueprint analysis
-    const unanalyzedCitations = citations.filter(c => !analyzedCitationIds.has(c.id));
+    // Filter to citations without blueprint analysis AND under the retry limit.
+    // Papers that exceeded MAX_ANALYSIS_ATTEMPTS are excluded to prevent infinite token spend.
+    const unanalyzedCitations = citations.filter(c =>
+      !analyzedCitationIds.has(c.id) &&
+      (citationFailureCounts.get(c.id) || 0) < MAX_ANALYSIS_ATTEMPTS
+    );
+    const exhaustedCitations = citations.filter(c =>
+      !analyzedCitationIds.has(c.id) &&
+      (citationFailureCounts.get(c.id) || 0) >= MAX_ANALYSIS_ATTEMPTS
+    );
     
     if (unanalyzedCitations.length === 0) {
       showToast({
-        type: 'info',
-        title: 'All Citations Analyzed',
-        message: 'All imported citations have already been analyzed against the blueprint.',
-        duration: 3000
+        type: exhaustedCitations.length > 0 ? 'warning' : 'info',
+        title: exhaustedCitations.length > 0 ? 'Retry Limit Reached' : 'All Citations Analyzed',
+        message: exhaustedCitations.length > 0
+          ? `${exhaustedCitations.length} citation${exhaustedCitations.length > 1 ? 's' : ''} failed after ${MAX_ANALYSIS_ATTEMPTS} attempts. Try adding abstracts or editing titles for better results.`
+          : 'All imported citations have already been analyzed against the blueprint.',
+        duration: 4000
       });
       return;
     }
     
-    // Check how many have abstracts
+    // Separate citations with and without abstracts.
+    // Papers without abstracts are NOT sent to the LLM — they produce low-quality
+    // results and waste tokens. Instead they are flagged in the UI with a "No Abstract" tag.
     const withAbstracts = unanalyzedCitations.filter((c: any) => c.abstract);
+    const withoutAbstracts = unanalyzedCitations.filter((c: any) => !c.abstract);
+    
+    // Track skipped-no-abstract IDs so the UI can show the tag
+    if (withoutAbstracts.length > 0) {
+      setCitationSkippedNoAbstract(prev => {
+        const next = new Set(prev);
+        withoutAbstracts.forEach(c => next.add(c.id));
+        return next;
+      });
+    }
+    
     if (withAbstracts.length === 0) {
       showToast({
         type: 'warning',
         title: 'No Abstracts Available',
-        message: 'Citations without abstracts will have limited analysis. Consider adding abstracts for better results.',
+        message: `All ${withoutAbstracts.length} citation${withoutAbstracts.length > 1 ? 's' : ''} lack abstracts and were skipped. Add abstracts to enable AI analysis.`,
         duration: 4000
       });
-    } else if (withAbstracts.length < unanalyzedCitations.length) {
+      return;
+    } else if (withoutAbstracts.length > 0) {
       showToast({
         type: 'info',
-        title: 'Partial Abstract Coverage',
-        message: `${withAbstracts.length}/${unanalyzedCitations.length} citations have abstracts. Analysis will be more accurate for papers with abstracts.`,
+        title: 'Some Citations Skipped',
+        message: `${withoutAbstracts.length} citation${withoutAbstracts.length > 1 ? 's' : ''} without abstracts will be skipped. Analyzing ${withAbstracts.length} citation${withAbstracts.length > 1 ? 's' : ''} with abstracts.`,
         duration: 3000
       });
     }
@@ -996,9 +1393,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     try {
       setCitationAnalyzing(true);
       
-      // Create a virtual search run with the unanalyzed citations
-      // We'll convert citations to the same format as search results
-      const citationsAsResults = unanalyzedCitations.map((c: any) => ({
+      // Only send citations WITH abstracts to the mapping API
+      const citationsAsResults = withAbstracts.map((c: any) => ({
         id: c.id,
         title: c.title,
         abstract: c.abstract || null,
@@ -1007,54 +1403,153 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         doi: c.doi || null
       }));
       
-      // We need to create a temporary search run or use a different endpoint
-      // For now, we'll use the mapping endpoint directly
-      const response = await fetch(`/api/papers/${sessionId}/literature/mapping`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`
-        },
-        body: JSON.stringify({
-          citations: citationsAsResults,
-          includeBlueprint: true
-        })
+      const totalToAnalyze = citationsAsResults.length;
+      setCitationReviewStatus({
+        total: totalToAnalyze,
+        reviewed: 0,
+        inProcess: totalToAnalyze,
+        retry: 0
       });
+      
+      // Chunk citations into groups of 100 (API limit) and process in parallel.
+      // Up to PARALLEL_API_CHUNKS are fired concurrently; results merge after each group.
+      const API_CHUNK_SIZE = 100;
+      const PARALLEL_API_CHUNKS = 2;
+      const chunks: typeof citationsAsResults[] = [];
+      for (let i = 0; i < citationsAsResults.length; i += API_CHUNK_SIZE) {
+        chunks.push(citationsAsResults.slice(i, i + API_CHUNK_SIZE));
+      }
+      
+      let allSuggestions: any[] = [];
+      let latestCoverage: any = null;
+      let cumulativeReviewed = 0;
+      let cumulativeFailed = 0;
+      
+      // Process a single chunk — returns structured result (never throws)
+      const processOneChunk = async (chunk: typeof citationsAsResults, chunkIdx: number) => {
+        try {
+          const response = await fetch(`/api/papers/${sessionId}/literature/mapping`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${authToken}`
+            },
+            body: JSON.stringify({
+              citations: chunk,
+              includeBlueprint: true
+            })
+          });
 
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Citation analysis failed');
+          const data = await response.json();
+          if (!response.ok) {
+            console.error(`[CitationMapping] Chunk ${chunkIdx + 1}/${chunks.length} failed:`, data.error);
+            return { suggestions: [] as any[], coverage: null, reviewed: 0, failed: chunk.length };
+          }
+
+          const chunkSuggestions: any[] = Array.isArray(data.analysis?.suggestions) ? data.analysis.suggestions : [];
+          const meta = data.analysis?.analysisMeta;
+          return {
+            suggestions: chunkSuggestions,
+            coverage: data.analysis?.blueprintCoverage ?? null,
+            reviewed: meta?.reviewedPapers ?? chunkSuggestions.length,
+            failed: meta?.failedPapers ?? 0
+          };
+        } catch (chunkErr) {
+          console.error(`[CitationMapping] Chunk ${chunkIdx + 1}/${chunks.length} threw:`, chunkErr);
+          return { suggestions: [] as any[], coverage: null, reviewed: 0, failed: chunk.length };
+        }
+      };
+      
+      // Fire chunks in parallel groups of PARALLEL_API_CHUNKS
+      for (let g = 0; g < chunks.length; g += PARALLEL_API_CHUNKS) {
+        const group = chunks.slice(g, g + PARALLEL_API_CHUNKS);
+        const groupResults = await Promise.all(
+          group.map((chunk, idx) => processOneChunk(chunk, g + idx))
+        );
+        
+        // Merge results from this parallel group
+        for (const result of groupResults) {
+          allSuggestions = [...allSuggestions, ...result.suggestions];
+          if (result.coverage) latestCoverage = result.coverage;
+          cumulativeReviewed += result.reviewed;
+          cumulativeFailed += result.failed;
+        }
+        
+        // Live progress update after each parallel group completes
+        setCitationReviewStatus({
+          total: totalToAnalyze,
+          reviewed: cumulativeReviewed,
+          inProcess: Math.max(0, totalToAnalyze - cumulativeReviewed - cumulativeFailed),
+          retry: cumulativeFailed
+        });
       }
 
-      // Update analyzed citations set
+      // Process accumulated results from all chunks
+      const actuallyAnalyzedIds = allSuggestions.map((s: any) => s.paperId).filter(Boolean);
+      const analyzedSet = new Set(actuallyAnalyzedIds);
       const newAnalyzedIds = new Set(analyzedCitationIds);
-      unanalyzedCitations.forEach(c => newAnalyzedIds.add(c.id));
+      actuallyAnalyzedIds.forEach((id: string) => newAnalyzedIds.add(id));
       setAnalyzedCitationIds(newAnalyzedIds);
       
-      // Update dimension mappings
-      if (data.analysis?.suggestions) {
+      // Track per-paper failure counts: increment for papers that were sent but NOT analyzed.
+      // This prevents persistently failing papers from consuming tokens indefinitely.
+      const newFailureCounts = new Map(citationFailureCounts);
+      for (const c of citationsAsResults) {
+        if (!analyzedSet.has(c.id)) {
+          newFailureCounts.set(c.id, (newFailureCounts.get(c.id) || 0) + 1);
+        }
+      }
+      setCitationFailureCounts(newFailureCounts);
+      
+      // Update dimension mappings AND per-paper AI analysis
+      if (allSuggestions.length > 0) {
         const newMappings = new Map(citationDimensionMappings);
-        for (const suggestion of data.analysis.suggestions) {
+        const newAnalysis = new Map(citationAiAnalysis);
+        for (const suggestion of allSuggestions) {
+          if (!suggestion.paperId) continue;
+          // Store dimension mappings
           if (suggestion.dimensionMappings && suggestion.dimensionMappings.length > 0) {
             newMappings.set(suggestion.paperId, suggestion.dimensionMappings);
           }
+          // Store full per-paper AI analysis (relevance, reasoning, recommendation)
+          newAnalysis.set(suggestion.paperId, {
+            isRelevant: suggestion.isRelevant ?? true,
+            relevanceScore: typeof suggestion.relevanceScore === 'number' ? suggestion.relevanceScore : 50,
+            reasoning: suggestion.reasoning || '',
+            recommendation: suggestion.recommendation
+          });
         }
         setCitationDimensionMappings(newMappings);
+        setCitationAiAnalysis(newAnalysis);
       }
       
-      // Update coverage
-      if (data.analysis?.blueprintCoverage) {
-        setCitationBlueprintCoverage(data.analysis.blueprintCoverage);
+      // Update coverage from last successful response
+      if (latestCoverage) {
+        setCitationBlueprintCoverage(latestCoverage);
       }
+
+      // Final review status
+      setCitationReviewStatus({
+        total: totalToAnalyze,
+        reviewed: cumulativeReviewed,
+        inProcess: 0,
+        retry: cumulativeFailed
+      });
       
+      const analyzedCount = actuallyAnalyzedIds.length;
+      const remainingCount = Math.max(0, withAbstracts.length - analyzedCount);
+      const skippedSuffix = withoutAbstracts.length > 0 ? ` (${withoutAbstracts.length} skipped — no abstract)` : '';
       showToast({
         type: 'success',
         title: 'Citation Analysis Complete',
-        message: `Analyzed ${unanalyzedCitations.length} citations against blueprint dimensions`,
-        duration: 4000
+        message: remainingCount > 0
+          ? `Analyzed ${analyzedCount} citation${analyzedCount !== 1 ? 's' : ''}. ${remainingCount} remaining — run again to continue.${skippedSuffix}`
+          : `Analyzed ${analyzedCount} citation${analyzedCount !== 1 ? 's' : ''} against blueprint dimensions${skippedSuffix}`,
+        duration: 4500
       });
     } catch (err) {
       console.error('Citation analysis failed:', err);
+      setCitationReviewStatus(prev => prev ? { ...prev, inProcess: 0 } : null);
       showToast({
         type: 'error',
         title: 'Analysis Failed',
@@ -1405,6 +1900,15 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     
     // Switch to search mode
     setAddMode('search');
+
+    // Trigger the actual search immediately (no second click)
+    await handleSearch({
+      query: query.queryText,
+      sources: query.suggestedSources && query.suggestedSources.length > 0 ? query.suggestedSources : sources,
+      yearFrom: query.suggestedYearFrom ? query.suggestedYearFrom.toString() : yearFrom,
+      yearTo: query.suggestedYearTo ? query.suggestedYearTo.toString() : yearTo,
+      strategyQueryId: query.id
+    });
   };
   
   // Load search strategy on mount
@@ -1462,6 +1966,12 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   
   // Citation analysis state (for analyzing imported citations against blueprint)
   const [citationAnalyzing, setCitationAnalyzing] = useState(false);
+  const [citationReviewStatus, setCitationReviewStatus] = useState<{
+    total: number;
+    reviewed: number;
+    inProcess: number;
+    retry: number;
+  } | null>(null);
   const [analyzedCitationIds, setAnalyzedCitationIds] = useState<Set<string>>(new Set());
   const [citationDimensionMappings, setCitationDimensionMappings] = useState<Map<string, Array<{
     sectionKey: string;
@@ -1469,6 +1979,18 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     remark: string;
     confidence: 'HIGH' | 'MEDIUM' | 'LOW';
   }>>>(new Map());
+  const [citationAiAnalysis, setCitationAiAnalysis] = useState<Map<string, {
+    isRelevant: boolean;
+    relevanceScore: number;
+    reasoning: string;
+    recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';
+  }>>(new Map());
+  // Per-paper failure count: prevents infinite token consumption from persistently failing papers.
+  // Papers that exceed MAX_ANALYSIS_ATTEMPTS are excluded from future analysis runs.
+  const MAX_ANALYSIS_ATTEMPTS = 2;
+  const [citationFailureCounts, setCitationFailureCounts] = useState<Map<string, number>>(new Map());
+  // Papers skipped from analysis because they lack an abstract (no useful data for LLM)
+  const [citationSkippedNoAbstract, setCitationSkippedNoAbstract] = useState<Set<string>>(new Set());
   const [citationBlueprintCoverage, setCitationBlueprintCoverage] = useState<{
     totalDimensions: number;
     coveredDimensions: number;
@@ -2636,15 +3158,26 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                             <>
                               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                              </svg>
-                              🤖 Analyze & Map to Blueprint
-                            </>
+                            </svg>
+                            🤖 Analyze & Map to Blueprint
+                          </>
+                        )}
+                      </Button>
+                      {aiReviewStatus && (
+                        <span className="text-[11px] text-gray-600">
+                          Reviewed: <span className="font-medium">{aiReviewStatus.reviewed}</span> / {aiReviewStatus.total}
+                          {aiReviewStatus.inProcess > 0 && (
+                            <> · In Process: <span className="font-medium">{aiReviewStatus.inProcess}</span></>
                           )}
-                        </Button>
-                        {aiSuggestions.size > 0 && (
-                          <Button
-                            onClick={handleAddAllSuggested}
-                            size="sm"
+                          {aiReviewStatus.retry > 0 && (
+                            <> · Needs Retry: <span className="font-medium text-amber-700">{aiReviewStatus.retry}</span></>
+                          )}
+                        </span>
+                      )}
+                      {aiSuggestions.size > 0 && (
+                        <Button
+                          onClick={handleAddAllSuggested}
+                          size="sm"
                             variant="outline"
                             className="text-violet-600 border-violet-300 hover:bg-violet-50"
                           >
@@ -3188,8 +3721,12 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                     📄 Abstract
                                   </Badge>
                                 ) : (
-                                  <Badge variant="outline" className="shrink-0 text-[10px] text-amber-600 border-amber-300">
-                                    No abstract
+                                  <Badge variant="outline" className={`shrink-0 text-[10px] ${
+                                    aiSuggestions.size > 0
+                                      ? 'text-amber-700 border-amber-300 bg-amber-50'
+                                      : 'text-amber-600 border-amber-300'
+                                  }`} title={aiSuggestions.size > 0 ? 'Skipped from AI analysis — add an abstract to enable review' : 'No abstract available'}>
+                                    {aiSuggestions.size > 0 ? 'No Abstract — Skipped' : 'No abstract'}
                                   </Badge>
                                 )}
                               </div>
@@ -3664,6 +4201,17 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                   )}
                 </Button>
               </div>
+              {citationReviewStatus && (
+                <div className="text-[11px] text-gray-600">
+                  Reviewed: <span className="font-medium">{citationReviewStatus.reviewed}</span> / {citationReviewStatus.total}
+                  {citationReviewStatus.inProcess > 0 && (
+                    <> · In Process: <span className="font-medium">{citationReviewStatus.inProcess}</span></>
+                  )}
+                  {citationReviewStatus.retry > 0 && (
+                    <> · Needs Retry: <span className="font-medium text-amber-700">{citationReviewStatus.retry}</span></>
+                  )}
+                </div>
+              )}
               
               {/* Citation Blueprint Coverage Summary */}
               {citationBlueprintCoverage && (
@@ -3726,63 +4274,161 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                   </div>
                 ) : (
                   <AnimatePresence>
-                    {filteredCitations.map(citation => (
-                      <motion.div
-                        key={citation.id}
-                        initial={{ opacity: 0, x: 20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -20 }}
-                        className={`p-2.5 rounded-lg border transition-all cursor-pointer ${
-                          selectedCitations.has(citation.id)
-                            ? 'bg-indigo-50 border-indigo-300'
-                            : 'bg-white hover:bg-gray-50 border-gray-200'
-                        }`}
-                        onClick={() => {
-                          setSelectedCitations(prev => {
-                            const next = new Set(prev);
-                            if (next.has(citation.id)) {
-                              next.delete(citation.id);
-                            } else {
-                              next.add(citation.id);
-                            }
-                            return next;
-                          });
-                        }}
-                      >
-                        <div className="flex items-start gap-2">
-                          <Checkbox
-                            checked={selectedCitations.has(citation.id)}
-                            className="mt-0.5"
-                          />
-                          <div className="flex-1 min-w-0">
-                            <p className="text-sm font-medium text-gray-900 line-clamp-2 leading-tight">
-                              {citation.title}
-                            </p>
-                            <p className="text-xs text-gray-500 mt-0.5">
-                              {citation.authors?.slice(0, 2).join(', ')}
-                              {citation.authors?.length > 2 && ' et al.'}
-                              {citation.year && ` (${citation.year})`}
-                            </p>
-                            <div className="flex items-center gap-2 mt-1">
-                              <code className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">
-                                {citation.citationKey || citation.preview?.inText}
-                              </code>
-                              {citation.doi && (
-                                <a
-                                  href={`https://doi.org/${citation.doi}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="text-[10px] text-indigo-600 hover:underline"
-                                  onClick={e => e.stopPropagation()}
-                                >
-                                  DOI ↗
-                                </a>
+                    {filteredCitations.map(citation => {
+                      const mappings = citationDimensionMappings.get(citation.id) || [];
+                      const aiAnalysis = citationAiAnalysis.get(citation.id);
+                      const failureCount = citationFailureCounts.get(citation.id) || 0;
+                      const isExhausted = !analyzedCitationIds.has(citation.id) && failureCount >= MAX_ANALYSIS_ATTEMPTS;
+                      const isSkippedNoAbstract = citationSkippedNoAbstract.has(citation.id) || (analyzedCitationIds.size > 0 && !citation.abstract);
+                      return (
+                        <motion.div
+                          key={citation.id}
+                          initial={{ opacity: 0, x: 20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: -20 }}
+                          className={`p-2.5 rounded-lg border transition-all cursor-pointer ${
+                            selectedCitations.has(citation.id)
+                              ? 'bg-indigo-50 border-indigo-300'
+                              : 'bg-white hover:bg-gray-50 border-gray-200'
+                          }`}
+                          onClick={() => {
+                            setSelectedCitations(prev => {
+                              const next = new Set(prev);
+                              if (next.has(citation.id)) {
+                                next.delete(citation.id);
+                              } else {
+                                next.add(citation.id);
+                              }
+                              return next;
+                            });
+                          }}
+                        >
+                          <div className="flex items-start gap-2">
+                            <Checkbox
+                              checked={selectedCitations.has(citation.id)}
+                              className="mt-0.5"
+                            />
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 line-clamp-2 leading-tight">
+                                {citation.title}
+                              </p>
+                              <p className="text-xs text-gray-500 mt-0.5">
+                                {citation.authors?.slice(0, 2).join(', ')}
+                                {citation.authors?.length > 2 && ' et al.'}
+                                {citation.year && ` (${citation.year})`}
+                              </p>
+                              <div className="flex items-center gap-2 mt-1">
+                                <code className="text-[10px] px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">
+                                  {citation.citationKey || citation.preview?.inText}
+                                </code>
+                                {citation.doi && (
+                                  <a
+                                    href={`https://doi.org/${citation.doi}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-[10px] text-indigo-600 hover:underline"
+                                    onClick={e => e.stopPropagation()}
+                                  >
+                                    DOI ↗
+                                  </a>
+                                )}
+                              </div>
+                              {/* No Abstract — skipped from AI analysis */}
+                              {isSkippedNoAbstract && !aiAnalysis && (
+                                <div className="mt-1.5 flex items-center gap-1.5">
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 font-medium">
+                                    No Abstract
+                                  </span>
+                                  <span className="text-[10px] text-gray-400">
+                                    Skipped — add abstract to enable AI analysis
+                                  </span>
+                                </div>
+                              )}
+                              {/* Analysis exhausted indicator */}
+                              {isExhausted && !aiAnalysis && !isSkippedNoAbstract && (
+                                <div className="mt-1.5 flex items-center gap-1.5">
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-50 text-red-600 border border-red-200">
+                                    Analysis failed ({failureCount}x)
+                                  </span>
+                                  <span className="text-[10px] text-gray-400">
+                                    Try adding/editing abstract
+                                  </span>
+                                </div>
+                              )}
+                              {/* AI Relevance Review */}
+                              {aiAnalysis && (
+                                <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
+                                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                                    aiAnalysis.relevanceScore >= 70
+                                      ? 'bg-emerald-100 text-emerald-700'
+                                      : aiAnalysis.relevanceScore >= 40
+                                        ? 'bg-blue-100 text-blue-700'
+                                        : 'bg-gray-100 text-gray-600'
+                                  }`}>
+                                    {aiAnalysis.relevanceScore}% relevant
+                                  </span>
+                                  {aiAnalysis.recommendation && (
+                                    <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                      aiAnalysis.recommendation === 'IMPORT'
+                                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                        : aiAnalysis.recommendation === 'MAYBE'
+                                          ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                                          : 'bg-gray-50 text-gray-500 border border-gray-200'
+                                    }`}>
+                                      {aiAnalysis.recommendation}
+                                    </span>
+                                  )}
+                                  {aiAnalysis.reasoning && (
+                                    <span className="text-[10px] text-gray-500 line-clamp-1" title={aiAnalysis.reasoning}>
+                                      {aiAnalysis.reasoning}
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                              {mappings.length > 0 && (
+                                <div className="mt-2 flex flex-wrap gap-1">
+                                  {mappings.slice(0, 3).map((mapping, idx) => {
+                                    const dimensionText = typeof mapping.dimension === 'string' ? mapping.dimension : '';
+                                    const displayDimension = dimensionText.length > 32
+                                      ? `${dimensionText.slice(0, 32)}...`
+                                      : dimensionText || 'Dimension';
+                                    return (
+                                      <div
+                                        key={`${citation.id}-map-${idx}`}
+                                        className="group relative"
+                                      >
+                                        <span
+                                          className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                                            mapping.confidence === 'HIGH'
+                                              ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                                              : mapping.confidence === 'MEDIUM'
+                                                ? 'bg-blue-50 text-blue-700 border-blue-300'
+                                                : 'bg-gray-50 text-gray-700 border-gray-300'
+                                          }`}
+                                        >
+                                          {mapping.sectionKey}: {displayDimension}
+                                        </span>
+                                        {mapping.remark && (
+                                          <div className="absolute left-0 bottom-full mb-1 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg">
+                                            <p className="font-medium mb-1">{mapping.sectionKey}</p>
+                                            <p className="text-gray-300">{mapping.remark}</p>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                  {mappings.length > 3 && (
+                                    <span className="text-[10px] text-gray-500">
+                                      +{mappings.length - 3} more
+                                    </span>
+                                  )}
+                                </div>
                               )}
                             </div>
                           </div>
-                        </div>
-                      </motion.div>
-                    ))}
+                        </motion.div>
+                      );
+                    })}
                   </AnimatePresence>
                 )}
               </div>

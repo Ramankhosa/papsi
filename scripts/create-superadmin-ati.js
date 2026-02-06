@@ -18,6 +18,7 @@ async function createATISuperAdmin() {
     const testEmail = 'superadmin@papsi.com'
     const testPassword = 'SuperAdmin123!'
     const testName = 'Super Admin'
+    const atiExpiryDate = new Date('2026-07-01T00:00:00.000Z')
 
     // Hash the password
     console.log('🔒 Hashing password...')
@@ -75,10 +76,10 @@ async function createATISuperAdmin() {
         tenantId: platformTenant.id,
         tokenHash,
         rawToken: rawToken, // Store temporarily for demo
-        rawTokenExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+        rawTokenExpiry: atiExpiryDate,
         fingerprint: 'superadmin-ati-token',
         status: 'ACTIVE',
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+        expiresAt: atiExpiryDate,
         maxUses: 1, // Super admin tokens should only be used once
         planTier: 'PLATFORM_ADMIN',
         notes: 'Super Admin ATI Onboarding Token'

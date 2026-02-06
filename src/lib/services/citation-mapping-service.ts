@@ -88,10 +88,11 @@ interface CitationForMapping {
 
 // Batch processing configuration (following novelty-search-service pattern)
 const BATCH_CONFIG = {
-  BATCH_SIZE: 10,           // Papers per LLM call (larger than patents - shorter abstracts)
+  BATCH_SIZE: 8,            // Papers per LLM call (reduced to avoid JSON truncation)
   MAX_PAPERS_PER_RUN: 100,  // Maximum papers to process in one run
   MAX_DIMENSIONS_PER_PAPER: 4,  // Soft limit on dimensions per paper
-  MIN_ABSTRACT_LENGTH: 50   // Minimum abstract length to consider
+  MIN_ABSTRACT_LENGTH: 50,  // Minimum abstract length to consider
+  PARALLEL_BATCH_LIMIT: 3   // Parallel LLM calls per mapping run
 };
 
 // ============================================================================
@@ -187,27 +188,33 @@ class CitationMappingService {
     // 3. Build validation structures ONCE (performance optimization)
     const validationStructures = this.buildBlueprintValidationStructures(blueprint);
 
-    // 4. Process in batches (following novelty-search-service pattern)
-    const allMappings: PaperBlueprintMapping[] = [];
+    // 4. Process in batches (parallel with limit)
     const batchSize = BATCH_CONFIG.BATCH_SIZE;
     const limitedCitations = citations.slice(0, BATCH_CONFIG.MAX_PAPERS_PER_RUN);
+    const totalBatches = Math.ceil(limitedCitations.length / batchSize);
+    const batches: CitationForMapping[][] = [];
 
     for (let i = 0; i < limitedCitations.length; i += batchSize) {
-      const batch = limitedCitations.slice(i, i + batchSize);
-      const batchNum = Math.floor(i / batchSize) + 1;
-      const totalBatches = Math.ceil(limitedCitations.length / batchSize);
-      
-      console.log(`📋 Processing batch ${batchNum}/${totalBatches} (${batch.length} papers)`);
-
-      const batchMappings = await this.mapBatchToBlueprint(
-        batch,
-        blueprint,
-        tenantContext,
-        validationStructures
-      );
-
-      allMappings.push(...batchMappings);
+      batches.push(limitedCitations.slice(i, i + batchSize));
     }
+
+    const batchResults = await this.runBatchesInParallel(
+      batches,
+      BATCH_CONFIG.PARALLEL_BATCH_LIMIT,
+      async (batch, batchIndex) => {
+        const batchNum = batchIndex + 1;
+        console.log(`📋 Processing batch ${batchNum}/${totalBatches} (${batch.length} papers)`);
+
+        return this.mapBatchToBlueprint(
+          batch,
+          blueprint,
+          tenantContext,
+          validationStructures
+        );
+      }
+    );
+
+    const allMappings = batchResults.flat();
 
     // 4. Store mappings in database
     await this.storeMappings(sessionId, allMappings);
@@ -222,6 +229,25 @@ class CitationMappingService {
       coverage,
       blueprintId: blueprint.id
     };
+  }
+
+  private async runBatchesInParallel<T, R>(
+    batches: T[],
+    limit: number,
+    worker: (batch: T, index: number) => Promise<R>
+  ): Promise<R[]> {
+    if (batches.length === 0) return [];
+    const results: R[] = new Array(batches.length);
+    let nextIndex = 0;
+    const workers = Array.from({ length: Math.min(limit, batches.length) }, async () => {
+      while (true) {
+        const currentIndex = nextIndex++;
+        if (currentIndex >= batches.length) break;
+        results[currentIndex] = await worker(batches[currentIndex], currentIndex);
+      }
+    });
+    await Promise.all(workers);
+    return results;
   }
 
   /**
@@ -249,9 +275,9 @@ class CitationMappingService {
           taskCode: 'LLM2_DRAFT',
           stageCode: 'CITATION_BLUEPRINT_MAPPING',
           prompt,
+          // maxTokensOut is controlled via super admin LLM config for CITATION_BLUEPRINT_MAPPING stage
           parameters: {
             temperature: 0.3,  // Lower temperature for consistent mapping
-            maxOutputTokens: 4000
           },
           idempotencyKey: crypto.randomUUID(),
           metadata: {
@@ -267,7 +293,7 @@ class CitationMappingService {
       }
 
       // Use pre-built validation structures or build them (for backwards compatibility)
-      const { validDimensions, dimensionToCanonical, validSectionKeys } = 
+      const { validDimensions, dimensionToCanonical, validSectionKeys, sectionDimensionsByKey } = 
         validationStructures || this.buildBlueprintValidationStructures(blueprint);
 
       return this.parseMappingResponse(
@@ -275,7 +301,8 @@ class CitationMappingService {
         papers, 
         validDimensions,
         validSectionKeys,
-        dimensionToCanonical
+        dimensionToCanonical,
+        sectionDimensionsByKey
       );
 
     } catch (error) {
@@ -298,10 +325,12 @@ class CitationMappingService {
     validDimensions: Set<string>;
     dimensionToCanonical: Map<string, string>;
     validSectionKeys: Set<string>;
+    sectionDimensionsByKey: Map<string, string[]>;
   } {
     const validDimensions = new Set<string>();
     const dimensionToCanonical = new Map<string, string>();
     const validSectionKeys = new Set<string>();
+    const sectionDimensionsByKey = new Map<string, string[]>();
     
     // Filter sections for literature mapping (non-review papers exclude Results/Discussion)
     const sectionsForMapping = filterSectionsForLiteratureMapping(
@@ -312,6 +341,7 @@ class CitationMappingService {
     for (const section of sectionsForMapping) {
       // Collect valid section keys
       validSectionKeys.add(section.sectionKey);
+      sectionDimensionsByKey.set(section.sectionKey, section.mustCover || []);
       
       for (const dimension of section.mustCover) {
         // Normalize: trim whitespace, normalize internal whitespace
@@ -326,7 +356,7 @@ class CitationMappingService {
       }
     }
     
-    return { validDimensions, dimensionToCanonical, validSectionKeys };
+    return { validDimensions, dimensionToCanonical, validSectionKeys, sectionDimensionsByKey };
   }
 
   /**
@@ -415,7 +445,8 @@ MAPPING TASK (for EACH paper)
 ═══════════════════════════════════════════════════════════════
 1. Identify the MOST appropriate section based on paper content
 2. Identify which MUST COVER dimensions (0-4 maximum) the paper provides evidence for
-3. For EACH matched dimension, write a 1-2 sentence REMARK grounded in the abstract
+3. Provide the dimensionIndex (1-based) from the list above (dimension text optional if index provided)
+4. For EACH matched dimension, write a 1-2 sentence REMARK grounded in the abstract
 4. A paper MAY support a dimension even if its type doesn't match the annotation
 
 ═══════════════════════════════════════════════════════════════
@@ -447,7 +478,8 @@ OUTPUT FORMAT (JSON array - one object per paper)
     "sectionKey": "literature_review" | "methodology" | "discussion" | null,
     "dimensionMappings": [
       {
-        "dimension": "EXACT text from mustCover list",
+        "dimensionIndex": 1,
+        "dimension": "EXACT text from mustCover list (optional if index provided)",
         "remark": "1-2 sentence evidence-specific remark grounded in abstract"
       }
     ]
@@ -467,7 +499,8 @@ Return ONLY the JSON array, no additional text or explanation.`;
     papers: CitationForMapping[],
     validDimensions: Set<string>,
     validSectionKeys?: Set<string>,
-    dimensionToCanonical?: Map<string, string>
+    dimensionToCanonical?: Map<string, string>,
+    sectionDimensionsByKey?: Map<string, string[]>
   ): PaperBlueprintMapping[] {
     try {
       // Clean JSON from markdown fences
@@ -512,9 +545,27 @@ Return ONLY the JSON array, no additional text or explanation.`;
           validatedSectionKey = null; // Set to null rather than using invalid section
         }
         
+        // Normalize dimension mappings (support dimensionIndex)
+        const rawMappings = item.dimensionMappings || item.dimension_mappings || [];
+        const normalizedMappings = Array.isArray(rawMappings)
+          ? rawMappings.map((dm: any) => {
+              const indexValue = dm.dimensionIndex ?? dm.dimension_index;
+              const indexNum = typeof indexValue === 'number'
+                ? indexValue
+                : (typeof indexValue === 'string' && indexValue.trim() !== '' ? Number(indexValue) : undefined);
+              if (validatedSectionKey && typeof indexNum === 'number' && Number.isInteger(indexNum)) {
+                const dims = sectionDimensionsByKey?.get(validatedSectionKey) || [];
+                const canonical = dims[indexNum - 1];
+                if (!canonical) return null;
+                return { ...dm, dimension: canonical };
+              }
+              return dm;
+            }).filter(Boolean)
+          : [];
+
         // Validate dimension mappings with exact matching and canonical storage
         const { validMappings, rejected } = this.validateDimensionMappingsExact(
-          item.dimensionMappings || item.dimension_mappings || [],
+          normalizedMappings,
           validDimensions,
           dimensionToCanonical
         );
@@ -1158,4 +1209,3 @@ export const citationMappingService = new CitationMappingService();
 
 // Export class for testing
 export { CitationMappingService };
-

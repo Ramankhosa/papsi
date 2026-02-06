@@ -250,10 +250,10 @@ class PaperSectionService {
           taskCode: 'LLM2_DRAFT',
           stageCode: 'PAPER_SECTION_GEN',
           prompt,
+          // maxTokensOut is controlled via super admin LLM config for PAPER_SECTION_GEN stage
           parameters: {
             purpose: 'paper_section_generation',
             temperature: 0.5,
-            maxOutputTokens: 4000
           },
           idempotencyKey: crypto.randomUUID(),
           metadata: {
@@ -436,10 +436,10 @@ class PaperSectionService {
         taskCode: 'LLM2_DRAFT',
         stageCode: 'PAPER_MEMORY_EXTRACT',
         prompt,
+        // maxTokensOut is controlled via super admin LLM config for PAPER_MEMORY_EXTRACT stage
         parameters: {
           purpose: 'memory_extraction',
           temperature: 0.2,
-          maxOutputTokens: 1000
         },
         idempotencyKey: crypto.randomUUID(),
         metadata: {

@@ -8,13 +8,40 @@ import { blueprintService, type BlueprintWithSectionPlan, type SectionPlanItem }
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 120; // Allow up to 120s for LLM processing with blueprint
+export const maxDuration = 300; // Allow up to 300s for LLM processing across all aggregated search runs
 
 const requestSchema = z.object({
   searchRunId: z.string().min(1),
   maxSuggestions: z.number().int().min(1).max(20).optional().default(10),
   includeBlueprint: z.boolean().optional().default(true), // Include blueprint dimension mapping
 });
+
+const updateSchema = z.object({
+  searchRunId: z.string().min(1),
+  removedResultIds: z.array(z.string().min(1)).min(1)
+});
+
+const BATCH_SIZE = 12;
+const PARALLEL_BATCH_LIMIT = 5;
+
+async function runBatchesInParallel<T, R>(
+  batches: T[],
+  limit: number,
+  worker: (batch: T, index: number) => Promise<R>
+): Promise<R[]> {
+  if (batches.length === 0) return [];
+  const results: R[] = new Array(batches.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(limit, batches.length) }, async () => {
+    while (true) {
+      const currentIndex = nextIndex++;
+      if (currentIndex >= batches.length) break;
+      results[currentIndex] = await worker(batches[currentIndex], currentIndex);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
 
 // Enhanced response structure from LLM with citation metadata
 interface CitationUsage {
@@ -30,6 +57,7 @@ interface DimensionMapping {
   dimension: string;
   remark: string;
   confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  dimensionIndex?: number;
 }
 
 interface CitationMeta {
@@ -43,6 +71,8 @@ interface CitationMeta {
 
 interface PaperRelevanceAnalysis {
   paperId: string;
+  paperTitle?: string;
+  paperDoi?: string;
   isRelevant: boolean;
   relevanceScore: number; // 0-100
   reasoning: string;
@@ -75,6 +105,41 @@ interface LLMResponse {
   suggestions: PaperRelevanceAnalysis[];
   summary: string;
   blueprintCoverage?: BlueprintCoverage;
+}
+
+// Normalize DOIs / titles to build deduplication keys
+function normalizeDoi(doi?: string | null) {
+  return typeof doi === 'string'
+    ? doi.trim().toLowerCase()
+        .replace(/^https?:\/\/(dx\.)?doi\.org\//, '')
+        .replace(/\s+/g, '')
+    : '';
+}
+
+function normalizeTitle(title?: string | null) {
+  return typeof title === 'string'
+    ? title.trim().toLowerCase().replace(/[\s\W]+/g, '')
+    : '';
+}
+
+function deduplicatePapers(papers: any[]) {
+  const seen = new Set<string>();
+  const unique: any[] = [];
+
+  for (const p of papers) {
+    const doiKey = normalizeDoi(p.doi);
+    const titleKey = normalizeTitle(p.title);
+    const idKey = String(p.id || p.paperId || p.citationKey || '').toLowerCase();
+
+    const key = doiKey || titleKey || idKey;
+    if (!key) continue;
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    unique.push(p);
+  }
+
+  return unique;
 }
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
@@ -197,7 +262,6 @@ function isReviewPaper(paperTypeCode?: string): boolean {
 function buildPrompt(
   researchQuestion: string,
   papers: Array<{ id: string; title: string; abstract?: string; authors?: string[]; year?: number }>,
-  maxSuggestions: number,
   blueprint?: BlueprintWithSectionPlan | null
 ): string {
   const paperList = papers.map((p, idx) => {
@@ -246,7 +310,8 @@ ${sectionsText}
     dimensionMappingInstructions = `
 7. DIMENSION MAPPINGS (CRITICAL):
    For each paper, identify which blueprint dimensions it supports:
-   - Map to EXACT dimension text from the blueprint above
+   - Prefer the dimensionIndex (1-based) from the list above
+   - If you provide dimension text, it must match EXACTLY from the blueprint above
    - Provide a grounded remark (1-2 sentences from abstract) explaining how it supports the dimension
    - Assign confidence: HIGH (directly addresses), MEDIUM (partially relevant), LOW (tangentially related)
    - A paper can map to multiple dimensions across different sections
@@ -284,6 +349,7 @@ For each paper, determine:
       "dimensionMappings": [
         {
           "sectionKey": "<exact section key from blueprint>",
+          "dimensionIndex": <1-based index from the section list>,
           "dimension": "<exact dimension text from blueprint>",
           "remark": "<1-2 sentence grounded explanation from abstract>",
           "confidence": "<HIGH|MEDIUM|LOW>"
@@ -339,7 +405,7 @@ CANDIDATE PAPERS:
 ${paperList}
 
 TASK:
-Analyze these papers and identify the TOP ${maxSuggestions} most relevant papers.${blueprint ? ' Map each paper to the blueprint dimensions it supports.' : ''}
+Analyze EVERY paper in the list above for relevance to the research question.${blueprint ? ' Map each paper to the blueprint dimensions it supports.' : ''} Assign a relevance score (0-100) and recommendation to each paper — do NOT skip any.
 ${baseTasks}${dimensionMappingInstructions}
 
 IMPORTANT CRITERIA:
@@ -354,7 +420,7 @@ IMPORTANT CRITERIA:
 Respond in the following JSON format ONLY (no markdown, no explanation outside JSON):
 ${jsonSchema}
 
-Return ONLY papers you recommend. Order by relevance score (highest first).`;
+Include ALL papers in the response with their analysis. Order by relevance score (highest first).`;
 }
 
 function parseAndValidateLLMResponse(
@@ -362,6 +428,21 @@ function parseAndValidateLLMResponse(
   validPaperIds: Set<string>,
   blueprint?: BlueprintWithSectionPlan | null
 ): LLMResponse {
+  const normalizeDimension = (value: string) =>
+    value
+      .trim()
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
+
+  const extractJsonBlock = (text: string) => {
+    const firstBrace = text.indexOf('{');
+    const lastBrace = text.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      return text.slice(firstBrace, lastBrace + 1);
+    }
+    return text;
+  };
+
   // Clean up response - remove markdown code blocks if present
   let cleaned = output.trim();
   if (cleaned.startsWith('```json')) {
@@ -378,7 +459,7 @@ function parseAndValidateLLMResponse(
   // Try to salvage partial results by fixing common truncation issues
   let parsed: any;
   try {
-    parsed = JSON.parse(cleaned);
+    parsed = JSON.parse(extractJsonBlock(cleaned));
   } catch (parseError) {
     console.warn('[LiteratureRelevance] Initial JSON parse failed, attempting to salvage truncated response...');
     
@@ -399,12 +480,23 @@ function parseAndValidateLLMResponse(
 
   // Build valid section keys and dimensions from blueprint
   const validSectionKeys = new Set<string>();
-  const validDimensions = new Map<string, Set<string>>(); // sectionKey -> dimensions
+  const validDimensions = new Map<string, Map<string, string>>(); // sectionKey -> normalized -> canonical
+  const sectionDimensionsByKey = new Map<string, string[]>(); // sectionKey -> ordered mustCover
   
   if (blueprint?.sectionPlan) {
-    for (const section of blueprint.sectionPlan) {
+    const isReview = isReviewPaper(blueprint.paperTypeCode ?? undefined);
+    const sectionsForValidation = isReview
+      ? blueprint.sectionPlan
+      : blueprint.sectionPlan.filter(s => isLiteratureMappingSection(s.sectionKey));
+
+    for (const section of sectionsForValidation) {
       validSectionKeys.add(section.sectionKey);
-      validDimensions.set(section.sectionKey, new Set(section.mustCover || []));
+      const dimMap = new Map<string, string>();
+      for (const dim of section.mustCover || []) {
+        dimMap.set(normalizeDimension(dim), dim);
+      }
+      validDimensions.set(section.sectionKey, dimMap);
+      sectionDimensionsByKey.set(section.sectionKey, section.mustCover || []);
     }
   }
 
@@ -451,23 +543,21 @@ function parseAndValidateLLMResponse(
         }
         
         // Validate dimension exists in that section (fuzzy match for minor variations)
-        const sectionDimensions = validDimensions.get(dm.sectionKey);
-        let matchedDimension = dm.dimension;
-        
-        if (sectionDimensions) {
-          // Try exact match first
-          if (!sectionDimensions.has(dm.dimension)) {
-            // Try fuzzy match (lowercase, trimmed)
-            const normalizedInput = String(dm.dimension).toLowerCase().trim();
-            for (const validDim of Array.from(sectionDimensions)) {
-              if (validDim.toLowerCase().trim() === normalizedInput) {
-                matchedDimension = validDim; // Use the canonical dimension text
-                break;
-              }
-            }
-          }
+        let matchedDimension: string | undefined;
+        const indexValue = dm.dimensionIndex ?? dm.dimension_index;
+        const indexNum = typeof indexValue === 'number'
+          ? indexValue
+          : (typeof indexValue === 'string' && indexValue.trim() !== '' ? Number(indexValue) : undefined);
+        if (typeof indexNum === 'number' && Number.isInteger(indexNum)) {
+          const dims = sectionDimensionsByKey.get(dm.sectionKey) || [];
+          matchedDimension = dims[indexNum - 1];
+        } else {
+          const sectionDimensions = validDimensions.get(dm.sectionKey);
+          const normalizedInput = normalizeDimension(String(dm.dimension || ''));
+          matchedDimension = sectionDimensions?.get(normalizedInput);
         }
-        
+        if (!matchedDimension) continue;
+
         dimensionMappings.push({
           sectionKey: dm.sectionKey,
           dimension: String(matchedDimension).slice(0, 500),
@@ -620,6 +710,26 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       return NextResponse.json({ error: 'Search run not found' }, { status: 404 });
     }
 
+    // Collect all search runs for the session to cover the full search space
+    const allRuns = await prisma.literatureSearchRun.findMany({
+      where: { sessionId },
+      orderBy: { createdAt: 'desc' },
+      take: 50 // safety cap
+    });
+
+    // Merge results across runs, excluding user-removed items
+    const removedAcrossRuns = new Set<string>();
+    for (const run of allRuns) {
+      const removed = (run.aiAnalysis as any)?.removedResultIds;
+      if (Array.isArray(removed)) {
+        removed.forEach((id: string) => removedAcrossRuns.add(String(id)));
+      }
+    }
+
+    const aggregatedResults = deduplicatePapers(
+      allRuns.flatMap(run => Array.isArray(run.results) ? run.results : [])
+    ).filter(p => !removedAcrossRuns.has(String(p.id || p.paperId || p.citationKey || p.doi || '')));
+
     // Fetch blueprint if requested and available
     let blueprint: BlueprintWithSectionPlan | null = null;
     if (includeBlueprint) {
@@ -634,66 +744,196 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       || 'General research topic';
 
     // Parse search results
-    const results = searchRun.results as any[];
+    const results = aggregatedResults;
     if (!results || results.length === 0) {
       return NextResponse.json({ error: 'No search results to analyze' }, { status: 400 });
     }
 
-    // Filter to papers with abstracts for better analysis (but include all if few have abstracts)
-    // Limit batch size to avoid output token truncation - blueprint analysis needs more output tokens
-    const maxPapersToAnalyze = blueprint ? 15 : 25; // Fewer papers when blueprint mapping is included
-    const papersWithAbstracts = results.filter(r => r.abstract);
-    const papersToAnalyze = papersWithAbstracts.length >= 5 
-      ? papersWithAbstracts.slice(0, maxPapersToAnalyze)
-      : results.slice(0, maxPapersToAnalyze);
+    // Only analyze papers that have abstracts — title-only papers produce
+    // low-quality results and waste LLM tokens. Skipped IDs are returned in
+    // the response so the frontend can show a "No Abstract" indicator.
+    const papersWithAbstracts = results.filter((r: any) => r.abstract);
+    const skippedNoAbstract = results.filter((r: any) => !r.abstract);
+    const skippedNoAbstractIds = skippedNoAbstract.map((r: any) => String(r.id || r.paperId || r.citationKey || ''));
+    const papersToAnalyze = papersWithAbstracts;
 
-    // Build valid paper ID set for validation
-    const validPaperIds = new Set(papersToAnalyze.map(p => p.id));
+    const batches: typeof papersToAnalyze[] = [];
+    for (let i = 0; i < papersToAnalyze.length; i += BATCH_SIZE) {
+      batches.push(papersToAnalyze.slice(i, i + BATCH_SIZE));
+    }
 
-    // Build prompt (batch all papers in single call) - include blueprint if available
-    const prompt = buildPrompt(researchQuestion, papersToAnalyze, maxSuggestions, blueprint);
+    const totalBatches = batches.length;
 
     // Get auth headers for LLM gateway
     const authHeader = request.headers.get('authorization') || '';
     const headers: Record<string, string> = { authorization: authHeader };
 
-    // Execute LLM call (single batch call for cost efficiency)
-    const llmResult = await llmGateway.executeLLMOperation(
-      { headers },
-      {
-        taskCode: 'LITERATURE_RELEVANCE',
-        stageCode: 'LITERATURE_RELEVANCE',
-        prompt,
-        parameters: {
-          temperature: 0.3, // Lower temp for more consistent analysis
-        },
-        idempotencyKey: `lit-relevance-${searchRunId}-${Date.now()}`,
-        metadata: {
-          sessionId,
-          searchRunId,
-          paperCount: papersToAnalyze.length,
-          blueprintId: blueprint?.id || null,
+    // Token consumption safeguard: hard cap on LLM calls per request.
+    let llmCallCount = 0;
+    const MAX_LLM_CALLS_PER_REQUEST = 50;
+
+    const processBatchWithRetry = async (
+      batch: typeof papersToAnalyze,
+      batchIndex: number,
+      depth: number = 0
+    ): Promise<{
+      suggestions: PaperRelevanceAnalysis[];
+      summary: string;
+      parseError: boolean;
+      outputTokens: number;
+      modelClass: string;
+      failedPaperIds: string[];
+    }> => {
+      // Outer try-catch: prevents ANY exception from propagating up and
+      // killing Promise.all (which would abort all remaining batches)
+      try {
+        if (llmCallCount >= MAX_LLM_CALLS_PER_REQUEST) {
+          console.warn(`[LiteratureRelevance] LLM call budget exhausted (${llmCallCount}/${MAX_LLM_CALLS_PER_REQUEST}), skipping batch ${batchIndex + 1}`);
+          return { suggestions: [], summary: '', parseError: true, outputTokens: 0, modelClass: 'unknown', failedPaperIds: batch.map(p => p.id) };
         }
+
+        const validPaperIds = new Set(batch.map(p => p.id));
+        const prompt = buildPrompt(
+          researchQuestion,
+          batch,
+          blueprint
+        );
+
+        // The metering system enforces a per-task concurrency limit on active
+        // reservations. Retry with back-off so every batch eventually gets a slot.
+        const MAX_CONCURRENCY_RETRIES = 8;
+        let llmResult: any = null;
+
+        for (let attempt = 0; attempt <= MAX_CONCURRENCY_RETRIES; attempt++) {
+          llmResult = await llmGateway.executeLLMOperation(
+            { headers },
+            {
+              taskCode: 'LITERATURE_RELEVANCE',
+              stageCode: 'LITERATURE_RELEVANCE',
+              prompt,
+              parameters: {
+                temperature: 0.3,
+              },
+              idempotencyKey: `lit-relevance-${searchRunId}-${Date.now()}-${batchIndex}-${depth}-${attempt}`,
+              metadata: {
+                sessionId,
+                searchRunId,
+                paperCount: batch.length,
+                batchIndex: batchIndex + 1,
+                totalBatches,
+                blueprintId: blueprint?.id || null,
+              }
+            }
+          );
+
+          if (llmResult.success && llmResult.response) {
+            llmCallCount++;
+            break;
+          }
+
+          const errorCode = (llmResult.error as any)?.code;
+          if (errorCode === 'CONCURRENCY_LIMIT' && attempt < MAX_CONCURRENCY_RETRIES) {
+            const delayMs = (attempt + 1) * 3000;
+            console.log(`[LiteratureRelevance] Concurrency limit hit for batch ${batchIndex + 1}, waiting ${delayMs / 1000}s (${attempt + 1}/${MAX_CONCURRENCY_RETRIES})`);
+            await new Promise(resolve => setTimeout(resolve, delayMs));
+            continue;
+          }
+
+          break;
+        }
+
+        if (!llmResult?.success || !llmResult?.response) {
+          const errorCode = (llmResult?.error as any)?.code || 'UNKNOWN';
+          console.error(`[LiteratureRelevance] LLM call failed for batch ${batchIndex + 1} (${errorCode}):`, llmResult?.error);
+          return { suggestions: [], summary: '', parseError: true, outputTokens: 0, modelClass: 'unknown', failedPaperIds: batch.map(p => p.id) };
+        }
+
+        try {
+          const analysis = parseAndValidateLLMResponse(llmResult.response.output, validPaperIds, blueprint);
+          const paperById = new Map(batch.map(paper => [paper.id, paper]));
+          const enrichedSuggestions = analysis.suggestions.map(suggestion => {
+            const paper = paperById.get(suggestion.paperId);
+            return {
+              ...suggestion,
+              paperTitle: paper?.title,
+              paperDoi: paper?.doi
+            };
+          });
+          return {
+            ...analysis,
+            suggestions: enrichedSuggestions,
+            parseError: false,
+            outputTokens: llmResult.response.outputTokens || 0,
+            modelClass: llmResult.response.modelClass || 'unknown',
+            failedPaperIds: []
+          };
+        } catch (parseError) {
+          console.error(`[LiteratureRelevance] Failed to parse LLM response for batch ${batchIndex + 1}:`, parseError);
+          console.error('Raw output preview:', llmResult.response.output?.slice(0, 500));
+          if (batch.length > 1 && depth < 2) {
+            console.warn(`[LiteratureRelevance] Retrying batch ${batchIndex + 1} with smaller chunks (size ${batch.length})`);
+            const mid = Math.ceil(batch.length / 2);
+            // Run both halves in parallel — halves the retry latency
+            const [left, right] = await Promise.all([
+              processBatchWithRetry(batch.slice(0, mid), batchIndex, depth + 1),
+              processBatchWithRetry(batch.slice(mid), batchIndex, depth + 1)
+            ]);
+            return {
+              suggestions: [...left.suggestions, ...right.suggestions],
+              summary: left.summary || right.summary || '',
+              parseError: left.parseError || right.parseError,
+              outputTokens: (left.outputTokens || 0) + (right.outputTokens || 0),
+              modelClass: left.modelClass !== 'unknown' ? left.modelClass : right.modelClass,
+              failedPaperIds: [...left.failedPaperIds, ...right.failedPaperIds]
+            };
+          }
+          return {
+            suggestions: [],
+            summary: '',
+            parseError: true,
+            outputTokens: llmResult.response.outputTokens || 0,
+            modelClass: llmResult.response.modelClass || 'unknown',
+            failedPaperIds: batch.map(p => p.id)
+          };
+        }
+      } catch (outerError) {
+        // Catch-all: LLM gateway exceptions, network errors, unexpected failures
+        console.error(`[LiteratureRelevance] Unexpected error in batch ${batchIndex + 1}:`, outerError);
+        return {
+          suggestions: [],
+          summary: '',
+          parseError: true,
+          outputTokens: 0,
+          modelClass: 'unknown',
+          failedPaperIds: batch.map(p => p.id)
+        };
       }
-    );
+    };
 
-    if (!llmResult.success || !llmResult.response) {
-      console.error('[LiteratureRelevance] LLM call failed:', llmResult.error);
-      return NextResponse.json({ 
-        error: llmResult.error?.message || 'AI analysis failed' 
-      }, { status: 500 });
-    }
+    const batchResults = await runBatchesInParallel(batches, PARALLEL_BATCH_LIMIT, async (batch, batchIndex) => {
+      return processBatchWithRetry(batch, batchIndex);
+    });
 
-    // Parse and validate LLM response (pass blueprint for validation)
-    let analysis: LLMResponse;
-    try {
-      analysis = parseAndValidateLLMResponse(llmResult.response.output, validPaperIds, blueprint);
-    } catch (parseError) {
-      console.error('[LiteratureRelevance] Failed to parse LLM response:', parseError);
-      console.error('Raw output preview:', llmResult.response.output?.slice(0, 500));
-      
-      // Return partial success with empty analysis rather than failing completely
-      // This allows users to still see their search results even if AI analysis fails
+    const parseError = batchResults.some(r => r.parseError);
+    const totalOutputTokens = batchResults.reduce((sum, r) => sum + (r.outputTokens || 0), 0);
+    const aggregatedSuggestions = batchResults.flatMap(r => r.suggestions || []);
+    const failedPaperIds = Array.from(new Set(batchResults.flatMap(r => r.failedPaperIds || [])));
+    const totalPapers = papersToAnalyze.length;
+    const reviewedPapers = Math.max(0, totalPapers - failedPaperIds.length);
+    // Return ALL analyzed papers sorted by relevance — don't truncate.
+    // All papers consumed LLM tokens; discarding results wastes that spend.
+    // The frontend can filter/paginate as needed.
+    const sortedSuggestions = aggregatedSuggestions
+      .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+    const summary = totalBatches > 1
+      ? `AI analysis completed across ${totalBatches} batches.`
+      : (batchResults[0]?.summary || 'AI analysis completed.');
+    const blueprintCoverage = blueprint?.sectionPlan
+      ? calculateBlueprintCoverage(blueprint, sortedSuggestions)
+      : undefined;
+
+    // If all batches failed, return partial success with empty analysis
+    if (sortedSuggestions.length === 0 && parseError) {
       return NextResponse.json({
         success: true,
         searchRunId,
@@ -713,19 +953,46 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           analyzedAt: new Date().toISOString(),
           papersAnalyzed: papersToAnalyze.length,
           blueprintIncluded: !!blueprint,
-          parseError: true
+          parseError: true,
+          analysisMeta: {
+            totalPapers,
+            reviewedPapers,
+            failedPapers: failedPaperIds.length,
+            failedPaperIds,
+            skippedNoAbstractIds,
+            skippedNoAbstractCount: skippedNoAbstractIds.length
+          }
         }
       });
     }
+
+    const modelUsed = batchResults.find(r => r.modelClass && r.modelClass !== 'unknown')?.modelClass || 'unknown';
+    const existingRemoved = Array.isArray((searchRun.aiAnalysis as any)?.removedResultIds)
+      ? (searchRun.aiAnalysis as any).removedResultIds
+      : [];
 
     // Update search run with AI analysis
     await prisma.literatureSearchRun.update({
       where: { id: searchRunId },
       data: {
-        aiAnalysis: analysis as any,
+        aiAnalysis: {
+          suggestions: sortedSuggestions,
+          summary,
+          blueprintCoverage,
+          parseError: parseError || undefined,
+          removedResultIds: existingRemoved,
+          analysisMeta: {
+            totalPapers,
+            reviewedPapers,
+            failedPapers: failedPaperIds.length,
+            failedPaperIds,
+            skippedNoAbstractIds,
+            skippedNoAbstractCount: skippedNoAbstractIds.length
+          }
+        },
         aiAnalyzedAt: new Date(),
-        aiModelUsed: llmResult.response.modelClass || 'unknown',
-        aiTokensUsed: llmResult.response.outputTokens || 0,
+        aiModelUsed: modelUsed,
+        aiTokensUsed: totalOutputTokens,
         researchQuestion,
       }
     });
@@ -740,10 +1007,10 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         meta: {
           sessionId,
           papersAnalyzed: papersToAnalyze.length,
-          suggestionsReturned: analysis.suggestions.length,
-          tokensUsed: llmResult.response.outputTokens,
+          suggestionsReturned: sortedSuggestions.length,
+          tokensUsed: totalOutputTokens,
           blueprintIncluded: !!blueprint,
-          dimensionsCovered: analysis.blueprintCoverage?.coveredDimensions || 0,
+          dimensionsCovered: blueprintCoverage?.coveredDimensions || 0,
         }
       }
     });
@@ -752,12 +1019,21 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       success: true,
       searchRunId,
       analysis: {
-        suggestions: analysis.suggestions,
-        summary: analysis.summary,
-        blueprintCoverage: analysis.blueprintCoverage,
+        suggestions: sortedSuggestions,
+        summary,
+        blueprintCoverage,
         analyzedAt: new Date().toISOString(),
         papersAnalyzed: papersToAnalyze.length,
         blueprintIncluded: !!blueprint,
+        parseError: parseError || undefined,
+        analysisMeta: {
+          totalPapers,
+          reviewedPapers,
+          failedPapers: failedPaperIds.length,
+          failedPaperIds,
+          skippedNoAbstractIds,
+          skippedNoAbstractCount: skippedNoAbstractIds.length
+        }
       }
     });
 
@@ -768,6 +1044,61 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
     console.error('[LiteratureRelevance] POST error:', error);
     return NextResponse.json({ error: 'Failed to analyze literature relevance' }, { status: 500 });
+  }
+}
+
+// PATCH - Persist removed search results for a run
+export async function PATCH(request: NextRequest, context: { params: { paperId: string } }) {
+  try {
+    const { user, error } = await authenticateUser(request);
+    if (error || !user) {
+      return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 });
+    }
+
+    const sessionId = context.params.paperId;
+    const session = await getSessionForUser(sessionId, user);
+    if (!session) {
+      return NextResponse.json({ error: 'Paper session not found' }, { status: 404 });
+    }
+
+    const body = await request.json();
+    const { searchRunId, removedResultIds } = updateSchema.parse(body);
+
+    const searchRun = await prisma.literatureSearchRun.findFirst({
+      where: { id: searchRunId, sessionId }
+    });
+
+    if (!searchRun) {
+      return NextResponse.json({ error: 'Search run not found' }, { status: 404 });
+    }
+
+    const existingAnalysis = (searchRun.aiAnalysis as Record<string, any>) || {};
+    const existingRemoved = Array.isArray(existingAnalysis.removedResultIds)
+      ? existingAnalysis.removedResultIds
+      : [];
+    const merged = new Set<string>([...existingRemoved, ...removedResultIds]);
+
+    await prisma.literatureSearchRun.update({
+      where: { id: searchRunId },
+      data: {
+        aiAnalysis: {
+          ...existingAnalysis,
+          removedResultIds: Array.from(merged)
+        }
+      }
+    });
+
+    return NextResponse.json({
+      success: true,
+      removedResultIds: Array.from(merged)
+    });
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return NextResponse.json({ error: error.errors[0]?.message || 'Invalid request' }, { status: 400 });
+    }
+
+    console.error('[LiteratureRelevance] PATCH error:', error);
+    return NextResponse.json({ error: 'Failed to update removed results' }, { status: 500 });
   }
 }
 

@@ -326,9 +326,9 @@ Return ONLY the JSON object.`;
           taskCode: 'LLM2_DRAFT',
           stageCode: 'SEARCH_STRATEGY_PLANNING',
           prompt,
+          // maxTokensOut is controlled via super admin LLM config for SEARCH_STRATEGY_PLANNING stage
           parameters: {
             temperature: 0.4,
-            maxOutputTokens: 1000
           },
           idempotencyKey: crypto.randomUUID(),
           metadata: {
@@ -451,9 +451,9 @@ Return ONLY the JSON array.`;
           taskCode: 'LLM2_DRAFT',
           stageCode: 'SEARCH_QUERY_GENERATION',
           prompt,
+          // maxTokensOut is controlled via super admin LLM config for SEARCH_QUERY_GENERATION stage
           parameters: {
             temperature: 0.5,
-            maxOutputTokens: 3000
           },
           idempotencyKey: crypto.randomUUID(),
           metadata: {
@@ -470,8 +470,19 @@ Return ONLY the JSON array.`;
 
       const queries = this.parseQueriesResponse(result.response.output);
       
-      // Apply deterministic guardrails
-      const validatedQueries = this.applyQueryGuardrails(queries, searchPlan, targetCounts);
+      // If LLM returned empty/invalid JSON, use fallback immediately
+      if (queries.length === 0) {
+        console.warn('LLM returned empty/invalid queries, using fallback queries');
+        return this.generateFallbackQueries(researchTopic, searchPlan);
+      }
+      
+      // Apply deterministic guardrails with backfill for missing intents/categories
+      const validatedQueries = this.applyQueryGuardrails(
+        queries, 
+        searchPlan, 
+        targetCounts,
+        researchTopic
+      );
       
       return validatedQueries;
 
@@ -483,40 +494,194 @@ Return ONLY the JSON array.`;
 
   /**
    * Apply deterministic guardrails to generated queries
+   * ENFORCES: mandatory intents, category minimums, and query count bounds
    */
   private applyQueryGuardrails(
     queries: GeneratedQuery[],
     searchPlan: SearchPlan,
-    targetCounts: Record<string, number>
+    targetCounts: Record<string, number>,
+    researchTopic?: ResearchTopic
   ): GeneratedQuery[] {
     
-    // Ensure query count is within bounds
-    let validQueries = queries.slice(0, QUERY_CONSTRAINTS.MAX_QUERIES);
+    // Sort by priority first (lower = more important)
+    let validQueries = [...queries].sort((a, b) => (a.priority || 99) - (b.priority || 99));
     
-    // Check mandatory intents coverage
+    // Track what we have
     const coveredIntents = new Set(validQueries.map(q => q.searchIntent));
+    const categoryCounts: Record<string, number> = {};
+    for (const q of validQueries) {
+      categoryCounts[q.category] = (categoryCounts[q.category] || 0) + 1;
+    }
+
+    // BACKFILL missing mandatory intents (this is enforced, not just logged)
     const missingIntents = MANDATORY_INTENTS.filter(intent => !coveredIntents.has(intent));
-    
     if (missingIntents.length > 0) {
-      console.warn(`Missing mandatory intents: ${missingIntents.join(', ')}`);
-      // In production, could add fallback queries for missing intents
+      console.warn(`⚠️ Backfilling ${missingIntents.length} missing mandatory intents: ${missingIntents.join(', ')}`);
+      const backfillQueries = this.generateBackfillQueriesForIntents(missingIntents, researchTopic);
+      validQueries.push(...backfillQueries);
+      
+      // Update category counts
+      for (const q of backfillQueries) {
+        categoryCounts[q.category] = (categoryCounts[q.category] || 0) + 1;
+      }
     }
 
-    // Ensure minimum queries
+    // ENFORCE category minimums from targetCounts
+    for (const [category, targetCount] of Object.entries(targetCounts)) {
+      const currentCount = categoryCounts[category] || 0;
+      if (currentCount < targetCount && targetCount > 0) {
+        const deficit = targetCount - currentCount;
+        console.warn(`⚠️ Category ${category} has ${currentCount} queries, target is ${targetCount}. Backfilling ${deficit}.`);
+        
+        // Generate simple backfill queries for underrepresented categories
+        const backfillQueries = this.generateBackfillQueriesForCategory(
+          category as SearchQueryCategory,
+          deficit,
+          researchTopic,
+          validQueries.length + 1
+        );
+        validQueries.push(...backfillQueries);
+        categoryCounts[category] = currentCount + backfillQueries.length;
+      }
+    }
+
+    // ENFORCE minimum query count
     if (validQueries.length < QUERY_CONSTRAINTS.MIN_QUERIES) {
-      console.warn(`Only ${validQueries.length} queries generated, minimum is ${QUERY_CONSTRAINTS.MIN_QUERIES}`);
+      console.warn(`⚠️ Only ${validQueries.length} queries after guardrails, minimum is ${QUERY_CONSTRAINTS.MIN_QUERIES}. Adding more.`);
+      // Add generic topic coverage queries until we hit minimum
+      const mainKeyword = researchTopic?.keywords?.[0] || researchTopic?.title?.split(' ').slice(0, 3).join(' ') || 'research topic';
+      let priority = validQueries.length + 1;
+      
+      while (validQueries.length < QUERY_CONSTRAINTS.MIN_QUERIES) {
+        validQueries.push({
+          queryText: `${mainKeyword} ${['applications', 'techniques', 'frameworks', 'analysis'][validQueries.length % 4]}`,
+          category: 'CORE_CONCEPTS',
+          searchIntent: 'topic_coverage',
+          description: 'Additional query to meet minimum coverage requirement',
+          priority: priority++,
+          suggestedSources: ['semantic_scholar', 'google_scholar']
+        });
+      }
     }
 
-    // Assign priorities if not set properly
+    // TRUNCATE to max, but preserve mandatory intent coverage
+    if (validQueries.length > QUERY_CONSTRAINTS.MAX_QUERIES) {
+      // Separate mandatory-intent queries from others
+      const mandatoryQueries = validQueries.filter(q => MANDATORY_INTENTS.includes(q.searchIntent));
+      const otherQueries = validQueries.filter(q => !MANDATORY_INTENTS.includes(q.searchIntent));
+      
+      // Sort others by priority and take as many as we can after mandatory
+      otherQueries.sort((a, b) => (a.priority || 99) - (b.priority || 99));
+      const remaining = QUERY_CONSTRAINTS.MAX_QUERIES - mandatoryQueries.length;
+      
+      validQueries = [...mandatoryQueries, ...otherQueries.slice(0, Math.max(0, remaining))];
+      console.warn(`⚠️ Truncated to ${validQueries.length} queries (max ${QUERY_CONSTRAINTS.MAX_QUERIES}), preserved ${mandatoryQueries.length} mandatory intent queries`);
+    }
+
+    // Reassign priorities sequentially
     validQueries = validQueries.map((q, i) => ({
       ...q,
-      priority: q.priority || i + 1
+      priority: i + 1
     }));
 
-    // Sort by priority
+    // Final sort by priority
     validQueries.sort((a, b) => a.priority - b.priority);
 
     return validQueries;
+  }
+
+  /**
+   * Generate backfill queries for missing mandatory intents
+   */
+  private generateBackfillQueriesForIntents(
+    missingIntents: string[],
+    researchTopic?: ResearchTopic
+  ): GeneratedQuery[] {
+    const mainKeyword = researchTopic?.keywords?.[0] || 
+      researchTopic?.title?.split(' ').slice(0, 3).join(' ') || 
+      'research topic';
+    
+    const intentToQuery: Record<string, { queryText: string; category: SearchQueryCategory; description: string }> = {
+      'historical_foundational': {
+        queryText: `${mainKeyword} seminal foundational works history`,
+        category: 'THEORETICAL_FOUNDATION',
+        description: 'Backfill query for foundational/historical works coverage'
+      },
+      'methodological': {
+        queryText: `${mainKeyword} methodology methods techniques`,
+        category: 'METHODOLOGY',
+        description: 'Backfill query for methodological coverage'
+      },
+      'comparison_baseline': {
+        queryText: `${mainKeyword} comparison benchmark baseline evaluation`,
+        category: 'COMPETING_APPROACHES',
+        description: 'Backfill query for comparison/baseline coverage'
+      },
+      'limitations_gaps': {
+        queryText: `${mainKeyword} limitations challenges gaps future work`,
+        category: 'GAP_IDENTIFICATION',
+        description: 'Backfill query for limitations/gaps coverage'
+      }
+    };
+
+    return missingIntents.map((intent, i) => {
+      const template = intentToQuery[intent] || {
+        queryText: `${mainKeyword} ${intent}`,
+        category: 'CORE_CONCEPTS' as SearchQueryCategory,
+        description: `Backfill query for ${intent} coverage`
+      };
+
+      return {
+        queryText: template.queryText,
+        category: template.category,
+        searchIntent: intent,
+        description: template.description,
+        priority: 100 + i, // Will be reassigned
+        suggestedSources: ['semantic_scholar', 'google_scholar']
+      };
+    });
+  }
+
+  /**
+   * Generate backfill queries for underrepresented categories
+   */
+  private generateBackfillQueriesForCategory(
+    category: SearchQueryCategory,
+    count: number,
+    researchTopic?: ResearchTopic,
+    startPriority: number = 50
+  ): GeneratedQuery[] {
+    const mainKeyword = researchTopic?.keywords?.[0] || 
+      researchTopic?.title?.split(' ').slice(0, 3).join(' ') || 
+      'research topic';
+
+    const categoryPhrases: Record<string, string[]> = {
+      'CORE_CONCEPTS': ['concepts', 'fundamentals', 'overview'],
+      'DOMAIN_APPLICATION': ['application', 'use case', 'implementation'],
+      'METHODOLOGY': ['methodology', 'methods', 'approach'],
+      'THEORETICAL_FOUNDATION': ['theory', 'foundations', 'principles'],
+      'SURVEYS_REVIEWS': ['survey', 'review', 'state of the art'],
+      'COMPETING_APPROACHES': ['alternative', 'comparison', 'benchmark'],
+      'RECENT_ADVANCES': ['recent', 'advances', '2023 2024'],
+      'GAP_IDENTIFICATION': ['gaps', 'challenges', 'future directions'],
+      'CUSTOM': ['custom', 'specific', 'targeted']
+    };
+
+    const phrases = categoryPhrases[category] || ['research', 'study'];
+    const queries: GeneratedQuery[] = [];
+
+    for (let i = 0; i < Math.min(count, 2); i++) { // Cap at 2 backfill per category
+      queries.push({
+        queryText: `${mainKeyword} ${phrases[i % phrases.length]}`,
+        category,
+        searchIntent: 'topic_coverage',
+        description: `Backfill query for ${category} category coverage`,
+        priority: startPriority + i,
+        suggestedSources: ['semantic_scholar', 'google_scholar']
+      });
+    }
+
+    return queries;
   }
 
   /**

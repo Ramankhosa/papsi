@@ -132,10 +132,10 @@ export function createReservationService(config: MeteringConfig): ReservationSer
           orderBy: { scope: 'desc' } // tenant overrides plan
         })
 
-        return concurrencyRule?.value || 2 // Default concurrency limit
+        return concurrencyRule?.value || 5 // Default concurrency limit (safe for LLM provider rate limits)
       } catch (error) {
         console.warn('Failed to get concurrency limit, using default:', error)
-        return 2
+        return 5
       }
     }
   }

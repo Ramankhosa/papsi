@@ -33,7 +33,7 @@ const generateSchema = z.object({
   sectionKey: z.string().min(1),
   instructions: z.string().max(5000).optional(),
   temperature: z.number().min(0).max(1).optional(),
-  maxOutputTokens: z.number().int().positive().optional(),
+  maxOutputTokens: z.number().int().positive().optional(), // Deprecated: output tokens now controlled via super admin LLM config
   // Persona style support (borrowed from patent drafting)
   usePersonaStyle: z.boolean().optional(),
   personaSelection: z.object({
@@ -341,13 +341,14 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           writingSampleBlock
         );
 
+        // maxTokensOut is controlled via super admin LLM config for PAPER_SECTION_DRAFT stage.
+        // Providers read limits.maxTokensOut from the gateway's model resolver, not from parameters.
         const llmRequest = {
           taskCode: 'LLM2_DRAFT' as const,
           stageCode: 'PAPER_SECTION_DRAFT',
           prompt,
           parameters: {
             temperature: payload.temperature,
-            maxOutputTokens: payload.maxOutputTokens
           },
           idempotencyKey: crypto.randomUUID(),
           metadata: {
@@ -638,13 +639,13 @@ Focus on:
 
 Return ONLY valid JSON, no other text.`;
 
+        // maxTokensOut is controlled via super admin LLM config for PAPER_AI_REVIEW stage
         const llmRequest = {
           taskCode: 'LLM2_DRAFT' as const,
           stageCode: 'PAPER_AI_REVIEW',
           prompt: reviewPrompt,
           parameters: {
             temperature: 0.3,
-            maxOutputTokens: 4000
           },
           idempotencyKey: crypto.randomUUID(),
           metadata: {
@@ -733,13 +734,13 @@ Provide the COMPLETE revised section content that addresses the issue while pres
 
 Return ONLY the revised section content, no explanations or markdown formatting.`;
 
+        // maxTokensOut is controlled via super admin LLM config for PAPER_AI_FIX stage
         const llmRequest = {
           taskCode: 'LLM2_DRAFT' as const,
           stageCode: 'PAPER_AI_FIX',
           prompt: fixPrompt,
           parameters: {
             temperature: 0.2,
-            maxOutputTokens: 3000
           },
           idempotencyKey: crypto.randomUUID(),
           metadata: {

@@ -217,10 +217,10 @@ class BlueprintService {
         taskCode: 'LLM2_DRAFT',
         stageCode: 'PAPER_BLUEPRINT_GEN',
         prompt,
+        // maxTokensOut is controlled via super admin LLM config for PAPER_BLUEPRINT_GEN stage
         parameters: {
           purpose: 'blueprint_generation',
           temperature: 0.4,
-          maxOutputTokens: 4000
         },
         idempotencyKey: crypto.randomUUID(),
         metadata: {

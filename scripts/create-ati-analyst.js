@@ -17,6 +17,7 @@ async function createATIAnalyst() {
     const testEmail = 'analyst@papsi.com'
     const testPassword = 'AnalystPass123!'
     const testName = 'Papsi Analyst'
+    const atiExpiryDate = new Date('2026-07-01T00:00:00.000Z')
 
     // Hash the password
     console.log('🔒 Hashing password...')
@@ -66,10 +67,10 @@ async function createATIAnalyst() {
         tenantId: testTenant.id,
         tokenHash,
         rawToken: rawToken, // Store temporarily for demo
-        rawTokenExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+        rawTokenExpiry: atiExpiryDate,
         fingerprint: 'ati-test-token',
         status: 'ACTIVE',
-        expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days
+        expiresAt: atiExpiryDate,
         maxUses: 10,
         planTier: 'FREE'
       }
