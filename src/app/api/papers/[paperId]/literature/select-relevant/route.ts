@@ -14,6 +14,7 @@ const requestSchema = z.object({
   searchRunId: z.string().min(1),
   maxSuggestions: z.number().int().min(1).max(20).optional().default(10),
   includeBlueprint: z.boolean().optional().default(true), // Include blueprint dimension mapping
+  forceReanalyze: z.boolean().optional().default(false),  // Skip incremental — re-analyze all papers
 });
 
 const updateSchema = z.object({
@@ -699,7 +700,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
     // Parse request
     const body = await request.json();
-    const { searchRunId, maxSuggestions, includeBlueprint } = requestSchema.parse(body);
+    const { searchRunId, maxSuggestions, includeBlueprint, forceReanalyze } = requestSchema.parse(body);
 
     // Get the search run
     const searchRun = await prisma.literatureSearchRun.findFirst({
@@ -749,17 +750,86 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       return NextResponse.json({ error: 'No search results to analyze' }, { status: 400 });
     }
 
-    // Only analyze papers that have abstracts — title-only papers produce
-    // low-quality results and waste LLM tokens. Skipped IDs are returned in
-    // the response so the frontend can show a "No Abstract" indicator.
+    // Prefer papers with abstracts — title-only papers produce lower-quality
+    // results.  However, if fewer than 5 papers have abstracts fall back to
+    // ALL papers so the user still gets analysis.  Skipped IDs are returned
+    // in the response so the frontend can show a "No Abstract" indicator.
     const papersWithAbstracts = results.filter((r: any) => r.abstract);
-    const skippedNoAbstract = results.filter((r: any) => !r.abstract);
+    const papersToAnalyze = papersWithAbstracts.length >= 5
+      ? papersWithAbstracts
+      : results;  // fallback: include title-only papers when few abstracts are available
+    const skippedNoAbstract = results.filter((r: any) => !r.abstract && !papersToAnalyze.includes(r));
     const skippedNoAbstractIds = skippedNoAbstract.map((r: any) => String(r.id || r.paperId || r.citationKey || ''));
-    const papersToAnalyze = papersWithAbstracts;
 
-    const batches: typeof papersToAnalyze[] = [];
-    for (let i = 0; i < papersToAnalyze.length; i += BATCH_SIZE) {
-      batches.push(papersToAnalyze.slice(i, i + BATCH_SIZE));
+    if (papersToAnalyze.length === 0) {
+      return NextResponse.json({ error: 'No papers available for analysis (all results lack abstracts and fallback threshold not met)' }, { status: 400 });
+    }
+
+    // ── Incremental analysis: skip papers that already have a successful suggestion ──
+    // On re-click we only send NEW + PREVIOUSLY-FAILED papers to the LLM.
+    // Previous suggestions for successful papers are preserved and merged into the
+    // final result.  Pass forceReanalyze=true to bypass this and re-analyze everything.
+    const existingAnalysis = (searchRun.aiAnalysis as any) || {};
+    const existingSuggestions: any[] = Array.isArray(existingAnalysis.suggestions) ? existingAnalysis.suggestions : [];
+    const previouslyFailedIds = new Set<string>(
+      Array.isArray(existingAnalysis.analysisMeta?.failedPaperIds) ? existingAnalysis.analysisMeta.failedPaperIds : []
+    );
+    const alreadyAnalyzedIds = new Set<string>(
+      existingSuggestions.map((s: any) => String(s.paperId || ''))
+    );
+
+    let papersNeedingAnalysis: typeof papersToAnalyze;
+    let carriedOverSuggestions: any[] = [];
+
+    if (forceReanalyze || existingSuggestions.length === 0) {
+      // First analysis or explicit re-analysis — send everything
+      papersNeedingAnalysis = papersToAnalyze;
+    } else {
+      // Incremental: only analyze papers that are NEW or previously FAILED
+      papersNeedingAnalysis = papersToAnalyze.filter((p: any) => {
+        const pid = String(p.id || p.paperId || p.citationKey || '');
+        return !alreadyAnalyzedIds.has(pid) || previouslyFailedIds.has(pid);
+      });
+      // Carry over successful suggestions from the previous run
+      carriedOverSuggestions = existingSuggestions.filter((s: any) => {
+        const pid = String(s.paperId || '');
+        return !previouslyFailedIds.has(pid);
+      });
+    }
+
+    console.log(`[LiteratureRelevance] Analyzing ${papersNeedingAnalysis.length} papers (${papersWithAbstracts.length} with abstracts, ${skippedNoAbstract.length} skipped, ${carriedOverSuggestions.length} carried over from previous analysis, forceReanalyze=${forceReanalyze})`);
+
+    // If all papers were already analyzed and none need re-analysis, return the existing data
+    if (papersNeedingAnalysis.length === 0 && carriedOverSuggestions.length > 0) {
+      const blueprintCoverage = blueprint?.sectionPlan
+        ? calculateBlueprintCoverage(blueprint, carriedOverSuggestions)
+        : undefined;
+      return NextResponse.json({
+        success: true,
+        searchRunId,
+        analysis: {
+          suggestions: carriedOverSuggestions,
+          summary: 'All papers already analyzed. Click again with force re-analyze to refresh.',
+          blueprintCoverage,
+          analyzedAt: existingAnalysis.analyzedAt || new Date().toISOString(),
+          papersAnalyzed: papersToAnalyze.length,
+          blueprintIncluded: !!blueprint,
+          parseError: false,
+          analysisMeta: existingAnalysis.analysisMeta || {
+            totalPapers: papersToAnalyze.length,
+            reviewedPapers: carriedOverSuggestions.length,
+            failedPapers: 0,
+            failedPaperIds: [],
+            skippedNoAbstractIds,
+            skippedNoAbstractCount: skippedNoAbstractIds.length
+          }
+        }
+      });
+    }
+
+    const batches: typeof papersNeedingAnalysis[] = [];
+    for (let i = 0; i < papersNeedingAnalysis.length; i += BATCH_SIZE) {
+      batches.push(papersNeedingAnalysis.slice(i, i + BATCH_SIZE));
     }
 
     const totalBatches = batches.length;
@@ -916,15 +986,24 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
     const parseError = batchResults.some(r => r.parseError);
     const totalOutputTokens = batchResults.reduce((sum, r) => sum + (r.outputTokens || 0), 0);
-    const aggregatedSuggestions = batchResults.flatMap(r => r.suggestions || []);
+    const newSuggestions = batchResults.flatMap(r => r.suggestions || []);
     const failedPaperIds = Array.from(new Set(batchResults.flatMap(r => r.failedPaperIds || [])));
+
+    // Merge new suggestions with carried-over suggestions from the previous run.
+    // New suggestions take priority (in case a previously-failed paper now succeeded).
+    const newSuggestionIds = new Set(newSuggestions.map((s: any) => String(s.paperId || '')));
+    const mergedSuggestions = [
+      ...newSuggestions,
+      ...carriedOverSuggestions.filter((s: any) => !newSuggestionIds.has(String(s.paperId || '')))
+    ];
+
     const totalPapers = papersToAnalyze.length;
-    const reviewedPapers = Math.max(0, totalPapers - failedPaperIds.length);
+    const reviewedPapers = Math.max(0, mergedSuggestions.length);
     // Return ALL analyzed papers sorted by relevance — don't truncate.
     // All papers consumed LLM tokens; discarding results wastes that spend.
     // The frontend can filter/paginate as needed.
-    const sortedSuggestions = aggregatedSuggestions
-      .sort((a, b) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+    const sortedSuggestions = mergedSuggestions
+      .sort((a: any, b: any) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
     const summary = totalBatches > 1
       ? `AI analysis completed across ${totalBatches} batches.`
       : (batchResults[0]?.summary || 'AI analysis completed.');
