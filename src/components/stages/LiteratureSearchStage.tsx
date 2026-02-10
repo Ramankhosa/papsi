@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -125,6 +125,9 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   // Expandable abstracts
   const [expandedAbstracts, setExpandedAbstracts] = useState<Set<string>>(new Set());
   
+  // AbortController for cancelling in-flight search requests
+  const searchAbortControllerRef = useRef<AbortController | null>(null);
+  
   // Add Citations mode: 'search' | 'library' | 'import'
   const [addMode, setAddMode] = useState<'search' | 'library' | 'import'>('search');
   
@@ -172,6 +175,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     inProcess: number;
     retry: number;
   } | null>(null);
+  const [bulkAddingSuggested, setBulkAddingSuggested] = useState(false);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
   
@@ -389,16 +393,13 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     setRemovedResults(new Set());
   };
   
-  // Clear removed results and coverage data when new search is performed
+  // Clear UI selection state when new search is performed, but PRESERVE AI analysis data
+  // (relevance scores, dimension mappings, recommendations, blueprint coverage, summary)
+  // because results accumulate across searches and existing AI analysis remains valid.
   const handleSearchWithReset = async () => {
     setRemovedResults(new Set());
     setSelectedResults(new Set());
-    // Clear AI analysis data for fresh search
-    setAiSuggestions(new Map());
-    setPaperDimensionMappings(new Map());
-    setPaperRecommendations(new Map());
-    setBlueprintCoverage(null);
-    setAiSummary(null);
+    // Switch back to results view so new papers are visible
     setSearchViewMode('results');
     await handleSearch();
   };
@@ -948,21 +949,43 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     return Array.from(seen.values());
   };
 
-  // Clear all accumulated results
+  // Clear all accumulated results AND all associated AI analysis data
   const clearAllResults = () => {
     setResults([]);
     setSearchRunIds([]);
     setSearchRunId(null);
     setAiSuggestions(new Map());
+    setPaperDimensionMappings(new Map());
+    setPaperRecommendations(new Map());
+    setBlueprintCoverage(null);
     setAiSummary(null);
     setAiError(null);
+    setAiReviewStatus(null);
+    setSelectedResults(new Set());
+    setRemovedResults(new Set());
+    setSearchViewMode('results');
     showToast({
       type: 'info',
       title: 'Results Cleared',
-      message: 'All accumulated search results have been cleared',
+      message: 'All accumulated search results and AI analysis have been cleared',
       duration: 3000
     });
   };
+
+  // Cancel any in-flight search request
+  const handleCancelSearch = useCallback(() => {
+    if (searchAbortControllerRef.current) {
+      searchAbortControllerRef.current.abort();
+      searchAbortControllerRef.current = null;
+    }
+    setLoading(false);
+    showToast({
+      type: 'info',
+      title: 'Search Cancelled',
+      message: 'The search request has been stopped',
+      duration: 3000
+    });
+  }, [showToast]);
 
   const handleSearch = async (overrides?: {
     query?: string;
@@ -971,6 +994,15 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     yearTo?: string;
     strategyQueryId?: string | null;
   }) => {
+    // Abort any previous in-flight search
+    if (searchAbortControllerRef.current) {
+      searchAbortControllerRef.current.abort();
+    }
+    
+    // Create a new AbortController for this search
+    const abortController = new AbortController();
+    searchAbortControllerRef.current = abortController;
+    
     try {
       setLoading(true);
       setError(null);
@@ -979,6 +1011,11 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       const searchYearFrom = overrides?.yearFrom ?? yearFrom;
       const searchYearTo = overrides?.yearTo ?? yearTo;
       const strategyId = overrides?.strategyQueryId ?? currentStrategyQueryId;
+      
+      // Validate year values before sending — ensure they are valid integers
+      const parsedYearFrom = searchYearFrom ? parseInt(searchYearFrom, 10) : undefined;
+      const parsedYearTo = searchYearTo ? parseInt(searchYearTo, 10) : undefined;
+      
       const response = await fetch(`/api/papers/${sessionId}/literature/search`, {
         method: 'POST',
         headers: {
@@ -988,14 +1025,15 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         body: JSON.stringify({
           query: searchQuery,
           sources: searchSources,
-          yearFrom: searchYearFrom ? parseInt(searchYearFrom, 10) : undefined,
-          yearTo: searchYearTo ? parseInt(searchYearTo, 10) : undefined,
+          yearFrom: parsedYearFrom && Number.isFinite(parsedYearFrom) ? parsedYearFrom : undefined,
+          yearTo: parsedYearTo && Number.isFinite(parsedYearTo) ? parsedYearTo : undefined,
           // Enhanced filters
           publicationTypes: publicationTypes.length > 0 ? publicationTypes : undefined,
           openAccessOnly: openAccessOnly || undefined,
           minCitations: minCitations ? parseInt(minCitations, 10) : undefined,
           fieldsOfStudy: fieldsOfStudy.length > 0 ? fieldsOfStudy : undefined
-        })
+        }),
+        signal: abortController.signal
       });
 
       const data = await response.json();
@@ -1039,6 +1077,10 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         setCurrentStrategyQueryId(null);
       }
     } catch (err) {
+      // Don't treat abort as an error
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        return; // Search was cancelled by user, silently exit
+      }
       setError(err instanceof Error ? err.message : 'Search failed');
       // Reset strategy query tracking on error
       const strategyId = overrides?.strategyQueryId ?? currentStrategyQueryId;
@@ -1047,7 +1089,12 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         setCurrentStrategyQueryId(null);
       }
     } finally {
-      setLoading(false);
+      // Only clear loading if this controller is still the current one
+      // (prevents a cancelled search from clearing the loading state of a new search)
+      if (searchAbortControllerRef.current === abortController) {
+        setLoading(false);
+        searchAbortControllerRef.current = null;
+      }
     }
   };
 
@@ -1255,10 +1302,36 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       console.log('[AI Analysis] Resolved suggestions count:', suggestionsMap.size);
       console.log('[AI Analysis] Resolved dimension mappings count:', dimensionMappingsMap.size);
       
-      setAiSuggestions(suggestionsMap);
-      setPaperDimensionMappings(dimensionMappingsMap);
-      setPaperRecommendations(recommendationsMap);
-      setAiSummary(data.analysis?.summary || null);
+      // MERGE new AI data with existing data so that previous analysis is preserved
+      // when the user runs AI analysis again after searching for more papers.
+      setAiSuggestions(prev => {
+        const merged = new Map(prev);
+        for (const [key, value] of suggestionsMap) {
+          merged.set(key, value); // New analysis overwrites old for same paper
+        }
+        return merged;
+      });
+      setPaperDimensionMappings(prev => {
+        const merged = new Map(prev);
+        for (const [key, value] of dimensionMappingsMap) {
+          merged.set(key, value);
+        }
+        return merged;
+      });
+      setPaperRecommendations(prev => {
+        const merged = new Map(prev);
+        for (const [key, value] of recommendationsMap) {
+          merged.set(key, value);
+        }
+        return merged;
+      });
+      // Append new summary to existing (if any) so context from prior analyses is kept
+      setAiSummary(prev => {
+        const newSummary = data.analysis?.summary;
+        if (!newSummary) return prev;
+        if (!prev) return newSummary;
+        return `${prev}\n\n---\n\n${newSummary}`;
+      });
       
       // Store blueprint coverage if available
       if (data.analysis?.blueprintCoverage) {
@@ -1318,17 +1391,85 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       return;
     }
 
-    // Import each suggested paper
-    for (const paper of suggestedPapers) {
-      await handleImport(paper);
+    try {
+      setBulkAddingSuggested(true);
+
+      const response = await fetch(`/api/papers/${sessionId}/citations/bulk-import`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          citations: suggestedPapers.map(paper => {
+            const suggestion = aiSuggestions.get(paper.id);
+            const suggestionMeta = suggestion?.citationMeta;
+            return {
+              searchResult: paper,
+              citationMeta: suggestionMeta ? {
+                keyContribution: suggestionMeta.keyContribution,
+                keyFindings: suggestionMeta.keyFindings,
+                methodologicalApproach: suggestionMeta.methodologicalApproach,
+                relevanceToResearch: suggestionMeta.relevanceToResearch,
+                limitationsOrGaps: suggestionMeta.limitationsOrGaps,
+                usage: suggestionMeta.usage,
+                relevanceScore: suggestion?.score
+              } : null,
+              relevanceScore: suggestion?.score,
+              recommendation: paperRecommendations.get(paper.id),
+              dimensionMappings: paperDimensionMappings.get(paper.id) || []
+            };
+          })
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Bulk import failed');
+      }
+
+      const importedBatch = Array.isArray(data.citations) ? data.citations : [];
+      const importedCount = typeof data.importedCount === 'number'
+        ? data.importedCount
+        : importedBatch.length;
+      const skippedCount = typeof data.skippedCount === 'number'
+        ? data.skippedCount
+        : Math.max(0, suggestedPapers.length - importedCount);
+
+      if (importedBatch.length > 0) {
+        setCitations(prev => {
+          const next = [...prev];
+          const seen = new Set(next.map(c => c.id));
+          for (const citation of importedBatch) {
+            if (citation?.id && !seen.has(citation.id)) {
+              seen.add(citation.id);
+              next.push(citation);
+            }
+          }
+          return next;
+        });
+      }
+
+      await refreshSession();
+
+      showToast({
+        type: importedCount > 0 ? 'success' : 'info',
+        title: importedCount > 0 ? 'Papers Added' : 'No New Papers Added',
+        message: skippedCount > 0
+          ? `Added ${importedCount} AI-suggested papers (${skippedCount} skipped as duplicates)`
+          : `Added ${importedCount} AI-suggested papers to citations`,
+        duration: 4000
+      });
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'Import Failed',
+        message: err instanceof Error ? err.message : 'Could not import suggested papers',
+        duration: 5000
+      });
+    } finally {
+      setBulkAddingSuggested(false);
     }
-    
-    showToast({
-      type: 'success',
-      title: 'Papers Added',
-      message: `Added ${suggestedPapers.length} AI-suggested papers to citations`,
-      duration: 4000
-    });
   };
 
   // Analyze unanalyzed citations against blueprint dimensions
@@ -2399,18 +2540,40 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                       <Input
                         value={query}
                         onChange={event => setQuery(event.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handleSearch()}
+                        onKeyDown={e => e.key === 'Enter' && !loading && handleSearch()}
                         placeholder="Search papers, topics, or keywords..."
-                        className="pr-20"
+                        className={loading ? "pr-32" : "pr-20"}
                       />
-                      <Button 
-                        size="sm" 
-                        onClick={handleSearchWithReset} 
-                        disabled={loading || !query.trim()}
-                        className="absolute right-1 top-1 h-7"
-                      >
-                        {loading ? '...' : 'Search'}
-                      </Button>
+                      <div className="absolute right-1 top-1 flex items-center gap-1">
+                        {loading && (
+                          <Button 
+                            size="sm" 
+                            variant="destructive"
+                            onClick={handleCancelSearch}
+                            className="h-7 px-2 text-xs"
+                          >
+                            <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                            Stop
+                          </Button>
+                        )}
+                        <Button 
+                          size="sm" 
+                          onClick={handleSearchWithReset} 
+                          disabled={loading || !query.trim()}
+                          className="h-7"
+                        >
+                          {loading ? (
+                            <span className="flex items-center gap-1">
+                              <svg className="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                              </svg>
+                            </span>
+                          ) : 'Search'}
+                        </Button>
+                      </div>
                     </div>
                     
                     {/* Research question suggestions removed - use Search Strategy for systematic queries */}
@@ -3177,6 +3340,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                       {aiSuggestions.size > 0 && (
                         <Button
                           onClick={handleAddAllSuggested}
+                          disabled={bulkAddingSuggested}
                           size="sm"
                             variant="outline"
                             className="text-violet-600 border-violet-300 hover:bg-violet-50"
@@ -3184,7 +3348,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                             <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                             </svg>
-                            Add All Suggested ({aiSuggestions.size})
+                            {bulkAddingSuggested ? 'Adding Suggested...' : `Add All Suggested (${aiSuggestions.size})`}
                           </Button>
                         )}
                         {/* Hide non-relevant toggle */}
@@ -3359,6 +3523,20 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                             </span>
                           ))}
                         </div>
+                        
+                        {/* Stop Search button */}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleCancelSearch}
+                          className="mt-5 text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300"
+                        >
+                          <svg className="w-3.5 h-3.5 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z" />
+                          </svg>
+                          Stop Search
+                        </Button>
                       </div>
                     </motion.div>
                   )}

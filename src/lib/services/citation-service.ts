@@ -6,7 +6,15 @@
 import { prisma } from '../prisma';
 import { literatureSearchService, SearchResult } from './literature-search-service';
 import { citationStyleService, CitationData } from './citation-style-service';
-import type { Citation, CitationUsage, CitationImportSource, CitationSourceType } from '@prisma/client';
+import type {
+  Prisma,
+  Citation,
+  CitationUsage,
+  CitationImportSource,
+  CitationSourceType,
+  CitationUsageKind,
+  DimensionMappingConfidence
+} from '@prisma/client';
 
 // AI-generated citation metadata for section generation
 export interface CitationAIMeta {
@@ -40,7 +48,14 @@ export interface CreateCitationInput {
   isbn?: string;
   publisher?: string;
   edition?: string;
+  abstract?: string;
   importSource: CitationImportSource;
+  importProvider?: string;
+  importProviderPaperId?: string;
+  doiNormalized?: string;
+  titleFingerprint?: string;
+  firstAuthorNormalized?: string;
+  paperIdentityKey?: string;
   notes?: string;
   tags?: string[];
   aiMeta?: CitationAIMeta; // AI-generated metadata for section generation
@@ -69,6 +84,42 @@ export interface CitationWithUsage extends Citation {
   usageCount: number;
 }
 
+export interface BulkSearchResultImportInput {
+  searchResult: SearchResult;
+  citationMeta?: {
+    keyContribution?: string;
+    keyFindings?: string;
+    methodologicalApproach?: string | null;
+    relevanceToResearch?: string;
+    limitationsOrGaps?: string | null;
+    usage?: {
+      introduction?: boolean;
+      literatureReview?: boolean;
+      methodology?: boolean;
+      comparison?: boolean;
+    };
+    relevanceScore?: number;
+  };
+  clientRef?: string;
+}
+
+export interface BulkSearchResultImportRecord {
+  citation: Citation;
+  searchResult: SearchResult;
+  clientRef?: string;
+}
+
+export interface BulkSearchResultImportSkipped {
+  searchResult: SearchResult;
+  clientRef?: string;
+  reason: 'INVALID_INPUT' | 'DUPLICATE_EXISTING' | 'DUPLICATE_BATCH' | 'SKIPPED_BY_DB_CONSTRAINT';
+}
+
+export interface BulkSearchResultImportResult {
+  imported: BulkSearchResultImportRecord[];
+  skipped: BulkSearchResultImportSkipped[];
+}
+
 export interface QualityCheckResult {
   unusedCitations: CitationWithUsage[];
   duplicateCitations: Array<{
@@ -94,7 +145,10 @@ class CitationService {
     const existingCitation = await prisma.citation.findFirst({
       where: {
         sessionId,
-        doi: cleanedDOI.toLowerCase()
+        OR: [
+          { doi: cleanedDOI.toLowerCase() },
+          { doiNormalized: cleanedDOI.toLowerCase() }
+        ]
       }
     });
 
@@ -188,6 +242,16 @@ class CitationService {
       throw new Error('Similar citation already exists in the session');
     }
 
+    const doiNormalized = this.normalizeDOI(searchResult.doi);
+    const titleFingerprint = this.buildTitleFingerprint(searchResult.title);
+    const firstAuthorNormalized = this.normalizeAuthor(searchResult.authors?.[0]);
+    const paperIdentityKey = this.buildPaperIdentityKey({
+      doi: searchResult.doi,
+      title: searchResult.title,
+      year: searchResult.year,
+      firstAuthor: searchResult.authors?.[0]
+    });
+
     return this.createCitation({
       sessionId,
       sourceType: this.inferSourceType(searchResult),
@@ -197,8 +261,15 @@ class CitationService {
       venue: searchResult.venue,
       doi: searchResult.doi,
       url: searchResult.url,
+      abstract: searchResult.abstract,
       notes: searchResult.abstract,
       importSource: this.mapSearchSourceToImportSource(searchResult.source),
+      importProvider: searchResult.source || undefined,
+      importProviderPaperId: searchResult.id || undefined,
+      doiNormalized,
+      titleFingerprint,
+      firstAuthorNormalized,
+      paperIdentityKey,
       // Store AI-generated citation metadata for section generation
       aiMeta: citationMeta ? {
         keyContribution: citationMeta.keyContribution,
@@ -247,7 +318,10 @@ class CitationService {
       const existingCitation = await prisma.citation.findFirst({
         where: {
           sessionId: citation.sessionId,
-          doi: updates.doi.toLowerCase(),
+          OR: [
+            { doi: updates.doi.toLowerCase() },
+            { doiNormalized: updates.doi.toLowerCase() }
+          ],
           id: { not: citationId }
         }
       });
@@ -256,6 +330,11 @@ class CitationService {
         throw new Error('Citation with this DOI already exists in the session');
       }
     }
+
+    const nextTitle = updates.title ?? citation.title;
+    const nextAuthors = updates.authors ?? citation.authors;
+    const nextYear = updates.year ?? citation.year;
+    const nextDoi = updates.doi ?? citation.doi;
 
     return prisma.citation.update({
       where: { id: citationId },
@@ -274,9 +353,315 @@ class CitationService {
         edition: updates.edition,
         notes: updates.notes,
         tags: updates.tags,
-        isActive: updates.isActive
+        isActive: updates.isActive,
+        doiNormalized: this.normalizeDOI(nextDoi || undefined),
+        titleFingerprint: this.buildTitleFingerprint(nextTitle),
+        firstAuthorNormalized: this.normalizeAuthor(nextAuthors?.[0]),
+        paperIdentityKey: this.buildPaperIdentityKey({
+          doi: nextDoi || undefined,
+          title: nextTitle,
+          year: nextYear || undefined,
+          firstAuthor: nextAuthors?.[0]
+        })
       }
     });
+  }
+
+  /**
+   * Bulk import citations from search results in a single DB write.
+   * Uses in-memory duplicate detection to mirror single-import behavior.
+   */
+  async importFromSearchResultsBulk(
+    sessionId: string,
+    items: BulkSearchResultImportInput[]
+  ): Promise<BulkSearchResultImportResult> {
+    if (!Array.isArray(items) || items.length === 0) {
+      return {
+        imported: [],
+        skipped: []
+      };
+    }
+
+    const existingCitations = await prisma.citation.findMany({
+      where: { sessionId },
+      select: {
+        citationKey: true,
+        doi: true,
+        doiNormalized: true,
+        paperIdentityKey: true,
+        title: true,
+        authors: true,
+        year: true
+      }
+    });
+
+    const existingCitationKeys = existingCitations.map(c => c.citationKey);
+    const existingNormalizedDois = new Set<string>();
+    const existingIdentityKeys = new Set<string>();
+    const existingTitleAuthorYearKeys = new Set<string>();
+
+    for (const citation of existingCitations) {
+      const normalizedDoi = this.normalizeDOI(citation.doiNormalized || citation.doi);
+      if (normalizedDoi) {
+        existingNormalizedDois.add(normalizedDoi);
+      }
+
+      if (citation.paperIdentityKey) {
+        existingIdentityKeys.add(citation.paperIdentityKey);
+      }
+
+      const tayKey = this.buildTitleAuthorYearDuplicateKey(
+        citation.title,
+        citation.authors,
+        citation.year
+      );
+      if (tayKey) {
+        existingTitleAuthorYearKeys.add(tayKey);
+      }
+    }
+
+    const batchNormalizedDois = new Set<string>();
+    const batchIdentityKeys = new Set<string>();
+    const batchTitleAuthorYearKeys = new Set<string>();
+    const nowIso = new Date().toISOString();
+    const createRows: Prisma.CitationCreateManyInput[] = [];
+    const acceptedItems: Array<{
+      id: string;
+      item: BulkSearchResultImportInput;
+    }> = [];
+    const skipped: BulkSearchResultImportSkipped[] = [];
+
+    for (const item of items) {
+      const searchResult = item.searchResult;
+      const normalizedTitle = typeof searchResult?.title === 'string'
+        ? searchResult.title.trim()
+        : '';
+      const normalizedYear = Number.isFinite(Number(searchResult?.year))
+        ? Math.trunc(Number(searchResult.year))
+        : undefined;
+      const normalizedVenue = typeof searchResult?.venue === 'string'
+        ? searchResult.venue
+        : undefined;
+      const normalizedDoiRaw = typeof searchResult?.doi === 'string'
+        ? searchResult.doi
+        : undefined;
+      const normalizedUrl = typeof searchResult?.url === 'string'
+        ? searchResult.url
+        : undefined;
+      const normalizedAbstract = typeof searchResult?.abstract === 'string'
+        ? searchResult.abstract
+        : undefined;
+      const normalizedSource = typeof searchResult?.source === 'string'
+        ? searchResult.source
+        : 'manual';
+      const normalizedProviderPaperId = typeof searchResult?.id === 'string'
+        ? searchResult.id
+        : undefined;
+      const normalizedAuthors = Array.isArray(searchResult?.authors)
+        ? searchResult.authors
+            .filter((author): author is string => typeof author === 'string' && author.trim().length > 0)
+            .map(author => author.trim())
+        : [];
+
+      if (!normalizedTitle || normalizedAuthors.length === 0) {
+        skipped.push({
+          searchResult,
+          clientRef: item.clientRef,
+          reason: 'INVALID_INPUT'
+        });
+        continue;
+      }
+
+      const normalizedDoi = this.normalizeDOI(normalizedDoiRaw);
+      const paperIdentityKey = this.buildPaperIdentityKey({
+        doi: normalizedDoiRaw,
+        title: normalizedTitle,
+        year: normalizedYear,
+        firstAuthor: normalizedAuthors[0]
+      });
+      const titleAuthorYearKey = this.buildTitleAuthorYearDuplicateKey(
+        normalizedTitle,
+        normalizedAuthors,
+        normalizedYear
+      );
+
+      if (normalizedDoi && existingNormalizedDois.has(normalizedDoi)) {
+        skipped.push({
+          searchResult,
+          clientRef: item.clientRef,
+          reason: 'DUPLICATE_EXISTING'
+        });
+        continue;
+      }
+      if (paperIdentityKey && existingIdentityKeys.has(paperIdentityKey)) {
+        skipped.push({
+          searchResult,
+          clientRef: item.clientRef,
+          reason: 'DUPLICATE_EXISTING'
+        });
+        continue;
+      }
+      if (titleAuthorYearKey && existingTitleAuthorYearKeys.has(titleAuthorYearKey)) {
+        skipped.push({
+          searchResult,
+          clientRef: item.clientRef,
+          reason: 'DUPLICATE_EXISTING'
+        });
+        continue;
+      }
+
+      if (normalizedDoi && batchNormalizedDois.has(normalizedDoi)) {
+        skipped.push({
+          searchResult,
+          clientRef: item.clientRef,
+          reason: 'DUPLICATE_BATCH'
+        });
+        continue;
+      }
+      if (paperIdentityKey && batchIdentityKeys.has(paperIdentityKey)) {
+        skipped.push({
+          searchResult,
+          clientRef: item.clientRef,
+          reason: 'DUPLICATE_BATCH'
+        });
+        continue;
+      }
+      if (titleAuthorYearKey && batchTitleAuthorYearKeys.has(titleAuthorYearKey)) {
+        skipped.push({
+          searchResult,
+          clientRef: item.clientRef,
+          reason: 'DUPLICATE_BATCH'
+        });
+        continue;
+      }
+
+      const citationId = `citation_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      const citationData: CitationData = {
+        id: citationId,
+        title: normalizedTitle,
+        authors: normalizedAuthors,
+        year: normalizedYear,
+        venue: normalizedVenue,
+        volume: undefined,
+        issue: undefined,
+        pages: undefined,
+        doi: normalizedDoiRaw,
+        url: normalizedUrl,
+        isbn: undefined,
+        publisher: undefined,
+        edition: undefined,
+        citationKey: ''
+      };
+
+      citationData.citationKey = citationStyleService.generateCitationKey(citationData, existingCitationKeys);
+      existingCitationKeys.push(citationData.citationKey);
+
+      const aiMeta = item.citationMeta
+        ? {
+            keyContribution: item.citationMeta.keyContribution,
+            keyFindings: item.citationMeta.keyFindings,
+            methodologicalApproach: item.citationMeta.methodologicalApproach,
+            relevanceToResearch: item.citationMeta.relevanceToResearch,
+            limitationsOrGaps: item.citationMeta.limitationsOrGaps,
+            usage: item.citationMeta.usage || {},
+            relevanceScore: item.citationMeta.relevanceScore,
+            analyzedAt: nowIso
+          }
+        : undefined;
+
+      const titleFingerprint = this.buildTitleFingerprint(normalizedTitle);
+      const firstAuthorNormalized = this.normalizeAuthor(normalizedAuthors[0]);
+
+      createRows.push({
+        id: citationId,
+        sessionId,
+        sourceType: this.inferSourceType(searchResult),
+        title: normalizedTitle,
+        authors: normalizedAuthors,
+        year: normalizedYear,
+        venue: normalizedVenue,
+        volume: undefined,
+        issue: undefined,
+        pages: undefined,
+        doi: normalizedDoiRaw,
+        url: normalizedUrl,
+        isbn: undefined,
+        publisher: undefined,
+        edition: undefined,
+        abstract: normalizedAbstract,
+        citationKey: citationData.citationKey,
+        importSource: this.mapSearchSourceToImportSource(normalizedSource),
+        importProvider: normalizedSource || undefined,
+        importProviderPaperId: normalizedProviderPaperId,
+        doiNormalized: normalizedDoi,
+        titleFingerprint,
+        firstAuthorNormalized,
+        paperIdentityKey,
+        notes: normalizedAbstract,
+        tags: [],
+        aiMeta: aiMeta as Prisma.InputJsonValue | undefined
+      });
+
+      acceptedItems.push({
+        id: citationId,
+        item
+      });
+
+      if (normalizedDoi) {
+        batchNormalizedDois.add(normalizedDoi);
+      }
+      if (paperIdentityKey) {
+        batchIdentityKeys.add(paperIdentityKey);
+      }
+      if (titleAuthorYearKey) {
+        batchTitleAuthorYearKeys.add(titleAuthorYearKey);
+      }
+    }
+
+    if (createRows.length > 0) {
+      await prisma.citation.createMany({
+        data: createRows,
+        skipDuplicates: true
+      });
+    }
+
+    const createdIds = acceptedItems.map(item => item.id);
+    const createdMap = new Map<string, Citation>();
+
+    if (createdIds.length > 0) {
+      const created = await prisma.citation.findMany({
+        where: {
+          id: { in: createdIds }
+        }
+      });
+      for (const citation of created) {
+        createdMap.set(citation.id, citation);
+      }
+    }
+
+    const imported: BulkSearchResultImportRecord[] = [];
+    for (const accepted of acceptedItems) {
+      const created = createdMap.get(accepted.id);
+      if (created) {
+        imported.push({
+          citation: created,
+          searchResult: accepted.item.searchResult,
+          clientRef: accepted.item.clientRef
+        });
+        continue;
+      }
+
+      skipped.push({
+        searchResult: accepted.item.searchResult,
+        clientRef: accepted.item.clientRef,
+        reason: 'SKIPPED_BY_DB_CONSTRAINT'
+      });
+    }
+
+    return {
+      imported,
+      skipped
+    };
   }
 
   /**
@@ -285,7 +670,13 @@ class CitationService {
   async deleteCitation(citationId: string): Promise<{ deleted: boolean; warning?: string }> {
     const citation = await prisma.citation.findUnique({
       where: { id: citationId },
-      include: { usages: true }
+      include: {
+        usages: {
+          where: {
+            usageKind: 'DRAFT_CITATION'
+          }
+        }
+      }
     });
 
     if (!citation) {
@@ -325,7 +716,11 @@ class CitationService {
         isActive: true
       },
       include: {
-        usages: true
+        usages: {
+          where: {
+            usageKind: 'DRAFT_CITATION'
+          }
+        }
       },
       orderBy: { createdAt: 'asc' }
     });
@@ -346,7 +741,8 @@ class CitationService {
         isActive: true,
         usages: {
           some: {
-            sectionKey
+            sectionKey,
+            usageKind: 'DRAFT_CITATION'
           }
         }
       },
@@ -363,7 +759,15 @@ class CitationService {
     citationId: string,
     sectionKey: string,
     contextSnippet?: string,
-    position?: number
+    position?: number,
+    options?: {
+      usageKind?: CitationUsageKind;
+      dimension?: string | null;
+      confidence?: DimensionMappingConfidence | null;
+      remark?: string | null;
+      mappedAt?: Date | null;
+      mappingSource?: string | null;
+    }
   ): Promise<CitationUsage> {
     const citation = await prisma.citation.findUnique({
       where: { id: citationId }
@@ -373,12 +777,17 @@ class CitationService {
       throw new Error('Citation not found');
     }
 
+    const usageKind = options?.usageKind || 'DRAFT_CITATION';
+    const dimension = options?.dimension || null;
+
     // Check if usage already exists
     const existingUsage = await prisma.citationUsage.findFirst({
       where: {
         citationId,
         sectionKey,
-        position
+        position,
+        usageKind,
+        dimension: usageKind === 'DIMENSION_MAPPING' ? dimension : undefined
       }
     });
 
@@ -388,6 +797,13 @@ class CitationService {
         where: { id: existingUsage.id },
         data: {
           contextSnippet,
+          remark: options?.remark ?? existingUsage.remark,
+          confidence: options?.confidence ?? existingUsage.confidence,
+          mappedAt: options?.mappedAt ?? existingUsage.mappedAt,
+          mappingSource: usageKind === 'DIMENSION_MAPPING'
+            ? (options?.mappingSource || 'auto')
+            : null,
+          dimension: usageKind === 'DIMENSION_MAPPING' ? dimension : null,
           updatedAt: new Date()
         }
       });
@@ -400,7 +816,15 @@ class CitationService {
         sectionKey,
         contextSnippet,
         position,
-        inTextFormat: await this.generateInTextFormat(citation)
+        inTextFormat: await this.generateInTextFormat(citation),
+        usageKind,
+        dimension: usageKind === 'DIMENSION_MAPPING' ? dimension : null,
+        remark: options?.remark ?? null,
+        confidence: options?.confidence ?? null,
+        mappedAt: options?.mappedAt ?? null,
+        mappingSource: usageKind === 'DIMENSION_MAPPING'
+          ? (options?.mappingSource || 'auto')
+          : null
       }
     });
   }
@@ -414,11 +838,17 @@ class CitationService {
         sessionId,
         isActive: true,
         usages: {
-          none: {}
+          none: {
+            usageKind: 'DRAFT_CITATION'
+          }
         }
       },
       include: {
-        usages: true
+        usages: {
+          where: {
+            usageKind: 'DRAFT_CITATION'
+          }
+        }
       },
       orderBy: { createdAt: 'asc' }
     });
@@ -564,7 +994,11 @@ class CitationService {
         isActive: true
       },
       include: {
-        usages: true
+        usages: {
+          where: {
+            usageKind: 'DRAFT_CITATION'
+          }
+        }
       }
     });
 
@@ -609,6 +1043,16 @@ class CitationService {
     const existingCitations = await this.getCitationsForSession(input.sessionId);
     const existingKeys = existingCitations.map(c => c.citationKey);
 
+    const normalizedDOI = input.doiNormalized ?? this.normalizeDOI(input.doi);
+    const titleFingerprint = input.titleFingerprint ?? this.buildTitleFingerprint(input.title);
+    const firstAuthorNormalized = input.firstAuthorNormalized ?? this.normalizeAuthor(input.authors?.[0]);
+    const paperIdentityKey = input.paperIdentityKey ?? this.buildPaperIdentityKey({
+      doi: input.doi,
+      title: input.title,
+      year: input.year,
+      firstAuthor: input.authors?.[0]
+    });
+
     const citationData: CitationData = {
       id: `citation_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       title: input.title,
@@ -645,8 +1089,15 @@ class CitationService {
         isbn: input.isbn,
         publisher: input.publisher,
         edition: input.edition,
+        abstract: input.abstract,
         citationKey: citationData.citationKey,
         importSource: input.importSource,
+        importProvider: input.importProvider,
+        importProviderPaperId: input.importProviderPaperId,
+        doiNormalized: normalizedDOI,
+        titleFingerprint,
+        firstAuthorNormalized,
+        paperIdentityKey,
         notes: input.notes,
         tags: input.tags || [],
         aiMeta: input.aiMeta || undefined as any
@@ -656,11 +1107,31 @@ class CitationService {
 
   private async findDuplicate(sessionId: string, citationData: Partial<CreateCitationInput | SearchResult>): Promise<Citation | null> {
     // Check DOI first
-    if (citationData.doi) {
+    const normalizedDoi = this.normalizeDOI(citationData.doi);
+    if (normalizedDoi) {
       const existing = await prisma.citation.findFirst({
         where: {
           sessionId,
-          doi: citationData.doi.toLowerCase()
+          OR: [
+            { doi: normalizedDoi },
+            { doiNormalized: normalizedDoi }
+          ]
+        }
+      });
+      if (existing) return existing;
+    }
+
+    const paperIdentityKey = this.buildPaperIdentityKey({
+      doi: citationData.doi,
+      title: citationData.title,
+      year: citationData.year,
+      firstAuthor: citationData.authors?.[0]
+    });
+    if (paperIdentityKey) {
+      const existing = await prisma.citation.findFirst({
+        where: {
+          sessionId,
+          paperIdentityKey
         }
       });
       if (existing) return existing;
@@ -710,6 +1181,79 @@ class CitationService {
     }
 
     return null;
+  }
+
+  private normalizeDOI(doi?: string | null): string | undefined {
+    if (!doi || typeof doi !== 'string') {
+      return undefined;
+    }
+    const normalized = doi
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\/(dx\.)?doi\.org\//, '')
+      .replace(/^doi:/, '')
+      .replace(/\s+/g, '');
+    return normalized || undefined;
+  }
+
+  private buildTitleFingerprint(title?: string | null): string | undefined {
+    if (!title || typeof title !== 'string') {
+      return undefined;
+    }
+    const fingerprint = title
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return fingerprint || undefined;
+  }
+
+  private normalizeAuthor(author?: string | null): string | undefined {
+    if (!author || typeof author !== 'string') {
+      return undefined;
+    }
+    const normalized = author
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    return normalized || undefined;
+  }
+
+  private buildPaperIdentityKey(input: {
+    doi?: string | null;
+    title?: string | null;
+    year?: number | null;
+    firstAuthor?: string | null;
+  }): string | undefined {
+    const doiNormalized = this.normalizeDOI(input.doi);
+    if (doiNormalized) {
+      return `doi:${doiNormalized}`;
+    }
+
+    const titleFingerprint = this.buildTitleFingerprint(input.title);
+    if (!titleFingerprint) {
+      return undefined;
+    }
+
+    const yearPart = input.year ? String(input.year) : 'na';
+    const authorPart = this.normalizeAuthor(input.firstAuthor) || 'na';
+    return `tfp:${titleFingerprint}|y:${yearPart}|fa:${authorPart}`;
+  }
+
+  private buildTitleAuthorYearDuplicateKey(
+    title?: string | null,
+    authors?: string[] | null,
+    year?: number | null
+  ): string | undefined {
+    const titleFingerprint = this.buildTitleFingerprint(title);
+    const firstAuthor = this.normalizeAuthor(authors?.[0]);
+    if (!titleFingerprint || !firstAuthor || !year) {
+      return undefined;
+    }
+    return `${titleFingerprint}|${firstAuthor}|${year}`;
   }
 
   private inferSourceType(citationData: Partial<CreateCitationInput | SearchResult>): CitationSourceType {

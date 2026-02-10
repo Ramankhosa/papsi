@@ -590,6 +590,10 @@ function formatSectionLabel(sectionKey: string): string {
   return sectionKey.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
+function normalizeSectionKey(sectionKey: string): string {
+  return sectionKey.trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
 const displayName: Record<string, string> = {
   title: 'Title', abstract: 'Abstract', introduction: 'Introduction',
   literature_review: 'Literature Review', related_work: 'Related Work',
@@ -641,6 +645,7 @@ export default function SectionDraftingStage({
   const [loading, setLoading] = useState(false);
   const [currentKeys, setCurrentKeys] = useState<string[] | null>(null);
   const [sectionLoading, setSectionLoading] = useState<Record<string, boolean>>({});
+  const [mappedEvidenceBySection, setMappedEvidenceBySection] = useState<Record<string, boolean>>({});
 
   // Auto Mode
   const [autoMode, setAutoMode] = useState(false);
@@ -715,12 +720,21 @@ export default function SectionDraftingStage({
   // Messages
   const [message, setMessage] = useState<string | null>(null);
   const [messageType, setMessageType] = useState<'success' | 'error' | 'warning'>('success');
+  const mappedEvidenceStorageKey = useMemo(
+    () => (sessionId ? `paper:${sessionId}:mapped-evidence` : ''),
+    [sessionId]
+  );
 
   const showMsg = (msg: string, type: 'success' | 'error' | 'warning') => {
     setMessage(msg);
     setMessageType(type);
     setTimeout(() => setMessage(null), 4000);
   };
+
+  const isMappedEvidenceEnabled = useCallback(
+    (sectionKey: string) => mappedEvidenceBySection[normalizeSectionKey(sectionKey)] !== false,
+    [mappedEvidenceBySection]
+  );
 
   // Helper: Extract figure references from content
   const getReferencedFigures = useCallback((sectionContent: string) => {
@@ -845,6 +859,52 @@ export default function SectionDraftingStage({
   }, [sessionId, authToken]);
 
   useEffect(() => { loadSession(); loadCitations(); loadFigures(); }, [loadSession, loadCitations, loadFigures]);
+
+  useEffect(() => {
+    if (!mappedEvidenceStorageKey) return;
+    try {
+      const raw = localStorage.getItem(mappedEvidenceStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        const normalized: Record<string, boolean> = {};
+        for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof value === 'boolean') {
+            normalized[normalizeSectionKey(key)] = value;
+          }
+        }
+        setMappedEvidenceBySection(normalized);
+      }
+    } catch (err) {
+      console.warn('[SectionDrafting] Failed to load mapped evidence preferences:', err);
+    }
+  }, [mappedEvidenceStorageKey]);
+
+  useEffect(() => {
+    const allKeys = (sectionConfigs || fallbackSections).flatMap(s => s.keys).filter(Boolean);
+    if (allKeys.length === 0) return;
+    setMappedEvidenceBySection(prev => {
+      const next = { ...prev };
+      let changed = false;
+      for (const key of allKeys) {
+        const normalized = normalizeSectionKey(key);
+        if (typeof next[normalized] !== 'boolean') {
+          next[normalized] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [sectionConfigs]);
+
+  useEffect(() => {
+    if (!mappedEvidenceStorageKey) return;
+    try {
+      localStorage.setItem(mappedEvidenceStorageKey, JSON.stringify(mappedEvidenceBySection));
+    } catch (err) {
+      console.warn('[SectionDrafting] Failed to persist mapped evidence preferences:', err);
+    }
+  }, [mappedEvidenceBySection, mappedEvidenceStorageKey]);
 
   // REMOVED: Auto-switch to preview mode - always stay in edit mode for stability
 
@@ -1091,19 +1151,44 @@ export default function SectionDraftingStage({
     try {
       const instr = userInstructions[sectionKey];
       const instructions = instr?.isActive !== false ? instr?.instruction || '' : '';
+      const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
       const res = await fetch(`/api/papers/${sessionId}/drafting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ action: 'generate_section', sectionKey, instructions, usePersonaStyle, personaSelection })
+        body: JSON.stringify({
+          action: 'generate_section',
+          sectionKey,
+          instructions,
+          useMappedEvidence,
+          usePersonaStyle,
+          personaSelection
+        })
       });
       const data = await res.json();
-      if (!res.ok) return { success: false, error: data.error || 'Generation failed' };
+      if (!res.ok) {
+        const disallowed = Array.isArray(data?.citationValidation?.disallowedKeys)
+          ? data.citationValidation.disallowedKeys as string[]
+          : [];
+        const unknown = Array.isArray(data?.citationValidation?.unknownKeys)
+          ? data.citationValidation.unknownKeys as string[]
+          : [];
+        const detailParts: string[] = [];
+        if (disallowed.length > 0) {
+          detailParts.push(`disallowed: ${disallowed.slice(0, 5).join(', ')}`);
+        }
+        if (unknown.length > 0) {
+          detailParts.push(`unknown: ${unknown.slice(0, 5).join(', ')}`);
+        }
+        const details = detailParts.length ? ` (${detailParts.join(' | ')})` : '';
+        const hint = typeof data?.hint === 'string' ? ` ${data.hint}` : '';
+        return { success: false, error: `${data.error || 'Generation failed'}${details}${hint}` };
+      }
       if (data.content) return { success: true, content: data.content };
       return { success: false, error: 'No content returned' };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
-  }, [sessionId, authToken, userInstructions, usePersonaStyle, personaSelection]);
+  }, [sessionId, authToken, userInstructions, usePersonaStyle, personaSelection, isMappedEvidenceEnabled]);
 
   const handleGenerate = useCallback(async (keys: string[]) => {
     if (loading) return;
@@ -1182,10 +1267,18 @@ export default function SectionDraftingStage({
     setSectionLoading(prev => ({ ...prev, [sectionKey]: true }));
     try {
       const remarks = regenRemarks[sectionKey] || '';
+      const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
       const res = await fetch(`/api/papers/${sessionId}/drafting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ action: 'generate_section', sectionKey, instructions: remarks, usePersonaStyle, personaSelection })
+        body: JSON.stringify({
+          action: 'generate_section',
+          sectionKey,
+          instructions: remarks,
+          useMappedEvidence,
+          usePersonaStyle,
+          personaSelection
+        })
       });
       const data = await res.json();
       if (res.ok && data.content) {
@@ -1196,14 +1289,29 @@ export default function SectionDraftingStage({
         showMsg('Section regenerated', 'success');
         await refreshSession();
       } else {
-        showMsg(data.error || 'Regeneration failed', 'error');
+        const disallowed = Array.isArray(data?.citationValidation?.disallowedKeys)
+          ? data.citationValidation.disallowedKeys as string[]
+          : [];
+        const unknown = Array.isArray(data?.citationValidation?.unknownKeys)
+          ? data.citationValidation.unknownKeys as string[]
+          : [];
+        const detailParts: string[] = [];
+        if (disallowed.length > 0) {
+          detailParts.push(`disallowed: ${disallowed.slice(0, 5).join(', ')}`);
+        }
+        if (unknown.length > 0) {
+          detailParts.push(`unknown: ${unknown.slice(0, 5).join(', ')}`);
+        }
+        const details = detailParts.length ? ` (${detailParts.join(' | ')})` : '';
+        const hint = typeof data?.hint === 'string' ? ` ${data.hint}` : '';
+        showMsg(`${data.error || 'Regeneration failed'}${details}${hint}`, 'error');
       }
     } catch {
       showMsg('Regeneration failed', 'error');
     } finally {
       setSectionLoading(prev => ({ ...prev, [sectionKey]: false }));
     }
-  }, [sessionId, authToken, regenRemarks, usePersonaStyle, personaSelection, refreshSession]);
+  }, [sessionId, authToken, regenRemarks, usePersonaStyle, personaSelection, refreshSession, isMappedEvidenceEnabled]);
 
   // ============================================================================
   // Citations & Bibliography
@@ -1212,7 +1320,8 @@ export default function SectionDraftingStage({
   // Insert a single citation at cursor position (used by sidebar CitationManager)
   const handleInsertSingleCitation = useCallback((citationKey: string) => {
     // Get target section - use focused section or cursor position
-    const target = focusedSection || (sectionConfigs.length > 0 ? sectionConfigs[0].keys[0] : null);
+    const activeSections = sectionConfigs || fallbackSections;
+    const target = focusedSection || (activeSections.length > 0 ? activeSections[0].keys[0] : null);
     if (!target) return;
 
     const insertText = `[CITE:${citationKey}]`;
@@ -1578,7 +1687,8 @@ export default function SectionDraftingStage({
             </div>
             <div className="p-3 border-t space-y-2">
               <button onClick={() => { 
-                  const targetSection = focusedSection || (sectionConfigs.length > 0 ? sectionConfigs[0].keys[0] : null);
+                  const activeSections = sectionConfigs || fallbackSections;
+                  const targetSection = focusedSection || (activeSections.length > 0 ? activeSections[0].keys[0] : null);
                   if (targetSection) { 
                     insertCitationTargetRef.current = targetSection; 
                     setInsertCitationTarget(targetSection); 
@@ -1616,6 +1726,10 @@ export default function SectionDraftingStage({
             const hasContent = section.keys.some(k => content[k]);
             const isSavingSection = section.keys.some(k => saving[k]);
             const hasPending = section.keys.some(k => pendingChanges.has(k));
+            const primarySectionKey = section.keys[0] || '';
+            const mappedEvidenceEnabled = section.keys.length > 0
+              ? section.keys.every(k => isMappedEvidenceEnabled(k))
+              : true;
 
             return (
               <div key={section.keys.join('|') || idx} className="group relative hover:bg-gray-50/30 transition-colors -mx-4 px-4 py-2 rounded-lg">
@@ -1653,6 +1767,29 @@ export default function SectionDraftingStage({
                         </div>
                       );
                     })()}
+                    {primarySectionKey && (
+                      <label
+                        className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full border border-slate-200 bg-slate-50 text-[10px] font-medium text-slate-700"
+                        title="When enabled, AI uses mapped dimension evidence and citation whitelist for this section."
+                      >
+                        <input
+                          type="checkbox"
+                          className="h-3 w-3 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                          checked={mappedEvidenceEnabled}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setMappedEvidenceBySection(prev => {
+                              const next = { ...prev };
+                              for (const key of section.keys) {
+                                next[normalizeSectionKey(key)] = checked;
+                              }
+                              return next;
+                            });
+                          }}
+                        />
+                        Auto citations
+                      </label>
+                    )}
                     {/* Save indicator */}
                     {isSavingSection && <span className="text-xs text-amber-500 animate-pulse">Saving...</span>}
                     {hasPending && !isSavingSection && <span className="text-xs text-gray-400">Unsaved</span>}
@@ -1854,7 +1991,7 @@ export default function SectionDraftingStage({
 
       <PaperInstructionsModal isOpen={showAllInstructionsModal} onClose={() => setShowAllInstructionsModal(false)}
         sections={(sectionConfigs || fallbackSections).flatMap(s => s.keys.map(k => ({ key: k, label: displayName[k] || formatSectionLabel(k) })))}
-        instructions={userInstructions} onSaveAll={(newInstr) => setUserInstructions(newInstr)} />
+        instructions={userInstructions} onSaveAll={(newInstr) => setUserInstructions(newInstr as Record<string, UserInstruction>)} />
 
       {/* Figure Preview Modal */}
       <AnimatePresence>

@@ -122,8 +122,8 @@ It must NOT:
 
 CITATIONS:
 Do NOT fabricate citations.
-Where background knowledge must be supported, insert:
-[CITATION_NEEDED: <what kind of work should be cited>]
+Citation format and allowed keys are provided in the CITATION INSTRUCTIONS block below.
+Follow those instructions exactly for all in-text citations.
 
 SCIENTIFIC RULES:
 1. Every contribution must be verifiable in later sections.
@@ -164,8 +164,8 @@ The Literature Review must NOT:
 
 CITATIONS:
 Do NOT fabricate citations.
-When a body of work must be cited, insert:
-[CITATION_NEEDED: <type of prior work or representative studies>]
+Citation format and allowed keys are provided in the CITATION INSTRUCTIONS block below.
+Follow those instructions exactly for all in-text citations.
 
 SYNTHESIS RULES:
 1. Group studies by IDEA or APPROACH, not by author or year.
@@ -204,8 +204,8 @@ The Methodology must NOT:
 
 CITATIONS:
 Do NOT fabricate citations.
-Where standard methods require attribution, insert:
-[CITATION_NEEDED: <method / protocol / analytic approach>]
+Citation format and allowed keys are provided in the CITATION INSTRUCTIONS block below.
+Follow those instructions exactly for all in-text citations.
 
 SCIENTIFIC RIGOR RULES:
 1. Every methodological choice must be justified by necessity or constraint.
@@ -283,8 +283,8 @@ The Discussion must NOT:
 
 CITATIONS:
 Do NOT fabricate citations.
-Where comparison to prior work is required, insert:
-[CITATION_NEEDED: <type of related work>]
+Citation format and allowed keys are provided in the CITATION INSTRUCTIONS block below.
+Follow those instructions exactly for all in-text citations.
 
 DISCUSSION DISCIPLINE:
 1. Every interpretive statement must trace to a reported RESULT.

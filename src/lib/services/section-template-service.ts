@@ -8,7 +8,6 @@
 
 import { prisma } from '../prisma';
 import { paperTypeService } from './paper-type-service';
-import { paperSectionTemplates } from '../prompts/paper-section-prompts';
 import type { PaperTypeDefinition, PaperSupersetSection, PaperTypeSectionPrompt } from '@prisma/client';
 
 export interface SectionTemplate {
@@ -100,7 +99,13 @@ class SectionTemplateService {
    */
   async getSectionTemplate(sectionKey: string, paperTypeCode: string): Promise<SectionTemplate | null> {
     const allTemplates = await this.getSectionsForPaperType(paperTypeCode);
-    return allTemplates.find(template => template.sectionKey === sectionKey) || null;
+    const exact = allTemplates.find(template => template.sectionKey === sectionKey);
+    if (exact) return exact;
+
+    const normalizedRequested = this.normalizeSectionKey(sectionKey);
+    return allTemplates.find(
+      template => this.normalizeSectionKey(template.sectionKey) === normalizedRequested
+    ) || null;
   }
 
   /**
@@ -145,23 +150,13 @@ class SectionTemplateService {
     sectionKey: string,
     paperTypeCode: string
   ): Promise<string | null> {
-    const useDb = await this.loadFromDatabase();
+    await this.loadFromDatabase();
     const normalized = paperTypeCode.toUpperCase();
 
-    if (useDb) {
-      const overrideKey = `${normalized}:${sectionKey}`;
-      const dbOverride = this.dbTypeOverrides.get(overrideKey);
-      if (dbOverride) {
-        return dbOverride.instruction;
-      }
-    } else {
-      // Fall back to static templates
-      const template = this.sectionTemplates.find(t => t.sectionKey === sectionKey);
-      if (template?.promptsByPaperType) {
-        if (template.promptsByPaperType[normalized]) {
-          return template.promptsByPaperType[normalized];
-        }
-      }
+    const overrideKey = `${normalized}:${sectionKey}`;
+    const dbOverride = this.dbTypeOverrides.get(overrideKey);
+    if (dbOverride) {
+      return dbOverride.instruction;
     }
 
     return null;
@@ -174,15 +169,29 @@ class SectionTemplateService {
     // Validate template
     this.validateSectionTemplate(template);
 
-    // Store in database (for now, we'll use a simple in-memory approach)
-    // In a full implementation, this would be stored in a SectionTemplate table
-    const existingIndex = this.sectionTemplates.findIndex(t => t.sectionKey === template.sectionKey);
-
-    if (existingIndex >= 0) {
-      this.sectionTemplates[existingIndex] = template;
-    } else {
-      this.sectionTemplates.push(template);
-    }
+    await prisma.paperSupersetSection.upsert({
+      where: { sectionKey: template.sectionKey },
+      update: {
+        label: template.displayName,
+        description: template.description || null,
+        instruction: template.defaultPrompt,
+        constraints: template.constraints as any,
+        displayOrder: template.orderWeight,
+        isRequired: template.isRequired,
+        isActive: true,
+        updatedAt: new Date()
+      },
+      create: {
+        sectionKey: template.sectionKey,
+        label: template.displayName,
+        description: template.description || null,
+        instruction: template.defaultPrompt,
+        constraints: template.constraints as any,
+        displayOrder: template.orderWeight,
+        isRequired: template.isRequired,
+        isActive: true
+      }
+    });
 
     // Clear cache
     this.invalidateCache();
@@ -254,9 +263,6 @@ class SectionTemplateService {
   // PRIVATE METHODS
   // ============================================================================
 
-  // Fallback to static templates if DB is not seeded
-  private sectionTemplates: SectionTemplate[] = paperSectionTemplates;
-  
   // DB-loaded templates cache
   private dbSupersetSections: Map<string, PaperSupersetSection> = new Map();
   private dbTypeOverrides: Map<string, PaperTypeSectionPrompt> = new Map();
@@ -305,9 +311,7 @@ class SectionTemplateService {
       });
 
       if (supersetSections.length === 0) {
-        // Database not seeded, fall back to static templates
-        console.log('PaperSupersetSection table is empty, using static templates');
-        return false;
+        throw new Error('PaperSupersetSection table is empty. Seed paper section prompts before drafting.');
       }
 
       // Load type overrides
@@ -336,7 +340,7 @@ class SectionTemplateService {
       return true;
     } catch (error) {
       console.error('Failed to load paper prompts from database:', error);
-      return false;
+      throw error;
     }
   }
 
@@ -349,44 +353,23 @@ class SectionTemplateService {
    * The paper type additions provide type-specific guidance layered on top.
    */
   private async resolvePromptForPaperType(template: SectionTemplate, paperTypeCode: string): Promise<string> {
-    const useDb = await this.loadFromDatabase();
+    await this.loadFromDatabase();
     const normalized = paperTypeCode.toUpperCase();
 
     let basePrompt = template.defaultPrompt;
     let typeAdditions = '';
 
-    if (useDb) {
-      // Get base prompt from DB (if available)
-      const dbBase = this.dbSupersetSections.get(template.sectionKey);
-      if (dbBase) {
-        basePrompt = dbBase.instruction;
-      }
+    // Get base prompt from DB (if available)
+    const dbBase = this.dbSupersetSections.get(template.sectionKey);
+    if (dbBase) {
+      basePrompt = dbBase.instruction;
+    }
 
-      // Get type-specific ADDITIONS from DB (not replacement!)
-      const overrideKey = `${normalized}:${template.sectionKey}`;
-      const dbOverride = this.dbTypeOverrides.get(overrideKey);
-      if (dbOverride) {
-        typeAdditions = dbOverride.instruction;
-      }
-    } else {
-      // Fall back to static templates for additions
-      const overrides = template.promptsByPaperType;
-      if (overrides) {
-        if (overrides[normalized]) {
-          typeAdditions = overrides[normalized];
-        } else {
-          for (const [key, value] of Object.entries(overrides)) {
-            if (key.endsWith('*') && normalized.startsWith(key.slice(0, -1))) {
-              typeAdditions = value;
-              break;
-            }
-            if (key.startsWith('*') && normalized.endsWith(key.slice(1))) {
-              typeAdditions = value;
-              break;
-            }
-          }
-        }
-      }
+    // Get type-specific ADDITIONS from DB (not replacement!)
+    const overrideKey = `${normalized}:${template.sectionKey}`;
+    const dbOverride = this.dbTypeOverrides.get(overrideKey);
+    if (dbOverride) {
+      typeAdditions = dbOverride.instruction;
     }
 
     // Combine: BASE + TYPE_ADDITIONS (layered, not replaced)
@@ -406,82 +389,57 @@ ${typeAdditions}`;
    * Get just the base prompt without any additions
    */
   async getBasePrompt(sectionKey: string): Promise<string | null> {
-    const useDb = await this.loadFromDatabase();
-    
-    if (useDb) {
-      const dbBase = this.dbSupersetSections.get(sectionKey);
-      if (dbBase) {
-        return dbBase.instruction;
-      }
+    await this.loadFromDatabase();
+
+    const dbBase = this.dbSupersetSections.get(sectionKey);
+    if (dbBase) {
+      return dbBase.instruction;
     }
-    
-    const template = this.sectionTemplates.find(t => t.sectionKey === sectionKey);
-    return template?.defaultPrompt || null;
+
+    return null;
   }
 
   /**
    * Get just the paper type additions (for preview/editing)
    */
   async getPaperTypeAdditions(sectionKey: string, paperTypeCode: string): Promise<string | null> {
-    const useDb = await this.loadFromDatabase();
+    await this.loadFromDatabase();
     const normalized = paperTypeCode.toUpperCase();
     
-    if (useDb) {
-      const overrideKey = `${normalized}:${sectionKey}`;
-      const dbOverride = this.dbTypeOverrides.get(overrideKey);
-      if (dbOverride) {
-        return dbOverride.instruction;
-      }
+    const overrideKey = `${normalized}:${sectionKey}`;
+    const dbOverride = this.dbTypeOverrides.get(overrideKey);
+    if (dbOverride) {
+      return dbOverride.instruction;
     }
-    
-    const template = this.sectionTemplates.find(t => t.sectionKey === sectionKey);
-    if (template?.promptsByPaperType?.[normalized]) {
-      return template.promptsByPaperType[normalized];
-    }
-    
+
     return null;
   }
 
   private async getAllSectionTemplates(): Promise<SectionTemplate[]> {
-    const useDb = await this.loadFromDatabase();
+    await this.loadFromDatabase();
 
-    if (useDb && this.dbSupersetSections.size > 0) {
-      // Convert DB records to SectionTemplate format
-      const dbTemplates: SectionTemplate[] = [];
-      const dbSectionKeys = new Set<string>();
-      
-      for (const ss of Array.from(this.dbSupersetSections.values())) {
-        const constraints = (ss.constraints || {}) as SectionConstraints;
-        dbTemplates.push({
-          sectionKey: ss.sectionKey,
-          displayName: ss.label,
-          description: ss.description || undefined,
-          defaultPrompt: ss.instruction,
-          promptsByPaperType: undefined, // Overrides handled separately
-          constraints,
-          applicablePaperTypes: ['*'], // All types (filtered by DB query)
-          orderWeight: ss.displayOrder,
-          isRequired: ss.isRequired
-        });
-        dbSectionKeys.add(ss.sectionKey);
-      }
-
-      // IMPORTANT: Merge with static templates for any sections not in DB
-      // This ensures new static sections work even if DB hasn't been re-seeded
-      const mergedTemplates = [...dbTemplates];
-      
-      for (const staticTemplate of this.sectionTemplates) {
-        if (!dbSectionKeys.has(staticTemplate.sectionKey)) {
-          console.warn(`Section "${staticTemplate.sectionKey}" not found in DB, using static template`);
-          mergedTemplates.push(staticTemplate);
-        }
-      }
-
-      return mergedTemplates;
+    if (this.dbSupersetSections.size === 0) {
+      throw new Error('Paper section prompts are unavailable. Seed PaperSupersetSection before generating drafts.');
     }
 
-    // Fall back to static templates
-    return this.sectionTemplates;
+    // Convert DB records to SectionTemplate format
+    const dbTemplates: SectionTemplate[] = [];
+    for (const ss of Array.from(this.dbSupersetSections.values())) {
+      const constraints = (ss.constraints || {}) as SectionConstraints;
+      dbTemplates.push({
+        sectionKey: ss.sectionKey,
+        displayName: ss.label,
+        description: ss.description || undefined,
+        defaultPrompt: ss.instruction,
+        promptsByPaperType: undefined, // Overrides handled separately
+        constraints,
+        applicablePaperTypes: ['*'], // All types (filtered by DB query)
+        orderWeight: ss.displayOrder,
+        isRequired: ss.isRequired
+      });
+    }
+
+    return dbTemplates;
   }
 
   private orderTemplatesByPaperType(templates: SectionTemplate[], paperType: any): SectionTemplate[] {
@@ -615,7 +573,11 @@ ${typeAdditions}`;
       conclusion: `Focus on contributions and implications, not just summarizing what you did.`
     };
 
-    return guidance[sectionKey] || '';
+    return guidance[this.normalizeSectionKey(sectionKey)] || '';
+  }
+
+  private normalizeSectionKey(sectionKey: string): string {
+    return sectionKey.trim().toLowerCase().replace(/[\s-]+/g, '_');
   }
 
   private validateSectionTemplate(template: SectionTemplate): void {

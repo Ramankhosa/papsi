@@ -55,6 +55,7 @@ uploads/
 # Temporary files
 *.tmp
 *.temp
+*.tsbuildinfo
 
 # Database backups
 database-backup-*/

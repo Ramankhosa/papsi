@@ -3,8 +3,11 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { llmGateway } from '@/lib/metering/gateway';
+import { defaultConfig as meteringDefaultConfig } from '@/lib/metering/config';
+import { createReservationService } from '@/lib/metering/reservation';
 import { featureFlags } from '@/lib/feature-flags';
 import { blueprintService, type BlueprintWithSectionPlan } from '@/lib/services/blueprint-service';
+import { citationMappingService, type PaperBlueprintMapping } from '@/lib/services/citation-mapping-service';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,10 +26,16 @@ const requestSchema = z.object({
 });
 
 const BATCH_SIZE = 12;
-// Metering system default concurrency limit is 5 per tenant per task.
-// The concurrency-retry loop in processBatchWithRetry handles any overflow
-// gracefully if the admin configures a lower limit via PolicyRule.
-const PARALLEL_BATCH_LIMIT = 5;
+const DEFAULT_PARALLEL_BATCH_LIMIT = parsePositiveInt(
+  process.env.LITERATURE_RELEVANCE_DEFAULT_PARALLEL_BATCH_LIMIT,
+  5
+);
+const MAX_PARALLEL_BATCH_LIMIT = parsePositiveInt(
+  process.env.LITERATURE_RELEVANCE_MAX_PARALLEL_BATCH_LIMIT,
+  15
+);
+const LITERATURE_TASK_CODE = 'LITERATURE_RELEVANCE' as const;
+const reservationService = createReservationService(meteringDefaultConfig);
 
 // ============================================================================
 // Section Filtering Helpers (module-level — used by buildPrompt,
@@ -79,6 +88,33 @@ async function runBatchesInParallel<T, R>(
   return results;
 }
 
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function clampParallelLimit(value: number): number {
+  return Math.max(1, Math.min(value, MAX_PARALLEL_BATCH_LIMIT));
+}
+
+async function resolveParallelBatchLimit(tenantId?: string | null): Promise<number> {
+  const defaultLimit = clampParallelLimit(DEFAULT_PARALLEL_BATCH_LIMIT);
+  if (!tenantId) {
+    return defaultLimit;
+  }
+
+  try {
+    const meteringLimit = await reservationService.getConcurrencyLimit(tenantId, LITERATURE_TASK_CODE);
+    if (typeof meteringLimit === 'number' && meteringLimit > 0) {
+      return clampParallelLimit(meteringLimit);
+    }
+  } catch (error) {
+    console.warn('[CitationMapping] Failed to resolve policy concurrency limit, using default:', error);
+  }
+
+  return defaultLimit;
+}
+
 // Dimension mapping for blueprint integration
 interface DimensionMapping {
   sectionKey: string;
@@ -120,6 +156,17 @@ interface LLMResponse {
   suggestions: CitationAnalysis[];
   summary: string;
   blueprintCoverage?: BlueprintCoverage;
+}
+
+function toMappingStatus(suggestion: CitationAnalysis): PaperBlueprintMapping['mappingStatus'] {
+  const mappings = suggestion.dimensionMappings || [];
+  if (!mappings.length) {
+    return 'UNMAPPED';
+  }
+  if (mappings.length === 1 && mappings[0].confidence === 'LOW') {
+    return 'WEAK';
+  }
+  return 'MAPPED';
 }
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
@@ -517,6 +564,11 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     const citationsWithAbstracts = citations.filter(c => c.abstract);
     const skippedNoAbstractIds = citations.filter(c => !c.abstract).map(c => c.id);
     const papersToAnalyze = citationsWithAbstracts;
+    const parallelBatchLimit = await resolveParallelBatchLimit(user.tenantId);
+
+    console.log(
+      `[CitationMapping] Effective parallel batch limit: ${parallelBatchLimit} (default=${DEFAULT_PARALLEL_BATCH_LIMIT}, max=${MAX_PARALLEL_BATCH_LIMIT})`
+    );
 
     const authHeader = request.headers.get('authorization') || '';
     const headers: Record<string, string> = { authorization: authHeader };
@@ -574,8 +626,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           llmResult = await llmGateway.executeLLMOperation(
             { headers },
             {
-              taskCode: 'LITERATURE_RELEVANCE',
-              stageCode: 'LITERATURE_RELEVANCE',
+              taskCode: LITERATURE_TASK_CODE,
+              stageCode: LITERATURE_TASK_CODE,
               prompt,
               parameters: {
                 temperature: 0.3,
@@ -620,16 +672,32 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           const analysis = parseAndValidateLLMResponse(llmResult.response.output, validPaperIds, blueprint);
           // Only mark papers as analyzed if the LLM actually returned results for them
           const returnedPaperIds = new Set(analysis.suggestions.map(s => s.paperId));
-          const missedInBatch = batch.filter(p => !returnedPaperIds.has(p.id)).map(p => p.id);
-          if (missedInBatch.length > 0) {
-            console.warn(`[CitationMapping] LLM missed ${missedInBatch.length} paper(s) in batch ${batchIndex + 1}: ${missedInBatch.join(', ')}`);
+          const missedPapers = batch.filter(p => !returnedPaperIds.has(p.id));
+          let missedRetrySuggestions: typeof analysis.suggestions = [];
+          let missedRetryAnalyzedIds: string[] = [];
+          let missedRetryFailedIds: string[] = [];
+
+          // Immediately retry missed papers with a smaller batch (avoids
+          // waiting for the second pass). Only retry when there are ≥1
+          // missed papers AND the batch had more than just those papers.
+          if (missedPapers.length > 0 && missedPapers.length < batch.length && depth < 2) {
+            console.warn(`[CitationMapping] LLM missed ${missedPapers.length} paper(s) in batch ${batchIndex + 1}, retrying missed papers immediately`);
+            const missedResult = await processBatchWithRetry(missedPapers, batchIndex, depth + 1);
+            missedRetrySuggestions = missedResult.suggestions;
+            missedRetryAnalyzedIds = missedResult.analyzedPaperIds;
+            missedRetryFailedIds = missedResult.failedPaperIds;
+          } else if (missedPapers.length > 0) {
+            missedRetryFailedIds = missedPapers.map(p => p.id);
+            console.warn(`[CitationMapping] LLM missed ${missedPapers.length} paper(s) in batch ${batchIndex + 1}: ${missedRetryFailedIds.join(', ')}`);
           }
+
           return {
             ...analysis,
-            analyzedPaperIds: Array.from(returnedPaperIds),
+            suggestions: [...analysis.suggestions, ...missedRetrySuggestions],
+            analyzedPaperIds: [...Array.from(returnedPaperIds), ...missedRetryAnalyzedIds],
             parseError: false,
             outputTokens: llmResult.response.outputTokens || 0,
-            failedPaperIds: missedInBatch
+            failedPaperIds: missedRetryFailedIds
           };
         } catch (parseError) {
           console.error(`[CitationMapping] Failed to parse LLM response for batch ${batchIndex + 1}:`, parseError);
@@ -675,7 +743,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       }
     };
 
-    const batchResults = await runBatchesInParallel(batches, PARALLEL_BATCH_LIMIT, async (batch, batchIndex) => {
+    const batchResults = await runBatchesInParallel(batches, parallelBatchLimit, async (batch, batchIndex) => {
       return processBatchWithRetry(batch, batchIndex);
     });
 
@@ -696,12 +764,12 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         for (let i = 0; i < retryPapers.length; i += retryBatchSize) {
           retryBatches.push(retryPapers.slice(i, i + retryBatchSize));
         }
-        const retryResults = await runBatchesInParallel(retryBatches, PARALLEL_BATCH_LIMIT, async (batch, idx) => {
+        const retryResults = await runBatchesInParallel(retryBatches, parallelBatchLimit, async (batch, idx) => {
           return processBatchWithRetry(batch, totalBatches + idx);
         });
         const retrySuggestions = retryResults.flatMap(r => r.suggestions || []);
         const retryAnalyzedIds = retryResults.flatMap(r => r.analyzedPaperIds || []);
-        const retryStillFailed = retryResults.flatMap(r => r.failedPaperIds || []);
+        const retryStillFailed = Array.from(new Set(retryResults.flatMap(r => r.failedPaperIds || [])));
         totalOutputTokens += retryResults.reduce((sum, r) => sum + (r.outputTokens || 0), 0);
 
         // Merge: prefer retry results for papers that were retried successfully
@@ -723,6 +791,90 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       ? `Analysis completed across ${totalBatches} batches.`
       : (batchResults[0]?.summary || 'Analysis completed.');
     const blueprintCoverage = calculateBlueprintCoverage(blueprint, allSuggestions);
+
+    const mappedIds = Array.from(new Set(
+      allSuggestions
+        .map(s => s.paperId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0)
+    ));
+    const citationRows = mappedIds.length > 0
+      ? await prisma.citation.findMany({
+          where: {
+            sessionId,
+            id: { in: mappedIds }
+          },
+          select: {
+            id: true,
+            citationKey: true
+          }
+        })
+      : [];
+    const citationById = new Map(citationRows.map(c => [c.id, c]));
+    const unresolvedPaperIds: string[] = [];
+    const mappingsToPersist: PaperBlueprintMapping[] = [];
+
+    for (const suggestion of allSuggestions) {
+      if (!suggestion.paperId) continue;
+      const citation = citationById.get(suggestion.paperId);
+      if (!citation) {
+        unresolvedPaperIds.push(suggestion.paperId);
+        continue;
+      }
+      const dimensionMappings = suggestion.dimensionMappings || [];
+      if (dimensionMappings.length === 0) {
+        mappingsToPersist.push({
+          paperId: suggestion.paperId,
+          citationKey: citation.citationKey,
+          sectionKey: null,
+          dimensionMappings: [],
+          mappingStatus: toMappingStatus(suggestion)
+        });
+        continue;
+      }
+
+      const bySection = new Map<string, typeof dimensionMappings>();
+      for (const dm of dimensionMappings) {
+        if (!dm.sectionKey) continue;
+        if (!bySection.has(dm.sectionKey)) {
+          bySection.set(dm.sectionKey, []);
+        }
+        bySection.get(dm.sectionKey)!.push(dm);
+      }
+
+      if (bySection.size === 0) {
+        mappingsToPersist.push({
+          paperId: suggestion.paperId,
+          citationKey: citation.citationKey,
+          sectionKey: null,
+          dimensionMappings: [],
+          mappingStatus: 'UNMAPPED'
+        });
+        continue;
+      }
+
+      for (const [mappedSectionKey, sectionMappings] of Array.from(bySection.entries())) {
+        mappingsToPersist.push({
+          paperId: suggestion.paperId,
+          citationKey: citation.citationKey,
+          sectionKey: mappedSectionKey,
+          dimensionMappings: sectionMappings.map((dm: DimensionMapping) => ({
+            dimension: dm.dimension,
+            remark: dm.remark,
+            confidence: dm.confidence
+          })),
+          mappingStatus: toMappingStatus({
+            ...suggestion,
+            dimensionMappings: sectionMappings
+          })
+        });
+      }
+    }
+
+    if (mappingsToPersist.length > 0) {
+      const mappedCitationIds = Array.from(new Set(mappingsToPersist.map(m => m.paperId)));
+      await citationMappingService.clearMappingsForCitations(sessionId, mappedCitationIds);
+      await citationMappingService.storeMappings(sessionId, mappingsToPersist);
+    }
 
     // If all batches failed, return partial success with empty analysis
     if (allSuggestions.length === 0 && parseError) {
@@ -751,7 +903,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             failedPapers: failedPaperIds.length,
             failedPaperIds,
             skippedNoAbstractIds,
-            skippedNoAbstractCount: skippedNoAbstractIds.length
+            skippedNoAbstractCount: skippedNoAbstractIds.length,
+            persistedMappings: 0
           }
         }
       });
@@ -769,7 +922,9 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           citationsAnalyzed: analyzedPaperIds.length,
           dimensionsCovered: blueprintCoverage.coveredDimensions || 0,
           tokensUsed: totalOutputTokens,
-          batches: totalBatches
+          batches: totalBatches,
+          persistedMappings: mappingsToPersist.length,
+          unresolvedPaperIds
         }
       }
     });
@@ -784,13 +939,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         citationsAnalyzed: analyzedPaperIds.length,
         analyzedPaperIds,
         parseError: parseError || undefined,
+        unresolvedPaperIds,
         analysisMeta: {
           totalPapers,
           reviewedPapers,
           failedPapers: failedPaperIds.length,
           failedPaperIds,
           skippedNoAbstractIds,
-          skippedNoAbstractCount: skippedNoAbstractIds.length
+          skippedNoAbstractCount: skippedNoAbstractIds.length,
+          persistedMappings: mappingsToPersist.length
         }
       }
     });

@@ -9,6 +9,11 @@ import { createLLMProvider, getProviderFromModelCode, type ProviderConfig, type 
 import { logLLMCost, calculateCost, type CostBreakdown, ensurePricingLoaded, isPricingLoaded } from '../cost-calculator'
 
 const SHOULD_LOG_PROVIDER_INIT = process.env.LLM_PROVIDER_INIT_LOGS === 'true'
+const parsePositiveIntEnv = (value: string | undefined, fallback: number): number => {
+  const parsed = Number.parseInt(value || '', 10)
+  if (Number.isFinite(parsed) && parsed > 0) return parsed
+  return fallback
+}
 
 export interface ProviderPriority {
   provider: string
@@ -65,7 +70,7 @@ const MODEL_CONTEXT_LIMITS: Record<string, { maxInput: number; maxOutput: number
   'claude-3-5-haiku-20241022': { maxInput: 200000, maxOutput: 8192 },
   'claude-3-opus': { maxInput: 200000, maxOutput: 4096 },
   // Gemini
-  'gemini-2.5-pro': { maxInput: 1000000, maxOutput: 8192 },
+  'gemini-2.5-pro': { maxInput: 2097152, maxOutput: 65536 },
   'gemini-2.0-flash': { maxInput: 1000000, maxOutput: 8192 },
   'gemini-2.0-flash-001': { maxInput: 1000000, maxOutput: 8192 },
   'gemini-2.0-flash-lite': { maxInput: 1000000, maxOutput: 8192 },
@@ -90,6 +95,8 @@ interface ProviderConfigs {
     apiKey: string | undefined
     model: string
     baseURL: string
+    timeout?: number
+    maxRetries?: number
   }
 }
 
@@ -124,7 +131,9 @@ export class LLMProviderRouter {
       openai: {
         apiKey: process.env.OPENAI_API_KEY,
         model: 'gpt-4o',
-        baseURL: 'https://api.openai.com/v1'
+        baseURL: 'https://api.openai.com/v1',
+        timeout: parsePositiveIntEnv(process.env.OPENAI_TIMEOUT_MS, 30000),
+        maxRetries: parsePositiveIntEnv(process.env.OPENAI_MAX_RETRIES, 3)
       },
       
       // Anthropic Claude provider

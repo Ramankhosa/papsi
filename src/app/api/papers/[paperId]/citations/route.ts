@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { citationService } from '@/lib/services/citation-service';
 import { citationStyleService, type CitationData } from '@/lib/services/citation-style-service';
+import { citationMappingService, type CitationMetaSnapshot, type PaperBlueprintMapping } from '@/lib/services/citation-mapping-service';
 
 export const runtime = 'nodejs';
 
@@ -96,6 +97,270 @@ function getDefaultStyleCode(session: any): string {
     || 'APA7';
 }
 
+function normalizeDoi(doi?: string | null): string {
+  return typeof doi === 'string'
+    ? doi.trim().toLowerCase()
+        .replace(/^https?:\/\/(dx\.)?doi\.org\//, '')
+        .replace(/^doi:/, '')
+        .replace(/\s+/g, '')
+    : '';
+}
+
+function normalizeTitleFingerprint(title?: string | null): string {
+  return typeof title === 'string'
+    ? title.trim().toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+    : '';
+}
+
+function normalizeAuthor(author?: string | null): string {
+  return typeof author === 'string'
+    ? author.trim().toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+    : '';
+}
+
+function normalizeProvider(provider?: string | null): string {
+  return typeof provider === 'string'
+    ? provider.trim().toLowerCase().replace(/\s+/g, '_')
+    : '';
+}
+
+function buildPaperIdentityKey(input: {
+  doi?: string | null;
+  title?: string | null;
+  year?: number | null;
+  firstAuthor?: string | null;
+}): string | undefined {
+  const doi = normalizeDoi(input.doi);
+  if (doi) {
+    return `doi:${doi}`;
+  }
+  const titleFingerprint = normalizeTitleFingerprint(input.title);
+  if (!titleFingerprint) {
+    return undefined;
+  }
+  const yearPart = input.year ? String(input.year) : 'na';
+  const authorPart = normalizeAuthor(input.firstAuthor) || 'na';
+  return `tfp:${titleFingerprint}|y:${yearPart}|fa:${authorPart}`;
+}
+
+function toCitationMetaSnapshot(raw: any, fallbackRelevanceScore?: number): CitationMetaSnapshot | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+  const result: CitationMetaSnapshot = {};
+  if (typeof raw.keyContribution === 'string' && raw.keyContribution.trim()) {
+    result.keyContribution = raw.keyContribution.trim().slice(0, 400);
+  }
+  if (typeof raw.keyFindings === 'string' && raw.keyFindings.trim()) {
+    result.keyFindings = raw.keyFindings.trim().slice(0, 400);
+  }
+  if (typeof raw.methodologicalApproach === 'string') {
+    const value = raw.methodologicalApproach.trim();
+    result.methodologicalApproach = value ? value.slice(0, 400) : null;
+  } else if (raw.methodologicalApproach === null) {
+    result.methodologicalApproach = null;
+  }
+  if (typeof raw.relevanceToResearch === 'string' && raw.relevanceToResearch.trim()) {
+    result.relevanceToResearch = raw.relevanceToResearch.trim().slice(0, 500);
+  }
+  if (typeof raw.limitationsOrGaps === 'string') {
+    const value = raw.limitationsOrGaps.trim();
+    result.limitationsOrGaps = value ? value.slice(0, 500) : null;
+  } else if (raw.limitationsOrGaps === null) {
+    result.limitationsOrGaps = null;
+  }
+  if (raw.usage && typeof raw.usage === 'object') {
+    result.usage = {
+      introduction: Boolean(raw.usage.introduction),
+      literatureReview: Boolean(raw.usage.literatureReview),
+      methodology: Boolean(raw.usage.methodology),
+      comparison: Boolean(raw.usage.comparison)
+    };
+  }
+  const relevanceScore = Number(raw.relevanceScore ?? fallbackRelevanceScore);
+  if (Number.isFinite(relevanceScore)) {
+    result.relevanceScore = Math.max(0, Math.min(100, relevanceScore));
+  }
+  result.analyzedAt = new Date().toISOString();
+
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function buildMappingsForCitation(
+  citation: { id: string; citationKey: string },
+  suggestion: any
+): PaperBlueprintMapping[] {
+  const citationMeta = toCitationMetaSnapshot(suggestion.citationMeta, Number(suggestion.relevanceScore));
+  const rawMappings = Array.isArray(suggestion.dimensionMappings) ? suggestion.dimensionMappings : [];
+  if (rawMappings.length === 0) {
+    return [{
+      paperId: citation.id,
+      citationKey: citation.citationKey,
+      sectionKey: null,
+      dimensionMappings: [],
+      mappingStatus: 'UNMAPPED',
+      citationMeta
+    }];
+  }
+
+  const bySection = new Map<string, Array<{
+    dimension: string;
+    remark: string;
+    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  }>>();
+
+  for (const raw of rawMappings) {
+    const sectionKey = typeof raw?.sectionKey === 'string' ? raw.sectionKey.trim() : '';
+    const dimension = typeof raw?.dimension === 'string' ? raw.dimension.trim() : '';
+    if (!sectionKey || !dimension) {
+      continue;
+    }
+    const remark = typeof raw?.remark === 'string' && raw.remark.trim()
+      ? raw.remark.trim().slice(0, 500)
+      : 'No remark provided';
+    const confidence = raw?.confidence === 'HIGH' || raw?.confidence === 'MEDIUM' || raw?.confidence === 'LOW'
+      ? raw.confidence
+      : 'MEDIUM';
+
+    if (!bySection.has(sectionKey)) {
+      bySection.set(sectionKey, []);
+    }
+    bySection.get(sectionKey)!.push({ dimension, remark, confidence });
+  }
+
+  if (bySection.size === 0) {
+    return [{
+      paperId: citation.id,
+      citationKey: citation.citationKey,
+      sectionKey: null,
+      dimensionMappings: [],
+      mappingStatus: 'UNMAPPED',
+      citationMeta
+    }];
+  }
+
+  const mappings: PaperBlueprintMapping[] = [];
+  for (const [sectionKey, dims] of Array.from(bySection.entries())) {
+    const highMedium = dims.filter((d: { confidence: 'HIGH' | 'MEDIUM' | 'LOW' }) => d.confidence === 'HIGH' || d.confidence === 'MEDIUM').length;
+    const mappingStatus: PaperBlueprintMapping['mappingStatus'] = highMedium >= 2
+      ? 'MAPPED'
+      : highMedium >= 1
+        ? 'WEAK'
+        : dims.length > 0
+          ? 'WEAK'
+          : 'UNMAPPED';
+
+    mappings.push({
+      paperId: citation.id,
+      citationKey: citation.citationKey,
+      sectionKey,
+      dimensionMappings: dims,
+      mappingStatus,
+      citationMeta
+    });
+  }
+
+  return mappings;
+}
+
+async function hydrateCitationMappingsFromAnalysis(
+  sessionId: string,
+  citation: {
+    id: string;
+    citationKey: string;
+    doi?: string | null;
+    year?: number | null;
+    title?: string | null;
+    authors?: string[] | null;
+    doiNormalized?: string | null;
+    paperIdentityKey?: string | null;
+  },
+  searchResult: any
+): Promise<void> {
+  const providerPaperId = typeof searchResult?.id === 'string' ? searchResult.id : '';
+  const provider = normalizeProvider(searchResult?.source);
+  const normalizedDoi = normalizeDoi(searchResult?.doi || citation.doi || citation.doiNormalized || '');
+  const identityKey = buildPaperIdentityKey({
+    doi: searchResult?.doi || citation.doi,
+    title: searchResult?.title || citation.title,
+    year: searchResult?.year || citation.year,
+    firstAuthor: Array.isArray(searchResult?.authors) && searchResult.authors.length > 0
+      ? searchResult.authors[0]
+      : Array.isArray(citation.authors) && citation.authors.length > 0
+        ? citation.authors[0]
+        : undefined
+  }) || citation.paperIdentityKey || undefined;
+  const titleFingerprint = normalizeTitleFingerprint(searchResult?.title || citation.title || '');
+
+  const searchRuns = await prisma.literatureSearchRun.findMany({
+    where: { sessionId },
+    orderBy: [
+      { aiAnalyzedAt: 'desc' },
+      { createdAt: 'desc' }
+    ],
+    take: 30,
+    select: {
+      id: true,
+      aiAnalysis: true
+    }
+  });
+
+  let matchedSuggestion: any = null;
+  for (const run of searchRuns) {
+    if (!run.aiAnalysis) {
+      continue;
+    }
+    const suggestions = Array.isArray((run.aiAnalysis as any)?.suggestions)
+      ? (run.aiAnalysis as any).suggestions
+      : [];
+    for (const suggestion of suggestions) {
+      const suggestionIdentity = typeof suggestion?.paperIdentityKey === 'string' ? suggestion.paperIdentityKey : '';
+      const suggestionDoi = normalizeDoi(suggestion?.paperDoi);
+      const suggestionProviderPaperId = typeof suggestion?.providerPaperId === 'string'
+        ? suggestion.providerPaperId
+        : (typeof suggestion?.paperId === 'string' ? suggestion.paperId : '');
+      const suggestionProvider = normalizeProvider(suggestion?.paperSource);
+      const suggestionTitleFingerprint = normalizeTitleFingerprint(suggestion?.paperTitle);
+
+      const matchesIdentity = Boolean(identityKey && suggestionIdentity && identityKey === suggestionIdentity);
+      const matchesDoi = Boolean(normalizedDoi && suggestionDoi && normalizedDoi === suggestionDoi);
+      const matchesProviderPaper = Boolean(
+        providerPaperId
+        && suggestionProviderPaperId
+        && providerPaperId === suggestionProviderPaperId
+        && (!provider || !suggestionProvider || provider === suggestionProvider)
+      );
+      const matchesTitle = Boolean(titleFingerprint && suggestionTitleFingerprint && titleFingerprint === suggestionTitleFingerprint);
+
+      if (matchesIdentity || matchesDoi || matchesProviderPaper || matchesTitle) {
+        matchedSuggestion = suggestion;
+        break;
+      }
+    }
+    if (matchedSuggestion) {
+      break;
+    }
+  }
+
+  if (!matchedSuggestion) {
+    return;
+  }
+
+  const mappings = buildMappingsForCitation(citation, matchedSuggestion);
+  if (mappings.length === 0) {
+    return;
+  }
+
+  await citationMappingService.clearMappingsForCitations(sessionId, [citation.id]);
+  await citationMappingService.storeMappings(sessionId, mappings);
+}
+
 export async function GET(request: NextRequest, context: { params: { paperId: string } }) {
   try {
     const { user, error } = await authenticateUser(request);
@@ -167,6 +432,12 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         data.searchResult,
         data.citationMeta || undefined
       );
+
+      try {
+        await hydrateCitationMappingsFromAnalysis(sessionId, citation, data.searchResult);
+      } catch (mappingHydrationError) {
+        console.warn('[Citations] Failed to hydrate mapping metadata for imported citation:', mappingHydrationError);
+      }
     } else if (data.citation) {
       citation = await citationService.addManualCitation(sessionId, data.citation);
     } else {

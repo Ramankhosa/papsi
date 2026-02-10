@@ -1046,8 +1046,19 @@ class OpenAlexProvider implements SearchProvider {
       // Build filter string for OpenAlex
       const filters: string[] = [];
 
-      if (options.yearFrom) filters.push(`publication_year:>=${options.yearFrom}`);
-      if (options.yearTo) filters.push(`publication_year:<=${options.yearTo}`);
+      // OpenAlex supports >, <, !, and range (YYYY-YYYY) operators — NOT >= or <=
+      const validYearFrom = options.yearFrom && Number.isFinite(options.yearFrom) ? options.yearFrom : null;
+      const validYearTo = options.yearTo && Number.isFinite(options.yearTo) ? options.yearTo : null;
+      if (validYearFrom && validYearTo) {
+        // Use inclusive range syntax: publication_year:2020-2024
+        filters.push(`publication_year:${validYearFrom}-${validYearTo}`);
+      } else if (validYearFrom) {
+        // "greater than (yearFrom - 1)" is equivalent to ">= yearFrom" for integers
+        filters.push(`publication_year:>${validYearFrom - 1}`);
+      } else if (validYearTo) {
+        // "less than (yearTo + 1)" is equivalent to "<= yearTo" for integers
+        filters.push(`publication_year:<${validYearTo + 1}`);
+      }
 
       // Publication type filter
       if (options.publicationTypes && options.publicationTypes.length > 0) {
@@ -1741,25 +1752,30 @@ class COREProvider implements SearchProvider {
       this.lastRequestTime = Date.now();
 
       // Build request body for CORE API v3
-      const requestBody: any = {
-        q: query,
-        limit: options.limit || 20,
-        offset: 0
-      };
+      // CORE v3 search accepts q (query string) and limit/offset
+      // Year filtering uses the query syntax: yearPublished>=YYYY
+      const sanitizedQuery = query.replace(/[^\w\s\-"'.,:;()]/g, ' ').trim();
+      let searchQuery = sanitizedQuery;
 
-      // Add year filters
+      // Add year filters using CORE query syntax
       if (options.yearFrom || options.yearTo) {
-        const filters: string[] = [];
-        if (options.yearFrom) {
-          filters.push(`yearPublished>=${options.yearFrom}`);
+        const yearParts: string[] = [];
+        if (options.yearFrom && Number.isFinite(options.yearFrom)) {
+          yearParts.push(`yearPublished>=${options.yearFrom}`);
         }
-        if (options.yearTo) {
-          filters.push(`yearPublished<=${options.yearTo}`);
+        if (options.yearTo && Number.isFinite(options.yearTo)) {
+          yearParts.push(`yearPublished<=${options.yearTo}`);
         }
-        if (filters.length > 0) {
-          requestBody.q = `(${query}) AND ${filters.join(' AND ')}`;
+        if (yearParts.length > 0) {
+          searchQuery = `(${sanitizedQuery}) AND ${yearParts.join(' AND ')}`;
         }
       }
+
+      const requestBody: any = {
+        q: searchQuery,
+        limit: Math.min(options.limit || 20, 100),
+        offset: 0
+      };
 
       const response = await this.fetchWithTimeout('https://api.core.ac.uk/v3/search/works', {
         method: 'POST',
@@ -1772,7 +1788,10 @@ class COREProvider implements SearchProvider {
           console.warn('CORE API key invalid or expired');
           return [];
         }
-        throw new Error(`CORE API error: ${response.status}`);
+        // Log error details for debugging but don't crash — return empty
+        const errorBody = await response.text().catch(() => 'Unable to read error body');
+        console.error(`CORE API error ${response.status}: ${errorBody.substring(0, 300)}`);
+        return [];
       }
 
       const data = await response.json();

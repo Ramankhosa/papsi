@@ -28,6 +28,35 @@ export interface DimensionMapping {
 }
 
 /**
+ * Optional per-paper AI metadata captured during relevance analysis.
+ * Stored on Citation.aiMeta so drafting prompts can use richer relevance notes.
+ */
+export interface CitationMetaSnapshot {
+  keyContribution?: string;
+  keyFindings?: string;
+  methodologicalApproach?: string | null;
+  relevanceToResearch?: string;
+  limitationsOrGaps?: string | null;
+  claimTypesSupported?: Array<
+    'BACKGROUND' |
+    'GAP' |
+    'METHOD' |
+    'LIMITATION' |
+    'DATASET' |
+    'IMPLEMENTATION_CONSTRAINT'
+  >;
+  evidenceBoundary?: string | null;
+  usage?: {
+    introduction?: boolean;
+    literatureReview?: boolean;
+    methodology?: boolean;
+    comparison?: boolean;
+  };
+  relevanceScore?: number;
+  analyzedAt?: string;
+}
+
+/**
  * Paper to blueprint mapping result
  */
 export interface PaperBlueprintMapping {
@@ -36,6 +65,7 @@ export interface PaperBlueprintMapping {
   sectionKey: string | null;    // null = no clear match (background_only)
   dimensionMappings: DimensionMapping[];
   mappingStatus: 'MAPPED' | 'WEAK' | 'UNMAPPED' | 'ERROR';
+  citationMeta?: CitationMetaSnapshot;
 }
 
 /**
@@ -94,6 +124,16 @@ const BATCH_CONFIG = {
   MIN_ABSTRACT_LENGTH: 50,  // Minimum abstract length to consider
   PARALLEL_BATCH_LIMIT: 3   // Parallel LLM calls per mapping run
 };
+
+const CLAIM_TYPE_VALUES = [
+  'BACKGROUND',
+  'GAP',
+  'METHOD',
+  'LIMITATION',
+  'DATASET',
+  'IMPLEMENTATION_CONSTRAINT'
+] as const;
+const CLAIM_TYPE_SET = new Set<string>(CLAIM_TYPE_VALUES);
 
 // ============================================================================
 // Section Filtering for Literature Mapping
@@ -262,6 +302,7 @@ class CitationMappingService {
       validDimensions: Set<string>;
       dimensionToCanonical: Map<string, string>;
       validSectionKeys: Set<string>;
+      sectionDimensionsByKey: Map<string, string[]>;
     }
   ): Promise<PaperBlueprintMapping[]> {
     
@@ -368,6 +409,13 @@ class CitationMappingService {
       .trim()
       .replace(/\s+/g, ' ')  // Normalize internal whitespace
       .toLowerCase();         // Case-insensitive matching
+  }
+
+  private normalizeSectionKeyString(sectionKey: string): string {
+    return sectionKey
+      .trim()
+      .toLowerCase()
+      .replace(/[\s-]+/g, '_');
   }
 
   /**
@@ -497,7 +545,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
   private parseMappingResponse(
     output: string,
     papers: CitationForMapping[],
-    validDimensions: Set<string>,
+    validDimensions?: Set<string>,
     validSectionKeys?: Set<string>,
     dimensionToCanonical?: Map<string, string>,
     sectionDimensionsByKey?: Map<string, string[]>
@@ -563,13 +611,20 @@ Return ONLY the JSON array, no additional text or explanation.`;
             }).filter(Boolean)
           : [];
 
-        // Validate dimension mappings with exact matching and canonical storage
-        const { validMappings, rejected } = this.validateDimensionMappingsExact(
-          normalizedMappings,
-          validDimensions,
-          dimensionToCanonical
-        );
-        rejectedDimensionCount += rejected;
+        // Strict mode with blueprint validation when structures are provided.
+        // Falls back to legacy validation for compatibility in tests/util usage.
+        let validMappings: DimensionMapping[] = [];
+        if (validDimensions && validDimensions.size > 0) {
+          const strict = this.validateDimensionMappingsExact(
+            normalizedMappings,
+            validDimensions,
+            dimensionToCanonical
+          );
+          validMappings = strict.validMappings;
+          rejectedDimensionCount += strict.rejected;
+        } else {
+          validMappings = this.validateDimensionMappings(normalizedMappings);
+        }
         
         const mapping: PaperBlueprintMapping = {
           paperId: paper.id, // Use the validated paper ID from our input
@@ -674,6 +729,76 @@ Return ONLY the JSON array, no additional text or explanation.`;
     return valid.includes(confidence) ? confidence : 'MEDIUM';
   }
 
+  private sanitizeCitationMeta(meta: CitationMetaSnapshot | undefined): CitationMetaSnapshot | undefined {
+    if (!meta) {
+      return undefined;
+    }
+
+    const cleaned: CitationMetaSnapshot = {};
+    if (typeof meta.keyContribution === 'string' && meta.keyContribution.trim()) {
+      cleaned.keyContribution = meta.keyContribution.trim().slice(0, 400);
+    }
+    if (typeof meta.keyFindings === 'string' && meta.keyFindings.trim()) {
+      cleaned.keyFindings = meta.keyFindings.trim().slice(0, 400);
+    }
+    if (typeof meta.methodologicalApproach === 'string') {
+      const value = meta.methodologicalApproach.trim();
+      cleaned.methodologicalApproach = value ? value.slice(0, 400) : null;
+    } else if (meta.methodologicalApproach === null) {
+      cleaned.methodologicalApproach = null;
+    }
+    if (typeof meta.relevanceToResearch === 'string' && meta.relevanceToResearch.trim()) {
+      cleaned.relevanceToResearch = meta.relevanceToResearch.trim().slice(0, 500);
+    }
+    if (typeof meta.limitationsOrGaps === 'string') {
+      const value = meta.limitationsOrGaps.trim();
+      cleaned.limitationsOrGaps = value ? value.slice(0, 500) : null;
+    } else if (meta.limitationsOrGaps === null) {
+      cleaned.limitationsOrGaps = null;
+    }
+    if (Array.isArray(meta.claimTypesSupported)) {
+      const claimTypes = Array.from(
+        new Set(
+          meta.claimTypesSupported
+            .map(value => String(value).trim().toUpperCase())
+            .filter(value => CLAIM_TYPE_SET.has(value))
+        )
+      ).slice(0, 3) as Array<
+        'BACKGROUND' |
+        'GAP' |
+        'METHOD' |
+        'LIMITATION' |
+        'DATASET' |
+        'IMPLEMENTATION_CONSTRAINT'
+      >;
+      if (claimTypes.length > 0) {
+        cleaned.claimTypesSupported = claimTypes;
+      }
+    }
+    if (typeof meta.evidenceBoundary === 'string') {
+      const value = meta.evidenceBoundary.trim();
+      cleaned.evidenceBoundary = value ? value.slice(0, 400) : null;
+    } else if (meta.evidenceBoundary === null) {
+      cleaned.evidenceBoundary = null;
+    }
+    if (meta.usage && typeof meta.usage === 'object') {
+      cleaned.usage = {
+        introduction: Boolean(meta.usage.introduction),
+        literatureReview: Boolean(meta.usage.literatureReview),
+        methodology: Boolean(meta.usage.methodology),
+        comparison: Boolean(meta.usage.comparison)
+      };
+    }
+    if (typeof meta.relevanceScore === 'number' && Number.isFinite(meta.relevanceScore)) {
+      cleaned.relevanceScore = Math.max(0, Math.min(100, Math.round(meta.relevanceScore)));
+    }
+    if (typeof meta.analyzedAt === 'string' && meta.analyzedAt.trim()) {
+      cleaned.analyzedAt = meta.analyzedAt;
+    }
+
+    return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+  }
+
   /**
    * Deduplicate mappings if LLM returned same paperId multiple times
    * Merges dimension mappings and keeps the first sectionKey encountered
@@ -706,6 +831,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
         // Update the mapping
         existing.dimensionMappings = mergedDimensions.slice(0, BATCH_CONFIG.MAX_DIMENSIONS_PER_PAPER);
         existing.sectionKey = existing.sectionKey || mapping.sectionKey;
+        existing.citationMeta = existing.citationMeta || mapping.citationMeta;
         existing.mappingStatus = this.determineMappingStatus({ dimensionMappings: existing.dimensionMappings });
         
         console.warn(`⚠️ Merged duplicate mapping for paper "${mapping.citationKey}"`);
@@ -785,11 +911,21 @@ Return ONLY the JSON array, no additional text or explanation.`;
    * Uses CitationUsage model with dedicated dimension fields + aiMeta for summary
    * MERGES aiMeta with existing data rather than overwriting
    */
-  private async storeMappings(
+  async storeMappings(
     sessionId: string,
     mappings: PaperBlueprintMapping[]
   ): Promise<void> {
     const now = new Date();
+    
+    // DEBUG: Log overall storage attempt
+    console.log(`[CitationMappingService] storeMappings called with ${mappings.length} mappings for session ${sessionId}`);
+    const withDimensions = mappings.filter(m => m.dimensionMappings.length > 0);
+    const withSectionKey = mappings.filter(m => m.sectionKey);
+    console.log(`[CitationMappingService]   - ${withDimensions.length} mappings have dimensions`);
+    console.log(`[CitationMappingService]   - ${withSectionKey.length} mappings have sectionKey`);
+    
+    let citationUsageCreated = 0;
+    let citationUsageSkipped = 0;
     
     // Process each mapping
     for (const mapping of mappings) {
@@ -807,8 +943,10 @@ Return ONLY the JSON array, no additional text or explanation.`;
 
         // MERGE aiMeta: preserve existing data, add/update blueprintMapping
         const existingMeta = (existingCitation.aiMeta as Record<string, any>) || {};
+        const sanitizedCitationMeta = this.sanitizeCitationMeta(mapping.citationMeta);
         const mergedMeta = {
           ...existingMeta,
+          ...(sanitizedCitationMeta || {}),
           blueprintMapping: {
             sectionKey: mapping.sectionKey,
             mappingStatus: mapping.mappingStatus,
@@ -825,6 +963,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
         });
 
         if (mapping.mappingStatus === 'ERROR' || !mapping.sectionKey) {
+          citationUsageSkipped++;
           continue;
         }
 
@@ -837,12 +976,16 @@ Return ONLY the JSON array, no additional text or explanation.`;
             mapping.citationKey,
             now
           );
+          citationUsageCreated++;
         }
       } catch (error) {
         console.error(`Failed to store mapping for paper ${mapping.paperId}:`, error);
         // Continue with other mappings
       }
     }
+    
+    // DEBUG: Log final counts
+    console.log(`[CitationMappingService] Storage complete: ${citationUsageCreated} CitationUsage records created, ${citationUsageSkipped} mappings skipped (no sectionKey or ERROR)`);
   }
 
   /**
@@ -871,7 +1014,8 @@ Return ONLY the JSON array, no additional text or explanation.`;
         where: {
           citationId,
           sectionKey,
-          dimension: dim.dimension as any
+          dimension: dim.dimension as any,
+          usageKind: 'DIMENSION_MAPPING'
         }
       });
 
@@ -886,6 +1030,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
             citationId,
             sectionKey,
             dimension: dim.dimension as any,
+            usageKind: 'DIMENSION_MAPPING',
             ...usageData
           }
         });
@@ -900,7 +1045,8 @@ Return ONLY the JSON array, no additional text or explanation.`;
           where: {
             citationId,
             sectionKey,
-            dimension: dim.dimension as any
+            dimension: dim.dimension as any,
+            usageKind: 'DIMENSION_MAPPING'
           }
         });
         
@@ -1058,7 +1204,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
         usages: {
           where: {
             dimension: { not: null } as any,
-            mappingSource: 'auto'
+            usageKind: 'DIMENSION_MAPPING'
           },
           select: {
             sectionKey: true,
@@ -1074,6 +1220,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
       .filter(c => c.aiMeta && (c.aiMeta as any).blueprintMapping)
       .map(c => {
         const bm = (c.aiMeta as any).blueprintMapping;
+        const citationMeta = this.sanitizeCitationMeta(c.aiMeta as CitationMetaSnapshot | undefined);
         
         // Build dimension mappings from CitationUsage records
         const dimensionMappings: DimensionMapping[] = c.usages.map(u => ({
@@ -1087,7 +1234,8 @@ Return ONLY the JSON array, no additional text or explanation.`;
           citationKey: c.citationKey,
           sectionKey: bm.sectionKey || (c.usages[0]?.sectionKey ?? null),
           dimensionMappings,
-          mappingStatus: bm.mappingStatus || (dimensionMappings.length > 0 ? 'MAPPED' : 'UNMAPPED')
+          mappingStatus: bm.mappingStatus || (dimensionMappings.length > 0 ? 'MAPPED' : 'UNMAPPED'),
+          citationMeta
         };
       });
   }
@@ -1113,7 +1261,10 @@ Return ONLY the JSON array, no additional text or explanation.`;
       return [];
     }
 
-    const sectionPlan = blueprint.sectionPlan.find(s => s.sectionKey === sectionKey);
+    const normalizedRequestedSection = this.normalizeSectionKeyString(sectionKey);
+    const sectionPlan = blueprint.sectionPlan.find(
+      s => this.normalizeSectionKeyString(s.sectionKey) === normalizedRequestedSection
+    );
     if (!sectionPlan) {
       return [];
     }
@@ -1122,11 +1273,12 @@ Return ONLY the JSON array, no additional text or explanation.`;
     const usages = await prisma.citationUsage.findMany({
       where: {
         citation: { sessionId, isActive: true },
-        sectionKey,
-        dimension: { not: null }  // Only get records with dimension mappings
+        dimension: { not: null }, // Only get records with dimension mappings
+        usageKind: 'DIMENSION_MAPPING'
       },
       select: {
         citationId: true,
+        sectionKey: true,
         dimension: true,
         remark: true,
         confidence: true,
@@ -1137,6 +1289,9 @@ Return ONLY the JSON array, no additional text or explanation.`;
         }
       }
     });
+    const sectionUsages = usages.filter(
+      u => this.normalizeSectionKeyString((u as any).sectionKey || '') === this.normalizeSectionKeyString(sectionPlan.sectionKey)
+    );
 
     // Group by dimension from blueprint mustCover using EXACT matching
     const result: Array<{
@@ -1153,7 +1308,7 @@ Return ONLY the JSON array, no additional text or explanation.`;
       const normalizedBlueprintDim = this.normalizeDimensionString(dimension);
       
       // STRICT: Exact match only - no substring/fuzzy matching
-      const matchingUsages = usages.filter(u =>
+      const matchingUsages = sectionUsages.filter(u =>
         (u as any).dimension &&
         this.normalizeDimensionString((u as any).dimension) === normalizedBlueprintDim
       );
@@ -1193,12 +1348,53 @@ Return ONLY the JSON array, no additional text or explanation.`;
       }
     }
 
-    // Delete CitationUsage records that were auto-created by mapping service
-    // Only delete records where mappingSource is 'auto' (preserves manual usages)
+    // Delete mapping rows written by the mapping flow, keep draft usage rows.
     await prisma.citationUsage.deleteMany({
       where: {
         citation: { sessionId },
-        mappingSource: 'auto'
+        usageKind: 'DIMENSION_MAPPING'
+      }
+    });
+  }
+
+  /**
+   * Legacy validator kept for backward compatibility in tests and utility callers.
+   * Applies structural validation and light normalization without blueprint strictness.
+   */
+  private validateDimensionMappings(mappings: any[]): DimensionMapping[] {
+    if (!Array.isArray(mappings)) {
+      return [];
+    }
+
+    const validMappings: DimensionMapping[] = [];
+    for (const dm of mappings.slice(0, BATCH_CONFIG.MAX_DIMENSIONS_PER_PAPER)) {
+      if (!dm || typeof dm.dimension !== 'string' || typeof dm.remark !== 'string') {
+        continue;
+      }
+
+      validMappings.push({
+        dimension: String(dm.dimension).trim().slice(0, 500),
+        remark: String(dm.remark).trim().slice(0, 500),
+        confidence: this.validateConfidence(dm.confidence)
+      });
+    }
+    return validMappings;
+  }
+
+  /**
+   * Clear auto-generated mapping rows for a subset of citations in a session.
+   * Used by API chunked remapping to avoid stale dimension rows.
+   */
+  async clearMappingsForCitations(sessionId: string, citationIds: string[]): Promise<void> {
+    if (!citationIds.length) {
+      return;
+    }
+
+    await prisma.citationUsage.deleteMany({
+      where: {
+        citationId: { in: citationIds },
+        citation: { sessionId },
+        usageKind: 'DIMENSION_MAPPING'
       }
     });
   }

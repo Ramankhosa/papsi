@@ -173,7 +173,7 @@ export class LLMGateway {
         }
       }
 
-      // 7. Preflight check: validate input size against provider limits
+      // 7. Preflight check: enforce admin limits and emit provider-limit warnings
       const preflightResult = this.preflightCheck(
         selectedModel,
         llmRequest.inputTokens || 0,
@@ -196,11 +196,6 @@ export class LLMGateway {
           success: false,
           error: new MeteringError('INPUT_TOO_LARGE', preflightResult.error || 'Input exceeds limits')
         }
-      }
-      
-      // Apply clamped maxTokensOut if it exceeded provider limits
-      if (preflightResult.clampedMaxTokensOut !== undefined) {
-        decision.maxTokensOut = preflightResult.clampedMaxTokensOut
       }
       
       if (preflightResult.warnings.length > 0) {
@@ -439,7 +434,7 @@ export class LLMGateway {
       'claude-3-haiku-20240307': { maxInput: 200000, maxOutput: 4096 },
       
       // Gemini
-      'gemini-2.5-pro': { maxInput: 1000000, maxOutput: 8192 },
+      'gemini-2.5-pro': { maxInput: 2097152, maxOutput: 65536 },
       'gemini-2.0-flash': { maxInput: 1000000, maxOutput: 8192 },
       'gemini-2.0-flash-001': { maxInput: 1000000, maxOutput: 8192 },
       'gemini-2.0-flash-lite': { maxInput: 1000000, maxOutput: 8192 },
@@ -483,7 +478,7 @@ export class LLMGateway {
     if (lowerCode.startsWith('gpt-3')) return { maxInput: 16385, maxOutput: 4096 }
     if (lowerCode.startsWith('o1')) return { maxInput: 128000, maxOutput: 65536 }
     if (lowerCode.startsWith('claude')) return { maxInput: 200000, maxOutput: 8192 }
-    if (lowerCode.startsWith('gemini')) return { maxInput: 1000000, maxOutput: 8192 }
+    if (lowerCode.startsWith('gemini')) return { maxInput: 1000000, maxOutput: 65536 }
     if (lowerCode.startsWith('llama') || lowerCode.startsWith('groq-llama')) return { maxInput: 128000, maxOutput: 8192 }
     if (lowerCode.startsWith('mixtral') || lowerCode.startsWith('groq-mixtral')) return { maxInput: 32768, maxOutput: 8192 }
     if (lowerCode.startsWith('deepseek')) return { maxInput: 128000, maxOutput: 8192 }
@@ -494,25 +489,25 @@ export class LLMGateway {
   }
 
   /**
-   * Preflight check: validate input size against provider limits
-   * Returns clamped maxTokensOut if it exceeds provider limits
+   * Preflight check:
+   * - Enforces super-admin configured limits
+   * - Emits warnings for known provider limits
    */
   private preflightCheck(
     modelCode: string,
     estimatedInputTokens: number,
     maxTokensIn?: number,
     maxTokensOut?: number
-  ): { valid: boolean; error?: string; warnings: string[]; clampedMaxTokensOut?: number } {
+  ): { valid: boolean; error?: string; warnings: string[] } {
     const warnings: string[] = []
     const providerLimits = this.getProviderContextLimits(modelCode)
     
-    // Check against provider context limits
+    // Provider context limits are advisory here.
+    // Super-admin limits are the only hard enforcement in gateway preflight.
     if (estimatedInputTokens > providerLimits.maxInput) {
-      return {
-        valid: false,
-        error: `Input too large: estimated ${estimatedInputTokens} tokens exceeds ${modelCode} limit of ${providerLimits.maxInput}`,
-        warnings
-      }
+      warnings.push(
+        `Estimated input (${estimatedInputTokens}) exceeds known ${modelCode} limit (${providerLimits.maxInput}); provider may reject request`
+      )
     }
     
     // Check against admin-configured maxTokensIn
@@ -524,11 +519,11 @@ export class LLMGateway {
       }
     }
     
-    // Clamp output tokens to provider limits (FIX: actually clamp, not just warn)
-    let clampedMaxTokensOut: number | undefined
+    // Warn if configured output tokens exceed known provider limits.
     if (maxTokensOut && maxTokensOut > providerLimits.maxOutput) {
-      clampedMaxTokensOut = providerLimits.maxOutput
-      warnings.push(`Clamped output tokens from ${maxTokensOut} to provider limit of ${providerLimits.maxOutput}`)
+      warnings.push(
+        `Configured output tokens (${maxTokensOut}) exceed known ${modelCode} limit (${providerLimits.maxOutput}); provider may reject request`
+      )
     }
     
     // Warn if approaching limits
@@ -536,7 +531,7 @@ export class LLMGateway {
       warnings.push(`Input is ${Math.round(estimatedInputTokens / providerLimits.maxInput * 100)}% of ${modelCode} context limit`)
     }
     
-    return { valid: true, warnings, clampedMaxTokensOut }
+    return { valid: true, warnings }
   }
 
   private getFeatureForTask(taskCode: TaskCode): FeatureCode {

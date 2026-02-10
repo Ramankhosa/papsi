@@ -99,7 +99,7 @@ model Tenant {
   teams           Team[]
   writingSamples  WritingSample[]
   writingPersonas WritingPersona[]
-  
+
   // Paper Writing (academic papers)
   paperWritingSamples  PaperWritingSample[]
   paperWritingPersonas PaperWritingPersona[]
@@ -192,7 +192,7 @@ model User {
   // Writing Samples for example-based style mimicry
   writingSamples  WritingSample[]
   createdPersonas WritingPersona[] @relation("PersonaCreator")
-  
+
   // Paper Writing Samples for academic style mimicry
   paperWritingSamples  PaperWritingSample[]
   createdPaperPersonas PaperWritingPersona[] @relation("PaperPersonaCreator")
@@ -1762,7 +1762,7 @@ model DraftingSession {
 
   // Literature search runs (persisted for AI analysis)
   literatureSearchRuns LiteratureSearchRun[]
-  
+
   // Citation search strategy (systematic query generation)
   citationSearchStrategy CitationSearchStrategy?
 
@@ -2650,8 +2650,8 @@ model PaperWritingPersona {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   // Relations
-  tenant  Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  creator User                @relation("PaperPersonaCreator", fields: [createdBy], references: [id])
+  tenant  Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  creator User                 @relation("PaperPersonaCreator", fields: [createdBy], references: [id])
   samples PaperWritingSample[]
 
   // A user can have multiple personas, but names must be unique per user
@@ -3804,44 +3804,44 @@ model ResearchTopic {
   // ============================================================================
   // BASIC INFO SEGMENT
   // ============================================================================
-  title            String   // Research/paper title
-  field            String?  // Research field (e.g., "Computer Science")
-  subfield         String?  // Subfield/specialization
-  topicDescription String?  @db.Text // Brief topic description
+  title            String // Research/paper title
+  field            String? // Research field (e.g., "Computer Science")
+  subfield         String? // Subfield/specialization
+  topicDescription String? @db.Text // Brief topic description
 
   // ============================================================================
   // RESEARCH QUESTION SEGMENT
   // ============================================================================
-  researchQuestion  String   @db.Text // Main research question (required)
-  subQuestions      String[] // Sub-questions to investigate
-  problemStatement  String?  @db.Text // Problem being addressed
-  researchGaps      String?  @db.Text // Identified gaps in literature
+  researchQuestion String   @db.Text // Main research question (required)
+  subQuestions     String[] // Sub-questions to investigate
+  problemStatement String?  @db.Text // Problem being addressed
+  researchGaps     String?  @db.Text // Identified gaps in literature
 
   // ============================================================================
   // METHODOLOGY SEGMENT
   // ============================================================================
-  methodology            MethodologyType // Research methodology type
-  methodologyApproach    String?  @db.Text // Detailed approach description
-  techniques             String[] // Research techniques to use
-  methodologyJustification String? @db.Text // Why this methodology
+  methodology              MethodologyType // Research methodology type
+  methodologyApproach      String?         @db.Text // Detailed approach description
+  techniques               String[] // Research techniques to use
+  methodologyJustification String?         @db.Text // Why this methodology
 
   // ============================================================================
   // DATA & EXPERIMENTATION SEGMENT
   // ============================================================================
   datasetDescription String?  @db.Text // Description of dataset
   dataCollection     String?  @db.Text // Data collection method
-  sampleSize         String?  // Expected sample size
+  sampleSize         String? // Expected sample size
   tools              String[] // Tools/software to use
   experiments        String?  @db.Text // Planned experiments
 
   // ============================================================================
   // EXPECTED OUTCOMES SEGMENT
   // ============================================================================
-  hypothesis       String?  @db.Text // Research hypothesis
-  expectedResults  String?  @db.Text // Expected findings
+  hypothesis       String?          @db.Text // Research hypothesis
+  expectedResults  String?          @db.Text // Expected findings
   contributionType ContributionType // Type of contribution
-  novelty          String?  @db.Text // What makes this novel
-  limitations      String?  @db.Text // Known limitations
+  novelty          String?          @db.Text // What makes this novel
+  limitations      String?          @db.Text // Known limitations
 
   // ============================================================================
   // KEYWORDS & ABSTRACT
@@ -3854,7 +3854,7 @@ model ResearchTopic {
   // ============================================================================
   llmPromptUsed String? @db.Text // The prompt that generated this topic
   llmResponse   String? @db.Text // Raw LLM response
-  llmTokensUsed Int?    // Token usage for billing/analytics
+  llmTokensUsed Int? // Token usage for billing/analytics
 
   // Timestamps
   createdAt DateTime @default(now())
@@ -3872,13 +3872,13 @@ model ResearchTopic {
 
 // Paper Blueprint - Frozen plan that governs all section generation
 model PaperBlueprint {
-  id        String @id @default(cuid())
-  sessionId String @unique
+  id        String          @id @default(cuid())
+  sessionId String          @unique
   session   DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   // Core thesis elements (synthesized from ResearchTopic)
-  thesisStatement  String  @db.Text // Single sentence central claim
-  centralObjective String  @db.Text // 1-2 sentences: what the paper will achieve
+  thesisStatement  String   @db.Text // Single sentence central claim
+  centralObjective String   @db.Text // 1-2 sentences: what the paper will achieve
   keyContributions String[] // 3-7 testable outcomes/deliverables
 
   // Section plan - methodology-aware structure
@@ -3901,8 +3901,8 @@ model PaperBlueprint {
   frozenAt DateTime?
 
   // Versioning
-  version   Int    @default(1)
-  changeLog Json?  // Array of { version, changedAt, changes[] }
+  version   Int   @default(1)
+  changeLog Json? // Array of { version, changedAt, changes[] }
 
   // LLM metadata
   llmPromptUsed String? @db.Text
@@ -3920,16 +3920,16 @@ model PaperBlueprint {
 
 // Paper Section - Generated content with inline memory
 model PaperSection {
-  id        String @id @default(cuid())
+  id        String          @id @default(cuid())
   sessionId String
   session   DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   // Section identification
-  sectionKey   String // e.g., "introduction", "methodology", "results"
-  displayName  String // Human-readable name
+  sectionKey  String // e.g., "introduction", "methodology", "results"
+  displayName String // Human-readable name
 
   // Generated content
-  content   String  @db.Text
+  content   String @db.Text
   wordCount Int?
 
   // Inline memory (key innovation - passed to subsequent sections)
@@ -3943,8 +3943,8 @@ model PaperSection {
   tokensUsed       Int?
 
   // Status
-  status    PaperSectionStatus @default(DRAFT)
-  isStale   Boolean            @default(false) // Marked stale if blueprint changes
+  status  PaperSectionStatus @default(DRAFT)
+  isStale Boolean            @default(false) // Marked stale if blueprint changes
 
   // Versioning
   version Int @default(1)
@@ -3981,15 +3981,15 @@ enum PaperSectionStatus {
 
 // Base section definitions for academic papers (like SupersetSection for patents)
 model PaperSupersetSection {
-  id           String   @id @default(cuid())
-  sectionKey   String   @unique @map("section_key") // e.g., "abstract", "introduction", "methodology"
-  displayOrder Int      @map("display_order") // Order in the drafting flow
+  id           String  @id @default(cuid())
+  sectionKey   String  @unique @map("section_key") // e.g., "abstract", "introduction", "methodology"
+  displayOrder Int     @map("display_order") // Order in the drafting flow
   label        String // Display label: "Abstract", "Introduction", etc.
-  description  String?  @db.Text // Description of what this section contains
-  instruction  String   @db.Text // Base prompt instruction for LLM
-  constraints  Json     @default("{}") // { wordLimit, citationRequirements, tenseRequirements, styleRequirements }
-  isRequired   Boolean  @default(true) @map("is_required") // Default required status
-  isActive     Boolean  @default(true) @map("is_active") // Can be disabled without deleting
+  description  String? @db.Text // Description of what this section contains
+  instruction  String  @db.Text // Base prompt instruction for LLM
+  constraints  Json    @default("{}") // { wordLimit, citationRequirements, tenseRequirements, styleRequirements }
+  isRequired   Boolean @default(true) @map("is_required") // Default required status
+  isActive     Boolean @default(true) @map("is_active") // Can be disabled without deleting
 
   // Context injection flags for papers
   requiresBlueprint        Boolean @default(true) @map("requires_blueprint") // Inject blueprint context
@@ -4012,21 +4012,21 @@ model PaperSupersetSection {
 // Paper-type-specific prompt overrides (like CountrySectionPrompt for patents)
 // New paper types automatically inherit base prompts from PaperSupersetSection
 model PaperTypeSectionPrompt {
-  id              String                       @id @default(cuid())
-  paperTypeCode   String                       @map("paper_type_code") // e.g., "JOURNAL_ARTICLE", "CONFERENCE_PAPER"
-  sectionKey      String                       @map("section_key") // canonical key: "abstract", "introduction", etc.
-  instruction     String                       @db.Text // Override instruction (merged with base prompt)
-  constraints     Json                         @default("{}") // Override constraints (merged with base)
-  additions       Json?                        @default("[]") // Array of additional guidance strings
-  version         Int                          @default(1)
-  status          PaperTypeSectionPromptStatus @default(ACTIVE)
-  createdBy       String?                      @map("created_by")
-  updatedBy       String?                      @map("updated_by")
-  createdAt       DateTime                     @default(now()) @map("created_at")
-  updatedAt       DateTime                     @updatedAt @map("updated_at")
+  id            String                       @id @default(cuid())
+  paperTypeCode String                       @map("paper_type_code") // e.g., "JOURNAL_ARTICLE", "CONFERENCE_PAPER"
+  sectionKey    String                       @map("section_key") // canonical key: "abstract", "introduction", etc.
+  instruction   String                       @db.Text // Override instruction (merged with base prompt)
+  constraints   Json                         @default("{}") // Override constraints (merged with base)
+  additions     Json?                        @default("[]") // Array of additional guidance strings
+  version       Int                          @default(1)
+  status        PaperTypeSectionPromptStatus @default(ACTIVE)
+  createdBy     String?                      @map("created_by")
+  updatedBy     String?                      @map("updated_by")
+  createdAt     DateTime                     @default(now()) @map("created_at")
+  updatedAt     DateTime                     @updatedAt @map("updated_at")
 
   // Relations
-  supersetSection PaperSupersetSection          @relation(fields: [sectionKey], references: [sectionKey])
+  supersetSection PaperSupersetSection            @relation(fields: [sectionKey], references: [sectionKey])
   history         PaperTypeSectionPromptHistory[]
 
   @@unique([paperTypeCode, sectionKey], name: "paper_type_section_unique")
@@ -4095,8 +4095,16 @@ model Citation {
   bibtex      String? // Full BibTeX representation
 
   // Import metadata
-  importSource CitationImportSource @default(MANUAL)
-  importDate   DateTime             @default(now())
+  importSource          CitationImportSource @default(MANUAL)
+  importDate            DateTime             @default(now())
+  importProvider        String?
+  importProviderPaperId String?
+
+  // Stable identity for search-result <-> citation reconciliation
+  doiNormalized         String?
+  titleFingerprint      String?
+  firstAuthorNormalized String?
+  paperIdentityKey      String?
 
   // User annotations
   notes String?
@@ -4121,6 +4129,9 @@ model Citation {
   @@index([sessionId])
   @@index([citationKey])
   @@index([doi])
+  @@index([sessionId, doiNormalized])
+  @@index([sessionId, paperIdentityKey])
+  @@index([sessionId, importProvider, importProviderPaperId])
   @@index([sourceType])
   @@index([importSource])
   @@index([isActive])
@@ -4141,29 +4152,38 @@ model CitationUsage {
 
   // Citation format used
   inTextFormat String // The actual formatted citation text used (e.g., "(Smith et al., 2023)")
+  usageKind    CitationUsageKind @default(DRAFT_CITATION)
 
   // Blueprint dimension mapping (Part B of SRS - optional, populated by citation mapping service)
-  dimension       String?                    // The mustCover dimension this citation supports
-  remark          String?     @db.Text       // LLM-generated remark explaining support for the dimension
-  confidence      DimensionMappingConfidence? // Confidence level of the mapping
-  mappedAt        DateTime?                  // When the mapping was generated
-  mappingSource   String?     @default("auto") // "auto" for LLM-generated, "manual" for user-set
+  dimension     String? // The mustCover dimension this citation supports
+  remark        String?                     @db.Text // LLM-generated remark explaining support for the dimension
+  confidence    DimensionMappingConfidence? // Confidence level of the mapping
+  mappedAt      DateTime? // When the mapping was generated
+  mappingSource String?                     @default("auto") // "auto" for LLM-generated, "manual" for user-set
 
   // Timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  @@unique([citationId, sectionKey, dimension, usageKind], name: "citation_usage_dim_map_uniq")
   @@index([citationId])
   @@index([sectionKey])
+  @@index([citationId, usageKind])
+  @@index([sectionKey, usageKind])
   @@index([dimension])
   @@map("citation_usages")
 }
 
 // Confidence level for citation-to-dimension mappings
 enum DimensionMappingConfidence {
-  HIGH    // Clear, direct support for the dimension
-  MEDIUM  // Reasonable support, some interpretation required
-  LOW     // Weak/tangential support
+  HIGH // Clear, direct support for the dimension
+  MEDIUM // Reasonable support, some interpretation required
+  LOW // Weak/tangential support
+}
+
+enum CitationUsageKind {
+  DRAFT_CITATION
+  DIMENSION_MAPPING
 }
 
 enum VenueType {
@@ -4279,22 +4299,22 @@ model CitationSearchStrategy {
   sessionId String @unique
 
   // Source information for generation
-  paperTitle       String?
-  paperAbstract    String?  @db.Text
-  keywords         String[]
-  researchFocus    String?  @db.Text // Main focus/objective of the research
+  paperTitle    String?
+  paperAbstract String?  @db.Text
+  keywords      String[]
+  researchFocus String?  @db.Text // Main focus/objective of the research
 
   // Generation metadata
-  generatedAt DateTime  @default(now())
+  generatedAt DateTime @default(now())
   aiModelUsed String?
-  
+
   // Strategy overview
-  summary          String?  @db.Text // AI-generated overview of the search strategy
-  estimatedPapers  Int?     // Estimated total papers to find
-  
+  summary         String? @db.Text // AI-generated overview of the search strategy
+  estimatedPapers Int? // Estimated total papers to find
+
   // Status
-  status           SearchStrategyStatus @default(DRAFT)
-  completedAt      DateTime?
+  status      SearchStrategyStatus @default(DRAFT)
+  completedAt DateTime?
 
   // Timestamps
   createdAt DateTime @default(now())
@@ -4312,28 +4332,28 @@ model CitationSearchStrategy {
 model CitationSearchQuery {
   id         String @id @default(cuid())
   strategyId String
-  
+
   // Query details
-  queryText    String   // The actual search query
-  category     SearchQueryCategory
-  description  String   // Why this query is included / what it covers
-  priority     Int      // Execution order (1 = first)
-  
+  queryText   String // The actual search query
+  category    SearchQueryCategory
+  description String // Why this query is included / what it covers
+  priority    Int // Execution order (1 = first)
+
   // Search suggestions
-  suggestedSources   String[]  // Recommended sources for this query
-  suggestedYearFrom  Int?      // Suggested year range
-  suggestedYearTo    Int?
-  suggestedFilters   Json?     // Additional filter suggestions
-  
+  suggestedSources  String[] // Recommended sources for this query
+  suggestedYearFrom Int? // Suggested year range
+  suggestedYearTo   Int?
+  suggestedFilters  Json? // Additional filter suggestions
+
   // Execution status
   status        SearchQueryStatus @default(PENDING)
   searchedAt    DateTime?
-  resultsCount  Int?              // Total results from search
-  importedCount Int?              // Papers imported from this query
-  
+  resultsCount  Int? // Total results from search
+  importedCount Int? // Papers imported from this query
+
   // Notes
-  userNotes     String?  @db.Text
-  
+  userNotes String? @db.Text
+
   // Timestamps
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -4350,30 +4370,30 @@ model CitationSearchQuery {
 }
 
 enum SearchStrategyStatus {
-  DRAFT       // Being generated
-  READY       // Ready to use
+  DRAFT // Being generated
+  READY // Ready to use
   IN_PROGRESS // Some queries executed
-  COMPLETED   // All queries done
+  COMPLETED // All queries done
 }
 
 enum SearchQueryCategory {
-  CORE_CONCEPTS         // Main topic keywords
-  DOMAIN_APPLICATION    // Field-specific papers
-  METHODOLOGY           // Methods and techniques
+  CORE_CONCEPTS // Main topic keywords
+  DOMAIN_APPLICATION // Field-specific papers
+  METHODOLOGY // Methods and techniques
   THEORETICAL_FOUNDATION // Foundational/seminal works
-  SURVEYS_REVIEWS       // Existing reviews and surveys
-  COMPETING_APPROACHES  // Alternative methods/baselines
-  RECENT_ADVANCES       // Latest papers
-  GAP_IDENTIFICATION    // Papers highlighting gaps
-  CUSTOM                // User-added queries
+  SURVEYS_REVIEWS // Existing reviews and surveys
+  COMPETING_APPROACHES // Alternative methods/baselines
+  RECENT_ADVANCES // Latest papers
+  GAP_IDENTIFICATION // Papers highlighting gaps
+  CUSTOM // User-added queries
 }
 
 enum SearchQueryStatus {
-  PENDING     // Not yet searched
-  SEARCHING   // Currently searching
-  SEARCHED    // Search completed, reviewing results
-  COMPLETED   // Done - papers imported
-  SKIPPED     // User chose to skip this query
+  PENDING // Not yet searched
+  SEARCHING // Currently searching
+  SEARCHED // Search completed, reviewing results
+  COMPLETED // Done - papers imported
+  SKIPPED // User chose to skip this query
 }
 
 model ReferenceLibrary {

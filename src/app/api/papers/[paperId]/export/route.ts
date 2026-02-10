@@ -80,13 +80,7 @@ function stripHtml(value: string): string {
 }
 
 function extractCitationKeys(content: string): string[] {
-  const keys = new Set<string>();
-  const pattern = /\[CITE:([^\]]+)\]/g;
-  let match;
-  while ((match = pattern.exec(content)) !== null) {
-    keys.add(match[1]);
-  }
-  return Array.from(keys);
+  return DraftingService.extractCitationKeys(content);
 }
 
 function parseFormattingGuidelines(venue: any) {

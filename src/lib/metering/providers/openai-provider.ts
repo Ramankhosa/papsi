@@ -5,6 +5,14 @@
 import type { LLMRequest, LLMResponse, EnforcementDecision, MultimodalContent } from '../types'
 import type { LLMProvider, ProviderConfig } from './llm-provider'
 
+const DEFAULT_OPENAI_TIMEOUT_MS = 30000
+// GPT-5 and o1 models use reasoning and produce longer outputs; they need a much
+// larger timeout to avoid AbortError on complex prompts (e.g., paper section drafting).
+const DEFAULT_GPT5_TIMEOUT_MS = 120000
+const DEFAULT_O1_TIMEOUT_MS = 120000
+const DEFAULT_OPENAI_MAX_RETRIES = 3
+const RETRYABLE_HTTP_STATUS_CODES = new Set([408, 429, 500, 502, 503, 504])
+
 export class OpenAIProvider implements LLMProvider {
   name = 'openai'
   supportedModels = [
@@ -36,6 +44,49 @@ export class OpenAIProvider implements LLMProvider {
     this.config = config
   }
 
+  private getTimeoutMs(modelCode?: string): number {
+    const configuredTimeout = this.config.timeout
+    if (typeof configuredTimeout === 'number' && Number.isFinite(configuredTimeout) && configuredTimeout > 0) {
+      return configuredTimeout
+    }
+    // Use longer defaults for models that require more processing time
+    if (modelCode) {
+      if (modelCode.startsWith('gpt-5')) return DEFAULT_GPT5_TIMEOUT_MS
+      if (modelCode.startsWith('o1')) return DEFAULT_O1_TIMEOUT_MS
+    }
+    return DEFAULT_OPENAI_TIMEOUT_MS
+  }
+
+  private getMaxRetries(): number {
+    const configuredRetries = this.config.maxRetries
+    if (typeof configuredRetries === 'number' && Number.isFinite(configuredRetries) && configuredRetries > 0) {
+      return Math.floor(configuredRetries)
+    }
+    return DEFAULT_OPENAI_MAX_RETRIES
+  }
+
+  private isRetryableNetworkError(error: unknown): boolean {
+    if (!(error instanceof Error)) return false
+
+    const message = error.message.toLowerCase()
+    return (
+      error.name === 'AbortError' ||
+      message.includes('fetch failed') ||
+      message.includes('und_err_connect_timeout') ||
+      message.includes('timed out') ||
+      message.includes('etimedout') ||
+      message.includes('econnreset') ||
+      message.includes('econnrefused') ||
+      message.includes('enotfound') ||
+      message.includes('eai_again')
+    )
+  }
+
+  private async waitBeforeRetry(attempt: number): Promise<void> {
+    const delayMs = Math.min(1000 * Math.pow(2, attempt - 1), 5000)
+    await new Promise(resolve => setTimeout(resolve, delayMs))
+  }
+
   private normalizeModelCode(modelCode: string): {
     apiModel: string
     isThinkingVariant: boolean
@@ -65,7 +116,10 @@ export class OpenAIProvider implements LLMProvider {
     
     // Apply enforcement limits - some models use max_completion_tokens instead of max_tokens
     const maxTokens = limits.maxTokensOut || 4096
+    const timeoutMs = this.getTimeoutMs(modelToUse)
+    const maxAttempts = this.getMaxRetries()
     console.log(`[OpenAIProvider] Token limits: admin=${limits.maxTokensOut || 'not set'}, using=${maxTokens}`)
+    console.log(`[OpenAIProvider] Request timeout=${timeoutMs}ms, maxAttempts=${maxAttempts}`)
 
     try {
       // Build message content for OpenAI
@@ -143,37 +197,78 @@ export class OpenAIProvider implements LLMProvider {
         }
       }
       
-      const response = await fetch(`${this.config.baseURL}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.config.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(requestBody),
-      })
+      let lastError: Error | null = null
 
-      if (!response.ok) {
-        const error = await response.text()
-        throw new Error(`OpenAI API error: ${response.status} ${error}`)
-      }
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
-      const data = await response.json()
+        try {
+          const response = await fetch(`${this.config.baseURL}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${this.config.apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal
+          })
 
-      const choice = data.choices[0]
-      const usage = data.usage
+          if (!response.ok) {
+            const errorText = await response.text()
+            const statusError = new Error(`OpenAI API error: ${response.status} ${errorText}`)
+            const canRetry = attempt < maxAttempts && RETRYABLE_HTTP_STATUS_CODES.has(response.status)
 
-      return {
-        output: choice.message.content,
-        outputTokens: usage?.completion_tokens || 0,
-        modelClass: requestedModel, // Preserve the configured model code (may be a thinking alias)
-        metadata: {
-          provider: 'openai',
-          inputTokens: usage?.prompt_tokens || 0,
-          totalTokens: usage?.total_tokens || 0,
-          finishReason: choice.finish_reason,
-          modelUsed: modelToUse
+            if (canRetry) {
+              console.warn(
+                `[OpenAIProvider] Attempt ${attempt}/${maxAttempts} returned status ${response.status}. Retrying...`
+              )
+              await this.waitBeforeRetry(attempt)
+              continue
+            }
+
+            throw statusError
+          }
+
+          const data = await response.json()
+          const choice = data.choices?.[0]
+          const usage = data.usage
+
+          if (!choice?.message?.content) {
+            throw new Error('OpenAI API returned an empty response')
+          }
+
+          return {
+            output: choice.message.content,
+            outputTokens: usage?.completion_tokens || 0,
+            modelClass: requestedModel, // Preserve the configured model code (may be a thinking alias)
+            metadata: {
+              provider: 'openai',
+              inputTokens: usage?.prompt_tokens || 0,
+              totalTokens: usage?.total_tokens || 0,
+              finishReason: choice.finish_reason,
+              modelUsed: modelToUse
+            }
+          }
+        } catch (error) {
+          lastError = error instanceof Error ? error : new Error(String(error))
+
+          const canRetry = attempt < maxAttempts && this.isRetryableNetworkError(lastError)
+          if (canRetry) {
+            console.warn(
+              `[OpenAIProvider] Attempt ${attempt}/${maxAttempts} failed (${lastError.message}). Retrying...`
+            )
+            await this.waitBeforeRetry(attempt)
+            continue
+          }
+
+          throw lastError
+        } finally {
+          clearTimeout(timeoutId)
         }
       }
+
+      throw new Error(`OpenAI API call failed after ${maxAttempts} attempts: ${lastError?.message || 'Unknown error'}`)
     } catch (error) {
       console.error('OpenAI API error:', error)
       throw new Error(`OpenAI API call failed: ${error instanceof Error ? error.message : String(error)}`)
@@ -233,16 +328,21 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async isHealthy(): Promise<boolean> {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), this.getTimeoutMs())
     try {
       const response = await fetch(`${this.config.baseURL}/models`, {
         headers: {
           'Authorization': `Bearer ${this.config.apiKey}`,
         },
+        signal: controller.signal
       })
       return response.ok
     } catch (error) {
       console.error('OpenAI health check failed:', error)
       return false
+    } finally {
+      clearTimeout(timeoutId)
     }
   }
 }

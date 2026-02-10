@@ -3,8 +3,11 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { llmGateway } from '@/lib/metering/gateway';
+import { defaultConfig as meteringDefaultConfig } from '@/lib/metering/config';
+import { createReservationService } from '@/lib/metering/reservation';
 import { featureFlags } from '@/lib/feature-flags';
 import { blueprintService, type BlueprintWithSectionPlan, type SectionPlanItem } from '@/lib/services/blueprint-service';
+import { citationMappingService, type CitationMetaSnapshot, type PaperBlueprintMapping } from '@/lib/services/citation-mapping-service';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,7 +26,16 @@ const updateSchema = z.object({
 });
 
 const BATCH_SIZE = 12;
-const PARALLEL_BATCH_LIMIT = 5;
+const DEFAULT_PARALLEL_BATCH_LIMIT = parsePositiveInt(
+  process.env.LITERATURE_RELEVANCE_DEFAULT_PARALLEL_BATCH_LIMIT,
+  5
+);
+const MAX_PARALLEL_BATCH_LIMIT = parsePositiveInt(
+  process.env.LITERATURE_RELEVANCE_MAX_PARALLEL_BATCH_LIMIT,
+  15
+);
+const LITERATURE_TASK_CODE = 'LITERATURE_RELEVANCE' as const;
+const reservationService = createReservationService(meteringDefaultConfig);
 
 async function runBatchesInParallel<T, R>(
   batches: T[],
@@ -44,6 +56,33 @@ async function runBatchesInParallel<T, R>(
   return results;
 }
 
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value || '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function clampParallelLimit(value: number): number {
+  return Math.max(1, Math.min(value, MAX_PARALLEL_BATCH_LIMIT));
+}
+
+async function resolveParallelBatchLimit(tenantId?: string | null): Promise<number> {
+  const defaultLimit = clampParallelLimit(DEFAULT_PARALLEL_BATCH_LIMIT);
+  if (!tenantId) {
+    return defaultLimit;
+  }
+
+  try {
+    const meteringLimit = await reservationService.getConcurrencyLimit(tenantId, LITERATURE_TASK_CODE);
+    if (typeof meteringLimit === 'number' && meteringLimit > 0) {
+      return clampParallelLimit(meteringLimit);
+    }
+  } catch (error) {
+    console.warn('[LiteratureRelevance] Failed to resolve policy concurrency limit, using default:', error);
+  }
+
+  return defaultLimit;
+}
+
 // Enhanced response structure from LLM with citation metadata
 interface CitationUsage {
   introduction: boolean;      // Cite for background/context
@@ -51,6 +90,17 @@ interface CitationUsage {
   methodology: boolean;       // Reference their method
   comparison: boolean;        // Use as baseline/comparison
 }
+
+const CLAIM_TYPE_VALUES = [
+  'BACKGROUND',
+  'GAP',
+  'METHOD',
+  'LIMITATION',
+  'DATASET',
+  'IMPLEMENTATION_CONSTRAINT'
+] as const;
+type ClaimType = (typeof CLAIM_TYPE_VALUES)[number];
+const CLAIM_TYPE_SET = new Set<string>(CLAIM_TYPE_VALUES);
 
 // Dimension mapping for blueprint integration
 interface DimensionMapping {
@@ -67,6 +117,8 @@ interface CitationMeta {
   methodologicalApproach: string | null;  // Their method (if relevant)
   relevanceToResearch: string;     // How it relates to user's research
   limitationsOrGaps: string | null;       // What they didn't address
+  claimTypesSupported: ClaimType[]; // Structured claim categories this paper can support
+  evidenceBoundary: string | null;  // What should NOT be claimed from this paper
   usage: CitationUsage;
 }
 
@@ -74,6 +126,9 @@ interface PaperRelevanceAnalysis {
   paperId: string;
   paperTitle?: string;
   paperDoi?: string;
+  paperSource?: string;
+  providerPaperId?: string;
+  paperIdentityKey?: string;
   isRelevant: boolean;
   relevanceScore: number; // 0-100
   reasoning: string;
@@ -119,8 +174,73 @@ function normalizeDoi(doi?: string | null) {
 
 function normalizeTitle(title?: string | null) {
   return typeof title === 'string'
-    ? title.trim().toLowerCase().replace(/[\s\W]+/g, '')
+    ? title
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
     : '';
+}
+
+function normalizeProvider(provider?: string | null): string {
+  return typeof provider === 'string'
+    ? provider.trim().toLowerCase().replace(/\s+/g, '_')
+    : '';
+}
+
+function normalizeAuthor(author?: string | null): string {
+  return typeof author === 'string'
+    ? author
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+    : '';
+}
+
+function toCitationMetaSnapshot(
+  suggestion: Pick<PaperRelevanceAnalysis, 'citationMeta' | 'relevanceScore'>
+): CitationMetaSnapshot | undefined {
+  const meta = suggestion.citationMeta;
+  if (!meta) {
+    return undefined;
+  }
+
+  return {
+    keyContribution: typeof meta.keyContribution === 'string' ? meta.keyContribution.slice(0, 400) : undefined,
+    keyFindings: typeof meta.keyFindings === 'string' ? meta.keyFindings.slice(0, 400) : undefined,
+    methodologicalApproach: typeof meta.methodologicalApproach === 'string'
+      ? meta.methodologicalApproach.slice(0, 400)
+      : (meta.methodologicalApproach ?? null),
+    relevanceToResearch: typeof meta.relevanceToResearch === 'string' ? meta.relevanceToResearch.slice(0, 500) : undefined,
+    limitationsOrGaps: typeof meta.limitationsOrGaps === 'string'
+      ? meta.limitationsOrGaps.slice(0, 500)
+      : (meta.limitationsOrGaps ?? null),
+    claimTypesSupported: Array.isArray(meta.claimTypesSupported)
+      ? Array.from(
+          new Set(
+            meta.claimTypesSupported
+              .map(v => String(v).trim().toUpperCase())
+              .filter(v => CLAIM_TYPE_SET.has(v))
+          )
+        ).slice(0, 3) as ClaimType[]
+      : undefined,
+    evidenceBoundary: typeof meta.evidenceBoundary === 'string'
+      ? meta.evidenceBoundary.slice(0, 400)
+      : (meta.evidenceBoundary ?? null),
+    usage: meta.usage ? {
+      introduction: Boolean(meta.usage.introduction),
+      literatureReview: Boolean(meta.usage.literatureReview),
+      methodology: Boolean(meta.usage.methodology),
+      comparison: Boolean(meta.usage.comparison)
+    } : undefined,
+    relevanceScore: Number.isFinite(Number(suggestion.relevanceScore))
+      ? Math.max(0, Math.min(100, Number(suggestion.relevanceScore)))
+      : undefined,
+    analyzedAt: new Date().toISOString()
+  };
 }
 
 function deduplicatePapers(papers: any[]) {
@@ -330,9 +450,11 @@ For each paper, determine:
 1. Key contribution (1 sentence - what's new/important about this paper)
 2. Key findings (1 sentence - main results or conclusions)
 3. Methodological approach (if relevant to the research question)
-4. How it relates to the research question
+4. How it relates to the research question (1-2 sentences, concrete and specific)
 5. Limitations or gaps (what they didn't address - useful for positioning your work)
-6. WHERE to cite this paper:
+6. Claim types this paper can support (choose up to 3): BACKGROUND, GAP, METHOD, LIMITATION, DATASET, IMPLEMENTATION_CONSTRAINT
+7. Evidence boundary (1 sentence: what NOT to claim from this paper)
+8. WHERE to cite this paper:
    - Introduction: Good for background/context/motivation?
    - Literature Review: Needs detailed analysis/comparison?
    - Methodology: Reference their method/approach?
@@ -362,6 +484,8 @@ For each paper, determine:
         "methodologicalApproach": "<their method, or null if not relevant>",
         "relevanceToResearch": "<how it connects to the research question>",
         "limitationsOrGaps": "<what they didn't address, or null>",
+        "claimTypesSupported": ["<BACKGROUND|GAP|METHOD|LIMITATION|DATASET|IMPLEMENTATION_CONSTRAINT>"],
+        "evidenceBoundary": "<one sentence boundary on what this paper does NOT support, or null>",
         "usage": {
           "introduction": <true/false>,
           "literatureReview": <true/false>,
@@ -385,6 +509,8 @@ For each paper, determine:
         "methodologicalApproach": "<their method, or null if not relevant>",
         "relevanceToResearch": "<how it connects to the research question>",
         "limitationsOrGaps": "<what they didn't address, or null>",
+        "claimTypesSupported": ["<BACKGROUND|GAP|METHOD|LIMITATION|DATASET|IMPLEMENTATION_CONSTRAINT>"],
+        "evidenceBoundary": "<one sentence boundary on what this paper does NOT support, or null>",
         "usage": {
           "introduction": <true/false>,
           "literatureReview": <true/false>,
@@ -513,17 +639,31 @@ function parseAndValidateLLMResponse(
     // Parse citation metadata with defaults
     const rawMeta = suggestion.citationMeta || {};
     const usage = rawMeta.usage || {};
+    const claimTypesSupported = Array.isArray(rawMeta.claimTypesSupported)
+      ? Array.from(
+          new Set(
+            rawMeta.claimTypesSupported
+              .map((value: unknown) => String(value).trim().toUpperCase())
+              .filter((value: string) => CLAIM_TYPE_SET.has(value))
+          )
+        ).slice(0, 3) as ClaimType[]
+      : [];
+    const evidenceBoundary = typeof rawMeta.evidenceBoundary === 'string'
+      ? rawMeta.evidenceBoundary.trim().slice(0, 400)
+      : null;
     
     const citationMeta: CitationMeta = {
-      keyContribution: String(rawMeta.keyContribution || 'Not specified').slice(0, 300),
-      keyFindings: String(rawMeta.keyFindings || 'Not specified').slice(0, 300),
+      keyContribution: String(rawMeta.keyContribution || 'Not specified').slice(0, 400),
+      keyFindings: String(rawMeta.keyFindings || 'Not specified').slice(0, 400),
       methodologicalApproach: rawMeta.methodologicalApproach 
-        ? String(rawMeta.methodologicalApproach).slice(0, 300) 
+        ? String(rawMeta.methodologicalApproach).slice(0, 400) 
         : null,
-      relevanceToResearch: String(rawMeta.relevanceToResearch || suggestion.reasoning || 'Relevant to research').slice(0, 300),
+      relevanceToResearch: String(rawMeta.relevanceToResearch || suggestion.reasoning || 'Relevant to research').slice(0, 500),
       limitationsOrGaps: rawMeta.limitationsOrGaps 
-        ? String(rawMeta.limitationsOrGaps).slice(0, 300) 
+        ? String(rawMeta.limitationsOrGaps).slice(0, 500) 
         : null,
+      claimTypesSupported,
+      evidenceBoundary: evidenceBoundary || null,
       usage: {
         introduction: Boolean(usage.introduction),
         literatureReview: Boolean(usage.literatureReview !== false), // Default true for relevant papers
@@ -676,6 +816,152 @@ function calculateBlueprintCoverage(
     gaps,
     sectionCoverage
   };
+}
+
+type CitationLookupRow = {
+  id: string;
+  citationKey: string;
+  doiNormalized: string | null;
+  paperIdentityKey: string | null;
+  importProvider: string | null;
+  importProviderPaperId: string | null;
+  titleFingerprint: string | null;
+  year: number | null;
+  firstAuthorNormalized: string | null;
+};
+
+type CitationLookupIndex = {
+  byId: Map<string, CitationLookupRow>;
+  byIdentity: Map<string, CitationLookupRow[]>;
+  byDoi: Map<string, CitationLookupRow[]>;
+  byProviderAndPaperId: Map<string, CitationLookupRow[]>;
+  byProviderPaperId: Map<string, CitationLookupRow[]>;
+  byTitleFingerprint: Map<string, CitationLookupRow[]>;
+};
+
+function pushLookup(map: Map<string, CitationLookupRow[]>, key: string, value: CitationLookupRow) {
+  if (!key) {
+    return;
+  }
+  if (!map.has(key)) {
+    map.set(key, []);
+  }
+  map.get(key)!.push(value);
+}
+
+function buildCitationLookupIndex(citations: CitationLookupRow[]): CitationLookupIndex {
+  const byId = new Map<string, CitationLookupRow>();
+  const byIdentity = new Map<string, CitationLookupRow[]>();
+  const byDoi = new Map<string, CitationLookupRow[]>();
+  const byProviderAndPaperId = new Map<string, CitationLookupRow[]>();
+  const byProviderPaperId = new Map<string, CitationLookupRow[]>();
+  const byTitleFingerprint = new Map<string, CitationLookupRow[]>();
+
+  for (const row of citations) {
+    byId.set(row.id, row);
+    if (row.paperIdentityKey) {
+      pushLookup(byIdentity, row.paperIdentityKey, row);
+    }
+    if (row.doiNormalized) {
+      pushLookup(byDoi, row.doiNormalized, row);
+    }
+    if (row.importProviderPaperId) {
+      pushLookup(byProviderPaperId, row.importProviderPaperId, row);
+      const providerPair = `${normalizeProvider(row.importProvider)}::${row.importProviderPaperId}`;
+      pushLookup(byProviderAndPaperId, providerPair, row);
+    }
+    if (row.titleFingerprint) {
+      pushLookup(byTitleFingerprint, row.titleFingerprint, row);
+    }
+  }
+
+  return {
+    byId,
+    byIdentity,
+    byDoi,
+    byProviderAndPaperId,
+    byProviderPaperId,
+    byTitleFingerprint
+  };
+}
+
+function narrowCitationCandidates(
+  candidates: CitationLookupRow[],
+  suggestion: PaperRelevanceAnalysis
+): CitationLookupRow[] {
+  if (candidates.length <= 1) {
+    return candidates;
+  }
+
+  const identity = suggestion.paperIdentityKey || '';
+  const yearMatch = identity.match(/\|y:([^|]+)/);
+  const authorMatch = identity.match(/\|fa:([^|]+)/);
+  const expectedYear = yearMatch && yearMatch[1] !== 'na' ? Number(yearMatch[1]) : undefined;
+  const expectedAuthor = authorMatch?.[1] && authorMatch[1] !== 'na' ? authorMatch[1] : '';
+
+  let narrowed = candidates;
+  if (typeof expectedYear === 'number' && Number.isFinite(expectedYear)) {
+    const yearFiltered = narrowed.filter(c => c.year === expectedYear);
+    if (yearFiltered.length > 0) {
+      narrowed = yearFiltered;
+    }
+  }
+  if (expectedAuthor) {
+    const authorFiltered = narrowed.filter(c => (c.firstAuthorNormalized || '') === expectedAuthor);
+    if (authorFiltered.length > 0) {
+      narrowed = authorFiltered;
+    }
+  }
+
+  return narrowed;
+}
+
+function resolveCitationForSuggestion(
+  suggestion: PaperRelevanceAnalysis,
+  index: CitationLookupIndex
+): CitationLookupRow | null {
+  if (suggestion.paperId && index.byId.has(suggestion.paperId)) {
+    return index.byId.get(suggestion.paperId) || null;
+  }
+
+  if (suggestion.paperIdentityKey) {
+    const byIdentity = narrowCitationCandidates(index.byIdentity.get(suggestion.paperIdentityKey) || [], suggestion);
+    if (byIdentity.length > 0) {
+      return byIdentity[0];
+    }
+  }
+
+  const normalizedDoi = normalizeDoi(suggestion.paperDoi);
+  if (normalizedDoi) {
+    const byDoi = narrowCitationCandidates(index.byDoi.get(normalizedDoi) || [], suggestion);
+    if (byDoi.length > 0) {
+      return byDoi[0];
+    }
+  }
+
+  const providerPaperId = suggestion.providerPaperId || suggestion.paperId;
+  if (providerPaperId) {
+    const providerPairKey = `${normalizeProvider(suggestion.paperSource)}::${providerPaperId}`;
+    const byProviderPair = narrowCitationCandidates(index.byProviderAndPaperId.get(providerPairKey) || [], suggestion);
+    if (byProviderPair.length > 0) {
+      return byProviderPair[0];
+    }
+
+    const byProviderPaperId = narrowCitationCandidates(index.byProviderPaperId.get(providerPaperId) || [], suggestion);
+    if (byProviderPaperId.length > 0) {
+      return byProviderPaperId[0];
+    }
+  }
+
+  const titleFingerprint = normalizeTitle(suggestion.paperTitle);
+  if (titleFingerprint) {
+    const byTitle = narrowCitationCandidates(index.byTitleFingerprint.get(titleFingerprint) || [], suggestion);
+    if (byTitle.length > 0) {
+      return byTitle[0];
+    }
+  }
+
+  return null;
 }
 
 export async function POST(request: NextRequest, context: { params: { paperId: string } }) {
@@ -832,6 +1118,11 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       batches.push(papersNeedingAnalysis.slice(i, i + BATCH_SIZE));
     }
 
+    const parallelBatchLimit = await resolveParallelBatchLimit(user.tenantId);
+    console.log(
+      `[LiteratureRelevance] Effective parallel batch limit: ${parallelBatchLimit} (default=${DEFAULT_PARALLEL_BATCH_LIMIT}, max=${MAX_PARALLEL_BATCH_LIMIT})`
+    );
+
     const totalBatches = batches.length;
 
     // Get auth headers for LLM gateway
@@ -878,8 +1169,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           llmResult = await llmGateway.executeLLMOperation(
             { headers },
             {
-              taskCode: 'LITERATURE_RELEVANCE',
-              stageCode: 'LITERATURE_RELEVANCE',
+              taskCode: LITERATURE_TASK_CODE,
+              stageCode: LITERATURE_TASK_CODE,
               prompt,
               parameters: {
                 temperature: 0.3,
@@ -923,19 +1214,53 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           const paperById = new Map(batch.map(paper => [paper.id, paper]));
           const enrichedSuggestions = analysis.suggestions.map(suggestion => {
             const paper = paperById.get(suggestion.paperId);
+            const normalizedDoi = normalizeDoi(paper?.doi);
+            const normalizedTitle = normalizeTitle(paper?.title);
+            const firstAuthor = Array.isArray(paper?.authors) && paper?.authors.length > 0
+              ? normalizeAuthor(String(paper.authors[0]))
+              : 'na';
+            const identityKey = normalizedDoi
+              ? `doi:${normalizedDoi}`
+              : (normalizedTitle
+                ? `tfp:${normalizedTitle}|y:${paper?.year || 'na'}|fa:${firstAuthor || 'na'}`
+                : undefined);
             return {
               ...suggestion,
               paperTitle: paper?.title,
-              paperDoi: paper?.doi
+              paperDoi: paper?.doi,
+              paperSource: paper?.source,
+              providerPaperId: paper?.id,
+              paperIdentityKey: identityKey
             };
           });
+
+          // Track papers the LLM omitted from its response
+          const returnedPaperIds = new Set(analysis.suggestions.map(s => s.paperId));
+          const missedInBatch = batch.filter(p => !returnedPaperIds.has(p.id));
+          let missedSuggestions: PaperRelevanceAnalysis[] = [];
+          let missedFailedIds: string[] = [];
+
+          // Immediately retry missed papers with a smaller batch (avoids
+          // waiting for a second pass or re-click). Only retry when there
+          // are ≥1 missed papers AND the batch had more than just those
+          // papers (otherwise we'd loop on the same set).
+          if (missedInBatch.length > 0 && missedInBatch.length < batch.length && depth < 2) {
+            console.warn(`[LiteratureRelevance] LLM missed ${missedInBatch.length} paper(s) in batch ${batchIndex + 1}, retrying missed papers immediately`);
+            const missedResult = await processBatchWithRetry(missedInBatch, batchIndex, depth + 1);
+            missedSuggestions = missedResult.suggestions;
+            missedFailedIds = missedResult.failedPaperIds;
+          } else if (missedInBatch.length > 0) {
+            missedFailedIds = missedInBatch.map(p => p.id);
+            console.warn(`[LiteratureRelevance] LLM missed ${missedInBatch.length} paper(s) in batch ${batchIndex + 1}: ${missedFailedIds.join(', ')}`);
+          }
+
           return {
             ...analysis,
-            suggestions: enrichedSuggestions,
+            suggestions: [...enrichedSuggestions, ...missedSuggestions] as any[],
             parseError: false,
             outputTokens: llmResult.response.outputTokens || 0,
             modelClass: llmResult.response.modelClass || 'unknown',
-            failedPaperIds: []
+            failedPaperIds: missedFailedIds
           };
         } catch (parseError) {
           console.error(`[LiteratureRelevance] Failed to parse LLM response for batch ${batchIndex + 1}:`, parseError);
@@ -980,14 +1305,44 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       }
     };
 
-    const batchResults = await runBatchesInParallel(batches, PARALLEL_BATCH_LIMIT, async (batch, batchIndex) => {
+    const batchResults = await runBatchesInParallel(batches, parallelBatchLimit, async (batch, batchIndex) => {
       return processBatchWithRetry(batch, batchIndex);
     });
 
-    const parseError = batchResults.some(r => r.parseError);
-    const totalOutputTokens = batchResults.reduce((sum, r) => sum + (r.outputTokens || 0), 0);
-    const newSuggestions = batchResults.flatMap(r => r.suggestions || []);
-    const failedPaperIds = Array.from(new Set(batchResults.flatMap(r => r.failedPaperIds || [])));
+    let parseError = batchResults.some(r => r.parseError);
+    let totalOutputTokens = batchResults.reduce((sum, r) => sum + (r.outputTokens || 0), 0);
+    let newSuggestions = batchResults.flatMap(r => r.suggestions || []);
+    let failedPaperIds = Array.from(new Set(batchResults.flatMap(r => r.failedPaperIds || [])));
+
+    // Second pass: retry failed/missed papers (ensures up to 2 attempts per paper)
+    if (failedPaperIds.length > 0) {
+      const failedSet = new Set(failedPaperIds);
+      const retryPapers = papersNeedingAnalysis.filter((p: any) => failedSet.has(p.id));
+      if (retryPapers.length > 0) {
+        console.log(`[LiteratureRelevance] Retry pass: ${retryPapers.length} paper(s) failed/missed in first pass, retrying with smaller batches...`);
+        const retryBatchSize = Math.min(BATCH_SIZE, 4); // smaller batches for retry
+        const retryBatches: typeof papersNeedingAnalysis[] = [];
+        for (let i = 0; i < retryPapers.length; i += retryBatchSize) {
+          retryBatches.push(retryPapers.slice(i, i + retryBatchSize));
+        }
+        const retryResults = await runBatchesInParallel(retryBatches, parallelBatchLimit, async (batch, idx) => {
+          return processBatchWithRetry(batch, totalBatches + idx);
+        });
+        const retrySuggestions = retryResults.flatMap(r => r.suggestions || []);
+        const retryStillFailed = Array.from(new Set(retryResults.flatMap(r => r.failedPaperIds || [])));
+        totalOutputTokens += retryResults.reduce((sum, r) => sum + (r.outputTokens || 0), 0);
+
+        // Merge: prefer retry results for papers that were retried successfully
+        const retryPaperIdSet = new Set(retrySuggestions.map((s: any) => String(s.paperId || '')));
+        newSuggestions = [
+          ...newSuggestions.filter((s: any) => !retryPaperIdSet.has(String(s.paperId || ''))),
+          ...retrySuggestions
+        ];
+        failedPaperIds = retryStillFailed; // Only papers that failed BOTH passes
+        parseError = parseError || retryResults.some(r => r.parseError);
+        console.log(`[LiteratureRelevance] Retry complete: ${retrySuggestions.length} recovered, ${retryStillFailed.length} still failed`);
+      }
+    }
 
     // Merge new suggestions with carried-over suggestions from the previous run.
     // New suggestions take priority (in case a previously-failed paper now succeeded).
@@ -1068,13 +1423,126 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             skippedNoAbstractIds,
             skippedNoAbstractCount: skippedNoAbstractIds.length
           }
-        },
+        } as any,
         aiAnalyzedAt: new Date(),
         aiModelUsed: modelUsed,
         aiTokensUsed: totalOutputTokens,
         researchQuestion,
       }
     });
+
+    // ============================================================================
+    // PERSIST DIMENSION MAPPINGS TO CitationUsage FOR DRAFTING SERVICE
+    // This ensures the "Analyze & Map to Blueprint" button in search results
+    // also populates the CitationUsage table used by the drafting service.
+    // ============================================================================
+    if (blueprint && sortedSuggestions.length > 0) {
+      try {
+        const citationRows = await prisma.citation.findMany({
+          where: { sessionId, isActive: true },
+          select: {
+            id: true,
+            citationKey: true,
+            doiNormalized: true,
+            paperIdentityKey: true,
+            importProvider: true,
+            importProviderPaperId: true,
+            titleFingerprint: true,
+            year: true,
+            firstAuthorNormalized: true
+          }
+        });
+
+        const citationLookup = buildCitationLookupIndex(citationRows as CitationLookupRow[]);
+
+        const mappingsToPersist: PaperBlueprintMapping[] = [];
+        const mappedCitationIds = new Set<string>();
+        let unmatchedSuggestions = 0;
+
+        for (const suggestion of sortedSuggestions) {
+          const citation = resolveCitationForSuggestion(suggestion, citationLookup);
+          if (!citation) {
+            unmatchedSuggestions++;
+            continue;
+          }
+
+          mappedCitationIds.add(citation.id);
+          const citationMeta = toCitationMetaSnapshot(suggestion);
+          const dimensionMappings = suggestion.dimensionMappings || [];
+          if (dimensionMappings.length === 0) {
+            mappingsToPersist.push({
+              paperId: citation.id,
+              citationKey: citation.citationKey,
+              sectionKey: null,
+              dimensionMappings: [],
+              mappingStatus: 'UNMAPPED',
+              citationMeta
+            });
+            continue;
+          }
+
+          // Group dimension mappings by section
+          const bySection = new Map<string, typeof dimensionMappings>();
+          for (const dm of dimensionMappings) {
+            if (!dm.sectionKey) continue;
+            if (!bySection.has(dm.sectionKey)) {
+              bySection.set(dm.sectionKey, []);
+            }
+            bySection.get(dm.sectionKey)!.push(dm);
+          }
+          
+          if (bySection.size === 0) {
+            mappingsToPersist.push({
+              paperId: citation.id,
+              citationKey: citation.citationKey,
+              sectionKey: null,
+              dimensionMappings: [],
+              mappingStatus: 'UNMAPPED',
+              citationMeta
+            });
+            continue;
+          }
+          
+          // Create one mapping entry per section
+          for (const [mappedSectionKey, sectionMappings] of Array.from(bySection.entries())) {
+            const highMediumCount = sectionMappings.filter(
+              (dm: DimensionMapping) => dm.confidence === 'HIGH' || dm.confidence === 'MEDIUM'
+            ).length;
+            const mappingStatus = highMediumCount >= 2 ? 'MAPPED' 
+              : highMediumCount >= 1 ? 'WEAK' 
+              : sectionMappings.length > 0 ? 'WEAK' : 'UNMAPPED';
+            
+            mappingsToPersist.push({
+              paperId: citation.id,
+              citationKey: citation.citationKey,
+              sectionKey: mappedSectionKey,
+              dimensionMappings: sectionMappings.map((dm: DimensionMapping) => ({
+                dimension: dm.dimension,
+                remark: dm.remark,
+                confidence: dm.confidence
+              })),
+              mappingStatus,
+              citationMeta
+            });
+          }
+        }
+
+        if (unmatchedSuggestions > 0) {
+          console.log(`[LiteratureRelevance] ${unmatchedSuggestions} suggestion(s) could not be reconciled to imported citations yet`);
+        }
+
+        // Persist to CitationUsage table
+        if (mappingsToPersist.length > 0) {
+          const citationIds = Array.from(mappedCitationIds);
+          await citationMappingService.clearMappingsForCitations(sessionId, citationIds);
+          await citationMappingService.storeMappings(sessionId, mappingsToPersist);
+          console.log(`[LiteratureRelevance] Persisted ${mappingsToPersist.length} mapping row(s) to CitationUsage for ${citationIds.length} citation(s)`);
+        }
+      } catch (mappingError) {
+        // Don't fail the request if mapping persistence fails - just log it
+        console.error('[LiteratureRelevance] Failed to persist dimension mappings to CitationUsage:', mappingError);
+      }
+    }
 
     // Log audit
     await prisma.auditLog.create({
@@ -1242,4 +1710,3 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
     return NextResponse.json({ error: 'Failed to retrieve search runs' }, { status: 500 });
   }
 }
-

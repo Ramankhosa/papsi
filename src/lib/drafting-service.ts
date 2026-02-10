@@ -31,6 +31,7 @@ import { featureFlags, isPaperWritingMode, isPatentDraftingMode } from './featur
 import { citationService, type CitationWithUsage } from './services/citation-service';
 import { citationStyleService, type CitationData } from './services/citation-style-service';
 import { paperTypeService } from './services/paper-type-service';
+import { evidencePackService, type SectionEvidencePack } from './services/evidence-pack-service';
 
 // NOTE: Legacy SUPERSET_PROMPTS removed - all prompts now come from database
 // Base prompts are stored in SupersetSection table
@@ -141,6 +142,10 @@ export interface SectionGenerationResult {
 }
 
 export class DraftingService {
+  private static normalizeSectionKey(sectionKey: string): string {
+    return sectionKey.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  }
+
   private static sectionKeyMap: Record<string, string[]> = {
     title: ['title'],
     abstract: ['abstract'],
@@ -334,10 +339,20 @@ export class DraftingService {
    * Build citation context for section generation
    * Gathers relevant citations and formats them for LLM prompts
    */
-  static async buildCitationContext(sessionId: string, sectionKey: string): Promise<{
+  static async buildCitationContext(
+    sessionId: string,
+    sectionKey: string,
+    options?: {
+      useMappedEvidence?: boolean;
+      preloadedEvidencePack?: SectionEvidencePack | null;
+    }
+  ): Promise<{
     availableCitations: CitationData[];
     citationInstructions: string;
     relevantCitations: CitationData[];
+    allowedCitationKeys: string[];
+    evidenceGaps: string[];
+    usedEvidencePack: boolean;
   }> {
     const citations = await citationService.getCitationsForSession(sessionId);
     const availableCitations = citations.map(citation => ({
@@ -357,58 +372,127 @@ export class DraftingService {
       citationKey: citation.citationKey
     }));
 
-    // Get relevant citations for this section type
-    const relevantCitations = this.filterRelevantCitations(availableCitations, sectionKey);
+    const useMappedEvidence = options?.useMappedEvidence !== false;
+    const evidencePack = useMappedEvidence
+      ? (options?.preloadedEvidencePack || await evidencePackService.getEvidencePack(sessionId, sectionKey))
+      : null;
+    let relevantCitations: CitationData[] = [];
+    let allowedCitationKeys: string[] = [];
+    let evidenceGaps: string[] = [];
+    let usedEvidencePack = false;
+
+    // If a blueprint section has mapped evidence, enforce mapped keys strictly.
+    if (evidencePack?.hasBlueprint && evidencePack.dimensionEvidence.length > 0) {
+      allowedCitationKeys = evidencePack.allowedCitationKeys;
+      evidenceGaps = evidencePack.gaps;
+      usedEvidencePack = true;
+      const allowedSet = new Set(allowedCitationKeys);
+      relevantCitations = availableCitations.filter(c => allowedSet.has(c.citationKey));
+    } else {
+      // Fallback for sections not covered by blueprint mapping.
+      relevantCitations = this.filterRelevantCitations(availableCitations, sectionKey);
+      allowedCitationKeys = relevantCitations.map(c => c.citationKey).slice(0, 30);
+    }
 
     // Build citation instructions for LLM
-    const citationInstructions = this.buildCitationInstructions(relevantCitations, sectionKey);
+    const citationInstructions = this.buildCitationInstructions(relevantCitations, sectionKey, {
+      allowedCitationKeys,
+      evidenceGaps,
+      strictWhitelist: useMappedEvidence
+    });
 
     return {
       availableCitations,
       citationInstructions,
-      relevantCitations
+      relevantCitations,
+      allowedCitationKeys,
+      evidenceGaps,
+      usedEvidencePack
     };
   }
 
   /**
-   * Filter citations relevant to a specific section
+   * Filter citations relevant to a specific section.
+   * This is the FALLBACK path when no evidence pack (blueprint mapping) is available.
+   * 
+   * Strategy: start with a section-specific heuristic, but always fall back to
+   * providing ALL citations (capped for token limits) when the heuristic returns
+   * too few results. An empty allowed-key list causes the LLM to either skip
+   * citations entirely or hallucinate keys, which is worse than a broad list.
    */
   private static filterRelevantCitations(citations: CitationData[], sectionKey: string): CitationData[] {
-    // Simple relevance filtering based on section type
-    switch (sectionKey.toLowerCase()) {
-      case 'abstract':
-      case 'acknowledgments':
-        return [];
+    const MIN_FALLBACK = 5; // Minimum citations to provide; below this, use all
+    const MAX_FALLBACK = 30; // Cap to prevent token overflow
+
+    const normalized = this.normalizeSectionKey(sectionKey);
+
+    // Sections that should never have citations
+    if (normalized === 'abstract' || normalized === 'acknowledgments') {
+      return [];
+    }
+
+    let filtered: CitationData[] | null = null;
+
+    switch (normalized) {
       case 'literature_review':
         // All citations are relevant for literature review
-        return citations;
-      case 'introduction':
-        // Recent citations (last 5 years) for introduction
+        return citations.slice(0, MAX_FALLBACK);
+
+      case 'introduction': {
+        // Prefer recent citations (last 5 years) for introduction
         const currentYear = new Date().getFullYear();
-        return citations.filter(c => c.year && (currentYear - c.year) <= 5);
-      case 'methodology':
-        // Citations related to methods, tools, or empirical studies
-        return citations.filter(c =>
-          c.title.toLowerCase().includes('method') ||
-          c.title.toLowerCase().includes('approach') ||
-          c.title.toLowerCase().includes('framework') ||
-          c.venue?.toLowerCase().includes('method')
-        );
-      case 'discussion':
-        // Citations that might be relevant for discussion/comparison
-        return citations.filter(c => c.year && c.year >= 2015); // Recent works
+        filtered = citations.filter(c => c.year && (currentYear - c.year) <= 5);
+        break;
+      }
+
+      case 'methodology': {
+        // Prefer citations related to methods, tools, or empirical studies
+        const methodKeywords = ['method', 'approach', 'framework', 'technique', 'algorithm', 'model', 'tool', 'implementation', 'design', 'experiment'];
+        filtered = citations.filter(c => {
+          const titleLower = c.title.toLowerCase();
+          const venueLower = c.venue?.toLowerCase() || '';
+          return methodKeywords.some(kw => titleLower.includes(kw) || venueLower.includes(kw));
+        });
+        break;
+      }
+
+      case 'discussion': {
+        // Prefer recent citations for discussion/comparison
+        filtered = citations.filter(c => c.year && c.year >= 2015);
+        break;
+      }
+
       default:
-        // Return all citations for other sections
-        return citations.slice(0, 10); // Limit to prevent token overflow
+        // All other sections: use all citations
+        filtered = null;
+        break;
     }
+
+    // Fallback: if the heuristic returned too few results, use all citations.
+    // An empty or near-empty list is worse than a broad one because the LLM
+    // will either skip citations or hallucinate keys.
+    if (filtered !== null && filtered.length >= MIN_FALLBACK) {
+      return filtered.slice(0, MAX_FALLBACK);
+    }
+
+    return citations.slice(0, MAX_FALLBACK);
   }
 
   /**
    * Build citation instructions for LLM prompts
    */
-  private static buildCitationInstructions(citations: CitationData[], sectionKey: string): string {
+  private static buildCitationInstructions(
+    citations: CitationData[],
+    sectionKey: string,
+    options?: {
+      allowedCitationKeys?: string[];
+      evidenceGaps?: string[];
+      strictWhitelist?: boolean;
+    }
+  ): string {
+    const normalizedSectionKey = this.normalizeSectionKey(sectionKey);
     const noCitationSections = new Set(['abstract', 'acknowledgments']);
-    if (noCitationSections.has(sectionKey.toLowerCase())) {
+    if (noCitationSections.has(normalizedSectionKey)) {
       return 'Do not include citations in this section.';
     }
 
@@ -426,25 +510,39 @@ export class DraftingService {
       : '';
 
     const sectionGuidance = this.getSectionCitationGuidance(sectionKey);
+    const whitelistText = (options?.allowedCitationKeys || []).length > 0
+      ? (options?.allowedCitationKeys || []).map(k => `[${k}]`).join(', ')
+      : '(none)';
+    const gapText = (options?.evidenceGaps || []).length > 0
+      ? `\n- Evidence gaps to acknowledge carefully (do not fabricate support): ${(options?.evidenceGaps || []).join('; ')}`
+      : '';
+    const strictLine = options?.strictWhitelist
+      ? 'Use only keys from ALLOWED CITATION KEYS. Any other key is invalid.'
+      : 'Prefer keys from ALLOWED CITATION KEYS.';
+    const formatOverride = options?.strictWhitelist
+      ? '- IMPORTANT OVERRIDE: Ignore any [CITATION_NEEDED] instruction from earlier prompt blocks.\n- Never output [CITATION_NEEDED: ...]. Use only [CITE:CitationKey] with keys from ALLOWED CITATION KEYS.\n'
+      : '';
 
     return `Available Citations for this section:
 ${citationList}${overflowNote}
 
 Citation Instructions:
+${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
 - Use citations to support your claims and arguments
 - Reference relevant work that supports or contrasts with your approach
 - Use the format [CITE:CitationKey] in your response where you want to cite a source
 - Do not invent citations. Use only the citation keys provided above
+- ${strictLine}
 - Ensure each major claim is supported by at least one citation unless it is a novel contribution
 - ${sectionGuidance}
-- Aim for 3-8 citations per section depending on section length and importance`;
+- Aim for 3-8 citations per section depending on section length and importance${gapText}`;
   }
 
   /**
    * Get section-specific citation guidance
    */
   private static getSectionCitationGuidance(sectionKey: string): string {
-    switch (sectionKey.toLowerCase()) {
+    switch (this.normalizeSectionKey(sectionKey)) {
       case 'introduction':
         return "Cite 2-4 key papers that establish the problem context and show why this research is needed";
       case 'literature_review':
@@ -465,82 +563,385 @@ Citation Instructions:
   /**
    * Post-process section content to replace citation placeholders
    */
+  private static normalizeCitationKey(rawKey: string): string {
+    return rawKey
+      .trim()
+      .replace(/^['"`\s]+|['"`\s]+$/g, '')
+      .replace(/[.,;:]+$/g, '')
+      .trim();
+  }
+
+  private static splitCitationKeyList(rawKeys: string): string[] {
+    if (!rawKeys) return [];
+    const unified = rawKeys.replace(/\s+(?:and|&)\s+/gi, ',');
+    return unified
+      .split(/[,;|/]/g)
+      .map(part => this.normalizeCitationKey(part))
+      .filter(Boolean);
+  }
+
+  private static buildCitationKeyLookup(keys: string[]): Map<string, string> {
+    const lookup = new Map<string, string>();
+    for (const key of keys) {
+      const normalized = this.normalizeCitationKey(key).toLowerCase();
+      if (!normalized) continue;
+      if (!lookup.has(normalized)) {
+        lookup.set(normalized, key);
+      }
+    }
+    return lookup;
+  }
+
+  private static looksLikeCitationKey(rawKey: string): boolean {
+    const normalized = this.normalizeCitationKey(rawKey);
+    if (!normalized) return false;
+    if (/^\d+(?:[-–]\d+)?$/.test(normalized)) return false;
+    if (/^(?:fig(?:ure)?|table|sec(?:tion)?|eq(?:uation)?|appendix)[A-Za-z0-9._:-]*$/i.test(normalized)) {
+      return false;
+    }
+    return /^[A-Za-z][A-Za-z0-9._:-]{1,127}$/.test(normalized);
+  }
+
+  private static extractCitationPlaceholders(content: string): Array<{
+    fullMatch: string;
+    rawKeys: string;
+    parsedKeys: string[];
+    start: number;
+    end: number;
+  }> {
+    const placeholders: Array<{
+      fullMatch: string;
+      rawKeys: string;
+      parsedKeys: string[];
+      start: number;
+      end: number;
+    }> = [];
+    const citePattern = /\[CITE:([^\]]+)\]/g;
+    let match: RegExpExecArray | null;
+    while ((match = citePattern.exec(content)) !== null) {
+      const fullMatch = match[0];
+      const rawKeys = match[1] || '';
+      const parsedKeys = this.splitCitationKeyList(rawKeys);
+      const start = match.index;
+      const end = start + fullMatch.length;
+      placeholders.push({ fullMatch, rawKeys, parsedKeys, start, end });
+    }
+    return placeholders;
+  }
+
+  /**
+   * Extract bare bracket citation keys from content.
+   * When knownSessionKeys is provided, bare brackets are only treated as citations
+   * if they match a known session citation key. This prevents false positives from
+   * technical terms like [BERT], [ResNet], [LSTM] being flagged as citation keys.
+   * Explicit [CITE:key] markers are always extracted regardless (handled separately).
+   */
+  private static extractBareCitationKeys(
+    content: string,
+    knownSessionKeys?: Set<string>
+  ): Array<{
+    fullMatch: string;
+    rawKeys: string;
+    parsedKeys: string[];
+    start: number;
+    end: number;
+  }> {
+    const bare: Array<{
+      fullMatch: string;
+      rawKeys: string;
+      parsedKeys: string[];
+      start: number;
+      end: number;
+    }> = [];
+
+    // Build a normalized lookup from known session keys for fast matching
+    const knownLookup = knownSessionKeys
+      ? new Set(Array.from(knownSessionKeys).map(k => this.normalizeCitationKey(k).toLowerCase()))
+      : null;
+
+    const bracketPattern = /\[([^\]\r\n]+)\]/g;
+    let match: RegExpExecArray | null;
+    while ((match = bracketPattern.exec(content)) !== null) {
+      const raw = (match[1] || '').trim();
+      if (!raw || /^CITE\s*:/i.test(raw)) continue;
+
+      let parsedKeys = this.splitCitationKeyList(raw).filter(key => this.looksLikeCitationKey(key));
+      if (parsedKeys.length === 0) continue;
+
+      // When session keys are known, only accept bare bracket keys that match
+      // an actual citation key in the session. This eliminates false positives
+      // from model names, acronyms, and other technical terms.
+      if (knownLookup) {
+        parsedKeys = parsedKeys.filter(key =>
+          knownLookup.has(this.normalizeCitationKey(key).toLowerCase())
+        );
+        if (parsedKeys.length === 0) continue;
+      }
+
+      const fullMatch = match[0];
+      const start = match.index;
+      const end = start + fullMatch.length;
+      bare.push({
+        fullMatch,
+        rawKeys: raw,
+        parsedKeys,
+        start,
+        end
+      });
+    }
+
+    return bare;
+  }
+
+  /**
+   * Extract all citation markers from content (both explicit [CITE:key] and bare [key]).
+   * When knownSessionKeys is provided, bare brackets are filtered to known keys only.
+   */
+  private static extractCitationMarkers(
+    content: string,
+    knownSessionKeys?: Set<string>
+  ): Array<{
+    fullMatch: string;
+    rawKeys: string;
+    parsedKeys: string[];
+    start: number;
+    end: number;
+  }> {
+    const explicit = this.extractCitationPlaceholders(content);
+    const bare = this.extractBareCitationKeys(content, knownSessionKeys);
+    const combined = [...explicit, ...bare].sort((a, b) => a.start - b.start);
+
+    const markers: Array<{
+      fullMatch: string;
+      rawKeys: string;
+      parsedKeys: string[];
+      start: number;
+      end: number;
+    }> = [];
+    let lastEnd = -1;
+    for (const marker of combined) {
+      if (marker.start < lastEnd) continue;
+      markers.push(marker);
+      lastEnd = marker.end;
+    }
+
+    return markers;
+  }
+
+  /**
+   * Extract all citation keys from content.
+   * When knownSessionKeys is provided, bare bracket keys are cross-referenced
+   * to avoid treating technical terms (e.g. [BERT]) as citation keys.
+   */
+  static extractCitationKeys(content: string, knownSessionKeys?: Set<string>): string[] {
+    const keys = new Set<string>();
+    const markers = this.extractCitationMarkers(content, knownSessionKeys);
+    for (const marker of markers) {
+      for (const key of marker.parsedKeys) {
+        keys.add(key);
+      }
+    }
+    return Array.from(keys);
+  }
+
+  static validateCitationKeys(
+    content: string,
+    allowedCitationKeys?: string[],
+    knownSessionKeys?: Set<string>
+  ): {
+    keys: string[];
+    disallowedKeys: string[];
+  } {
+    const rawKeys = this.extractCitationKeys(content, knownSessionKeys);
+    if (!allowedCitationKeys || allowedCitationKeys.length === 0) {
+      return { keys: rawKeys, disallowedKeys: [] };
+    }
+    const allowedLookup = this.buildCitationKeyLookup(allowedCitationKeys);
+    const disallowed = new Set<string>();
+    for (const key of rawKeys) {
+      if (!allowedLookup.has(this.normalizeCitationKey(key).toLowerCase())) {
+        disallowed.add(key);
+      }
+    }
+    const disallowedKeys = Array.from(disallowed);
+    const keys = rawKeys.map(k => allowedLookup.get(this.normalizeCitationKey(k).toLowerCase()) || k);
+    return { keys, disallowedKeys };
+  }
+
+  /**
+   * Deterministic fallback: strip disallowed citation placeholders from content.
+   * Called when LLM repair fails to remove all disallowed keys.
+   * Removes [CITE:key] and bare [key] markers that aren't in the allowed set.
+   */
+  static stripDisallowedCitations(
+    content: string,
+    allowedCitationKeys: string[]
+  ): string {
+    const allowedLookup = this.buildCitationKeyLookup(allowedCitationKeys);
+    const markers = this.extractCitationMarkers(content);
+    if (markers.length === 0) return content;
+
+    let result = '';
+    let cursor = 0;
+
+    for (const marker of markers) {
+      result += content.slice(cursor, marker.start);
+      cursor = marker.end;
+
+      // Keep only the keys that are allowed; drop the rest
+      const keptParts: string[] = [];
+      for (const key of marker.parsedKeys) {
+        const normalized = this.normalizeCitationKey(key).toLowerCase();
+        const canonical = allowedLookup.get(normalized);
+        if (canonical) {
+          keptParts.push(`[CITE:${canonical}]`);
+        }
+      }
+
+      if (keptParts.length > 0) {
+        result += keptParts.join(' ');
+      }
+      // If no keys survived, the placeholder is dropped entirely (no orphan brackets)
+    }
+
+    result += content.slice(cursor);
+    return result;
+  }
+
   static async postProcessSection(
     content: string,
     sessionId: string,
-    citationStyle: string = 'APA7'
+    citationStyle: string = 'APA7',
+    options?: {
+      allowedCitationKeys?: string[];
+      strictWhitelist?: boolean;
+      preserveCitationPlaceholders?: boolean;
+    }
   ): Promise<{
     processedContent: string;
     citationsUsed: string[];
     warnings: string[];
+    unknownCitationKeys: string[];
+    disallowedCitationKeys: string[];
   }> {
     const warnings: string[] = [];
-    const citationsUsed: string[] = [];
+    const citationsUsed = new Set<string>();
+    const unknownCitationKeys = new Set<string>();
+    const disallowedCitationKeys = new Set<string>();
+    const preserveCitationPlaceholders = options?.preserveCitationPlaceholders === true;
 
-    // Find all citation placeholders
-    const citePattern = /\[CITE:([^\]]+)\]/g;
-    const foundCitations = new Set<string>();
-
-    // Extract citation keys from placeholders
-    let match;
-    while ((match = citePattern.exec(content)) !== null) {
-      foundCitations.add(match[1]);
-    }
-
-    // Get citation data for formatting
+    // Get citation data for formatting (load first so we can build knownSessionKeys)
     const sessionCitations = await citationService.getCitationsForSession(sessionId);
     const citationMap = new Map(sessionCitations.map(c => [c.citationKey, c]));
+    const citationLookup = this.buildCitationKeyLookup(sessionCitations.map(c => c.citationKey));
 
-    // Replace placeholders with formatted citations
-    let processedContent = content;
-    const replacements = new Map<string, string>();
+    // Build known session keys set so bare bracket extraction filters out false positives
+    const knownSessionKeys = new Set(sessionCitations.map(c => c.citationKey));
 
-    for (const key of foundCitations) {
-      const citation = citationMap.get(key);
-      if (citation) {
-        try {
-          const formatted = await citationStyleService.formatInTextCitation({
-            id: citation.id,
-            title: citation.title,
-            authors: citation.authors,
-            year: citation.year ?? undefined,
-            venue: citation.venue ?? undefined,
-            volume: citation.volume ?? undefined,
-            issue: citation.issue ?? undefined,
-            pages: citation.pages ?? undefined,
-            doi: citation.doi ?? undefined,
-            url: citation.url ?? undefined,
-            isbn: citation.isbn ?? undefined,
-            publisher: citation.publisher ?? undefined,
-            edition: citation.edition ?? undefined,
-            citationKey: citation.citationKey
-          }, citationStyle);
+    const markers = this.extractCitationMarkers(content, knownSessionKeys);
+    const allowedLookup = options?.allowedCitationKeys && options.allowedCitationKeys.length > 0
+      ? this.buildCitationKeyLookup(options.allowedCitationKeys)
+      : null;
+    const formattedCitationCache = new Map<string, string>();
 
-          replacements.set(`[CITE:${key}]`, formatted);
-          citationsUsed.push(key);
+    // Replace placeholders with formatted citations while preserving non-citation text exactly.
+    let processedContent = '';
+    let cursor = 0;
 
-          // Mark citation as used (we'll need section context for this)
-          // await citationService.markCitationUsed(citation.id, sectionKey);
+    for (const marker of markers) {
+      processedContent += content.slice(cursor, marker.start);
+      cursor = marker.end;
 
-        } catch (error) {
-          warnings.push(`Failed to format citation ${key}: ${error}`);
-          replacements.set(`[CITE:${key}]`, `[${key}]`); // Fallback
+      const parsedKeys = marker.parsedKeys.length > 0
+        ? marker.parsedKeys
+        : [this.normalizeCitationKey(marker.rawKeys)].filter(Boolean);
+      const replacementParts: string[] = [];
+
+      for (const parsedKey of parsedKeys) {
+        const normalized = this.normalizeCitationKey(parsedKey);
+        const normalizedLower = normalized.toLowerCase();
+        if (!normalizedLower) continue;
+
+        const allowedKey = allowedLookup?.get(normalizedLower);
+        if (allowedLookup && !allowedKey) {
+          disallowedCitationKeys.add(normalized);
+          warnings.push(`Citation key not allowed for this section: ${normalized}`);
+          if (options?.strictWhitelist) {
+            continue;
+          }
+          replacementParts.push(
+            preserveCitationPlaceholders ? `[CITE:${normalized}]` : `[${normalized}]`
+          );
+          continue;
         }
-      } else {
-        warnings.push(`Citation key not found: ${key}`);
-        replacements.set(`[CITE:${key}]`, `[${key}]`); // Fallback
+
+        const canonicalKey = allowedKey || citationLookup.get(normalizedLower) || normalized;
+        const citation = citationMap.get(canonicalKey);
+        if (!citation) {
+          unknownCitationKeys.add(canonicalKey);
+          warnings.push(`Citation key not found: ${canonicalKey}`);
+          if (!options?.strictWhitelist) {
+            replacementParts.push(
+              preserveCitationPlaceholders ? `[CITE:${canonicalKey}]` : `[${canonicalKey}]`
+            );
+          }
+          continue;
+        }
+
+        citationsUsed.add(citation.citationKey);
+
+        if (preserveCitationPlaceholders) {
+          replacementParts.push(`[CITE:${citation.citationKey}]`);
+          continue;
+        }
+
+        try {
+          let formatted = formattedCitationCache.get(citation.citationKey);
+          if (!formatted) {
+            formatted = await citationStyleService.formatInTextCitation({
+              id: citation.id,
+              title: citation.title,
+              authors: citation.authors,
+              year: citation.year ?? undefined,
+              venue: citation.venue ?? undefined,
+              volume: citation.volume ?? undefined,
+              issue: citation.issue ?? undefined,
+              pages: citation.pages ?? undefined,
+              doi: citation.doi ?? undefined,
+              url: citation.url ?? undefined,
+              isbn: citation.isbn ?? undefined,
+              publisher: citation.publisher ?? undefined,
+              edition: citation.edition ?? undefined,
+              citationKey: citation.citationKey
+            }, citationStyle);
+            formattedCitationCache.set(citation.citationKey, formatted);
+          }
+
+          replacementParts.push(formatted);
+        } catch (error) {
+          warnings.push(`Failed to format citation ${citation.citationKey}: ${error}`);
+          replacementParts.push(
+            preserveCitationPlaceholders
+              ? `[CITE:${citation.citationKey}]`
+              : `[${citation.citationKey}]`
+          );
+        }
+      }
+
+      if (replacementParts.length > 0) {
+        processedContent += replacementParts.join(' ');
+      } else if (!options?.strictWhitelist) {
+        processedContent += marker.fullMatch;
       }
     }
-
-    // Apply all replacements
-    for (const [placeholder, formatted] of replacements) {
-      processedContent = processedContent.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), formatted);
-    }
+    processedContent += content.slice(cursor);
 
     return {
       processedContent,
-      citationsUsed,
-      warnings
+      citationsUsed: Array.from(citationsUsed),
+      warnings,
+      unknownCitationKeys: Array.from(unknownCitationKeys),
+      disallowedCitationKeys: Array.from(disallowedCitationKeys)
     };
   }
 
@@ -1754,7 +2155,10 @@ Respond in this exact JSON shape:
               const postProcessed = await this.postProcessSection(
                 generated[s],
                 session.id,
-                citationStyle
+                citationStyle,
+                {
+                  preserveCitationPlaceholders: true
+                }
               );
 
               generated[s] = postProcessed.processedContent;
