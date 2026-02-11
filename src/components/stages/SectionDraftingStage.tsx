@@ -39,6 +39,7 @@ interface SectionDraftingStageProps {
   onSessionUpdated?: (session: any) => void;
   selectedSection?: string;
   onSectionSelect?: (sectionKey: string) => void;
+  onNavigateToStage?: (stageKey: string) => void;
 }
 
 type SectionConfig = {
@@ -626,7 +627,7 @@ const SELECTION_CHANGE_DELAY = 150;
 // ============================================================================
 
 export default function SectionDraftingStage({ 
-  sessionId, authToken, onSessionUpdated 
+  sessionId, authToken, onSessionUpdated, onNavigateToStage 
 }: SectionDraftingStageProps) {
   // Session State
   const [session, setSession] = useState<any>(null);
@@ -1047,13 +1048,30 @@ export default function SectionDraftingStage({
     }
   }, [authToken, sessionId, focusedSection, content, selectedText, handleContentChange]);
 
-  const handleGenerateFigure = useCallback(async (description: string) => {
+  const handleGenerateFigure = useCallback(async (description: string, meta?: Record<string, any>) => {
     if (!authToken || !description.trim()) {
       throw new Error('Missing required parameters');
     }
 
     try {
-      // First create the figure plan
+      // Derive category and type from suggestion meta if available
+      const category = meta?.category || 'DIAGRAM';
+      const figureType = meta?.suggestedType || 'auto';
+      const title = meta?.title || description.slice(0, 100);
+
+      // Build suggestionMeta for the figure plan so the generate route can use it
+      const suggestionMeta: Record<string, any> = {};
+      if (meta?.relevantSection) suggestionMeta.relevantSection = meta.relevantSection;
+      if (meta?.importance) suggestionMeta.importance = meta.importance;
+      if (meta?.dataNeeded) suggestionMeta.dataNeeded = meta.dataNeeded;
+      if (meta?.whyThisFigure) suggestionMeta.whyThisFigure = meta.whyThisFigure;
+      if (meta?.rendererPreference) suggestionMeta.rendererPreference = meta.rendererPreference;
+      if (meta?.diagramSpec) suggestionMeta.diagramSpec = meta.diagramSpec;
+      if (meta?.sketchStyle) suggestionMeta.sketchStyle = meta.sketchStyle;
+      if (meta?.sketchPrompt) suggestionMeta.sketchPrompt = meta.sketchPrompt;
+      if (meta?.sketchMode) suggestionMeta.sketchMode = meta.sketchMode;
+
+      // First create the figure plan with full suggestion context
       const createRes = await fetch(`/api/papers/${sessionId}/figures`, {
         method: 'POST',
         headers: {
@@ -1061,10 +1079,13 @@ export default function SectionDraftingStage({
           Authorization: `Bearer ${authToken}`
         },
         body: JSON.stringify({
-          title: description.slice(0, 100),
+          title,
+          caption: description,
           description,
-          category: 'AUTO',
-          figureType: 'auto'
+          category,
+          figureType,
+          notes: description,
+          suggestionMeta: Object.keys(suggestionMeta).length > 0 ? suggestionMeta : undefined
         })
       });
 
@@ -1073,7 +1094,8 @@ export default function SectionDraftingStage({
         throw new Error(createData.error || 'Failed to create figure');
       }
 
-      // Then generate the figure
+      // Then generate the figure – pass suggestion meta so the generate route
+      // can enrich the LLM prompt and choose the right renderer
       const generateRes = await fetch(
         `/api/papers/${sessionId}/figures/${createData.figure.id}/generate`,
         {
@@ -1083,9 +1105,13 @@ export default function SectionDraftingStage({
             Authorization: `Bearer ${authToken}`
           },
           body: JSON.stringify({
+            title,
             description,
+            category,
+            figureType,
             useLLM: true,
-            theme: 'academic'
+            theme: 'academic',
+            suggestionMeta: Object.keys(suggestionMeta).length > 0 ? suggestionMeta : undefined
           })
         }
       );
@@ -2095,6 +2121,7 @@ export default function SectionDraftingStage({
         onGenerateFigure={handleGenerateFigure}
         selectedText={selectedText}
         onRefreshFigures={loadFigures}
+        onNavigateToStage={onNavigateToStage}
         isVisible={true}
       />
     </div>

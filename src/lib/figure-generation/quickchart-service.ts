@@ -85,8 +85,8 @@ export function buildChartConfig(
 /**
  * Normalizes chart type for QuickChart API.
  */
-function normalizeChartType(type: DataChartType): string {
-  const typeMap: Record<DataChartType, string> = {
+function normalizeChartType(type: DataChartType): DataChartType {
+  const typeMap: Record<DataChartType, DataChartType> = {
     bar: 'bar',
     horizontalBar: 'horizontalBar',
     line: 'line',

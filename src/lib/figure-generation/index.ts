@@ -353,6 +353,7 @@ export async function suggestFigures(
     DIAGRAM: 0,
     STATISTICAL_PLOT: 0,
     ILLUSTRATION: 0,
+    SKETCH: 0,
     TABLE: 0,
     EQUATION: 0,
     CUSTOM: 0

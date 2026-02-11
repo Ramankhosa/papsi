@@ -100,12 +100,32 @@ interface FloatingWritingPanelProps {
   onInsertFigure?: (figureId: string, position?: 'cursor' | 'end') => void;
   onInsertCitation?: (citation: Citation) => void;
   onTextAction?: (action: 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple', selectedText: string, instructions?: string) => Promise<string>;
-  onGenerateFigure?: (description: string) => void;
+  onGenerateFigure?: (description: string, meta?: SmartFigureMeta) => void;
   onGenerateDiagram?: (description: string, diagramType: string) => void;
   selectedText?: TextSelection | null;
   onRefreshFigures?: () => void;
   onRefreshCitations?: () => void;
+  onNavigateToStage?: (stageKey: string) => void;
   isVisible?: boolean;
+}
+
+/** Metadata passed from the floating panel's smart figure suggestion flow */
+interface SmartFigureMeta {
+  sourceSection?: string;
+  sourceText?: string;
+  category?: string;
+  suggestedType?: string;
+  rendererPreference?: string;
+  title?: string;
+  description?: string;
+  importance?: string;
+  relevantSection?: string;
+  dataNeeded?: string;
+  whyThisFigure?: string;
+  diagramSpec?: any;
+  sketchStyle?: string;
+  sketchPrompt?: string;
+  sketchMode?: string;
 }
 
 // ============================================================================
@@ -467,6 +487,7 @@ export default function FloatingWritingPanel({
   selectedText,
   onRefreshFigures,
   onRefreshCitations,
+  onNavigateToStage,
   isVisible = true
 }: FloatingWritingPanelProps) {
   // Panel state
@@ -492,7 +513,7 @@ export default function FloatingWritingPanel({
   const MIN_WIDTH = 280;
   const MAX_WIDTH = 600;
   const MIN_HEIGHT = 400;
-  const MAX_HEIGHT = 800;
+  const MAX_HEIGHT = typeof window !== 'undefined' ? window.innerHeight - 32 : 900;
 
   // Load saved position and size from localStorage
   useEffect(() => {
@@ -529,7 +550,7 @@ export default function FloatingWritingPanel({
   }, []);
 
   // Handle resize start
-  const handleResizeStart = useCallback((e: React.MouseEvent, direction: 'corner' | 'left' | 'bottom') => {
+  const handleResizeStart = useCallback((e: React.MouseEvent, direction: 'corner' | 'left' | 'bottom' | 'top' | 'top-left-corner') => {
     e.preventDefault();
     e.stopPropagation();
     setIsResizing(true);
@@ -546,12 +567,16 @@ export default function FloatingWritingPanel({
       let newWidth = resizeRef.current.startWidth;
       let newHeight = resizeRef.current.startHeight;
       
-      if (direction === 'corner' || direction === 'left') {
+      if (direction === 'corner' || direction === 'left' || direction === 'top-left-corner') {
         // Resize from left - moving left increases width, moving right decreases
         newWidth = resizeRef.current.startWidth - (moveEvent.clientX - resizeRef.current.startX);
       }
       if (direction === 'corner' || direction === 'bottom') {
         newHeight = resizeRef.current.startHeight + (moveEvent.clientY - resizeRef.current.startY);
+      }
+      if (direction === 'top' || direction === 'top-left-corner') {
+        // Resize from top - moving up increases height
+        newHeight = resizeRef.current.startHeight - (moveEvent.clientY - resizeRef.current.startY);
       }
       
       // Apply constraints
@@ -619,6 +644,12 @@ export default function FloatingWritingPanel({
   const [diagramDescription, setDiagramDescription] = useState('');
   const [selectedDiagramType, setSelectedDiagramType] = useState('auto');
   const [generatingDiagram, setGeneratingDiagram] = useState(false);
+
+  // Smart figure suggestion state
+  const [showSmartSuggest, setShowSmartSuggest] = useState(false);
+  const [smartSuggestions, setSmartSuggestions] = useState<SmartFigureMeta[]>([]);
+  const [loadingSmartSuggest, setLoadingSmartSuggest] = useState(false);
+  const [generatingSmartFigure, setGeneratingSmartFigure] = useState<string | null>(null); // track which suggestion is being generated
   
   // Custom instructions for text actions
   const [customInstructions, setCustomInstructions] = useState('');
@@ -685,6 +716,105 @@ export default function FloatingWritingPanel({
       setGeneratingDiagram(false);
     }
   };
+
+  // ── Smart Figure Suggestion: sends selected text / section content to the
+  //    suggestion API and shows the user AI-recommended figures inline.
+  //    When user has highlighted text → focusMode='selection', only that text is visualized.
+  //    When no selection → focusMode='section', full section content is the focus.
+  const handleSmartFigureSuggest = useCallback(async () => {
+    if (!authToken || !sessionId) return;
+
+    // Determine focus: selected text = 'selection' mode, full section = 'section' mode
+    const hasSelection = !!selectedText?.text?.trim();
+    const sourceText = hasSelection ? selectedText!.text : (currentContent || '');
+    if (!sourceText.trim()) return;
+
+    const focusMode = hasSelection ? 'selection' as const : 'section' as const;
+
+    setLoadingSmartSuggest(true);
+    setShowSmartSuggest(true);
+    setSmartSuggestions([]);
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/figures/suggest`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          // Still send the section content for broader grounding context
+          sections: currentContent
+            ? { [currentSection || '_current']: currentContent.slice(0, 4000) }
+            : undefined,
+          useLLM: true,
+          preferences: { outputMix: 'balanced', detailLevel: 'moderate' },
+          // Focus fields — the LLM will constrain all suggestions to this text
+          focusText: sourceText.slice(0, 4000),
+          focusSection: currentSection || undefined,
+          focusMode
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to get suggestions');
+
+      const items: SmartFigureMeta[] = (data.suggestions || []).map((s: any) => ({
+        title: s.title,
+        description: s.description,
+        category: s.category || 'DIAGRAM',
+        suggestedType: s.suggestedType || 'flowchart',
+        rendererPreference: s.rendererPreference,
+        relevantSection: currentSection || s.relevantSection,
+        importance: s.importance,
+        dataNeeded: s.dataNeeded,
+        whyThisFigure: s.whyThisFigure,
+        diagramSpec: s.diagramSpec,
+        sourceSection: currentSection,
+        sourceText: sourceText.slice(0, 500),
+        sketchStyle: s.sketchStyle,
+        sketchPrompt: s.sketchPrompt,
+        sketchMode: s.sketchMode
+      }));
+      setSmartSuggestions(items);
+    } catch (err) {
+      console.error('[SmartFigureSuggest] Error:', err);
+      setSmartSuggestions([]);
+    } finally {
+      setLoadingSmartSuggest(false);
+    }
+  }, [authToken, sessionId, selectedText, currentContent, currentSection]);
+
+  /** Accept a smart suggestion: create + generate the figure immediately */
+  const handleAcceptSmartSuggestion = useCallback(async (suggestion: SmartFigureMeta) => {
+    if (!onGenerateFigure) return;
+    const key = suggestion.title || 'figure';
+    setGeneratingSmartFigure(key);
+    try {
+      await onGenerateFigure(suggestion.description || suggestion.title || '', suggestion);
+      // After successful generation, refresh figures
+      onRefreshFigures?.();
+    } catch (err) {
+      console.error('[SmartFigureSuggest] Generation failed:', err);
+    } finally {
+      setGeneratingSmartFigure(null);
+    }
+  }, [onGenerateFigure, onRefreshFigures]);
+
+  /** Navigate to Figure Planner stage with context pre-filled */
+  const handleOpenInFigurePlanner = useCallback(() => {
+    if (!onNavigateToStage) return;
+    const hasSelection = !!selectedText?.text?.trim();
+    // Store context in sessionStorage so the Figure Planner can pick it up
+    const context = {
+      sourceSection: currentSection,
+      sourceText: (hasSelection ? selectedText!.text : (currentContent || '')).slice(0, 4000),
+      focusMode: hasSelection ? 'selection' : 'section',
+      timestamp: Date.now()
+    };
+    try {
+      sessionStorage.setItem(`figure_planner_context_${sessionId}`, JSON.stringify(context));
+    } catch { /* ignore storage errors */ }
+    onNavigateToStage('FIGURE_PLANNER');
+  }, [onNavigateToStage, currentSection, selectedText, currentContent, sessionId]);
 
   // Generate AI suggestions based on current context
   const generateSuggestions = useCallback(async () => {
@@ -1220,16 +1350,146 @@ export default function FloatingWritingPanel({
                         />
                       </div>
 
-                      {/* Quick Create Button */}
+                      {/* Smart Figure Suggestion – AI analyzes selected text or section content */}
+                      <div className="space-y-2">
+                        <button
+                          onClick={handleSmartFigureSuggest}
+                          disabled={loadingSmartSuggest || (!selectedText?.text && !currentContent)}
+                          className="w-full p-3 rounded-xl border-2 border-dashed border-amber-200 hover:border-amber-400 hover:bg-amber-50 transition-colors flex items-center justify-center gap-2 text-sm text-amber-600 hover:text-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {loadingSmartSuggest ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Sparkles className="w-4 h-4" />
+                          )}
+                          {selectedText?.text
+                            ? `Suggest Figures for Selection (${selectedText.text.length} chars)`
+                            : 'AI Suggest Figures for This Section'}
+                        </button>
+
+                        {/* Inline Smart Suggestions */}
+                        <AnimatePresence>
+                          {showSmartSuggest && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: 'auto', opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              className="overflow-hidden"
+                            >
+                              <div className="p-2.5 bg-amber-50 rounded-xl border border-amber-200 space-y-2 max-h-[300px] overflow-y-auto">
+                                {loadingSmartSuggest ? (
+                                  <div className="py-6 text-center">
+                                    <Loader2 className="w-5 h-5 animate-spin text-amber-500 mx-auto mb-2" />
+                                    <p className="text-xs text-amber-700">Analyzing content and finding the best visualizations...</p>
+                                  </div>
+                                ) : smartSuggestions.length === 0 ? (
+                                  <div className="py-4 text-center text-xs text-slate-500">
+                                    No suggestions found. Try selecting specific data or a longer section.
+                                  </div>
+                                ) : (
+                                  <>
+                                    <p className="text-[10px] font-medium text-amber-700 px-1">
+                                      {smartSuggestions.length} suggestion{smartSuggestions.length !== 1 ? 's' : ''} found
+                                    </p>
+                                    {smartSuggestions.map((s, idx) => {
+                                      const catIcon = s.category === 'DATA_CHART' || s.category === 'STATISTICAL_PLOT'
+                                        ? <BarChart3 className="w-3.5 h-3.5" />
+                                        : s.category === 'SKETCH' || s.category === 'ILLUSTRATION'
+                                          ? <ImageIcon className="w-3.5 h-3.5" />
+                                          : <GitBranch className="w-3.5 h-3.5" />;
+                                      const isGenerating = generatingSmartFigure === (s.title || `fig-${idx}`);
+                                      const catColor = s.category === 'DATA_CHART' || s.category === 'STATISTICAL_PLOT'
+                                        ? 'bg-blue-100 text-blue-700'
+                                        : s.category === 'SKETCH' || s.category === 'ILLUSTRATION'
+                                          ? 'bg-purple-100 text-purple-700'
+                                          : 'bg-emerald-100 text-emerald-700';
+
+                                      return (
+                                        <div key={idx} className="p-2.5 bg-white rounded-lg border border-amber-100 space-y-1.5">
+                                          <div className="flex items-start gap-2">
+                                            <div className={`mt-0.5 p-1 rounded ${catColor}`}>{catIcon}</div>
+                                            <div className="flex-1 min-w-0">
+                                              <div className="flex items-center gap-1.5 flex-wrap">
+                                                <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded ${catColor}`}>
+                                                  {(s.category || 'DIAGRAM').replace('_', ' ')}
+                                                </span>
+                                                {s.importance === 'required' && (
+                                                  <span className="text-[9px] text-red-600 font-medium">Required</span>
+                                                )}
+                                                {s.importance === 'recommended' && (
+                                                  <span className="text-[9px] text-blue-600 font-medium">Recommended</span>
+                                                )}
+                                              </div>
+                                              <h5 className="text-xs font-medium text-slate-800 mt-1 leading-snug">{s.title}</h5>
+                                              <p className="text-[10px] text-slate-500 mt-0.5 line-clamp-2">{s.description}</p>
+                                              {s.whyThisFigure && (
+                                                <p className="text-[10px] text-amber-600 mt-1 italic">Why: {s.whyThisFigure}</p>
+                                              )}
+                                            </div>
+                                          </div>
+                                          <div className="flex gap-1.5 pt-1">
+                                            <Button
+                                              size="sm"
+                                              onClick={() => handleAcceptSmartSuggestion(s)}
+                                              disabled={!!generatingSmartFigure}
+                                              className="flex-1 h-7 rounded-lg text-[10px] bg-amber-600 hover:bg-amber-700 text-white"
+                                            >
+                                              {isGenerating ? (
+                                                <Loader2 className="w-3 h-3 animate-spin mr-1" />
+                                              ) : (
+                                                <Zap className="w-3 h-3 mr-1" />
+                                              )}
+                                              {isGenerating ? 'Generating...' : 'Generate Now'}
+                                            </Button>
+                                            {onNavigateToStage && (
+                                              <Button
+                                                size="sm"
+                                                variant="outline"
+                                                onClick={handleOpenInFigurePlanner}
+                                                disabled={!!generatingSmartFigure}
+                                                className="h-7 rounded-lg text-[10px]"
+                                                title="Open in Figure Planner for full control"
+                                              >
+                                                <ExternalLink className="w-3 h-3" />
+                                              </Button>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                    {/* Link to full Figure Planner */}
+                                    {onNavigateToStage && (
+                                      <button
+                                        onClick={handleOpenInFigurePlanner}
+                                        className="w-full p-2 rounded-lg text-[10px] text-amber-700 hover:bg-amber-100 transition-colors flex items-center justify-center gap-1.5 font-medium"
+                                      >
+                                        <ExternalLink className="w-3 h-3" />
+                                        Open Figure Planner for full control
+                                      </button>
+                                    )}
+                                  </>
+                                )}
+                                <button
+                                  onClick={() => setShowSmartSuggest(false)}
+                                  className="w-full p-1.5 text-[10px] text-slate-400 hover:text-slate-600 transition-colors"
+                                >
+                                  Dismiss
+                                </button>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+
+                      {/* Quick Create (manual) – fallback for users who know exactly what they want */}
                       <button
                         onClick={() => setShowQuickFigure(!showQuickFigure)}
-                        className="w-full p-3 rounded-xl border-2 border-dashed border-slate-200 hover:border-blue-300 hover:bg-blue-50 transition-colors flex items-center justify-center gap-2 text-sm text-slate-500 hover:text-blue-600"
+                        className="w-full p-2 rounded-lg border border-dashed border-slate-200 hover:border-blue-300 hover:bg-blue-50 transition-colors flex items-center justify-center gap-2 text-xs text-slate-400 hover:text-blue-600"
                       >
-                        <Plus className="w-4 h-4" />
-                        Quick Generate Figure
+                        <Plus className="w-3.5 h-3.5" />
+                        Quick Generate (manual description)
                       </button>
 
-                      {/* Quick Figure Form */}
                       <AnimatePresence>
                         {showQuickFigure && (
                           <motion.div
@@ -1487,19 +1747,71 @@ export default function FloatingWritingPanel({
                         </div>
                       </div>
 
-                      {/* Diagram Generation from Text */}
+                      {/* Smart Figure Suggestion from Text */}
                       <div className="pt-2 border-t border-slate-100">
                         <div className="flex items-center gap-2 mb-2">
-                          <p className="text-xs font-medium text-slate-600">Generate Diagram</p>
-                          <HelpTooltip text="Create diagrams from selected text or description. AI analyzes content and generates flowcharts, sequence diagrams, or charts." />
+                          <p className="text-xs font-medium text-slate-600">Suggest Figures & Diagrams</p>
+                          <HelpTooltip text="AI analyzes selected text or the current section and suggests the best charts, diagrams, or illustrations to visualize your content." />
                         </div>
                         
                         <button
-                          onClick={() => setShowDiagramGen(!showDiagramGen)}
-                          className="w-full p-2.5 rounded-lg border border-dashed border-slate-200 hover:border-violet-300 hover:bg-violet-50 transition-colors flex items-center justify-center gap-2 text-sm text-slate-500 hover:text-violet-600"
+                          onClick={handleSmartFigureSuggest}
+                          disabled={loadingSmartSuggest || (!selectedText?.text && !currentContent)}
+                          className="w-full p-2.5 rounded-lg border border-dashed border-amber-200 hover:border-amber-400 hover:bg-amber-50 transition-colors flex items-center justify-center gap-2 text-sm text-amber-600 hover:text-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                          <Workflow className="w-4 h-4" />
-                          {selectedText?.text ? 'Generate from Selection' : 'Create Diagram'}
+                          {loadingSmartSuggest ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Sparkles className="w-4 h-4" />
+                          )}
+                          {selectedText?.text ? 'Suggest from Selection' : 'Suggest for This Section'}
+                        </button>
+
+                        {/* Inline Smart Suggestions in Actions tab */}
+                        <AnimatePresence>
+                          {showSmartSuggest && smartSuggestions.length > 0 && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: 'auto', opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              className="overflow-hidden mt-2"
+                            >
+                              <div className="p-2 bg-amber-50 rounded-lg border border-amber-200 space-y-1.5 max-h-[200px] overflow-y-auto">
+                                {smartSuggestions.slice(0, 3).map((s, idx) => (
+                                  <button
+                                    key={idx}
+                                    onClick={() => handleAcceptSmartSuggestion(s)}
+                                    disabled={!!generatingSmartFigure}
+                                    className="w-full text-left p-2 bg-white rounded-lg border border-amber-100 hover:border-amber-300 transition-colors"
+                                  >
+                                    <div className="flex items-center gap-1.5">
+                                      <Zap className="w-3 h-3 text-amber-500 shrink-0" />
+                                      <span className="text-[10px] font-medium text-slate-700 truncate">{s.title}</span>
+                                    </div>
+                                    <p className="text-[9px] text-slate-500 mt-0.5 line-clamp-1 pl-[18px]">{s.description}</p>
+                                  </button>
+                                ))}
+                                {onNavigateToStage && (
+                                  <button
+                                    onClick={handleOpenInFigurePlanner}
+                                    className="w-full p-1.5 text-[10px] text-amber-600 hover:bg-amber-100 rounded-lg transition-colors flex items-center justify-center gap-1"
+                                  >
+                                    <ExternalLink className="w-3 h-3" />
+                                    See all in Figure Planner
+                                  </button>
+                                )}
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+
+                        {/* Fallback: manual diagram generation */}
+                        <button
+                          onClick={() => setShowDiagramGen(!showDiagramGen)}
+                          className="w-full mt-1.5 p-2 rounded-lg border border-dashed border-slate-200 hover:border-violet-300 hover:bg-violet-50 transition-colors flex items-center justify-center gap-2 text-xs text-slate-400 hover:text-violet-600"
+                        >
+                          <Workflow className="w-3.5 h-3.5" />
+                          Manual diagram (describe it yourself)
                         </button>
 
                         <AnimatePresence>
@@ -1891,7 +2203,7 @@ export default function FloatingWritingPanel({
                     ) : (
                       <>
                         <p className="text-[10px] text-slate-400 flex items-center gap-1">
-                          <Move className="w-3 h-3" /> Drag header to move • Drag edges to resize
+                          <Move className="w-3 h-3" /> Drag header to move • Drag any edge to resize
                         </p>
                         <p className="text-[10px] text-slate-400">
                           <kbd className="px-1 py-0.5 bg-white rounded text-[10px] border">Ctrl</kbd>+<kbd className="px-1 py-0.5 bg-white rounded text-[10px] border">.</kbd> toggle
@@ -1980,12 +2292,28 @@ export default function FloatingWritingPanel({
                 <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-slate-300 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
               </div>
 
+              {/* Top edge resize handle */}
+              <div
+                onMouseDown={(e) => handleResizeStart(e, 'top')}
+                className="absolute top-0 left-0 right-0 h-2 cursor-ns-resize group"
+              >
+                <div className="absolute top-0 left-1/2 -translate-x-1/2 h-1 w-8 bg-slate-300 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
+
               {/* Bottom edge resize handle */}
               <div
                 onMouseDown={(e) => handleResizeStart(e, 'bottom')}
                 className="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize group"
               >
                 <div className="absolute bottom-0 left-1/2 -translate-x-1/2 h-1 w-8 bg-slate-300 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+              </div>
+
+              {/* Corner resize handle (top-left) */}
+              <div
+                onMouseDown={(e) => handleResizeStart(e, 'top-left-corner')}
+                className="absolute top-0 left-0 w-4 h-4 cursor-nwse-resize group z-10"
+              >
+                <div className="absolute top-1 left-1 w-2 h-2 border-l-2 border-t-2 border-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
               </div>
 
               {/* Corner resize handle (bottom-left) */}

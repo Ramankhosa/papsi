@@ -14,6 +14,7 @@ export type FigureCategory =
   | 'DIAGRAM'           // Flowcharts, sequences - via PlantUML/Mermaid
   | 'STATISTICAL_PLOT'  // Complex stats - via Python execution
   | 'ILLUSTRATION'      // Conceptual - via AI image generation
+  | 'SKETCH'            // AI-generated sketch or refinement
   | 'TABLE'             // Data tables - via HTML/LaTeX rendering
   | 'EQUATION'          // Math equations - via MathJax/KaTeX
   | 'CUSTOM'            // User-uploaded figures
@@ -34,6 +35,9 @@ export type DiagramType =
   | 'flowchart'
   | 'sequence'
   | 'class'
+  | 'activity'
+  | 'component'
+  | 'usecase'
   | 'state'
   | 'er'           // Entity-relationship
   | 'gantt'
@@ -41,6 +45,33 @@ export type DiagramType =
   | 'timeline'
   | 'architecture'
   | 'plantuml'     // Raw PlantUML
+
+export interface DiagramSpecNode {
+  idHint: string
+  label: string
+  group?: string
+}
+
+export interface DiagramSpecEdge {
+  fromHint: string
+  toHint: string
+  label?: string
+  type?: 'solid' | 'dashed' | 'async'
+}
+
+export interface DiagramSpecGroup {
+  name: string
+  nodeIds?: string[]
+  description?: string
+}
+
+export interface DiagramStructuredSpec {
+  layout?: 'LR' | 'TD'
+  nodes?: DiagramSpecNode[]
+  edges?: DiagramSpecEdge[]
+  groups?: DiagramSpecGroup[]
+  splitSuggestion?: string
+}
 
 export type StatisticalPlotType = 
   | 'histogram'
@@ -281,9 +312,18 @@ export interface FigureSuggestion {
   description: string
   category: FigureCategory
   suggestedType?: string
+  rendererPreference?: 'plantuml' | 'mermaid' | 'auto'
   relevantSection?: string      // Which paper section it relates to
   dataSources?: string[]        // What data it would visualize
+  dataNeeded?: string
+  whyThisFigure?: string
+  diagramSpec?: DiagramStructuredSpec
   importance: 'required' | 'recommended' | 'optional'
+
+  // Sketch/illustration-specific fields (used when category is SKETCH)
+  sketchStyle?: 'academic' | 'scientific' | 'conceptual' | 'technical'
+  sketchPrompt?: string         // Purpose-built visual prompt for Gemini image generation
+  sketchMode?: 'SUGGEST' | 'GUIDED'  // SUGGEST = AI-driven from context, GUIDED = description-driven
 }
 
 export interface FigurePlan {

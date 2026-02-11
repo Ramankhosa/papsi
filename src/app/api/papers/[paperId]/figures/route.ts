@@ -4,15 +4,48 @@ import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 const createSchema = z.object({
   title: z.string().min(1),
   caption: z.string().optional().default(''),
   figureType: z.string().min(1),
-  category: z.enum(['DATA_CHART', 'DIAGRAM', 'STATISTICAL_PLOT', 'ILLUSTRATION', 'CUSTOM']).optional(),
+  category: z.enum(['DATA_CHART', 'DIAGRAM', 'STATISTICAL_PLOT', 'ILLUSTRATION', 'SKETCH', 'CUSTOM']).optional(),
   notes: z.string().optional(),
   figureNo: z.number().optional(),
-  status: z.enum(['PLANNED', 'GENERATING', 'GENERATED', 'FAILED']).optional()
+  status: z.enum(['PLANNED', 'GENERATING', 'GENERATED', 'FAILED']).optional(),
+  suggestionMeta: z.object({
+    relevantSection: z.string().optional().nullable(),
+    importance: z.enum(['required', 'recommended', 'optional']).optional().nullable(),
+    dataNeeded: z.string().optional().nullable(),
+    whyThisFigure: z.string().optional().nullable(),
+    rendererPreference: z.enum(['plantuml', 'mermaid', 'auto']).optional().nullable(),
+    diagramSpec: z.object({
+      layout: z.enum(['LR', 'TD']).optional(),
+      nodes: z.array(z.object({
+        idHint: z.string(),
+        label: z.string(),
+        group: z.string().optional()
+      })).optional(),
+      edges: z.array(z.object({
+        fromHint: z.string(),
+        toHint: z.string(),
+        label: z.string().optional(),
+        type: z.enum(['solid', 'dashed', 'async']).optional()
+      })).optional(),
+      groups: z.array(z.object({
+        name: z.string(),
+        nodeIds: z.array(z.string()).optional(),
+        description: z.string().optional()
+      })).optional(),
+      splitSuggestion: z.string().optional()
+    }).optional().nullable(),
+    // Sketch/illustration-specific fields
+    sketchStyle: z.enum(['academic', 'scientific', 'conceptual', 'technical']).optional().nullable(),
+    sketchPrompt: z.string().optional().nullable(),
+    sketchMode: z.enum(['SUGGEST', 'GUIDED']).optional().nullable()
+  }).optional().nullable()
 });
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
@@ -75,7 +108,8 @@ function toResponse(plan: any) {
     notes: meta.notes || '',
     status,
     imagePath,
-    generatedCode: meta.generatedCode || null
+    generatedCode: meta.generatedCode || null,
+    suggestionMeta: meta.suggestionMeta || null
   };
 }
 
@@ -98,7 +132,24 @@ export async function GET(request: NextRequest, context: { params: Promise<{ pap
       orderBy: { figureNo: 'asc' }
     });
 
-    return NextResponse.json({ figures: plans.map(toResponse) });
+    // Backward-compatible guard for any legacy soft-delete markers in nodes JSON.
+    const visiblePlans = plans.filter((plan: any) => {
+      const meta = typeof plan.nodes === 'object' && plan.nodes !== null && !Array.isArray(plan.nodes)
+        ? plan.nodes as Record<string, unknown>
+        : {};
+      return meta.isDeleted !== true && meta.deleted !== true && meta.status !== 'DELETED';
+    });
+
+    return NextResponse.json(
+      { figures: visiblePlans.map(toResponse) },
+      {
+        headers: {
+          'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+          Pragma: 'no-cache',
+          Expires: '0'
+        }
+      }
+    );
   } catch (error) {
     console.error('[PaperFigures] GET error:', error);
     return NextResponse.json({ error: 'Failed to fetch figures' }, { status: 500 });
@@ -133,7 +184,8 @@ export async function POST(request: NextRequest, context: { params: Promise<{ pa
       category: data.category || 'DIAGRAM',
       caption: data.caption || '',
       notes: data.notes || '',
-      status: data.status || 'PLANNED'
+      status: data.status || 'PLANNED',
+      suggestionMeta: data.suggestionMeta || null
     };
 
     const plan = await prisma.figurePlan.create({

@@ -26,6 +26,7 @@ import {
   KrokiRequest,
   FIGURE_DIMENSIONS
 } from './types'
+import crypto from 'crypto'
 
 // ============================================================================
 // Configuration
@@ -33,6 +34,10 @@ import {
 
 const KROKI_BASE_URL = process.env.KROKI_BASE_URL || 'https://kroki.io'
 const PLANTUML_BASE_URL = process.env.PLANTUML_BASE_URL || 'https://www.plantuml.com/plantuml'
+
+function shortHash(input: string): string {
+  return crypto.createHash('sha256').update(input).digest('hex').slice(0, 12)
+}
 
 // ============================================================================
 // Mermaid Code Templates
@@ -62,6 +67,9 @@ function getMermaidDiagramType(type: DiagramType): string {
     flowchart: 'flowchart TD',
     sequence: 'sequenceDiagram',
     class: 'classDiagram',
+    activity: 'flowchart TD',
+    component: 'flowchart LR',
+    usecase: 'flowchart LR',
     state: 'stateDiagram-v2',
     er: 'erDiagram',
     gantt: 'gantt',
@@ -115,6 +123,9 @@ function getKrokiDiagramType(type: DiagramType): string {
     flowchart: 'mermaid',
     sequence: 'mermaid',
     class: 'mermaid',
+    activity: 'mermaid',
+    component: 'mermaid',
+    usecase: 'mermaid',
     state: 'mermaid',
     er: 'mermaid',
     gantt: 'mermaid',
@@ -192,8 +203,9 @@ export async function generateMermaidDiagram(
 
     const format = options?.format || 'svg'
     const krokiType = getKrokiDiagramType(config.diagramType)
+    const codeHash = shortHash(fullCode)
 
-    console.log(`[Mermaid] Generating ${config.diagramType} diagram via Kroki (${format})`)
+    console.log(`[DiagramRender] renderer=kroki type=${krokiType} format=${format} codeHash=${codeHash} codeLen=${fullCode.length}`)
 
     // Encode the diagram source
     const encoded = await encodeForKroki(fullCode)
@@ -231,10 +243,11 @@ export async function generateMermaidDiagram(
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unknown error')
-      console.error('[Mermaid] Kroki error:', response.status, errorText.slice(0, 500))
+      const summary = errorText.slice(0, 400)
+      console.error(`[DiagramRender] renderer=kroki type=${krokiType} status=${response.status} codeHash=${codeHash} error=${summary}`)
       return {
         success: false,
-        error: `Diagram rendering failed: ${errorText.slice(0, 200)}`,
+        error: `KROKI_RENDER_ERROR status=${response.status} type=${krokiType} codeHash=${codeHash} details=${summary}`,
         errorCode: 'RENDERING_FAILED',
         provider: 'kroki'
       }
@@ -245,7 +258,7 @@ export async function generateMermaidDiagram(
     const imageBase64 = buffer.toString('base64')
 
     const duration = Date.now() - startTime
-    console.log(`[Mermaid] Diagram generated in ${duration}ms, size: ${buffer.length} bytes`)
+    console.log(`[DiagramRender] success renderer=kroki type=${krokiType} codeHash=${codeHash} durationMs=${duration} size=${buffer.length}`)
 
     return {
       success: true,
@@ -286,8 +299,8 @@ export async function generatePlantUMLDiagram(
   const code = cleanPlantUMLCode(rawCode)
 
   try {
-    // Option 1: Use our existing PlantUML proxy (preferred for patents)
-    if (options?.useProxy !== false) {
+    // Option 1 (opt-in only): use PlantUML proxy/server.
+    if (options?.useProxy === true) {
       const proxyResult = await generateViaProxy(code, format)
       if (proxyResult.success) {
         return proxyResult
@@ -295,9 +308,9 @@ export async function generatePlantUMLDiagram(
       console.warn('[PlantUML] Proxy failed, falling back to Kroki')
     }
 
-    // Option 2: Use Kroki as fallback
-    console.log(`[PlantUML] Generating diagram via Kroki (${format})`)
-    console.log(`[PlantUML] Code (cleaned):`, code.slice(0, 200))
+    // Default renderer: Kroki
+    const codeHash = shortHash(code)
+    console.log(`[DiagramRender] renderer=kroki type=plantuml format=${format} codeHash=${codeHash} codeLen=${code.length}`)
     
     const encoded = await encodeForKroki(code)
     const url = `${KROKI_BASE_URL}/plantuml/${format}/${encoded}`
@@ -332,11 +345,11 @@ export async function generatePlantUMLDiagram(
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => 'Unknown error')
-      console.error(`[PlantUML] Kroki error ${response.status}:`, errorText.slice(0, 500))
-      console.error('[PlantUML] Code that failed:', code.slice(0, 300))
+      const summary = errorText.slice(0, 500)
+      console.error(`[DiagramRender] renderer=kroki type=plantuml status=${response.status} codeHash=${codeHash} error=${summary}`)
       return {
         success: false,
-        error: `Diagram syntax error: ${errorText.slice(0, 200)}`,
+        error: `KROKI_RENDER_ERROR status=${response.status} type=plantuml codeHash=${codeHash} details=${summary}`,
         errorCode: 'RENDERING_FAILED',
         provider: 'kroki',
         apiCallDuration: Date.now() - startTime
@@ -854,6 +867,7 @@ export async function generateFromPlantUMLCode(
   code: string,
   options?: {
     format?: 'svg' | 'png'
+    useProxy?: boolean
   }
 ): Promise<FigureGenerationResult> {
   // cleanPlantUMLCode is called inside generatePlantUMLDiagram

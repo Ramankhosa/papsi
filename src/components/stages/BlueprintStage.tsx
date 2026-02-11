@@ -11,7 +11,7 @@
  * - Freeze blueprint when ready for section generation
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   Sparkles,
@@ -31,11 +31,15 @@ import {
   BookOpen,
   Layers,
   GitBranch,
-  Zap
+  Zap,
+  Ban,
+  Link2,
+  ArrowLeft,
+  ArrowRight,
+  ListFilter
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/components/ui/toast';
@@ -102,6 +106,12 @@ const SECTION_ICONS: Record<string, any> = {
   conclusion: Zap,
   default: BookOpen
 };
+
+const ALL_SECTIONS_FILTER = '__all_sections__';
+
+function formatSectionName(key: string): string {
+  return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
 
 // ============================================================================
 // Sub-Components
@@ -244,16 +254,20 @@ function DimensionCard({
 interface SectionNodeProps {
   section: SectionPlanItem;
   isFrozen: boolean;
+  isFocused?: boolean;
   onUpdateSection: (updated: SectionPlanItem) => void;
 }
 
-function SectionNode({ section, isFrozen, onUpdateSection }: SectionNodeProps) {
+function SectionNode({ section, isFrozen, isFocused = false, onUpdateSection }: SectionNodeProps) {
   const [isExpanded, setIsExpanded] = useState(true);
   const [editingDimensionIndex, setEditingDimensionIndex] = useState<number | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
 
   const Icon = SECTION_ICONS[section.sectionKey] || SECTION_ICONS.default;
-  const dimensionCount = section.mustCover.length;
+  const dimensionCount = section.mustCover?.length || 0;
+  const mustAvoidCount = section.mustAvoid?.length || 0;
+  const dependencyCount = section.dependencies?.length || 0;
+  const outputsCount = section.outputsPromised?.length || 0;
 
   const handleSaveDimension = (index: number, newDimension: string, newType: string) => {
     const updated = { ...section };
@@ -291,10 +305,6 @@ function SectionNode({ section, isFrozen, onUpdateSection }: SectionNodeProps) {
     setIsAddingNew(false);
   };
 
-  const formatSectionName = (key: string) => {
-    return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  };
-
   return (
     <motion.div
       layout
@@ -305,7 +315,7 @@ function SectionNode({ section, isFrozen, onUpdateSection }: SectionNodeProps) {
       {/* Connector line from center */}
       <div className="absolute -left-8 top-8 w-8 h-0.5 bg-gradient-to-r from-blue-300 to-transparent dark:from-blue-600" />
       
-      <Card className="overflow-hidden border-0 shadow-lg bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm">
+      <Card className={`overflow-hidden border-0 shadow-lg bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm ${isFocused ? 'ring-2 ring-blue-300 dark:ring-blue-700 shadow-blue-200/40 dark:shadow-blue-900/20' : ''}`}>
         {/* Section Header */}
         <button
           onClick={() => setIsExpanded(!isExpanded)}
@@ -323,9 +333,8 @@ function SectionNode({ section, isFrozen, onUpdateSection }: SectionNodeProps) {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant="secondary" className="text-xs">
-              {dimensionCount} dimensions
-            </Badge>
+            <Badge variant="secondary" className="text-xs">{dimensionCount} must have</Badge>
+            <Badge variant="outline" className="text-xs border-rose-200 text-rose-700 dark:border-rose-900 dark:text-rose-300">{mustAvoidCount} don&apos;t do</Badge>
             <motion.div
               animate={{ rotate: isExpanded ? 180 : 0 }}
               transition={{ duration: 0.2 }}
@@ -345,59 +354,164 @@ function SectionNode({ section, isFrozen, onUpdateSection }: SectionNodeProps) {
               transition={{ duration: 0.2 }}
             >
               <CardContent className="pt-0 pb-4 px-4">
-                <div className="space-y-2 ml-2 border-l-2 border-slate-200 dark:border-slate-700 pl-4">
-                  {section.mustCover.map((dim, idx) => (
-                    <DimensionCard
-                      key={`${section.sectionKey}-${idx}`}
-                      dimension={dim}
-                      type={section.mustCoverTyping?.[dim]}
-                      sectionKey={section.sectionKey}
-                      isEditing={editingDimensionIndex === idx}
-                      isFrozen={isFrozen}
-                      onEdit={() => setEditingDimensionIndex(idx)}
-                      onDelete={() => handleDeleteDimension(idx)}
-                      onSave={(newDim, newType) => handleSaveDimension(idx, newDim, newType)}
-                      onCancel={() => setEditingDimensionIndex(null)}
-                    />
-                  ))}
+                <div className="space-y-4">
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/50 p-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
+                      Purpose
+                    </div>
+                    <p className="text-sm text-slate-700 dark:text-slate-200 leading-relaxed">
+                      {section.purpose || 'No purpose defined.'}
+                    </p>
+                  </div>
 
-                  {/* Add New Dimension */}
-                  {isAddingNew ? (
-                    <DimensionCard
-                      dimension=""
-                      type="empirical"
-                      sectionKey={section.sectionKey}
-                      isEditing={true}
-                      isFrozen={false}
-                      onEdit={() => {}}
-                      onDelete={() => setIsAddingNew(false)}
-                      onSave={handleAddDimension}
-                      onCancel={() => setIsAddingNew(false)}
-                    />
-                  ) : !isFrozen && (
-                    <motion.button
-                      whileHover={{ scale: 1.02 }}
-                      whileTap={{ scale: 0.98 }}
-                      onClick={() => setIsAddingNew(true)}
-                      className="w-full p-3 rounded-xl border-2 border-dashed border-slate-300 dark:border-slate-600 
-                        text-slate-500 dark:text-slate-400 hover:border-blue-400 hover:text-blue-500 
-                        dark:hover:border-blue-500 dark:hover:text-blue-400
-                        flex items-center justify-center gap-2 transition-colors"
-                    >
-                      <Plus className="w-4 h-4" />
-                      <span className="text-sm">Add Dimension</span>
-                    </motion.button>
-                  )}
+                  <div className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50/70 dark:bg-emerald-950/20 p-3">
+                    <div className="flex items-center justify-between gap-2 mb-3">
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                        Must Have ({dimensionCount})
+                      </div>
+                      {section.suggestedCitationCount && (
+                        <Badge variant="outline" className="text-[10px] border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300">
+                          ~{section.suggestedCitationCount} citations
+                        </Badge>
+                      )}
+                    </div>
+
+                    <div className="space-y-2 ml-2 border-l-2 border-emerald-200/80 dark:border-emerald-900/70 pl-4">
+                      {section.mustCover.map((dim, idx) => (
+                        <DimensionCard
+                          key={`${section.sectionKey}-${idx}`}
+                          dimension={dim}
+                          type={section.mustCoverTyping?.[dim]}
+                          sectionKey={section.sectionKey}
+                          isEditing={editingDimensionIndex === idx}
+                          isFrozen={isFrozen}
+                          onEdit={() => setEditingDimensionIndex(idx)}
+                          onDelete={() => handleDeleteDimension(idx)}
+                          onSave={(newDim, newType) => handleSaveDimension(idx, newDim, newType)}
+                          onCancel={() => setEditingDimensionIndex(null)}
+                        />
+                      ))}
+
+                      {dimensionCount === 0 && (
+                        <div className="text-sm text-emerald-700/70 dark:text-emerald-300/70">
+                          No must-have dimensions yet.
+                        </div>
+                      )}
+
+                      {/* Add New Dimension */}
+                      {isAddingNew ? (
+                        <DimensionCard
+                          dimension=""
+                          type="empirical"
+                          sectionKey={section.sectionKey}
+                          isEditing={true}
+                          isFrozen={false}
+                          onEdit={() => {}}
+                          onDelete={() => setIsAddingNew(false)}
+                          onSave={handleAddDimension}
+                          onCancel={() => setIsAddingNew(false)}
+                        />
+                      ) : !isFrozen && (
+                        <motion.button
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                          onClick={() => setIsAddingNew(true)}
+                          className="w-full p-3 rounded-xl border-2 border-dashed border-emerald-300 dark:border-emerald-700
+                            text-emerald-700 dark:text-emerald-400 hover:border-emerald-500 hover:text-emerald-800
+                            dark:hover:border-emerald-500 dark:hover:text-emerald-300
+                            flex items-center justify-center gap-2 transition-colors"
+                        >
+                          <Plus className="w-4 h-4" />
+                          <span className="text-sm">Add Must-Have Dimension</span>
+                        </motion.button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid md:grid-cols-2 gap-3">
+                    <div className="rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50/70 dark:bg-rose-950/20 p-3">
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-300 mb-2 flex items-center gap-1.5">
+                        <Ban className="w-3.5 h-3.5" />
+                        Don&apos;t Do ({mustAvoidCount})
+                      </div>
+                      {mustAvoidCount > 0 ? (
+                        <ul className="space-y-1.5">
+                          {section.mustAvoid.map((item, idx) => (
+                            <li key={`${section.sectionKey}-avoid-${idx}`} className="flex items-start gap-2 text-sm text-rose-800 dark:text-rose-200">
+                              <span className="mt-0.5 text-rose-500 dark:text-rose-400">
+                                <X className="w-3.5 h-3.5" />
+                              </span>
+                              <span>{item}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-sm text-rose-700/70 dark:text-rose-300/70">No explicit avoid rules defined.</p>
+                      )}
+                    </div>
+
+                    <div className="rounded-xl border border-amber-200 dark:border-amber-900 bg-amber-50/70 dark:bg-amber-950/20 p-3">
+                      <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-2 flex items-center gap-1.5">
+                        <Link2 className="w-3.5 h-3.5" />
+                        Must Do Before ({dependencyCount})
+                      </div>
+                      {dependencyCount > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {section.dependencies.map((dependency) => (
+                            <Badge
+                              key={`${section.sectionKey}-dependency-${dependency}`}
+                              variant="outline"
+                              className="border-amber-300 text-amber-800 dark:border-amber-800 dark:text-amber-300"
+                            >
+                              {formatSectionName(dependency)}
+                            </Badge>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-amber-700/70 dark:text-amber-300/70">No required dependency sections.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-indigo-200 dark:border-indigo-900 bg-indigo-50/70 dark:bg-indigo-950/20 p-3">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300 mb-2 flex items-center gap-1.5">
+                      <ChevronRight className="w-3.5 h-3.5" />
+                      Outputs Promised ({outputsCount})
+                    </div>
+                    {outputsCount > 0 ? (
+                      <div className="flex flex-wrap gap-2">
+                        {section.outputsPromised.map((output, idx) => (
+                          <Badge
+                            key={`${section.sectionKey}-output-${idx}`}
+                            className="bg-indigo-100 text-indigo-800 hover:bg-indigo-100 dark:bg-indigo-900/60 dark:text-indigo-200"
+                          >
+                            {output}
+                          </Badge>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-indigo-700/70 dark:text-indigo-300/70">No downstream outputs listed.</p>
+                    )}
+                  </div>
                 </div>
 
-                {/* Section metadata */}
-                {section.suggestedCitationCount && (
-                  <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800">
-                    <span className="text-xs text-slate-400">
-                      Suggested citations: ~{section.suggestedCitationCount}
-                    </span>
-                  </div>
-                )}
+                <div className="mt-4 pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center gap-2 flex-wrap">
+                  {section.wordBudget ? (
+                    <Badge variant="secondary" className="text-xs">
+                      ~{section.wordBudget} words
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="text-xs text-slate-500 border-slate-300 dark:border-slate-700 dark:text-slate-400">
+                      Word budget not set
+                    </Badge>
+                  )}
+                  <Badge variant="outline" className="text-xs border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300">
+                    {dimensionCount} must-have dimensions
+                  </Badge>
+                  <Badge variant="outline" className="text-xs border-rose-300 text-rose-700 dark:border-rose-800 dark:text-rose-300">
+                    {mustAvoidCount} avoid rules
+                  </Badge>
+                </div>
               </CardContent>
             </motion.div>
           )}
@@ -432,6 +546,7 @@ export default function BlueprintStage({
   const [editingObjective, setEditingObjective] = useState(false);
   const [thesisValue, setThesisValue] = useState('');
   const [objectiveValue, setObjectiveValue] = useState('');
+  const [sectionFilter, setSectionFilter] = useState<string>(ALL_SECTIONS_FILTER);
 
   // Load blueprint
   const loadBlueprint = useCallback(async () => {
@@ -594,6 +709,34 @@ export default function BlueprintStage({
   };
 
   const isFrozen = blueprint?.status === 'FROZEN';
+  const sections = useMemo(() => blueprint?.sectionPlan ?? [], [blueprint?.sectionPlan]);
+
+  useEffect(() => {
+    if (!sections.length) {
+      setSectionFilter(ALL_SECTIONS_FILTER);
+      return;
+    }
+
+    if (sectionFilter !== ALL_SECTIONS_FILTER && !sections.some(section => section.sectionKey === sectionFilter)) {
+      setSectionFilter(ALL_SECTIONS_FILTER);
+    }
+  }, [sections, sectionFilter]);
+
+  const filteredSections = sectionFilter === ALL_SECTIONS_FILTER
+    ? sections
+    : sections.filter(section => section.sectionKey === sectionFilter);
+
+  const selectedSectionIndex = sections.findIndex(section => section.sectionKey === sectionFilter);
+  const totalMustHave = sections.reduce((sum, section) => sum + (section.mustCover?.length || 0), 0);
+  const totalDontDo = sections.reduce((sum, section) => sum + (section.mustAvoid?.length || 0), 0);
+
+  const moveSectionFilter = (direction: -1 | 1) => {
+    if (!sections.length || sectionFilter === ALL_SECTIONS_FILTER) return;
+    const nextIndex = selectedSectionIndex + direction;
+    if (nextIndex >= 0 && nextIndex < sections.length) {
+      setSectionFilter(sections[nextIndex].sectionKey);
+    }
+  };
 
   // Debug: Log current state - this should appear in browser console
   console.log('[BlueprintStage] STATE - loading:', loading, 'blueprint:', blueprint ? 'exists' : 'null', 'error:', error, 'authToken:', authToken ? 'present' : 'null');
@@ -707,7 +850,7 @@ export default function BlueprintStage({
           </Button>
 
           <p className="mt-4 text-xs text-slate-400">
-            Make sure you've completed the Research Topic stage first
+            Make sure you&apos;ve completed the Research Topic stage first
           </p>
         </motion.div>
       </div>
@@ -897,6 +1040,36 @@ export default function BlueprintStage({
                   </div>
                 </div>
               )}
+
+              {blueprint.narrativeArc && (
+                <div className="mt-6 pt-4 border-t border-slate-200 dark:border-slate-700">
+                  <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2 block">
+                    Narrative Arc
+                  </span>
+                  <p className="text-sm text-slate-700 dark:text-slate-200 leading-relaxed">
+                    {blueprint.narrativeArc}
+                  </p>
+                </div>
+              )}
+
+              {blueprint.preferredTerms && Object.keys(blueprint.preferredTerms).length > 0 && (
+                <div className="mt-6 pt-4 border-t border-slate-200 dark:border-slate-700">
+                  <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2 block">
+                    Preferred Terms
+                  </span>
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    {Object.entries(blueprint.preferredTerms).map(([term, definition]) => (
+                      <div
+                        key={term}
+                        className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white/70 dark:bg-slate-900/50 px-3 py-2"
+                      >
+                        <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">{term}</p>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">{definition}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -904,13 +1077,97 @@ export default function BlueprintStage({
           <div className="absolute left-1/2 -translate-x-1/2 -bottom-8 w-0.5 h-8 bg-gradient-to-b from-blue-300 to-transparent dark:from-blue-600" />
         </motion.div>
 
+        {/* Section Review Filters */}
+        <div className="mb-8 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white/70 dark:bg-slate-900/60 backdrop-blur-sm p-4 shadow-sm">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 mb-4">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-700 dark:text-slate-200">
+                <ListFilter className="w-4 h-4 text-blue-500" />
+                Section-Wise Review
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                Filter to one section to reduce overload, or keep all visible.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="secondary" className="text-xs">
+                {sections.length} sections
+              </Badge>
+              <Badge variant="outline" className="text-xs border-emerald-300 text-emerald-700 dark:border-emerald-900 dark:text-emerald-300">
+                {totalMustHave} must-have
+              </Badge>
+              <Badge variant="outline" className="text-xs border-rose-300 text-rose-700 dark:border-rose-900 dark:text-rose-300">
+                {totalDontDo} don&apos;t-do
+              </Badge>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setSectionFilter(ALL_SECTIONS_FILTER)}
+              className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors border ${
+                sectionFilter === ALL_SECTIONS_FILTER
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-blue-400'
+              }`}
+            >
+              All Sections
+            </button>
+            {sections.map((section, index) => (
+              <button
+                key={section.sectionKey}
+                onClick={() => setSectionFilter(section.sectionKey)}
+                className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors border ${
+                  sectionFilter === section.sectionKey
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700 hover:border-indigo-400'
+                }`}
+                title={`Must have: ${section.mustCover?.length || 0} | Don't do: ${section.mustAvoid?.length || 0}`}
+              >
+                {index + 1}. {formatSectionName(section.sectionKey)}
+              </button>
+            ))}
+          </div>
+
+          {sectionFilter !== ALL_SECTIONS_FILTER && selectedSectionIndex >= 0 && (
+            <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                Reviewing section {selectedSectionIndex + 1} of {sections.length}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => moveSectionFilter(-1)}
+                  disabled={selectedSectionIndex <= 0}
+                  className="text-xs"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5 mr-1" />
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => moveSectionFilter(1)}
+                  disabled={selectedSectionIndex >= sections.length - 1}
+                  className="text-xs"
+                >
+                  Next
+                  <ArrowRight className="w-3.5 h-3.5 ml-1" />
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Section Nodes */}
-        <div className="grid md:grid-cols-2 gap-6 pl-8">
-          {blueprint.sectionPlan.map((section, idx) => (
+        <div className={`grid gap-6 ${sectionFilter === ALL_SECTIONS_FILTER ? 'md:grid-cols-2 pl-8' : 'max-w-3xl mx-auto'}`}>
+          {filteredSections.map((section) => (
             <SectionNode
               key={section.sectionKey}
               section={section}
               isFrozen={isFrozen}
+              isFocused={sectionFilter !== ALL_SECTIONS_FILTER}
               onUpdateSection={(updated) => handleUpdateSection(section.sectionKey, updated)}
             />
           ))}

@@ -7,6 +7,13 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
+import { useToast } from '@/components/ui/toast';
+import {
+  DEFAULT_FIGURE_SUGGESTION_PREFERENCES,
+  normalizeFigurePreferences,
+  resolveSketchStyleFromPreferences,
+  type FigureSuggestionPreferences
+} from '@/lib/figure-generation/preferences';
 import { 
   BarChart3, 
   LineChart, 
@@ -49,6 +56,26 @@ interface PaperFigurePlannerStageProps {
 
 type FigureCategory = 'DATA_CHART' | 'DIAGRAM' | 'STATISTICAL_PLOT' | 'ILLUSTRATION' | 'SKETCH' | 'CUSTOM';
 
+type DiagramSpec = {
+  layout?: 'LR' | 'TD';
+  nodes?: Array<{ idHint: string; label: string; group?: string }>;
+  edges?: Array<{ fromHint: string; toHint: string; label?: string; type?: 'solid' | 'dashed' | 'async' }>;
+  groups?: Array<{ name: string; nodeIds?: string[]; description?: string }>;
+  splitSuggestion?: string;
+};
+
+type FigureSuggestionMeta = {
+  relevantSection?: string;
+  importance?: 'required' | 'recommended' | 'optional';
+  dataNeeded?: string;
+  whyThisFigure?: string;
+  rendererPreference?: 'plantuml' | 'mermaid' | 'auto';
+  diagramSpec?: DiagramSpec;
+  sketchStyle?: 'academic' | 'scientific' | 'conceptual' | 'technical';
+  sketchPrompt?: string;
+  sketchMode?: 'SUGGEST' | 'GUIDED';
+};
+
 type FigurePlan = {
   id: string;
   figureNo: number;
@@ -60,6 +87,30 @@ type FigurePlan = {
   imagePath?: string;
   status: 'PLANNED' | 'GENERATING' | 'GENERATED' | 'FAILED';
   generatedCode?: string;
+  suggestionMeta?: FigureSuggestionMeta | null;
+};
+
+type SuggestionStatus = 'pending' | 'used' | 'dismissed';
+
+type FigureSuggestionItem = {
+  id: string;
+  title: string;
+  description: string;
+  category: FigureCategory;
+  suggestedType?: string;
+  rendererPreference?: 'plantuml' | 'mermaid' | 'auto';
+  relevantSection?: string;
+  importance?: 'required' | 'recommended' | 'optional';
+  dataNeeded?: string;
+  whyThisFigure?: string;
+  diagramSpec?: DiagramSpec;
+  sketchStyle?: 'academic' | 'scientific' | 'conceptual' | 'technical';
+  sketchPrompt?: string;
+  sketchMode?: 'SUGGEST' | 'GUIDED';
+  // Persistence & tracking fields
+  status?: SuggestionStatus;
+  usedByFigureId?: string | null;
+  usedAt?: string | null;
 };
 
 // Figure types with descriptions and visual examples
@@ -106,20 +157,121 @@ const CATEGORY_COLORS: Record<FigureCategory, string> = {
   CUSTOM: 'bg-slate-500'
 };
 
+const CATEGORY_ACCENTS: Record<FigureCategory, string> = {
+  DATA_CHART: 'border-sky-200 bg-sky-50/70',
+  DIAGRAM: 'border-violet-200 bg-violet-50/70',
+  STATISTICAL_PLOT: 'border-emerald-200 bg-emerald-50/70',
+  ILLUSTRATION: 'border-amber-200 bg-amber-50/70',
+  SKETCH: 'border-rose-200 bg-rose-50/70',
+  CUSTOM: 'border-slate-200 bg-slate-50/70'
+};
+
+const PREFERENCE_OPTIONS = {
+  stylePreset: [
+    { value: 'auto', label: 'Let AI decide' },
+    { value: 'ieee_clean', label: 'IEEE clean' },
+    { value: 'nature_minimal', label: 'Nature minimal' },
+    { value: 'industrial_dashboard', label: 'Industrial dashboard' },
+    { value: 'technical_blueprint', label: 'Technical blueprint' },
+    { value: 'conceptual_storyboard', label: 'Concept storyboard' }
+  ],
+  outputMix: [
+    { value: 'auto', label: 'Let AI balance' },
+    { value: 'balanced', label: 'Balanced mix' },
+    { value: 'charts_first', label: 'Charts first' },
+    { value: 'diagrams_first', label: 'Diagrams first' },
+    { value: 'include_sketches', label: 'Include sketches' }
+  ],
+  chartPreference: [
+    { value: 'auto', label: 'Auto chart family' },
+    { value: 'bar_line', label: 'Bar and line' },
+    { value: 'distribution', label: 'Distribution focused' },
+    { value: 'correlation', label: 'Correlation focused' },
+    { value: 'comparative', label: 'Comparative metrics' }
+  ],
+  diagramPreference: [
+    { value: 'auto', label: 'Auto diagram family' },
+    { value: 'flow', label: 'Flow/process' },
+    { value: 'architecture', label: 'Architecture/system' },
+    { value: 'sequence', label: 'Sequence/interaction' },
+    { value: 'conceptual', label: 'Conceptual map' }
+  ],
+  visualTone: [
+    { value: 'auto', label: 'Auto tone' },
+    { value: 'formal', label: 'Formal publication' },
+    { value: 'minimal', label: 'Minimal clean' },
+    { value: 'high_contrast', label: 'High contrast' },
+    { value: 'presentation_ready', label: 'Presentation ready' }
+  ],
+  colorMode: [
+    { value: 'auto', label: 'Auto color mode' },
+    { value: 'color', label: 'Color' },
+    { value: 'grayscale', label: 'Grayscale' },
+    { value: 'colorblind_safe', label: 'Colorblind safe' }
+  ],
+  detailLevel: [
+    { value: 'auto', label: 'Auto detail' },
+    { value: 'simple', label: 'Simple' },
+    { value: 'moderate', label: 'Moderate' },
+    { value: 'advanced', label: 'Advanced' }
+  ],
+  annotationDensity: [
+    { value: 'auto', label: 'Auto labels' },
+    { value: 'light', label: 'Light' },
+    { value: 'balanced', label: 'Balanced' },
+    { value: 'detailed', label: 'Detailed' }
+  ],
+  targetAudience: [
+    { value: 'auto', label: 'Auto audience' },
+    { value: 'academic', label: 'Academic reviewers' },
+    { value: 'industry', label: 'Industry stakeholders' },
+    { value: 'mixed', label: 'Mixed audience' }
+  ],
+  strictness: [
+    { value: 'soft', label: 'Soft guidance' },
+    { value: 'strict', label: 'Strict enforcement' }
+  ]
+} as const;
+
+const SUGGESTION_SECTION_FILTER_ALL = '__all__';
+
+function getSectionMapFromSession(session: any): Record<string, string> {
+  const paperSections = Array.isArray(session?.paperSections) ? session.paperSections : [];
+  if (paperSections.length > 0) {
+    return paperSections.reduce((acc: Record<string, string>, section: any) => {
+      if (section?.sectionKey && typeof section?.content === 'string' && section.content.trim()) {
+        acc[section.sectionKey] = section.content;
+      }
+      return acc;
+    }, {});
+  }
+
+  return session?.annexureDrafts?.[0]?.extraSections || {};
+}
+
 export default function PaperFigurePlannerStage({ 
   sessionId, 
   authToken, 
   onSessionUpdated,
   session 
 }: PaperFigurePlannerStageProps) {
+  const { showToast } = useToast();
   const [figures, setFigures] = useState<FigurePlan[]>([]);
   const [isCreating, setIsCreating] = useState(false);
   const [generating, setGenerating] = useState<string | null>(null);
   const [previewFigure, setPreviewFigure] = useState<FigurePlan | null>(null);
   const [showTypeDropdown, setShowTypeDropdown] = useState(false);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
-  const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [suggestions, setSuggestions] = useState<FigureSuggestionItem[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggestionPreferences, setSuggestionPreferences] = useState<FigureSuggestionPreferences>(DEFAULT_FIGURE_SUGGESTION_PREFERENCES);
+  const [isGeneratingBatch, setIsGeneratingBatch] = useState(false);
+  const [isApplyingSuggestionBatch, setIsApplyingSuggestionBatch] = useState(false);
+  const [selectedSuggestionIds, setSelectedSuggestionIds] = useState<string[]>([]);
+  const [sectionFilter, setSectionFilter] = useState<string>(SUGGESTION_SECTION_FILTER_ALL);
+  const [categoryFilter, setCategoryFilter] = useState<string>(SUGGESTION_SECTION_FILTER_ALL);
+  const [importanceFilter, setImportanceFilter] = useState<string>(SUGGESTION_SECTION_FILTER_ALL);
+  const [suggestionsRequested, setSuggestionsRequested] = useState(false);
   
   // Modification request state
   const [modificationRequest, setModificationRequest] = useState('');
@@ -137,6 +289,76 @@ export default function PaperFigurePlannerStage({
   const [description, setDescription] = useState('');
   const [figureType, setFigureType] = useState('bar');
   const [category, setCategory] = useState<FigureCategory>('DATA_CHART');
+  const [pendingSuggestionMeta, setPendingSuggestionMeta] = useState<FigureSuggestionMeta | null>(null);
+  const [pendingSuggestionId, setPendingSuggestionId] = useState<string | null>(null);
+  const [activeRequest, setActiveRequest] = useState<{
+    controller: AbortController;
+    timeoutId: ReturnType<typeof setTimeout> | null;
+    label: string;
+    timedOut: boolean;
+  } | null>(null);
+
+  const startCancelableRequest = useCallback((label: string, timeoutMs: number) => {
+    const controller = new AbortController();
+    const requestState = {
+      controller,
+      timeoutId: null as ReturnType<typeof setTimeout> | null,
+      label,
+      timedOut: false
+    };
+    requestState.timeoutId = setTimeout(() => {
+      requestState.timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    setActiveRequest(requestState);
+    return requestState;
+  }, []);
+
+  const finishCancelableRequest = useCallback((requestState: {
+    controller: AbortController;
+    timeoutId: ReturnType<typeof setTimeout> | null;
+  }) => {
+    if (requestState.timeoutId !== null) {
+      clearTimeout(requestState.timeoutId);
+    }
+    setActiveRequest((current) => (current === requestState ? null : current));
+  }, []);
+
+  const isAbortError = (error: unknown): boolean => {
+    return error instanceof DOMException
+      ? error.name === 'AbortError'
+      : (error as any)?.name === 'AbortError';
+  };
+
+  const cancelActiveRequest = useCallback(() => {
+    setActiveRequest((current) => {
+      if (!current) return current;
+      if (current.timeoutId !== null) {
+        clearTimeout(current.timeoutId);
+      }
+      current.controller.abort();
+      return null;
+    });
+    showToast({
+      type: 'info',
+      title: 'Request canceled',
+      message: 'The active request was canceled.'
+    });
+  }, [showToast]);
+
+  const getBatchFailureMessage = useCallback((results: any[]): string => {
+    const failures = results.filter((entry: any) => entry?.success === false);
+    if (failures.length === 0) return '';
+    const titleList = failures
+      .map((entry: any) => entry?.title)
+      .filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+      .slice(0, 3);
+    const suffix = failures.length > titleList.length ? ` and ${failures.length - titleList.length} more` : '';
+    if (titleList.length > 0) {
+      return `Failed: ${titleList.join(', ')}${suffix}.`;
+    }
+    return `${failures.length} figure(s) failed.`;
+  }, []);
 
   // Calculate next figure number
   const nextFigureNo = useMemo(() => {
@@ -145,12 +367,157 @@ export default function PaperFigurePlannerStage({
   }, [figures]);
 
   const selectedType = FIGURE_OPTIONS.find(t => t.value === figureType);
+  const normalizePrefs = useCallback(() => normalizeFigurePreferences(suggestionPreferences), [suggestionPreferences]);
+
+  const suggestionSections = useMemo(() => {
+    const values = new Set<string>();
+    suggestions.forEach((item) => {
+      if (item.relevantSection?.trim()) values.add(item.relevantSection.trim());
+    });
+    return Array.from(values);
+  }, [suggestions]);
+
+  const filteredSuggestions = useMemo(() => {
+    return suggestions.filter((item) => {
+      if (sectionFilter !== SUGGESTION_SECTION_FILTER_ALL && item.relevantSection !== sectionFilter) return false;
+      if (categoryFilter !== SUGGESTION_SECTION_FILTER_ALL && item.category !== categoryFilter) return false;
+      if (importanceFilter !== SUGGESTION_SECTION_FILTER_ALL && (item.importance || 'optional') !== importanceFilter) return false;
+      return true;
+    });
+  }, [suggestions, sectionFilter, categoryFilter, importanceFilter]);
+
+  const selectedSuggestions = useMemo(() => {
+    const selected = new Set(selectedSuggestionIds);
+    // Exclude already-used suggestions from batch operations
+    return suggestions.filter((item) => selected.has(item.id) && item.status !== 'used');
+  }, [suggestions, selectedSuggestionIds]);
+
+  const updatePreference = <K extends keyof FigureSuggestionPreferences>(
+    key: K,
+    value: FigureSuggestionPreferences[K]
+  ) => {
+    setSuggestionPreferences((prev) => normalizeFigurePreferences({
+      ...prev,
+      [key]: value
+    }));
+  };
+
+  // ── Suggestion persistence helpers ──────────────────────────────
+
+  /** Parse API response items into typed FigureSuggestionItem[] */
+  const parseSuggestionsFromApi = useCallback((items: any[]): FigureSuggestionItem[] => {
+    return items.map((item: any, index: number) => ({
+      id: item.id || `${Date.now()}-${index}`,
+      title: item.title,
+      description: item.description,
+      category: (item.category || 'DIAGRAM') as FigureCategory,
+      suggestedType: item.suggestedType || 'flowchart',
+      rendererPreference: item.rendererPreference,
+      relevantSection: item.relevantSection || '',
+      importance: item.importance || 'optional',
+      dataNeeded: item.dataNeeded || '',
+      whyThisFigure: item.whyThisFigure || '',
+      diagramSpec: item.diagramSpec,
+      sketchStyle: item.sketchStyle,
+      sketchPrompt: item.sketchPrompt,
+      sketchMode: item.sketchMode,
+      status: (item.status as SuggestionStatus) || 'pending',
+      usedByFigureId: item.usedByFigureId ?? null,
+      usedAt: item.usedAt ?? null
+    }));
+  }, []);
+
+  /** Load suggestion cache from server on mount */
+  const loadCachedSuggestions = useCallback(async () => {
+    if (!authToken || !sessionId) return;
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/figures/suggest`, {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      if (data.suggestions && data.suggestions.length > 0) {
+        const cached = parseSuggestionsFromApi(data.suggestions);
+        setSuggestions(cached);
+        setSuggestionsRequested(true);
+        // Auto-select only pending suggestions
+        setSelectedSuggestionIds(cached.filter(s => s.status !== 'used' && s.status !== 'dismissed').map(s => s.id));
+      }
+    } catch (err) {
+      console.error('Failed to load cached suggestions:', err);
+    }
+  }, [authToken, sessionId, parseSuggestionsFromApi]);
+
+  /** Persist status changes for one or more suggestions to the server */
+  const persistSuggestionStatuses = useCallback(async (
+    updates: Array<{ id: string; status: SuggestionStatus; usedByFigureId?: string | null }>
+  ) => {
+    if (!authToken || !sessionId || updates.length === 0) return;
+    try {
+      await fetch(`/api/papers/${sessionId}/figures/suggest`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ updates })
+      });
+    } catch (err) {
+      console.error('Failed to persist suggestion status:', err);
+    }
+  }, [authToken, sessionId]);
+
+  /** Mark a suggestion as used (locally + server) and link it to a figure */
+  const markSuggestionUsed = useCallback((suggestionId: string, figureId: string) => {
+    setSuggestions(prev => prev.map(s =>
+      s.id === suggestionId
+        ? { ...s, status: 'used' as SuggestionStatus, usedByFigureId: figureId, usedAt: new Date().toISOString() }
+        : s
+    ));
+    persistSuggestionStatuses([{ id: suggestionId, status: 'used', usedByFigureId: figureId }]);
+  }, [persistSuggestionStatuses]);
+
+  /** Mark multiple suggestions as used (for batch operations) */
+  const markSuggestionsUsedBatch = useCallback((entries: Array<{ suggestionTitle: string; figureId: string }>) => {
+    setSuggestions(prev => {
+      const titleToFigure = new Map(entries.map(e => [e.suggestionTitle.toLowerCase(), e.figureId]));
+      const updates: Array<{ id: string; status: SuggestionStatus; usedByFigureId: string }> = [];
+      const next = prev.map(s => {
+        const figId = titleToFigure.get(s.title.toLowerCase());
+        if (figId && s.status !== 'used') {
+          updates.push({ id: s.id, status: 'used', usedByFigureId: figId });
+          return { ...s, status: 'used' as SuggestionStatus, usedByFigureId: figId, usedAt: new Date().toISOString() };
+        }
+        return s;
+      });
+      if (updates.length > 0) {
+        persistSuggestionStatuses(updates);
+      }
+      return next;
+    });
+  }, [persistSuggestionStatuses]);
+
+  /** When a figure is deleted, revert its linked suggestion back to pending */
+  const revertSuggestionOnFigureDelete = useCallback((figureId: string) => {
+    setSuggestions(prev => {
+      const match = prev.find(s => s.usedByFigureId === figureId);
+      if (!match) return prev;
+      persistSuggestionStatuses([{ id: match.id, status: 'pending', usedByFigureId: null }]);
+      return prev.map(s =>
+        s.usedByFigureId === figureId
+          ? { ...s, status: 'pending' as SuggestionStatus, usedByFigureId: null, usedAt: null }
+          : s
+      );
+    });
+  }, [persistSuggestionStatuses]);
 
   // Load figures
   const loadFigures = useCallback(async () => {
     if (!authToken || !sessionId) return;
     try {
     const response = await fetch(`/api/papers/${sessionId}/figures`, {
+      cache: 'no-store',
       headers: { Authorization: `Bearer ${authToken}` }
     });
     if (!response.ok) return;
@@ -164,13 +531,78 @@ export default function PaperFigurePlannerStage({
   useEffect(() => {
     if (sessionId && authToken) {
       loadFigures();
+      loadCachedSuggestions();
     }
-  }, [sessionId, authToken, loadFigures]);
+  }, [sessionId, authToken, loadFigures, loadCachedSuggestions]);
 
-  // Create figure
+  // ── Cross-stage context: if user navigated here from the drafting stage with
+  //    selected text, auto-open the suggestion panel and trigger AI suggestions.
+  useEffect(() => {
+    if (!sessionId || !authToken) return;
+    const storageKey = `figure_planner_context_${sessionId}`;
+    try {
+      const raw = sessionStorage.getItem(storageKey);
+      if (!raw) return;
+      sessionStorage.removeItem(storageKey);
+      const ctx = JSON.parse(raw);
+      // Only use context less than 5 minutes old
+      if (ctx.timestamp && Date.now() - ctx.timestamp > 5 * 60 * 1000) return;
+      if (ctx.sourceText) {
+        const isSelection = ctx.focusMode === 'selection';
+        // Show a toast so the user knows why the suggestions panel opened
+        showToast({
+          type: 'info',
+          title: isSelection ? 'Selected text received' : 'Section content received',
+          message: isSelection
+            ? 'Analyzing your selected text for the best figure suggestions...'
+            : ctx.sourceSection
+              ? `Analyzing "${ctx.sourceSection}" section for figure suggestions...`
+              : 'Analyzing content for figure suggestions...'
+        });
+        // Auto-open suggestions panel and trigger generation
+        setShowSuggestions(true);
+        setSuggestionsRequested(true);
+        setLoadingSuggestions(true);
+        // Trigger the suggest API with focus mode so suggestions
+        // are constrained to the carried-over text
+        fetch(`/api/papers/${sessionId}/figures/suggest`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            useLLM: true,
+            preferences: { outputMix: 'balanced', detailLevel: 'moderate' },
+            focusText: ctx.sourceText.slice(0, 4000),
+            focusSection: ctx.sourceSection || undefined,
+            focusMode: ctx.focusMode || 'selection'
+          })
+        })
+          .then(res => res.json())
+          .then(data => {
+            if (data.suggestions) {
+              const nextSuggestions = parseSuggestionsFromApi(data.suggestions);
+              setSuggestions(nextSuggestions);
+              setSelectedSuggestionIds(nextSuggestions.filter(s => s.status !== 'used').map(s => s.id));
+            }
+          })
+          .catch(err => console.error('[FigurePlanner] Cross-stage suggest error:', err))
+          .finally(() => setLoadingSuggestions(false));
+      }
+    } catch {
+      /* ignore parse/storage errors */
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, authToken]);
+
+  // Create figure — when created from a suggestion (pendingSuggestionMeta is set),
+  // auto-trigger generation so the full flow runs: create -> LLM code gen -> render -> retry.
   const handleCreate = async () => {
     if (!authToken || !title.trim()) return;
     
+    const wasFromSuggestion = !!pendingSuggestionMeta;
+    const originSuggestionId = pendingSuggestionId;
     setIsCreating(true);
     try {
       const response = await fetch(`/api/papers/${sessionId}/figures`, {
@@ -186,18 +618,38 @@ export default function PaperFigurePlannerStage({
           category,
           notes: description,
           figureNo: nextFigureNo,
-          status: 'PLANNED'
+          status: 'PLANNED',
+          suggestionMeta: pendingSuggestionMeta || undefined
         })
       });
       
       const data = await response.json();
       if (!response.ok) throw new Error(data.error);
       
-      setFigures(prev => [...prev, data.figure]);
+      const createdFigure: FigurePlan = data.figure;
+      setFigures(prev => [...prev, createdFigure]);
       setTitle('');
       setDescription('');
+      setPendingSuggestionMeta(null);
+      setPendingSuggestionId(null);
+
+      // Mark the source suggestion as used
+      if (wasFromSuggestion && originSuggestionId && createdFigure?.id) {
+        markSuggestionUsed(originSuggestionId, createdFigure.id);
+      }
+
+      // Auto-trigger generation for figures created from suggestions
+      if (wasFromSuggestion && createdFigure?.id) {
+        // Small delay so React state settles and the figure card renders
+        setTimeout(() => handleGenerate(createdFigure), 100);
+      }
     } catch (err) {
       console.error('Failed to create figure:', err);
+      showToast({
+        type: 'error',
+        title: 'Failed to create figure',
+        message: err instanceof Error ? err.message : 'Unexpected error'
+      });
     } finally {
       setIsCreating(false);
     }
@@ -206,15 +658,18 @@ export default function PaperFigurePlannerStage({
   // Generate figure
   const handleGenerate = async (figure: FigurePlan) => {
     if (!authToken) return;
+    const previousStatus = figure.status;
     
     setGenerating(figure.id);
     setFigures(prev => prev.map(f => 
       f.id === figure.id ? { ...f, status: 'GENERATING' as const } : f
     ));
 
+    const requestState = startCancelableRequest(`Generating "${figure.title}"`, 120000);
     try {
       const response = await fetch(`/api/papers/${sessionId}/figures/${figure.id}/generate`, {
         method: 'POST',
+        signal: requestState.controller.signal,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`
@@ -226,6 +681,8 @@ export default function PaperFigurePlannerStage({
           caption: figure.caption,
           description: figure.notes || figure.caption,
           theme: 'academic',
+          preferences: normalizePrefs(),
+          suggestionMeta: figure.suggestionMeta || undefined,
           useLLM: true
         })
       });
@@ -240,10 +697,30 @@ export default function PaperFigurePlannerStage({
           : f
       ));
     } catch (err) {
-      setFigures(prev => prev.map(f => 
-        f.id === figure.id ? { ...f, status: 'FAILED' as const } : f
-      ));
+      if (isAbortError(err)) {
+        setFigures(prev => prev.map(f => 
+          f.id === figure.id ? { ...f, status: previousStatus } : f
+        ));
+        setPreviewFigure((prev) => prev?.id === figure.id ? { ...prev, status: previousStatus } : prev);
+        showToast({
+          type: requestState.timedOut ? 'warning' : 'info',
+          title: requestState.timedOut ? 'Generation timed out' : 'Generation canceled',
+          message: requestState.timedOut
+            ? 'The request took longer than 120 seconds and was canceled.'
+            : 'The generation request was canceled.'
+        });
+      } else {
+        setFigures(prev => prev.map(f => 
+          f.id === figure.id ? { ...f, status: 'FAILED' as const } : f
+        ));
+        showToast({
+          type: 'error',
+          title: 'Generation failed',
+          message: err instanceof Error ? err.message : 'Unexpected error'
+        });
+      }
     } finally {
+      finishCancelableRequest(requestState);
       setGenerating(null);
     }
   };
@@ -252,66 +729,163 @@ export default function PaperFigurePlannerStage({
   const handleDelete = async (figureId: string) => {
     if (!authToken) return;
     try {
-      await fetch(`/api/papers/${sessionId}/figures/${figureId}`, {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${authToken}` }
-    });
+      const response = await fetch(`/api/papers/${sessionId}/figures/${figureId}`, {
+        method: 'DELETE',
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data?.error || 'Failed to delete figure');
+      }
       setFigures(prev => prev.filter(f => f.id !== figureId));
+      // Close preview if we're deleting the previewed figure
+      if (previewFigure?.id === figureId) {
+        setPreviewFigure(null);
+        setShowModifyInput(false);
+        setModificationRequest('');
+      }
+      // Revert the linked suggestion back to pending so the user can re-use it
+      revertSuggestionOnFigureDelete(figureId);
+      // Re-sync with server to avoid stale local state.
+      await loadFigures();
     } catch (error) {
       console.error('Failed to delete:', error);
     }
   };
 
-  // Get AI suggestions
+  // Clear generated image only (reset to PLANNED)
+  const handleClearImage = async (figureId: string) => {
+    if (!authToken) return;
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/figures/${figureId}?imageOnly=true`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      const data = await response.json();
+      if (response.ok && data.figure) {
+        setFigures(prev => prev.map(f => 
+          f.id === figureId 
+            ? { ...f, status: 'PLANNED' as const, imagePath: undefined, generatedCode: undefined }
+            : f
+        ));
+        // Update preview if we're clearing the previewed figure
+        if (previewFigure?.id === figureId) {
+          setPreviewFigure(prev => prev ? { ...prev, status: 'PLANNED' as const, imagePath: undefined } : null);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to clear image:', error);
+    }
+  };
+
+  // Get AI suggestions - called only when user explicitly clicks "Let AI Suggest"
   const handleGetSuggestions = async () => {
     if (!authToken) return;
     setLoadingSuggestions(true);
-    setShowSuggestions(true);
+    setSuggestionsRequested(true);
     
+    const requestState = startCancelableRequest('Generating AI suggestions', 120000);
     try {
+      const paperSections = getSectionMapFromSession(session);
+      const normalizedPrefs = normalizePrefs();
+      const blueprint = session?.paperBlueprint
+        ? {
+            thesisStatement: session.paperBlueprint.thesisStatement || '',
+            centralObjective: session.paperBlueprint.centralObjective || '',
+            keyContributions: session.paperBlueprint.keyContributions || [],
+            sectionPlan: session.paperBlueprint.sectionPlan || []
+          }
+        : undefined;
+
       const response = await fetch(`/api/papers/${sessionId}/figures/suggest`, {
         method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${authToken}`
-      },
-      body: JSON.stringify({
+        signal: requestState.controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
           paperTitle: session?.researchTopic?.title || '',
-          paperAbstract: session?.researchTopic?.abstract || '',
-          sections: session?.annexureDrafts?.[0]?.extraSections || {},
+          paperAbstract: session?.researchTopic?.abstractDraft || '',
+          datasetDescription: session?.researchTopic?.datasetDescription || '',
+          sections: paperSections,
+          blueprint,
+          preferences: normalizedPrefs,
           useLLM: true
-      })
-    });
+        })
+      });
       
-    const data = await response.json();
+      const data = await response.json();
       if (response.ok) {
-        setSuggestions(data.suggestions || []);
+        const nextSuggestions: FigureSuggestionItem[] = parseSuggestionsFromApi(data.suggestions || []);
+        setSuggestions(nextSuggestions);
+        // Auto-select only pending suggestions
+        setSelectedSuggestionIds(nextSuggestions.filter(s => s.status !== 'used').map((item) => item.id));
+        setSectionFilter(SUGGESTION_SECTION_FILTER_ALL);
+        setCategoryFilter(SUGGESTION_SECTION_FILTER_ALL);
+        setImportanceFilter(SUGGESTION_SECTION_FILTER_ALL);
+      } else {
+        throw new Error(data.error || 'Failed to fetch suggestions');
       }
     } catch (error) {
-      console.error('Failed to get suggestions:', error);
+      if (isAbortError(error)) {
+        showToast({
+          type: requestState.timedOut ? 'warning' : 'info',
+          title: requestState.timedOut ? 'Suggestion request timed out' : 'Suggestion request canceled',
+          message: requestState.timedOut
+            ? 'The request took longer than 120 seconds and was canceled.'
+            : 'The suggestion request was canceled.'
+        });
+      } else {
+        console.error('Failed to get suggestions:', error);
+        showToast({
+          type: 'error',
+          title: 'Failed to get suggestions',
+          message: error instanceof Error ? error.message : 'Unexpected error'
+        });
+      }
     } finally {
+      finishCancelableRequest(requestState);
       setLoadingSuggestions(false);
     }
   };
 
-  // Apply suggestion
-  const applySuggestion = (suggestion: any) => {
+  // Apply suggestion – tracks the suggestion ID so we can mark it as used after figure creation
+  const applySuggestion = (suggestion: FigureSuggestionItem) => {
     setTitle(suggestion.title);
     setDescription(suggestion.description);
     setFigureType(suggestion.suggestedType || 'flowchart');
     setCategory(suggestion.category || 'DIAGRAM');
+    if ((suggestion.category === 'SKETCH') || suggestion.suggestedType?.startsWith('sketch')) {
+      setSketchStyle(resolveSketchStyleFromPreferences(normalizePrefs()));
+    }
+    setPendingSuggestionId(suggestion.id);
+    setPendingSuggestionMeta({
+      relevantSection: suggestion.relevantSection || undefined,
+      importance: suggestion.importance || undefined,
+      dataNeeded: suggestion.dataNeeded || undefined,
+      whyThisFigure: suggestion.whyThisFigure || undefined,
+      rendererPreference: suggestion.rendererPreference || undefined,
+      diagramSpec: suggestion.diagramSpec,
+      sketchStyle: suggestion.sketchStyle || undefined,
+      sketchPrompt: suggestion.sketchPrompt || undefined,
+      sketchMode: suggestion.sketchMode || undefined
+    });
     setShowSuggestions(false);
   };
 
   // Handle modification request - regenerate with user feedback
   const handleModify = async (figure: FigurePlan) => {
     if (!authToken || !modificationRequest.trim()) return;
+    const previousStatus = figure.status;
     
     setIsModifying(true);
     setFigures(prev => prev.map(f => 
       f.id === figure.id ? { ...f, status: 'GENERATING' as const } : f
     ));
 
+    const requestState = startCancelableRequest(`Applying changes to "${figure.title}"`, 120000);
     try {
       let response: Response;
       
@@ -322,6 +896,7 @@ export default function PaperFigurePlannerStage({
         // Use sketch modification endpoint
         response = await fetch(`/api/papers/${sessionId}/figures/${figure.id}/sketch`, {
           method: 'PATCH',
+          signal: requestState.controller.signal,
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${authToken}`
@@ -342,6 +917,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
 
         response = await fetch(`/api/papers/${sessionId}/figures/${figure.id}/generate`, {
           method: 'POST',
+          signal: requestState.controller.signal,
           headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${authToken}`
@@ -354,6 +930,8 @@ Please regenerate the figure incorporating the user's feedback and corrections.
             description: enhancedDescription,
             modificationRequest: modificationRequest,
             theme: 'academic',
+            preferences: normalizePrefs(),
+            suggestionMeta: figure.suggestionMeta || undefined,
             useLLM: true
           })
         });
@@ -379,11 +957,31 @@ Please regenerate the figure incorporating the user's feedback and corrections.
       setModificationRequest('');
       setShowModifyInput(false);
     } catch (err) {
-      console.error('Modification failed:', err);
-      setFigures(prev => prev.map(f => 
-        f.id === figure.id ? { ...f, status: 'FAILED' as const } : f
-      ));
+      if (isAbortError(err)) {
+        setFigures(prev => prev.map(f => 
+          f.id === figure.id ? { ...f, status: previousStatus } : f
+        ));
+        setPreviewFigure(prev => prev?.id === figure.id ? { ...prev, status: previousStatus } : prev);
+        showToast({
+          type: requestState.timedOut ? 'warning' : 'info',
+          title: requestState.timedOut ? 'Modification timed out' : 'Modification canceled',
+          message: requestState.timedOut
+            ? 'The request took longer than 120 seconds and was canceled.'
+            : 'The modification request was canceled.'
+        });
+      } else {
+        console.error('Modification failed:', err);
+        setFigures(prev => prev.map(f => 
+          f.id === figure.id ? { ...f, status: 'FAILED' as const } : f
+        ));
+        showToast({
+          type: 'error',
+          title: 'Modification failed',
+          message: err instanceof Error ? err.message : 'Unexpected error'
+        });
+      }
     } finally {
+      finishCancelableRequest(requestState);
       setIsModifying(false);
     }
   };
@@ -393,6 +991,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
     setFigureType(option.value);
     setCategory(option.category as FigureCategory);
     setShowTypeDropdown(false);
+    setPendingSuggestionMeta(null);
     // Clear sketch file when switching types
     if (!option.value.startsWith('sketch-')) {
       setSketchUploadFile(null);
@@ -461,11 +1060,18 @@ Please regenerate the figure incorporating the user's feedback and corrections.
       if (!response.ok) throw new Error(data.error);
 
       // Reload figures to get the new sketch
-      loadFigures();
+      await loadFigures();
+
+      // Mark the source suggestion as used if applicable
+      if (pendingSuggestionId && data.figureId) {
+        markSuggestionUsed(pendingSuggestionId, data.figureId);
+      }
       
       // Clear form
       setTitle('');
       setDescription('');
+      setPendingSuggestionMeta(null);
+      setPendingSuggestionId(null);
       setSketchUploadFile(null);
       setSketchUploadPreview(null);
       
@@ -474,6 +1080,189 @@ Please regenerate the figure incorporating the user's feedback and corrections.
       alert(`Failed to generate sketch: ${err.message}`);
     } finally {
       setIsGeneratingSketch(false);
+    }
+  };
+
+  const toggleSuggestionSelection = (suggestionId: string) => {
+    setSelectedSuggestionIds((prev) => (
+      prev.includes(suggestionId)
+        ? prev.filter((id) => id !== suggestionId)
+        : [...prev, suggestionId]
+    ));
+  };
+
+  const toggleSelectAllFiltered = () => {
+    // Exclude already-used suggestions from select-all toggle
+    const selectableIds = filteredSuggestions.filter(s => s.status !== 'used').map((item) => item.id);
+    const selected = new Set(selectedSuggestionIds);
+    const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
+
+    if (allSelected) {
+      setSelectedSuggestionIds((prev) => prev.filter((id) => !selectableIds.includes(id)));
+      return;
+    }
+
+    setSelectedSuggestionIds((prev) => Array.from(new Set([...prev, ...selectableIds])));
+  };
+
+  const handleGenerateAll = async () => {
+    if (!authToken || isGeneratingBatch) return;
+    const pending = figures.filter((f) => f.status === 'PLANNED' || f.status === 'FAILED');
+    if (pending.length === 0) return;
+
+    setIsGeneratingBatch(true);
+    const requestState = startCancelableRequest(`Generating ${pending.length} figures`, 180000);
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/figures/batch`, {
+        method: 'POST',
+        signal: requestState.controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          mode: 'generateExisting',
+          figureIds: pending.map((figure) => figure.id),
+          preferences: normalizePrefs(),
+          useLLM: true,
+          continueOnError: true
+        })
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || 'Batch generation failed');
+      }
+
+      await loadFigures();
+      const results = Array.isArray(data.results) ? data.results : [];
+      const generated = Number(data.generated || results.filter((entry: any) => entry?.success === true).length);
+      const failed = Number(data.failed || results.filter((entry: any) => entry?.success === false).length);
+      if (failed > 0) {
+        showToast({
+          type: 'warning',
+          title: `Generated ${generated}/${generated + failed} figures`,
+          message: getBatchFailureMessage(results)
+        });
+      } else {
+        showToast({
+          type: 'success',
+          title: `Generated ${generated} figure${generated === 1 ? '' : 's'}`,
+          message: 'Batch generation completed successfully.'
+        });
+      }
+    } catch (error) {
+      if (isAbortError(error)) {
+        showToast({
+          type: requestState.timedOut ? 'warning' : 'info',
+          title: requestState.timedOut ? 'Batch generation timed out' : 'Batch generation canceled',
+          message: requestState.timedOut
+            ? 'The batch request took longer than 180 seconds and was canceled.'
+            : 'The batch request was canceled.'
+        });
+      } else {
+        console.error('Batch generation failed:', error);
+        showToast({
+          type: 'error',
+          title: 'Batch generation failed',
+          message: error instanceof Error ? error.message : 'Unexpected error'
+        });
+      }
+    } finally {
+      finishCancelableRequest(requestState);
+      setIsGeneratingBatch(false);
+    }
+  };
+
+  const handleCreateAndGenerateFromSuggestions = async () => {
+    if (!authToken || isApplyingSuggestionBatch) return;
+    if (selectedSuggestions.length === 0) return;
+
+    setIsApplyingSuggestionBatch(true);
+    const requestState = startCancelableRequest(`Creating and generating ${selectedSuggestions.length} suggestions`, 180000);
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/figures/batch`, {
+        method: 'POST',
+        signal: requestState.controller.signal,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          mode: 'createAndGenerateFromSuggestions',
+          suggestions: selectedSuggestions.map((item) => ({
+            title: item.title,
+            description: item.description,
+            category: item.category,
+            suggestedType: item.suggestedType,
+            rendererPreference: item.rendererPreference,
+            relevantSection: item.relevantSection,
+            importance: item.importance,
+            dataNeeded: item.dataNeeded,
+            whyThisFigure: item.whyThisFigure,
+            diagramSpec: item.diagramSpec,
+            sketchStyle: item.sketchStyle,
+            sketchPrompt: item.sketchPrompt,
+            sketchMode: item.sketchMode
+          })),
+          preferences: normalizePrefs(),
+          useLLM: true,
+          continueOnError: true
+        })
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to generate selected suggestions');
+      }
+
+      await loadFigures();
+      const results = Array.isArray(data.results) ? data.results : [];
+      const generated = Number(data.generated || results.filter((entry: any) => entry?.success === true).length);
+      const failed = Number(data.failed || results.filter((entry: any) => entry?.success === false).length);
+
+      // Mark all batch-processed suggestions as used, linking them to created figures
+      const batchUsedEntries: Array<{ suggestionTitle: string; figureId: string }> = results
+        .filter((r: any) => r?.figureId && r?.title)
+        .map((r: any) => ({ suggestionTitle: r.title, figureId: r.figureId }));
+      if (batchUsedEntries.length > 0) {
+        markSuggestionsUsedBatch(batchUsedEntries);
+      }
+
+      if (failed > 0) {
+        showToast({
+          type: 'warning',
+          title: `Generated ${generated}/${generated + failed} figures`,
+          message: getBatchFailureMessage(results)
+        });
+      } else {
+        showToast({
+          type: 'success',
+          title: `Generated ${generated} figure${generated === 1 ? '' : 's'}`,
+          message: 'All selected suggestions were generated.'
+        });
+      }
+      setShowSuggestions(false);
+    } catch (error) {
+      if (isAbortError(error)) {
+        showToast({
+          type: requestState.timedOut ? 'warning' : 'info',
+          title: requestState.timedOut ? 'Suggestion batch timed out' : 'Suggestion batch canceled',
+          message: requestState.timedOut
+            ? 'The batch request took longer than 180 seconds and was canceled.'
+            : 'The batch request was canceled.'
+        });
+      } else {
+        console.error('Suggestion batch failed:', error);
+        showToast({
+          type: 'error',
+          title: 'Suggestion batch failed',
+          message: error instanceof Error ? error.message : 'Unexpected error'
+        });
+      }
+    } finally {
+      finishCancelableRequest(requestState);
+      setIsApplyingSuggestionBatch(false);
     }
   };
 
@@ -495,19 +1284,14 @@ Please regenerate the figure incorporating the user's feedback and corrections.
               </p>
             </div>
 
-            {/* AI Suggestions Button */}
+            {/* AI Suggestions Button - opens the dialog for user to configure preferences first */}
             <Button 
               variant="outline" 
-              onClick={handleGetSuggestions}
-              disabled={loadingSuggestions}
+              onClick={() => setShowSuggestions(true)}
               className="gap-2 border-amber-200 text-amber-700 hover:bg-amber-50 hover:border-amber-300"
             >
-              {loadingSuggestions ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Sparkles className="w-4 h-4" />
-              )}
-              AI Suggestions
+              <Sparkles className="w-4 h-4" />
+              Suggest Figures/Charts From My Data
             </Button>
           </div>
           
@@ -522,6 +1306,19 @@ Please regenerate the figure incorporating the user's feedback and corrections.
               <span className="text-sm text-slate-600">{generatedFigures.length} generated</span>
             </div>
           </div>
+          {activeRequest && (
+            <div className="mt-4 flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+              <span className="text-sm text-amber-800">{activeRequest.label}</span>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={cancelActiveRequest}
+                className="border-amber-300 text-amber-800 hover:bg-amber-100"
+              >
+                Cancel
+              </Button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -796,10 +1593,19 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                 <Button 
                   onClick={handleCreate}
                   disabled={isCreating || !title.trim()}
-                  className="w-full h-12 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-medium shadow-lg shadow-blue-500/25"
+                  className={`w-full h-12 rounded-xl text-white font-medium shadow-lg ${
+                    pendingSuggestionMeta
+                      ? 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 shadow-amber-500/25'
+                      : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-blue-500/25'
+                  }`}
                 >
                   {isCreating ? (
                     <Loader2 className="w-5 h-5 animate-spin" />
+                  ) : pendingSuggestionMeta ? (
+                    <>
+                      <Zap className="w-5 h-5 mr-2" />
+                      Add and Generate Figure
+                    </>
                   ) : (
                     <>
                       <Plus className="w-5 h-5 mr-2" />
@@ -833,10 +1639,12 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                       className="bg-white rounded-xl border border-slate-200 overflow-hidden hover:shadow-md transition-shadow"
                     >
                       <div className="flex items-stretch">
-                        {/* Thumbnail */}
+                        {/* Thumbnail - clickable for any non-generating figure */}
                         <div 
-                          className="w-24 h-24 bg-slate-100 flex items-center justify-center shrink-0 cursor-pointer"
-                          onClick={() => figure.imagePath && setPreviewFigure(figure)}
+                          className={`w-24 h-24 bg-slate-100 flex items-center justify-center shrink-0 ${
+                            figure.status !== 'GENERATING' ? 'cursor-pointer hover:bg-slate-200 transition-colors' : ''
+                          }`}
+                          onClick={() => figure.status !== 'GENERATING' && setPreviewFigure(figure)}
                         >
                           {figure.status === 'GENERATING' ? (
                             <div className="flex flex-col items-center gap-1">
@@ -849,6 +1657,11 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                               alt={figure.title}
                               className="w-full h-full object-cover"
                             />
+                          ) : figure.status === 'FAILED' ? (
+                            <div className="flex flex-col items-center gap-1">
+                              <X className="w-6 h-6 text-red-400" />
+                              <span className="text-[10px] text-red-400">Failed</span>
+                            </div>
                           ) : (
                             <Icon className="w-8 h-8 text-slate-300" />
                           )}
@@ -870,9 +1683,10 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                             <p className="text-sm text-slate-500 truncate">{figure.caption}</p>
                           </div>
                           
-                          {/* Actions */}
+                          {/* Actions - always visible for every status */}
                           <div className="flex items-center gap-1 ml-4">
-                            {figure.status === 'PLANNED' && (
+                            {/* Generate / Regenerate / Retry - always available */}
+                            {figure.status === 'PLANNED' ? (
                               <Button
                                 size="sm"
                                 onClick={() => handleGenerate(figure)}
@@ -882,60 +1696,100 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                                 <Zap className="w-3.5 h-3.5" />
                                 Generate
                               </Button>
-                            )}
-                            {figure.status === 'GENERATED' && (
-                              <>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => setPreviewFigure(figure)}
-                                  className="rounded-lg"
-                                  title="View"
-                                >
-                                  <Eye className="w-4 h-4" />
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => {
-                                    setPreviewFigure(figure);
-                                    setShowModifyInput(true);
-                                  }}
-                                  className="rounded-lg text-blue-600 hover:text-blue-700 hover:bg-blue-50"
-                                  title="Request modifications"
-                                >
-                                  <Pencil className="w-4 h-4" />
-                                </Button>
-                                <Button
-                                  size="sm"
-                                  variant="ghost"
-                                  onClick={() => handleGenerate(figure)}
-                                  className="rounded-lg"
-                                  title="Regenerate"
-                                >
-                                  <RefreshCw className="w-4 h-4" />
-                                </Button>
-                              </>
-                            )}
-                            {figure.status === 'FAILED' && (
+                            ) : figure.status === 'FAILED' ? (
                               <Button
                                 size="sm"
                                 variant="outline"
                                 onClick={() => handleGenerate(figure)}
-                                className="rounded-lg text-red-600 border-red-200 hover:bg-red-50"
+                                disabled={isGenerating}
+                                className="rounded-lg text-red-600 border-red-200 hover:bg-red-50 gap-1"
                               >
-                                <RefreshCw className="w-4 h-4 mr-1" />
+                                <RefreshCw className="w-3.5 h-3.5" />
                                 Retry
                               </Button>
+                            ) : figure.status === 'GENERATING' ? null : (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleGenerate(figure)}
+                                disabled={isGenerating}
+                                className="rounded-lg"
+                                title="Regenerate"
+                              >
+                                <RefreshCw className="w-4 h-4" />
+                              </Button>
                             )}
+
+                            {/* View - available when image exists (GENERATED or FAILED with partial image) */}
+                            {figure.imagePath && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setPreviewFigure(figure)}
+                                className="rounded-lg"
+                                title="View figure"
+                              >
+                                <Eye className="w-4 h-4" />
+                              </Button>
+                            )}
+
+                            {/* Modify - available for GENERATED and FAILED (opens preview with modify input) */}
+                            {(figure.status === 'GENERATED' || figure.status === 'FAILED') && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  setPreviewFigure(figure);
+                                  setShowModifyInput(true);
+                                }}
+                                className="rounded-lg text-blue-600 hover:text-blue-700 hover:bg-blue-50"
+                                title="Request modifications and regenerate"
+                              >
+                                <Pencil className="w-4 h-4" />
+                              </Button>
+                            )}
+
+                            {/* Download - direct download when image exists */}
+                            {figure.imagePath && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => {
+                                  const link = document.createElement('a');
+                                  link.href = figure.imagePath!;
+                                  link.download = `figure-${figure.figureNo}-${figure.title.replace(/\s+/g, '-').toLowerCase()}.png`;
+                                  link.click();
+                                }}
+                                className="rounded-lg text-slate-500 hover:text-slate-700"
+                                title="Download image"
+                              >
+                                <Download className="w-4 h-4" />
+                              </Button>
+                            )}
+
+                            {/* Clear Image - available when image exists */}
+                            {figure.imagePath && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleClearImage(figure.id)}
+                                className="rounded-lg text-amber-600 hover:text-amber-700 hover:bg-amber-50"
+                                title="Remove generated image (keep plan)"
+                              >
+                                <X className="w-4 h-4" />
+                              </Button>
+                            )}
+
+                            {/* Delete figure - always available */}
                             <Button
                               size="sm"
                               variant="ghost"
                               onClick={() => handleDelete(figure.id)}
                               className="rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50"
+                              title="Delete figure"
                             >
                               <Trash2 className="w-4 h-4" />
-                </Button>
+                            </Button>
                           </div>
                         </div>
                       </div>
@@ -950,11 +1804,15 @@ Please regenerate the figure incorporating the user's feedback and corrections.
               <div className="flex justify-center pt-4">
                 <Button
                   variant="outline"
-                  onClick={() => plannedFigures.forEach(f => handleGenerate(f))}
-                  disabled={!!generating}
+                  onClick={handleGenerateAll}
+                  disabled={!!generating || isGeneratingBatch}
                   className="rounded-xl gap-2"
                 >
-                  <Wand2 className="w-4 h-4" />
+                  {isGeneratingBatch ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Wand2 className="w-4 h-4" />
+                  )}
                   Generate All ({plannedFigures.length})
                 </Button>
               </div>
@@ -976,57 +1834,342 @@ Please regenerate the figure incorporating the user's feedback and corrections.
 
       {/* AI Suggestions Dialog */}
       <Dialog open={showSuggestions} onOpenChange={setShowSuggestions}>
-        <DialogContent className="max-w-xl bg-white border-0 shadow-2xl rounded-2xl">
+        <DialogContent className="max-w-5xl bg-white border-0 shadow-2xl rounded-2xl">
           <DialogHeader className="pb-4 border-b border-slate-100">
             <DialogTitle className="flex items-center gap-2 text-xl">
               <Sparkles className="w-5 h-5 text-amber-500" />
-              AI Suggestions
+              Suggest Figures and Charts From Your Data
             </DialogTitle>
           </DialogHeader>
-          
-          <div className="py-4 max-h-[60vh] overflow-y-auto">
-            {loadingSuggestions ? (
-              <div className="py-12 text-center">
-                <Loader2 className="w-8 h-8 animate-spin text-amber-500 mx-auto mb-3" />
-                <p className="text-slate-600">Analyzing your paper...</p>
+
+          <div className="py-4 max-h-[75vh] overflow-y-auto space-y-5">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-sm font-semibold text-slate-700">Preference Profile</p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleGetSuggestions}
+                  disabled={loadingSuggestions}
+                  className="gap-2"
+                >
+                  {loadingSuggestions ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                  {suggestionsRequested ? 'Refresh Suggestions' : 'Let AI Suggest'}
+                </Button>
               </div>
-            ) : suggestions.length === 0 ? (
-              <div className="py-12 text-center">
-                <ImageIcon className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-                <p className="text-slate-600">No suggestions yet</p>
-                <p className="text-sm text-slate-400 mt-1">Add more content to your paper</p>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {suggestions.map((suggestion, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => applySuggestion(suggestion)}
-                    className="w-full text-left p-4 rounded-xl border border-slate-200 hover:border-amber-300 hover:bg-amber-50 transition-all group"
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span className="block">Style preset</span>
+                  <select
+                    value={suggestionPreferences.stylePreset}
+                    onChange={(e) => updatePreference('stylePreset', e.target.value as FigureSuggestionPreferences['stylePreset'])}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
                   >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1">
-                          <Badge className={`${CATEGORY_COLORS[suggestion.category as FigureCategory] || 'bg-slate-500'} text-white text-[10px]`}>
-                            {suggestion.category?.replace('_', ' ')}
-                          </Badge>
-                          {suggestion.importance === 'recommended' && (
-                            <Badge variant="outline" className="text-[10px] border-blue-200 text-blue-700">
-                              Recommended
-                            </Badge>
-                          )}
-                        </div>
-                        <h4 className="font-medium text-slate-900 group-hover:text-amber-700">{suggestion.title}</h4>
-                        <p className="text-sm text-slate-500 mt-1 line-clamp-2">{suggestion.description}</p>
-                      </div>
-                      <div className="w-8 h-8 rounded-full bg-slate-100 group-hover:bg-amber-200 flex items-center justify-center shrink-0 transition-colors">
-                        <Plus className="w-4 h-4 text-slate-500 group-hover:text-amber-700" />
-                      </div>
-                    </div>
-                  </button>
-                ))}
+                    {PREFERENCE_OPTIONS.stylePreset.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span className="block">Output mix</span>
+                  <select
+                    value={suggestionPreferences.outputMix}
+                    onChange={(e) => updatePreference('outputMix', e.target.value as FigureSuggestionPreferences['outputMix'])}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                  >
+                    {PREFERENCE_OPTIONS.outputMix.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span className="block">Chart preference</span>
+                  <select
+                    value={suggestionPreferences.chartPreference}
+                    onChange={(e) => updatePreference('chartPreference', e.target.value as FigureSuggestionPreferences['chartPreference'])}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                  >
+                    {PREFERENCE_OPTIONS.chartPreference.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span className="block">Diagram preference</span>
+                  <select
+                    value={suggestionPreferences.diagramPreference}
+                    onChange={(e) => updatePreference('diagramPreference', e.target.value as FigureSuggestionPreferences['diagramPreference'])}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                  >
+                    {PREFERENCE_OPTIONS.diagramPreference.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span className="block">Visual tone</span>
+                  <select
+                    value={suggestionPreferences.visualTone}
+                    onChange={(e) => updatePreference('visualTone', e.target.value as FigureSuggestionPreferences['visualTone'])}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                  >
+                    {PREFERENCE_OPTIONS.visualTone.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span className="block">Color mode</span>
+                  <select
+                    value={suggestionPreferences.colorMode}
+                    onChange={(e) => updatePreference('colorMode', e.target.value as FigureSuggestionPreferences['colorMode'])}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                  >
+                    {PREFERENCE_OPTIONS.colorMode.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span className="block">Detail level</span>
+                  <select
+                    value={suggestionPreferences.detailLevel}
+                    onChange={(e) => updatePreference('detailLevel', e.target.value as FigureSuggestionPreferences['detailLevel'])}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                  >
+                    {PREFERENCE_OPTIONS.detailLevel.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span className="block">Annotation density</span>
+                  <select
+                    value={suggestionPreferences.annotationDensity}
+                    onChange={(e) => updatePreference('annotationDensity', e.target.value as FigureSuggestionPreferences['annotationDensity'])}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                  >
+                    {PREFERENCE_OPTIONS.annotationDensity.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span className="block">Target audience</span>
+                  <select
+                    value={suggestionPreferences.targetAudience}
+                    onChange={(e) => updatePreference('targetAudience', e.target.value as FigureSuggestionPreferences['targetAudience'])}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                  >
+                    {PREFERENCE_OPTIONS.targetAudience.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs text-slate-600 space-y-1">
+                  <span className="block">Strictness</span>
+                  <select
+                    value={suggestionPreferences.strictness}
+                    onChange={(e) => updatePreference('strictness', e.target.value as FigureSuggestionPreferences['strictness'])}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                  >
+                    {PREFERENCE_OPTIONS.strictness.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
               </div>
-            )}
+            </div>
+
+            <div className="rounded-xl border border-slate-200 p-4">
+              {/* Before user triggers AI - show call-to-action */}
+              {!suggestionsRequested && !loadingSuggestions ? (
+                <div className="py-12 text-center space-y-4">
+                  <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-amber-100 to-amber-50 flex items-center justify-center mx-auto">
+                    <Lightbulb className="w-8 h-8 text-amber-500" />
+                  </div>
+                  <div>
+                    <p className="text-slate-700 font-medium text-base">Ready to Analyze Your Paper</p>
+                    <p className="text-sm text-slate-500 mt-1 max-w-md mx-auto">
+                      Configure your preferences above, then click &ldquo;Let AI Suggest&rdquo; to analyze your paper content and recommend relevant figures and charts.
+                    </p>
+                    <p className="text-xs text-slate-400 mt-2 max-w-md mx-auto">
+                      Or use the &ldquo;New Figure&rdquo; form below the dialog to create figures manually with full control.
+                    </p>
+                  </div>
+                  <Button
+                    onClick={handleGetSuggestions}
+                    className="gap-2 bg-amber-600 hover:bg-amber-700 text-white px-8 py-3 text-base rounded-xl shadow-lg shadow-amber-500/25"
+                  >
+                    <Sparkles className="w-5 h-5" />
+                    Let AI Suggest
+                  </Button>
+                </div>
+              ) : (
+                <>
+                  {/* Filters - only visible once suggestions have been requested */}
+                  <div className="flex flex-wrap items-center gap-3 mb-3">
+                    <label className="text-xs text-slate-600">
+                      <span className="block mb-1">Section filter</span>
+                      <select
+                        value={sectionFilter}
+                        onChange={(e) => setSectionFilter(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                      >
+                        <option value={SUGGESTION_SECTION_FILTER_ALL}>All sections</option>
+                        {suggestionSections.map((section) => (
+                          <option key={section} value={section}>{section}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-xs text-slate-600">
+                      <span className="block mb-1">Category filter</span>
+                      <select
+                        value={categoryFilter}
+                        onChange={(e) => setCategoryFilter(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                      >
+                        <option value={SUGGESTION_SECTION_FILTER_ALL}>All categories</option>
+                        {Object.keys(CATEGORY_COLORS).map((value) => (
+                          <option key={value} value={value}>{value.replace('_', ' ')}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-xs text-slate-600">
+                      <span className="block mb-1">Importance filter</span>
+                      <select
+                        value={importanceFilter}
+                        onChange={(e) => setImportanceFilter(e.target.value)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                      >
+                        <option value={SUGGESTION_SECTION_FILTER_ALL}>All priorities</option>
+                        <option value="required">Required</option>
+                        <option value="recommended">Recommended</option>
+                        <option value="optional">Optional</option>
+                      </select>
+                    </label>
+                    <Button size="sm" variant="outline" onClick={toggleSelectAllFiltered} className="mt-5">
+                      {filteredSuggestions.filter(s => s.status !== 'used').length > 0 && filteredSuggestions.filter(s => s.status !== 'used').every((item) => selectedSuggestionIds.includes(item.id))
+                        ? 'Deselect filtered'
+                        : 'Select pending'}
+                    </Button>
+                  </div>
+
+                  {loadingSuggestions ? (
+                    <div className="py-12 text-center">
+                      <Loader2 className="w-8 h-8 animate-spin text-amber-500 mx-auto mb-3" />
+                      <p className="text-slate-600">Analyzing your paper and blueprint context...</p>
+                    </div>
+                  ) : filteredSuggestions.length === 0 ? (
+                    <div className="py-12 text-center">
+                      <FileImage className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+                      <p className="text-slate-600">No suggestions for current filter set</p>
+                      <p className="text-sm text-slate-400 mt-1">Adjust filters or refresh with different preferences</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {filteredSuggestions.map((suggestion) => {
+                        const isSelected = selectedSuggestionIds.includes(suggestion.id);
+                        const isUsed = suggestion.status === 'used';
+                        const isDismissed = suggestion.status === 'dismissed';
+                        const importanceTone = suggestion.importance === 'required'
+                          ? 'border-red-200 text-red-700'
+                          : suggestion.importance === 'recommended'
+                            ? 'border-blue-200 text-blue-700'
+                            : 'border-slate-200 text-slate-600';
+
+                        return (
+                          <div
+                            key={suggestion.id}
+                            className={`rounded-xl border p-4 transition-all ${CATEGORY_ACCENTS[suggestion.category]} ${isSelected ? 'ring-2 ring-amber-300' : ''} ${isUsed ? 'opacity-60' : ''} ${isDismissed ? 'opacity-40' : ''}`}
+                          >
+                            <div className="flex items-start gap-3">
+                              <button
+                                type="button"
+                                onClick={() => !isUsed && toggleSuggestionSelection(suggestion.id)}
+                                disabled={isUsed}
+                                className={`mt-1 h-5 w-5 rounded border flex items-center justify-center ${isSelected ? 'bg-amber-500 border-amber-500' : 'bg-white border-slate-300'} ${isUsed ? 'cursor-not-allowed' : ''}`}
+                              >
+                                {isSelected && <Check className="w-3.5 h-3.5 text-white" />}
+                              </button>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex flex-wrap items-center gap-2 mb-1">
+                                  <Badge className={`${CATEGORY_COLORS[suggestion.category]} text-white text-[10px]`}>
+                                    {suggestion.category.replace('_', ' ')}
+                                  </Badge>
+                                  <Badge variant="outline" className={`text-[10px] ${importanceTone}`}>
+                                    {(suggestion.importance || 'optional').toUpperCase()}
+                                  </Badge>
+                                  {suggestion.relevantSection && (
+                                    <Badge variant="outline" className="text-[10px] border-slate-300 text-slate-600">
+                                      {suggestion.relevantSection}
+                                    </Badge>
+                                  )}
+                                  {isUsed && (
+                                    <Badge variant="outline" className="text-[10px] border-green-300 text-green-700 bg-green-50">
+                                      <Check className="w-3 h-3 mr-0.5" /> USED
+                                    </Badge>
+                                  )}
+                                  {isDismissed && (
+                                    <Badge variant="outline" className="text-[10px] border-slate-300 text-slate-400">
+                                      DISMISSED
+                                    </Badge>
+                                  )}
+                                </div>
+                                <h4 className={`font-medium ${isUsed ? 'text-slate-500 line-through' : 'text-slate-900'}`}>{suggestion.title}</h4>
+                                <p className="text-sm text-slate-600 mt-1">{suggestion.description}</p>
+                                {suggestion.dataNeeded && (
+                                  <p className="text-xs text-slate-500 mt-2">Data needed: {suggestion.dataNeeded}</p>
+                                )}
+                                {suggestion.whyThisFigure && (
+                                  <p className="text-xs text-slate-500 mt-1">Why: {suggestion.whyThisFigure}</p>
+                                )}
+                              </div>
+                              {isUsed ? (
+                                <span className="shrink-0 text-xs text-green-600 font-medium px-2 py-1">Added</span>
+                              ) : (
+                                <Button size="sm" variant="outline" onClick={() => applySuggestion(suggestion)} className="shrink-0">
+                                  <Plus className="w-4 h-4 mr-1" />
+                                  Use
+                                </Button>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="sticky bottom-0 bg-white pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-slate-600">
+                {selectedSuggestions.length} selected for batch creation and generation
+                {suggestions.some(s => s.status === 'used') && (
+                  <span className="ml-2 text-green-600">
+                    ({suggestions.filter(s => s.status === 'used').length} already used)
+                  </span>
+                )}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setSelectedSuggestionIds([])}
+                  disabled={selectedSuggestionIds.length === 0 || isApplyingSuggestionBatch}
+                >
+                  Clear Selection
+                </Button>
+                <Button
+                  onClick={handleCreateAndGenerateFromSuggestions}
+                  disabled={selectedSuggestions.length === 0 || isApplyingSuggestionBatch}
+                  className="gap-2 bg-amber-600 hover:bg-amber-700 text-white"
+                >
+                  {isApplyingSuggestionBatch ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                  Accept Batch and Generate
+                </Button>
+              </div>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
@@ -1041,29 +2184,62 @@ Please regenerate the figure incorporating the user's feedback and corrections.
       }}>
         <DialogContent className="max-w-3xl bg-white border-0 shadow-2xl rounded-2xl">
           <DialogHeader className="pb-4">
-            <DialogTitle className="text-xl">
-              Figure {previewFigure?.figureNo}: {previewFigure?.title}
+            <DialogTitle className="flex items-center gap-3 text-xl">
+              <span>Figure {previewFigure?.figureNo}: {previewFigure?.title}</span>
+              {previewFigure?.status && (
+                <Badge className={`text-[10px] font-medium ${
+                  previewFigure.status === 'GENERATED' ? 'bg-emerald-100 text-emerald-700 border-emerald-200' :
+                  previewFigure.status === 'FAILED' ? 'bg-red-100 text-red-700 border-red-200' :
+                  previewFigure.status === 'GENERATING' ? 'bg-blue-100 text-blue-700 border-blue-200' :
+                  'bg-slate-100 text-slate-700 border-slate-200'
+                }`} variant="outline">
+                  {previewFigure.status}
+                </Badge>
+              )}
             </DialogTitle>
             <p className="text-slate-500 text-sm mt-1">{previewFigure?.caption}</p>
           </DialogHeader>
           
-          {/* Figure Preview */}
-          {previewFigure?.imagePath && (
-            <div className="bg-slate-50 rounded-xl p-6 relative">
-              {isModifying && (
-                <div className="absolute inset-0 bg-white/80 rounded-xl flex flex-col items-center justify-center z-10">
-                  <Loader2 className="w-8 h-8 animate-spin text-blue-500 mb-3" />
-                  <p className="text-slate-600 font-medium">Regenerating with your changes...</p>
-                  <p className="text-slate-400 text-sm">This may take a moment</p>
-                </div>
-              )}
+          {/* Figure Preview or Status Placeholder */}
+          <div className="bg-slate-50 rounded-xl p-6 relative min-h-[120px]">
+            {isModifying && (
+              <div className="absolute inset-0 bg-white/80 rounded-xl flex flex-col items-center justify-center z-10">
+                <Loader2 className="w-8 h-8 animate-spin text-blue-500 mb-3" />
+                <p className="text-slate-600 font-medium">Regenerating with your changes...</p>
+                <p className="text-slate-400 text-sm">This may take a moment</p>
+              </div>
+            )}
+            {previewFigure?.imagePath ? (
               <img 
                 src={previewFigure.imagePath} 
                 alt={previewFigure.title}
                 className="max-w-full h-auto mx-auto rounded-lg shadow-sm"
               />
-            </div>
-          )}
+            ) : previewFigure?.status === 'FAILED' ? (
+              <div className="flex flex-col items-center justify-center py-8 text-center">
+                <div className="w-14 h-14 rounded-full bg-red-100 flex items-center justify-center mb-3">
+                  <X className="w-7 h-7 text-red-500" />
+                </div>
+                <p className="text-slate-700 font-medium">Generation Failed</p>
+                <p className="text-slate-500 text-sm mt-1 max-w-sm">
+                  The figure could not be rendered. You can modify the description and retry, or regenerate with different settings.
+                </p>
+              </div>
+            ) : previewFigure?.status === 'GENERATING' ? (
+              <div className="flex flex-col items-center justify-center py-8">
+                <Loader2 className="w-10 h-10 animate-spin text-blue-500 mb-3" />
+                <p className="text-slate-600 font-medium">Generating...</p>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center justify-center py-8 text-center">
+                <div className="w-14 h-14 rounded-full bg-slate-200 flex items-center justify-center mb-3">
+                  <ImageIcon className="w-7 h-7 text-slate-400" />
+                </div>
+                <p className="text-slate-700 font-medium">No Image Generated Yet</p>
+                <p className="text-slate-500 text-sm mt-1">Click Regenerate below or add a description to generate this figure.</p>
+              </div>
+            )}
+          </div>
           
           {/* Modification Request Section */}
           <div className="border-t border-slate-100 pt-4">
@@ -1127,7 +2303,36 @@ Please regenerate the figure incorporating the user's feedback and corrections.
             )}
           </div>
           
-          <DialogFooter className="pt-4 border-t border-slate-100">
+          <DialogFooter className="pt-4 border-t border-slate-100 flex-wrap gap-2">
+            <div className="flex items-center gap-2 mr-auto">
+              <Button 
+                variant="outline"
+                onClick={() => {
+                  if (!previewFigure) return;
+                  handleClearImage(previewFigure.id);
+                }}
+                disabled={isModifying || !previewFigure?.imagePath}
+                className="rounded-lg gap-2 text-amber-600 border-amber-200 hover:bg-amber-50 hover:border-amber-300"
+                title="Remove the generated image but keep the figure plan"
+              >
+                <X className="w-4 h-4" />
+                Clear Image
+              </Button>
+              <Button 
+                variant="outline"
+                onClick={() => {
+                  if (!previewFigure) return;
+                  if (confirm('Delete this figure entirely? This cannot be undone.')) {
+                    handleDelete(previewFigure.id);
+                  }
+                }}
+                disabled={isModifying}
+                className="rounded-lg gap-2 text-red-600 border-red-200 hover:bg-red-50 hover:border-red-300"
+              >
+                <Trash2 className="w-4 h-4" />
+                Delete Figure
+              </Button>
+            </div>
             <Button variant="outline" onClick={() => {
               setPreviewFigure(null);
               setShowModifyInput(false);
@@ -1144,10 +2349,18 @@ Please regenerate the figure incorporating the user's feedback and corrections.
               <RefreshCw className="w-4 h-4" />
               Regenerate
             </Button>
-            <Button asChild className="rounded-lg bg-slate-900 hover:bg-slate-800">
-              <a href={previewFigure?.imagePath} download className="gap-2">
-                <Download className="w-4 h-4" /> Download
-              </a>
+            <Button
+              className="rounded-lg bg-slate-900 hover:bg-slate-800 gap-2"
+              disabled={!previewFigure?.imagePath}
+              onClick={() => {
+                if (!previewFigure?.imagePath) return;
+                const link = document.createElement('a');
+                link.href = previewFigure.imagePath;
+                link.download = `figure-${previewFigure.figureNo}-${previewFigure.title.replace(/\s+/g, '-').toLowerCase()}.png`;
+                link.click();
+              }}
+            >
+              <Download className="w-4 h-4" /> Download
             </Button>
           </DialogFooter>
         </DialogContent>

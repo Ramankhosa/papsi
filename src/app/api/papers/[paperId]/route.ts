@@ -28,7 +28,10 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
       citations: true,
       annexureDrafts: true,
       figurePlans: true,
-      paperBlueprint: true
+      paperBlueprint: true,
+      paperSections: {
+        orderBy: { updatedAt: 'desc' }
+      }
     }
   });
 }
@@ -113,7 +116,10 @@ export async function PUT(request: NextRequest, context: { params: { paperId: st
         citationStyle: true,
         publicationVenue: true,
         researchTopic: true,
-        figurePlans: true
+        figurePlans: true,
+        paperSections: {
+          orderBy: { updatedAt: 'desc' }
+        }
       }
     });
 

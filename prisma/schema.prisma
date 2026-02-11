@@ -1718,6 +1718,10 @@ model DraftingSession {
   // Per-jurisdiction draft status (e.g., {"IN":{status:"done",latestVersion:2}})
   jurisdictionDraftStatus Json?
 
+  // AI figure/diagram/sketch suggestion cache – persists suggestions across page
+  // refreshes and tracks usage status (pending/used/dismissed).
+  figureSuggestionCache Json? @map("figure_suggestion_cache")
+
   // Paper writing fields (new)
   paperTypeId            String? // Reference to PaperTypeDefinition
   citationStyleId        String? // Reference to CitationStyleDefinition

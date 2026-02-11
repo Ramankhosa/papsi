@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
+import fs from 'fs/promises';
+import path from 'path';
 
 export const runtime = 'nodejs';
 
@@ -49,7 +51,8 @@ function toResponse(plan: any) {
     notes: meta.notes || '',
     status,
     imagePath,
-    generatedCode: meta.generatedCode || null
+    generatedCode: meta.generatedCode || null,
+    suggestionMeta: meta.suggestionMeta || null
   };
 }
 
@@ -109,6 +112,24 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ pap
   }
 }
 
+/**
+ * Helper to delete an image file from disk given its public path
+ */
+async function deleteImageFile(imagePath: string | null | undefined): Promise<void> {
+  if (!imagePath) return;
+  try {
+    // imagePath is like /uploads/figures/figure_xxx_123.png or /uploads/paper-sketches/session/file.png
+    const filePath = path.join(process.cwd(), 'public', imagePath);
+    await fs.unlink(filePath);
+    console.log(`[PaperFigures] Deleted image file: ${filePath}`);
+  } catch (err: any) {
+    // File may not exist - that's ok
+    if (err?.code !== 'ENOENT') {
+      console.warn(`[PaperFigures] Failed to delete image file ${imagePath}:`, err?.message);
+    }
+  }
+}
+
 export async function DELETE(request: NextRequest, context: { params: Promise<{ paperId: string; figureId: string }> }) {
   try {
     const { user, error } = await authenticateUser(request);
@@ -127,6 +148,48 @@ export async function DELETE(request: NextRequest, context: { params: Promise<{ 
     if (!figureId) {
       return NextResponse.json({ error: 'Figure ID is required' }, { status: 400 });
     }
+
+    // Check for query param: ?imageOnly=true to only clear the generated image
+    const imageOnly = request.nextUrl.searchParams.get('imageOnly') === 'true';
+
+    const figure = await prisma.figurePlan.findFirst({
+      where: { id: figureId, sessionId }
+    });
+
+    if (!figure) {
+      return NextResponse.json({ error: 'Figure not found' }, { status: 404 });
+    }
+
+    const meta = (figure.nodes as any) || {};
+    const imagePath = meta.imagePath || null;
+
+    if (imageOnly) {
+      // Only clear the generated image, reset figure to PLANNED state
+      await deleteImageFile(imagePath);
+
+      // Remove generation-related fields while keeping plan metadata
+      const keysToRemove = ['imagePath', 'generatedCode', 'status', 'checksum', 'fileSize', 'generatedAt', 'source', 'lastModificationRequest'];
+      const cleanMeta: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(meta)) {
+        if (!keysToRemove.includes(key)) {
+          cleanMeta[key] = value;
+        }
+      }
+
+      const updatedNodes = { ...cleanMeta, status: 'PLANNED' };
+
+      await prisma.figurePlan.update({
+        where: { id: figureId },
+        data: {
+          nodes: updatedNodes as any
+        }
+      });
+
+      return NextResponse.json({ cleared: true, figure: toResponse({ ...figure, nodes: updatedNodes }) });
+    }
+
+    // Full delete: remove image file + database record
+    await deleteImageFile(imagePath);
 
     await prisma.figurePlan.delete({
       where: { id: figureId }
