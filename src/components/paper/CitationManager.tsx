@@ -51,13 +51,14 @@ export default function CitationManager({
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<string[]>([])
   const [fetchingAbstract, setFetchingAbstract] = useState(false)
+  const [usageFilter, setUsageFilter] = useState<'all' | 'used' | 'unused'>('all')
 
-  const syncCitations = (updated: any[]) => {
+  const syncCitations = useCallback((updated: any[]) => {
     setCitations(updated)
     onCitationsUpdated?.(updated)
-  }
+  }, [onCitationsUpdated])
 
-  const loadCitations = async () => {
+  const loadCitations = useCallback(async () => {
     if (!authToken) return;
     const response = await fetch(`/api/papers/${sessionId}/citations`, {
       headers: { Authorization: `Bearer ${authToken}` }
@@ -65,7 +66,7 @@ export default function CitationManager({
     if (!response.ok) return
     const data = await response.json()
     syncCitations(data.citations || [])
-  }
+  }, [authToken, sessionId, syncCitations])
 
   useEffect(() => {
     if (externalCitations) {
@@ -77,20 +78,39 @@ export default function CitationManager({
     if (!externalCitations && sessionId && authToken) {
       loadCitations().catch(() => undefined)
     }
-  }, [externalCitations, sessionId, authToken])
+  }, [externalCitations, sessionId, authToken, loadCitations])
+
+  const usageSummary = useMemo(() => {
+    const used = citations.filter(citation => Number(citation.usageCount || 0) > 0).length
+    const unused = Math.max(0, citations.length - used)
+    return {
+      total: citations.length,
+      used,
+      unused
+    }
+  }, [citations])
 
   const filtered = useMemo(() => {
-    if (!query.trim()) return citations
-    const lower = query.toLowerCase()
-    return citations.filter(citation => {
-      return (
-        citation.title?.toLowerCase().includes(lower) ||
-        citation.authors?.join(' ').toLowerCase().includes(lower) ||
-        citation.citationKey?.toLowerCase().includes(lower) ||
-        String(citation.year || '').includes(lower)
-      )
-    })
-  }, [citations, query])
+    const lower = query.trim().toLowerCase()
+    return citations
+      .filter(citation => {
+        const count = Number(citation.usageCount || 0)
+        if (usageFilter === 'used' && count <= 0) return false
+        if (usageFilter === 'unused' && count > 0) return false
+        if (!lower) return true
+        return (
+          citation.title?.toLowerCase().includes(lower) ||
+          citation.authors?.join(' ').toLowerCase().includes(lower) ||
+          citation.citationKey?.toLowerCase().includes(lower) ||
+          String(citation.year || '').includes(lower)
+        )
+      })
+      .sort((a, b) => {
+        const usageDiff = Number(b.usageCount || 0) - Number(a.usageCount || 0)
+        if (usageDiff !== 0) return usageDiff
+        return String(a.title || '').localeCompare(String(b.title || ''))
+      })
+  }, [citations, query, usageFilter])
 
   const openEdit = (citation: any) => {
     setEditing(citation)
@@ -262,6 +282,32 @@ export default function CitationManager({
           placeholder="Search citations"
           className="max-w-sm"
         />
+        <div className="flex items-center gap-1">
+          <Button
+            size="sm"
+            variant={usageFilter === 'all' ? 'default' : 'secondary'}
+            onClick={() => setUsageFilter('all')}
+            className="text-xs"
+          >
+            All ({usageSummary.total})
+          </Button>
+          <Button
+            size="sm"
+            variant={usageFilter === 'used' ? 'default' : 'secondary'}
+            onClick={() => setUsageFilter('used')}
+            className="text-xs"
+          >
+            Used ({usageSummary.used})
+          </Button>
+          <Button
+            size="sm"
+            variant={usageFilter === 'unused' ? 'default' : 'secondary'}
+            onClick={() => setUsageFilter('unused')}
+            className="text-xs"
+          >
+            Unused ({usageSummary.unused})
+          </Button>
+        </div>
         {allowSelection && (
           <Button variant="secondary" onClick={exportSelected} disabled={selectedIds.length === 0}>
             Export selected BibTeX
@@ -295,7 +341,15 @@ export default function CitationManager({
                         onCheckedChange={() => toggleSelected(citation.id)}
                       />
                     )}
-                    {citation.usageCount > 0 && <Badge variant="secondary" className="text-[10px]">{citation.usageCount} uses</Badge>}
+                    {Number(citation.usageCount || 0) > 0 ? (
+                      <Badge variant="secondary" className="text-[10px]">
+                        {citation.usageCount} uses
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300">
+                        Unused
+                      </Badge>
+                    )}
                   </div>
                 </div>
 

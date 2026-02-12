@@ -11,6 +11,7 @@ import {
   type TextActionType 
 } from '@/lib/paper/text-action-service';
 import { prisma } from '@/lib/prisma';
+import { polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
 
 // ============================================================================
 // Validation Helpers
@@ -123,7 +124,7 @@ export async function POST(
     return NextResponse.json({
       success: true,
       originalText: result.originalText,
-      transformedText: result.transformedText,
+      transformedText: polishDraftMarkdown(result.transformedText),
       action: result.action,
       tokenUsage: result.tokenUsage
     });

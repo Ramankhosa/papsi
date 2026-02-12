@@ -27,6 +27,8 @@ export interface FormattingOptions {
   maxAuthors?: number; // Override default max authors before et al.
   includeDOI?: boolean; // Force include/exclude DOI
   shortForm?: boolean; // Use short form if supported by style
+  citationNumber?: number; // Explicit numeric index for numbered citation styles (IEEE/Vancouver)
+  citationNumbering?: Record<string, number>; // Optional numbering map keyed by citationKey
 }
 
 export interface BibliographyOptions {
@@ -302,9 +304,18 @@ class CitationStyleService {
   }
 
   private formatIEEEInText(citation: CitationData, options: FormattingOptions): string {
-    // IEEE uses numbered citations - this would need citation numbering context
-    // For now, return placeholder
-    return '[1]'; // This should be replaced with actual numbering
+    const explicit = Number(options?.citationNumber);
+    if (Number.isFinite(explicit) && explicit > 0) {
+      return `[${Math.trunc(explicit)}]`;
+    }
+
+    const fromMap = Number(options?.citationNumbering?.[citation.citationKey]);
+    if (Number.isFinite(fromMap) && fromMap > 0) {
+      return `[${Math.trunc(fromMap)}]`;
+    }
+
+    // Fallback to deterministic placeholder when no sequence context is provided.
+    return '[1]';
   }
 
   private formatChicagoAuthorDateInText(citation: CitationData, options: FormattingOptions): string {

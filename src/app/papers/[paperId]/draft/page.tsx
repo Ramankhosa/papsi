@@ -55,6 +55,7 @@ export default function PaperDraftingPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentStage, setCurrentStage] = useState<StageKey>('OUTLINE_PLANNING');
+  const [hasHydratedStage, setHasHydratedStage] = useState(false);
   const [pendingStage, setPendingStage] = useState<StageKey | null>(null);
   const [stageWarning, setStageWarning] = useState<string | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -96,20 +97,22 @@ export default function PaperDraftingPage() {
   }, [paperId, authToken, authLoading]);
 
   useEffect(() => {
+    setHasHydratedStage(false);
     if (!paperId) return;
+
     const stored = typeof window !== 'undefined'
       ? localStorage.getItem(`paper_stage_${paperId}`)
       : null;
     if (stored && STAGES.some(stage => stage.key === stored)) {
       setCurrentStage(stored as StageKey);
     }
+    setHasHydratedStage(true);
   }, [paperId]);
 
   useEffect(() => {
-    if (paperId) {
-      localStorage.setItem(`paper_stage_${paperId}`, currentStage);
-    }
-  }, [paperId, currentStage]);
+    if (!paperId || !hasHydratedStage) return;
+    localStorage.setItem(`paper_stage_${paperId}`, currentStage);
+  }, [paperId, currentStage, hasHydratedStage]);
 
   useEffect(() => {
     if (!authLoading) {
@@ -246,11 +249,17 @@ export default function PaperDraftingPage() {
     setPendingStage(null);
     setStageWarning(null);
     setCurrentStage(stageKey);
+    if (paperId) {
+      localStorage.setItem(`paper_stage_${paperId}`, stageKey);
+    }
   };
 
   const handleForceProceed = () => {
     if (!pendingStage) return;
     setCurrentStage(pendingStage);
+    if (paperId) {
+      localStorage.setItem(`paper_stage_${paperId}`, pendingStage);
+    }
     setPendingStage(null);
     setStageWarning(null);
   };

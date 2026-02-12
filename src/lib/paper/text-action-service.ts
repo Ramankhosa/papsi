@@ -5,6 +5,7 @@
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { prisma } from '@/lib/prisma';
+import { polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
 
 // ============================================================================
 // Types
@@ -163,6 +164,11 @@ RULES:
 5. Return ONLY the improved text, no explanations
 6. Citations must remain with their associated claims/statements
 
+OUTPUT FORMAT (MANDATORY):
+- Return ONLY polished Markdown text (no JSON, no code fences, no explanations)
+- Preserve heading/list hierarchy if present
+- Preserve citations exactly
+
 OUTPUT: Return only the rewritten text, nothing else.`,
 
   expand: `You are an expert academic writer helping expand research paper content.
@@ -180,6 +186,11 @@ RULES:
 5. CRITICALLY IMPORTANT: Preserve ALL existing citations EXACTLY as they appear - do not modify, remove, or change format
 6. Return ONLY the expanded text, no explanations
 
+OUTPUT FORMAT (MANDATORY):
+- Return ONLY polished Markdown text (no JSON, no code fences, no explanations)
+- Preserve heading/list hierarchy if present
+- Preserve citations exactly
+
 OUTPUT: Return only the expanded text, nothing else.`,
 
   condense: `You are an expert academic editor helping condense research paper text.
@@ -195,6 +206,11 @@ RULES:
 3. Maintain academic tone
 4. Ensure nothing critical is lost including all citation markers
 5. Return ONLY the condensed text, no explanations
+
+OUTPUT FORMAT (MANDATORY):
+- Return ONLY polished Markdown text (no JSON, no code fences, no explanations)
+- Preserve heading/list hierarchy if present
+- Preserve citations exactly
 
 OUTPUT: Return only the condensed text, nothing else.`,
 
@@ -213,6 +229,11 @@ RULES:
 4. Keep approximately the same length
 5. Return ONLY the formalized text, no explanations
 
+OUTPUT FORMAT (MANDATORY):
+- Return ONLY polished Markdown text (no JSON, no code fences, no explanations)
+- Preserve heading/list hierarchy if present
+- Preserve citations exactly
+
 OUTPUT: Return only the formalized text, nothing else.`,
 
   simple: `You are an expert science communicator helping simplify research paper text.
@@ -229,6 +250,11 @@ RULES:
 4. Keep approximately the same length
 5. CRITICALLY IMPORTANT: Preserve ALL citations EXACTLY as they appear - citations like [Author, 2023], [1], (Smith, 2022) must not be changed
 6. Return ONLY the simplified text, no explanations
+
+OUTPUT FORMAT (MANDATORY):
+- Return ONLY polished Markdown text (no JSON, no code fences, no explanations)
+- Preserve heading/list hierarchy if present
+- Preserve citations exactly
 
 OUTPUT: Return only the simplified text, nothing else.`
 };
@@ -392,6 +418,12 @@ export async function performTextAction(request: TextActionRequest): Promise<Tex
       if (!preserved) {
         console.warn(`Citation preservation warning: Some citations may not be fully preserved. Original: ${originalCitations.length}, Final: ${finalCitations.length}`);
       }
+    }
+
+    // Normalize markdown for submission-ready output across drafting modules.
+    transformedText = polishDraftMarkdown(transformedText);
+    if (originalCitations.length > 0) {
+      transformedText = ensureCitationsPreserved(selectedText, transformedText);
     }
 
     // Get token usage if available

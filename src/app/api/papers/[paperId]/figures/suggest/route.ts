@@ -44,6 +44,12 @@ interface SuggestionCache {
   items: CachedSuggestionItem[];
 }
 
+type FocusHints = {
+  entities?: string[];
+  metrics?: string[];
+  verbs?: string[];
+};
+
 const suggestSchema = z.object({
   paperTitle: z.string().optional(),
   paperAbstract: z.string().optional(),
@@ -78,7 +84,12 @@ const suggestSchema = z.object({
   // Focus mode: when provided, suggestions are constrained to this specific text
   focusText: z.string().max(5000).optional(),
   focusSection: z.string().optional(),
-  focusMode: z.enum(['selection', 'section']).optional()
+  focusMode: z.enum(['selection', 'section']).optional(),
+  focusHints: z.object({
+    entities: z.array(z.string().max(120)).max(20).optional(),
+    metrics: z.array(z.string().max(120)).max(20).optional(),
+    verbs: z.array(z.string().max(80)).max(20).optional()
+  }).optional()
 });
 
 
@@ -158,6 +169,130 @@ function extractBlueprintContext(session: any) {
   };
 }
 
+function dedupeList(values: string[], limit: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const cleaned = value.replace(/\s+/g, ' ').trim();
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+function extractMetricHints(text: string): string[] {
+  const hits: string[] = [];
+  const patterns = [
+    /\b\d+(?:\.\d+)?\s*(?:%|ms|s|sec|seconds|min|minutes|hours|hz|khz|mhz|ghz|fps|mb|gb|tb)\b/gi,
+    /\b(?:accuracy|precision|recall|f1|f1-score|auc|roc-auc|latency|throughput|loss|rmse|mae|mape|iou|bleu|rouge|perplexity)\b(?:\s*[:=]\s*\d+(?:\.\d+)?(?:\s*%|\s*ms|\s*s)?)?/gi,
+    /\bp\s*[<=>]\s*0?\.\d+\b/gi,
+    /\bN\s*=\s*\d+\b/gi
+  ];
+
+  for (const pattern of patterns) {
+    const matches = text.match(pattern);
+    if (matches) hits.push(...matches.map(m => m.trim()));
+  }
+  return dedupeList(hits, 10);
+}
+
+function extractVerbHints(text: string): string[] {
+  const verbPatterns: Array<{ label: string; pattern: RegExp }> = [
+    { label: 'compare', pattern: /\bcompar(?:e|es|ed|ing|ison)\b/gi },
+    { label: 'classify', pattern: /\bclassif(?:y|ies|ied|ying|ication)\b/gi },
+    { label: 'predict', pattern: /\bpredict(?:s|ed|ing|ion)\b/gi },
+    { label: 'detect', pattern: /\bdetect(?:s|ed|ing|ion)\b/gi },
+    { label: 'optimize', pattern: /\boptimi[sz](?:e|es|ed|ing|ation)\b/gi },
+    { label: 'evaluate', pattern: /\bevaluat(?:e|es|ed|ing|ion)\b/gi },
+    { label: 'benchmark', pattern: /\bbenchmark(?:s|ed|ing)?\b/gi },
+    { label: 'aggregate', pattern: /\baggregat(?:e|es|ed|ing|ion)\b/gi },
+    { label: 'train', pattern: /\btrain(?:s|ed|ing)?\b/gi },
+    { label: 'infer', pattern: /\binfer(?:s|red|ring|ence)\b/gi },
+    { label: 'segment', pattern: /\bsegment(?:s|ed|ing|ation)\b/gi },
+    { label: 'cluster', pattern: /\bcluster(?:s|ed|ing)?\b/gi },
+    { label: 'rank', pattern: /\brank(?:s|ed|ing)?\b/gi },
+    { label: 'retrieve', pattern: /\bretriev(?:e|es|ed|ing|al)\b/gi },
+    { label: 'summarize', pattern: /\bsummariz(?:e|es|ed|ing|ation)\b/gi },
+    { label: 'generate', pattern: /\bgenerat(?:e|es|ed|ing|ion)\b/gi },
+    { label: 'analyze', pattern: /\banaly[sz](?:e|es|ed|ing|is)\b/gi }
+  ];
+
+  const scored: Array<{ label: string; count: number }> = [];
+  for (const item of verbPatterns) {
+    const matches = text.match(item.pattern);
+    if (!matches || matches.length === 0) continue;
+    scored.push({ label: item.label, count: matches.length });
+  }
+  scored.sort((a, b) => b.count - a.count);
+  return scored.slice(0, 8).map(item => item.label);
+}
+
+function extractEntityHints(text: string, metricHints: string[], verbHints: string[]): string[] {
+  const candidates = new Map<string, { value: string; score: number }>();
+  const metricSet = new Set(metricHints.map(v => v.toLowerCase()));
+  const verbSet = new Set(verbHints);
+  const stopwords = new Set([
+    'the', 'and', 'for', 'with', 'from', 'that', 'this', 'those', 'these', 'using', 'use', 'used', 'our', 'their',
+    'into', 'onto', 'across', 'within', 'between', 'through', 'under', 'over', 'after', 'before', 'about', 'results',
+    'result', 'paper', 'section', 'method', 'methods', 'approach', 'approaches', 'model', 'models', 'system', 'systems',
+    'data', 'dataset', 'datasets', 'analysis', 'performance', 'value', 'values', 'table', 'figure'
+  ]);
+
+  const pushCandidate = (raw: string, bonus: number) => {
+    const value = raw.replace(/[^\w\s\-\/]/g, ' ').replace(/\s+/g, ' ').trim();
+    if (!value) return;
+    const lower = value.toLowerCase();
+    if (stopwords.has(lower) || metricSet.has(lower) || verbSet.has(lower)) return;
+    if (lower.length < 3) return;
+    if (/^\d/.test(lower)) return;
+    const current = candidates.get(lower);
+    candidates.set(lower, {
+      value,
+      score: (current?.score || 0) + 1 + bonus
+    });
+  };
+
+  const acronymMatches = text.match(/\b[A-Z][A-Z0-9]{1,}\b/g) || [];
+  acronymMatches.forEach((hit) => pushCandidate(hit, 3));
+
+  const properNounMatches = text.match(/\b[A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+){0,2}\b/g) || [];
+  properNounMatches.forEach((hit) => pushCandidate(hit, 2));
+
+  const taggedPhraseMatches = text.match(/\b(?:dataset|model|algorithm|framework|module|component|pipeline|architecture|network|baseline|variant|classifier|encoder|decoder|protocol)\s+[A-Za-z0-9][A-Za-z0-9\-_/]*(?:\s+[A-Za-z0-9][A-Za-z0-9\-_/]*)?/gi) || [];
+  taggedPhraseMatches.forEach((hit) => pushCandidate(hit, 2));
+
+  const tokens = text.match(/\b[a-zA-Z][a-zA-Z0-9\-_]{3,}\b/g) || [];
+  tokens.forEach((token) => pushCandidate(token, /[A-Z]/.test(token) ? 1 : 0));
+
+  return Array.from(candidates.values())
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10)
+    .map(item => item.value);
+}
+
+function extractFocusHints(text: string): FocusHints {
+  const metricHints = extractMetricHints(text);
+  const verbHints = extractVerbHints(text);
+  const entityHints = extractEntityHints(text, metricHints, verbHints);
+  return {
+    entities: entityHints,
+    metrics: metricHints,
+    verbs: verbHints
+  };
+}
+
+function mergeFocusHints(provided?: FocusHints, extracted?: FocusHints): FocusHints | undefined {
+  const entities = dedupeList([...(provided?.entities || []), ...(extracted?.entities || [])], 10);
+  const metrics = dedupeList([...(provided?.metrics || []), ...(extracted?.metrics || [])], 10);
+  const verbs = dedupeList([...(provided?.verbs || []), ...(extracted?.verbs || [])], 8);
+  if (entities.length === 0 && metrics.length === 0 && verbs.length === 0) return undefined;
+  return { entities, metrics, verbs };
+}
+
 export async function POST(
   request: NextRequest, 
   context: { params: Promise<{ paperId: string }> }
@@ -214,6 +349,9 @@ export async function POST(
       const paperBlueprint = data.blueprint || extractBlueprintContext(session);
 
       const isFocused = !!data.focusText?.trim();
+      const focusHints = isFocused
+        ? mergeFocusHints(data.focusHints, extractFocusHints(data.focusText || ''))
+        : undefined;
       const llmResult = await generateFigureSuggestions(
         {
           paperTitle,
@@ -228,7 +366,8 @@ export async function POST(
           // Focus fields – when present, the LLM constrains suggestions to this excerpt
           focusText: data.focusText,
           focusSection: data.focusSection,
-          focusMode: data.focusMode
+          focusMode: data.focusMode,
+          focusHints
         },
         requestHeaders
       );

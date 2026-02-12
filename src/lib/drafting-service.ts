@@ -816,6 +816,7 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
       allowedCitationKeys?: string[];
       strictWhitelist?: boolean;
       preserveCitationPlaceholders?: boolean;
+      citationNumbering?: Record<string, number>;
     }
   ): Promise<{
     processedContent: string;
@@ -913,7 +914,9 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
               publisher: citation.publisher ?? undefined,
               edition: citation.edition ?? undefined,
               citationKey: citation.citationKey
-            }, citationStyle);
+            }, citationStyle, {
+              citationNumber: options?.citationNumbering?.[citation.citationKey]
+            });
             formattedCitationCache.set(citation.citationKey, formatted);
           }
 

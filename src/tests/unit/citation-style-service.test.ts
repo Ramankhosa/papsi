@@ -137,6 +137,42 @@ describe('CitationStyleService', () => {
       expect(result).toBe('[1]');
     });
 
+    it('should format IEEE in-text citation with explicit citation number', async () => {
+      (prisma.citationStyleDefinition.findUnique as any).mockResolvedValue({
+        code: 'IEEE',
+        name: 'IEEE',
+        inTextFormatTemplate: '[Number]',
+        bibliographyRules: {},
+        bibliographySortOrder: 'order_of_appearance',
+        isActive: true,
+        maxAuthorsBeforeEtAl: 3
+      });
+
+      const result = await service.formatInTextCitation(mockCitation, 'IEEE', {
+        citationNumber: 7
+      });
+      expect(result).toBe('[7]');
+    });
+
+    it('should format IEEE in-text citation using citation numbering map', async () => {
+      (prisma.citationStyleDefinition.findUnique as any).mockResolvedValue({
+        code: 'IEEE',
+        name: 'IEEE',
+        inTextFormatTemplate: '[Number]',
+        bibliographyRules: {},
+        bibliographySortOrder: 'order_of_appearance',
+        isActive: true,
+        maxAuthorsBeforeEtAl: 3
+      });
+
+      const result = await service.formatInTextCitation(mockCitation, 'IEEE', {
+        citationNumbering: {
+          [mockCitation.citationKey]: 4
+        }
+      });
+      expect(result).toBe('[4]');
+    });
+
     it('should format Chicago author-date in-text citation', async () => {
       (prisma.citationStyleDefinition.findUnique as any).mockResolvedValue({
         code: 'CHICAGO_AUTHOR_DATE',

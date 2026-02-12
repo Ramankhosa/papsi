@@ -59,6 +59,90 @@ function getStyleCode(session: any): string {
     || 'APA7';
 }
 
+const NUMERIC_ORDER_STYLES = new Set(['IEEE', 'VANCOUVER']);
+const CITE_MARKER_REGEX = /\[CITE:([^\]]+)\]/gi;
+
+function splitCitationKeys(rawKeys: string): string[] {
+  if (!rawKeys) return [];
+  return rawKeys
+    .split(/[;,]/)
+    .map(key => key.trim())
+    .filter(Boolean);
+}
+
+function buildCanonicalCitationLookup(citations: Array<{ citationKey: string }>): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const citation of citations) {
+    const key = String(citation.citationKey || '').trim();
+    if (!key) continue;
+    lookup.set(key.toLowerCase(), key);
+  }
+  return lookup;
+}
+
+function extractOrderedCitationKeysFromSections(
+  sections: Array<{ key: string; content: string }>,
+  canonicalLookup: Map<string, string>
+): string[] {
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+
+  for (const section of sections) {
+    const content = section.content || '';
+    if (!content.trim()) continue;
+
+    CITE_MARKER_REGEX.lastIndex = 0;
+    let match: RegExpExecArray | null = null;
+    while ((match = CITE_MARKER_REGEX.exec(content)) !== null) {
+      const keys = splitCitationKeys(match[1] || '');
+      for (const key of keys) {
+        const canonical = canonicalLookup.get(key.toLowerCase());
+        if (!canonical || seen.has(canonical)) continue;
+        seen.add(canonical);
+        ordered.push(canonical);
+      }
+    }
+  }
+
+  return ordered;
+}
+
+function mergeCitationOrder(primaryOrder: string[], fallbackOrder: string[]): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  const append = (key: string) => {
+    const normalized = String(key || '').trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    merged.push(key);
+  };
+  for (const key of primaryOrder) append(key);
+  for (const key of fallbackOrder) append(key);
+  return merged;
+}
+
+function sortCitationsByOrderedKeys<T extends { citationKey: string }>(
+  citations: T[],
+  orderedCitationKeys: string[]
+): T[] {
+  const orderLookup = new Map<string, number>();
+  orderedCitationKeys.forEach((key, index) => orderLookup.set(key, index));
+  return [...citations].sort((a, b) => {
+    const left = orderLookup.get(a.citationKey);
+    const right = orderLookup.get(b.citationKey);
+    const leftRank = typeof left === 'number' ? left : Number.MAX_SAFE_INTEGER;
+    const rightRank = typeof right === 'number' ? right : Number.MAX_SAFE_INTEGER;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return a.citationKey.localeCompare(b.citationKey);
+  });
+}
+
+function buildCitationNumberingMap(orderedCitationKeys: string[]): Record<string, number> {
+  return Object.fromEntries(
+    orderedCitationKeys.map((citationKey, index) => [citationKey, index + 1])
+  );
+}
+
 function titleize(value: string): string {
   return value
     .replace(/_/g, ' ')
@@ -77,10 +161,6 @@ function stripHtml(value: string): string {
   text = text.replace(/&quot;/gi, '"');
   text = text.replace(/&#39;/gi, "'");
   return text.trim();
-}
-
-function extractCitationKeys(content: string): string[] {
-  return DraftingService.extractCitationKeys(content);
 }
 
 function parseFormattingGuidelines(venue: any) {
@@ -203,10 +283,10 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
       .map(key => ({ key: key as string, raw: extraSections[key as string] || '' }))
       .filter(section => section.raw && section.raw.trim().length > 0);
 
-    const usedCitationKeys = new Set<string>();
+    const citations = await citationService.getCitationsForSession(sessionId);
+    const canonicalLookup = buildCanonicalCitationLookup(citations);
     const plainSections = sections.map(section => {
       const plain = stripHtml(section.raw);
-      extractCitationKeys(plain).forEach(key => usedCitationKeys.add(key));
       return {
         key: section.key,
         title: titleize(section.key),
@@ -214,9 +294,41 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
       };
     });
 
+    const orderedCitationKeys = extractOrderedCitationKeysFromSections(plainSections, canonicalLookup);
+    const fallbackUsedKeys = orderedCitationKeys.length === 0
+      ? Array.from(new Set(
+          plainSections
+            .flatMap(section => DraftingService.extractCitationKeys(section.content))
+            .map(key => canonicalLookup.get(String(key || '').trim().toLowerCase()) || String(key || '').trim())
+            .filter(Boolean)
+        ))
+      : [];
+    const usedCitationKeys = orderedCitationKeys.length > 0
+      ? orderedCitationKeys
+      : fallbackUsedKeys;
+
+    const filteredCitations = usedCitationKeys.length > 0
+      ? citations.filter(citation => usedCitationKeys.includes(citation.citationKey))
+      : citations;
+    const isNumericOrderStyle = NUMERIC_ORDER_STYLES.has(styleCode.toUpperCase());
+    const citationOrdering = mergeCitationOrder(
+      orderedCitationKeys,
+      filteredCitations.map(citation => citation.citationKey)
+    );
+    const citationNumbering = isNumericOrderStyle
+      ? buildCitationNumberingMap(citationOrdering)
+      : undefined;
+
     const formattedSections = await Promise.all(
       plainSections.map(async section => {
-        const processed = await DraftingService.postProcessSection(section.content, sessionId, styleCode);
+        const processed = await DraftingService.postProcessSection(
+          section.content,
+          sessionId,
+          styleCode,
+          {
+            citationNumbering
+          }
+        );
         return {
           key: section.key,
           title: section.title,
@@ -225,13 +337,13 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
       })
     );
 
-    const citations = await citationService.getCitationsForSession(sessionId);
-    const filteredCitations = usedCitationKeys.size > 0
-      ? citations.filter(citation => usedCitationKeys.has(citation.citationKey))
-      : citations;
+    const bibliographyCitations = isNumericOrderStyle
+      ? sortCitationsByOrderedKeys(filteredCitations, citationOrdering)
+      : filteredCitations;
     const bibliography = await citationStyleService.generateBibliography(
-      filteredCitations.map(toCitationData),
-      styleCode
+      bibliographyCitations.map(toCitationData),
+      styleCode,
+      isNumericOrderStyle ? { sortOrder: 'order_of_appearance' } : undefined
     );
 
     const figures = (session.figurePlans || [])

@@ -115,6 +115,12 @@ export interface FigureSuggestionRequest {
   focusSection?: string
   /** 'selection' = user highlighted text, 'section' = full section focus */
   focusMode?: 'selection' | 'section'
+  /** Optional structured anchors extracted from focusText */
+  focusHints?: {
+    entities?: string[]
+    metrics?: string[]
+    verbs?: string[]
+  }
 }
 
 export interface FigureSuggestionResult {
@@ -652,12 +658,28 @@ PAPER CONTENT:
  * illustrate the focused content while still using the broader paper
  * context for grounding (correct terminology, related variables, etc.).
  */
-function buildFocusTextBlock(focusText: string, focusSection?: string, focusMode?: 'selection' | 'section'): string {
+function buildFocusTextBlock(
+  focusText: string,
+  focusSection?: string,
+  focusMode?: 'selection' | 'section',
+  focusHints?: { entities?: string[]; metrics?: string[]; verbs?: string[] }
+): string {
   const modeLabel = focusMode === 'selection'
     ? 'The user has selected the following excerpt from their paper'
     : 'The user wants figures specifically for the following content'
   const sectionHint = focusSection
     ? ` (from the "${focusSection}" section)`
+    : ''
+  const entities = (focusHints?.entities || []).slice(0, 10)
+  const metrics = (focusHints?.metrics || []).slice(0, 10)
+  const verbs = (focusHints?.verbs || []).slice(0, 8)
+  const hintsBlock = (entities.length > 0 || metrics.length > 0 || verbs.length > 0)
+    ? `
+FOCUS HINTS (EXTRACTED ANCHORS - USE THESE TO STAY SPECIFIC):
+- Entities: ${entities.length > 0 ? entities.join('; ') : 'none'}
+- Metrics: ${metrics.length > 0 ? metrics.join('; ') : 'none'}
+- Verbs/Actions: ${verbs.length > 0 ? verbs.join('; ') : 'none'}
+`
     : ''
 
   return `
@@ -669,6 +691,7 @@ ${modeLabel}${sectionHint}:
 """
 ${focusText.slice(0, 3000)}
 """
+${hintsBlock}
 
 STRICT RULES FOR THIS FOCUSED REQUEST:
 1. EVERY suggestion MUST directly visualize, explain, or showcase the content in the excerpt above.
@@ -681,6 +704,7 @@ STRICT RULES FOR THIS FOCUSED REQUEST:
 8. Suggest 2-4 figures (not more) since this is a targeted excerpt, not a full paper.
 9. The "relevantSection" field must be "${focusSection || 'selected_content'}".
 10. The "whyThisFigure" field must explain how this figure helps the reader understand the focused text specifically.
+11. Prefer suggestions that explicitly mention at least one extracted entity or metric when available.
 ═══════════════════════════════════════════════════
 
 `
@@ -1681,7 +1705,8 @@ export async function generateFigureSuggestions(
       const focusBlock = buildFocusTextBlock(
         request.focusText!,
         request.focusSection,
-        request.focusMode
+        request.focusMode,
+        request.focusHints
       )
       fullPrompt = FIGURE_SUGGESTION_PROMPT + focusBlock + paperContext
     } else {
@@ -1842,4 +1867,6 @@ export async function generateDiagramCode(
 
   return generatePlantUMLCode(normalizedRequest, requestHeaders)
 }
+
+
 

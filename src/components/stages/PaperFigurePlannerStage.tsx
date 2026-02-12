@@ -379,6 +379,7 @@ export default function PaperFigurePlannerStage({
 
   const filteredSuggestions = useMemo(() => {
     return suggestions.filter((item) => {
+      if (item.status === 'dismissed') return false;
       if (sectionFilter !== SUGGESTION_SECTION_FILTER_ALL && item.relevantSection !== sectionFilter) return false;
       if (categoryFilter !== SUGGESTION_SECTION_FILTER_ALL && item.category !== categoryFilter) return false;
       if (importanceFilter !== SUGGESTION_SECTION_FILTER_ALL && (item.importance || 'optional') !== importanceFilter) return false;
@@ -389,7 +390,7 @@ export default function PaperFigurePlannerStage({
   const selectedSuggestions = useMemo(() => {
     const selected = new Set(selectedSuggestionIds);
     // Exclude already-used suggestions from batch operations
-    return suggestions.filter((item) => selected.has(item.id) && item.status !== 'used');
+    return suggestions.filter((item) => selected.has(item.id) && item.status !== 'used' && item.status !== 'dismissed');
   }, [suggestions, selectedSuggestionIds]);
 
   const updatePreference = <K extends keyof FigureSuggestionPreferences>(
@@ -438,7 +439,7 @@ export default function PaperFigurePlannerStage({
       if (!response.ok) return;
       const data = await response.json();
       if (data.suggestions && data.suggestions.length > 0) {
-        const cached = parseSuggestionsFromApi(data.suggestions);
+        const cached = parseSuggestionsFromApi(data.suggestions).filter((s) => s.status !== 'dismissed');
         setSuggestions(cached);
         setSuggestionsRequested(true);
         // Auto-select only pending suggestions
@@ -477,6 +478,22 @@ export default function PaperFigurePlannerStage({
     ));
     persistSuggestionStatuses([{ id: suggestionId, status: 'used', usedByFigureId: figureId }]);
   }, [persistSuggestionStatuses]);
+
+  /** Discard a suggestion the user does not want to use */
+  const dismissSuggestion = useCallback((suggestionId: string) => {
+    setSuggestions(prev => prev.filter(s => s.id !== suggestionId));
+    setSelectedSuggestionIds(prev => prev.filter(id => id !== suggestionId));
+    persistSuggestionStatuses([{ id: suggestionId, status: 'dismissed', usedByFigureId: null }]);
+  }, [persistSuggestionStatuses]);
+
+  /** Discard all currently selected pending suggestions */
+  const dismissSelectedSuggestions = useCallback(() => {
+    if (selectedSuggestions.length === 0) return;
+    const ids = selectedSuggestions.map(s => s.id);
+    setSuggestions(prev => prev.filter(s => !ids.includes(s.id)));
+    setSelectedSuggestionIds(prev => prev.filter(id => !ids.includes(id)));
+    persistSuggestionStatuses(ids.map((id) => ({ id, status: 'dismissed' as SuggestionStatus, usedByFigureId: null })));
+  }, [persistSuggestionStatuses, selectedSuggestions]);
 
   /** Mark multiple suggestions as used (for batch operations) */
   const markSuggestionsUsedBatch = useCallback((entries: Array<{ suggestionTitle: string; figureId: string }>) => {
@@ -582,9 +599,9 @@ export default function PaperFigurePlannerStage({
           .then(res => res.json())
           .then(data => {
             if (data.suggestions) {
-              const nextSuggestions = parseSuggestionsFromApi(data.suggestions);
+              const nextSuggestions = parseSuggestionsFromApi(data.suggestions).filter((s) => s.status !== 'dismissed');
               setSuggestions(nextSuggestions);
-              setSelectedSuggestionIds(nextSuggestions.filter(s => s.status !== 'used').map(s => s.id));
+              setSelectedSuggestionIds(nextSuggestions.filter(s => s.status !== 'used' && s.status !== 'dismissed').map(s => s.id));
             }
           })
           .catch(err => console.error('[FigurePlanner] Cross-stage suggest error:', err))
@@ -818,10 +835,10 @@ export default function PaperFigurePlannerStage({
       
       const data = await response.json();
       if (response.ok) {
-        const nextSuggestions: FigureSuggestionItem[] = parseSuggestionsFromApi(data.suggestions || []);
+        const nextSuggestions: FigureSuggestionItem[] = parseSuggestionsFromApi(data.suggestions || []).filter((s) => s.status !== 'dismissed');
         setSuggestions(nextSuggestions);
         // Auto-select only pending suggestions
-        setSelectedSuggestionIds(nextSuggestions.filter(s => s.status !== 'used').map((item) => item.id));
+        setSelectedSuggestionIds(nextSuggestions.filter(s => s.status !== 'used' && s.status !== 'dismissed').map((item) => item.id));
         setSectionFilter(SUGGESTION_SECTION_FILTER_ALL);
         setCategoryFilter(SUGGESTION_SECTION_FILTER_ALL);
         setImportanceFilter(SUGGESTION_SECTION_FILTER_ALL);
@@ -1083,7 +1100,9 @@ Please regenerate the figure incorporating the user's feedback and corrections.
     }
   };
 
-  const toggleSuggestionSelection = (suggestionId: string) => {
+  const toggleSuggestionSelection = (suggestion: FigureSuggestionItem) => {
+    if (suggestion.status === 'used' || suggestion.status === 'dismissed') return;
+    const suggestionId = suggestion.id;
     setSelectedSuggestionIds((prev) => (
       prev.includes(suggestionId)
         ? prev.filter((id) => id !== suggestionId)
@@ -1093,7 +1112,9 @@ Please regenerate the figure incorporating the user's feedback and corrections.
 
   const toggleSelectAllFiltered = () => {
     // Exclude already-used suggestions from select-all toggle
-    const selectableIds = filteredSuggestions.filter(s => s.status !== 'used').map((item) => item.id);
+    const selectableIds = filteredSuggestions
+      .filter(s => s.status !== 'used' && s.status !== 'dismissed')
+      .map((item) => item.id);
     const selected = new Set(selectedSuggestionIds);
     const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
 
@@ -2049,7 +2070,8 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                       </select>
                     </label>
                     <Button size="sm" variant="outline" onClick={toggleSelectAllFiltered} className="mt-5">
-                      {filteredSuggestions.filter(s => s.status !== 'used').length > 0 && filteredSuggestions.filter(s => s.status !== 'used').every((item) => selectedSuggestionIds.includes(item.id))
+                      {filteredSuggestions.filter(s => s.status !== 'used' && s.status !== 'dismissed').length > 0 &&
+                      filteredSuggestions.filter(s => s.status !== 'used' && s.status !== 'dismissed').every((item) => selectedSuggestionIds.includes(item.id))
                         ? 'Deselect filtered'
                         : 'Select pending'}
                     </Button>
@@ -2086,7 +2108,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                             <div className="flex items-start gap-3">
                               <button
                                 type="button"
-                                onClick={() => !isUsed && toggleSuggestionSelection(suggestion.id)}
+                                onClick={() => !isUsed && !isDismissed && toggleSuggestionSelection(suggestion)}
                                 disabled={isUsed}
                                 className={`mt-1 h-5 w-5 rounded border flex items-center justify-center ${isSelected ? 'bg-amber-500 border-amber-500' : 'bg-white border-slate-300'} ${isUsed ? 'cursor-not-allowed' : ''}`}
                               >
@@ -2128,10 +2150,21 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                               {isUsed ? (
                                 <span className="shrink-0 text-xs text-green-600 font-medium px-2 py-1">Added</span>
                               ) : (
-                                <Button size="sm" variant="outline" onClick={() => applySuggestion(suggestion)} className="shrink-0">
-                                  <Plus className="w-4 h-4 mr-1" />
-                                  Use
-                                </Button>
+                                <div className="shrink-0 flex flex-col gap-1.5">
+                                  <Button size="sm" variant="outline" onClick={() => applySuggestion(suggestion)}>
+                                    <Plus className="w-4 h-4 mr-1" />
+                                    Use
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => dismissSuggestion(suggestion.id)}
+                                    className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                                  >
+                                    <X className="w-3.5 h-3.5 mr-1" />
+                                    Discard
+                                  </Button>
+                                </div>
                               )}
                             </div>
                           </div>
@@ -2153,6 +2186,14 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                 )}
               </p>
               <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  onClick={dismissSelectedSuggestions}
+                  disabled={selectedSuggestions.length === 0 || isApplyingSuggestionBatch}
+                  className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700"
+                >
+                  Discard Selected
+                </Button>
                 <Button
                   variant="outline"
                   onClick={() => setSelectedSuggestionIds([])}
@@ -2182,8 +2223,8 @@ Please regenerate the figure incorporating the user's feedback and corrections.
           setModificationRequest('');
         }
       }}>
-        <DialogContent className="max-w-3xl bg-white border-0 shadow-2xl rounded-2xl">
-          <DialogHeader className="pb-4">
+      <DialogContent className="max-w-4xl w-[95vw] max-h-[92vh] bg-white border-0 shadow-2xl rounded-2xl flex flex-col overflow-hidden">
+          <DialogHeader className="pb-4 flex-shrink-0">
             <DialogTitle className="flex items-center gap-3 text-xl">
               <span>Figure {previewFigure?.figureNo}: {previewFigure?.title}</span>
               {previewFigure?.status && (
@@ -2199,9 +2240,10 @@ Please regenerate the figure incorporating the user's feedback and corrections.
             </DialogTitle>
             <p className="text-slate-500 text-sm mt-1">{previewFigure?.caption}</p>
           </DialogHeader>
-          
+
+          <div className="flex-1 overflow-y-auto space-y-4 pr-1">
           {/* Figure Preview or Status Placeholder */}
-          <div className="bg-slate-50 rounded-xl p-6 relative min-h-[120px]">
+          <div className="bg-slate-50 rounded-xl p-4 md:p-6 relative min-h-[120px] max-h-[52vh] overflow-auto">
             {isModifying && (
               <div className="absolute inset-0 bg-white/80 rounded-xl flex flex-col items-center justify-center z-10">
                 <Loader2 className="w-8 h-8 animate-spin text-blue-500 mb-3" />
@@ -2213,7 +2255,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
               <img 
                 src={previewFigure.imagePath} 
                 alt={previewFigure.title}
-                className="max-w-full h-auto mx-auto rounded-lg shadow-sm"
+                className="max-w-full max-h-[46vh] h-auto mx-auto rounded-lg shadow-sm object-contain"
               />
             ) : previewFigure?.status === 'FAILED' ? (
               <div className="flex flex-col items-center justify-center py-8 text-center">
@@ -2302,8 +2344,9 @@ Please regenerate the figure incorporating the user's feedback and corrections.
               </div>
             )}
           </div>
-          
-          <DialogFooter className="pt-4 border-t border-slate-100 flex-wrap gap-2">
+          </div>
+
+          <DialogFooter className="pt-4 border-t border-slate-100 flex-wrap gap-2 flex-shrink-0 bg-white">
             <div className="flex items-center gap-2 mr-auto">
               <Button 
                 variant="outline"

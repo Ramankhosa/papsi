@@ -19,6 +19,51 @@ interface LiteratureSearchStageProps {
   onSessionUpdated?: (session: any) => void;
 }
 
+type SearchQueryCategory =
+  | 'CORE_CONCEPTS'
+  | 'DOMAIN_APPLICATION'
+  | 'METHODOLOGY'
+  | 'THEORETICAL_FOUNDATION'
+  | 'SURVEYS_REVIEWS'
+  | 'COMPETING_APPROACHES'
+  | 'RECENT_ADVANCES'
+  | 'GAP_IDENTIFICATION'
+  | 'CUSTOM';
+
+interface SearchStrategyQuery {
+  id: string;
+  queryText: string;
+  category: SearchQueryCategory;
+  description: string;
+  priority: number;
+  suggestedSources: string[];
+  suggestedYearFrom: number | null;
+  suggestedYearTo: number | null;
+  status: 'PENDING' | 'SEARCHING' | 'SEARCHED' | 'COMPLETED' | 'SKIPPED';
+  importedCount: number | null;
+  resultsCount: number | null;
+}
+
+interface SearchStrategyData {
+  id: string;
+  status: 'DRAFT' | 'READY' | 'IN_PROGRESS' | 'COMPLETED';
+  summary: string | null;
+  estimatedPapers: number | null;
+  progress: number;
+  completedQueries: number;
+  totalQueries: number;
+  queries: SearchStrategyQuery[];
+}
+
+interface SearchStrategyEditorState {
+  queryText: string;
+  description: string;
+  category: SearchQueryCategory;
+  suggestedSources: string[];
+  suggestedYearFrom: string;
+  suggestedYearTo: string;
+}
+
 const SOURCE_OPTIONS = [
   { value: 'google_scholar', label: 'Google Scholar', description: 'Broad academic search' },
   { value: 'semantic_scholar', label: 'Semantic Scholar', description: 'Rich abstracts & citations' },
@@ -92,6 +137,18 @@ const SEARCH_LOADING_MESSAGES = [
   { text: 'Extracting abstracts and metadata...', icon: '📝' },
   { text: 'Deduplicating across sources...', icon: '🔄' },
   { text: 'Preparing your personalized results...', icon: '✨' },
+];
+
+const SEARCH_QUERY_CATEGORIES: Array<{ value: SearchQueryCategory; label: string }> = [
+  { value: 'CORE_CONCEPTS', label: 'Core concepts' },
+  { value: 'DOMAIN_APPLICATION', label: 'Domain application' },
+  { value: 'METHODOLOGY', label: 'Methodology' },
+  { value: 'THEORETICAL_FOUNDATION', label: 'Theoretical foundation' },
+  { value: 'SURVEYS_REVIEWS', label: 'Surveys and reviews' },
+  { value: 'COMPETING_APPROACHES', label: 'Competing approaches' },
+  { value: 'RECENT_ADVANCES', label: 'Recent advances' },
+  { value: 'GAP_IDENTIFICATION', label: 'Gap identification' },
+  { value: 'CUSTOM', label: 'Custom' }
 ];
 
 export default function LiteratureSearchStage({ sessionId, authToken, onSessionUpdated }: LiteratureSearchStageProps) {
@@ -1921,10 +1978,46 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   const [mainTab, setMainTab] = useState<'find' | 'citations'>('find');
   
   // Search Strategy state
-  const [searchStrategy, setSearchStrategy] = useState<any | null>(null);
+  const [searchStrategy, setSearchStrategy] = useState<SearchStrategyData | null>(null);
   const [strategyLoading, setStrategyLoading] = useState(false);
   const [strategyExpanded, setStrategyExpanded] = useState(true);
   const [generatingStrategy, setGeneratingStrategy] = useState(false);
+  const [selectedStrategyQueryId, setSelectedStrategyQueryId] = useState<string | null>(null);
+  const [strategyDetailsOpen, setStrategyDetailsOpen] = useState(false);
+  const [strategyEditor, setStrategyEditor] = useState<SearchStrategyEditorState | null>(null);
+  const [strategyEditorQueryId, setStrategyEditorQueryId] = useState<string | null>(null);
+  const [savingStrategyQuery, setSavingStrategyQuery] = useState(false);
+
+  const toStrategyEditorState = useCallback((strategyQuery: SearchStrategyQuery): SearchStrategyEditorState => ({
+    queryText: strategyQuery.queryText || '',
+    description: strategyQuery.description || '',
+    category: strategyQuery.category,
+    suggestedSources: Array.isArray(strategyQuery.suggestedSources) ? strategyQuery.suggestedSources : [],
+    suggestedYearFrom: strategyQuery.suggestedYearFrom ? String(strategyQuery.suggestedYearFrom) : '',
+    suggestedYearTo: strategyQuery.suggestedYearTo ? String(strategyQuery.suggestedYearTo) : ''
+  }), []);
+
+  const selectedStrategyQuery = useMemo(() => {
+    if (!searchStrategy || !selectedStrategyQueryId) return null;
+    return searchStrategy.queries.find(q => q.id === selectedStrategyQueryId) || null;
+  }, [searchStrategy, selectedStrategyQueryId]);
+
+  const strategyEditorDirty = useMemo(() => {
+    if (!selectedStrategyQuery || !strategyEditor) return false;
+    const normalize = (value: string) => value.trim();
+    const normalizeSources = (values: string[]) => [...values].sort().join('|');
+    const selectedYearFrom = selectedStrategyQuery.suggestedYearFrom ? String(selectedStrategyQuery.suggestedYearFrom) : '';
+    const selectedYearTo = selectedStrategyQuery.suggestedYearTo ? String(selectedStrategyQuery.suggestedYearTo) : '';
+
+    return (
+      normalize(strategyEditor.queryText) !== normalize(selectedStrategyQuery.queryText) ||
+      normalize(strategyEditor.description) !== normalize(selectedStrategyQuery.description) ||
+      strategyEditor.category !== selectedStrategyQuery.category ||
+      normalizeSources(strategyEditor.suggestedSources) !== normalizeSources(selectedStrategyQuery.suggestedSources || []) ||
+      normalize(strategyEditor.suggestedYearFrom) !== selectedYearFrom ||
+      normalize(strategyEditor.suggestedYearTo) !== selectedYearTo
+    );
+  }, [selectedStrategyQuery, strategyEditor]);
   
   // Fetch search strategy
   const fetchSearchStrategy = useCallback(async () => {
@@ -1936,7 +2029,16 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       });
       if (response.ok) {
         const data = await response.json();
-        setSearchStrategy(data.strategy);
+        const strategyData = (data.strategy || null) as SearchStrategyData | null;
+        setSearchStrategy(strategyData);
+        if (!strategyData || strategyData.queries.length === 0) {
+          setStrategyDetailsOpen(false);
+        }
+        setSelectedStrategyQueryId(prev => {
+          if (!strategyData || strategyData.queries.length === 0) return null;
+          if (prev && strategyData.queries.some(q => q.id === prev)) return prev;
+          return strategyData.queries[0].id;
+        });
       }
     } catch (err) {
       console.error('Failed to fetch search strategy:', err);
@@ -1961,11 +2063,14 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       
       const data = await response.json();
       if (response.ok) {
-        setSearchStrategy(data.strategy);
+        const strategyData = data.strategy as SearchStrategyData;
+        setSearchStrategy(strategyData);
+        setSelectedStrategyQueryId(strategyData.queries?.[0]?.id || null);
+        setStrategyDetailsOpen(false);
         showToast({
           type: 'success',
           title: 'Search Strategy Generated',
-          message: `Created ${data.strategy.queries.length} systematic search queries`,
+          message: `Created ${strategyData.queries.length} systematic search queries`,
           duration: 4000
         });
       } else {
@@ -1994,7 +2099,12 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   };
   
   // Update query status
-  const updateQueryStatus = async (queryId: string, status: string, resultsCount?: number, importedCount?: number) => {
+  const updateQueryStatus = async (
+    queryId: string,
+    status: SearchStrategyQuery['status'],
+    resultsCount?: number,
+    importedCount?: number
+  ) => {
     if (!authToken) return;
     try {
       const response = await fetch(`/api/papers/${sessionId}/search-strategy`, {
@@ -2018,40 +2128,170 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   
   // Track current strategy query being executed
   const [currentStrategyQueryId, setCurrentStrategyQueryId] = useState<string | null>(null);
+
+  const loadStrategyQueryIntoSearchForm = useCallback((strategyQuery: SearchStrategyQuery) => {
+    setQuery(strategyQuery.queryText);
+    if (strategyQuery.suggestedSources && strategyQuery.suggestedSources.length > 0) {
+      setSources(strategyQuery.suggestedSources);
+    }
+    setYearFrom(strategyQuery.suggestedYearFrom ? strategyQuery.suggestedYearFrom.toString() : '');
+    setYearTo(strategyQuery.suggestedYearTo ? strategyQuery.suggestedYearTo.toString() : '');
+    setAddMode('search');
+  }, []);
+
+  const toggleStrategySource = useCallback((sourceValue: string, checked: boolean) => {
+    setStrategyEditor(prev => {
+      if (!prev) return prev;
+      if (checked) {
+        if (prev.suggestedSources.includes(sourceValue)) return prev;
+        return { ...prev, suggestedSources: [...prev.suggestedSources, sourceValue] };
+      }
+      return { ...prev, suggestedSources: prev.suggestedSources.filter(source => source !== sourceValue) };
+    });
+  }, []);
+
+  const saveStrategyQueryEdits = useCallback(async () => {
+    if (!authToken || !selectedStrategyQuery || !strategyEditor) return;
+
+    const queryText = strategyEditor.queryText.trim();
+    if (queryText.length < 2) {
+      showToast({
+        type: 'error',
+        title: 'Query text required',
+        message: 'Query text must be at least 2 characters long.',
+        duration: 4000
+      });
+      return;
+    }
+
+    const parseYear = (value: string): number | null => {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      const parsed = Number(trimmed);
+      if (!Number.isInteger(parsed) || parsed < 1900 || parsed > 2100) {
+        throw new Error('Years must be integers between 1900 and 2100.');
+      }
+      return parsed;
+    };
+
+    let suggestedYearFrom: number | null;
+    let suggestedYearTo: number | null;
+    try {
+      suggestedYearFrom = parseYear(strategyEditor.suggestedYearFrom);
+      suggestedYearTo = parseYear(strategyEditor.suggestedYearTo);
+      if (suggestedYearFrom !== null && suggestedYearTo !== null && suggestedYearFrom > suggestedYearTo) {
+        throw new Error('Start year must be less than or equal to end year.');
+      }
+    } catch (validationError) {
+      showToast({
+        type: 'error',
+        title: 'Invalid year range',
+        message: validationError instanceof Error ? validationError.message : 'Please check year values.',
+        duration: 4500
+      });
+      return;
+    }
+
+    try {
+      setSavingStrategyQuery(true);
+      const response = await fetch(`/api/papers/${sessionId}/search-strategy`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          queryId: selectedStrategyQuery.id,
+          queryText,
+          description: strategyEditor.description.trim(),
+          category: strategyEditor.category,
+          suggestedSources: strategyEditor.suggestedSources,
+          suggestedYearFrom,
+          suggestedYearTo
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to save strategy query');
+      }
+
+      showToast({
+        type: 'success',
+        title: 'Search strategy updated',
+        message: 'Your query edits have been saved.',
+        duration: 3000
+      });
+
+      await fetchSearchStrategy();
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'Save failed',
+        message: err instanceof Error ? err.message : 'Could not update this strategy query.',
+        duration: 4500
+      });
+    } finally {
+      setSavingStrategyQuery(false);
+    }
+  }, [authToken, selectedStrategyQuery, strategyEditor, showToast, sessionId, fetchSearchStrategy]);
+
+  const resetStrategyEditor = useCallback(() => {
+    if (!selectedStrategyQuery) return;
+    setStrategyEditor(toStrategyEditorState(selectedStrategyQuery));
+    setStrategyEditorQueryId(selectedStrategyQuery.id);
+  }, [selectedStrategyQuery, toStrategyEditorState]);
+
+  const showStrategyQueryDetails = useCallback((strategyQuery: SearchStrategyQuery) => {
+    setSelectedStrategyQueryId(strategyQuery.id);
+    setStrategyEditor(toStrategyEditorState(strategyQuery));
+    setStrategyEditorQueryId(strategyQuery.id);
+    setStrategyDetailsOpen(true);
+  }, [toStrategyEditorState]);
   
   // Execute a strategy query - fills search box and triggers search
-  const executeStrategyQuery = async (query: any) => {
+  const executeStrategyQuery = async (strategyQuery: SearchStrategyQuery) => {
     // Track which strategy query we're executing
-    setCurrentStrategyQueryId(query.id);
-    
-    // Fill the search box
-    setQuery(query.queryText);
-    
-    // Set suggested sources
-    if (query.suggestedSources && query.suggestedSources.length > 0) {
-      setSources(query.suggestedSources);
-    }
-    
-    // Set year filters if suggested
-    if (query.suggestedYearFrom) setYearFrom(query.suggestedYearFrom.toString());
-    if (query.suggestedYearTo) setYearTo(query.suggestedYearTo.toString());
+    setCurrentStrategyQueryId(strategyQuery.id);
+    loadStrategyQueryIntoSearchForm(strategyQuery);
+    setSelectedStrategyQueryId(strategyQuery.id);
+    setStrategyEditor(toStrategyEditorState(strategyQuery));
+    setStrategyEditorQueryId(strategyQuery.id);
+
+    const selectedSources = strategyQuery.suggestedSources && strategyQuery.suggestedSources.length > 0
+      ? strategyQuery.suggestedSources
+      : sources;
+    const selectedYearFrom = strategyQuery.suggestedYearFrom ? strategyQuery.suggestedYearFrom.toString() : yearFrom;
+    const selectedYearTo = strategyQuery.suggestedYearTo ? strategyQuery.suggestedYearTo.toString() : yearTo;
     
     // Update query status to searching
-    await updateQueryStatus(query.id, 'SEARCHING');
-    
-    // Switch to search mode
-    setAddMode('search');
+    await updateQueryStatus(strategyQuery.id, 'SEARCHING');
 
     // Trigger the actual search immediately (no second click)
     await handleSearch({
-      query: query.queryText,
-      sources: query.suggestedSources && query.suggestedSources.length > 0 ? query.suggestedSources : sources,
-      yearFrom: query.suggestedYearFrom ? query.suggestedYearFrom.toString() : yearFrom,
-      yearTo: query.suggestedYearTo ? query.suggestedYearTo.toString() : yearTo,
-      strategyQueryId: query.id
+      query: strategyQuery.queryText,
+      sources: selectedSources,
+      yearFrom: selectedYearFrom,
+      yearTo: selectedYearTo,
+      strategyQueryId: strategyQuery.id
     });
   };
   
+  // Keep an editor loaded for the currently selected strategy query
+  useEffect(() => {
+    if (!selectedStrategyQuery) {
+      setStrategyEditor(null);
+      setStrategyEditorQueryId(null);
+      setStrategyDetailsOpen(false);
+      return;
+    }
+
+    if (strategyEditorQueryId !== selectedStrategyQuery.id) {
+      setStrategyEditor(toStrategyEditorState(selectedStrategyQuery));
+      setStrategyEditorQueryId(selectedStrategyQuery.id);
+    }
+  }, [selectedStrategyQuery, strategyEditorQueryId, toStrategyEditorState]);
+
   // Load search strategy on mount
   useEffect(() => {
     fetchSearchStrategy();
@@ -2383,72 +2623,92 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                     
                     {/* Query List */}
                     <div className="space-y-1.5 max-h-64 overflow-y-auto pr-1">
-                      {searchStrategy.queries.map((query: any, idx: number) => {
+                      {searchStrategy.queries.map((strategyQuery: SearchStrategyQuery) => {
                         const categoryIcons: Record<string, string> = {
-                          'CORE_CONCEPTS': '🎯',
-                          'DOMAIN_APPLICATION': '🏭',
-                          'METHODOLOGY': '⚙️',
-                          'THEORETICAL_FOUNDATION': '📚',
-                          'SURVEYS_REVIEWS': '📊',
-                          'COMPETING_APPROACHES': '⚔️',
-                          'RECENT_ADVANCES': '🚀',
-                          'GAP_IDENTIFICATION': '🔍',
-                          'CUSTOM': '✏️'
+                          CORE_CONCEPTS: '🎯',
+                          DOMAIN_APPLICATION: '🏭',
+                          METHODOLOGY: '⚙️',
+                          THEORETICAL_FOUNDATION: '📚',
+                          SURVEYS_REVIEWS: '📊',
+                          COMPETING_APPROACHES: '⚔️',
+                          RECENT_ADVANCES: '🚀',
+                          GAP_IDENTIFICATION: '🔍',
+                          CUSTOM: '✏️'
                         };
-                        
+
                         const statusColors: Record<string, string> = {
-                          'PENDING': 'bg-gray-100 text-gray-600 border-gray-200',
-                          'SEARCHING': 'bg-amber-100 text-amber-700 border-amber-200 animate-pulse',
-                          'SEARCHED': 'bg-blue-100 text-blue-700 border-blue-200',
-                          'COMPLETED': 'bg-emerald-100 text-emerald-700 border-emerald-200',
-                          'SKIPPED': 'bg-gray-100 text-gray-400 border-gray-200 line-through'
+                          PENDING: 'bg-gray-100 text-gray-600 border-gray-200',
+                          SEARCHING: 'bg-amber-100 text-amber-700 border-amber-200 animate-pulse',
+                          SEARCHED: 'bg-blue-100 text-blue-700 border-blue-200',
+                          COMPLETED: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+                          SKIPPED: 'bg-gray-100 text-gray-400 border-gray-200 line-through'
                         };
-                        
+                        const isSelected = strategyDetailsOpen && selectedStrategyQueryId === strategyQuery.id;
+
                         return (
-                          <div 
-                            key={query.id}
+                          <div
+                            key={strategyQuery.id}
                             className={`flex items-center gap-2 p-2 rounded-lg border transition-all ${
-                              query.status === 'COMPLETED' || query.status === 'SKIPPED'
-                                ? 'bg-gray-50/50'
-                                : 'bg-white hover:shadow-sm cursor-pointer'
+                              isSelected
+                                ? 'bg-indigo-50 border-indigo-300 shadow-sm'
+                                : strategyQuery.status === 'COMPLETED' || strategyQuery.status === 'SKIPPED'
+                                  ? 'bg-gray-50/50 border-gray-200'
+                                  : 'bg-white hover:shadow-sm'
                             }`}
                           >
-                            <span className="text-sm shrink-0">{categoryIcons[query.category] || '📄'}</span>
+                            <span className="text-sm shrink-0">{categoryIcons[strategyQuery.category] || '📄'}</span>
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2">
                                 <span className={`text-xs font-medium ${
-                                  query.status === 'SKIPPED' ? 'text-gray-400 line-through' : 'text-gray-900'
+                                  strategyQuery.status === 'SKIPPED' ? 'text-gray-400 line-through' : 'text-gray-900'
                                 }`}>
-                                  {query.queryText}
+                                  {strategyQuery.queryText}
                                 </span>
-                                <Badge variant="outline" className={`text-[9px] px-1 py-0 ${statusColors[query.status]}`}>
-                                  {query.status === 'COMPLETED' && query.importedCount !== null 
-                                    ? `✓ ${query.importedCount} imported`
-                                    : query.status.toLowerCase().replace('_', ' ')
+                                <Badge variant="outline" className={`text-[9px] px-1 py-0 ${statusColors[strategyQuery.status]}`}>
+                                  {strategyQuery.status === 'COMPLETED' && strategyQuery.importedCount !== null
+                                    ? `✓ ${strategyQuery.importedCount} imported`
+                                    : strategyQuery.status.toLowerCase().replace('_', ' ')
                                   }
                                 </Badge>
                               </div>
-                              <p className="text-[10px] text-gray-500 truncate">{query.description}</p>
+                              <p className="text-[10px] text-gray-500 truncate">{strategyQuery.description}</p>
                             </div>
                             <div className="flex items-center gap-1 shrink-0">
-                              {query.status === 'PENDING' && (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  showStrategyQueryDetails(strategyQuery);
+                                }}
+                                className="h-6 text-[10px] px-2 border-indigo-200 text-indigo-700"
+                              >
+                                {isSelected && strategyDetailsOpen ? 'Shown' : 'Show'}
+                              </Button>
+                              {strategyQuery.status === 'PENDING' && (
                                 <Button
                                   size="sm"
-                                  onClick={() => executeStrategyQuery(query)}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    executeStrategyQuery(strategyQuery);
+                                  }}
                                   className="h-6 text-[10px] px-2 bg-indigo-600 hover:bg-indigo-700"
                                 >
-                                  Search →
+                                  Search {'→'}
                                 </Button>
                               )}
-                              {query.status === 'SEARCHING' && (
+                              {strategyQuery.status === 'SEARCHING' && (
                                 <span className="text-[10px] text-amber-600 animate-pulse">Searching...</span>
                               )}
-                              {query.status === 'SEARCHED' && (
+                              {strategyQuery.status === 'SEARCHED' && (
                                 <>
                                   <Button
                                     size="sm"
                                     variant="outline"
-                                    onClick={() => updateQueryStatus(query.id, 'COMPLETED', query.resultsCount, citations.length)}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      updateQueryStatus(strategyQuery.id, 'COMPLETED', strategyQuery.resultsCount || undefined, citations.length);
+                                    }}
                                     className="h-6 text-[10px] px-2 text-emerald-600 border-emerald-300"
                                   >
                                     ✓ Done
@@ -2456,18 +2716,24 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                   <Button
                                     size="sm"
                                     variant="ghost"
-                                    onClick={() => updateQueryStatus(query.id, 'SKIPPED')}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      updateQueryStatus(strategyQuery.id, 'SKIPPED');
+                                    }}
                                     className="h-6 text-[10px] px-1 text-gray-400"
                                   >
                                     Skip
                                   </Button>
                                 </>
                               )}
-                              {(query.status === 'COMPLETED' || query.status === 'SKIPPED') && (
+                              {(strategyQuery.status === 'COMPLETED' || strategyQuery.status === 'SKIPPED') && (
                                 <Button
                                   size="sm"
                                   variant="ghost"
-                                  onClick={() => executeStrategyQuery(query)}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    executeStrategyQuery(strategyQuery);
+                                  }}
                                   className="h-6 text-[10px] px-1 text-gray-400"
                                   title="Search again"
                                 >
@@ -2479,6 +2745,130 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                         );
                       })}
                     </div>
+
+                    {strategyDetailsOpen && selectedStrategyQuery && strategyEditor && (
+                      <div className="mt-3 rounded-lg border border-indigo-200 bg-white/80 p-3 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-xs font-semibold text-indigo-900">Selected strategy query</p>
+                            <p className="text-[10px] text-indigo-700/80">Edit details, then save. Changes affect future runs.</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Badge variant="outline" className="text-[10px] border-indigo-200 text-indigo-700">
+                              {selectedStrategyQuery.status.toLowerCase().replace('_', ' ')}
+                            </Badge>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setStrategyDetailsOpen(false)}
+                              className="h-6 text-[10px] px-2 text-gray-500"
+                            >
+                              Hide
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="block text-[11px] font-medium text-gray-700">Query text</label>
+                          <Input
+                            value={strategyEditor.queryText}
+                            onChange={(event) => setStrategyEditor(prev => prev ? { ...prev, queryText: event.target.value } : prev)}
+                            placeholder="Search query keywords"
+                            className="h-8 text-xs"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          <div className="space-y-1">
+                            <label className="block text-[11px] font-medium text-gray-700">Category</label>
+                            <select
+                              value={strategyEditor.category}
+                              onChange={(event) => setStrategyEditor(prev => prev ? { ...prev, category: event.target.value as SearchQueryCategory } : prev)}
+                              className="h-8 w-full rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-800"
+                            >
+                              {SEARCH_QUERY_CATEGORIES.map(categoryOption => (
+                                <option key={categoryOption.value} value={categoryOption.value}>
+                                  {categoryOption.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div className="space-y-1">
+                              <label className="block text-[11px] font-medium text-gray-700">Year from</label>
+                              <Input
+                                value={strategyEditor.suggestedYearFrom}
+                                onChange={(event) => setStrategyEditor(prev => prev ? { ...prev, suggestedYearFrom: event.target.value } : prev)}
+                                placeholder="e.g. 2020"
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="block text-[11px] font-medium text-gray-700">Year to</label>
+                              <Input
+                                value={strategyEditor.suggestedYearTo}
+                                onChange={(event) => setStrategyEditor(prev => prev ? { ...prev, suggestedYearTo: event.target.value } : prev)}
+                                placeholder="e.g. 2026"
+                                className="h-8 text-xs"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="block text-[11px] font-medium text-gray-700">Description</label>
+                          <Textarea
+                            value={strategyEditor.description}
+                            onChange={(event) => setStrategyEditor(prev => prev ? { ...prev, description: event.target.value } : prev)}
+                            placeholder="What this query is intended to cover"
+                            className="min-h-[64px] text-xs"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <label className="block text-[11px] font-medium text-gray-700">Suggested sources</label>
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+                            {SOURCE_OPTIONS.map(sourceOption => (
+                              <label key={sourceOption.value} className="flex items-center gap-1.5 text-[10px] text-gray-700 bg-white rounded border border-gray-200 px-2 py-1">
+                                <Checkbox
+                                  checked={strategyEditor.suggestedSources.includes(sourceOption.value)}
+                                  onCheckedChange={(checked) => toggleStrategySource(sourceOption.value, checked === true)}
+                                />
+                                <span>{sourceOption.label}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 pt-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => loadStrategyQueryIntoSearchForm(selectedStrategyQuery)}
+                            className="h-7 text-[11px]"
+                          >
+                            Load into search form
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={resetStrategyEditor}
+                            disabled={!strategyEditorDirty || savingStrategyQuery}
+                            className="h-7 text-[11px] text-gray-600"
+                          >
+                            Reset
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={saveStrategyQueryEdits}
+                            disabled={!strategyEditorDirty || savingStrategyQuery || !strategyEditor.queryText.trim()}
+                            className="h-7 text-[11px] bg-indigo-600 hover:bg-indigo-700"
+                          >
+                            {savingStrategyQuery ? 'Saving...' : 'Save changes'}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </motion.div>
               )}

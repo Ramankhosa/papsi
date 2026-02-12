@@ -5,6 +5,29 @@ import { prisma } from '@/lib/prisma'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
+function getRequiresCitationsOverride(constraints: unknown): boolean | undefined {
+  if (!constraints || typeof constraints !== 'object') return undefined
+  const record = constraints as Record<string, unknown>
+
+  if (typeof record.requiresCitations === 'boolean') {
+    return record.requiresCitations as boolean
+  }
+
+  const contextOverrides = record.contextOverrides
+  if (contextOverrides && typeof contextOverrides === 'object') {
+    const ctx = contextOverrides as Record<string, unknown>
+    if (typeof ctx.requiresCitations === 'boolean') return ctx.requiresCitations as boolean
+  }
+
+  const context = record.context
+  if (context && typeof context === 'object') {
+    const ctx = context as Record<string, unknown>
+    if (typeof ctx.requiresCitations === 'boolean') return ctx.requiresCitations as boolean
+  }
+
+  return undefined
+}
+
 /**
  * GET /api/super-admin/paper-section-prompts
  * Returns paper type section prompts organized by paper type
@@ -55,6 +78,10 @@ export async function GET(request: NextRequest) {
         const override = typePrompts.find(
           tp => tp.paperTypeCode === pt.code && tp.sectionKey === ss.sectionKey
         )
+        const overrideRequiresCitations = getRequiresCitationsOverride(override?.constraints)
+        const requiresCitations = typeof overrideRequiresCitations === 'boolean'
+          ? overrideRequiresCitations
+          : ss.requiresCitations
 
         return {
           sectionKey: ss.sectionKey,
@@ -73,7 +100,7 @@ export async function GET(request: NextRequest) {
           // Context flags from base
           requiresBlueprint: ss.requiresBlueprint,
           requiresPreviousSections: ss.requiresPreviousSections,
-          requiresCitations: ss.requiresCitations
+          requiresCitations
         }
       })
 

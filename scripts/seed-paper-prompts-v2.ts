@@ -723,7 +723,7 @@ const supersetSections: SectionDef[] = [
     isRequired: true,
     requiresBlueprint: true,
     requiresPreviousSections: true,
-    requiresCitations: true
+    requiresCitations: false
   },
   {
     sectionKey: 'conclusion',
@@ -792,7 +792,7 @@ ${outputFormat}`,
     isRequired: false,
     requiresBlueprint: true,
     requiresPreviousSections: true,
-    requiresCitations: true
+    requiresCitations: false
   },
   {
     sectionKey: 'related_work',
@@ -841,7 +841,7 @@ ${outputFormat}`,
     isRequired: false,
     requiresBlueprint: true,
     requiresPreviousSections: true,
-    requiresCitations: true
+    requiresCitations: false
   },
   {
     sectionKey: 'implementation',
@@ -890,7 +890,7 @@ ${outputFormat}`,
     isRequired: false,
     requiresBlueprint: true,
     requiresPreviousSections: true,
-    requiresCitations: true
+    requiresCitations: false
   },
   {
     sectionKey: 'evaluation',
@@ -939,7 +939,7 @@ ${outputFormat}`,
     isRequired: false,
     requiresBlueprint: true,
     requiresPreviousSections: true,
-    requiresCitations: true
+    requiresCitations: false
   },
   {
     sectionKey: 'case_study',
@@ -988,7 +988,7 @@ ${outputFormat}`,
     isRequired: false,
     requiresBlueprint: true,
     requiresPreviousSections: true,
-    requiresCitations: true
+    requiresCitations: false
   },
   {
     sectionKey: 'background',
@@ -1037,7 +1037,7 @@ ${outputFormat}`,
     isRequired: false,
     requiresBlueprint: true,
     requiresPreviousSections: true,
-    requiresCitations: true
+    requiresCitations: false
   }
 ]
 

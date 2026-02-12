@@ -37,8 +37,6 @@ import {
   GitBranch,
   BarChart3,
   Network,
-  Workflow,
-  ChevronDown,
   ExternalLink,
   Copy
 } from 'lucide-react';
@@ -101,16 +99,18 @@ interface FloatingWritingPanelProps {
   onInsertCitation?: (citation: Citation) => void;
   onTextAction?: (action: 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple', selectedText: string, instructions?: string) => Promise<string>;
   onGenerateFigure?: (description: string, meta?: SmartFigureMeta) => void;
-  onGenerateDiagram?: (description: string, diagramType: string) => void;
   selectedText?: TextSelection | null;
   onRefreshFigures?: () => void;
   onRefreshCitations?: () => void;
   onNavigateToStage?: (stageKey: string) => void;
+  onOpenBibliographyPanel?: () => void;
   isVisible?: boolean;
 }
 
 /** Metadata passed from the floating panel's smart figure suggestion flow */
 interface SmartFigureMeta {
+  id?: string;
+  status?: 'pending' | 'used' | 'dismissed';
   sourceSection?: string;
   sourceText?: string;
   category?: string;
@@ -160,15 +160,6 @@ function HelpTooltip({ text }: { text: string }) {
     </div>
   );
 }
-
-// Diagram type options
-const DIAGRAM_TYPES = [
-  { id: 'auto', label: 'Auto-detect', icon: <Sparkles className="w-3 h-3" />, description: 'AI chooses best diagram type' },
-  { id: 'flowchart', label: 'Flowchart', icon: <Workflow className="w-3 h-3" />, description: 'Process and workflow diagrams' },
-  { id: 'sequence', label: 'Sequence', icon: <GitBranch className="w-3 h-3" />, description: 'Interaction sequences' },
-  { id: 'class', label: 'Class/ER', icon: <Network className="w-3 h-3" />, description: 'Entity relationships' },
-  { id: 'chart', label: 'Chart', icon: <BarChart3 className="w-3 h-3" />, description: 'Data visualizations' },
-];
 
 // ============================================================================
 // Panel Tab Component
@@ -483,11 +474,11 @@ export default function FloatingWritingPanel({
   onInsertCitation,
   onTextAction,
   onGenerateFigure,
-  onGenerateDiagram,
   selectedText,
   onRefreshFigures,
   onRefreshCitations,
   onNavigateToStage,
+  onOpenBibliographyPanel,
   isVisible = true
 }: FloatingWritingPanelProps) {
   // Panel state
@@ -501,28 +492,69 @@ export default function FloatingWritingPanel({
   const constraintsRef = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
+  const [layoutReady, setLayoutReady] = useState(false);
+  const [viewportSize, setViewportSize] = useState({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1440,
+    height: typeof window !== 'undefined' ? window.innerHeight : 900
+  });
 
   // Resize state
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [panelSize, setPanelSize] = useState({ width: 288, height: 500 }); // Default w-72 = 288px
   const [isResizing, setIsResizing] = useState(false);
-  const resizeRef = useRef<{ startX: number; startY: number; startWidth: number; startHeight: number } | null>(null);
+  const resizeRef = useRef<{
+    startX: number;
+    startY: number;
+    startWidth: number;
+    startHeight: number;
+    startPosX: number;
+    startPosY: number;
+  } | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Min/max size constraints
   const MIN_WIDTH = 280;
   const MAX_WIDTH = 600;
   const MIN_HEIGHT = 400;
-  const MAX_HEIGHT = typeof window !== 'undefined' ? window.innerHeight - 32 : 900;
+  const MAX_HEIGHT = Math.max(MIN_HEIGHT, viewportSize.height - 48);
+
+  const clampPanelPosition = useCallback(
+    (
+      candidate: { x: number; y: number },
+      sizeOverride?: { width: number; height: number }
+    ) => {
+      const width = sizeOverride?.width ?? panelSize.width;
+      const height = sizeOverride?.height ?? panelSize.height;
+      const minX = width - viewportSize.width + 32;
+      const maxX = 16;
+      const minY = -16;
+      const maxY = Math.max(-16, viewportSize.height - height - 32);
+      return {
+        x: Math.max(minX, Math.min(maxX, candidate.x)),
+        y: Math.max(minY, Math.min(maxY, candidate.y))
+      };
+    },
+    [panelSize.height, panelSize.width, viewportSize.height, viewportSize.width]
+  );
 
   // Load saved position and size from localStorage
+  useEffect(() => {
+    const handleResize = () => {
+      setViewportSize({ width: window.innerWidth, height: window.innerHeight });
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
   useEffect(() => {
     const savedPosition = localStorage.getItem('floatingPanelPosition');
     const savedSize = localStorage.getItem('floatingPanelSize');
     if (savedPosition) {
       try {
         const parsed = JSON.parse(savedPosition);
-        setPosition(parsed);
+        if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') {
+          setPosition(parsed);
+        }
       } catch {
         // Ignore parse errors
       }
@@ -530,24 +562,53 @@ export default function FloatingWritingPanel({
     if (savedSize) {
       try {
         const parsed = JSON.parse(savedSize);
-        setPanelSize(parsed);
+        if (typeof parsed?.width === 'number' && typeof parsed?.height === 'number') {
+          setPanelSize({
+            width: Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, parsed.width)),
+            height: Math.max(MIN_HEIGHT, parsed.height)
+          });
+        }
       } catch {
         // Ignore parse errors
       }
     }
+    setLayoutReady(true);
   }, []);
 
-  // Save size to localStorage
-  const savePanelSize = useCallback((size: { width: number; height: number }) => {
-    localStorage.setItem('floatingPanelSize', JSON.stringify(size));
-  }, []);
+  useEffect(() => {
+    if (!layoutReady) return;
+    localStorage.setItem('floatingPanelSize', JSON.stringify(panelSize));
+  }, [layoutReady, panelSize]);
+
+  useEffect(() => {
+    if (!layoutReady) return;
+    localStorage.setItem('floatingPanelPosition', JSON.stringify(position));
+  }, [layoutReady, position]);
+
+  useEffect(() => {
+    if (isFullscreen) return;
+    const constrainedSize = {
+      width: Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, panelSize.width)),
+      height: Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, panelSize.height))
+    };
+    if (constrainedSize.width !== panelSize.width || constrainedSize.height !== panelSize.height) {
+      setPanelSize(constrainedSize);
+    }
+    setPosition((prev) => {
+      const clamped = clampPanelPosition(prev, constrainedSize);
+      if (clamped.x === prev.x && clamped.y === prev.y) return prev;
+      return clamped;
+    });
+  }, [MAX_HEIGHT, clampPanelPosition, isFullscreen, panelSize.height, panelSize.width]);
 
   // Save position to localStorage when it changes
-  const handleDragEnd = useCallback((_: any, info: { point: { x: number; y: number } }) => {
+  const handleDragEnd = useCallback((_: any, info: { offset: { x: number; y: number } }) => {
     setIsDragging(false);
-    const newPosition = { x: info.point.x, y: info.point.y };
-    // We don't save the actual point, we save the offset from default position
-  }, []);
+    setPosition((prev) => clampPanelPosition({
+      x: prev.x + info.offset.x,
+      y: prev.y + info.offset.y
+    }));
+  }, [clampPanelPosition]);
 
   // Handle resize start
   const handleResizeStart = useCallback((e: React.MouseEvent, direction: 'corner' | 'left' | 'bottom' | 'top' | 'top-left-corner') => {
@@ -559,38 +620,44 @@ export default function FloatingWritingPanel({
       startY: e.clientY,
       startWidth: panelSize.width,
       startHeight: panelSize.height,
+      startPosX: position.x,
+      startPosY: position.y,
     };
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
       if (!resizeRef.current) return;
-      
+
+      const deltaX = moveEvent.clientX - resizeRef.current.startX;
+      const deltaY = moveEvent.clientY - resizeRef.current.startY;
       let newWidth = resizeRef.current.startWidth;
       let newHeight = resizeRef.current.startHeight;
-      
+      let newY = resizeRef.current.startPosY;
+
       if (direction === 'corner' || direction === 'left' || direction === 'top-left-corner') {
         // Resize from left - moving left increases width, moving right decreases
-        newWidth = resizeRef.current.startWidth - (moveEvent.clientX - resizeRef.current.startX);
+        newWidth = resizeRef.current.startWidth - deltaX;
       }
       if (direction === 'corner' || direction === 'bottom') {
-        newHeight = resizeRef.current.startHeight + (moveEvent.clientY - resizeRef.current.startY);
+        newHeight = resizeRef.current.startHeight + deltaY;
       }
       if (direction === 'top' || direction === 'top-left-corner') {
-        // Resize from top - moving up increases height
-        newHeight = resizeRef.current.startHeight - (moveEvent.clientY - resizeRef.current.startY);
+        // Resize from top while keeping the bottom edge stable.
+        newHeight = resizeRef.current.startHeight - deltaY;
+        newY = resizeRef.current.startPosY + deltaY;
       }
-      
+
       // Apply constraints
       newWidth = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, newWidth));
       newHeight = Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, newHeight));
-      
-      setPanelSize({ width: newWidth, height: newHeight });
+
+      const nextSize = { width: newWidth, height: newHeight };
+      const nextPos = clampPanelPosition({ x: resizeRef.current.startPosX, y: newY }, nextSize);
+      setPanelSize(nextSize);
+      setPosition(nextPos);
     };
 
     const handleMouseUp = () => {
       setIsResizing(false);
-      if (resizeRef.current) {
-        savePanelSize(panelSize);
-      }
       resizeRef.current = null;
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
@@ -598,7 +665,7 @@ export default function FloatingWritingPanel({
 
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
-  }, [panelSize, savePanelSize]);
+  }, [MAX_HEIGHT, clampPanelPosition, panelSize.height, panelSize.width, position.x, position.y]);
 
   // Toggle fullscreen
   const toggleFullscreen = useCallback(() => {
@@ -639,17 +706,29 @@ export default function FloatingWritingPanel({
   const [figureDescription, setFigureDescription] = useState('');
   const [generatingFigure, setGeneratingFigure] = useState(false);
   
-  // Diagram generation state
-  const [showDiagramGen, setShowDiagramGen] = useState(false);
-  const [diagramDescription, setDiagramDescription] = useState('');
-  const [selectedDiagramType, setSelectedDiagramType] = useState('auto');
-  const [generatingDiagram, setGeneratingDiagram] = useState(false);
-
   // Smart figure suggestion state
   const [showSmartSuggest, setShowSmartSuggest] = useState(false);
   const [smartSuggestions, setSmartSuggestions] = useState<SmartFigureMeta[]>([]);
   const [loadingSmartSuggest, setLoadingSmartSuggest] = useState(false);
   const [generatingSmartFigure, setGeneratingSmartFigure] = useState<string | null>(null); // track which suggestion is being generated
+
+  const persistSmartSuggestionStatuses = useCallback(async (
+    updates: Array<{ id: string; status: 'pending' | 'used' | 'dismissed'; usedByFigureId?: string | null }>
+  ) => {
+    if (!authToken || !sessionId || updates.length === 0) return;
+    try {
+      await fetch(`/api/papers/${sessionId}/figures/suggest`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ updates })
+      });
+    } catch (err) {
+      console.error('[SmartFigureSuggest] Failed to persist suggestion status:', err);
+    }
+  }, [authToken, sessionId]);
   
   // Custom instructions for text actions
   const [customInstructions, setCustomInstructions] = useState('');
@@ -676,13 +755,14 @@ export default function FloatingWritingPanel({
   
   // Help panel state
   const [showHelp, setShowHelp] = useState(false);
+  const paperCitationCount = Math.max(citationCounts.paper, citations.length);
 
   // Tabs configuration
   const tabs: PanelTab[] = [
-    { id: 'figures', icon: <ImageIcon className="w-4 h-4" />, label: 'Figures', badge: figures.filter(f => f.status === 'GENERATED').length },
+    { id: 'figures', icon: <ImageIcon className="w-4 h-4" />, label: 'Figures', badge: figures.length },
     { id: 'ai', icon: <Sparkles className="w-4 h-4" />, label: 'AI Assist', badge: aiSuggestions.length },
     { id: 'actions', icon: <Wand2 className="w-4 h-4" />, label: 'Actions' },
-    { id: 'citations', icon: <BookOpen className="w-4 h-4" />, label: 'Citations', badge: citationCounts.total || citations.length },
+    { id: 'citations', icon: <BookOpen className="w-4 h-4" />, label: 'Citations', badge: paperCitationCount },
   ];
 
   // Filter figures based on search
@@ -690,32 +770,6 @@ export default function FloatingWritingPanel({
     f.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
     f.description?.toLowerCase().includes(searchQuery.toLowerCase())
   );
-
-  // Use API-fetched citations or fall back to prop-based citations
-  const displayCitations = paperCitations.length > 0 ? paperCitations : citations.map(c => ({
-    ...c,
-    citationKey: c.citationKey || `${c.authors?.split(' ')[0] || 'Unknown'}${c.year || ''}`,
-    source: 'paper' as const,
-  }));
-
-  // Handle diagram generation
-  const handleGenerateDiagram = async () => {
-    if (!onGenerateDiagram) return;
-    
-    const description = diagramDescription.trim() || selectedText?.text || '';
-    if (!description) return;
-    
-    setGeneratingDiagram(true);
-    try {
-      await onGenerateDiagram(description, selectedDiagramType);
-      setDiagramDescription('');
-      setShowDiagramGen(false);
-    } catch (err) {
-      console.error('Diagram generation failed:', err);
-    } finally {
-      setGeneratingDiagram(false);
-    }
-  };
 
   // ── Smart Figure Suggestion: sends selected text / section content to the
   //    suggestion API and shows the user AI-recommended figures inline.
@@ -758,6 +812,8 @@ export default function FloatingWritingPanel({
       if (!response.ok) throw new Error(data.error || 'Failed to get suggestions');
 
       const items: SmartFigureMeta[] = (data.suggestions || []).map((s: any) => ({
+        id: s.id,
+        status: s.status || 'pending',
         title: s.title,
         description: s.description,
         category: s.category || 'DIAGRAM',
@@ -783,21 +839,52 @@ export default function FloatingWritingPanel({
     }
   }, [authToken, sessionId, selectedText, currentContent, currentSection]);
 
+  const handleDismissSmartSuggestion = useCallback((index: number, suggestionId?: string) => {
+    setSmartSuggestions((prev) => prev.filter((_, i) => i !== index));
+    if (suggestionId) {
+      persistSmartSuggestionStatuses([{ id: suggestionId, status: 'dismissed', usedByFigureId: null }]);
+    }
+  }, [persistSmartSuggestionStatuses]);
+
+  const handleDismissAllSmartSuggestions = useCallback(() => {
+    const ids = smartSuggestions.map((s) => s.id).filter((id): id is string => !!id);
+    setSmartSuggestions([]);
+    setShowSmartSuggest(false);
+    if (ids.length > 0) {
+      persistSmartSuggestionStatuses(ids.map((id) => ({ id, status: 'dismissed', usedByFigureId: null })));
+    }
+  }, [persistSmartSuggestionStatuses, smartSuggestions]);
+
   /** Accept a smart suggestion: create + generate the figure immediately */
-  const handleAcceptSmartSuggestion = useCallback(async (suggestion: SmartFigureMeta) => {
+  const handleAcceptSmartSuggestion = useCallback(async (suggestion: SmartFigureMeta, index?: number) => {
     if (!onGenerateFigure) return;
-    const key = suggestion.title || 'figure';
+    const key = suggestion.id || suggestion.title || `figure-${index ?? 0}`;
     setGeneratingSmartFigure(key);
     try {
       await onGenerateFigure(suggestion.description || suggestion.title || '', suggestion);
       // After successful generation, refresh figures
       onRefreshFigures?.();
+      if (typeof index === 'number') {
+        setSmartSuggestions((prev) => prev.filter((_, i) => i !== index));
+      }
+      if (suggestion.id) {
+        persistSmartSuggestionStatuses([{ id: suggestion.id, status: 'used', usedByFigureId: null }]);
+      }
     } catch (err) {
       console.error('[SmartFigureSuggest] Generation failed:', err);
     } finally {
       setGeneratingSmartFigure(null);
     }
-  }, [onGenerateFigure, onRefreshFigures]);
+  }, [onGenerateFigure, onRefreshFigures, persistSmartSuggestionStatuses]);
+
+  const figureColumnCount = isFullscreen
+    ? Math.max(2, Math.min(4, Math.floor((viewportSize.width - 120) / 200)))
+    : panelSize.width >= 520
+      ? 3
+      : panelSize.width >= 380
+        ? 2
+        : 1;
+  const smartSuggestMaxHeight = Math.max(180, Math.min(420, panelSize.height - 260));
 
   /** Navigate to Figure Planner stage with context pre-filled */
   const handleOpenInFigurePlanner = useCallback(() => {
@@ -815,6 +902,15 @@ export default function FloatingWritingPanel({
     } catch { /* ignore storage errors */ }
     onNavigateToStage('FIGURE_PLANNER');
   }, [onNavigateToStage, currentSection, selectedText, currentContent, sessionId]);
+
+  const canOpenBibliographyPanel = Boolean(onOpenBibliographyPanel || onNavigateToStage);
+  const handleOpenBibliographyPanel = useCallback(() => {
+    if (onOpenBibliographyPanel) {
+      onOpenBibliographyPanel();
+      return;
+    }
+    onNavigateToStage?.('SECTION_DRAFTING');
+  }, [onNavigateToStage, onOpenBibliographyPanel]);
 
   // Generate AI suggestions based on current context
   const generateSuggestions = useCallback(async () => {
@@ -960,6 +1056,8 @@ export default function FloatingWritingPanel({
         if (onInsertCitation) {
           onInsertCitation(data.citation);
         }
+        onRefreshCitations?.();
+        fetchCitations();
       }
     } catch (err) {
       console.error('Failed to import citation:', err);
@@ -1031,6 +1129,7 @@ export default function FloatingWritingPanel({
       setDoiInput('');
       setShowAddCitation(false);
       fetchCitations();
+      onRefreshCitations?.();
     } catch (err) {
       setAddCitationError(err instanceof Error ? err.message : 'Failed to add citation');
     } finally {
@@ -1120,6 +1219,7 @@ export default function FloatingWritingPanel({
       setBibtexInput('');
       setShowAddCitation(false);
       fetchCitations();
+      onRefreshCitations?.();
     } catch (err) {
       setAddCitationError(err instanceof Error ? err.message : 'Failed to parse BibTeX');
     } finally {
@@ -1193,8 +1293,8 @@ export default function FloatingWritingPanel({
           y: isFullscreen ? 0 : position.y,
           position: 'fixed',
           right: isFullscreen ? 0 : 24,
-          top: isFullscreen ? 0 : '50%',
-          marginTop: isFullscreen ? 0 : (isCollapsed ? -100 : -(panelSize.height / 2)),
+          top: isFullscreen ? 0 : 24,
+          marginTop: 0,
           zIndex: isFullscreen ? 100 : 40,
         }}
         transition={{ type: 'spring', stiffness: 300, damping: 30 }}
@@ -1376,7 +1476,7 @@ export default function FloatingWritingPanel({
                               exit={{ height: 0, opacity: 0 }}
                               className="overflow-hidden"
                             >
-                              <div className="p-2.5 bg-amber-50 rounded-xl border border-amber-200 space-y-2 max-h-[300px] overflow-y-auto">
+                              <div className="p-2.5 bg-amber-50 rounded-xl border border-amber-200 space-y-2 overflow-y-auto" style={{ maxHeight: smartSuggestMaxHeight }}>
                                 {loadingSmartSuggest ? (
                                   <div className="py-6 text-center">
                                     <Loader2 className="w-5 h-5 animate-spin text-amber-500 mx-auto mb-2" />
@@ -1397,7 +1497,8 @@ export default function FloatingWritingPanel({
                                         : s.category === 'SKETCH' || s.category === 'ILLUSTRATION'
                                           ? <ImageIcon className="w-3.5 h-3.5" />
                                           : <GitBranch className="w-3.5 h-3.5" />;
-                                      const isGenerating = generatingSmartFigure === (s.title || `fig-${idx}`);
+                                      const suggestionKey = s.id || s.title || `fig-${idx}`;
+                                      const isGenerating = generatingSmartFigure === suggestionKey;
                                       const catColor = s.category === 'DATA_CHART' || s.category === 'STATISTICAL_PLOT'
                                         ? 'bg-blue-100 text-blue-700'
                                         : s.category === 'SKETCH' || s.category === 'ILLUSTRATION'
@@ -1426,11 +1527,19 @@ export default function FloatingWritingPanel({
                                                 <p className="text-[10px] text-amber-600 mt-1 italic">Why: {s.whyThisFigure}</p>
                                               )}
                                             </div>
+                                            <button
+                                              onClick={() => handleDismissSmartSuggestion(idx, s.id)}
+                                              disabled={isGenerating}
+                                              className="p-1 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
+                                              title="Discard this suggestion"
+                                            >
+                                              <X className="w-3.5 h-3.5" />
+                                            </button>
                                           </div>
                                           <div className="flex gap-1.5 pt-1">
                                             <Button
                                               size="sm"
-                                              onClick={() => handleAcceptSmartSuggestion(s)}
+                                              onClick={() => handleAcceptSmartSuggestion(s, idx)}
                                               disabled={!!generatingSmartFigure}
                                               className="flex-1 h-7 rounded-lg text-[10px] bg-amber-600 hover:bg-amber-700 text-white"
                                             >
@@ -1467,6 +1576,12 @@ export default function FloatingWritingPanel({
                                         Open Figure Planner for full control
                                       </button>
                                     )}
+                                    <button
+                                      onClick={handleDismissAllSmartSuggestions}
+                                      className="w-full p-2 rounded-lg text-[10px] text-red-600 hover:bg-red-50 transition-colors font-medium"
+                                    >
+                                      Discard all suggestions
+                                    </button>
                                   </>
                                 )}
                                 <button
@@ -1536,7 +1651,7 @@ export default function FloatingWritingPanel({
 
                       {/* Figure Grid */}
                       {filteredFigures.length > 0 ? (
-                        <div className="grid grid-cols-2 gap-2">
+                        <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${figureColumnCount}, minmax(0, 1fr))` }}>
                           {filteredFigures.map(figure => (
                             <FigureCard
                               key={figure.id}
@@ -1747,146 +1862,6 @@ export default function FloatingWritingPanel({
                         </div>
                       </div>
 
-                      {/* Smart Figure Suggestion from Text */}
-                      <div className="pt-2 border-t border-slate-100">
-                        <div className="flex items-center gap-2 mb-2">
-                          <p className="text-xs font-medium text-slate-600">Suggest Figures & Diagrams</p>
-                          <HelpTooltip text="AI analyzes selected text or the current section and suggests the best charts, diagrams, or illustrations to visualize your content." />
-                        </div>
-                        
-                        <button
-                          onClick={handleSmartFigureSuggest}
-                          disabled={loadingSmartSuggest || (!selectedText?.text && !currentContent)}
-                          className="w-full p-2.5 rounded-lg border border-dashed border-amber-200 hover:border-amber-400 hover:bg-amber-50 transition-colors flex items-center justify-center gap-2 text-sm text-amber-600 hover:text-amber-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                          {loadingSmartSuggest ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Sparkles className="w-4 h-4" />
-                          )}
-                          {selectedText?.text ? 'Suggest from Selection' : 'Suggest for This Section'}
-                        </button>
-
-                        {/* Inline Smart Suggestions in Actions tab */}
-                        <AnimatePresence>
-                          {showSmartSuggest && smartSuggestions.length > 0 && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: 'auto', opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              className="overflow-hidden mt-2"
-                            >
-                              <div className="p-2 bg-amber-50 rounded-lg border border-amber-200 space-y-1.5 max-h-[200px] overflow-y-auto">
-                                {smartSuggestions.slice(0, 3).map((s, idx) => (
-                                  <button
-                                    key={idx}
-                                    onClick={() => handleAcceptSmartSuggestion(s)}
-                                    disabled={!!generatingSmartFigure}
-                                    className="w-full text-left p-2 bg-white rounded-lg border border-amber-100 hover:border-amber-300 transition-colors"
-                                  >
-                                    <div className="flex items-center gap-1.5">
-                                      <Zap className="w-3 h-3 text-amber-500 shrink-0" />
-                                      <span className="text-[10px] font-medium text-slate-700 truncate">{s.title}</span>
-                                    </div>
-                                    <p className="text-[9px] text-slate-500 mt-0.5 line-clamp-1 pl-[18px]">{s.description}</p>
-                                  </button>
-                                ))}
-                                {onNavigateToStage && (
-                                  <button
-                                    onClick={handleOpenInFigurePlanner}
-                                    className="w-full p-1.5 text-[10px] text-amber-600 hover:bg-amber-100 rounded-lg transition-colors flex items-center justify-center gap-1"
-                                  >
-                                    <ExternalLink className="w-3 h-3" />
-                                    See all in Figure Planner
-                                  </button>
-                                )}
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-
-                        {/* Fallback: manual diagram generation */}
-                        <button
-                          onClick={() => setShowDiagramGen(!showDiagramGen)}
-                          className="w-full mt-1.5 p-2 rounded-lg border border-dashed border-slate-200 hover:border-violet-300 hover:bg-violet-50 transition-colors flex items-center justify-center gap-2 text-xs text-slate-400 hover:text-violet-600"
-                        >
-                          <Workflow className="w-3.5 h-3.5" />
-                          Manual diagram (describe it yourself)
-                        </button>
-
-                        <AnimatePresence>
-                          {showDiagramGen && (
-                            <motion.div
-                              initial={{ height: 0, opacity: 0 }}
-                              animate={{ height: 'auto', opacity: 1 }}
-                              exit={{ height: 0, opacity: 0 }}
-                              className="overflow-hidden"
-                            >
-                              <div className="mt-2 p-3 bg-violet-50 rounded-xl border border-violet-100 space-y-3">
-                                {/* Diagram Type Selection */}
-                                <div>
-                                  <label className="text-[10px] font-medium text-violet-700 mb-1.5 block">Diagram Type</label>
-                                  <div className="grid grid-cols-2 gap-1.5">
-                                    {DIAGRAM_TYPES.map(type => (
-                                      <button
-                                        key={type.id}
-                                        onClick={() => setSelectedDiagramType(type.id)}
-                                        className={`flex items-center gap-1.5 p-2 rounded-lg text-left transition-all ${
-                                          selectedDiagramType === type.id
-                                            ? 'bg-violet-600 text-white'
-                                            : 'bg-white text-slate-600 hover:bg-violet-100'
-                                        }`}
-                                      >
-                                        {type.icon}
-                                        <span className="text-[10px] font-medium">{type.label}</span>
-                                      </button>
-                                    ))}
-                                  </div>
-                                </div>
-
-                                {/* Description (if no selection) */}
-                                {!selectedText?.text && (
-                                  <div>
-                                    <label className="text-[10px] font-medium text-violet-700 mb-1.5 block">Description</label>
-                                    <Textarea
-                                      value={diagramDescription}
-                                      onChange={e => setDiagramDescription(e.target.value)}
-                                      placeholder="Describe what you want to visualize..."
-                                      rows={2}
-                                      className="text-xs rounded-lg resize-none"
-                                    />
-                                  </div>
-                                )}
-
-                                <div className="flex gap-2">
-                                  <Button
-                                    size="sm"
-                                    onClick={handleGenerateDiagram}
-                                    disabled={generatingDiagram || (!selectedText?.text && !diagramDescription.trim())}
-                                    className="flex-1 h-8 rounded-lg text-xs bg-violet-600 hover:bg-violet-700"
-                                  >
-                                    {generatingDiagram ? (
-                                      <Loader2 className="w-3 h-3 animate-spin mr-1" />
-                                    ) : (
-                                      <Sparkles className="w-3 h-3 mr-1" />
-                                    )}
-                                    Generate
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => setShowDiagramGen(false)}
-                                    className="h-8 rounded-lg text-xs"
-                                  >
-                                    Cancel
-                                  </Button>
-                                </div>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
-                      </div>
-
                       {/* Tip for custom instructions */}
                       <div className="pt-2 border-t border-slate-100">
                         <div className="flex items-start gap-2 p-2 bg-slate-50 rounded-lg text-[10px] text-slate-500">
@@ -1913,7 +1888,7 @@ export default function FloatingWritingPanel({
                         <div className="flex items-center gap-1.5">
                           <p className="text-xs font-medium text-slate-600">Citations</p>
                           <span className="text-[10px] text-slate-400">
-                            ({citationCounts.paper} in paper)
+                            ({paperCitationCount} in paper)
                           </span>
                         </div>
                         <div className="flex items-center gap-1">
@@ -1942,6 +1917,17 @@ export default function FloatingWritingPanel({
                           </button>
                         </div>
                       </div>
+
+                      <button
+                        onClick={handleOpenBibliographyPanel}
+                        disabled={!canOpenBibliographyPanel}
+                        className="w-full h-8 inline-flex items-center justify-center gap-1.5 rounded-lg border border-purple-200 bg-purple-50 text-[11px] font-medium text-purple-700 hover:bg-purple-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Open bibliography generator and citation style options"
+                      >
+                        <BookOpen className="w-3.5 h-3.5" />
+                        Bibliography & Style
+                        <ArrowUpRight className="w-3 h-3" />
+                      </button>
 
                       {/* Add Citation Panel (DOI / BibTeX) */}
                       <AnimatePresence>
@@ -2255,7 +2241,7 @@ export default function FloatingWritingPanel({
                             <Wand2 className="w-3.5 h-3.5 text-blue-600 mt-0.5" />
                             <div>
                               <p className="font-medium text-blue-700">Actions</p>
-                              <p className="text-blue-600/80">Select text → Rewrite, Expand, Condense, or generate diagrams from it.</p>
+                              <p className="text-blue-600/80">Select text → Rewrite, Expand, Condense, formalize, or simplify.</p>
                             </div>
                           </div>
                           
@@ -2342,10 +2328,10 @@ export default function FloatingWritingPanel({
               initial={{ scale: 0.9, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full overflow-hidden"
+              className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-hidden flex flex-col"
               onClick={e => e.stopPropagation()}
             >
-              <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <div className="p-4 border-b border-slate-100 flex items-center justify-between flex-shrink-0">
                 <div>
                   <h3 className="font-semibold text-slate-800">Figure {previewFigure.figureNo}: {previewFigure.title}</h3>
                   <p className="text-sm text-slate-500 mt-0.5">{previewFigure.description}</p>
@@ -2358,15 +2344,15 @@ export default function FloatingWritingPanel({
                 </button>
               </div>
               {previewFigure.imagePath && (
-                <div className="p-4 bg-slate-50">
+                <div className="p-4 bg-slate-50 overflow-auto flex-1">
                   <img
                     src={previewFigure.imagePath}
                     alt={previewFigure.title}
-                    className="max-w-full h-auto mx-auto rounded-lg shadow-md"
+                    className="max-w-full max-h-[58vh] h-auto mx-auto rounded-lg shadow-md object-contain"
                   />
                 </div>
               )}
-              <div className="p-4 border-t border-slate-100 flex justify-end gap-2">
+              <div className="p-4 border-t border-slate-100 flex justify-end gap-2 flex-shrink-0 bg-white">
                 <Button
                   variant="outline"
                   onClick={() => setPreviewFigure(null)}

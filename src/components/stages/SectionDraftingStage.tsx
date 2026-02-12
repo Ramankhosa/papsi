@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useMemo, useState, useCallback, useRef, forwardRef } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Loader2, 
   AlertCircle,
   BookOpen,
+  Move,
   Settings2,
   Copy,
   Check,
@@ -18,7 +19,7 @@ import {
 } from 'lucide-react';
 import CitationPickerModal from '@/components/paper/CitationPickerModal';
 import CitationManager from '@/components/paper/CitationManager';
-import MarkdownRenderer from '@/components/paper/MarkdownRenderer';
+import PaperMarkdownEditor, { type PaperMarkdownEditorRef } from '@/components/paper/PaperMarkdownEditor';
 
 // Import shared components from patent drafting
 import BackendActivityPanel from '@/components/drafting/BackendActivityPanel';
@@ -28,6 +29,7 @@ import PersonaManager, { type PersonaSelection } from '@/components/drafting/Per
 import PaperInstructionsModal from './PaperInstructionsModal';
 import PaperSectionInstructionPopover from './PaperSectionInstructionPopover';
 import FloatingWritingPanel from '@/components/paper/FloatingWritingPanel';
+import { polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
 
 // ============================================================================
 // Types
@@ -62,6 +64,8 @@ interface UserInstruction {
   isPersistent?: boolean;
   updatedAt?: string;
 }
+
+type CitationsPanelResizeDirection = 'corner' | 'left' | 'bottom' | 'top' | 'top-left-corner';
 
 // AI Review Issue Type
 interface AIReviewIssue {
@@ -107,108 +111,6 @@ function Tooltip({ content, position = 'bottom', children }: {
     </div>
   );
 }
-
-// ============================================================================
-// Auto-Resize Textarea Component - Grows to fit content
-// ============================================================================
-
-interface AutoResizeTextareaProps {
-  value: string;
-  onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
-  onBlur?: () => void;
-  onFocus?: () => void;
-  onSelect?: (e: React.SyntheticEvent<HTMLTextAreaElement>) => void;
-  onKeyUp?: (e: React.KeyboardEvent<HTMLTextAreaElement>) => void;
-  onClick?: (e: React.MouseEvent<HTMLTextAreaElement>) => void;
-  placeholder?: string;
-  disabled?: boolean;
-  className?: string;
-  style?: React.CSSProperties;
-  minHeight?: number;
-}
-
-const AutoResizeTextarea = forwardRef<HTMLTextAreaElement, AutoResizeTextareaProps>(({
-  value,
-  onChange,
-  onBlur,
-  onFocus,
-  onSelect,
-  onKeyUp,
-  onClick,
-  placeholder,
-  disabled,
-  className,
-  style,
-  minHeight = 100
-}, ref) => {
-  const internalRef = useRef<HTMLTextAreaElement | null>(null);
-
-  // Combined ref callback
-  const setRef = useCallback((element: HTMLTextAreaElement | null) => {
-    internalRef.current = element;
-    if (typeof ref === 'function') {
-      ref(element);
-    } else if (ref) {
-      (ref as React.MutableRefObject<HTMLTextAreaElement | null>).current = element;
-    }
-    // Initial resize when element mounts
-    if (element) {
-      element.style.height = 'auto';
-      const newHeight = Math.max(element.scrollHeight, minHeight);
-      element.style.height = `${newHeight}px`;
-    }
-  }, [ref, minHeight]);
-
-  // Auto-resize on value change
-  useEffect(() => {
-    const textarea = internalRef.current;
-    if (!textarea) return;
-    
-    // Reset height to auto to get accurate scrollHeight
-    textarea.style.height = 'auto';
-    // Set to scrollHeight (content height)
-    const newHeight = Math.max(textarea.scrollHeight, minHeight);
-    textarea.style.height = `${newHeight}px`;
-  }, [value, minHeight]);
-
-  // Also resize on window resize
-  useEffect(() => {
-    const handleResize = () => {
-      const textarea = internalRef.current;
-      if (!textarea) return;
-      textarea.style.height = 'auto';
-      const newHeight = Math.max(textarea.scrollHeight, minHeight);
-      textarea.style.height = `${newHeight}px`;
-    };
-
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [minHeight]);
-
-  return (
-    <textarea
-      ref={setRef}
-      value={value}
-      onChange={onChange}
-      onBlur={onBlur}
-      onFocus={onFocus}
-      onSelect={onSelect}
-      onKeyUp={onKeyUp}
-      onClick={onClick}
-      placeholder={placeholder}
-      disabled={disabled}
-      className={className}
-      style={{
-        ...style,
-        overflow: 'hidden', // Hide scrollbar since we auto-resize
-        resize: 'none', // Prevent manual resize
-        minHeight: `${minHeight}px`
-      }}
-    />
-  );
-});
-
-AutoResizeTextarea.displayName = 'AutoResizeTextarea';
 
 // ============================================================================
 // Inline Diff View Component
@@ -574,11 +476,26 @@ function PaperValidationPanel({ sessionId, paperId, draft, onFix, authToken }: P
 // ============================================================================
 
 function parseExtraSections(value: any): Record<string, string> {
+  const normalize = (sections: Record<string, unknown>): Record<string, string> => {
+    const normalized: Record<string, string> = {};
+    for (const [key, sectionValue] of Object.entries(sections)) {
+      if (typeof sectionValue === 'string') {
+        normalized[key] = polishDraftMarkdown(sectionValue);
+      }
+    }
+    return normalized;
+  };
+
   if (!value) return {};
   if (typeof value === 'string') {
-    try { return JSON.parse(value); } catch { return {}; }
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? normalize(parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
   }
-  if (typeof value === 'object') return value;
+  if (typeof value === 'object') return normalize(value as Record<string, unknown>);
   return {};
 }
 
@@ -616,11 +533,14 @@ const fallbackSections: SectionConfig[] = [
   { keys: ['references'], label: 'References' }
 ];
 
+const DEFAULT_CITATION_ELIGIBLE_SECTIONS = new Set([
+  'introduction',
+  'literature_review',
+  'methodology'
+]);
+
 // Auto-save debounce delay in ms - increased for stability
 const AUTO_SAVE_DELAY = 3000;
-
-// Selection change debounce delay
-const SELECTION_CHANGE_DELAY = 150;
 
 // ============================================================================
 // Main Component
@@ -647,6 +567,7 @@ export default function SectionDraftingStage({
   const [currentKeys, setCurrentKeys] = useState<string[] | null>(null);
   const [sectionLoading, setSectionLoading] = useState<Record<string, boolean>>({});
   const [mappedEvidenceBySection, setMappedEvidenceBySection] = useState<Record<string, boolean>>({});
+  const [citationEligibleBySection, setCitationEligibleBySection] = useState<Record<string, boolean>>({});
 
   // Auto Mode
   const [autoMode, setAutoMode] = useState(false);
@@ -672,23 +593,50 @@ export default function SectionDraftingStage({
   const [instructionPopoverKey, setInstructionPopoverKey] = useState<string | null>(null);
   const [showAllInstructionsModal, setShowAllInstructionsModal] = useState(false);
 
-  // Formatting
-  const [showFormatting, setShowFormatting] = useState(false);
-  const [fontFamily, setFontFamily] = useState('serif');
-  const [fontSize, setFontSize] = useState('15px');
-  const [lineHeight, setLineHeight] = useState('1.7');
-
   // Citations
   const [citations, setCitations] = useState<any[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [showCitations, setShowCitations] = useState(false);
   const [insertCitationTarget, setInsertCitationTarget] = useState<string | null>(null);
   const insertCitationTargetRef = useRef<string | null>(null);
-  const cursorPositionRef = useRef<{ section: string; position: number } | null>(null);
-  const textareaRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  const editorRefs = useRef<Record<string, PaperMarkdownEditorRef | null>>({});
   const [focusedSection, setFocusedSection] = useState<string | null>(null);
   const [bibliographyContent, setBibliographyContent] = useState<string>('');
   const [generatingBibliography, setGeneratingBibliography] = useState(false);
+  const [bibliographyStyle, setBibliographyStyle] = useState<string>('APA7');
+  const [bibliographySortOrder, setBibliographySortOrder] = useState<'alphabetical' | 'order_of_appearance'>('alphabetical');
+  const [sequenceInfo, setSequenceInfo] = useState<{
+    styleCode: string;
+    version: number | null;
+    changed: boolean;
+    added: number;
+    removed: number;
+    renumbered: number;
+    historyCount: number;
+  } | null>(null);
+  const isNumericOrderBibliography = useMemo(
+    () => ['IEEE', 'VANCOUVER'].includes((bibliographyStyle || '').toUpperCase()),
+    [bibliographyStyle]
+  );
+  const [citationsPanelPosition, setCitationsPanelPosition] = useState({ x: 24, y: 24 });
+  const [citationsPanelSize, setCitationsPanelSize] = useState({ width: 320, height: 540 });
+  const [isCitationsPanelDragging, setIsCitationsPanelDragging] = useState(false);
+  const [isCitationsPanelResizing, setIsCitationsPanelResizing] = useState(false);
+  const citationsPanelInitializedRef = useRef(false);
+  const citationsPanelDragRef = useRef<{
+    startX: number;
+    startY: number;
+    startPosX: number;
+    startPosY: number;
+  } | null>(null);
+  const citationsPanelResizeRef = useRef<{
+    startX: number;
+    startY: number;
+    startWidth: number;
+    startHeight: number;
+    startPosX: number;
+    startPosY: number;
+  } | null>(null);
 
   // Floating Panel State
   const [figures, setFigures] = useState<Array<{
@@ -732,9 +680,209 @@ export default function SectionDraftingStage({
     setTimeout(() => setMessage(null), 4000);
   };
 
+  const getViewportBounds = useCallback(() => {
+    if (typeof window === 'undefined') {
+      return { width: 1440, height: 900 };
+    }
+    return { width: window.innerWidth, height: window.innerHeight };
+  }, []);
+
+  const clampCitationsPanelSize = useCallback((size: { width: number; height: number }) => {
+    const { width: viewportWidth, height: viewportHeight } = getViewportBounds();
+    const minWidth = 300;
+    const minHeight = 380;
+    const maxWidth = Math.max(minWidth, viewportWidth - 16);
+    const maxHeight = Math.max(minHeight, viewportHeight - 16);
+    return {
+      width: Math.max(minWidth, Math.min(maxWidth, size.width)),
+      height: Math.max(minHeight, Math.min(maxHeight, size.height)),
+    };
+  }, [getViewportBounds]);
+
+  const clampCitationsPanelPosition = useCallback((
+    position: { x: number; y: number },
+    sizeOverride?: { width: number; height: number }
+  ) => {
+    const { width: viewportWidth, height: viewportHeight } = getViewportBounds();
+    const panelSize = sizeOverride ?? citationsPanelSize;
+    const minX = 8;
+    const minY = 8;
+    const maxX = Math.max(minX, viewportWidth - panelSize.width - 8);
+    const maxY = Math.max(minY, viewportHeight - panelSize.height - 8);
+    return {
+      x: Math.max(minX, Math.min(maxX, position.x)),
+      y: Math.max(minY, Math.min(maxY, position.y)),
+    };
+  }, [citationsPanelSize, getViewportBounds]);
+
+  const resetCitationsPanelLayout = useCallback(() => {
+    const defaultSize = clampCitationsPanelSize({ width: 320, height: 540 });
+    const { width: viewportWidth } = getViewportBounds();
+    const defaultPosition = clampCitationsPanelPosition(
+      { x: viewportWidth - defaultSize.width - 24, y: 24 },
+      defaultSize
+    );
+    setCitationsPanelSize(defaultSize);
+    setCitationsPanelPosition(defaultPosition);
+  }, [clampCitationsPanelPosition, clampCitationsPanelSize, getViewportBounds]);
+
+  const openCitationsPanel = useCallback((options?: { reset?: boolean }) => {
+    const shouldReset = options?.reset === true;
+    if (shouldReset) {
+      resetCitationsPanelLayout();
+      setShowCitations(true);
+      return;
+    }
+
+    setCitationsPanelSize((prevSize) => {
+      const safeSize = Number.isFinite(prevSize.width) && Number.isFinite(prevSize.height)
+        ? prevSize
+        : { width: 320, height: 540 };
+      const nextSize = clampCitationsPanelSize(safeSize);
+      setCitationsPanelPosition((prevPos) => {
+        const safePos = Number.isFinite(prevPos.x) && Number.isFinite(prevPos.y)
+          ? prevPos
+          : { x: 24, y: 24 };
+        return clampCitationsPanelPosition(safePos, nextSize);
+      });
+      return nextSize;
+    });
+    setShowCitations(true);
+  }, [clampCitationsPanelPosition, clampCitationsPanelSize, resetCitationsPanelLayout]);
+
+  const handleCitationsPanelDragStart = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    citationsPanelDragRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startPosX: citationsPanelPosition.x,
+      startPosY: citationsPanelPosition.y,
+    };
+    setIsCitationsPanelDragging(true);
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!citationsPanelDragRef.current) return;
+      const deltaX = moveEvent.clientX - citationsPanelDragRef.current.startX;
+      const deltaY = moveEvent.clientY - citationsPanelDragRef.current.startY;
+      setCitationsPanelPosition(clampCitationsPanelPosition({
+        x: citationsPanelDragRef.current.startPosX + deltaX,
+        y: citationsPanelDragRef.current.startPosY + deltaY,
+      }));
+    };
+
+    const handleMouseUp = () => {
+      setIsCitationsPanelDragging(false);
+      citationsPanelDragRef.current = null;
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [citationsPanelPosition.x, citationsPanelPosition.y, clampCitationsPanelPosition]);
+
+  const handleCitationsPanelResizeStart = useCallback((
+    event: React.MouseEvent<HTMLDivElement>,
+    direction: CitationsPanelResizeDirection
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    citationsPanelResizeRef.current = {
+      startX: event.clientX,
+      startY: event.clientY,
+      startWidth: citationsPanelSize.width,
+      startHeight: citationsPanelSize.height,
+      startPosX: citationsPanelPosition.x,
+      startPosY: citationsPanelPosition.y,
+    };
+    setIsCitationsPanelResizing(true);
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!citationsPanelResizeRef.current) return;
+      const deltaX = moveEvent.clientX - citationsPanelResizeRef.current.startX;
+      const deltaY = moveEvent.clientY - citationsPanelResizeRef.current.startY;
+      let nextWidth = citationsPanelResizeRef.current.startWidth;
+      let nextHeight = citationsPanelResizeRef.current.startHeight;
+      let nextX = citationsPanelResizeRef.current.startPosX;
+      let nextY = citationsPanelResizeRef.current.startPosY;
+
+      if (direction === 'corner' || direction === 'left' || direction === 'top-left-corner') {
+        nextWidth = citationsPanelResizeRef.current.startWidth - deltaX;
+      }
+      if (direction === 'corner' || direction === 'bottom') {
+        nextHeight = citationsPanelResizeRef.current.startHeight + deltaY;
+      }
+      if (direction === 'top' || direction === 'top-left-corner') {
+        nextHeight = citationsPanelResizeRef.current.startHeight - deltaY;
+      }
+
+      const constrainedSize = clampCitationsPanelSize({ width: nextWidth, height: nextHeight });
+
+      if (direction === 'corner' || direction === 'left' || direction === 'top-left-corner') {
+        nextX = citationsPanelResizeRef.current.startPosX
+          + (citationsPanelResizeRef.current.startWidth - constrainedSize.width);
+      }
+      if (direction === 'top' || direction === 'top-left-corner') {
+        nextY = citationsPanelResizeRef.current.startPosY
+          + (citationsPanelResizeRef.current.startHeight - constrainedSize.height);
+      }
+
+      const constrainedPosition = clampCitationsPanelPosition({ x: nextX, y: nextY }, constrainedSize);
+      setCitationsPanelSize(constrainedSize);
+      setCitationsPanelPosition(constrainedPosition);
+    };
+
+    const handleMouseUp = () => {
+      setIsCitationsPanelResizing(false);
+      citationsPanelResizeRef.current = null;
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+  }, [
+    citationsPanelPosition.x,
+    citationsPanelPosition.y,
+    citationsPanelSize.height,
+    citationsPanelSize.width,
+    clampCitationsPanelPosition,
+    clampCitationsPanelSize
+  ]);
+
+  useEffect(() => {
+    if (!showCitations || citationsPanelInitializedRef.current) return;
+    resetCitationsPanelLayout();
+    citationsPanelInitializedRef.current = true;
+  }, [showCitations, resetCitationsPanelLayout]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => {
+      setCitationsPanelSize((prev) => {
+        const next = clampCitationsPanelSize(prev);
+        setCitationsPanelPosition((prevPos) => clampCitationsPanelPosition(prevPos, next));
+        if (next.width === prev.width && next.height === prev.height) return prev;
+        return next;
+      });
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [clampCitationsPanelPosition, clampCitationsPanelSize]);
+
+  const isCitationEligibleForSection = useCallback(
+    (sectionKey: string) => citationEligibleBySection[normalizeSectionKey(sectionKey)] === true,
+    [citationEligibleBySection]
+  );
+
   const isMappedEvidenceEnabled = useCallback(
-    (sectionKey: string) => mappedEvidenceBySection[normalizeSectionKey(sectionKey)] !== false,
-    [mappedEvidenceBySection]
+    (sectionKey: string) => {
+      const normalized = normalizeSectionKey(sectionKey);
+      if (citationEligibleBySection[normalized] !== true) return false;
+      return mappedEvidenceBySection[normalized] !== false;
+    },
+    [mappedEvidenceBySection, citationEligibleBySection]
   );
 
   // Helper: Extract figure references from content
@@ -743,10 +891,10 @@ export default function SectionDraftingStage({
     
     // Match patterns like [Figure 1], [Figure 2], etc.
     const figurePattern = /\[Figure\s+(\d+)\]/gi;
-    const matches = sectionContent.matchAll(figurePattern);
     const figureNos = new Set<number>();
-    
-    for (const match of matches) {
+
+    let match: RegExpExecArray | null = null;
+    while ((match = figurePattern.exec(sectionContent)) !== null) {
       figureNos.add(parseInt(match[1], 10));
     }
     
@@ -767,6 +915,15 @@ export default function SectionDraftingStage({
       const data = await res.json();
       const sess = data.session;
       setSession(sess);
+      const sessionStyleCode = typeof sess?.citationStyle?.code === 'string'
+        ? sess.citationStyle.code
+        : null;
+      if (sessionStyleCode) {
+        setBibliographyStyle(sessionStyleCode);
+        if (['IEEE', 'VANCOUVER'].includes(sessionStyleCode.toUpperCase())) {
+          setBibliographySortOrder('order_of_appearance');
+        }
+      }
       const code = sess?.paperType?.code || 'JOURNAL_ARTICLE';
       setPaperTypeCode(code);
 
@@ -790,11 +947,26 @@ export default function SectionDraftingStage({
             required: requiredSections.includes(key), wordLimit: wordLimits[key] || undefined
           }));
           setSectionConfigs(configs.length > 0 ? configs : fallbackSections);
+
+          const policies = pt.sectionContextPolicies && typeof pt.sectionContextPolicies === 'object'
+            ? pt.sectionContextPolicies as Record<string, { requiresCitations?: boolean }>
+            : {};
+          const eligibility: Record<string, boolean> = {};
+          for (const key of sectionOrder) {
+            const normalized = normalizeSectionKey(key);
+            const policy = policies[key] || policies[normalized];
+            eligibility[normalized] = typeof policy?.requiresCitations === 'boolean'
+              ? policy.requiresCitations
+              : DEFAULT_CITATION_ELIGIBLE_SECTIONS.has(normalized);
+          }
+          setCitationEligibleBySection(eligibility);
         } else {
           setSectionConfigs(fallbackSections);
+          setCitationEligibleBySection({});
         }
       } else {
         setSectionConfigs(fallbackSections);
+        setCitationEligibleBySection({});
       }
 
       // Check persona availability
@@ -845,12 +1017,12 @@ export default function SectionDraftingStage({
           id: f.id,
           figureNo: f.figureNo,
           title: f.title,
-          caption: f.nodes?.caption || f.description,
+          caption: f.caption || f.nodes?.caption || f.description,
           description: f.description,
-          imagePath: f.nodes?.imagePath || f.imagePath,
-          status: f.nodes?.status || 'PLANNED',
-          category: f.nodes?.category || 'CHART',
-          figureType: f.nodes?.figureType || 'auto'
+          imagePath: f.imagePath || f.nodes?.imagePath,
+          status: f.status || f.nodes?.status || (f.imagePath ? 'GENERATED' : 'PLANNED'),
+          category: f.category || f.nodes?.category || 'CHART',
+          figureType: f.figureType || f.nodes?.figureType || 'auto'
         }));
         setFigures(figs);
       }
@@ -860,6 +1032,21 @@ export default function SectionDraftingStage({
   }, [sessionId, authToken]);
 
   useEffect(() => { loadSession(); loadCitations(); loadFigures(); }, [loadSession, loadCitations, loadFigures]);
+
+  useEffect(() => {
+    if (!isNumericOrderBibliography) return;
+    if (bibliographySortOrder !== 'order_of_appearance') {
+      setBibliographySortOrder('order_of_appearance');
+    }
+  }, [isNumericOrderBibliography, bibliographySortOrder]);
+
+  useEffect(() => {
+    if (!sequenceInfo) return;
+    const currentStyle = (bibliographyStyle || '').toUpperCase();
+    if ((sequenceInfo.styleCode || '').toUpperCase() !== currentStyle) {
+      setSequenceInfo(null);
+    }
+  }, [bibliographyStyle, sequenceInfo]);
 
   useEffect(() => {
     if (!mappedEvidenceStorageKey) return;
@@ -889,14 +1076,20 @@ export default function SectionDraftingStage({
       let changed = false;
       for (const key of allKeys) {
         const normalized = normalizeSectionKey(key);
-        if (typeof next[normalized] !== 'boolean') {
-          next[normalized] = true;
+        const eligibleValue = citationEligibleBySection[normalized];
+        if (eligibleValue === true) {
+          if (typeof next[normalized] !== 'boolean') {
+            next[normalized] = true;
+            changed = true;
+          }
+        } else if (eligibleValue === false && next[normalized] !== false) {
+          next[normalized] = false;
           changed = true;
         }
       }
       return changed ? next : prev;
     });
-  }, [sectionConfigs]);
+  }, [sectionConfigs, citationEligibleBySection]);
 
   useEffect(() => {
     if (!mappedEvidenceStorageKey) return;
@@ -981,23 +1174,22 @@ export default function SectionDraftingStage({
     if (!figure) return;
 
     const figureRef = `[Figure ${figure.figureNo}]`;
-    
-    // Insert at cursor position if available
-    if (cursorPositionRef.current) {
-      const { section, position } = cursorPositionRef.current;
-      const currentContent = content[section] || '';
-      const newContent = currentContent.slice(0, position) + figureRef + currentContent.slice(position);
-      handleContentChange(section, newContent);
-      showMsg(`Inserted Figure ${figure.figureNo}`, 'success');
-    } else if (focusedSection) {
-      // Append to focused section
-      const currentContent = content[focusedSection] || '';
-      handleContentChange(focusedSection, currentContent + ' ' + figureRef);
-      showMsg(`Inserted Figure ${figure.figureNo}`, 'success');
-    } else {
+
+    const targetSection = focusedSection || insertCitationTargetRef.current;
+    if (!targetSection) {
       showMsg('Please click in a section first to insert the figure', 'warning');
+      return;
     }
-  }, [figures, content, focusedSection, handleContentChange]);
+
+    const editor = editorRefs.current[targetSection];
+    if (!editor) {
+      showMsg('Editor is not ready for this section', 'warning');
+      return;
+    }
+
+    editor.insertTextAtCursor(figureRef);
+    showMsg(`Inserted Figure ${figure.figureNo}`, 'success');
+  }, [figures, focusedSection]);
 
   const handleTextAction = useCallback(async (
     action: 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple',
@@ -1006,6 +1198,17 @@ export default function SectionDraftingStage({
   ): Promise<string> => {
     if (!authToken || !text.trim()) {
       throw new Error('Missing required parameters');
+    }
+
+    // CRITICAL: Save the editor selection range BEFORE the async API call.
+    // By the time the response arrives, the editor may have lost focus/selection.
+    const targetSection = focusedSection;
+    let savedRange: { from: number; to: number } | null = null;
+    if (targetSection) {
+      const editor = editorRefs.current[targetSection];
+      if (editor) {
+        savedRange = editor.saveSelection();
+      }
     }
 
     try {
@@ -1018,8 +1221,8 @@ export default function SectionDraftingStage({
         body: JSON.stringify({
           action,
           selectedText: text,
-          context: focusedSection ? content[focusedSection]?.slice(0, 500) : '',
-          sectionKey: focusedSection,
+          context: targetSection ? content[targetSection]?.slice(0, 500) : '',
+          sectionKey: targetSection,
           customInstructions
         })
       });
@@ -1029,13 +1232,17 @@ export default function SectionDraftingStage({
         throw new Error(data.error || 'Text action failed');
       }
 
-      // Replace the selected text in the focused section
-      if (focusedSection && cursorPositionRef.current?.section === focusedSection && selectedText) {
-        const currentContent = content[focusedSection] || '';
-        const beforeSelection = currentContent.slice(0, selectedText.start);
-        const afterSelection = currentContent.slice(selectedText.end);
-        const newContent = beforeSelection + data.transformedText + afterSelection;
-        handleContentChange(focusedSection, newContent);
+      if (targetSection) {
+        const editor = editorRefs.current[targetSection];
+        if (editor) {
+          if (savedRange && savedRange.from !== savedRange.to) {
+            // Use precise range replacement to avoid issues with lost selection
+            editor.replaceRange(savedRange.from, savedRange.to, data.transformedText);
+          } else {
+            // Fallback: try replaceSelection which checks saved selection internally
+            editor.replaceSelection(data.transformedText);
+          }
+        }
         setSelectedText(null);
         showMsg(`Text ${action}d successfully`, 'success');
       }
@@ -1046,7 +1253,7 @@ export default function SectionDraftingStage({
       showMsg(message, 'error');
       throw err;
     }
-  }, [authToken, sessionId, focusedSection, content, selectedText, handleContentChange]);
+  }, [authToken, sessionId, focusedSection, content]);
 
   const handleGenerateFigure = useCallback(async (description: string, meta?: Record<string, any>) => {
     if (!authToken || !description.trim()) {
@@ -1136,38 +1343,6 @@ export default function SectionDraftingStage({
   const handleOpenCitationPicker = useCallback(() => {
     setPickerOpen(true);
   }, []);
-
-  // Track text selection in textareas - debounced for stability
-  useEffect(() => {
-    let selectionTimer: NodeJS.Timeout | null = null;
-    
-    const handleSelectionChange = () => {
-      // Debounce selection changes to prevent excessive updates
-      if (selectionTimer) clearTimeout(selectionTimer);
-      
-      selectionTimer = setTimeout(() => {
-        if (focusedSection && textareaRefs.current[focusedSection]) {
-          const textarea = textareaRefs.current[focusedSection];
-          if (textarea && textarea.selectionStart !== textarea.selectionEnd) {
-            const text = textarea.value.slice(textarea.selectionStart, textarea.selectionEnd);
-            setSelectedText({
-              text,
-              start: textarea.selectionStart,
-              end: textarea.selectionEnd
-            });
-          } else {
-            setSelectedText(null);
-          }
-        }
-      }, SELECTION_CHANGE_DELAY);
-    };
-
-    document.addEventListener('selectionchange', handleSelectionChange);
-    return () => {
-      document.removeEventListener('selectionchange', handleSelectionChange);
-      if (selectionTimer) clearTimeout(selectionTimer);
-    };
-  }, [focusedSection]);
 
   // ============================================================================
   // Generation
@@ -1351,39 +1526,17 @@ export default function SectionDraftingStage({
     if (!target) return;
 
     const insertText = `[CITE:${citationKey}]`;
-    const current = content[target] || '';
-    
-    // Check for cursor position
-    const cursorInfo = cursorPositionRef.current;
-    let updated: string;
-    let newCursorPosition: number;
-    
-    if (cursorInfo && cursorInfo.section === target) {
-      // Insert at cursor position
-      const before = current.substring(0, cursorInfo.position);
-      const after = current.substring(cursorInfo.position);
-      updated = before + insertText + after;
-      newCursorPosition = cursorInfo.position + insertText.length;
+    const editor = editorRefs.current[target];
+    if (editor) {
+      editor.insertTextAtCursor(insertText);
+      editor.focus();
     } else {
-      // Fallback: insert at end
-      updated = current + ' ' + insertText;
-      newCursorPosition = updated.length;
+      const updated = `${content[target] || ''} ${insertText}`.trim();
+      setContent(prev => ({ ...prev, [target]: updated }));
+      setPendingChanges(prev => new Set(prev).add(target));
+      setTimeout(() => saveSection(target, updated), 100);
     }
-    
-    setContent(prev => ({ ...prev, [target]: updated }));
-    setPendingChanges(prev => new Set(prev).add(target));
-    setTimeout(() => saveSection(target, updated), 100);
-    
-    // Restore focus and cursor
-    setTimeout(() => {
-      const textarea = textareaRefs.current[target];
-      if (textarea) {
-        textarea.focus();
-        textarea.setSelectionRange(newCursorPosition, newCursorPosition);
-        cursorPositionRef.current = { section: target, position: newCursorPosition };
-      }
-    }, 50);
-    
+
     showMsg(`Citation [${citationKey}] inserted`, 'success');
   }, [content, saveSection, focusedSection, sectionConfigs]);
 
@@ -1392,50 +1545,79 @@ export default function SectionDraftingStage({
     if (!target || keys.length === 0) return;
     
     const insertText = keys.map(k => `[CITE:${k}]`).join(' ');
-    const current = content[target] || '';
-    
-    // Get cursor position - insert at cursor if available, otherwise at end
-    const cursorInfo = cursorPositionRef.current;
-    let updated: string;
-    let newCursorPosition: number;
-    
-    if (cursorInfo && cursorInfo.section === target) {
-      // Insert at cursor position
-      const before = current.substring(0, cursorInfo.position);
-      const after = current.substring(cursorInfo.position);
-      updated = before + insertText + after;
-      newCursorPosition = cursorInfo.position + insertText.length;
+    const editor = editorRefs.current[target];
+    if (editor) {
+      editor.insertTextAtCursor(insertText);
+      editor.focus();
     } else {
-      // Fallback: insert at end
-      updated = current + ' ' + insertText;
-      newCursorPosition = updated.length;
+      const updated = `${content[target] || ''} ${insertText}`.trim();
+      setContent(prev => ({ ...prev, [target]: updated }));
+      setPendingChanges(prev => new Set(prev).add(target));
+      setTimeout(() => saveSection(target, updated), 100);
     }
-    
-    setContent(prev => ({ ...prev, [target]: updated }));
-    setPendingChanges(prev => new Set(prev).add(target));
-    setTimeout(() => saveSection(target, updated), 100);
+
     setPickerOpen(false);
     setInsertCitationTarget(null);
     insertCitationTargetRef.current = null;
-    
-    // Restore focus and cursor position to the textarea
-    setTimeout(() => {
-      const textarea = textareaRefs.current[target];
-      if (textarea) {
-        textarea.focus();
-        textarea.setSelectionRange(newCursorPosition, newCursorPosition);
-      }
-    }, 50);
+    setFocusedSection(target);
+    showMsg(`${keys.length} citation(s) inserted`, 'success');
   }, [content, saveSection]);
 
-  // Extract citation keys from content (matches [CITE:key] patterns)
+  // Extract citation keys from content in canonical section order (for IEEE sequence accuracy).
   const extractUsedCitationKeys = useCallback(() => {
-    const allContent = Object.values(content).join(' ');
-    const matches = allContent.match(/\[CITE:([^\]]+)\]/g) || [];
-    const keys = matches.map(m => m.replace('[CITE:', '').replace(']', ''));
-    // Return unique keys
-    return [...new Set(keys)];
-  }, [content]);
+    const normalizedContent: Record<string, string> = {};
+    for (const [rawKey, rawValue] of Object.entries(content)) {
+      const sectionKey = normalizeSectionKey(rawKey);
+      if (!sectionKey) continue;
+      const value = String(rawValue || '');
+      if (!value.trim()) continue;
+      const existing = normalizedContent[sectionKey];
+      normalizedContent[sectionKey] = existing ? `${existing}\n\n${value}` : value;
+    }
+
+    const canonicalLookup = new Map<string, string>();
+    for (const citation of citations) {
+      const key = String(citation?.citationKey || '').trim();
+      if (!key) continue;
+      canonicalLookup.set(key.toLowerCase(), key);
+    }
+
+    const configuredOrder = (sectionConfigs || fallbackSections)
+      .flatMap(section => section.keys || [])
+      .map(key => normalizeSectionKey(key));
+    const orderedSections = Array.from(new Set([
+      ...configuredOrder,
+      ...Object.keys(normalizedContent)
+    ]));
+
+    const usedKeys: string[] = [];
+    const seen = new Set<string>();
+    const markerRegex = /\[CITE:([^\]]+)\]/gi;
+
+    for (const sectionKey of orderedSections) {
+      const sectionContent = normalizedContent[sectionKey] || '';
+      if (!sectionContent.trim()) continue;
+
+      markerRegex.lastIndex = 0;
+      let match: RegExpExecArray | null = null;
+      while ((match = markerRegex.exec(sectionContent)) !== null) {
+        const keysInMarker = String(match[1] || '')
+          .split(/[;,]/)
+          .map(key => key.trim())
+          .filter(Boolean);
+
+        for (const rawKey of keysInMarker) {
+          const canonical = canonicalLookup.get(rawKey.toLowerCase()) || rawKey;
+          const identity = canonical.toLowerCase();
+          if (seen.has(identity)) continue;
+          seen.add(identity);
+          usedKeys.push(canonical);
+        }
+      }
+    }
+
+    return usedKeys;
+  }, [content, citations, sectionConfigs]);
 
   const generateBibliography = useCallback(async () => {
     // Get only the citation keys that are actually used in the paper
@@ -1448,13 +1630,21 @@ export default function SectionDraftingStage({
     
     setGeneratingBibliography(true);
     try {
+      const pendingKeys = Array.from(pendingChanges);
+      if (pendingKeys.length > 0) {
+        await Promise.all(
+          pendingKeys.map(key => saveSection(key, content[key] || ''))
+        );
+      }
+
       const res = await fetch(`/api/papers/${sessionId}/drafting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify({ 
           action: 'generate_bibliography',
           citationKeys: usedCitationKeys,
-          sortOrder: 'alphabetical'
+          sortOrder: bibliographySortOrder,
+          styleCode: bibliographyStyle
         })
       });
       const data = await res.json();
@@ -1465,8 +1655,34 @@ export default function SectionDraftingStage({
           setContent(prev => ({ ...prev, references: data.bibliography }));
           await saveSection('references', data.bibliography);
         }
-        showMsg(`Bibliography generated for ${usedCitationKeys.length} citation(s)`, 'success');
-    } else {
+        const usedCount = typeof data.usedCount === 'number' ? data.usedCount : usedCitationKeys.length;
+        const added = Array.isArray(data?.sequence?.changes?.added) ? data.sequence.changes.added.length : 0;
+        const removed = Array.isArray(data?.sequence?.changes?.removed) ? data.sequence.changes.removed.length : 0;
+        const renumbered = Array.isArray(data?.sequence?.changes?.renumbered) ? data.sequence.changes.renumbered.length : 0;
+        const version = typeof data?.sequence?.version === 'number' ? data.sequence.version : null;
+        const historyCount = typeof data?.sequence?.historyCount === 'number' ? data.sequence.historyCount : 0;
+        const changed = Boolean(data?.sequence?.changed);
+
+        setSequenceInfo({
+          styleCode: String(data?.styleCode || bibliographyStyle),
+          version,
+          changed,
+          added,
+          removed,
+          renumbered,
+          historyCount
+        });
+
+        const sequenceLabel = version ? `, seq v${version}` : '';
+        const deltaLabel = changed
+          ? `, Δ +${added}/-${removed}, renumbered ${renumbered}`
+          : '';
+        showMsg(
+          `Bibliography generated (${bibliographyStyle}, ${usedCount} citations${sequenceLabel}${deltaLabel})`,
+          'success'
+        );
+        await loadCitations();
+      } else {
         showMsg('Failed to generate bibliography', 'error');
       }
     } catch {
@@ -1474,7 +1690,18 @@ export default function SectionDraftingStage({
     } finally {
       setGeneratingBibliography(false);
     }
-  }, [sessionId, authToken, sectionConfigs, saveSection]);
+  }, [
+    sessionId,
+    authToken,
+    sectionConfigs,
+    saveSection,
+    bibliographyStyle,
+    bibliographySortOrder,
+    extractUsedCitationKeys,
+    pendingChanges,
+    content,
+    loadCitations
+  ]);
 
   // ============================================================================
   // Instructions Handler
@@ -1649,43 +1876,16 @@ export default function SectionDraftingStage({
                 </button>
               </Tooltip>
               <Tooltip content="Citations panel" position="bottom">
-                <button onClick={() => setShowCitations(!showCitations)}
+                <button onClick={() => {
+                    if (showCitations) {
+                      setShowCitations(false);
+                      return;
+                    }
+                    openCitationsPanel();
+                  }}
                   className={`p-2 rounded-lg border ${showCitations ? 'bg-purple-50 border-purple-200 text-purple-700' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
                   <BookOpen className="w-4 h-4" />
                 </button>
-              </Tooltip>
-              <Tooltip content="Text formatting" position="bottom">
-                <div className="relative">
-                  <button onClick={() => setShowFormatting(!showFormatting)}
-                    className={`p-2 rounded-lg border ${showFormatting ? 'bg-indigo-50 border-indigo-200 text-indigo-700' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" /></svg>
-                  </button>
-                  {showFormatting && (
-                    <div className="absolute right-0 mt-2 w-64 bg-white border rounded-xl shadow-xl z-50 p-4">
-                      <div className="space-y-4">
-                        <div>
-                          <label className="block text-xs font-medium text-gray-700 mb-2">Font</label>
-                          <select value={fontFamily} onChange={(e) => setFontFamily(e.target.value)} className="w-full px-3 py-2 text-sm border rounded-lg">
-                            <option value="serif">Serif</option><option value="sans-serif">Sans</option><option value="Georgia, serif">Georgia</option>
-                          </select>
-              </div>
-                        <div>
-                          <label className="block text-xs font-medium text-gray-700 mb-2">Size</label>
-                          <select value={fontSize} onChange={(e) => setFontSize(e.target.value)} className="w-full px-3 py-2 text-sm border rounded-lg">
-                            <option value="14px">14px</option><option value="15px">15px</option><option value="16px">16px</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="block text-xs font-medium text-gray-700 mb-2">Line Height</label>
-                          <select value={lineHeight} onChange={(e) => setLineHeight(e.target.value)} className="w-full px-3 py-2 text-sm border rounded-lg">
-                            <option value="1.5">1.5</option><option value="1.7">1.7</option><option value="2.0">2.0</option>
-                          </select>
-                        </div>
-                        <button onClick={() => setShowFormatting(false)} className="w-full text-xs text-indigo-600 hover:text-indigo-800">Done</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
               </Tooltip>
             </div>
 
@@ -1696,44 +1896,176 @@ export default function SectionDraftingStage({
             </div>
           </div>
 
-      {/* Citations Panel */}
-          <AnimatePresence>
-            {showCitations && (
-          <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 20 }}
-            className="fixed right-4 top-32 w-80 max-h-[60vh] bg-white rounded-xl shadow-2xl border z-40 overflow-hidden flex flex-col">
-            <div className="p-4 border-b flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <BookOpen className="w-4 h-4 text-purple-500" />
-                <span className="font-semibold text-gray-900">Citations ({citations.length})</span>
-                    </div>
-              <button onClick={() => setShowCitations(false)} className="text-gray-400 hover:text-gray-600">✕</button>
-                </div>
-                <div className="flex-1 overflow-y-auto p-3">
-              <CitationManager sessionId={sessionId} authToken={authToken} citations={citations} onCitationsUpdated={setCitations} onInsertCitation={handleInsertSingleCitation} />
+            {/* Citations Panel */}
+      <AnimatePresence>
+        {showCitations && (
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={{ opacity: 0, x: 20 }}
+            style={{
+              left: citationsPanelPosition.x,
+              top: citationsPanelPosition.y,
+              width: citationsPanelSize.width,
+              height: citationsPanelSize.height,
+            }}
+            className={`fixed bg-white rounded-xl shadow-2xl border z-[120] overflow-hidden flex flex-col ${
+              isCitationsPanelDragging || isCitationsPanelResizing ? 'select-none' : ''
+            }`}
+          >
+            <div
+              className={`p-3 border-b flex items-center justify-between bg-white/95 backdrop-blur-sm ${
+                isCitationsPanelDragging ? 'cursor-grabbing' : 'cursor-grab'
+              }`}
+              onMouseDown={handleCitationsPanelDragStart}
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <Move className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
+                <BookOpen className="w-4 h-4 text-purple-500 flex-shrink-0" />
+                <span className="font-semibold text-gray-900 truncate">Citations ({citations.length})</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={resetCitationsPanelLayout}
+                  className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-md transition-colors"
+                  title="Reset panel layout"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={() => setShowCitations(false)}
+                  className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-md transition-colors"
+                  title="Close citations panel"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
-            <div className="p-3 border-t space-y-2">
-              <button onClick={() => { 
+
+            <div className="flex-1 overflow-y-auto p-3 min-h-0">
+              <CitationManager
+                sessionId={sessionId}
+                authToken={authToken}
+                citations={citations}
+                onCitationsUpdated={setCitations}
+                onInsertCitation={handleInsertSingleCitation}
+              />
+            </div>
+
+            <div className="p-3 border-t space-y-2 bg-white/95 backdrop-blur-sm">
+              <button
+                onClick={() => {
                   const activeSections = sectionConfigs || fallbackSections;
                   const targetSection = focusedSection || (activeSections.length > 0 ? activeSections[0].keys[0] : null);
-                  if (targetSection) { 
-                    insertCitationTargetRef.current = targetSection; 
-                    setInsertCitationTarget(targetSection); 
-                  } 
-                  setPickerOpen(true); 
-                }} 
-                className="w-full flex items-center justify-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-700 py-2 border border-blue-200 rounded-lg hover:bg-blue-50">
+                  if (targetSection) {
+                    insertCitationTargetRef.current = targetSection;
+                    setInsertCitationTarget(targetSection);
+                  }
+                  setPickerOpen(true);
+                }}
+                className="w-full flex items-center justify-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-700 py-2 border border-blue-200 rounded-lg hover:bg-blue-50"
+              >
                 <Plus className="w-3 h-3" /> Add Citation
               </button>
-              <button onClick={generateBibliography} disabled={generatingBibliography}
+
+              <div className="space-y-1.5 pt-1">
+                <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Citation Style</label>
+                <select
+                  value={bibliographyStyle}
+                  onChange={(e) => setBibliographyStyle(e.target.value)}
+                  className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:border-purple-300 focus:ring-1 focus:ring-purple-200"
+                >
+                  <option value="APA7">APA 7th Edition</option>
+                  <option value="IEEE">IEEE</option>
+                  <option value="CHICAGO_AUTHOR_DATE">Chicago (Author-Date)</option>
+                  <option value="MLA9">MLA 9th Edition</option>
+                  <option value="HARVARD">Harvard</option>
+                  <option value="VANCOUVER">Vancouver</option>
+                </select>
+                <div className="flex gap-1">
+                  <button
+                    onClick={() => setBibliographySortOrder('alphabetical')}
+                    disabled={isNumericOrderBibliography}
+                    className={`flex-1 text-[10px] py-1 rounded-md border transition-colors ${
+                      bibliographySortOrder === 'alphabetical'
+                        ? 'bg-purple-50 border-purple-200 text-purple-700 font-medium'
+                        : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                    } ${isNumericOrderBibliography ? 'opacity-40 cursor-not-allowed hover:bg-white' : ''}`}
+                  >
+                    A-&gt;Z Alphabetical
+                  </button>
+                  <button
+                    onClick={() => setBibliographySortOrder('order_of_appearance')}
+                    className={`flex-1 text-[10px] py-1 rounded-md border transition-colors ${
+                      bibliographySortOrder === 'order_of_appearance'
+                        ? 'bg-purple-50 border-purple-200 text-purple-700 font-medium'
+                        : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                    }`}
+                  >
+                    1-&gt;N Appearance
+                  </button>
+                </div>
+                {isNumericOrderBibliography && (
+                  <p className="text-[10px] text-slate-500">
+                    IEEE/Vancouver uses order-of-appearance numbering by first citation in the draft.
+                  </p>
+                )}
+                {isNumericOrderBibliography && sequenceInfo && (
+                  <p className="text-[10px] text-slate-500">
+                    Sequence {sequenceInfo.version ? `v${sequenceInfo.version}` : 'unversioned'} | snapshots {sequenceInfo.historyCount}
+                    {sequenceInfo.changed
+                      ? ` | delta +${sequenceInfo.added}/-${sequenceInfo.removed}, renumbered ${sequenceInfo.renumbered}`
+                      : ' | no numbering changes'}
+                  </p>
+                )}
+              </div>
+
+              <button
+                onClick={generateBibliography}
+                disabled={generatingBibliography}
                 className="w-full flex items-center justify-center gap-2 text-xs font-medium text-purple-600 hover:text-purple-700 py-2 border border-purple-200 rounded-lg hover:bg-purple-50 disabled:opacity-50"
-                title="Generates bibliography only for citations used in the paper (via [CITE:key] markers)">
+                title="Generates bibliography only for citations used in the paper (via [CITE:key] markers)"
+              >
                 {generatingBibliography ? <Loader2 className="w-3 h-3 animate-spin" /> : <BookOpen className="w-3 h-3" />}
                 Generate Bibliography ({extractUsedCitationKeys().length} used)
               </button>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+            </div>
+
+            <div
+              onMouseDown={(e) => handleCitationsPanelResizeStart(e, 'left')}
+              className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize group"
+            >
+              <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-slate-300 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+            </div>
+            <div
+              onMouseDown={(e) => handleCitationsPanelResizeStart(e, 'top')}
+              className="absolute top-0 left-0 right-0 h-2 cursor-ns-resize group"
+            >
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 h-1 w-8 bg-slate-300 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+            </div>
+            <div
+              onMouseDown={(e) => handleCitationsPanelResizeStart(e, 'bottom')}
+              className="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize group"
+            >
+              <div className="absolute bottom-0 left-1/2 -translate-x-1/2 h-1 w-8 bg-slate-300 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
+            </div>
+            <div
+              onMouseDown={(e) => handleCitationsPanelResizeStart(e, 'top-left-corner')}
+              className="absolute top-0 left-0 w-4 h-4 cursor-nwse-resize group z-10"
+            >
+              <div className="absolute top-1 left-1 w-2 h-2 border-l-2 border-t-2 border-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+            </div>
+            <div
+              onMouseDown={(e) => handleCitationsPanelResizeStart(e, 'corner')}
+              className="absolute bottom-0 left-0 w-4 h-4 cursor-nesw-resize group z-10"
+            >
+              <div className="absolute bottom-1 left-1 w-2 h-2 border-l-2 border-b-2 border-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Paper Document */}
       <div className="max-w-[850px] mx-auto bg-white shadow-[0_4px_24px_rgba(0,0,0,0.06)] min-h-[1100px] px-[60px] py-[60px] relative border border-gray-100">
@@ -1753,9 +2085,11 @@ export default function SectionDraftingStage({
             const isSavingSection = section.keys.some(k => saving[k]);
             const hasPending = section.keys.some(k => pendingChanges.has(k));
             const primarySectionKey = section.keys[0] || '';
-            const mappedEvidenceEnabled = section.keys.length > 0
-              ? section.keys.every(k => isMappedEvidenceEnabled(k))
-              : true;
+            const citationEligibleKeys = section.keys.filter(k => isCitationEligibleForSection(k));
+            const showCitationToggle = citationEligibleKeys.length > 0;
+            const mappedEvidenceEnabled = showCitationToggle
+              ? citationEligibleKeys.every(k => isMappedEvidenceEnabled(k))
+              : false;
 
             return (
               <div key={section.keys.join('|') || idx} className="group relative hover:bg-gray-50/30 transition-colors -mx-4 px-4 py-2 rounded-lg">
@@ -1793,7 +2127,7 @@ export default function SectionDraftingStage({
                         </div>
                       );
                     })()}
-                    {primarySectionKey && (
+                    {primarySectionKey && showCitationToggle && (
                       <label
                         className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full border border-slate-200 bg-slate-50 text-[10px] font-medium text-slate-700"
                         title="When enabled, AI uses mapped dimension evidence and citation whitelist for this section."
@@ -1806,7 +2140,7 @@ export default function SectionDraftingStage({
                             const checked = e.target.checked;
                             setMappedEvidenceBySection(prev => {
                               const next = { ...prev };
-                              for (const key of section.keys) {
+                              for (const key of citationEligibleKeys) {
                                 next[normalizeSectionKey(key)] = checked;
                               }
                               return next;
@@ -1844,15 +2178,11 @@ export default function SectionDraftingStage({
                           {/* Section Toolbar */}
                           <div className="flex items-center justify-end gap-1 mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
                             {/* REMOVED: Edit/Preview Toggle - always in edit mode for stability */}
-                            <button onClick={() => { 
-                                // Capture current cursor position from the textarea
-                                const textarea = textareaRefs.current[keyName];
-                                if (textarea) {
-                                  cursorPositionRef.current = { section: keyName, position: textarea.selectionStart };
-                                }
-                                insertCitationTargetRef.current = keyName; 
-                                setInsertCitationTarget(keyName); 
-                                setPickerOpen(true); 
+                            <button onClick={() => {
+                                setFocusedSection(keyName);
+                                insertCitationTargetRef.current = keyName;
+                                setInsertCitationTarget(keyName);
+                                setPickerOpen(true);
                               }}
                               className="p-1.5 rounded text-gray-400 hover:text-purple-600 hover:bg-purple-50" title="Insert citation">
                               <BookOpen className="w-4 h-4" />
@@ -1874,37 +2204,41 @@ export default function SectionDraftingStage({
 
                           {/* Content Area - Always in edit mode for stability */}
                           <div className="relative">
-                            <AutoResizeTextarea
-                              ref={(el) => { textareaRefs.current[keyName] = el; }}
+                            <PaperMarkdownEditor
+                              ref={(editor) => { editorRefs.current[keyName] = editor; }}
                               value={content[keyName] || ''}
-                              onChange={(e) => handleContentChange(keyName, e.target.value)}
-                              onBlur={() => handleBlur(keyName)}
+                              onChange={(markdown) => handleContentChange(keyName, markdown)}
+                              onBlur={() => {
+                                handleBlur(keyName);
+                                // NOTE: Do NOT clear selectedText on blur.
+                                // When the user clicks a FloatingWritingPanel button, the editor
+                                // blurs first. Clearing selectedText here would disable the
+                                // action buttons before the click handler fires.
+                                // Selection is properly cleared by onSelectionChange when the
+                                // user collapses the selection inside the editor.
+                              }}
                               onFocus={() => setFocusedSection(keyName)}
-                              onSelect={(e) => {
-                                const target = e.target as HTMLTextAreaElement;
-                                cursorPositionRef.current = { section: keyName, position: target.selectionStart };
+                              onSelectionChange={(selection) => {
+                                if (!selection || !selection.text) {
+                                  if (focusedSection === keyName) setSelectedText(null);
+                                  return;
+                                }
+                                setFocusedSection(keyName);
+                                setSelectedText({
+                                  text: selection.text,
+                                  start: selection.start,
+                                  end: selection.end
+                                });
+                                // Save selection in editor ref so it persists across blur
+                                const editor = editorRefs.current[keyName];
+                                if (editor) {
+                                  editor.saveSelection();
+                                }
                               }}
-                              onKeyUp={(e) => {
-                                const target = e.target as HTMLTextAreaElement;
-                                cursorPositionRef.current = { section: keyName, position: target.selectionStart };
-                              }}
-                              onClick={(e) => {
-                                const target = e.target as HTMLTextAreaElement;
-                                cursorPositionRef.current = { section: keyName, position: target.selectionStart };
-                              }}
-                              placeholder={isWorking ? 'Generating...' : 'Start typing or click Generate to create content...\n\nTip: Use ### for subsections and - for bullet points'}
-                              className="w-full border-0 bg-transparent p-0 text-gray-800 focus:ring-0 focus:outline-none placeholder-gray-300 text-justify selection:bg-blue-100 selection:text-blue-900"
-                              style={{ fontFamily, fontSize, lineHeight }}
+                              placeholder={isWorking ? 'Generating...' : 'Write polished section content with headings, bullets, and academic structure.'}
                               disabled={isWorking}
-                              minHeight={content[keyName] ? 50 : 100}
+                              className="min-h-[190px]"
                             />
-                            {/* Simple selection indicator - absolute positioned, no layout shift */}
-                            {selectedText && focusedSection === keyName && selectedText.text.length > 0 && (
-                              <div className="absolute top-0 right-0 flex items-center gap-1.5 px-2 py-1 bg-blue-500 text-white text-[10px] font-medium rounded-bl-lg rounded-tr-lg shadow-sm">
-                                <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-                                {selectedText.text.length} chars selected • AI ready
-                              </div>
-                            )}
                           </div>
 
                           {/* Referenced Figures Bar - Shows clickable thumbnails */}
@@ -2110,6 +2444,7 @@ export default function SectionDraftingStage({
         currentSection={focusedSection || undefined}
         currentContent={focusedSection ? content[focusedSection] : undefined}
         figures={figures}
+        citations={citations}
         onInsertFigure={handleInsertFigure}
         onInsertCitation={(citation) => {
           // Directly insert citation without opening modal
@@ -2121,7 +2456,9 @@ export default function SectionDraftingStage({
         onGenerateFigure={handleGenerateFigure}
         selectedText={selectedText}
         onRefreshFigures={loadFigures}
+        onRefreshCitations={loadCitations}
         onNavigateToStage={onNavigateToStage}
+        onOpenBibliographyPanel={() => openCitationsPanel({ reset: true })}
         isVisible={true}
       />
     </div>

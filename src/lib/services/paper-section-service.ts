@@ -33,6 +33,7 @@ import {
 } from './paper-prompt-debug';
 import type { PaperSection, PaperSectionStatus } from '@prisma/client';
 import crypto from 'crypto';
+import { polishDraftMarkdown } from '../markdown-draft-formatter';
 
 // ============================================================================
 // Types
@@ -396,13 +397,15 @@ class PaperSectionService {
       return null;
     }
 
+    const polishedContent = polishDraftMarkdown(content);
+
     // When content is manually edited, we should re-extract memory
     // For now, mark memory as potentially stale
     const updated = await prisma.paperSection.update({
       where: { sessionId_sectionKey: { sessionId, sectionKey } },
       data: {
-        content,
-        wordCount: this.countWords(content),
+        content: polishedContent,
+        wordCount: this.countWords(polishedContent),
         status: 'DRAFT',
         version: { increment: 1 }
       }
@@ -1003,7 +1006,7 @@ FIELD DEFINITIONS:
       // If no JSON found, treat entire output as content with empty memory
       console.warn('No JSON structure found in section response, using raw output as content');
       return {
-        content: text,
+        content: polishDraftMarkdown(text),
         memory: {
           keyPoints: [],
           termsIntroduced: [],
@@ -1018,7 +1021,7 @@ FIELD DEFINITIONS:
     try {
       const parsed = JSON.parse(text);
 
-      const content = parsed.content || '';
+      const content = polishDraftMarkdown(parsed.content || '');
       const memory: SectionMemory = {
         keyPoints: Array.isArray(parsed.memory?.keyPoints) ? parsed.memory.keyPoints : [],
         termsIntroduced: Array.isArray(parsed.memory?.termsIntroduced) ? parsed.memory.termsIntroduced : [],
@@ -1035,7 +1038,7 @@ FIELD DEFINITIONS:
       const contentMatch = output.match(/"content"\s*:\s*"([\s\S]*?)(?:","memory"|"})/);
       if (contentMatch) {
         return {
-          content: contentMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'),
+          content: polishDraftMarkdown(contentMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"')),
           memory: {
             keyPoints: [],
             termsIntroduced: [],

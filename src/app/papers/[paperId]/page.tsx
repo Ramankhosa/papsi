@@ -110,6 +110,7 @@ export default function PaperSessionPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [currentStage, setCurrentStage] = useState<StageKey>('OUTLINE_PLANNING')
+  const [hasHydratedStage, setHasHydratedStage] = useState(false)
   const [autoSaveStatus, setAutoSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved')
   const [aiAssistantOpen, setAiAssistantOpen] = useState(false)
   const [selectedSection, setSelectedSection] = useState<string>('')
@@ -143,13 +144,16 @@ export default function PaperSessionPage() {
   }, [paperId, authToken])
 
   useEffect(() => {
+    setHasHydratedStage(false)
     if (!paperId) return
+
     const stored = typeof window !== 'undefined'
       ? localStorage.getItem(`paper_stage_${paperId}`)
       : null
     if (stored && STAGES.some(stage => stage.key === stored)) {
       setCurrentStage(stored as StageKey)
     }
+    setHasHydratedStage(true)
   }, [paperId])
 
   useEffect(() => {
@@ -159,10 +163,9 @@ export default function PaperSessionPage() {
   }, [paperId, user, loadSession])
 
   useEffect(() => {
-    if (paperId) {
-      localStorage.setItem(`paper_stage_${paperId}`, currentStage)
-    }
-  }, [paperId, currentStage])
+    if (!paperId || !hasHydratedStage) return
+    localStorage.setItem(`paper_stage_${paperId}`, currentStage)
+  }, [paperId, currentStage, hasHydratedStage])
 
   // Calculate progress and statistics
   const paperStats = useMemo(() => {
@@ -216,7 +219,12 @@ export default function PaperSessionPage() {
   }
 
   const handleNavigateToStage = async (stageKey: string) => {
-    setCurrentStage(stageKey as StageKey)
+    const nextStage = stageKey as StageKey
+    setCurrentStage(nextStage)
+
+    if (paperId) {
+      localStorage.setItem(`paper_stage_${paperId}`, nextStage)
+    }
   }
 
   const handleSessionUpdated = (updatedSession: any) => {

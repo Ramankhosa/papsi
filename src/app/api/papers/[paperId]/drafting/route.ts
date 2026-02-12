@@ -12,6 +12,7 @@ import { DraftingService } from '@/lib/drafting-service';
 import { getWritingSample, buildWritingSampleBlock } from '@/lib/writing-sample-service';
 import { blueprintService } from '@/lib/services/blueprint-service';
 import { evidencePackService, type SectionEvidencePack } from '@/lib/services/evidence-pack-service';
+import { formatBibliographyMarkdown, polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -24,6 +25,7 @@ const actionSchema = z.object({
     'insert_citation',
     'check_citations',
     'generate_bibliography',
+    'get_citation_sequence_history',
     'analyze_structure',
     'word_count',
     'run_ai_review',
@@ -65,7 +67,13 @@ const checkCitationsSchema = z.object({
 
 const bibliographySchema = z.object({
   citationKeys: z.array(z.string().min(1)).optional(),
-  sortOrder: z.enum(['alphabetical', 'order_of_appearance']).optional()
+  sortOrder: z.enum(['alphabetical', 'order_of_appearance']).optional(),
+  styleCode: z.string().min(1).optional()
+});
+
+const citationSequenceHistorySchema = z.object({
+  styleCode: z.string().min(1).optional(),
+  limit: z.number().int().min(1).max(100).optional()
 });
 
 const aiReviewSchema = z.object({
@@ -133,15 +141,26 @@ async function getOrCreatePaperDraft(sessionId: string, title: string) {
 }
 
 function normalizeExtraSections(value: any): Record<string, string> {
+  const normalize = (sections: Record<string, unknown>): Record<string, string> => {
+    const normalized: Record<string, string> = {};
+    for (const [key, sectionValue] of Object.entries(sections)) {
+      if (typeof sectionValue === 'string') {
+        normalized[key] = polishDraftMarkdown(sectionValue);
+      }
+    }
+    return normalized;
+  };
+
   if (!value) return {};
   if (typeof value === 'string') {
     try {
-      return JSON.parse(value) as Record<string, string>;
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? normalize(parsed as Record<string, unknown>) : {};
     } catch {
       return {};
     }
   }
-  if (typeof value === 'object') return value as Record<string, string>;
+  if (typeof value === 'object') return normalize(value as Record<string, unknown>);
   return {};
 }
 
@@ -236,6 +255,517 @@ function getStyleCode(session: any): string {
   return session?.citationStyle?.code
     || process.env.DEFAULT_CITATION_STYLE
     || 'APA7';
+}
+
+const NUMERIC_ORDER_STYLES = new Set(['IEEE', 'VANCOUVER']);
+const CITE_MARKER_REGEX = /\[CITE:([^\]]+)\]/gi;
+
+type SessionCitation = Awaited<ReturnType<typeof citationService.getCitationsForSession>>[number];
+
+function splitCitationKeys(rawKeys: string): string[] {
+  if (!rawKeys) return [];
+  return rawKeys
+    .split(/[;,]/)
+    .map(key => key.trim())
+    .filter(Boolean);
+}
+
+function buildCanonicalCitationLookup(citations: Array<{ citationKey: string }>): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const citation of citations) {
+    const key = String(citation.citationKey || '').trim();
+    if (!key) continue;
+    lookup.set(key.toLowerCase(), key);
+  }
+  return lookup;
+}
+
+function mergeSectionOrder(
+  preferredOrder: string[],
+  extraSections: Record<string, string>,
+  additionalSections: string[] = []
+): string[] {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  const append = (sectionKey: string) => {
+    const normalized = normalizeSectionKey(sectionKey || '');
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    ordered.push(normalized);
+  };
+
+  for (const key of preferredOrder) append(key);
+  for (const key of Object.keys(extraSections)) append(key);
+  for (const key of additionalSections) append(key);
+
+  return ordered;
+}
+
+function mergeCitationOrder(primaryOrder: string[], secondaryOrder: string[]): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+
+  const append = (key: string) => {
+    const normalized = String(key || '').trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    merged.push(key);
+  };
+
+  for (const key of primaryOrder) append(key);
+  for (const key of secondaryOrder) append(key);
+
+  return merged;
+}
+
+type CitationSequenceRenumbered = {
+  citationKey: string;
+  from: number;
+  to: number;
+};
+
+type CitationSequenceDiff = {
+  added: string[];
+  removed: string[];
+  renumbered: CitationSequenceRenumbered[];
+};
+
+type CitationSequenceSnapshot = {
+  id: string;
+  styleCode: string;
+  sortOrder: 'alphabetical' | 'order_of_appearance';
+  orderedCitationKeys: string[];
+  numbering: Record<string, number>;
+  changes: CitationSequenceDiff;
+  version: number;
+  createdAt: string;
+};
+
+type CitationTrackingState = {
+  sequenceHistory: CitationSequenceSnapshot[];
+  latestByStyle: Record<string, string>;
+};
+
+function asPlainObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return { ...(value as Record<string, unknown>) };
+}
+
+function buildCitationNumberingMap(orderedCitationKeys: string[]): Record<string, number> {
+  return Object.fromEntries(
+    orderedCitationKeys.map((citationKey, index) => [citationKey, index + 1])
+  );
+}
+
+function buildCitationSequenceDiff(
+  previousOrdered: string[],
+  nextOrdered: string[]
+): CitationSequenceDiff {
+  const previousSet = new Set(previousOrdered);
+  const nextSet = new Set(nextOrdered);
+  const previousNumbering = buildCitationNumberingMap(previousOrdered);
+  const nextNumbering = buildCitationNumberingMap(nextOrdered);
+
+  const added = nextOrdered.filter(key => !previousSet.has(key));
+  const removed = previousOrdered.filter(key => !nextSet.has(key));
+  const renumbered: CitationSequenceRenumbered[] = nextOrdered
+    .filter(key => previousSet.has(key))
+    .map(key => ({
+      citationKey: key,
+      from: previousNumbering[key],
+      to: nextNumbering[key]
+    }))
+    .filter(change => change.from !== change.to);
+
+  return { added, removed, renumbered };
+}
+
+function readCitationTrackingState(validationReport: unknown): CitationTrackingState {
+  const report = asPlainObject(validationReport);
+  const rawTracking = asPlainObject(report.citationTracking);
+  const rawHistory = Array.isArray(rawTracking.sequenceHistory)
+    ? rawTracking.sequenceHistory
+    : [];
+  const sequenceHistory: CitationSequenceSnapshot[] = rawHistory
+    .map((item) => {
+      const snapshot = asPlainObject(item);
+      const styleCode = String(snapshot.styleCode || '').trim().toUpperCase();
+      const sortOrder = snapshot.sortOrder === 'order_of_appearance'
+        ? 'order_of_appearance'
+        : 'alphabetical';
+      const orderedCitationKeys = Array.isArray(snapshot.orderedCitationKeys)
+        ? snapshot.orderedCitationKeys.map(v => String(v || '').trim()).filter(Boolean)
+        : [];
+      const numberingRaw = asPlainObject(snapshot.numbering);
+      const numbering: Record<string, number> = {};
+      for (const [key, value] of Object.entries(numberingRaw)) {
+        const n = Number(value);
+        if (key && Number.isFinite(n)) numbering[key] = n;
+      }
+      const rawChanges = asPlainObject(snapshot.changes);
+      const changes: CitationSequenceDiff = {
+        added: Array.isArray(rawChanges.added)
+          ? rawChanges.added.map(v => String(v || '').trim()).filter(Boolean)
+          : [],
+        removed: Array.isArray(rawChanges.removed)
+          ? rawChanges.removed.map(v => String(v || '').trim()).filter(Boolean)
+          : [],
+        renumbered: Array.isArray(rawChanges.renumbered)
+          ? rawChanges.renumbered
+              .map((entry) => {
+                const row = asPlainObject(entry);
+                const citationKey = String(row.citationKey || '').trim();
+                const from = Number(row.from);
+                const to = Number(row.to);
+                if (!citationKey || !Number.isFinite(from) || !Number.isFinite(to)) return null;
+                return { citationKey, from, to };
+              })
+              .filter((entry): entry is CitationSequenceRenumbered => Boolean(entry))
+          : []
+      };
+      const version = Number(snapshot.version);
+      const createdAt = String(snapshot.createdAt || '').trim() || new Date(0).toISOString();
+      const id = String(snapshot.id || '').trim();
+      if (!id || !styleCode) return null;
+      return {
+        id,
+        styleCode,
+        sortOrder,
+        orderedCitationKeys,
+        numbering,
+        changes,
+        version: Number.isFinite(version) ? version : 1,
+        createdAt
+      } satisfies CitationSequenceSnapshot;
+    })
+    .filter((item): item is CitationSequenceSnapshot => Boolean(item));
+
+  const latestByStyleRaw = asPlainObject(rawTracking.latestByStyle);
+  const latestByStyle: Record<string, string> = {};
+  for (const [styleCode, snapshotId] of Object.entries(latestByStyleRaw)) {
+    const normalizedStyle = styleCode.trim().toUpperCase();
+    const id = String(snapshotId || '').trim();
+    if (normalizedStyle && id) {
+      latestByStyle[normalizedStyle] = id;
+    }
+  }
+
+  return {
+    sequenceHistory,
+    latestByStyle
+  };
+}
+
+function findLatestSnapshotForStyle(
+  tracking: CitationTrackingState,
+  styleCode: string
+): CitationSequenceSnapshot | null {
+  const normalizedStyleCode = styleCode.trim().toUpperCase();
+  if (!normalizedStyleCode) return null;
+
+  const preferredId = tracking.latestByStyle[normalizedStyleCode];
+  if (preferredId) {
+    const match = tracking.sequenceHistory.find(snapshot => snapshot.id === preferredId);
+    if (match) return match;
+  }
+
+  const fallback = [...tracking.sequenceHistory]
+    .reverse()
+    .find(snapshot => snapshot.styleCode === normalizedStyleCode);
+  return fallback || null;
+}
+
+async function persistCitationSequenceSnapshot(params: {
+  draftId: string;
+  validationReport: unknown;
+  styleCode: string;
+  sortOrder: 'alphabetical' | 'order_of_appearance';
+  orderedCitationKeys: string[];
+}): Promise<{
+  snapshotId: string;
+  version: number;
+  previousVersion: number | null;
+  changed: boolean;
+  changes: CitationSequenceDiff;
+  historyCount: number;
+}> {
+  const {
+    draftId,
+    validationReport,
+    styleCode,
+    sortOrder,
+    orderedCitationKeys
+  } = params;
+  const normalizedStyleCode = styleCode.trim().toUpperCase();
+  const baseReport = asPlainObject(validationReport);
+  const tracking = readCitationTrackingState(validationReport);
+  const previousSnapshot = findLatestSnapshotForStyle(tracking, normalizedStyleCode);
+  const previousOrdered = previousSnapshot?.orderedCitationKeys || [];
+  const changes = buildCitationSequenceDiff(previousOrdered, orderedCitationKeys);
+  const changed = !previousSnapshot
+    || changes.added.length > 0
+    || changes.removed.length > 0
+    || changes.renumbered.length > 0;
+
+  if (!changed && previousSnapshot) {
+    return {
+      snapshotId: previousSnapshot.id,
+      version: previousSnapshot.version,
+      previousVersion: previousSnapshot.version,
+      changed: false,
+      changes,
+      historyCount: tracking.sequenceHistory.length
+    };
+  }
+
+  const snapshot: CitationSequenceSnapshot = {
+    id: crypto.randomUUID(),
+    styleCode: normalizedStyleCode,
+    sortOrder,
+    orderedCitationKeys,
+    numbering: buildCitationNumberingMap(orderedCitationKeys),
+    changes,
+    version: (previousSnapshot?.version || 0) + 1,
+    createdAt: new Date().toISOString()
+  };
+
+  const nextHistory = [...tracking.sequenceHistory, snapshot].slice(-100);
+  const nextLatestByStyle = {
+    ...tracking.latestByStyle,
+    [normalizedStyleCode]: snapshot.id
+  };
+  const nextValidationReport = {
+    ...baseReport,
+    citationTracking: {
+      sequenceHistory: nextHistory,
+      latestByStyle: nextLatestByStyle
+    }
+  };
+
+  await prisma.annexureDraft.update({
+    where: { id: draftId },
+    data: {
+      validationReport: nextValidationReport
+    }
+  });
+
+  return {
+    snapshotId: snapshot.id,
+    version: snapshot.version,
+    previousVersion: previousSnapshot?.version || null,
+    changed: Boolean(previousSnapshot),
+    changes,
+    historyCount: nextHistory.length
+  };
+}
+
+function extractSectionCitationKeys(
+  sectionContent: string,
+  canonicalLookup: Map<string, string>
+): string[] {
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  CITE_MARKER_REGEX.lastIndex = 0;
+  let match: RegExpExecArray | null = null;
+
+  while ((match = CITE_MARKER_REGEX.exec(sectionContent)) !== null) {
+    const keys = splitCitationKeys(match[1] || '');
+    for (const rawKey of keys) {
+      const canonical = canonicalLookup.get(rawKey.toLowerCase());
+      if (!canonical || seen.has(canonical)) continue;
+      seen.add(canonical);
+      ordered.push(canonical);
+    }
+  }
+
+  return ordered;
+}
+
+function extractOrderedCitationKeysFromSections(
+  extraSections: Record<string, string>,
+  orderedSectionKeys: string[],
+  canonicalLookup: Map<string, string>
+): string[] {
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+
+  for (const sectionKey of orderedSectionKeys) {
+    const sectionContent = extraSections[sectionKey] || '';
+    if (!sectionContent.trim()) continue;
+    const sectionKeys = extractSectionCitationKeys(sectionContent, canonicalLookup);
+    for (const key of sectionKeys) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+      ordered.push(key);
+    }
+  }
+
+  return ordered;
+}
+
+function sortCitationsByOrderedKeys<T extends { citationKey: string }>(
+  citations: T[],
+  orderedCitationKeys: string[]
+): T[] {
+  const orderLookup = new Map<string, number>();
+  orderedCitationKeys.forEach((key, index) => orderLookup.set(key, index));
+
+  return [...citations].sort((a, b) => {
+    const left = orderLookup.get(a.citationKey);
+    const right = orderLookup.get(b.citationKey);
+    const leftRank = typeof left === 'number' ? left : Number.MAX_SAFE_INTEGER;
+    const rightRank = typeof right === 'number' ? right : Number.MAX_SAFE_INTEGER;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return a.citationKey.localeCompare(b.citationKey);
+  });
+}
+
+async function syncSectionDraftCitationUsage(params: {
+  sessionId: string;
+  sectionKey: string;
+  sectionContent: string;
+  citations: SessionCitation[];
+}): Promise<{
+  citationKeys: string[];
+  attributedCount: number;
+  ambiguousCount: number;
+  unattributedKeys: string[];
+}> {
+  const { sessionId, sectionContent, citations } = params;
+  const sectionKey = normalizeSectionKey(params.sectionKey || '');
+  if (!sectionKey) {
+    return {
+      citationKeys: [],
+      attributedCount: 0,
+      ambiguousCount: 0,
+      unattributedKeys: []
+    };
+  }
+  const canonicalLookup = buildCanonicalCitationLookup(citations);
+  const citationByKey = new Map(citations.map(c => [c.citationKey, c]));
+  const citationKeys = extractSectionCitationKeys(sectionContent, canonicalLookup);
+
+  const activeCitationIds = new Set(
+    citationKeys
+      .map(key => citationByKey.get(key)?.id)
+      .filter((id): id is string => Boolean(id))
+  );
+
+  const existing = await prisma.citationUsage.findMany({
+    where: {
+      sectionKey,
+      usageKind: 'DRAFT_CITATION',
+      citation: { sessionId }
+    },
+    select: {
+      id: true,
+      citationId: true
+    }
+  });
+
+  const staleUsageIds = existing
+    .filter(usage => !activeCitationIds.has(usage.citationId))
+    .map(usage => usage.id);
+  if (staleUsageIds.length > 0) {
+    await prisma.citationUsage.deleteMany({
+      where: { id: { in: staleUsageIds } }
+    });
+  }
+
+  let attributedCount = 0;
+  let ambiguousCount = 0;
+  const unattributedKeys: string[] = [];
+
+  for (const citationKey of citationKeys) {
+    const citation = citationByKey.get(citationKey);
+    if (!citation) continue;
+
+    const attribution = await resolveCitationAttribution(citation.id, sectionKey);
+    if (attribution.dimension) {
+      attributedCount++;
+    } else if (attribution.ambiguous) {
+      ambiguousCount++;
+      unattributedKeys.push(citationKey);
+    } else {
+      unattributedKeys.push(citationKey);
+    }
+
+    await citationService.markCitationUsed(
+      citation.id,
+      sectionKey,
+      sectionContent.slice(0, 200),
+      undefined,
+      {
+        usageKind: 'DRAFT_CITATION',
+        dimension: attribution.dimension
+      }
+    );
+  }
+
+  return {
+    citationKeys,
+    attributedCount,
+    ambiguousCount,
+    unattributedKeys
+  };
+}
+
+async function syncDraftCitationUsage(params: {
+  sessionId: string;
+  paperTypeCode: string;
+  citations: SessionCitation[];
+  extraSections: Record<string, string>;
+}): Promise<{
+  orderedSectionKeys: string[];
+  orderedCitationKeys: string[];
+}> {
+  const { sessionId, paperTypeCode, citations, extraSections } = params;
+  const normalizedSections: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(extraSections)) {
+    const sectionKey = normalizeSectionKey(rawKey);
+    if (!sectionKey) continue;
+    const value = String(rawValue || '');
+    if (!value.trim()) continue;
+    const existing = normalizedSections[sectionKey];
+    normalizedSections[sectionKey] = existing
+      ? `${existing}\n\n${value}`
+      : value;
+  }
+
+  const paperType = await paperTypeService.getPaperType(paperTypeCode);
+  const preferredOrder = Array.isArray(paperType?.sectionOrder) ? paperType.sectionOrder : [];
+  const existingUsageSections = await prisma.citationUsage.findMany({
+    where: {
+      usageKind: 'DRAFT_CITATION',
+      citation: { sessionId }
+    },
+    select: { sectionKey: true },
+    distinct: ['sectionKey']
+  });
+
+  const orderedSectionKeys = mergeSectionOrder(
+    preferredOrder,
+    normalizedSections,
+    existingUsageSections.map(row => row.sectionKey)
+  );
+
+  for (const sectionKey of orderedSectionKeys) {
+    await syncSectionDraftCitationUsage({
+      sessionId,
+      sectionKey,
+      sectionContent: normalizedSections[sectionKey] || '',
+      citations
+    });
+  }
+
+  const canonicalLookup = buildCanonicalCitationLookup(citations);
+  const orderedCitationKeys = extractOrderedCitationKeysFromSections(
+    normalizedSections,
+    orderedSectionKeys,
+    canonicalLookup
+  );
+
+  return { orderedSectionKeys, orderedCitationKeys };
 }
 
 interface BlueprintPromptContext {
@@ -440,7 +970,15 @@ async function buildPrompt(
   const userBlock = userInstructions ? `\n\nUSER INSTRUCTIONS:\n${userInstructions}` : '';
   const styleBlock = writingSampleBlock ? `\n\n${writingSampleBlock}` : '';
 
-  return `${basePrompt}${topicBlock}${citationsBlock}${styleBlock}${userBlock}\n\nReturn ONLY the section content.`;
+  return `${basePrompt}${topicBlock}${citationsBlock}${styleBlock}${userBlock}
+
+OUTPUT FORMAT (MANDATORY):
+- Return ONLY clean Markdown text. No JSON, no code fences, no explanations.
+- Use headings with ## for major subsections and ### for nested subsections when needed.
+- Use "-" for bullet lists and "1." for numbered lists; use two-space indentation for nested list levels.
+- Keep paragraph spacing clean (blank line between paragraphs and after headings).
+- Preserve citation placeholders exactly in [CITE:key] format.
+- Do not use HTML tags.`;
 }
 
 function extractCitationKeys(content: string): string[] {
@@ -667,14 +1205,20 @@ async function generateSection(
   emitStatus?: GenerationStatusEmitter
 ): Promise<GenerateSectionResult> {
   const { sessionId, session, user, paperTypeCode, payload, requestHeaders } = params;
-  const sectionKey = payload.sectionKey;
-  const useMappedEvidence = payload.useMappedEvidence !== false;
+  const sectionKey = normalizeSectionKey(payload.sectionKey);
+  const requestedMappedEvidence = payload.useMappedEvidence !== false;
+  const sectionContextPolicy = await sectionTemplateService.getSectionContextPolicy(sectionKey, paperTypeCode);
+  const useMappedEvidence = sectionContextPolicy.requiresCitations
+    ? requestedMappedEvidence
+    : false;
 
   await emitStatus?.(
     'load_context',
     useMappedEvidence
       ? 'Loading topic, citations, blueprint, and mapped evidence'
-      : 'Loading topic and citations (mapped evidence disabled)'
+      : sectionContextPolicy.requiresCitations
+        ? 'Loading topic and citations (mapped evidence disabled)'
+        : 'Loading topic and citations (auto citations disabled for this section by policy)'
   );
   const researchTopic = await prisma.researchTopic.findUnique({
     where: { sessionId }
@@ -875,7 +1419,7 @@ async function generateSection(
       ? 'Validating mapped citation whitelist for this section'
       : 'Validating citation keys (mapped whitelist disabled)'
   );
-  let contentForPostProcess = rawContent;
+  let contentForPostProcess = polishDraftMarkdown(rawContent);
   const initialValidation = DraftingService.validateCitationKeys(
     contentForPostProcess,
     useMappedEvidence ? citationContext.allowedCitationKeys : undefined
@@ -954,17 +1498,23 @@ async function generateSection(
     }
   );
 
+  const polishedContent = polishDraftMarkdown(postProcessed.processedContent);
+
   // P1 Fix: Only throw on unknownCitationKeys when strictWhitelist is active.
   // When mapped evidence is OFF, unknown keys from bare brackets (e.g. [BERT], [ResNet])
   // are false positives from technical terms -- they should NOT cause a hard failure.
-  const hasDisallowedInStrict = useMappedEvidence && postProcessed.disallowedCitationKeys.length > 0;
+  const finalValidation = DraftingService.validateCitationKeys(
+    polishedContent,
+    useMappedEvidence ? citationContext.allowedCitationKeys : undefined
+  );
+  const hasDisallowedInStrict = useMappedEvidence && finalValidation.disallowedKeys.length > 0;
   const hasUnknownInStrict = useMappedEvidence && postProcessed.unknownCitationKeys.length > 0;
 
   if (hasDisallowedInStrict || hasUnknownInStrict) {
     console.warn('[PaperDrafting] Post-process citation validation failed', {
       sectionKey,
-      disallowedCount: postProcessed.disallowedCitationKeys.length,
-      disallowedSample: postProcessed.disallowedCitationKeys.slice(0, 10),
+      disallowedCount: finalValidation.disallowedKeys.length,
+      disallowedSample: finalValidation.disallowedKeys.slice(0, 10),
       unknownCount: postProcessed.unknownCitationKeys.length,
       unknownSample: postProcessed.unknownCitationKeys.slice(0, 10)
     });
@@ -975,7 +1525,7 @@ async function generateSection(
         error: 'Section contains invalid citation keys',
         citationValidation: {
           allowedCitationKeys: useMappedEvidence ? citationContext.allowedCitationKeys : [],
-          disallowedKeys: postProcessed.disallowedCitationKeys,
+          disallowedKeys: finalValidation.disallowedKeys,
           unknownKeys: postProcessed.unknownCitationKeys
         }
       }
@@ -993,7 +1543,7 @@ async function generateSection(
   const updatedDraft = await updateDraftContent(
     draft.id,
     sectionKey,
-    postProcessed.processedContent,
+    polishedContent,
     paperTypeCode,
     {
       prompt,
@@ -1013,38 +1563,21 @@ async function generateSection(
     });
   }
 
-  const citationMap = new Map(citations.map(c => [c.citationKey, c]));
-  let attributedCount = 0;
-  let ambiguousCount = 0;
-  const unattributedKeys: string[] = [];
-  await Promise.all(postProcessed.citationsUsed.map(async key => {
-    const citation = citationMap.get(key);
-    if (!citation) return;
-    const attribution = await resolveCitationAttribution(citation.id, sectionKey);
-    if (attribution.dimension) {
-      attributedCount++;
-    } else if (attribution.ambiguous) {
-      ambiguousCount++;
-      unattributedKeys.push(key);
-    } else {
-      unattributedKeys.push(key);
-    }
-    await citationService.markCitationUsed(
-      citation.id,
-      sectionKey,
-      postProcessed.processedContent.slice(0, 200),
-      undefined,
-      {
-        usageKind: 'DRAFT_CITATION',
-        dimension: attribution.dimension
-      }
-    );
-  }));
+  const usageSync = await syncSectionDraftCitationUsage({
+    sessionId,
+    sectionKey,
+    sectionContent: polishedContent,
+    citations
+  });
+  const finalCitationKeys = usageSync.citationKeys;
+  const attributedCount = usageSync.attributedCount;
+  const ambiguousCount = usageSync.ambiguousCount;
+  const unattributedKeys = usageSync.unattributedKeys;
 
   return {
     sectionKey,
-    content: postProcessed.processedContent,
-    citationsUsed: postProcessed.citationsUsed,
+    content: polishedContent,
+    citationsUsed: finalCitationKeys,
     warnings: postProcessed.warnings,
     citationValidation: {
       allowedCitationKeys: useMappedEvidence ? citationContext.allowedCitationKeys : [],
@@ -1161,8 +1694,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
       case 'save_section': {
         const payload = saveSchema.parse(body);
-        const sectionKey = payload.sectionKey;
-        const content = payload.content || '';
+        const sectionKey = normalizeSectionKey(payload.sectionKey);
+        const content = polishDraftMarkdown(payload.content || '');
 
         const researchTopic = await prisma.researchTopic.findUnique({
           where: { sessionId }
@@ -1187,20 +1720,32 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           });
         }
 
+        const citations = await citationService.getCitationsForSession(sessionId);
+        const usageSync = await syncSectionDraftCitationUsage({
+          sessionId,
+          sectionKey,
+          sectionContent: content,
+          citations
+        });
+
         return NextResponse.json({
           sectionKey,
           content,
-          saved: true
+          saved: true,
+          citationsUsed: usageSync.citationKeys
         });
       }
 
       case 'insert_citation': {
         const payload = insertCitationSchema.parse(body);
+        const sectionKey = payload.sectionKey
+          ? normalizeSectionKey(payload.sectionKey)
+          : undefined;
         const citations = await citationService.getCitationsForSession(sessionId);
         const citationMap = new Map(citations.map(c => [c.citationKey, c]));
 
-        if (payload.sectionKey) {
-          const citationContext = await DraftingService.buildCitationContext(sessionId, payload.sectionKey);
+        if (sectionKey) {
+          const citationContext = await DraftingService.buildCitationContext(sessionId, sectionKey);
           if (citationContext.allowedCitationKeys.length > 0) {
             const allowedSet = new Set(citationContext.allowedCitationKeys);
             const disallowed = payload.citationKeys.filter(key => !allowedSet.has(key));
@@ -1224,15 +1769,16 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
         const insertText = placeholders.join(' ');
         const position = payload.position ?? payload.content.length;
-        const updated = payload.content.slice(0, position) + insertText + payload.content.slice(position);
+        const updatedRaw = payload.content.slice(0, position) + insertText + payload.content.slice(position);
+        const updated = polishDraftMarkdown(updatedRaw);
 
         await Promise.all(payload.citationKeys.map(async key => {
           const citation = citationMap.get(key);
-          if (!citation || !payload.sectionKey) return;
-          const attribution = await resolveCitationAttribution(citation.id, payload.sectionKey);
+          if (!citation || !sectionKey) return;
+          const attribution = await resolveCitationAttribution(citation.id, sectionKey);
           await citationService.markCitationUsed(
             citation.id,
-            payload.sectionKey,
+            sectionKey,
             updated.slice(0, 200),
             undefined,
             {
@@ -1264,20 +1810,154 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
       case 'generate_bibliography': {
         const payload = bibliographySchema.parse(body);
-        const styleCode = getStyleCode(session);
+        const styleCode = payload.styleCode || getStyleCode(session);
+        const normalizedStyleCode = styleCode.toUpperCase();
         const citations = await citationService.getCitationsForSession(sessionId);
+        const canonicalLookup = buildCanonicalCitationLookup(citations);
+        const draft = await getPaperDraft(sessionId);
 
-        const filtered = payload.citationKeys
-          ? citations.filter(c => payload.citationKeys!.includes(c.citationKey))
-          : citations;
+        let orderedCitationKeys: string[] = [];
+        if (draft) {
+          const sections = normalizeExtraSections(draft.extraSections);
+          const synced = await syncDraftCitationUsage({
+            sessionId,
+            paperTypeCode,
+            citations,
+            extraSections: sections
+          });
+          orderedCitationKeys = synced.orderedCitationKeys;
+        }
 
-        const bibliography = await citationStyleService.generateBibliography(
+        const requestedKeys = payload.citationKeys
+          ? payload.citationKeys
+              .map(key => canonicalLookup.get(key.trim().toLowerCase()))
+              .filter((key): key is string => Boolean(key))
+          : [];
+
+        const selectedCitationKeys = Array.from(new Set(
+          requestedKeys.length > 0
+            ? requestedKeys
+            : orderedCitationKeys.length > 0
+              ? orderedCitationKeys
+              : citations.map(c => c.citationKey)
+        ));
+
+        const selectedSet = new Set(selectedCitationKeys);
+        let filtered = citations.filter(c => selectedSet.has(c.citationKey));
+
+        const styleDefinition = await citationStyleService.getCitationStyle(styleCode);
+        const styleDefaultSortOrder = styleDefinition?.bibliographySortOrder === 'order_of_appearance'
+          ? 'order_of_appearance'
+          : 'alphabetical';
+
+        let effectiveSortOrder = payload.sortOrder || styleDefaultSortOrder;
+        if (NUMERIC_ORDER_STYLES.has(normalizedStyleCode)) {
+          effectiveSortOrder = 'order_of_appearance';
+        }
+
+        if (effectiveSortOrder === 'order_of_appearance') {
+          const fallbackOrder = selectedCitationKeys.length > 0
+            ? selectedCitationKeys
+            : citations.map(c => c.citationKey);
+          const ordering = mergeCitationOrder(orderedCitationKeys, fallbackOrder);
+          filtered = sortCitationsByOrderedKeys(filtered, ordering);
+        }
+
+        const rawBibliography = await citationStyleService.generateBibliography(
           filtered.map(toCitationData),
           styleCode,
-          { sortOrder: payload.sortOrder }
+          { sortOrder: effectiveSortOrder }
         );
 
-        return NextResponse.json({ bibliography });
+        const bibliography = formatBibliographyMarkdown(
+          rawBibliography,
+          effectiveSortOrder
+        );
+
+        const orderedCitationKeysForResponse = effectiveSortOrder === 'order_of_appearance'
+          ? filtered.map(citation => citation.citationKey)
+          : [];
+        const numbering = buildCitationNumberingMap(orderedCitationKeysForResponse);
+
+        let sequenceTracking: {
+          snapshotId: string;
+          version: number;
+          previousVersion: number | null;
+          changed: boolean;
+          changes: CitationSequenceDiff;
+          historyCount: number;
+        } | null = null;
+        if (draft && effectiveSortOrder === 'order_of_appearance') {
+          sequenceTracking = await persistCitationSequenceSnapshot({
+            draftId: draft.id,
+            validationReport: draft.validationReport,
+            styleCode,
+            sortOrder: effectiveSortOrder,
+            orderedCitationKeys: orderedCitationKeysForResponse
+          });
+        }
+
+        return NextResponse.json({
+          bibliography,
+          styleCode,
+          sortOrder: effectiveSortOrder,
+          usedCount: filtered.length,
+          sequence: {
+            orderedCitationKeys: orderedCitationKeysForResponse,
+            numbering,
+            snapshotId: sequenceTracking?.snapshotId || null,
+            version: sequenceTracking?.version || null,
+            previousVersion: sequenceTracking?.previousVersion || null,
+            changed: sequenceTracking?.changed || false,
+            changes: sequenceTracking?.changes || {
+              added: [],
+              removed: [],
+              renumbered: []
+            },
+            historyCount: sequenceTracking?.historyCount || 0
+          }
+        });
+      }
+
+      case 'get_citation_sequence_history': {
+        const payload = citationSequenceHistorySchema.parse(body);
+        const draft = await getPaperDraft(sessionId);
+        if (!draft) {
+          return NextResponse.json({
+            styleCode: payload.styleCode || null,
+            total: 0,
+            latest: null,
+            history: []
+          });
+        }
+
+        const styleFilter = payload.styleCode
+          ? payload.styleCode.trim().toUpperCase()
+          : null;
+        const tracking = readCitationTrackingState(draft.validationReport);
+        let history = [...tracking.sequenceHistory];
+        if (styleFilter) {
+          history = history.filter(snapshot => snapshot.styleCode === styleFilter);
+        }
+
+        history.sort((a, b) => {
+          const timeDiff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+          if (timeDiff !== 0) return timeDiff;
+          return b.version - a.version;
+        });
+
+        const limit = payload.limit || 20;
+        const slicedHistory = history.slice(0, limit);
+        const latest = styleFilter
+          ? findLatestSnapshotForStyle(tracking, styleFilter)
+          : (slicedHistory[0] || null);
+
+        return NextResponse.json({
+          styleCode: styleFilter,
+          total: history.length,
+          latest,
+          history: slicedHistory
+        });
       }
 
       case 'analyze_structure': {
@@ -1466,7 +2146,10 @@ Provide the COMPLETE revised section content that addresses the issue while pres
 - Existing citations and references
 - Overall structure and flow
 
-Return ONLY the revised section content, no explanations or markdown formatting.`;
+Return ONLY the revised section content in polished Markdown:
+- No code fences, no JSON, no explanations.
+- Preserve heading and list hierarchy.
+- Preserve [CITE:key] placeholders exactly.`;
 
         // maxTokensOut is controlled via super admin LLM config for PAPER_AI_FIX stage
         const llmRequest = {
@@ -1498,7 +2181,7 @@ Return ONLY the revised section content, no explanations or markdown formatting.
           }, { status: 500 });
         }
 
-        const fixedContent = (result.response.output || '').trim();
+        const fixedContent = polishDraftMarkdown((result.response.output || '').trim());
 
         // If preview only, return without saving
         if (payload.previewOnly) {

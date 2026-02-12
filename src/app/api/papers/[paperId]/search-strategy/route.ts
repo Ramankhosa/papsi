@@ -13,24 +13,33 @@ const generateSchema = z.object({
   regenerate: z.boolean().optional().default(false)
 });
 
+const searchQueryCategorySchema = z.enum([
+  'CORE_CONCEPTS', 'DOMAIN_APPLICATION', 'METHODOLOGY',
+  'THEORETICAL_FOUNDATION', 'SURVEYS_REVIEWS', 'COMPETING_APPROACHES',
+  'RECENT_ADVANCES', 'GAP_IDENTIFICATION', 'CUSTOM'
+]);
+
 // Schema for updating query status
 const updateQuerySchema = z.object({
   queryId: z.string().min(1),
   status: z.enum(['PENDING', 'SEARCHING', 'SEARCHED', 'COMPLETED', 'SKIPPED']).optional(),
   resultsCount: z.number().int().nonnegative().optional(),
   importedCount: z.number().int().nonnegative().optional(),
-  userNotes: z.string().optional()
+  userNotes: z.string().optional(),
+  queryText: z.string().min(2).max(300).optional(),
+  description: z.string().max(500).optional(),
+  category: searchQueryCategorySchema.optional(),
+  priority: z.number().int().positive().optional(),
+  suggestedSources: z.array(z.string().min(1).max(50)).optional(),
+  suggestedYearFrom: z.union([z.number().int().min(1900).max(2100), z.null()]).optional(),
+  suggestedYearTo: z.union([z.number().int().min(1900).max(2100), z.null()]).optional()
 });
 
 // Schema for adding custom query
 const addQuerySchema = z.object({
   queryText: z.string().min(2),
-  description: z.string().optional(),
-  category: z.enum([
-    'CORE_CONCEPTS', 'DOMAIN_APPLICATION', 'METHODOLOGY', 
-    'THEORETICAL_FOUNDATION', 'SURVEYS_REVIEWS', 'COMPETING_APPROACHES',
-    'RECENT_ADVANCES', 'GAP_IDENTIFICATION', 'CUSTOM'
-  ]).optional().default('CUSTOM')
+  description: z.string().max(500).optional(),
+  category: searchQueryCategorySchema.optional().default('CUSTOM')
 });
 
 interface GeneratedQuery {
@@ -427,6 +436,19 @@ export async function PATCH(request: NextRequest, context: { params: { paperId: 
     const body = await request.json();
     const data = updateQuerySchema.parse(body);
 
+    if (
+      data.suggestedYearFrom !== undefined &&
+      data.suggestedYearTo !== undefined &&
+      data.suggestedYearFrom !== null &&
+      data.suggestedYearTo !== null &&
+      data.suggestedYearFrom > data.suggestedYearTo
+    ) {
+      return NextResponse.json(
+        { error: 'suggestedYearFrom must be less than or equal to suggestedYearTo' },
+        { status: 400 }
+      );
+    }
+
     // Verify query belongs to this strategy
     const query = await prisma.citationSearchQuery.findFirst({
       where: {
@@ -450,6 +472,17 @@ export async function PATCH(request: NextRequest, context: { params: { paperId: 
     if (data.resultsCount !== undefined) updateData.resultsCount = data.resultsCount;
     if (data.importedCount !== undefined) updateData.importedCount = data.importedCount;
     if (data.userNotes !== undefined) updateData.userNotes = data.userNotes;
+    if (data.queryText !== undefined) updateData.queryText = data.queryText.trim();
+    if (data.description !== undefined) updateData.description = data.description.trim();
+    if (data.category !== undefined) updateData.category = data.category;
+    if (data.priority !== undefined) updateData.priority = data.priority;
+    if (data.suggestedSources !== undefined) updateData.suggestedSources = data.suggestedSources;
+    if (data.suggestedYearFrom !== undefined) updateData.suggestedYearFrom = data.suggestedYearFrom;
+    if (data.suggestedYearTo !== undefined) updateData.suggestedYearTo = data.suggestedYearTo;
+
+    if (Object.keys(updateData).length === 0) {
+      return NextResponse.json({ error: 'No query fields provided to update' }, { status: 400 });
+    }
 
     const updatedQuery = await prisma.citationSearchQuery.update({
       where: { id: data.queryId },

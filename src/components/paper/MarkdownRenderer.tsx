@@ -1,150 +1,288 @@
 'use client';
 
 import { useMemo } from 'react';
+import { polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
 
 interface MarkdownRendererProps {
   content: string;
   className?: string;
 }
 
-/**
- * Lightweight Markdown Renderer for Paper Sections
- * 
- * Supports:
- * - ### Subsection headings
- * - - Bullet points (unordered lists)
- * - 1. Numbered lists (ordered lists)
- * - **bold** and *italic* text
- * - Paragraphs with proper spacing
- */
+type ParsedListLine = {
+  type: 'ul' | 'ol';
+  level: number;
+  text: string;
+};
+
+type ListNode = {
+  type: 'ul' | 'ol';
+  text: string;
+  children: ListNode[];
+};
+
+type Block =
+  | { kind: 'heading'; level: number; text: string }
+  | { kind: 'paragraph'; text: string }
+  | { kind: 'list'; items: ParsedListLine[] }
+  | { kind: 'blockquote'; lines: string[] };
+
+function parseListLine(line: string): ParsedListLine | null {
+  const unordered = line.match(/^(\s*)-\s+(.+)$/);
+  if (unordered) {
+    return {
+      type: 'ul',
+      level: Math.max(0, Math.floor((unordered[1] || '').length / 2)),
+      text: unordered[2].trim()
+    };
+  }
+
+  const ordered = line.match(/^(\s*)(\d+)\.\s+(.+)$/);
+  if (ordered) {
+    return {
+      type: 'ol',
+      level: Math.max(0, Math.floor((ordered[1] || '').length / 2)),
+      text: ordered[3].trim()
+    };
+  }
+
+  return null;
+}
+
+function parseMarkdownBlocks(content: string): Block[] {
+  const lines = content.split(/\r?\n/);
+  const blocks: Block[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = (lines[index] || '').replace(/\s+$/g, '');
+    if (!line.trim()) {
+      index++;
+      continue;
+    }
+
+    const heading = line.match(/^(#{2,4})\s+(.+)$/);
+    if (heading) {
+      blocks.push({
+        kind: 'heading',
+        level: heading[1].length,
+        text: heading[2].trim()
+      });
+      index++;
+      continue;
+    }
+
+    // Blockquote: > text
+    const blockquoteMatch = line.match(/^>\s*(.*)$/);
+    if (blockquoteMatch) {
+      const quoteLines: string[] = [blockquoteMatch[1].trim()];
+      index++;
+      while (index < lines.length) {
+        const current = (lines[index] || '').replace(/\s+$/g, '');
+        const nextBq = current.match(/^>\s*(.*)$/);
+        if (nextBq) {
+          quoteLines.push(nextBq[1].trim());
+          index++;
+          continue;
+        }
+        break;
+      }
+      blocks.push({ kind: 'blockquote', lines: quoteLines.filter(Boolean) });
+      continue;
+    }
+
+    const firstListLine = parseListLine(line);
+    if (firstListLine) {
+      const listItems: ParsedListLine[] = [firstListLine];
+      index++;
+
+      while (index < lines.length) {
+        const current = (lines[index] || '').replace(/\s+$/g, '');
+        if (!current.trim()) {
+          index++;
+          continue;
+        }
+
+        const parsed = parseListLine(current);
+        if (parsed) {
+          listItems.push(parsed);
+          index++;
+          continue;
+        }
+
+        if (/^\s{2,}\S/.test(current) && listItems.length > 0) {
+          listItems[listItems.length - 1].text += ` ${current.trim()}`;
+          index++;
+          continue;
+        }
+
+        break;
+      }
+
+      blocks.push({ kind: 'list', items: listItems });
+      continue;
+    }
+
+    const paragraphLines: string[] = [line.trim()];
+    index++;
+
+    while (index < lines.length) {
+      const current = (lines[index] || '').replace(/\s+$/g, '');
+      if (!current.trim()) break;
+      if (/^(#{2,4})\s+/.test(current)) break;
+      if (parseListLine(current)) break;
+      paragraphLines.push(current.trim());
+      index++;
+    }
+
+    blocks.push({ kind: 'paragraph', text: paragraphLines.join(' ') });
+  }
+
+  return blocks;
+}
+
+function buildListTree(items: ParsedListLine[]): ListNode[] {
+  if (!items.length) return [];
+
+  const minLevel = Math.min(...items.map(item => item.level));
+  const normalized = items.map(item => ({ ...item, level: item.level - minLevel }));
+  const roots: ListNode[] = [];
+  const stack: Array<{ level: number; node: ListNode }> = [];
+
+  for (const item of normalized) {
+    const node: ListNode = {
+      type: item.type,
+      text: item.text,
+      children: []
+    };
+
+    while (stack.length > 0 && item.level <= stack[stack.length - 1].level) {
+      stack.pop();
+    }
+
+    if (stack.length === 0) {
+      roots.push(node);
+    } else {
+      stack[stack.length - 1].node.children.push(node);
+    }
+
+    stack.push({ level: item.level, node });
+  }
+
+  return roots;
+}
+
+function renderListGroups(nodes: ListNode[], depth: number = 0): React.ReactNode {
+  if (!nodes.length) return null;
+
+  const groups: Array<{ type: 'ul' | 'ol'; nodes: ListNode[] }> = [];
+  for (const node of nodes) {
+    const last = groups[groups.length - 1];
+    if (!last || last.type !== node.type) {
+      groups.push({ type: node.type, nodes: [node] });
+    } else {
+      last.nodes.push(node);
+    }
+  }
+
+  return groups.map((group, groupIndex) => {
+    const isUnordered = group.type === 'ul';
+    const ListTag = isUnordered ? 'ul' : 'ol';
+    const markerClass = isUnordered ? 'list-disc' : 'list-decimal';
+    const marginClass = depth === 0 ? 'ml-6' : 'ml-5';
+
+    return (
+      <ListTag
+        key={`${depth}-${groupIndex}`}
+        className={`${markerClass} list-outside ${marginClass} my-2 space-y-1`}
+        style={{ fontSize: '11pt' }}
+      >
+        {group.nodes.map((node, nodeIndex) => (
+          <li key={`${depth}-${groupIndex}-${nodeIndex}`} className="text-gray-800 pl-1">
+            {formatInlineText(node.text)}
+            {node.children.length > 0 && renderListGroups(node.children, depth + 1)}
+          </li>
+        ))}
+      </ListTag>
+    );
+  });
+}
+
 export default function MarkdownRenderer({ content, className = '' }: MarkdownRendererProps) {
   const rendered = useMemo(() => {
-    if (!content) return null;
+    const normalized = polishDraftMarkdown(content || '');
+    if (!normalized) return null;
 
-    // Split content into blocks (separated by double newlines or before headings)
-    const blocks = content.split(/\n\n+/);
-    const elements: React.ReactNode[] = [];
+    const blocks = parseMarkdownBlocks(normalized);
 
-    blocks.forEach((block, blockIndex) => {
-      const trimmedBlock = block.trim();
-      if (!trimmedBlock) return;
+    return blocks.map((block, index) => {
+      if (block.kind === 'heading') {
+        if (block.level <= 2) {
+          return (
+            <h3
+              key={index}
+              className="text-gray-900 mt-8 mb-3 first:mt-0"
+              style={{
+                fontSize: '13pt',
+                fontWeight: 700,
+                fontFamily: '"Palatino Linotype", "Book Antiqua", Palatino, serif'
+              }}
+            >
+              {formatInlineText(block.text)}
+            </h3>
+          );
+        }
 
-      // Check if block is a heading (### or ##)
-      // Elsevier-style: bold headings, slightly larger, numbered look
-      if (trimmedBlock.startsWith('### ')) {
-        const headingText = trimmedBlock.slice(4).trim();
-        elements.push(
-          <h4 
-            key={blockIndex} 
+        return (
+          <h4
+            key={index}
             className="text-gray-900 mt-6 mb-2 first:mt-0"
-            style={{ 
-              fontSize: '12pt', 
+            style={{
+              fontSize: '12pt',
               fontWeight: 600,
               fontFamily: '"Palatino Linotype", "Book Antiqua", Palatino, serif'
             }}
           >
-            {formatInlineText(headingText)}
+            {formatInlineText(block.text)}
           </h4>
         );
-        return;
       }
 
-      if (trimmedBlock.startsWith('## ')) {
-        const headingText = trimmedBlock.slice(3).trim();
-        elements.push(
-          <h3 
-            key={blockIndex} 
-            className="text-gray-900 mt-8 mb-3 first:mt-0"
-            style={{ 
-              fontSize: '13pt', 
-              fontWeight: 700,
-              fontFamily: '"Palatino Linotype", "Book Antiqua", Palatino, serif'
-            }}
+      if (block.kind === 'blockquote') {
+        return (
+          <blockquote
+            key={index}
+            className="border-l-3 border-indigo-400 pl-4 my-4 text-gray-600 italic"
+            style={{ fontSize: '10.5pt', lineHeight: '1.6' }}
           >
-            {formatInlineText(headingText)}
-          </h3>
-        );
-        return;
-      }
-
-      // Check if block is a list
-      const lines = trimmedBlock.split('\n');
-      const firstLine = lines[0].trim();
-
-      // Unordered list (starts with - or *)
-      if (/^[-*]\s/.test(firstLine)) {
-        const listItems: string[] = [];
-        lines.forEach(line => {
-          const match = line.match(/^[-*]\s+(.+)/);
-          if (match) {
-            listItems.push(match[1]);
-          } else if (line.trim() && listItems.length > 0) {
-            // Continuation of previous item
-            listItems[listItems.length - 1] += ' ' + line.trim();
-          }
-        });
-
-        elements.push(
-          <ul 
-            key={blockIndex} 
-            className="list-disc list-outside ml-6 my-3 space-y-1"
-            style={{ fontSize: '11pt' }}
-          >
-            {listItems.map((item, i) => (
-              <li key={i} className="text-gray-800 pl-1">
-                {formatInlineText(item)}
-              </li>
+            {block.lines.map((line, i) => (
+              <p key={i} className="my-1">{formatInlineText(line)}</p>
             ))}
-          </ul>
+          </blockquote>
         );
-        return;
       }
 
-      // Ordered list (starts with number.)
-      if (/^\d+\.\s/.test(firstLine)) {
-        const listItems: string[] = [];
-        lines.forEach(line => {
-          const match = line.match(/^\d+\.\s+(.+)/);
-          if (match) {
-            listItems.push(match[1]);
-          } else if (line.trim() && listItems.length > 0) {
-            // Continuation of previous item
-            listItems[listItems.length - 1] += ' ' + line.trim();
-          }
-        });
-
-        elements.push(
-          <ol 
-            key={blockIndex} 
-            className="list-decimal list-outside ml-6 my-3 space-y-1"
-            style={{ fontSize: '11pt' }}
-          >
-            {listItems.map((item, i) => (
-              <li key={i} className="text-gray-800 pl-1">
-                {formatInlineText(item)}
-              </li>
-            ))}
-          </ol>
+      if (block.kind === 'list') {
+        const tree = buildListTree(block.items);
+        return (
+          <div key={index} className="my-2">
+            {renderListGroups(tree)}
+          </div>
         );
-        return;
       }
 
-      // Regular paragraph - Elsevier style: justified, proper spacing
-      elements.push(
-        <p 
-          key={blockIndex} 
+      return (
+        <p
+          key={index}
           className="text-gray-800 my-3 text-justify first:mt-0"
-          style={{ 
-            textIndent: blockIndex > 0 ? '1.5em' : '0', // First-line indent except first paragraph
+          style={{
+            textIndent: '1.5em',
             marginBottom: '0.8em'
           }}
         >
-          {formatInlineText(trimmedBlock.replace(/\n/g, ' '))}
+          {formatInlineText(block.text)}
         </p>
       );
     });
-
-    return elements;
   }, [content]);
 
   return (

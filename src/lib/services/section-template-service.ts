@@ -51,6 +51,12 @@ export interface SectionPromptContext {
   targetWordCount?: number;
 }
 
+export interface SectionContextPolicy {
+  requiresBlueprint: boolean;
+  requiresPreviousSections: boolean;
+  requiresCitations: boolean;
+}
+
 class SectionTemplateService {
   private templateCache: Map<string, SectionTemplate[]> = new Map();
   private cacheTimestamp: number = 0;
@@ -257,6 +263,64 @@ class SectionTemplateService {
     });
 
     return rules;
+  }
+
+  /**
+   * Resolve runtime context/citation policy for a section based on:
+   * 1) base PaperSupersetSection flags
+   * 2) optional PaperTypeSectionPrompt constraints override
+   */
+  async getSectionContextPolicy(
+    sectionKey: string,
+    paperTypeCode: string
+  ): Promise<SectionContextPolicy> {
+    await this.loadFromDatabase();
+    const base = this.findSupersetSection(sectionKey);
+
+    const defaultPolicy: SectionContextPolicy = {
+      requiresBlueprint: true,
+      requiresPreviousSections: true,
+      requiresCitations: false
+    };
+
+    if (!base) {
+      return defaultPolicy;
+    }
+
+    const policy: SectionContextPolicy = {
+      requiresBlueprint: Boolean(base.requiresBlueprint),
+      requiresPreviousSections: Boolean(base.requiresPreviousSections),
+      requiresCitations: Boolean(base.requiresCitations)
+    };
+
+    const override = this.findTypeOverride(paperTypeCode, sectionKey);
+    const overrideRequiresCitations = this.extractBooleanOverride(override?.constraints, 'requiresCitations');
+    if (typeof overrideRequiresCitations === 'boolean') {
+      policy.requiresCitations = overrideRequiresCitations;
+    }
+
+    return policy;
+  }
+
+  /**
+   * Resolve runtime policies for all sections in a paper type (or provided section keys).
+   */
+  async getSectionContextPolicyMap(
+    paperTypeCode: string,
+    sectionKeys?: string[]
+  ): Promise<Record<string, SectionContextPolicy>> {
+    const keys = Array.isArray(sectionKeys) && sectionKeys.length > 0
+      ? sectionKeys
+      : (await paperTypeService.getPaperType(paperTypeCode))?.sectionOrder || [];
+
+    const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
+    const policyMap: Record<string, SectionContextPolicy> = {};
+
+    for (const key of uniqueKeys) {
+      policyMap[key] = await this.getSectionContextPolicy(key, paperTypeCode);
+    }
+
+    return policyMap;
   }
 
   // ============================================================================
@@ -578,6 +642,71 @@ ${typeAdditions}`;
 
   private normalizeSectionKey(sectionKey: string): string {
     return sectionKey.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  }
+
+  private findSupersetSection(sectionKey: string): PaperSupersetSection | undefined {
+    const exact = this.dbSupersetSections.get(sectionKey);
+    if (exact) return exact;
+
+    const normalized = this.normalizeSectionKey(sectionKey);
+    for (const [key, section] of this.dbSupersetSections.entries()) {
+      if (this.normalizeSectionKey(key) === normalized) {
+        return section;
+      }
+    }
+
+    return undefined;
+  }
+
+  private findTypeOverride(
+    paperTypeCode: string,
+    sectionKey: string
+  ): PaperTypeSectionPrompt | undefined {
+    const normalizedType = paperTypeCode.toUpperCase();
+    const exact = this.dbTypeOverrides.get(`${normalizedType}:${sectionKey}`);
+    if (exact) return exact;
+
+    const normalizedSection = this.normalizeSectionKey(sectionKey);
+    for (const override of this.dbTypeOverrides.values()) {
+      if (override.paperTypeCode !== normalizedType) continue;
+      if (this.normalizeSectionKey(override.sectionKey) === normalizedSection) {
+        return override;
+      }
+    }
+
+    return undefined;
+  }
+
+  /**
+   * Reads boolean override from:
+   * - constraints.requiresCitations
+   * - constraints.contextOverrides.requiresCitations
+   * - constraints.context.requiresCitations
+   */
+  private extractBooleanOverride(
+    constraints: unknown,
+    key: 'requiresCitations'
+  ): boolean | undefined {
+    if (!constraints || typeof constraints !== 'object') return undefined;
+    const record = constraints as Record<string, unknown>;
+
+    if (typeof record[key] === 'boolean') {
+      return record[key] as boolean;
+    }
+
+    const contextOverrides = record.contextOverrides;
+    if (contextOverrides && typeof contextOverrides === 'object') {
+      const ctx = contextOverrides as Record<string, unknown>;
+      if (typeof ctx[key] === 'boolean') return ctx[key] as boolean;
+    }
+
+    const context = record.context;
+    if (context && typeof context === 'object') {
+      const ctx = context as Record<string, unknown>;
+      if (typeof ctx[key] === 'boolean') return ctx[key] as boolean;
+    }
+
+    return undefined;
   }
 
   private validateSectionTemplate(template: SectionTemplate): void {
