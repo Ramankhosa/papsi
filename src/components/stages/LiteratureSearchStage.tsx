@@ -64,6 +64,127 @@ interface SearchStrategyEditorState {
   suggestedYearTo: string;
 }
 
+type MappingConfidence = 'HIGH' | 'MEDIUM' | 'LOW';
+type EvidenceKind = 'DIRECT_QUOTE' | 'PARAPHRASE' | 'INFERRED';
+type EvidenceSpecificity = 'HIGH' | 'MEDIUM' | 'LOW';
+
+interface CoverageEvidenceRow {
+  id: string;
+  paperId: string;
+  paperTitle: string;
+  sectionKey: string;
+  dimension: string;
+  dimensionKey: string;
+  remark: string;
+  confidence: MappingConfidence;
+  evidenceKind: EvidenceKind;
+  hasLocation: boolean;
+  locationLabel: string;
+  specificity: EvidenceSpecificity;
+  rubricScore: number;
+  rubricBand: 'high' | 'medium' | 'low';
+  authors: string[];
+  year: number | null;
+  venue: string;
+  publisher: string;
+  pages: string;
+  doi: string;
+  url: string;
+  affiliationText: string;
+}
+
+interface CoverageRowFeedback {
+  inclusionStatus: 'INCLUDED' | 'EXCLUDED';
+  reviewComment: string;
+}
+
+interface MappingReviewRecord {
+  id: string;
+  citationId: string;
+  sectionKey: string;
+  dimension: string;
+  remark: string;
+  confidence: MappingConfidence;
+  mappingSource: string;
+  inclusionStatus: 'INCLUDED' | 'EXCLUDED';
+  reviewComment: string;
+}
+
+interface CoverageSectionOption {
+  sectionKey: string;
+  sectionTitle: string;
+  dimensions: string[];
+}
+
+const normalizeCoverageToken = (value: string): string =>
+  value.toLowerCase().replace(/\s+/g, ' ').trim();
+
+const buildDimensionKey = (sectionKey: string, dimension: string): string =>
+  `${normalizeCoverageToken(sectionKey)}::${normalizeCoverageToken(dimension)}`;
+
+const deriveEvidenceKind = (remark: string): EvidenceKind => {
+  const text = remark.trim();
+  if (!text) return 'INFERRED';
+  if (text.includes('"') || text.includes("'")) return 'DIRECT_QUOTE';
+  if (/\b(abstract|reports?|shows?|states?|finds?|demonstrates?)\b/i.test(text)) {
+    return 'PARAPHRASE';
+  }
+  return 'INFERRED';
+};
+
+const hasLocationSignal = (remark: string, paper: any): boolean => {
+  if (paper?.pages) return true;
+  return /\b(p\.?|pp\.?|page|section|sec\.|chapter|table|figure)\s*[A-Za-z0-9-]*/i.test(remark);
+};
+
+const extractLocationLabel = (remark: string, paper: any): string => {
+  if (typeof paper?.pages === 'string' && paper.pages.trim()) {
+    return `Pages ${paper.pages.trim()}`;
+  }
+  const locationMatch = remark.match(/\b(p\.?|pp\.?|page|section|sec\.|chapter|table|figure)\s*([A-Za-z0-9.\-]+)/i);
+  if (!locationMatch) return 'Location not provided';
+  const locationType = locationMatch[1].replace(/\.$/, '');
+  const locationValue = locationMatch[2];
+  return `${locationType} ${locationValue}`;
+};
+
+const deriveSpecificity = (remark: string): EvidenceSpecificity => {
+  const text = remark.trim();
+  if (!text) return 'LOW';
+
+  const hasNumericDetail = /\d/.test(text);
+  const hasComparator = /\b(compared|versus|outperforms|improves|reduces|increases|benchmark)\b/i.test(text);
+  const hasLength = text.length >= 120;
+
+  if ((hasNumericDetail && hasComparator) || (hasNumericDetail && hasLength)) {
+    return 'HIGH';
+  }
+  if (hasNumericDetail || hasComparator || text.length >= 70) {
+    return 'MEDIUM';
+  }
+  return 'LOW';
+};
+
+const computeRubricScore = (
+  confidence: MappingConfidence,
+  evidenceKind: EvidenceKind,
+  hasLocation: boolean,
+  specificity: EvidenceSpecificity
+): number => {
+  const confidenceScore = confidence === 'HIGH' ? 58 : confidence === 'MEDIUM' ? 42 : 28;
+  const kindScore = evidenceKind === 'DIRECT_QUOTE' ? 20 : evidenceKind === 'PARAPHRASE' ? 12 : 6;
+  const locationScore = hasLocation ? 12 : 0;
+  const specificityScore = specificity === 'HIGH' ? 10 : specificity === 'MEDIUM' ? 6 : 2;
+
+  return Math.min(100, confidenceScore + kindScore + locationScore + specificityScore);
+};
+
+const rubricBandFromScore = (score: number): 'high' | 'medium' | 'low' => {
+  if (score >= 75) return 'high';
+  if (score >= 50) return 'medium';
+  return 'low';
+};
+
 const SOURCE_OPTIONS = [
   { value: 'google_scholar', label: 'Google Scholar', description: 'Broad academic search' },
   { value: 'semantic_scholar', label: 'Semantic Scholar', description: 'Rich abstracts & citations' },
@@ -197,6 +318,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   // Citations panel - search and selection
   const [citationSearch, setCitationSearch] = useState('');
   const [selectedCitations, setSelectedCitations] = useState<Set<string>>(new Set());
+  const [exportingBibtex, setExportingBibtex] = useState(false);
   
   // Libraries for "Save to Library" feature
   const [libraries, setLibraries] = useState<Array<{ id: string; name: string; color?: string; referenceCount: number }>>([]);
@@ -622,9 +744,9 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     }
   }, [sessionId, authToken]);
 
-  const normalizePaperKey = (value?: string) => value?.toLowerCase().trim();
+  const normalizePaperKey = useCallback((value?: string) => value?.toLowerCase().trim(), []);
   // Normalize DOI to handle different formats (with/without URL prefix)
-  const normalizeDoiKey = (doi?: string) => {
+  const normalizeDoiKey = useCallback((doi?: string) => {
     if (!doi) return undefined;
     let normalized = doi.toLowerCase().trim();
     // Remove common DOI URL prefixes
@@ -633,10 +755,10 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       .replace(/^https?:\/\/dx\.doi\.org\//i, '')
       .replace(/^doi:/i, '');
     return normalized || undefined;
-  };
-  const titleKey = (title?: string) => normalizePaperKey(title)?.substring(0, 100);
+  }, []);
+  const titleKey = useCallback((title?: string) => normalizePaperKey(title)?.substring(0, 100), [normalizePaperKey]);
 
-  const buildResultLookup = (list: any[]) => {
+  const buildResultLookup = useCallback((list: any[]) => {
     const byId = new Set<string>();
     const byDoi = new Map<string, string>();
     const byTitle = new Map<string, string>();
@@ -648,9 +770,9 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       if (tKey && !byTitle.has(tKey)) byTitle.set(tKey, result.id);
     }
     return { byId, byDoi, byTitle };
-  };
+  }, [normalizeDoiKey, titleKey]);
 
-  const resolveSuggestionResultId = (
+  const resolveSuggestionResultId = useCallback((
     suggestion: any,
     lookup: ReturnType<typeof buildResultLookup>
   ) => {
@@ -666,7 +788,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       return lookup.byTitle.get(tKey) as string;
     }
     return null;
-  };
+  }, [normalizeDoiKey, titleKey]);
 
   // Load ALL search runs and merge their results on mount (persist across refresh)
   useEffect(() => {
@@ -918,7 +1040,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     };
     
     loadExistingSearchRuns();
-  }, [sessionId, authToken]);
+  }, [sessionId, authToken, buildResultLookup, resolveSuggestionResultId, showToast, titleKey, normalizeDoiKey]);
 
   useEffect(() => {
     const loadSession = async () => {
@@ -1895,6 +2017,56 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     }
   };
 
+  const handleExportBibtex = async () => {
+    if (!authToken || citations.length === 0 || exportingBibtex) return;
+
+    try {
+      setExportingBibtex(true);
+      const idsQuery = selectedCitations.size > 0
+        ? `?ids=${encodeURIComponent(Array.from(selectedCitations).join(','))}`
+        : '';
+
+      const response = await fetch(`/api/papers/${sessionId}/citations/export${idsQuery}`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`
+        }
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'BibTeX export failed');
+      }
+
+      const bibtex = typeof data.bibtex === 'string' ? data.bibtex : '';
+      const blob = new Blob([bibtex], { type: 'application/x-bibtex;charset=utf-8' });
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = selectedCitations.size > 0
+        ? `citations_selected_${sessionId}.bib`
+        : `citations_${sessionId}.bib`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+
+      const exportedCount = typeof data.count === 'number' ? data.count : 0;
+      showToast({
+        type: 'success',
+        title: 'BibTeX Export Ready',
+        message: `Downloaded ${exportedCount} citation${exportedCount === 1 ? '' : 's'} as BibTeX.`,
+        duration: 3500
+      });
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'Export Failed',
+        message: err instanceof Error ? err.message : 'Could not export BibTeX.',
+        duration: 5000
+      });
+    } finally {
+      setExportingBibtex(false);
+    }
+  };
+
   const runGapAnalysis = async () => {
     if (!authToken) return;
     try {
@@ -2339,11 +2511,29 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     sectionKey: string;
     dimension: string;
     remark: string;
-    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+    confidence: MappingConfidence;
   }>>>(new Map());
   
   // Import recommendation from AI
   const [paperRecommendations, setPaperRecommendations] = useState<Map<string, 'IMPORT' | 'MAYBE' | 'SKIP'>>(new Map());
+
+  // Coverage UX: default evidence-first table + bipartite matrix alternate
+  const [coverageSubView, setCoverageSubView] = useState<'evidence_table' | 'matrix'>('evidence_table');
+  const [coverageDimensionFamilyFilter, setCoverageDimensionFamilyFilter] = useState<string>('all');
+  const [coverageYearFilter, setCoverageYearFilter] = useState<string>('all');
+  const [coverageVenueFilter, setCoverageVenueFilter] = useState('');
+  const [coverageAffiliationFilter, setCoverageAffiliationFilter] = useState('');
+  const [coverageStrengthFilter, setCoverageStrengthFilter] = useState<'all' | 'high' | 'medium' | 'low'>('all');
+  const [coverageShowGapsMode, setCoverageShowGapsMode] = useState(false);
+  const [coverageFeedback, setCoverageFeedback] = useState<Map<string, CoverageRowFeedback>>(new Map());
+  const [coverageSectionOptionsFromServer, setCoverageSectionOptionsFromServer] = useState<CoverageSectionOption[]>([]);
+  const [coverageSavingRows, setCoverageSavingRows] = useState<Set<string>>(new Set());
+  const [coverageRemapRow, setCoverageRemapRow] = useState<CoverageEvidenceRow | null>(null);
+  const [coverageRemapSectionKey, setCoverageRemapSectionKey] = useState('');
+  const [coverageRemapDimension, setCoverageRemapDimension] = useState('');
+  const [coverageRemapRemark, setCoverageRemapRemark] = useState('');
+  const [coverageRemapSubmitting, setCoverageRemapSubmitting] = useState(false);
+  const [activeCoverageEvidence, setActiveCoverageEvidence] = useState<CoverageEvidenceRow | null>(null);
   
   // Citation analysis state (for analyzing imported citations against blueprint)
   const [citationAnalyzing, setCitationAnalyzing] = useState(false);
@@ -2358,7 +2548,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     sectionKey: string;
     dimension: string;
     remark: string;
-    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+    confidence: MappingConfidence;
   }>>>(new Map());
   const [citationAiAnalysis, setCitationAiAnalysis] = useState<Map<string, {
     isRelevant: boolean;
@@ -2390,6 +2580,647 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       }>;
     }>;
   } | null>(null);
+
+  const coverageEvidenceRows = useMemo<CoverageEvidenceRow[]>(() => {
+    if (!blueprintCoverage) return [];
+
+    const resultById = new Map<string, any>(results.map(result => [String(result.id), result]));
+    const rows: CoverageEvidenceRow[] = [];
+    const seen = new Set<string>();
+
+    for (const [paperId, mappings] of paperDimensionMappings.entries()) {
+      const paper = resultById.get(String(paperId)) || {};
+      for (const mapping of mappings || []) {
+        const sectionKey = String(mapping.sectionKey || '').trim();
+        const dimension = String(mapping.dimension || '').trim();
+        if (!sectionKey || !dimension) continue;
+
+        const dimensionKey = buildDimensionKey(sectionKey, dimension);
+        const rowId = `${paperId}::${dimensionKey}`;
+        if (seen.has(rowId)) continue;
+
+        const remark = String(mapping.remark || '').trim();
+        const evidenceKind = deriveEvidenceKind(remark);
+        const hasLocation = hasLocationSignal(remark, paper);
+        const specificity = deriveSpecificity(remark);
+        const rubricScore = computeRubricScore(mapping.confidence, evidenceKind, hasLocation, specificity);
+        const affiliationParts: string[] = [];
+        if (typeof paper?.publisher === 'string') affiliationParts.push(paper.publisher);
+        if (typeof paper?.venue === 'string') affiliationParts.push(paper.venue);
+        if (typeof paper?.rawData?.institution === 'string') affiliationParts.push(paper.rawData.institution);
+        if (Array.isArray(paper?.rawData?.affiliations)) affiliationParts.push(paper.rawData.affiliations.join(' '));
+        if (typeof paper?.rawData?.host_venue?.publisher === 'string') affiliationParts.push(paper.rawData.host_venue.publisher);
+
+        rows.push({
+          id: rowId,
+          paperId: String(paperId),
+          paperTitle: typeof paper?.title === 'string' && paper.title.trim() ? paper.title : 'Untitled paper',
+          sectionKey,
+          dimension,
+          dimensionKey,
+          remark,
+          confidence: mapping.confidence,
+          evidenceKind,
+          hasLocation,
+          locationLabel: extractLocationLabel(remark, paper),
+          specificity,
+          rubricScore,
+          rubricBand: rubricBandFromScore(rubricScore),
+          authors: Array.isArray(paper?.authors) ? paper.authors.filter((author: any) => typeof author === 'string' && author.trim()) : [],
+          year: typeof paper?.year === 'number' ? paper.year : null,
+          venue: typeof paper?.venue === 'string' ? paper.venue : '',
+          publisher: typeof paper?.publisher === 'string' ? paper.publisher : '',
+          pages: typeof paper?.pages === 'string' ? paper.pages : '',
+          doi: typeof paper?.doi === 'string' ? paper.doi : '',
+          url: typeof paper?.url === 'string' ? paper.url : '',
+          affiliationText: affiliationParts.join(' ')
+        });
+        seen.add(rowId);
+      }
+    }
+
+    for (const [sectionKey, section] of Object.entries(blueprintCoverage.sectionCoverage || {})) {
+      for (const dimensionNode of section.dimensions || []) {
+        const dimension = String(dimensionNode.dimension || '').trim();
+        const dimensionKey = buildDimensionKey(sectionKey, dimension);
+        for (const paperId of dimensionNode.papers || []) {
+          const rowId = `${paperId}::${dimensionKey}`;
+          if (seen.has(rowId)) continue;
+          const paper = resultById.get(String(paperId)) || {};
+          rows.push({
+            id: rowId,
+            paperId: String(paperId),
+            paperTitle: typeof paper?.title === 'string' && paper.title.trim() ? paper.title : 'Untitled paper',
+            sectionKey,
+            dimension,
+            dimensionKey,
+            remark: '',
+            confidence: 'LOW',
+            evidenceKind: 'INFERRED',
+            hasLocation: false,
+            locationLabel: 'Location not provided',
+            specificity: 'LOW',
+            rubricScore: computeRubricScore('LOW', 'INFERRED', false, 'LOW'),
+            rubricBand: 'low',
+            authors: Array.isArray(paper?.authors) ? paper.authors.filter((author: any) => typeof author === 'string' && author.trim()) : [],
+            year: typeof paper?.year === 'number' ? paper.year : null,
+            venue: typeof paper?.venue === 'string' ? paper.venue : '',
+            publisher: typeof paper?.publisher === 'string' ? paper.publisher : '',
+            pages: typeof paper?.pages === 'string' ? paper.pages : '',
+            doi: typeof paper?.doi === 'string' ? paper.doi : '',
+            url: typeof paper?.url === 'string' ? paper.url : '',
+            affiliationText: typeof paper?.publisher === 'string' ? paper.publisher : ''
+          });
+          seen.add(rowId);
+        }
+      }
+    }
+
+    return rows.sort((a, b) => {
+      if (a.sectionKey !== b.sectionKey) return a.sectionKey.localeCompare(b.sectionKey);
+      if (a.dimension !== b.dimension) return a.dimension.localeCompare(b.dimension);
+      return a.paperTitle.localeCompare(b.paperTitle);
+    });
+  }, [blueprintCoverage, paperDimensionMappings, results]);
+
+  const coverageDimensionFamilies = useMemo(() => {
+    const families = new Set<string>();
+    for (const row of coverageEvidenceRows) {
+      families.add(row.sectionKey);
+    }
+    return Array.from(families).sort((a, b) => a.localeCompare(b));
+  }, [coverageEvidenceRows]);
+
+  const coverageYears = useMemo(() => {
+    const years = new Set<number>();
+    for (const row of coverageEvidenceRows) {
+      if (typeof row.year === 'number') years.add(row.year);
+    }
+    return Array.from(years).sort((a, b) => b - a);
+  }, [coverageEvidenceRows]);
+
+  const filteredCoverageRows = useMemo(() => {
+    const venueFilter = normalizeCoverageToken(coverageVenueFilter);
+    const affiliationFilter = normalizeCoverageToken(coverageAffiliationFilter);
+
+    return coverageEvidenceRows.filter(row => {
+      if (coverageDimensionFamilyFilter !== 'all' && row.sectionKey !== coverageDimensionFamilyFilter) return false;
+      if (coverageYearFilter !== 'all' && String(row.year ?? '') !== coverageYearFilter) return false;
+      if (coverageStrengthFilter !== 'all' && row.rubricBand !== coverageStrengthFilter) return false;
+      if (venueFilter && !normalizeCoverageToken(`${row.venue} ${row.paperTitle}`).includes(venueFilter)) return false;
+      if (affiliationFilter && !normalizeCoverageToken(row.affiliationText).includes(affiliationFilter)) return false;
+      return true;
+    });
+  }, [
+    coverageEvidenceRows,
+    coverageDimensionFamilyFilter,
+    coverageYearFilter,
+    coverageVenueFilter,
+    coverageAffiliationFilter,
+    coverageStrengthFilter
+  ]);
+
+  const coverageGapKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const gap of blueprintCoverage?.gaps || []) {
+      keys.add(buildDimensionKey(gap.sectionKey, gap.dimension));
+    }
+    return keys;
+  }, [blueprintCoverage]);
+
+  const coverageMatrixDimensions = useMemo(() => {
+    if (!blueprintCoverage?.sectionCoverage) return [] as Array<{
+      key: string;
+      sectionKey: string;
+      dimension: string;
+      isGap: boolean;
+    }>;
+
+    const dimensions: Array<{ key: string; sectionKey: string; dimension: string; isGap: boolean }> = [];
+
+    for (const [sectionKey, section] of Object.entries(blueprintCoverage.sectionCoverage)) {
+      if (coverageDimensionFamilyFilter !== 'all' && sectionKey !== coverageDimensionFamilyFilter) continue;
+
+      for (const dim of section.dimensions || []) {
+        const dimension = String(dim.dimension || '').trim();
+        const key = buildDimensionKey(sectionKey, dimension);
+        dimensions.push({
+          key,
+          sectionKey,
+          dimension,
+          isGap: coverageGapKeys.has(key)
+        });
+      }
+    }
+
+    return dimensions.sort((a, b) => {
+      if (a.sectionKey !== b.sectionKey) return a.sectionKey.localeCompare(b.sectionKey);
+      return a.dimension.localeCompare(b.dimension);
+    });
+  }, [blueprintCoverage, coverageDimensionFamilyFilter, coverageGapKeys]);
+
+  const coverageMatrixDimensionDisplay = useMemo(() => {
+    const sectionCounters = new Map<string, number>();
+    return coverageMatrixDimensions.map(dimension => {
+      const sectionTokens = String(dimension.sectionKey || '')
+        .trim()
+        .toUpperCase()
+        .split(/[\s_\-]+/)
+        .filter(Boolean);
+      const sectionCode = sectionTokens.length > 1
+        ? sectionTokens.map(token => token[0]).join('').slice(0, 3)
+        : (sectionTokens[0] || 'DIM').slice(0, 3);
+      const count = (sectionCounters.get(sectionCode) || 0) + 1;
+      sectionCounters.set(sectionCode, count);
+      return {
+        ...dimension,
+        identifier: `${sectionCode}-${count}`
+      };
+    });
+  }, [coverageMatrixDimensions]);
+
+  const coverageRowsByCell = useMemo(() => {
+    const lookup = new Map<string, CoverageEvidenceRow[]>();
+    for (const row of filteredCoverageRows) {
+      const key = `${row.paperId}::${row.dimensionKey}`;
+      if (!lookup.has(key)) lookup.set(key, []);
+      lookup.get(key)!.push(row);
+    }
+    return lookup;
+  }, [filteredCoverageRows]);
+
+  const coverageMatrixPapers = useMemo(() => {
+    const papers = new Map<string, { id: string; title: string; year: number | null; venue: string }>();
+    for (const row of filteredCoverageRows) {
+      if (!papers.has(row.paperId)) {
+        papers.set(row.paperId, {
+          id: row.paperId,
+          title: row.paperTitle,
+          year: row.year,
+          venue: row.venue
+        });
+      }
+    }
+    return Array.from(papers.values()).sort((a, b) => {
+      if ((a.year || 0) !== (b.year || 0)) return (b.year || 0) - (a.year || 0);
+      return a.title.localeCompare(b.title);
+    });
+  }, [filteredCoverageRows]);
+
+  const coverageSectionOptions = useMemo<CoverageSectionOption[]>(() => {
+    const fromBlueprint = Array.isArray((session as any)?.paperBlueprint?.sectionPlan)
+      ? (session as any).paperBlueprint.sectionPlan
+          .map((section: any) => ({
+            sectionKey: String(section?.sectionKey || '').trim(),
+            sectionTitle: String(section?.purpose || section?.sectionKey || '').trim(),
+            dimensions: Array.isArray(section?.mustCover)
+              ? section.mustCover.map((dim: any) => String(dim || '').trim()).filter(Boolean)
+              : []
+          }))
+          .filter((section: CoverageSectionOption) => section.sectionKey && section.dimensions.length > 0)
+      : [];
+    if (fromBlueprint.length > 0) {
+      return fromBlueprint;
+    }
+    if (coverageSectionOptionsFromServer.length > 0) {
+      return coverageSectionOptionsFromServer;
+    }
+
+    return Object.entries(blueprintCoverage?.sectionCoverage || {}).map(([sectionKey, section]) => ({
+      sectionKey,
+      sectionTitle: sectionKey,
+      dimensions: (section.dimensions || [])
+        .map(dim => String(dim.dimension || '').trim())
+        .filter(Boolean)
+    })).filter(section => section.dimensions.length > 0);
+  }, [session, coverageSectionOptionsFromServer, blueprintCoverage]);
+
+  const coverageSectionOptionMap = useMemo(() => {
+    return new Map(coverageSectionOptions.map(option => [option.sectionKey, option]));
+  }, [coverageSectionOptions]);
+
+  const coverageRemapDimensionOptions = useMemo(() => {
+    const dimensions = coverageSectionOptionMap.get(coverageRemapSectionKey)?.dimensions || [];
+    if (dimensions.length > 0) {
+      return dimensions;
+    }
+    return coverageRemapRow?.dimension ? [coverageRemapRow.dimension] : [];
+  }, [coverageSectionOptionMap, coverageRemapSectionKey, coverageRemapRow]);
+
+  const citationLookup = useMemo(() => {
+    const byId = new Set<string>();
+    const byDoi = new Map<string, string>();
+    const byTitle = new Map<string, string>();
+    for (const citation of citations) {
+      const citationId = String(citation?.id || '');
+      if (!citationId) continue;
+      byId.add(citationId);
+      const doiKey = normalizeDoiKey(citation?.doi);
+      if (doiKey && !byDoi.has(doiKey)) byDoi.set(doiKey, citationId);
+      const tKey = titleKey(citation?.title);
+      if (tKey && !byTitle.has(tKey)) byTitle.set(tKey, citationId);
+    }
+    return { byId, byDoi, byTitle };
+  }, [citations, normalizeDoiKey, titleKey]);
+
+  const resultsById = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const result of results) {
+      if (result?.id) {
+        map.set(String(result.id), result);
+      }
+    }
+    return map;
+  }, [results]);
+
+  const resolveCoverageRowCitationId = useCallback((row: CoverageEvidenceRow): string | null => {
+    if (citationLookup.byId.has(row.paperId)) {
+      return row.paperId;
+    }
+    const backingResult = resultsById.get(row.paperId);
+    const doiKey = normalizeDoiKey(row.doi || backingResult?.doi);
+    if (doiKey && citationLookup.byDoi.has(doiKey)) {
+      return citationLookup.byDoi.get(doiKey) || null;
+    }
+    const tKey = titleKey(row.paperTitle || backingResult?.title);
+    if (tKey && citationLookup.byTitle.has(tKey)) {
+      return citationLookup.byTitle.get(tKey) || null;
+    }
+    return null;
+  }, [citationLookup, resultsById, normalizeDoiKey, titleKey]);
+
+  const updateCoverageFeedbackState = useCallback((
+    rowId: string,
+    inclusionStatus: 'INCLUDED' | 'EXCLUDED',
+    reviewComment = ''
+  ) => {
+    setCoverageFeedback(prev => {
+      const next = new Map(prev);
+      next.set(rowId, { inclusionStatus, reviewComment });
+      return next;
+    });
+  }, []);
+
+  const setCoverageRowSaving = useCallback((rowId: string, saving: boolean) => {
+    setCoverageSavingRows(prev => {
+      const next = new Set(prev);
+      if (saving) next.add(rowId);
+      else next.delete(rowId);
+      return next;
+    });
+  }, []);
+
+  const updateCoverageInclusion = useCallback(async (
+    row: CoverageEvidenceRow,
+    inclusionStatus: 'INCLUDED' | 'EXCLUDED'
+  ) => {
+    if (!authToken) return;
+    const citationId = resolveCoverageRowCitationId(row);
+    if (!citationId) {
+      showToast({
+        type: 'info',
+        title: 'Import required',
+        message: 'This paper must be added to citations before inclusion state can be persisted.',
+        duration: 3500
+      });
+      updateCoverageFeedbackState(row.id, inclusionStatus);
+      return;
+    }
+
+    setCoverageRowSaving(row.id, true);
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/literature/mapping-review`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          citationId,
+          sectionKey: row.sectionKey,
+          dimension: row.dimension,
+          action: inclusionStatus === 'INCLUDED' ? 'CONFIRM' : 'REMOVE'
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to update mapping status');
+      }
+
+      updateCoverageFeedbackState(row.id, inclusionStatus, String(payload?.mapping?.reviewComment || ''));
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'Update failed',
+        message: err instanceof Error ? err.message : 'Could not update mapping state',
+        duration: 4500
+      });
+    } finally {
+      setCoverageRowSaving(row.id, false);
+    }
+  }, [resolveCoverageRowCitationId, showToast, updateCoverageFeedbackState, setCoverageRowSaving, sessionId, authToken]);
+
+  const openCoverageRemapDialog = useCallback((row: CoverageEvidenceRow) => {
+    const matchedSection = coverageSectionOptions.find(section =>
+      normalizeCoverageToken(section.sectionKey) === normalizeCoverageToken(row.sectionKey)
+    ) || coverageSectionOptions[0];
+    const nextSectionKey = matchedSection?.sectionKey || row.sectionKey;
+    const nextDimension = matchedSection?.dimensions.find(dim =>
+      normalizeCoverageToken(dim) === normalizeCoverageToken(row.dimension)
+    ) || matchedSection?.dimensions[0] || row.dimension;
+
+    setCoverageRemapRow(row);
+    setCoverageRemapSectionKey(nextSectionKey);
+    setCoverageRemapDimension(nextDimension);
+    setCoverageRemapRemark(row.remark || '');
+  }, [coverageSectionOptions]);
+
+  const submitCoverageRemap = useCallback(async () => {
+    if (!coverageRemapRow) return;
+    if (!authToken) return;
+
+    const citationId = resolveCoverageRowCitationId(coverageRemapRow);
+    if (!citationId) {
+      showToast({
+        type: 'info',
+        title: 'Import required',
+        message: 'This paper must be added to citations before mapping changes can be persisted.',
+        duration: 3500
+      });
+      return;
+    }
+
+    setCoverageRemapSubmitting(true);
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/literature/mapping-review`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          citationId,
+          sectionKey: coverageRemapRow.sectionKey,
+          dimension: coverageRemapRow.dimension,
+          action: 'CHANGE_MAPPING',
+          newSectionKey: coverageRemapSectionKey,
+          newDimension: coverageRemapDimension,
+          newRemark: coverageRemapRemark
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to update mapping');
+      }
+
+      setPaperDimensionMappings(prev => {
+        const next = new Map(prev);
+        const existing = next.get(coverageRemapRow.paperId) || [];
+        const filtered = existing.filter(mapping =>
+          normalizeCoverageToken(mapping.sectionKey) !== normalizeCoverageToken(coverageRemapRow.sectionKey)
+          || normalizeCoverageToken(mapping.dimension) !== normalizeCoverageToken(coverageRemapRow.dimension)
+        );
+        next.set(coverageRemapRow.paperId, [
+          ...filtered,
+          {
+            sectionKey: payload?.mapping?.sectionKey || coverageRemapSectionKey,
+            dimension: payload?.mapping?.dimension || coverageRemapDimension,
+            remark: payload?.mapping?.remark || coverageRemapRemark.trim(),
+            confidence: (payload?.mapping?.confidence || coverageRemapRow.confidence) as MappingConfidence
+          }
+        ]);
+        return next;
+      });
+
+      updateCoverageFeedbackState(
+        `${coverageRemapRow.paperId}::${buildDimensionKey(payload?.mapping?.sectionKey || coverageRemapSectionKey, payload?.mapping?.dimension || coverageRemapDimension)}`,
+        'INCLUDED',
+        String(payload?.mapping?.reviewComment || '')
+      );
+      setCoverageFeedback(prev => {
+        const next = new Map(prev);
+        next.delete(coverageRemapRow.id);
+        return next;
+      });
+
+      setCoverageRemapRow(null);
+      setCoverageRemapSectionKey('');
+      setCoverageRemapDimension('');
+      setCoverageRemapRemark('');
+      showToast({
+        type: 'success',
+        title: 'Mapping updated',
+        message: 'Paper mapping was updated and marked as included for drafting.',
+        duration: 3500
+      });
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'Remap failed',
+        message: err instanceof Error ? err.message : 'Could not update mapping',
+        duration: 4500
+      });
+    } finally {
+      setCoverageRemapSubmitting(false);
+    }
+  }, [
+    coverageRemapRow,
+    resolveCoverageRowCitationId,
+    showToast,
+    sessionId,
+    authToken,
+    coverageRemapSectionKey,
+    coverageRemapDimension,
+    coverageRemapRemark,
+    updateCoverageFeedbackState
+  ]);
+
+  const loadPersistedCoverageReview = useCallback(async () => {
+    if (!authToken) return;
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/literature/mapping-review`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`
+        }
+      });
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = await response.json();
+      const reviewMappings: MappingReviewRecord[] = Array.isArray(payload?.mappings) ? payload.mappings : [];
+      const sectionOptions: CoverageSectionOption[] = Array.isArray(payload?.sectionOptions) ? payload.sectionOptions : [];
+      if (sectionOptions.length > 0) {
+        setCoverageSectionOptionsFromServer(
+          sectionOptions.map(option => ({
+            sectionKey: String(option.sectionKey || '').trim(),
+            sectionTitle: String(option.sectionTitle || option.sectionKey || '').trim(),
+            dimensions: Array.isArray(option.dimensions)
+              ? option.dimensions.map(dim => String(dim || '').trim()).filter(Boolean)
+              : []
+          })).filter(option => option.sectionKey && option.dimensions.length > 0)
+        );
+      }
+      if (reviewMappings.length === 0) {
+        return;
+      }
+
+      const resultLookup = buildResultLookup(results);
+      const citationToResultIds = new Map<string, Set<string>>();
+      for (const citation of citations) {
+        const citationId = String(citation?.id || '');
+        if (!citationId) continue;
+        const resultIds = new Set<string>();
+        if (resultLookup.byId.has(citationId)) {
+          resultIds.add(citationId);
+        }
+        const doiMatch = normalizeDoiKey(citation?.doi);
+        if (doiMatch && resultLookup.byDoi.has(doiMatch)) {
+          resultIds.add(String(resultLookup.byDoi.get(doiMatch)));
+        }
+        const titleMatch = titleKey(citation?.title);
+        if (titleMatch && resultLookup.byTitle.has(titleMatch)) {
+          resultIds.add(String(resultLookup.byTitle.get(titleMatch)));
+        }
+        if (resultIds.size > 0) {
+          citationToResultIds.set(citationId, resultIds);
+        }
+      }
+
+      const mappingsByCitation = new Map<string, Array<{
+        sectionKey: string;
+        dimension: string;
+        remark: string;
+        confidence: MappingConfidence;
+      }>>();
+
+      for (const mapping of reviewMappings) {
+        if (!mapping?.citationId || !mapping?.sectionKey || !mapping?.dimension) continue;
+        const group = mappingsByCitation.get(mapping.citationId) || [];
+        group.push({
+          sectionKey: mapping.sectionKey,
+          dimension: mapping.dimension,
+          remark: mapping.remark || '',
+          confidence: mapping.confidence || 'MEDIUM'
+        });
+        mappingsByCitation.set(mapping.citationId, group);
+      }
+
+      setPaperDimensionMappings(prev => {
+        const next = new Map(prev);
+        for (const [citationId, mappedDims] of mappingsByCitation.entries()) {
+          const resultIds = citationToResultIds.get(citationId);
+          if (!resultIds || resultIds.size === 0) continue;
+          for (const resultId of resultIds) {
+            next.set(resultId, mappedDims);
+          }
+        }
+        return next;
+      });
+
+      const hydratedFeedback = new Map<string, CoverageRowFeedback>();
+      for (const mapping of reviewMappings) {
+        const resultIds = citationToResultIds.get(mapping.citationId);
+        if (!resultIds || resultIds.size === 0) continue;
+        for (const resultId of resultIds) {
+          const rowId = `${resultId}::${buildDimensionKey(mapping.sectionKey, mapping.dimension)}`;
+          hydratedFeedback.set(rowId, {
+            inclusionStatus: mapping.inclusionStatus === 'EXCLUDED' ? 'EXCLUDED' : 'INCLUDED',
+            reviewComment: mapping.reviewComment || ''
+          });
+        }
+      }
+      setCoverageFeedback(hydratedFeedback);
+    } catch (err) {
+      console.warn('[LiteratureSearch] Failed to load persisted mapping review state:', err);
+    }
+  }, [authToken, sessionId, results, citations, buildResultLookup, normalizeDoiKey, titleKey]);
+
+  useEffect(() => {
+    if (!authToken || results.length === 0 || citations.length === 0) return;
+    loadPersistedCoverageReview();
+  }, [authToken, results.length, citations.length, loadPersistedCoverageReview]);
+
+  const renderCoverageEvidenceCard = useCallback((row: CoverageEvidenceRow) => {
+    const scoreClass =
+      row.rubricBand === 'high'
+        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+        : row.rubricBand === 'medium'
+          ? 'bg-blue-50 text-blue-700 border-blue-200'
+          : 'bg-amber-50 text-amber-700 border-amber-200';
+
+    return (
+      <div className="rounded-lg border border-gray-200 bg-gray-50 p-2.5 space-y-2">
+        <p className="text-xs text-gray-800 leading-relaxed">
+          {row.remark || 'No explicit grounding snippet returned. This mapping should be reviewed before relying on it.'}
+        </p>
+        <div className="flex flex-wrap items-center gap-1">
+          <Badge variant="outline" className="text-[10px] bg-white text-gray-700 border-gray-300">
+            {row.evidenceKind === 'DIRECT_QUOTE'
+              ? 'Direct quote'
+              : row.evidenceKind === 'PARAPHRASE'
+                ? 'Paraphrase'
+                : 'Inferred'}
+          </Badge>
+          <Badge variant="outline" className="text-[10px] bg-white text-gray-700 border-gray-300">
+            Location: {row.hasLocation ? 'Yes' : 'No'}
+          </Badge>
+          <Badge variant="outline" className="text-[10px] bg-white text-gray-700 border-gray-300">
+            Specificity: {row.specificity}
+          </Badge>
+          <Badge className={`text-[10px] border-0 ${scoreClass}`}>
+            Strength: {row.rubricScore}
+          </Badge>
+          <Badge variant="outline" className="text-[10px] bg-white text-gray-700 border-gray-300">
+            Confidence: {row.confidence}
+          </Badge>
+        </div>
+        <p className="text-[11px] text-gray-500">
+          <span className="font-medium text-gray-600">Location:</span> {row.locationLabel}
+        </p>
+      </div>
+    );
+  }, []);
   
   const handleFetchAbstract = async (resultId: string, doi?: string) => {
     if (!doi) return;
@@ -2474,7 +3305,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-semibold text-gray-900">Literature Review</h2>
-          <p className="text-sm text-gray-500">Search, import, and manage citations for your paper</p>
+          <p className="text-sm text-gray-500">Find papers, analyze relevance, check coverage, and manage citations</p>
         </div>
         <div className="flex items-center gap-3">
           <div className="text-right">
@@ -2496,16 +3327,34 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         </div>
       </div>
 
+      {/* Workflow Guide - subtle hint for new users */}
+      {citations.length === 0 && !searchStrategy && (
+        <div className="flex items-start gap-3 px-4 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200 text-xs text-blue-800">
+          <svg className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <div>
+            <p className="font-medium mb-0.5">Getting Started</p>
+            <p className="text-blue-700/80 leading-relaxed">
+              <span className="font-semibold">1.</span> Generate a Search Strategy to get AI-suggested queries {' '}
+              <span className="font-semibold">2.</span> Search &amp; import relevant papers {' '}
+              <span className="font-semibold">3.</span> Run Analyze &amp; Map to check blueprint coverage {' '}
+              <span className="font-semibold">4.</span> Review your citations in the Paper Citations tab
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Main Tabs */}
       <Tabs value={mainTab} onValueChange={(v) => setMainTab(v as 'find' | 'citations')} className="space-y-4">
         <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="find" className="flex items-center gap-2">
+          <TabsTrigger value="find" className="flex items-center gap-2" title="Search online databases, browse your library, or import references to find papers for your research.">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
             Find & Add
           </TabsTrigger>
-          <TabsTrigger value="citations" className="flex items-center gap-2">
+          <TabsTrigger value="citations" className="flex items-center gap-2" title="View and manage all citations you've added to this paper. Analyze coverage and export references.">
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
             </svg>
@@ -2552,7 +3401,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                     size="sm"
                     onClick={() => generateSearchStrategy(false)}
                     disabled={generatingStrategy}
-                    className="bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white"
+                    className="bg-gradient-to-r from-violet-600 to-violet-700 hover:from-violet-700 hover:to-violet-800 text-white shadow-sm"
+                    title="Generate Strategy: Use this first to create an AI search plan before running searches. It prepares query groups for concepts, methods, and comparison literature."
                   >
                     {generatingStrategy ? (
                       <>
@@ -2567,7 +3417,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                         <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
                         </svg>
-                        <span className="mr-1">✨ Generate Strategy</span>
+                        <span className="mr-1">Generate Strategy</span>
                         <Badge className="bg-amber-400/90 text-amber-900 text-[9px] px-1 py-0">PRO</Badge>
                       </>
                     )}
@@ -2578,9 +3428,10 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                     variant="outline"
                     onClick={() => generateSearchStrategy(true)}
                     disabled={generatingStrategy}
-                    className="text-indigo-600 border-indigo-300"
+                    className="text-violet-700 border-violet-300 hover:bg-violet-50"
+                    title="Regenerate Strategy: Rebuild the search plan after changing your topic, scope, or blueprint dimensions."
                   >
-                    {generatingStrategy ? 'Regenerating...' : '🔄 Regenerate'}
+                    {generatingStrategy ? 'Regenerating...' : 'Regenerate'}
                   </Button>
                 )}
               </div>
@@ -2846,6 +3697,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                             variant="outline"
                             onClick={() => loadStrategyQueryIntoSearchForm(selectedStrategyQuery)}
                             className="h-7 text-[11px]"
+                            title="Copy this strategy query into the search bar with its suggested filters. You can then run the search or tweak the query before searching."
                           >
                             Load into search form
                           </Button>
@@ -2886,6 +3738,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                       ? 'border-indigo-600 text-indigo-700 bg-white'
                       : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-100'
                   }`}
+                  title="Search academic databases (Semantic Scholar, CrossRef, etc.) for papers related to your topic."
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -2899,6 +3752,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                       ? 'border-indigo-600 text-indigo-700 bg-white'
                       : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-100'
                   }`}
+                  title="Browse and add papers from your personal reference library. Papers saved from previous sessions appear here."
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z" />
@@ -2912,6 +3766,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                       ? 'border-indigo-600 text-indigo-700 bg-white'
                       : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-100'
                   }`}
+                  title="Import citations from BibTeX files, DOI lists, or other reference formats directly into your paper."
                 >
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
@@ -3652,6 +4507,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                               setSelectedResults(new Set());
                             }}
                             className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700"
+                            title="Import the selected papers into your citation list for use in your paper."
                           >
                             <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
@@ -3664,6 +4520,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                             variant="outline"
                             onClick={removeSelected}
                             className="h-7 text-xs text-red-600 border-red-300 hover:bg-red-50"
+                            title="Remove selected papers from the search results list."
                           >
                             <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -3690,14 +4547,19 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                 
                 {/* AI Relevance Analysis Section */}
                 {results.length > 0 && !loading && (
-                  <div className="mt-3 pt-3 border-t border-gray-100">
-                    <div className="flex items-center justify-between gap-3 flex-wrap">
-                      <div className="flex items-center gap-2 flex-wrap">
+                  <div className="mt-3 pt-3 border-t border-gray-100 space-y-2">
+                    {/* Row 1: AI Analysis action + status + view toggle */}
+                    <div className="flex items-start justify-between gap-3 flex-wrap">
+                      {/* Left: Analyze button + status */}
+                      <div className="space-y-1">
+                        <p className="text-[10px] uppercase tracking-wide font-semibold text-violet-700">Analysis</p>
+                        <div className="flex items-center gap-2 flex-wrap">
                         <Button
                           onClick={handleAiRelevanceAnalysis}
                           disabled={aiAnalyzing || !searchRunId}
                           size="sm"
-                          className="bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white shadow-sm"
+                          className="bg-gradient-to-r from-violet-600 to-violet-700 hover:from-violet-700 hover:to-violet-800 text-white shadow-sm"
+                          title="Use AI to score each search result for relevance and map them to your paper's blueprint sections. Run this after searching to see which papers are most useful and unlock the Coverage view."
                         >
                           {aiAnalyzing ? (
                             <>
@@ -3705,120 +4567,143 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                               </svg>
-                              Analyzing with Blueprint...
+                              Analyzing...
                             </>
                           ) : (
                             <>
-                              <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
-                            </svg>
-                            🤖 Analyze & Map to Blueprint
-                          </>
+                              </svg>
+                              Analyze & Map
+                            </>
+                          )}
+                        </Button>
+                        {aiReviewStatus && (
+                          <span className="text-[11px] text-gray-500">
+                            {aiReviewStatus.reviewed}/{aiReviewStatus.total} reviewed
+                            {aiReviewStatus.retry > 0 && (
+                              <span className="text-amber-600 ml-1">· {aiReviewStatus.retry} retry</span>
+                            )}
+                          </span>
                         )}
-                      </Button>
-                      {aiReviewStatus && (
-                        <span className="text-[11px] text-gray-600">
-                          Reviewed: <span className="font-medium">{aiReviewStatus.reviewed}</span> / {aiReviewStatus.total}
-                          {aiReviewStatus.inProcess > 0 && (
-                            <> · In Process: <span className="font-medium">{aiReviewStatus.inProcess}</span></>
+                        </div>
+                      </div>
+
+                      <div className="hidden lg:block self-stretch w-px bg-gray-200" />
+
+                      {/* Right: View toggle */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[10px] uppercase tracking-wide font-semibold text-teal-700">Coverage</p>
+                          {aiSuggestions.size > 0 && (
+                            <Badge className="bg-violet-100 text-violet-700 border-0 text-[10px]">
+                              {aiSuggestions.size} AI picks
+                            </Badge>
                           )}
-                          {aiReviewStatus.retry > 0 && (
-                            <> · Needs Retry: <span className="font-medium text-amber-700">{aiReviewStatus.retry}</span></>
-                          )}
-                        </span>
-                      )}
-                      {aiSuggestions.size > 0 && (
+                        </div>
+                        {/* Toggle View: Results / Coverage */}
+                        <div className="flex items-center border border-teal-200 bg-teal-50/70 rounded-lg p-0.5 shadow-sm">
+                          <Button
+                            size="sm"
+                            variant={searchViewMode === 'results' ? 'default' : 'ghost'}
+                            onClick={() => setSearchViewMode('results')}
+                            className={`h-7 px-3 text-xs rounded-md ${
+                              searchViewMode === 'results' 
+                                ? 'bg-white border border-teal-200 shadow-sm text-gray-900' 
+                                : 'text-gray-700 hover:text-gray-900'
+                            }`}
+                            title="Results: Browse and import individual papers."
+                          >
+                            <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                            </svg>
+                            Results
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={searchViewMode === 'coverage' ? 'default' : 'ghost'}
+                            onClick={() => setSearchViewMode('coverage')}
+                            disabled={!blueprintCoverage}
+                            className={`h-7 px-3 text-xs rounded-md ${
+                              searchViewMode === 'coverage' 
+                                ? 'bg-teal-600 shadow-sm text-white border border-teal-600' 
+                                : !blueprintCoverage
+                                  ? 'bg-teal-100 text-teal-500 border border-teal-200 opacity-80 cursor-not-allowed'
+                                  : 'text-teal-700 hover:text-teal-900 hover:bg-teal-100'
+                            }`}
+                            title={blueprintCoverage 
+                              ? 'Coverage: Check mapped dimensions and identify evidence gaps before drafting.' 
+                              : "Coverage is locked until you run 'Analyze & Map'."
+                            }
+                          >
+                            <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+                            </svg>
+                            Coverage
+                            {blueprintCoverage && blueprintCoverage.gaps.length > 0 && (
+                              <Badge className="ml-1 h-4 px-1 text-[10px] bg-amber-500 text-white">
+                                {blueprintCoverage.gaps.length}
+                              </Badge>
+                            )}
+                          </Button>
+                        </div>
+                        {!blueprintCoverage && (
+                          <p className="text-[11px] text-teal-700/80">
+                            Run Analyze & Map first. Coverage view unlocks after blueprint mapping.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Row 2: Quick actions (only show after analysis) */}
+                    {aiSuggestions.size > 0 && (
+                      <div className="flex items-center gap-2 mt-2 pl-0.5 pt-2 border-t border-gray-100">
+                        <span className="text-[10px] text-emerald-700 uppercase tracking-wider font-semibold mr-1">Add / Import:</span>
                         <Button
                           onClick={handleAddAllSuggested}
                           disabled={bulkAddingSuggested}
                           size="sm"
-                            variant="outline"
-                            className="text-violet-600 border-violet-300 hover:bg-violet-50"
-                          >
-                            <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                            </svg>
-                            {bulkAddingSuggested ? 'Adding Suggested...' : `Add All Suggested (${aiSuggestions.size})`}
-                          </Button>
-                        )}
-                        {/* Hide non-relevant toggle */}
-                        {aiSuggestions.size > 0 && (
-                          <Button
-                            onClick={() => setHideNonRelevant(!hideNonRelevant)}
-                            size="sm"
-                            variant={hideNonRelevant ? "default" : "outline"}
-                            className={hideNonRelevant 
-                              ? "bg-gray-700 hover:bg-gray-800 text-white"
-                              : "text-gray-600 border-gray-300 hover:bg-gray-50"
-                            }
-                          >
-                            {hideNonRelevant ? (
-                              <>
-                                <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                </svg>
-                                Show All ({results.length})
-                              </>
-                            ) : (
-                              <>
-                                <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                                </svg>
-                                Hide Others ({results.length - aiSuggestions.size})
-                              </>
-                            )}
-                          </Button>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                      {aiSuggestions.size > 0 && (
-                        <Badge className="bg-violet-100 text-violet-700 border-0">
-                          {aiSuggestions.size} AI suggestions
-                        </Badge>
-                      )}
-                        {/* Toggle View: Results / Coverage */}
-                        {blueprintCoverage && (
-                          <div className="flex items-center bg-gray-100 rounded-lg p-0.5">
-                            <Button
-                              size="sm"
-                              variant={searchViewMode === 'results' ? 'default' : 'ghost'}
-                              onClick={() => setSearchViewMode('results')}
-                              className={`h-7 px-3 text-xs rounded-md ${
-                                searchViewMode === 'results' 
-                                  ? 'bg-white shadow-sm text-gray-900' 
-                                  : 'text-gray-600 hover:text-gray-900'
-                              }`}
-                            >
-                              <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 10h16M4 14h16M4 18h16" />
+                          variant="outline"
+                          className="h-6 text-[11px] text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                          title="Add All Suggested: Import all AI-recommended papers in one action."
+                        >
+                          <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                          </svg>
+                          {bulkAddingSuggested ? 'Adding...' : `Add All Suggested (${aiSuggestions.size})`}
+                        </Button>
+                        <Button
+                          onClick={() => setHideNonRelevant(!hideNonRelevant)}
+                          size="sm"
+                          variant={hideNonRelevant ? "default" : "outline"}
+                          className={`h-6 text-[11px] ${hideNonRelevant 
+                            ? "bg-violet-600 hover:bg-violet-700 text-white"
+                            : "text-violet-700 border-violet-300 hover:bg-violet-50"
+                          }`}
+                          title={hideNonRelevant 
+                            ? "Show all results again, including papers not suggested by AI." 
+                            : "Hide Others: Show only AI-suggested papers to focus your selection."
+                          }
+                        >
+                          {hideNonRelevant ? (
+                            <>
+                              <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                               </svg>
-                              Results
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant={searchViewMode === 'coverage' ? 'default' : 'ghost'}
-                              onClick={() => setSearchViewMode('coverage')}
-                              className={`h-7 px-3 text-xs rounded-md ${
-                                searchViewMode === 'coverage' 
-                                  ? 'bg-white shadow-sm text-gray-900' 
-                                  : 'text-gray-600 hover:text-gray-900'
-                              }`}
-                            >
-                              <svg className="w-3.5 h-3.5 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
+                              Show All ({results.length})
+                            </>
+                          ) : (
+                            <>
+                              <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
                               </svg>
-                              Coverage
-                              {blueprintCoverage.gaps.length > 0 && (
-                                <Badge className="ml-1 h-4 px-1 text-[10px] bg-amber-500 text-white">
-                                  {blueprintCoverage.gaps.length}
-                                </Badge>
-                              )}
-                            </Button>
-                          </div>
-                        )}
+                              Hide Others ({results.length - aiSuggestions.size})
+                            </>
+                          )}
+                        </Button>
                       </div>
-                    </div>
+                    )}
                     
                     {/* AI Summary */}
                     {aiSummary && (
@@ -3980,44 +4865,42 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                     </div>
                   )}
                   
-                  {/* Coverage View - Show blueprint dimension coverage */}
+                  {/* Coverage View - Evidence-first table + bipartite matrix */}
                   {!loading && searchViewMode === 'coverage' && blueprintCoverage && (
                     <div className="space-y-4">
-                      {/* Coverage Summary */}
                       <div className="bg-gradient-to-r from-violet-50 to-indigo-50 rounded-xl p-4 border border-violet-200">
-                        <div className="flex items-center justify-between mb-3">
+                        <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
                           <h3 className="font-semibold text-gray-900 flex items-center gap-2">
                             <svg className="w-5 h-5 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
                             </svg>
-                            Blueprint Coverage Analysis
+                            Dimension Coverage
                           </h3>
                           <div className="flex items-center gap-2">
                             <span className="text-sm text-gray-600">
                               {blueprintCoverage.coveredDimensions} / {blueprintCoverage.totalDimensions} dimensions
                             </span>
-                            <div className="w-20 h-2 bg-gray-200 rounded-full overflow-hidden">
-                              <div 
+                            <div className="w-24 h-2 bg-gray-200 rounded-full overflow-hidden">
+                              <div
                                 className="h-full bg-gradient-to-r from-emerald-500 to-green-500 rounded-full transition-all"
                                 style={{ width: `${blueprintCoverage.totalDimensions > 0 ? (blueprintCoverage.coveredDimensions / blueprintCoverage.totalDimensions) * 100 : 0}%` }}
                               />
                             </div>
                           </div>
                         </div>
-                        
+                        <p className="text-xs text-gray-600">
+                          Review each mapping with grounded evidence. Use the matrix for fast global coverage checks.
+                        </p>
                         {blueprintCoverage.gaps.length > 0 && (
-                          <div className="mt-2 p-2 bg-amber-50 rounded-lg border border-amber-200">
-                            <p className="text-xs font-medium text-amber-800 flex items-center gap-1">
-                              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                              </svg>
-                              {blueprintCoverage.gaps.length} dimension{blueprintCoverage.gaps.length > 1 ? 's' : ''} still need coverage
-                            </p>
+                          <div className="mt-2 inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-50 border border-amber-200 text-[11px] text-amber-800">
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                            {blueprintCoverage.gaps.length} uncovered dimension{blueprintCoverage.gaps.length > 1 ? 's' : ''}
                           </div>
                         )}
                       </div>
-                      
-                      {/* Empty Section Coverage State */}
+
                       {(!blueprintCoverage.sectionCoverage || Object.keys(blueprintCoverage.sectionCoverage).length === 0) && (
                         <div className="text-center py-8 text-gray-400">
                           <svg className="w-10 h-10 mx-auto mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -4027,123 +4910,302 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                           <p className="text-xs mt-1">Generate a blueprint first in the Blueprint stage</p>
                         </div>
                       )}
-                      
-                      {/* Section by Section Coverage */}
+
                       {blueprintCoverage.sectionCoverage && Object.keys(blueprintCoverage.sectionCoverage).length > 0 && (
-                      <div className="space-y-3">
-                        {Object.entries(blueprintCoverage.sectionCoverage).map(([sectionKey, section]) => {
-                          const coveragePercent = section.total > 0 ? (section.covered / section.total) * 100 : 0;
-                          const sectionGaps = blueprintCoverage.gaps.filter(g => g.sectionKey === sectionKey);
-                          
-                          return (
-                            <div key={sectionKey} className="border rounded-lg overflow-hidden bg-white">
-                              {/* Section Header */}
-                              <div className={`px-4 py-2.5 flex items-center justify-between ${
-                                coveragePercent === 100 
-                                  ? 'bg-emerald-50 border-b border-emerald-200' 
-                                  : coveragePercent > 0 
-                                    ? 'bg-blue-50 border-b border-blue-200' 
-                                    : 'bg-gray-50 border-b border-gray-200'
-                              }`}>
-                                <div className="flex items-center gap-2">
-                                  <span className={`font-medium text-sm ${
-                                    coveragePercent === 100 ? 'text-emerald-900' : 'text-gray-900'
-                                  }`}>
-                                    {sectionKey}
-                                  </span>
-                                  {coveragePercent === 100 && (
-                                    <Badge className="bg-emerald-500 text-white text-[10px]">
-                                      ✓ Complete
-                                    </Badge>
-                                  )}
-                                </div>
-                                <span className="text-xs text-gray-500">
-                                  {section.covered}/{section.total} dimensions
-                                </span>
+                        <>
+                          <div className="rounded-xl border border-gray-200 bg-white p-3 space-y-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="flex items-center gap-1 rounded-lg bg-gray-100 p-0.5">
+                                <Button
+                                  size="sm"
+                                  variant={coverageSubView === 'evidence_table' ? 'default' : 'ghost'}
+                                  onClick={() => setCoverageSubView('evidence_table')}
+                                  className={`h-7 px-3 text-xs ${coverageSubView === 'evidence_table' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-600'}`}
+                                >
+                                  Evidence Table
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant={coverageSubView === 'matrix' ? 'default' : 'ghost'}
+                                  onClick={() => setCoverageSubView('matrix')}
+                                  className={`h-7 px-3 text-xs ${coverageSubView === 'matrix' ? 'bg-white shadow-sm text-gray-900' : 'text-gray-600'}`}
+                                >
+                                  Coverage Matrix
+                                </Button>
                               </div>
-                              
-                              {/* Dimensions List */}
-                              <div className="divide-y divide-gray-100">
-                                {section.dimensions.map((dim, idx) => {
-                                  const isCovered = dim.paperCount > 0;
-                                  // Get papers that cover this dimension
-                                  const coveringPapers = dim.papers
-                                    .map(paperId => results.find(r => r.id === paperId))
-                                    .filter(Boolean);
-                                  
-                                  return (
-                                    <div key={idx} className={`px-4 py-2 ${isCovered ? 'bg-white' : 'bg-amber-50/50'}`}>
-                                      <div className="flex items-start gap-2">
-                                        <span className={`mt-0.5 text-sm ${isCovered ? 'text-emerald-500' : 'text-amber-500'}`}>
-                                          {isCovered ? '✓' : '○'}
-                                        </span>
-                                        <div className="flex-1 min-w-0">
-                                          <p className={`text-sm ${isCovered ? 'text-gray-700' : 'text-amber-800'}`}>
-                                            {dim.dimension}
-                                          </p>
-                                          {isCovered && coveringPapers.length > 0 && (
-                                            <div className="mt-1 flex flex-wrap gap-1">
-                                              {coveringPapers.slice(0, 3).map((paper: any) => {
-                                                const mapping = paperDimensionMappings.get(paper.id)?.find(
-                                                  m => m.sectionKey === sectionKey && m.dimension.toLowerCase().trim() === dim.dimension.toLowerCase().trim()
-                                                );
-                                                return (
-                                                  <div
-                                                    key={paper.id}
-                                                    className="group relative"
-                                                  >
-                                                    <Badge 
-                                                      variant="outline" 
-                                                      className={`text-[10px] cursor-help ${
-                                                        mapping?.confidence === 'HIGH' 
-                                                          ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
-                                                          : mapping?.confidence === 'MEDIUM'
-                                                            ? 'bg-blue-50 text-blue-700 border-blue-300'
-                                                            : 'bg-gray-50 text-gray-700 border-gray-300'
-                                                      }`}
-                                                    >
-                                                      {paper.title?.slice(0, 40)}...
-                                                      {mapping?.confidence && (
-                                                        <span className="ml-1 opacity-70">
-                                                          ({mapping.confidence[0]})
-                                                        </span>
-                                                      )}
-                                                    </Badge>
-                                                    {/* Tooltip with remark */}
-                                                    {mapping?.remark && (
-                                                      <div className="absolute left-0 bottom-full mb-1 hidden group-hover:block z-50 w-64 p-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg">
-                                                        <p className="font-medium mb-1">{paper.title}</p>
-                                                        <p className="text-gray-300">{mapping.remark}</p>
-                                                      </div>
-                                                    )}
-                                                  </div>
-                                                );
-                                              })}
-                                              {coveringPapers.length > 3 && (
-                                                <Badge variant="outline" className="text-[10px] bg-gray-50 text-gray-600">
-                                                  +{coveringPapers.length - 3} more
-                                                </Badge>
-                                              )}
-                                            </div>
-                                          )}
-                                          {!isCovered && (
-                                            <p className="text-[10px] text-amber-600 mt-1">
-                                              No papers found covering this dimension - consider searching for more specific papers
-                                            </p>
-                                          )}
-                                        </div>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
+                              <Button
+                                size="sm"
+                                variant={coverageShowGapsMode ? 'default' : 'outline'}
+                                onClick={() => setCoverageShowGapsMode(prev => !prev)}
+                                className={`h-7 text-xs ${coverageShowGapsMode ? 'bg-amber-600 hover:bg-amber-700 text-white' : 'text-amber-700 border-amber-300 hover:bg-amber-50'}`}
+                              >
+                                {coverageShowGapsMode ? 'Hide Gaps Mode' : 'Show Gaps Mode'}
+                              </Button>
+                            </div>
+
+                            <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                              <div>
+                                <label className="text-[11px] font-medium text-gray-600">Dimension family</label>
+                                <select
+                                  value={coverageDimensionFamilyFilter}
+                                  onChange={e => setCoverageDimensionFamilyFilter(e.target.value)}
+                                  className="mt-1 w-full h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700"
+                                >
+                                  <option value="all">All families</option>
+                                  {coverageDimensionFamilies.map(family => (
+                                    <option key={family} value={family}>{family}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="text-[11px] font-medium text-gray-600">Year</label>
+                                <select
+                                  value={coverageYearFilter}
+                                  onChange={e => setCoverageYearFilter(e.target.value)}
+                                  className="mt-1 w-full h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700"
+                                >
+                                  <option value="all">All years</option>
+                                  {coverageYears.map(year => (
+                                    <option key={year} value={String(year)}>{year}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="text-[11px] font-medium text-gray-600">Evidence strength</label>
+                                <select
+                                  value={coverageStrengthFilter}
+                                  onChange={e => setCoverageStrengthFilter(e.target.value as 'all' | 'high' | 'medium' | 'low')}
+                                  className="mt-1 w-full h-8 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700"
+                                >
+                                  <option value="all">All strengths</option>
+                                  <option value="high">High</option>
+                                  <option value="medium">Medium</option>
+                                  <option value="low">Low</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="text-[11px] font-medium text-gray-600">Venue</label>
+                                <Input
+                                  value={coverageVenueFilter}
+                                  onChange={e => setCoverageVenueFilter(e.target.value)}
+                                  placeholder="Filter by venue"
+                                  className="mt-1 h-8 text-xs"
+                                />
+                              </div>
+                              <div>
+                                <label className="text-[11px] font-medium text-gray-600">Affiliation</label>
+                                <Input
+                                  value={coverageAffiliationFilter}
+                                  onChange={e => setCoverageAffiliationFilter(e.target.value)}
+                                  placeholder="Filter by affiliation/publisher"
+                                  className="mt-1 h-8 text-xs"
+                                />
                               </div>
                             </div>
-                          );
-                        })}
-                      </div>
+
+                            <p className="text-[11px] text-gray-500">
+                              Showing {filteredCoverageRows.length} mapping row{filteredCoverageRows.length !== 1 ? 's' : ''}.
+                            </p>
+                          </div>
+
+                          {filteredCoverageRows.length === 0 && (
+                            <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-6 text-center">
+                              <p className="text-sm text-gray-600">No mappings match the current filters.</p>
+                              <p className="text-xs text-gray-500 mt-1">Clear filters or run analysis again to populate evidence rows.</p>
+                            </div>
+                          )}
+
+                          {filteredCoverageRows.length > 0 && coverageSubView === 'evidence_table' && (
+                            <div className="rounded-lg border border-gray-200 bg-white overflow-x-auto">
+                              <table className="min-w-[1100px] w-full">
+                                <thead className="bg-gray-50 border-b border-gray-200">
+                                  <tr>
+                                    <th className="text-left text-[11px] font-semibold text-gray-600 px-3 py-2 w-[20%]">Dimension</th>
+                                    <th className="text-left text-[11px] font-semibold text-gray-600 px-3 py-2 w-[26%]">Paper</th>
+                                    <th className="text-left text-[11px] font-semibold text-gray-600 px-3 py-2 w-[34%]">Evidence Card</th>
+                                    <th className="text-left text-[11px] font-semibold text-gray-600 px-3 py-2 w-[20%]">Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100">
+                                  {filteredCoverageRows.map(row => {
+                                    const feedback = coverageFeedback.get(row.id);
+                                    const primaryLink = row.doi ? `https://doi.org/${row.doi}` : row.url;
+                                    const inclusionStatus = feedback?.inclusionStatus || 'INCLUDED';
+                                    const isSavingRow = coverageSavingRows.has(row.id);
+                                    const detailText = [
+                                      row.authors.slice(0, 3).join(', '),
+                                      row.year ? String(row.year) : '',
+                                      row.venue || row.publisher
+                                    ].filter(Boolean).join(' · ');
+
+                                    return (
+                                      <tr key={row.id} className="align-top">
+                                        <td className="px-3 py-3">
+                                          <p className="text-[11px] font-semibold text-indigo-700 uppercase tracking-wide">{row.sectionKey}</p>
+                                          <p className="text-sm text-gray-900 mt-0.5">{row.dimension}</p>
+                                        </td>
+                                        <td className="px-3 py-3">
+                                          <p className="text-sm font-medium text-gray-900 leading-snug">{row.paperTitle}</p>
+                                          {detailText && (
+                                            <p className="text-[11px] text-gray-500 mt-1">{detailText}</p>
+                                          )}
+                                          {primaryLink && (
+                                            <a
+                                              href={primaryLink}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="inline-flex items-center mt-1 text-[11px] text-indigo-600 hover:underline"
+                                            >
+                                              Open source
+                                            </a>
+                                          )}
+                                        </td>
+                                        <td className="px-3 py-3">
+                                          {renderCoverageEvidenceCard(row)}
+                                        </td>
+                                        <td className="px-3 py-3">
+                                          <div className="flex flex-wrap gap-1">
+                                            <Button
+                                              size="sm"
+                                              variant="outline"
+                                              onClick={() => setActiveCoverageEvidence(row)}
+                                              className="h-6 px-2 text-[10px] text-indigo-700 border-indigo-200 hover:bg-indigo-50"
+                                            >
+                                              Open card
+                                            </Button>
+                                            <Button
+                                              size="sm"
+                                              variant={inclusionStatus === 'INCLUDED' ? 'default' : 'outline'}
+                                              onClick={() => updateCoverageInclusion(row, 'INCLUDED')}
+                                              disabled={isSavingRow}
+                                              className={`h-6 px-2 text-[10px] ${inclusionStatus === 'INCLUDED' ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'text-emerald-700 border-emerald-300 hover:bg-emerald-50'}`}
+                                            >
+                                              Confirm
+                                            </Button>
+                                            <Button
+                                              size="sm"
+                                              variant={inclusionStatus === 'EXCLUDED' ? 'default' : 'outline'}
+                                              onClick={() => updateCoverageInclusion(row, 'EXCLUDED')}
+                                              disabled={isSavingRow}
+                                              className={`h-6 px-2 text-[10px] ${inclusionStatus === 'EXCLUDED' ? 'bg-red-600 hover:bg-red-700 text-white' : 'text-red-700 border-red-300 hover:bg-red-50'}`}
+                                            >
+                                              Remove
+                                            </Button>
+                                            <Button
+                                              size="sm"
+                                              variant="outline"
+                                              onClick={() => openCoverageRemapDialog(row)}
+                                              className="h-6 px-2 text-[10px] text-gray-700 border-gray-300 hover:bg-gray-50"
+                                            >
+                                              Change Mapping
+                                            </Button>
+                                          </div>
+                                          <p className={`text-[11px] mt-2 ${inclusionStatus === 'EXCLUDED' ? 'text-red-700' : 'text-emerald-700'}`}>
+                                            {inclusionStatus === 'EXCLUDED' ? 'Excluded from drafting' : 'Included for drafting'}
+                                          </p>
+                                          {feedback?.reviewComment && (
+                                            <p className="text-[11px] text-gray-600 mt-1">
+                                              <span className="font-medium">Note:</span> {feedback.reviewComment}
+                                            </p>
+                                          )}
+                                        </td>
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+
+                          {coverageSubView === 'matrix' && (
+                            <div className="space-y-2">
+                              {(coverageMatrixDimensionDisplay.length === 0 || coverageMatrixPapers.length === 0) ? (
+                                <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-6 text-center">
+                                  <p className="text-sm text-gray-600">Matrix cannot be rendered with current filters.</p>
+                                  <p className="text-xs text-gray-500 mt-1">Adjust filters to include mapped papers and dimensions.</p>
+                                </div>
+                              ) : (
+                                <div className="rounded-lg border border-gray-200 bg-white overflow-auto max-h-[520px]">
+                                  <table className="min-w-max border-collapse">
+                                    <thead className="sticky top-0 z-20 bg-white">
+                                      <tr>
+                                        <th className="sticky left-0 z-30 bg-gray-50 border-b border-r border-gray-200 px-3 py-2 text-left text-[11px] font-semibold text-gray-700 min-w-[240px]">
+                                          Papers
+                                        </th>
+                                        {coverageMatrixDimensionDisplay.map(dimension => (
+                                          <th
+                                            key={dimension.key}
+                                            title={`${dimension.sectionKey}: ${dimension.dimension}`}
+                                            className={`border-b border-r px-1 py-1 text-[10px] font-semibold text-center align-middle min-w-[54px] ${
+                                              coverageShowGapsMode && dimension.isGap
+                                                ? 'bg-amber-50 border-amber-200 text-amber-800'
+                                                : 'bg-gray-50 border-gray-200 text-gray-700'
+                                            }`}
+                                          >
+                                            <span className="inline-flex items-center justify-center h-6 px-1 rounded bg-white/70 border border-gray-200">
+                                              {dimension.identifier}
+                                            </span>
+                                          </th>
+                                        ))}
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {coverageMatrixPapers.map(paper => (
+                                        <tr key={paper.id} className="hover:bg-gray-50/50">
+                                          <td className="sticky left-0 z-10 bg-white border-r border-b border-gray-200 px-3 py-2 min-w-[240px]">
+                                            <p className="text-xs font-medium text-gray-900 leading-tight">{paper.title}</p>
+                                            <p className="text-[10px] text-gray-500 mt-1">
+                                              {[paper.year ? String(paper.year) : '', paper.venue].filter(Boolean).join(' · ') || 'Metadata unavailable'}
+                                            </p>
+                                          </td>
+                                          {coverageMatrixDimensionDisplay.map(dimension => {
+                                            const cellRows = coverageRowsByCell.get(`${paper.id}::${dimension.key}`) || [];
+                                            const strongestRow = cellRows
+                                              .slice()
+                                              .sort((a, b) => b.rubricScore - a.rubricScore)[0];
+                                            const hasMapping = !!strongestRow;
+                                            const score = strongestRow?.rubricScore || 0;
+
+                                            const cellClass = hasMapping
+                                              ? score >= 75
+                                                ? 'bg-emerald-500 text-white border-emerald-600'
+                                                : score >= 50
+                                                  ? 'bg-blue-500 text-white border-blue-600'
+                                                  : 'bg-amber-400 text-amber-950 border-amber-500'
+                                              : (coverageShowGapsMode && dimension.isGap)
+                                                ? 'bg-amber-100 text-amber-700 border-amber-300'
+                                                : 'bg-gray-50 text-gray-300 border-gray-200';
+
+                                            return (
+                                              <td
+                                                key={`${paper.id}-${dimension.key}`}
+                                                className={`border-r border-b px-2 py-2 text-center text-[10px] transition-colors ${cellClass} ${hasMapping ? 'cursor-pointer hover:brightness-95' : ''}`}
+                                                title={hasMapping ? `${strongestRow.sectionKey}: ${strongestRow.dimension} (${strongestRow.rubricScore})` : (dimension.isGap ? 'Uncovered dimension' : 'No mapped evidence')}
+                                                onClick={() => {
+                                                  if (strongestRow) setActiveCoverageEvidence(strongestRow);
+                                                }}
+                                              >
+                                                {hasMapping ? strongestRow.rubricScore : (coverageShowGapsMode && dimension.isGap ? 'Gap' : '–')}
+                                              </td>
+                                            );
+                                          })}
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                              <div className="flex flex-wrap items-center gap-1 text-[10px] text-gray-600">
+                                <Badge className="bg-emerald-500 text-white border-0">75-100</Badge>
+                                <Badge className="bg-blue-500 text-white border-0">50-74</Badge>
+                                <Badge className="bg-amber-400 text-amber-950 border-0">0-49</Badge>
+                                <span>Header IDs are compact; hover a column header to view full section and dimension.</span>
+                              </div>
+                            </div>
+                          )}
+                        </>
                       )}
-                      
-                      {/* Gaps Summary */}
+
                       {blueprintCoverage.gaps.length > 0 && (
                         <div className="bg-amber-50 rounded-xl p-4 border border-amber-200">
                           <h4 className="font-medium text-amber-900 mb-2 flex items-center gap-2">
@@ -4164,7 +5226,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                   setSearchViewMode('results');
                                 }}
                               >
-                                🔍 {gap.dimension.slice(0, 40)}...
+                                Search: {gap.dimension.slice(0, 40)}...
                               </Button>
                             ))}
                           </div>
@@ -4172,7 +5234,6 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                       )}
                     </div>
                   )}
-                  
                   {/* Results - only show when not loading and in results view */}
                   {/* Sort results: AI-suggested first, use paginatedResults with pagination applied */}
                   {!loading && searchViewMode === 'results' && (
@@ -4725,49 +5786,41 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
             </CardHeader>
             <CardContent className="space-y-3">
               {/* Search and Actions */}
-              <div className="flex gap-2">
-                <Input
-                  value={citationSearch}
-                  onChange={e => setCitationSearch(e.target.value)}
-                  placeholder="Search citations..."
-                  className="h-8 text-sm"
-                />
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setGapModalOpen(true)}
-                  disabled={citations.length === 0}
-                  className="shrink-0 h-8"
-                  title="Analyze literature gaps"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                  </svg>
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={handleAnalyzeUnanalyzedCitations}
-                  disabled={citations.length === 0 || citationAnalyzing}
-                  className="shrink-0 h-8 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white"
-                  title="Analyze citations against blueprint dimensions"
-                >
-                  {citationAnalyzing ? (
-                    <>
-                      <svg className="w-4 h-4 mr-1 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      Analyzing...
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7m0 10a2 2 0 002 2h2a2 2 0 002-2V7a2 2 0 00-2-2h-2a2 2 0 00-2 2" />
-                      </svg>
-                      Map to Blueprint
-                    </>
-                  )}
-                </Button>
+              <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/70 p-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Filter</span>
+                  <Input
+                    value={citationSearch}
+                    onChange={e => setCitationSearch(e.target.value)}
+                    placeholder="Search citations..."
+                    className="h-8 text-sm bg-white"
+                    title="Filter citations by title, author, or citation key."
+                  />
+                </div>
+
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[10px] text-slate-700 uppercase tracking-wider font-semibold">Export</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={handleExportBibtex}
+                    disabled={citations.length === 0 || exportingBibtex}
+                    className="shrink-0 h-7 text-xs text-slate-700 border-slate-300 hover:bg-slate-50"
+                    title={selectedCitations.size > 0
+                      ? `Export BibTeX: Download only the ${selectedCitations.size} selected citation${selectedCitations.size === 1 ? '' : 's'}.`
+                      : 'Export BibTeX: Download all citations as a .bib file for LaTeX/reference managers.'}
+                  >
+                    {exportingBibtex
+                      ? 'Exporting...'
+                      : selectedCitations.size > 0
+                        ? `Export BibTeX (${selectedCitations.size} selected)`
+                        : 'Export BibTeX'}
+                  </Button>
+                </div>
+
+                <p className="text-[11px] text-gray-500">
+                  Select citation rows if you want to export only a subset; otherwise export will include all citations.
+                </p>
               </div>
               {citationReviewStatus && (
                 <div className="text-[11px] text-gray-600">
@@ -5001,7 +6054,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                 )}
               </div>
 
-              {/* Select all / Export / Gap Analysis */}
+              {/* Select all / Export */}
               {citations.length > 0 && (
                 <div className="flex items-center justify-between pt-3 border-t">
                   <div className="flex items-center gap-2">
@@ -5014,29 +6067,312 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                         }
                       }}
                       className="text-xs text-indigo-600 hover:underline"
+                      title="Select or deselect all citations for bulk actions like removal."
                     >
                       {selectedCitations.size === citations.length ? 'Deselect all' : 'Select all'}
                     </button>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Button 
-                      size="sm" 
-                      variant="outline" 
-                      onClick={() => setGapModalOpen(true)}
-                      className="h-7 text-xs"
-                    >
-                      📊 Gap Analysis
-                    </Button>
-                    <Button size="sm" variant="ghost" className="h-7 text-xs">
-                      Export BibTeX
-                    </Button>
-                  </div>
+                  <span className="text-[11px] text-gray-500">
+                    Use the toolbar above to export all citations or only the selected ones.
+                  </span>
                 </div>
               )}
             </CardContent>
           </Card>
         </TabsContent>
       </Tabs>
+
+      <Dialog
+        open={!!activeCoverageEvidence}
+        onOpenChange={(open) => {
+          if (!open) setActiveCoverageEvidence(null);
+        }}
+      >
+        <DialogContent className="max-w-2xl bg-white border-gray-200 shadow-2xl">
+          <DialogHeader>
+            <DialogTitle>Mapping Evidence Card</DialogTitle>
+            <DialogDescription>
+              Review the same grounded evidence card used in the evidence-first table.
+            </DialogDescription>
+          </DialogHeader>
+          {activeCoverageEvidence && (() => {
+            const aiSuggestion = aiSuggestions.get(activeCoverageEvidence.paperId);
+            const recommendation = paperRecommendations.get(activeCoverageEvidence.paperId);
+            const mappings = paperDimensionMappings.get(activeCoverageEvidence.paperId) || [];
+
+            return (
+              <div className="space-y-3">
+                <div className="rounded-lg border border-gray-200 p-3 bg-gray-50">
+                  <p className="text-[11px] font-semibold text-indigo-700 uppercase tracking-wide">
+                    {activeCoverageEvidence.sectionKey}
+                  </p>
+                  <p className="text-sm text-gray-900 mt-0.5">{activeCoverageEvidence.dimension}</p>
+                </div>
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <p className="text-sm font-medium text-gray-900">{activeCoverageEvidence.paperTitle}</p>
+                    {aiSuggestion && (
+                      <Badge className="text-[10px] bg-gradient-to-r from-violet-500 to-indigo-500 text-white border-0 shadow-sm">
+                        AI Pick
+                      </Badge>
+                    )}
+                    {recommendation && (
+                      <Badge className={`text-[10px] ${
+                        recommendation === 'IMPORT'
+                          ? 'bg-emerald-500 text-white'
+                          : recommendation === 'MAYBE'
+                            ? 'bg-amber-500 text-white'
+                            : 'bg-gray-400 text-white'
+                      }`}>
+                        {recommendation}
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-500">
+                    {[
+                      activeCoverageEvidence.authors.slice(0, 3).join(', '),
+                      activeCoverageEvidence.year ? String(activeCoverageEvidence.year) : '',
+                      activeCoverageEvidence.venue || activeCoverageEvidence.publisher
+                    ].filter(Boolean).join(' � ') || 'Metadata unavailable'}
+                  </p>
+                </div>
+
+                {mappings.length > 1 && (
+                  <div className="flex flex-wrap gap-1">
+                    {mappings.slice(0, 6).map((mapping, idx) => (
+                      <Badge
+                        key={`${mapping.sectionKey}-${mapping.dimension}-${idx}`}
+                        variant="outline"
+                        className={`text-[9px] ${
+                          mapping.confidence === 'HIGH'
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                            : mapping.confidence === 'MEDIUM'
+                              ? 'bg-blue-50 text-blue-700 border-blue-300'
+                              : 'bg-gray-50 text-gray-600 border-gray-300'
+                        }`}
+                      >
+                        {mapping.sectionKey}: {mapping.dimension.length > 36 ? `${mapping.dimension.slice(0, 36)}...` : mapping.dimension}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+
+                {aiSuggestion ? (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    className="p-2.5 bg-gradient-to-r from-violet-50 to-indigo-50 rounded-lg border border-violet-200"
+                  >
+                    <div className="flex items-start gap-2">
+                      <span className="text-violet-500 text-sm shrink-0">AI</span>
+                      <div className="flex-1 min-w-0 space-y-2">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] font-semibold text-violet-700 uppercase tracking-wide">
+                            Why it&apos;s relevant
+                          </span>
+                          <div className="flex items-center gap-1 px-1.5 py-0.5 bg-violet-100 rounded text-[10px] text-violet-600">
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                              <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                            </svg>
+                            {aiSuggestion.score}% match
+                          </div>
+                        </div>
+                        <p className="text-xs text-violet-800 leading-relaxed">
+                          {aiSuggestion.reasoning}
+                        </p>
+
+                        {aiSuggestion.citationMeta && (
+                          <div className="pt-2 border-t border-violet-200/50 space-y-1.5">
+                            {aiSuggestion.citationMeta.keyContribution && (
+                              <div className="flex items-start gap-1.5">
+                                <span className="text-[10px] font-medium text-violet-600 shrink-0 w-20">Contribution:</span>
+                                <span className="text-[11px] text-violet-900">{aiSuggestion.citationMeta.keyContribution}</span>
+                              </div>
+                            )}
+                            {aiSuggestion.citationMeta.keyFindings && (
+                              <div className="flex items-start gap-1.5">
+                                <span className="text-[10px] font-medium text-violet-600 shrink-0 w-20">Findings:</span>
+                                <span className="text-[11px] text-violet-900">{aiSuggestion.citationMeta.keyFindings}</span>
+                              </div>
+                            )}
+                            {aiSuggestion.citationMeta.methodologicalApproach && (
+                              <div className="flex items-start gap-1.5">
+                                <span className="text-[10px] font-medium text-violet-600 shrink-0 w-20">Method:</span>
+                                <span className="text-[11px] text-violet-900">{aiSuggestion.citationMeta.methodologicalApproach}</span>
+                              </div>
+                            )}
+                            {aiSuggestion.citationMeta.limitationsOrGaps && (
+                              <div className="flex items-start gap-1.5">
+                                <span className="text-[10px] font-medium text-amber-600 shrink-0 w-20">Gap:</span>
+                                <span className="text-[11px] text-amber-900">{aiSuggestion.citationMeta.limitationsOrGaps}</span>
+                              </div>
+                            )}
+                            {aiSuggestion.citationMeta.usage && (
+                              <div className="flex items-center gap-1.5 pt-1">
+                                <span className="text-[10px] font-medium text-violet-600">Cite in:</span>
+                                <div className="flex gap-1 flex-wrap">
+                                  {aiSuggestion.citationMeta.usage.introduction && (
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">Introduction</span>
+                                  )}
+                                  {aiSuggestion.citationMeta.usage.literatureReview && (
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-purple-100 text-purple-700 rounded">Lit Review</span>
+                                  )}
+                                  {aiSuggestion.citationMeta.usage.methodology && (
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded">Methodology</span>
+                                  )}
+                                  {aiSuggestion.citationMeta.usage.comparison && (
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded">Comparison</span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </motion.div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 p-3">
+                    <p className="text-xs text-gray-600">
+                      AI relevance review is not available for this paper yet. Run AI relevance analysis in Citation Search to see the full review tile.
+                    </p>
+                  </div>
+                )}
+
+                {renderCoverageEvidenceCard(activeCoverageEvidence)}
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => updateCoverageInclusion(activeCoverageEvidence, 'INCLUDED')}
+                    className="text-xs text-emerald-700 border-emerald-300 hover:bg-emerald-50"
+                  >
+                    Confirm
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => updateCoverageInclusion(activeCoverageEvidence, 'EXCLUDED')}
+                    className="text-xs text-red-700 border-red-300 hover:bg-red-50"
+                  >
+                    Remove
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      openCoverageRemapDialog(activeCoverageEvidence);
+                      setActiveCoverageEvidence(null);
+                    }}
+                    className="text-xs text-gray-700 border-gray-300 hover:bg-gray-50"
+                  >
+                    Change Mapping
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={!!coverageRemapRow}
+        onOpenChange={(open) => {
+          if (!open) {
+            setCoverageRemapRow(null);
+            setCoverageRemapSectionKey('');
+            setCoverageRemapDimension('');
+            setCoverageRemapRemark('');
+          }
+        }}
+      >
+        <DialogContent className="max-w-xl bg-white border-gray-200 shadow-2xl">
+          <DialogHeader>
+            <DialogTitle>Change Mapping</DialogTitle>
+            <DialogDescription>
+              Move this paper to a different blueprint dimension and update the relevance remark.
+            </DialogDescription>
+          </DialogHeader>
+          {coverageRemapRow && (
+            <div className="space-y-3">
+              <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                <p className="text-sm font-medium text-gray-900">{coverageRemapRow.paperTitle}</p>
+                <p className="text-[11px] text-gray-600 mt-1">
+                  Current: {coverageRemapRow.sectionKey} / {coverageRemapRow.dimension}
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-gray-700">Section</label>
+                <select
+                  value={coverageRemapSectionKey}
+                  onChange={(event) => {
+                    const nextSectionKey = event.target.value;
+                    const nextDims = coverageSectionOptionMap.get(nextSectionKey)?.dimensions || [];
+                    setCoverageRemapSectionKey(nextSectionKey);
+                    setCoverageRemapDimension(nextDims[0] || '');
+                  }}
+                  className="w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {coverageSectionOptions.map(section => (
+                    <option key={section.sectionKey} value={section.sectionKey}>
+                      {section.sectionKey} - {section.sectionTitle}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-gray-700">Dimension</label>
+                <select
+                  value={coverageRemapDimension}
+                  onChange={(event) => setCoverageRemapDimension(event.target.value)}
+                  className="w-full rounded-md border border-gray-300 px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {coverageRemapDimensionOptions.map(dimension => (
+                    <option key={dimension} value={dimension}>
+                      {dimension}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-gray-700">Relevance Remark</label>
+                <Textarea
+                  value={coverageRemapRemark}
+                  onChange={(event) => setCoverageRemapRemark(event.target.value)}
+                  placeholder="Explain briefly how this paper supports the selected dimension."
+                  className="min-h-[96px] text-sm"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setCoverageRemapRow(null);
+                    setCoverageRemapSectionKey('');
+                    setCoverageRemapDimension('');
+                    setCoverageRemapRemark('');
+                  }}
+                  disabled={coverageRemapSubmitting}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={submitCoverageRemap}
+                  disabled={coverageRemapSubmitting || !coverageRemapSectionKey || !coverageRemapDimension}
+                >
+                  {coverageRemapSubmitting ? 'Saving...' : 'Save mapping'}
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       {/* Gap Analysis Modal */}
       <Dialog open={gapModalOpen} onOpenChange={setGapModalOpen}>
@@ -6309,3 +7645,5 @@ function ManualCitationModal({
     </Dialog>
   );
 }
+
+

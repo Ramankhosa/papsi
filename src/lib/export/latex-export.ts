@@ -109,7 +109,7 @@ function normalizeLatexContent(content: string): string {
     .join('\n');
 
   citations.forEach(({ token, key }) => {
-    escaped = escaped.replaceAll(token, `\\cite{${key}}`);
+    escaped = escaped.split(token).join(`\\cite{${key}}`);
   });
 
   return escaped;

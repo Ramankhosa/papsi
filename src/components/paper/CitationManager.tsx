@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState, useCallback } from 'react'
+import { useEffect, useMemo, useState, useCallback, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -16,6 +16,7 @@ interface CitationManagerProps {
   onCitationsUpdated?: (citations: any[]) => void
   onInsertCitation?: (citationKey: string) => void
   allowSelection?: boolean
+  usageFilterAction?: ReactNode
 }
 
 const EMPTY_EDIT = {
@@ -31,6 +32,16 @@ const EMPTY_EDIT = {
   isbn: '',
   publisher: '',
   edition: '',
+  editors: '',
+  publicationPlace: '',
+  publicationDate: '',
+  accessedDate: '',
+  articleNumber: '',
+  issn: '',
+  journalAbbreviation: '',
+  pmid: '',
+  pmcid: '',
+  arxivId: '',
   abstract: '',
   notes: '',
   tags: ''
@@ -42,7 +53,8 @@ export default function CitationManager({
   citations: externalCitations,
   onCitationsUpdated,
   onInsertCitation,
-  allowSelection = false
+  allowSelection = false,
+  usageFilterAction
 }: CitationManagerProps) {
   const [citations, setCitations] = useState<any[]>(externalCitations || [])
   const [query, setQuery] = useState('')
@@ -127,6 +139,16 @@ export default function CitationManager({
       isbn: citation.isbn || '',
       publisher: citation.publisher || '',
       edition: citation.edition || '',
+      editors: Array.isArray(citation.editors) ? citation.editors.join(', ') : '',
+      publicationPlace: citation.publicationPlace || '',
+      publicationDate: citation.publicationDate || '',
+      accessedDate: citation.accessedDate || '',
+      articleNumber: citation.articleNumber || '',
+      issn: citation.issn || '',
+      journalAbbreviation: citation.journalAbbreviation || '',
+      pmid: citation.pmid || '',
+      pmcid: citation.pmcid || '',
+      arxivId: citation.arxivId || '',
       abstract: citation.abstract || '',
       notes: citation.notes || '',
       tags: Array.isArray(citation.tags) ? citation.tags.join(', ') : ''
@@ -185,6 +207,16 @@ export default function CitationManager({
         isbn: editValues.isbn || undefined,
         publisher: editValues.publisher || undefined,
         edition: editValues.edition || undefined,
+        editors: editValues.editors.split(',').map(a => a.trim()).filter(Boolean),
+        publicationPlace: editValues.publicationPlace || undefined,
+        publicationDate: editValues.publicationDate || undefined,
+        accessedDate: editValues.accessedDate || undefined,
+        articleNumber: editValues.articleNumber || undefined,
+        issn: editValues.issn || undefined,
+        journalAbbreviation: editValues.journalAbbreviation || undefined,
+        pmid: editValues.pmid || undefined,
+        pmcid: editValues.pmcid || undefined,
+        arxivId: editValues.arxivId || undefined,
         abstract: editValues.abstract || undefined,
         notes: editValues.notes || undefined,
         tags: editValues.tags.split(',').map(tag => tag.trim()).filter(Boolean)
@@ -307,6 +339,7 @@ export default function CitationManager({
           >
             Unused ({usageSummary.unused})
           </Button>
+          {usageFilterAction}
         </div>
         {allowSelection && (
           <Button variant="secondary" onClick={exportSelected} disabled={selectedIds.length === 0}>
@@ -469,9 +502,59 @@ export default function CitationManager({
               placeholder="Edition"
             />
             <Input
+              value={editValues.editors}
+              onChange={event => setEditValues(prev => ({ ...prev, editors: event.target.value }))}
+              placeholder="Editors (comma-separated)"
+            />
+            <Input
               value={editValues.isbn}
               onChange={event => setEditValues(prev => ({ ...prev, isbn: event.target.value }))}
               placeholder="ISBN"
+            />
+            <Input
+              value={editValues.publicationPlace}
+              onChange={event => setEditValues(prev => ({ ...prev, publicationPlace: event.target.value }))}
+              placeholder="Publication place"
+            />
+            <Input
+              value={editValues.publicationDate}
+              onChange={event => setEditValues(prev => ({ ...prev, publicationDate: event.target.value }))}
+              placeholder="Publication date (YYYY-MM-DD)"
+            />
+            <Input
+              value={editValues.accessedDate}
+              onChange={event => setEditValues(prev => ({ ...prev, accessedDate: event.target.value }))}
+              placeholder="Accessed date (YYYY-MM-DD)"
+            />
+            <Input
+              value={editValues.articleNumber}
+              onChange={event => setEditValues(prev => ({ ...prev, articleNumber: event.target.value }))}
+              placeholder="Article number"
+            />
+            <Input
+              value={editValues.issn}
+              onChange={event => setEditValues(prev => ({ ...prev, issn: event.target.value }))}
+              placeholder="ISSN"
+            />
+            <Input
+              value={editValues.journalAbbreviation}
+              onChange={event => setEditValues(prev => ({ ...prev, journalAbbreviation: event.target.value }))}
+              placeholder="Journal abbreviation"
+            />
+            <Input
+              value={editValues.pmid}
+              onChange={event => setEditValues(prev => ({ ...prev, pmid: event.target.value }))}
+              placeholder="PMID"
+            />
+            <Input
+              value={editValues.pmcid}
+              onChange={event => setEditValues(prev => ({ ...prev, pmcid: event.target.value }))}
+              placeholder="PMCID"
+            />
+            <Input
+              value={editValues.arxivId}
+              onChange={event => setEditValues(prev => ({ ...prev, arxivId: event.target.value }))}
+              placeholder="arXiv ID"
             />
             <Input
               value={editValues.tags}

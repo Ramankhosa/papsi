@@ -327,7 +327,8 @@ class EvidencePackService {
           isActive: true
         },
         usageKind: 'DIMENSION_MAPPING',
-        dimension: { not: null }
+        dimension: { not: null },
+        inclusionStatus: 'INCLUDED'
       },
       include: {
         citation: {

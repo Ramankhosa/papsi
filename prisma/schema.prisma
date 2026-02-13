@@ -4092,6 +4092,16 @@ model Citation {
   isbn      String?
   publisher String?
   edition   String?
+  editors   String[] @default([])
+  publicationPlace   String?
+  publicationDate    String?
+  accessedDate       String?
+  articleNumber      String?
+  issn               String?
+  journalAbbreviation String?
+  pmid               String?
+  pmcid              String?
+  arxivId            String?
   abstract  String?  @db.Text // Full abstract from source
 
   // Citation management
@@ -4164,6 +4174,10 @@ model CitationUsage {
   confidence    DimensionMappingConfidence? // Confidence level of the mapping
   mappedAt      DateTime? // When the mapping was generated
   mappingSource String?                     @default("auto") // "auto" for LLM-generated, "manual" for user-set
+  inclusionStatus CitationMappingInclusionStatus @default(INCLUDED) // user include/exclude control for drafting
+  reviewComment   String?                        @db.Text
+  reviewedAt      DateTime?
+  reviewedByUserId String?
 
   // Timestamps
   createdAt DateTime @default(now())
@@ -4188,6 +4202,11 @@ enum DimensionMappingConfidence {
 enum CitationUsageKind {
   DRAFT_CITATION
   DIMENSION_MAPPING
+}
+
+enum CitationMappingInclusionStatus {
+  INCLUDED
+  EXCLUDED
 }
 
 enum VenueType {
@@ -4417,6 +4436,16 @@ model ReferenceLibrary {
   isbn      String?
   publisher String?
   edition   String?
+  editors   String[] @default([])
+  publicationPlace   String?
+  publicationDate    String?
+  accessedDate       String?
+  articleNumber      String?
+  issn               String?
+  journalAbbreviation String?
+  pmid               String?
+  pmcid              String?
+  arxivId            String?
   abstract  String?  @db.Text // Full abstract
 
   // Source classification

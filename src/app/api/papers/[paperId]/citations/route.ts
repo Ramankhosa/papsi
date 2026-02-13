@@ -33,6 +33,16 @@ const manualCitationSchema = z.object({
   isbn: z.string().optional(),
   publisher: z.string().optional(),
   edition: z.string().optional(),
+  editors: z.array(z.string().min(1)).optional(),
+  publicationPlace: z.string().optional(),
+  publicationDate: z.string().optional(),
+  accessedDate: z.string().optional(),
+  articleNumber: z.string().optional(),
+  issn: z.string().optional(),
+  journalAbbreviation: z.string().optional(),
+  pmid: z.string().optional(),
+  pmcid: z.string().optional(),
+  arxivId: z.string().optional(),
   notes: z.string().optional(),
   tags: z.array(z.string()).optional()
 });
@@ -67,7 +77,8 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
   return prisma.draftingSession.findFirst({
     where,
     include: {
-      citationStyle: true
+      citationStyle: true,
+      paperType: true
     }
   });
 }
@@ -87,6 +98,17 @@ function toCitationData(citation: any): CitationData {
     isbn: citation.isbn || undefined,
     publisher: citation.publisher || undefined,
     edition: citation.edition || undefined,
+    sourceType: citation.sourceType || undefined,
+    editors: Array.isArray(citation.editors) ? citation.editors : undefined,
+    publicationPlace: citation.publicationPlace || undefined,
+    publicationDate: citation.publicationDate || undefined,
+    accessedDate: citation.accessedDate || undefined,
+    articleNumber: citation.articleNumber || undefined,
+    issn: citation.issn || undefined,
+    journalAbbreviation: citation.journalAbbreviation || undefined,
+    pmid: citation.pmid || undefined,
+    pmcid: citation.pmcid || undefined,
+    arxivId: citation.arxivId || undefined,
     citationKey: citation.citationKey
   };
 }
@@ -95,6 +117,257 @@ function getDefaultStyleCode(session: any): string {
   return session?.citationStyle?.code
     || process.env.DEFAULT_CITATION_STYLE
     || 'APA7';
+}
+
+const NUMERIC_ORDER_STYLES = new Set(['IEEE', 'VANCOUVER']);
+const CITE_MARKER_REGEX = /\[CITE:([^\]]+)\]/gi;
+const LEGACY_CITATION_SPAN_REGEX = /<span\b[^>]*data-cite-key=(?:"([^"]+)"|'([^']+)')[^>]*>[\s\S]*?<\/span>/gi;
+
+type CitationStyleMeta = {
+  styleCode: string;
+  sortOrder: 'alphabetical' | 'order_of_appearance';
+  isNumericStyle: boolean;
+  orderedCitationKeys: string[];
+  numberingByKey: Record<string, number>;
+};
+
+function splitCitationKeys(rawKeys: string): string[] {
+  if (!rawKeys) return [];
+  return rawKeys
+    .split(/[;,]/)
+    .map((key) => key.trim())
+    .filter(Boolean);
+}
+
+function normalizeCitationMarkupForExtraction(content: string): string {
+  const raw = String(content || '');
+  if (!raw) return '';
+
+  const replaceLegacySpans = (value: string): string => value.replace(
+    LEGACY_CITATION_SPAN_REGEX,
+    (_full, keyA, keyB) => {
+      const citationKey = String(keyA || keyB || '').trim();
+      return citationKey ? `[CITE:${citationKey}]` : _full;
+    }
+  );
+
+  const decoded = raw
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, '\'')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&');
+
+  return replaceLegacySpans(replaceLegacySpans(decoded));
+}
+
+function normalizeExtraSections(value: unknown): Record<string, string> {
+  const normalize = (sections: Record<string, unknown>): Record<string, string> => {
+    const normalized: Record<string, string> = {};
+    for (const [key, sectionValue] of Object.entries(sections)) {
+      if (typeof sectionValue === 'string') {
+        normalized[key] = sectionValue;
+      }
+    }
+    return normalized;
+  };
+
+  if (!value) return {};
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? normalize(parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return normalize(value as Record<string, unknown>);
+  }
+  return {};
+}
+
+function buildCanonicalCitationLookup(citations: Array<{ citationKey: string }>): Map<string, string> {
+  const lookup = new Map<string, string>();
+  for (const citation of citations) {
+    const key = String(citation.citationKey || '').trim();
+    if (!key) continue;
+    lookup.set(key.toLowerCase(), key);
+  }
+  return lookup;
+}
+
+function mergeSectionOrder(preferredOrder: string[], extraSections: Record<string, string>): string[] {
+  const actualByLower = new Map<string, string>();
+  for (const key of Object.keys(extraSections)) {
+    const normalized = key.trim().toLowerCase();
+    if (normalized && !actualByLower.has(normalized)) {
+      actualByLower.set(normalized, key);
+    }
+  }
+
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  const append = (sectionKey: string) => {
+    const normalized = String(sectionKey || '').trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    ordered.push(actualByLower.get(normalized) || sectionKey);
+  };
+
+  for (const key of preferredOrder) append(key);
+  for (const key of Object.keys(extraSections)) append(key);
+  return ordered;
+}
+
+function extractOrderedCitationKeysFromSections(
+  extraSections: Record<string, string>,
+  orderedSections: string[],
+  canonicalLookup: Map<string, string>
+): string[] {
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+
+  for (const sectionKey of orderedSections) {
+    const content = normalizeCitationMarkupForExtraction(extraSections[sectionKey] || '');
+    if (!content.trim()) continue;
+
+    CITE_MARKER_REGEX.lastIndex = 0;
+    let match: RegExpExecArray | null = null;
+    while ((match = CITE_MARKER_REGEX.exec(content)) !== null) {
+      const keys = splitCitationKeys(match[1] || '');
+      for (const key of keys) {
+        const canonical = canonicalLookup.get(key.toLowerCase());
+        if (!canonical || seen.has(canonical)) continue;
+        seen.add(canonical);
+        ordered.push(canonical);
+      }
+    }
+
+    const bareMarkerRegex = /\[([^\[\]]+)\]/g;
+    bareMarkerRegex.lastIndex = 0;
+    while ((match = bareMarkerRegex.exec(content)) !== null) {
+      const token = String(match[1] || '').trim();
+      if (!token || /^CITE:/i.test(token) || /^Figure\s+\d+/i.test(token)) continue;
+      const keys = splitCitationKeys(token);
+      for (const key of keys) {
+        const canonical = canonicalLookup.get(key.toLowerCase());
+        if (!canonical || seen.has(canonical)) continue;
+        seen.add(canonical);
+        ordered.push(canonical);
+      }
+    }
+  }
+
+  return ordered;
+}
+
+function mergeCitationOrder(primaryOrder: string[], fallbackOrder: string[]): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+
+  const append = (citationKey: string) => {
+    const key = String(citationKey || '').trim();
+    const normalized = key.toLowerCase();
+    if (!key || seen.has(normalized)) return;
+    seen.add(normalized);
+    merged.push(key);
+  };
+
+  for (const key of primaryOrder) append(key);
+  for (const key of fallbackOrder) append(key);
+
+  return merged;
+}
+
+function buildCitationNumberingMap(orderedCitationKeys: string[]): Record<string, number> {
+  return Object.fromEntries(
+    orderedCitationKeys.map((citationKey, index) => [citationKey, index + 1])
+  );
+}
+
+async function buildCitationStyleMeta(params: {
+  sessionId: string;
+  styleCode: string;
+  sectionOrder: string[];
+  citations: Array<{ citationKey: string }>;
+}): Promise<CitationStyleMeta> {
+  const normalizedStyleCode = String(params.styleCode || '').trim().toUpperCase();
+  const isNumericStyle = NUMERIC_ORDER_STYLES.has(normalizedStyleCode);
+
+  if (!isNumericStyle) {
+    return {
+      styleCode: normalizedStyleCode,
+      sortOrder: 'alphabetical',
+      isNumericStyle: false,
+      orderedCitationKeys: [],
+      numberingByKey: {}
+    };
+  }
+
+  const draft = await prisma.annexureDraft.findFirst({
+    where: {
+      sessionId: params.sessionId,
+      jurisdiction: 'PAPER'
+    },
+    orderBy: { version: 'desc' },
+    select: { extraSections: true }
+  });
+
+  const extraSections = normalizeExtraSections(draft?.extraSections);
+  const canonicalLookup = buildCanonicalCitationLookup(params.citations);
+  const orderedSections = mergeSectionOrder(params.sectionOrder, extraSections);
+  const orderedFromDraft = extractOrderedCitationKeysFromSections(
+    extraSections,
+    orderedSections,
+    canonicalLookup
+  );
+  const fallbackOrder = params.citations.map((citation) => citation.citationKey);
+  const orderedCitationKeys = mergeCitationOrder(orderedFromDraft, fallbackOrder);
+
+  return {
+    styleCode: normalizedStyleCode,
+    sortOrder: 'order_of_appearance',
+    isNumericStyle: true,
+    orderedCitationKeys,
+    numberingByKey: buildCitationNumberingMap(orderedCitationKeys)
+  };
+}
+
+async function buildCitationPreview(
+  citation: any,
+  styleCode: string,
+  styleMeta: CitationStyleMeta
+): Promise<{ inText: string; bibliography: string }> {
+  const citationData = toCitationData(citation);
+  const mappedNumber = Number(styleMeta.numberingByKey[citation.citationKey]);
+  const citationNumber = Number.isFinite(mappedNumber) && mappedNumber > 0
+    ? Math.trunc(mappedNumber)
+    : undefined;
+
+  let inText = '';
+  let bibliography = '';
+
+  try {
+    inText = await citationStyleService.formatInTextCitation(citationData, styleCode, {
+      citationNumber,
+      citationNumbering: styleMeta.numberingByKey
+    });
+
+    const bibliographyEntry = await citationStyleService.formatBibliographyEntry(citationData, styleCode);
+    if (styleMeta.isNumericStyle) {
+      const resolvedNumber = citationNumber || 1;
+      bibliography = styleMeta.styleCode === 'VANCOUVER'
+        ? `${resolvedNumber}. ${bibliographyEntry}`
+        : `[${resolvedNumber}] ${bibliographyEntry}`;
+    } else {
+      bibliography = bibliographyEntry;
+    }
+  } catch (formatError) {
+    console.warn('[Citations] Format preview failed:', formatError);
+  }
+
+  return { inText, bibliography };
 }
 
 function normalizeDoi(doi?: string | null): string {
@@ -376,31 +649,29 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
 
     const citations = await citationService.getCitationsForSession(sessionId);
     const styleCode = getDefaultStyleCode(session);
+    const sectionOrder = Array.isArray(session.paperType?.sectionOrder)
+      ? (session.paperType.sectionOrder as string[])
+      : [];
+    const styleMeta = await buildCitationStyleMeta({
+      sessionId,
+      styleCode,
+      sectionOrder,
+      citations
+    });
 
     const formatted = await Promise.all(citations.map(async citation => {
-      const data = toCitationData(citation);
-      let inText = '';
-      let bibliography = '';
-
-      try {
-        inText = await citationStyleService.formatInTextCitation(data, styleCode);
-        bibliography = await citationStyleService.formatBibliographyEntry(data, styleCode);
-      } catch (formatError) {
-        console.warn('[Citations] Format preview failed:', formatError);
-      }
+      const preview = await buildCitationPreview(citation, styleCode, styleMeta);
 
       return {
         ...citation,
-        preview: {
-          inText,
-          bibliography
-        }
+        preview
       };
     }));
 
     return NextResponse.json({
       citations: formatted,
-      citationStyle: styleCode
+      citationStyle: styleCode,
+      citationStyleMeta: styleMeta
     });
   } catch (error) {
     console.error('[Citations] GET error:', error);
@@ -445,25 +716,24 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     }
 
     const styleCode = getDefaultStyleCode(session);
-    const citationData = toCitationData(citation);
-    let inText = '';
-    let bibliography = '';
-
-    try {
-      inText = await citationStyleService.formatInTextCitation(citationData, styleCode);
-      bibliography = await citationStyleService.formatBibliographyEntry(citationData, styleCode);
-    } catch (formatError) {
-      console.warn('[Citations] Format preview failed:', formatError);
-    }
+    const citations = await citationService.getCitationsForSession(sessionId);
+    const sectionOrder = Array.isArray(session.paperType?.sectionOrder)
+      ? (session.paperType.sectionOrder as string[])
+      : [];
+    const styleMeta = await buildCitationStyleMeta({
+      sessionId,
+      styleCode,
+      sectionOrder,
+      citations
+    });
+    const preview = await buildCitationPreview(citation, styleCode, styleMeta);
 
     return NextResponse.json({
       citation: {
         ...citation,
-        preview: {
-          inText,
-          bibliography
-        }
-      }
+        preview
+      },
+      citationStyleMeta: styleMeta
     }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {

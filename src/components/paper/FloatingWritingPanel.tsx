@@ -1116,6 +1116,14 @@ export default function FloatingWritingPanel({
             pages: work.page,
             doi: work.DOI,
             url: work.URL,
+            editors: (work.editor || []).map((e: any) => `${e.given || ''} ${e.family || ''}`.trim()).filter(Boolean),
+            publicationPlace: work['publisher-location'],
+            publicationDate: Array.isArray(work.issued?.['date-parts']?.[0])
+              ? work.issued['date-parts'][0].map((part: number, idx: number) => idx > 0 ? String(part).padStart(2, '0') : String(part)).join('-')
+              : undefined,
+            articleNumber: work['article-number'],
+            issn: Array.isArray(work.ISSN) ? work.ISSN[0] : undefined,
+            journalAbbreviation: Array.isArray(work['short-container-title']) ? work['short-container-title'][0] : undefined,
           }
         }),
       });
@@ -1159,6 +1167,13 @@ export default function FloatingWritingPanel({
       const doiMatch = bibtex.match(/doi\s*=\s*[{"]?([^,}"]+)[}"']?/i);
       const urlMatch = bibtex.match(/url\s*=\s*[{"]([^}"]+)[}"]/i);
       const publisherMatch = bibtex.match(/publisher\s*=\s*[{"]([^}"]+)[}"]/i);
+      const editorMatch = bibtex.match(/editor\s*=\s*[{"]([^}"]+)[}"]/i);
+      const addressMatch = bibtex.match(/address\s*=\s*[{"]([^}"]+)[}"]/i);
+      const issnMatch = bibtex.match(/issn\s*=\s*[{"]?([^,}"]+)[}"']?/i);
+      const articleNumberMatch = bibtex.match(/(?:article-number|number)\s*=\s*[{"]?([^,}"]+)[}"']?/i);
+      const pmidMatch = bibtex.match(/pmid\s*=\s*[{"]?([^,}"]+)[}"']?/i);
+      const pmcidMatch = bibtex.match(/pmcid\s*=\s*[{"]?([^,}"]+)[}"']?/i);
+      const arxivMatch = bibtex.match(/(?:eprint|arxivid|arxiv)\s*=\s*[{"]?([^,}"]+)[}"']?/i);
       
       // Parse authors (handle "and" separator)
       let authors: string[] = ['Unknown'];
@@ -1206,6 +1221,15 @@ export default function FloatingWritingPanel({
             pages: pagesMatch?.[1]?.replace(/[{}]/g, '').replace(/--/g, '-'),
             doi: doiMatch?.[1]?.replace(/[{}]/g, ''),
             url: urlMatch?.[1],
+            editors: editorMatch?.[1]
+              ? editorMatch[1].split(/\s+and\s+/i).map(a => a.trim()).filter(Boolean)
+              : undefined,
+            publicationPlace: addressMatch?.[1]?.replace(/[{}]/g, ''),
+            articleNumber: articleNumberMatch?.[1]?.replace(/[{}]/g, ''),
+            issn: issnMatch?.[1]?.replace(/[{}]/g, ''),
+            pmid: pmidMatch?.[1]?.replace(/[{}]/g, ''),
+            pmcid: pmcidMatch?.[1]?.replace(/[{}]/g, ''),
+            arxivId: arxivMatch?.[1]?.replace(/[{}]/g, ''),
           }
         }),
       });

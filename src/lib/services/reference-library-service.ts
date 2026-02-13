@@ -21,6 +21,16 @@ export interface CreateReferenceInput {
   isbn?: string;
   publisher?: string;
   edition?: string;
+  editors?: string[];
+  publicationPlace?: string;
+  publicationDate?: string;
+  accessedDate?: string;
+  articleNumber?: string;
+  issn?: string;
+  journalAbbreviation?: string;
+  pmid?: string;
+  pmcid?: string;
+  arxivId?: string;
   abstract?: string;
   sourceType?: CitationSourceType;
   importSource?: CitationImportSource;
@@ -42,6 +52,16 @@ export interface UpdateReferenceInput {
   isbn?: string;
   publisher?: string;
   edition?: string;
+  editors?: string[];
+  publicationPlace?: string;
+  publicationDate?: string;
+  accessedDate?: string;
+  articleNumber?: string;
+  issn?: string;
+  journalAbbreviation?: string;
+  pmid?: string;
+  pmcid?: string;
+  arxivId?: string;
   abstract?: string;
   sourceType?: CitationSourceType;
   notes?: string;
@@ -86,6 +106,16 @@ class ReferenceLibraryService {
         isbn: input.isbn,
         publisher: input.publisher,
         edition: input.edition,
+        editors: input.editors || [],
+        publicationPlace: input.publicationPlace,
+        publicationDate: input.publicationDate,
+        accessedDate: input.accessedDate,
+        articleNumber: input.articleNumber,
+        issn: input.issn,
+        journalAbbreviation: input.journalAbbreviation,
+        pmid: input.pmid,
+        pmcid: input.pmcid,
+        arxivId: input.arxivId,
         abstract: input.abstract,
         sourceType: input.sourceType || 'OTHER',
         importSource: input.importSource || 'MANUAL',
@@ -288,6 +318,16 @@ class ReferenceLibraryService {
             isbn: ref.isbn,
             publisher: ref.publisher,
             edition: ref.edition,
+            editors: ref.editors || [],
+            publicationPlace: ref.publicationPlace,
+            publicationDate: ref.publicationDate,
+            accessedDate: ref.accessedDate,
+            articleNumber: ref.articleNumber,
+            issn: ref.issn,
+            journalAbbreviation: ref.journalAbbreviation,
+            pmid: ref.pmid,
+            pmcid: ref.pmcid,
+            arxivId: ref.arxivId,
             abstract: ref.abstract,
             sourceType: ref.sourceType,
             importSource: importSource || ref.importSource,
@@ -357,6 +397,16 @@ class ReferenceLibraryService {
       pages: work.page,
       doi: work.DOI,
       url: work.URL,
+      editors: (work.editor || []).map((editor: any) => `${editor.given || ''} ${editor.family || ''}`.trim()).filter(Boolean),
+      publicationPlace: work['publisher-location'],
+      publicationDate: Array.isArray(work.issued?.['date-parts']?.[0])
+        ? work.issued['date-parts'][0]
+            .map((part: number, index: number) => index > 0 ? String(part).padStart(2, '0') : String(part))
+            .join('-')
+        : undefined,
+      articleNumber: work['article-number'],
+      issn: Array.isArray(work.ISSN) ? work.ISSN[0] : undefined,
+      journalAbbreviation: Array.isArray(work['short-container-title']) ? work['short-container-title'][0] : undefined,
       abstract: work.abstract,
       sourceType: 'JOURNAL_ARTICLE',
       importSource: 'DOI_LOOKUP',
@@ -388,6 +438,16 @@ class ReferenceLibraryService {
       isbn: ref.isbn || undefined,
       publisher: ref.publisher || undefined,
       edition: ref.edition || undefined,
+      editors: ref.editors || undefined,
+      publicationPlace: ref.publicationPlace || undefined,
+      publicationDate: ref.publicationDate || undefined,
+      accessedDate: ref.accessedDate || undefined,
+      articleNumber: ref.articleNumber || undefined,
+      issn: ref.issn || undefined,
+      journalAbbreviation: ref.journalAbbreviation || undefined,
+      pmid: ref.pmid || undefined,
+      pmcid: ref.pmcid || undefined,
+      arxivId: ref.arxivId || undefined,
       abstract: ref.abstract || undefined,
       sourceType: ref.sourceType,
       importSource: ref.importSource,
@@ -568,6 +628,16 @@ class ReferenceLibraryService {
             isbn: ref.isbn,
             publisher: ref.publisher,
             edition: ref.edition,
+            editors: ref.editors,
+            publicationPlace: ref.publicationPlace,
+            publicationDate: ref.publicationDate,
+            accessedDate: ref.accessedDate,
+            articleNumber: ref.articleNumber,
+            issn: ref.issn,
+            journalAbbreviation: ref.journalAbbreviation,
+            pmid: ref.pmid,
+            pmcid: ref.pmcid,
+            arxivId: ref.arxivId,
             abstract: ref.abstract,
             citationKey,
             bibtex: ref.bibtex,

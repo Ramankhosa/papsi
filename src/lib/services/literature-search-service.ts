@@ -40,6 +40,22 @@ export interface SearchResult {
   authors: string[];
   year?: number;
   venue?: string;
+  volume?: string;
+  issue?: string;
+  pages?: string;
+  publisher?: string;
+  isbn?: string;
+  edition?: string;
+  editors?: string[];
+  publicationPlace?: string;
+  publicationDate?: string;
+  accessedDate?: string;
+  articleNumber?: string;
+  issn?: string;
+  journalAbbreviation?: string;
+  pmid?: string;
+  pmcid?: string;
+  arxivId?: string;
   abstract?: string;
   doi?: string;
   url?: string;
@@ -49,6 +65,108 @@ export interface SearchResult {
   isOpenAccess?: boolean;
   fieldsOfStudy?: string[];
   rawData?: any; // Original API response for debugging
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value === 'string') {
+    const normalized = value.replace(/\s+/g, ' ').trim();
+    return normalized || undefined;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  return undefined;
+}
+
+function firstDefinedString(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const normalized = normalizeOptionalString(value);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return undefined;
+}
+
+function buildPageRange(startPage: unknown, endPage: unknown): string | undefined {
+  const start = normalizeOptionalString(startPage);
+  const end = normalizeOptionalString(endPage);
+  if (start && end) {
+    return start === end ? start : `${start}-${end}`;
+  }
+  return start || end || undefined;
+}
+
+function parseCrossRefPages(work: any): string | undefined {
+  return firstDefinedString(
+    work?.page,
+    buildPageRange(work?.['page-first'], work?.['page-last'])
+  );
+}
+
+function parseCrossRefIsbn(work: any): string | undefined {
+  const isbnList = Array.isArray(work?.ISBN)
+    ? work.ISBN
+    : (work?.ISBN ? [work.ISBN] : []);
+  for (const isbn of isbnList) {
+    const normalized = normalizeOptionalString(isbn);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return undefined;
+}
+
+function parseCrossRefIssn(work: any): string | undefined {
+  const issnList = Array.isArray(work?.ISSN)
+    ? work.ISSN
+    : (work?.ISSN ? [work.ISSN] : []);
+  for (const issn of issnList) {
+    const normalized = normalizeOptionalString(issn);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return undefined;
+}
+
+function parseCrossRefEditors(work: any): string[] | undefined {
+  const editors = Array.isArray(work?.editor) ? work.editor : [];
+  const mapped = editors
+    .map((editor: any) => {
+      const given = normalizeOptionalString(editor?.given);
+      const family = normalizeOptionalString(editor?.family);
+      if (given && family) return `${given} ${family}`;
+      return given || family || '';
+    })
+    .map((name: string) => name.trim())
+    .filter(Boolean);
+  return mapped.length > 0 ? mapped : undefined;
+}
+
+function parseDateParts(value: any): string | undefined {
+  const parts = Array.isArray(value?.['date-parts']) && Array.isArray(value['date-parts'][0])
+    ? value['date-parts'][0]
+    : null;
+  if (!parts || parts.length === 0) {
+    return undefined;
+  }
+
+  const year = Number(parts[0]);
+  if (!Number.isFinite(year)) {
+    return undefined;
+  }
+
+  const month = Number(parts[1]);
+  const day = Number(parts[2]);
+  if (Number.isFinite(month) && month >= 1 && month <= 12) {
+    if (Number.isFinite(day) && day >= 1 && day <= 31) {
+      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    }
+    return `${year}-${String(month).padStart(2, '0')}`;
+  }
+
+  return String(year);
 }
 
 // Search options with enhanced filters
@@ -371,23 +489,62 @@ class LiteratureSearchService {
   }
 
   private deduplicateResults(results: SearchResult[]): SearchResult[] {
-    const seenDOIs = new Set<string>();
-    const deduplicated: SearchResult[] = [];
+    const byDoi = new Map<string, SearchResult>();
+    const withoutDoi: SearchResult[] = [];
 
     for (const result of results) {
-      const doi = result.doi?.toLowerCase();
-      if (doi && seenDOIs.has(doi)) {
-        continue; // Skip duplicate DOI
+      const normalizedDoi = normalizeOptionalString(result.doi)?.toLowerCase();
+      if (!normalizedDoi) {
+        withoutDoi.push(result);
+        continue;
       }
 
-      if (doi) {
-        seenDOIs.add(doi);
+      const existing = byDoi.get(normalizedDoi);
+      if (!existing) {
+        byDoi.set(normalizedDoi, result);
+        continue;
       }
 
-      deduplicated.push(result);
+      byDoi.set(normalizedDoi, this.mergeSearchResults(existing, result));
     }
 
-    return deduplicated;
+    return [...Array.from(byDoi.values()), ...withoutDoi];
+  }
+
+  private mergeSearchResults(primary: SearchResult, secondary: SearchResult): SearchResult {
+    const citationCounts = [primary.citationCount, secondary.citationCount]
+      .filter((count): count is number => typeof count === 'number' && Number.isFinite(count));
+    return {
+      ...primary,
+      title: primary.title || secondary.title,
+      authors: primary.authors?.length ? primary.authors : secondary.authors,
+      year: primary.year ?? secondary.year,
+      venue: primary.venue || secondary.venue,
+      volume: primary.volume || secondary.volume,
+      issue: primary.issue || secondary.issue,
+      pages: primary.pages || secondary.pages,
+      publisher: primary.publisher || secondary.publisher,
+      isbn: primary.isbn || secondary.isbn,
+      edition: primary.edition || secondary.edition,
+      editors: primary.editors?.length ? primary.editors : secondary.editors,
+      publicationPlace: primary.publicationPlace || secondary.publicationPlace,
+      publicationDate: primary.publicationDate || secondary.publicationDate,
+      accessedDate: primary.accessedDate || secondary.accessedDate,
+      articleNumber: primary.articleNumber || secondary.articleNumber,
+      issn: primary.issn || secondary.issn,
+      journalAbbreviation: primary.journalAbbreviation || secondary.journalAbbreviation,
+      pmid: primary.pmid || secondary.pmid,
+      pmcid: primary.pmcid || secondary.pmcid,
+      arxivId: primary.arxivId || secondary.arxivId,
+      abstract: primary.abstract || secondary.abstract,
+      doi: primary.doi || secondary.doi,
+      url: primary.url || secondary.url,
+      citationCount: citationCounts.length > 0 ? Math.max(...citationCounts) : undefined,
+      publicationType: primary.publicationType || secondary.publicationType,
+      isOpenAccess: primary.isOpenAccess ?? secondary.isOpenAccess,
+      fieldsOfStudy: primary.fieldsOfStudy?.length ? primary.fieldsOfStudy : secondary.fieldsOfStudy,
+      rawData: primary.rawData ?? secondary.rawData
+    };
   }
 
   private getProviderDescription(providerName: string): string {
@@ -595,7 +752,7 @@ class SemanticScholarProvider implements SearchProvider {
         const params = new URLSearchParams({
           query: query,
           limit: Math.min(options.limit || 20, 100).toString(), // Max 100 per request
-          fields: 'title,authors,year,venue,abstract,citationCount,externalIds,url,publicationTypes,isOpenAccess,fieldsOfStudy,openAccessPdf'
+          fields: 'title,authors,year,venue,journal,abstract,citationCount,externalIds,url,publicationTypes,isOpenAccess,fieldsOfStudy,openAccessPdf'
         });
 
         // Semantic Scholar uses 'year' parameter with range format: "2020-2023" or single year "2023"
@@ -690,22 +847,7 @@ class SemanticScholarProvider implements SearchProvider {
 
         const data = await response.json();
 
-        return (data.data || []).map((paper: any) => ({
-          id: `ss_${paper.paperId}`,
-          title: paper.title || '',
-          authors: (paper.authors || []).map((author: any) => author.name || ''),
-          year: paper.year,
-          venue: paper.venue,
-          abstract: paper.abstract,
-          doi: paper.externalIds?.DOI || null,
-          url: paper.url,
-          citationCount: paper.citationCount,
-          source: 'semantic_scholar',
-          publicationType: this.mapPublicationType(paper.publicationTypes),
-          isOpenAccess: paper.isOpenAccess || !!paper.openAccessPdf?.url,
-          fieldsOfStudy: (paper.fieldsOfStudy || []).map((f: any) => f.category || f),
-          rawData: paper
-        }));
+        return (data.data || []).map((paper: any) => this.mapPaperToSearchResult(paper));
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         if (attempt < maxRetries - 1) {
@@ -732,8 +874,9 @@ class SemanticScholarProvider implements SearchProvider {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
         this.lastRequestTime = Date.now();
+        const fields = 'title,authors,year,venue,journal,abstract,citationCount,externalIds,url,publicationTypes,isOpenAccess,fieldsOfStudy,openAccessPdf';
         // Try DOI first
-        const response = await this.fetchWithTimeout(`https://api.semanticscholar.org/graph/v1/paper/DOI:${identifier}`, {
+        const response = await this.fetchWithTimeout(`https://api.semanticscholar.org/graph/v1/paper/DOI:${identifier}?fields=${encodeURIComponent(fields)}`, {
           headers: this.getHeaders()
         });
 
@@ -750,19 +893,7 @@ class SemanticScholarProvider implements SearchProvider {
 
         if (response.ok) {
           const paper = await response.json();
-          return {
-            id: `ss_${paper.paperId}`,
-            title: paper.title || '',
-            authors: (paper.authors || []).map((author: any) => author.name || ''),
-            year: paper.year,
-            venue: paper.venue,
-            abstract: paper.abstract,
-            doi: paper.doi,
-            url: paper.url,
-            citationCount: paper.citationCount,
-            source: 'semantic_scholar',
-            rawData: paper
-          };
+          return this.mapPaperToSearchResult(paper);
         }
 
         // Non-429 error, don't retry
@@ -789,6 +920,40 @@ class SemanticScholarProvider implements SearchProvider {
 
   getRateLimit() {
     return { requests: 100, period: 300 }; // 100 requests per 5 minutes (unauthenticated)
+  }
+
+  private mapPaperToSearchResult(paper: any): SearchResult {
+    return {
+      id: `ss_${paper.paperId || crypto.randomUUID()}`,
+      title: paper.title || '',
+      authors: (paper.authors || []).map((author: any) => author.name || ''),
+      year: paper.year,
+      venue: firstDefinedString(paper.venue, paper.journal?.name),
+      volume: normalizeOptionalString(paper.journal?.volume),
+      issue: normalizeOptionalString(paper.journal?.issue),
+      pages: normalizeOptionalString(paper.journal?.pages),
+      publicationDate: firstDefinedString(
+        paper.publicationDate,
+        paper.year
+      ),
+      articleNumber: normalizeOptionalString(paper.journal?.articleNumber),
+      issn: firstDefinedString(
+        paper.journal?.issn,
+        paper.journal?.ISSN
+      ),
+      journalAbbreviation: normalizeOptionalString(paper.journal?.nameAbbrev),
+      pmid: normalizeOptionalString(paper.externalIds?.PubMed),
+      arxivId: normalizeOptionalString(paper.externalIds?.ArXiv),
+      abstract: paper.abstract,
+      doi: normalizeOptionalString(paper.externalIds?.DOI || paper.doi),
+      url: paper.url,
+      citationCount: paper.citationCount,
+      source: 'semantic_scholar',
+      publicationType: this.mapPublicationType(paper.publicationTypes),
+      isOpenAccess: paper.isOpenAccess || !!paper.openAccessPdf?.url,
+      fieldsOfStudy: (paper.fieldsOfStudy || []).map((f: any) => f.category || f),
+      rawData: paper
+    };
   }
 
   private mapPublicationType(types: string[] | undefined): PublicationType | undefined {
@@ -923,19 +1088,7 @@ class CrossRefProvider implements SearchProvider {
 
         const data = await response.json();
 
-        return (data.message?.items || []).map((work: any) => ({
-          id: `cr_${work.DOI || work.URL || crypto.randomUUID()}`,
-          title: work.title?.[0] || '',
-          authors: (work.author || []).map((author: any) => `${author.family || ''}, ${author.given || ''}`.trim()),
-          year: work.issued?.['date-parts']?.[0]?.[0],
-          venue: work['container-title']?.[0] || work.publisher,
-          abstract: work.abstract,
-          doi: work.DOI,
-          url: work.URL,
-          citationCount: work['is-referenced-by-count'],
-          source: 'crossref',
-          rawData: work
-        }));
+        return (data.message?.items || []).map((work: any) => this.mapWorkToSearchResult(work));
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
         
@@ -978,19 +1131,7 @@ class CrossRefProvider implements SearchProvider {
         const data = await response.json();
         const work = data.message;
 
-        return {
-          id: `cr_${work.DOI || work.URL || crypto.randomUUID()}`,
-          title: work.title?.[0] || '',
-          authors: (work.author || []).map((author: any) => `${author.family || ''}, ${author.given || ''}`.trim()),
-          year: work.issued?.['date-parts']?.[0]?.[0],
-          venue: work['container-title']?.[0] || work.publisher,
-          abstract: work.abstract,
-          doi: work.DOI,
-          url: work.URL,
-          citationCount: work['is-referenced-by-count'],
-          source: 'crossref',
-          rawData: work
-        };
+        return this.mapWorkToSearchResult(work);
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         const isTimeout = err.name === 'AbortError' || 
@@ -1013,6 +1154,45 @@ class CrossRefProvider implements SearchProvider {
 
   getRateLimit() {
     return { requests: 50, period: 1 }; // 50 requests per second (polite pool)
+  }
+
+  private mapWorkToSearchResult(work: any): SearchResult {
+    return {
+      id: `cr_${work.DOI || work.URL || crypto.randomUUID()}`,
+      title: work.title?.[0] || '',
+      authors: (work.author || []).map((author: any) => `${author.family || ''}, ${author.given || ''}`.trim()),
+      year: work.issued?.['date-parts']?.[0]?.[0],
+      venue: work['container-title']?.[0] || work.publisher,
+      volume: normalizeOptionalString(work.volume),
+      issue: normalizeOptionalString(work.issue),
+      pages: parseCrossRefPages(work),
+      publisher: normalizeOptionalString(work.publisher),
+      isbn: parseCrossRefIsbn(work),
+      edition: firstDefinedString(work['edition-number'], work.edition),
+      editors: parseCrossRefEditors(work),
+      publicationPlace: firstDefinedString(
+        work['publisher-location'],
+        work.publisherLocation
+      ),
+      publicationDate: firstDefinedString(
+        parseDateParts(work['published-print']),
+        parseDateParts(work['published-online']),
+        parseDateParts(work.issued),
+        normalizeOptionalString(work.created?.['date-time'])
+      ),
+      articleNumber: firstDefinedString(work['article-number'], work.articleNumber),
+      issn: parseCrossRefIssn(work),
+      journalAbbreviation: firstDefinedString(
+        Array.isArray(work['short-container-title']) ? work['short-container-title'][0] : undefined,
+        work.abbreviated_title
+      ),
+      abstract: work.abstract,
+      doi: normalizeOptionalString(work.DOI),
+      url: work.URL,
+      citationCount: work['is-referenced-by-count'],
+      source: 'crossref',
+      rawData: work
+    };
   }
 }
 
@@ -1144,22 +1324,7 @@ class OpenAlexProvider implements SearchProvider {
 
       const data = await response.json();
 
-      return (data.results || []).map((work: any) => ({
-        id: `oa_${work.id?.replace('https://openalex.org/', '') || crypto.randomUUID()}`,
-        title: work.title || '',
-        authors: (work.authorships || []).map((auth: any) => auth.author?.display_name || ''),
-        year: work.publication_year,
-        venue: work.primary_location?.source?.display_name || work.host_venue_name,
-        abstract: work.abstract_inverted_index ? this.reconstructAbstract(work.abstract_inverted_index) : undefined,
-        doi: work.doi?.replace('https://doi.org/', ''),
-        url: work.primary_location?.landing_page_url || work.doi,
-        citationCount: work.cited_by_count,
-        source: 'openalex',
-        publicationType: this.mapPublicationType(work.type),
-        isOpenAccess: work.is_oa,
-        fieldsOfStudy: (work.concepts || []).slice(0, 5).map((c: any) => c.display_name),
-        rawData: work
-      }));
+      return (data.results || []).map((work: any) => this.mapWorkToSearchResult(work));
     } catch (error) {
       console.error('OpenAlex search failed:', error);
       return [];
@@ -1199,19 +1364,7 @@ class OpenAlexProvider implements SearchProvider {
 
       const work = await response.json();
 
-      return {
-        id: `oa_${work.id?.replace('https://openalex.org/', '') || crypto.randomUUID()}`,
-        title: work.title || '',
-        authors: (work.authorships || []).map((auth: any) => auth.author?.display_name || ''),
-        year: work.publication_year,
-        venue: work.primary_location?.source?.display_name || work.host_venue_name,
-        abstract: work.abstract_inverted_index ? this.reconstructAbstract(work.abstract_inverted_index) : undefined,
-        doi: work.doi?.replace('https://doi.org/', ''),
-        url: work.primary_location?.landing_page_url || work.doi,
-        citationCount: work.cited_by_count,
-        source: 'openalex',
-        rawData: work
-      };
+      return this.mapWorkToSearchResult(work);
     } catch (error) {
       console.error('OpenAlex identifier lookup failed:', error);
       return null;
@@ -1220,6 +1373,63 @@ class OpenAlexProvider implements SearchProvider {
 
   getRateLimit() {
     return { requests: 100000, period: 1 }; // Unlimited (be reasonable)
+  }
+
+  private mapWorkToSearchResult(work: any): SearchResult {
+    const volume = firstDefinedString(work.biblio?.volume, work.volume);
+    const issue = firstDefinedString(work.biblio?.issue, work.issue);
+    const pages = firstDefinedString(
+      buildPageRange(work.biblio?.first_page, work.biblio?.last_page),
+      buildPageRange(work.first_page, work.last_page),
+      work.page
+    );
+
+    return {
+      id: `oa_${work.id?.replace('https://openalex.org/', '') || crypto.randomUUID()}`,
+      title: work.title || '',
+      authors: (work.authorships || []).map((auth: any) => auth.author?.display_name || ''),
+      year: work.publication_year,
+      venue: work.primary_location?.source?.display_name || work.host_venue_name,
+      volume,
+      issue,
+      pages,
+      publisher: firstDefinedString(
+        work.primary_location?.source?.host_organization_name,
+        work.host_venue?.publisher,
+        work.publisher
+      ),
+      isbn: firstDefinedString(work.isbn, Array.isArray(work.ISBN) ? work.ISBN[0] : undefined),
+      edition: normalizeOptionalString(work.edition),
+      publicationPlace: firstDefinedString(
+        work.primary_location?.source?.country_code,
+        work.host_venue?.country_code
+      ),
+      publicationDate: firstDefinedString(
+        work.publication_date,
+        work.publication_year
+      ),
+      articleNumber: firstDefinedString(
+        work.biblio?.article_number,
+        work.article_number
+      ),
+      issn: firstDefinedString(
+        work.primary_location?.source?.issn_l,
+        Array.isArray(work.primary_location?.source?.issn) ? work.primary_location.source.issn[0] : undefined
+      ),
+      journalAbbreviation: firstDefinedString(
+        work.primary_location?.source?.abbreviated_title,
+        work.primary_location?.source?.display_name
+      ),
+      abstract: work.abstract_inverted_index ? this.reconstructAbstract(work.abstract_inverted_index) : undefined,
+      doi: work.doi?.replace('https://doi.org/', ''),
+      url: work.primary_location?.landing_page_url || work.doi,
+      citationCount: work.cited_by_count,
+      source: 'openalex',
+      publicationType: this.mapPublicationType(work.type),
+      isOpenAccess: work.is_oa,
+      fieldsOfStudy: (work.concepts || []).slice(0, 5).map((c: any) => c.display_name),
+      rawData: work
+    };
   }
 
   private reconstructAbstract(invertedIndex: Record<string, number[]>): string {
@@ -1420,7 +1630,9 @@ class PubMedProvider implements SearchProvider {
           : undefined;
 
         // Extract authors
-        const authorMatches = articleXml.matchAll(/<Author[^>]*>[\s\S]*?<LastName>([^<]+)<\/LastName>[\s\S]*?(?:<ForeName>([^<]+)<\/ForeName>)?[\s\S]*?<\/Author>/g);
+        const authorMatches = Array.from(
+          articleXml.matchAll(/<Author[^>]*>[\s\S]*?<LastName>([^<]+)<\/LastName>[\s\S]*?(?:<ForeName>([^<]+)<\/ForeName>)?[\s\S]*?<\/Author>/g)
+        );
         const authors: string[] = [];
         for (const authorMatch of authorMatches) {
           const lastName = authorMatch[1];
@@ -1431,14 +1643,33 @@ class PubMedProvider implements SearchProvider {
         // Extract year
         const yearMatch = articleXml.match(/<PubDate>[\s\S]*?<Year>(\d{4})<\/Year>/);
         const year = yearMatch ? parseInt(yearMatch[1], 10) : undefined;
+        const monthMatch = articleXml.match(/<PubDate>[\s\S]*?<Month>([^<]+)<\/Month>/);
+        const dayMatch = articleXml.match(/<PubDate>[\s\S]*?<Day>(\d{1,2})<\/Day>/);
+        const publicationDate = this.buildPublicationDate(year, monthMatch?.[1], dayMatch?.[1]);
 
         // Extract journal
         const journalMatch = articleXml.match(/<Title>([^<]+)<\/Title>/);
         const venue = journalMatch ? this.decodeXmlEntities(journalMatch[1]) : undefined;
+        const isoAbbrevMatch = articleXml.match(/<ISOAbbreviation>([^<]+)<\/ISOAbbreviation>/);
+        const issnMatch = articleXml.match(/<ISSN[^>]*>([^<]+)<\/ISSN>/);
+        const volumeMatch = articleXml.match(/<Volume>([^<]+)<\/Volume>/);
+        const issueMatch = articleXml.match(/<Issue>([^<]+)<\/Issue>/);
+        const medlinePageMatch = articleXml.match(/<MedlinePgn>([^<]+)<\/MedlinePgn>/);
+        const startPageMatch = articleXml.match(/<StartPage>([^<]+)<\/StartPage>/);
+        const endPageMatch = articleXml.match(/<EndPage>([^<]+)<\/EndPage>/);
+        const articleNumberMatch = articleXml.match(/<ELocationID[^>]*EIdType=\"(?:pii|eid)\"[^>]*>([^<]+)<\/ELocationID>/i);
+        const pages = firstDefinedString(
+          medlinePageMatch ? this.decodeXmlEntities(medlinePageMatch[1]) : undefined,
+          buildPageRange(
+            startPageMatch ? this.decodeXmlEntities(startPageMatch[1]) : undefined,
+            endPageMatch ? this.decodeXmlEntities(endPageMatch[1]) : undefined
+          )
+        );
 
         // Extract DOI
         const doiMatch = articleXml.match(/<ArticleId IdType="doi">([^<]+)<\/ArticleId>/);
         const doi = doiMatch ? doiMatch[1] : undefined;
+        const pmcidMatch = articleXml.match(/<ArticleId IdType="pmc">([^<]+)<\/ArticleId>/);
 
         if (pmid && title) {
           results.push({
@@ -1447,6 +1678,15 @@ class PubMedProvider implements SearchProvider {
             authors,
             year,
             venue,
+            volume: volumeMatch ? this.decodeXmlEntities(volumeMatch[1]) : undefined,
+            issue: issueMatch ? this.decodeXmlEntities(issueMatch[1]) : undefined,
+            pages,
+            publicationDate,
+            articleNumber: articleNumberMatch ? this.decodeXmlEntities(articleNumberMatch[1]) : undefined,
+            issn: issnMatch ? this.decodeXmlEntities(issnMatch[1]) : undefined,
+            journalAbbreviation: isoAbbrevMatch ? this.decodeXmlEntities(isoAbbrevMatch[1]) : undefined,
+            pmid,
+            pmcid: pmcidMatch ? this.decodeXmlEntities(pmcidMatch[1]) : undefined,
             abstract,
             doi,
             url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
@@ -1460,6 +1700,49 @@ class PubMedProvider implements SearchProvider {
     }
 
     return results;
+  }
+
+  private buildPublicationDate(
+    year?: number,
+    monthRaw?: string,
+    dayRaw?: string
+  ): string | undefined {
+    if (!year) return undefined;
+
+    const monthLookup: Record<string, string> = {
+      jan: '01', january: '01',
+      feb: '02', february: '02',
+      mar: '03', march: '03',
+      apr: '04', april: '04',
+      may: '05',
+      jun: '06', june: '06',
+      jul: '07', july: '07',
+      aug: '08', august: '08',
+      sep: '09', sept: '09', september: '09',
+      oct: '10', october: '10',
+      nov: '11', november: '11',
+      dec: '12', december: '12'
+    };
+
+    const monthToken = (monthRaw || '').trim().toLowerCase();
+    const monthNumeric = monthLookup[monthToken] || (() => {
+      const numeric = Number(monthToken);
+      if (Number.isFinite(numeric) && numeric >= 1 && numeric <= 12) {
+        return String(numeric).padStart(2, '0');
+      }
+      return '';
+    })();
+
+    if (!monthNumeric) {
+      return String(year);
+    }
+
+    const dayNumeric = Number((dayRaw || '').trim());
+    if (Number.isFinite(dayNumeric) && dayNumeric >= 1 && dayNumeric <= 31) {
+      return `${year}-${monthNumeric}-${String(dayNumeric).padStart(2, '0')}`;
+    }
+
+    return `${year}-${monthNumeric}`;
   }
 
   private decodeXmlEntities(text: string): string {
@@ -1603,15 +1886,16 @@ class ArXivProvider implements SearchProvider {
         const abstract = summaryMatch ? summaryMatch[1].replace(/\s+/g, ' ').trim() : undefined;
 
         // Extract authors
-        const authorMatches = entryXml.matchAll(/<author>[\s\S]*?<name>([^<]+)<\/name>[\s\S]*?<\/author>/g);
+        const authorMatches = Array.from(entryXml.matchAll(/<author>[\s\S]*?<name>([^<]+)<\/name>[\s\S]*?<\/author>/g));
         const authors: string[] = [];
         for (const authorMatch of authorMatches) {
           authors.push(authorMatch[1].trim());
         }
 
         // Extract published date
-        const publishedMatch = entryXml.match(/<published>(\d{4})-\d{2}-\d{2}/);
+        const publishedMatch = entryXml.match(/<published>(\d{4})-\d{2}-\d{2}<\/published>/);
         const year = publishedMatch ? parseInt(publishedMatch[1], 10) : undefined;
+        const publishedDateMatch = entryXml.match(/<published>([^<]+)<\/published>/);
 
         // Filter by year if specified
         if (options.yearFrom && year && year < options.yearFrom) continue;
@@ -1622,7 +1906,7 @@ class ArXivProvider implements SearchProvider {
         const doi = doiMatch ? doiMatch[1] : undefined;
 
         // Extract categories for venue
-        const categoryMatches = entryXml.matchAll(/<category[^>]*term="([^"]+)"/g);
+        const categoryMatches = Array.from(entryXml.matchAll(/<category[^>]*term="([^"]+)"/g));
         const categories: string[] = [];
         for (const catMatch of categoryMatches) {
           categories.push(catMatch[1]);
@@ -1640,9 +1924,11 @@ class ArXivProvider implements SearchProvider {
             authors,
             year,
             venue,
+            publicationDate: publishedDateMatch ? publishedDateMatch[1] : undefined,
             abstract,
             doi,
             url: `https://arxiv.org/abs/${arxivId}`,
+            arxivId,
             source: 'arxiv',
             rawData: { arxivId, pdfUrl, categories }
           });
@@ -1805,6 +2091,34 @@ class COREProvider implements SearchProvider {
             authors: (work.authors || []).map((a: any) => a.name || '').filter(Boolean),
             year: work.yearPublished,
             venue: work.publisher || work.journals?.[0]?.title,
+            volume: firstDefinedString(work.volume, work.journals?.[0]?.volume),
+            issue: firstDefinedString(work.issue, work.journals?.[0]?.issue),
+            pages: firstDefinedString(
+              work.page,
+              work.pages,
+              buildPageRange(work.firstPage, work.lastPage)
+            ),
+            publisher: normalizeOptionalString(work.publisher),
+            isbn: firstDefinedString(
+              Array.isArray(work.identifiers?.isbn) ? work.identifiers.isbn[0] : undefined,
+              work.isbn
+            ),
+            edition: normalizeOptionalString(work.edition),
+            editors: Array.isArray(work.contributors)
+              ? work.contributors
+                  .filter((contributor: any) => /editor/i.test(String(contributor?.role || '')))
+                  .map((contributor: any) => normalizeOptionalString(contributor?.name))
+                  .filter((name: string | undefined): name is string => Boolean(name))
+              : undefined,
+            publicationPlace: firstDefinedString(work.publisherLocation, work.placePublished),
+            publicationDate: firstDefinedString(work.datePublished, work.yearPublished),
+            articleNumber: firstDefinedString(work.articleNumber, work.identifier),
+            issn: firstDefinedString(
+              Array.isArray(work.identifiers?.issn) ? work.identifiers.issn[0] : undefined,
+              work.issn,
+              work.journals?.[0]?.issn
+            ),
+            journalAbbreviation: firstDefinedString(work.journals?.[0]?.abbreviatedTitle, work.journals?.[0]?.title),
             abstract: work.abstract,
             doi: work.doi,
             url: work.downloadUrl || work.sourceFulltextUrls?.[0] || (work.doi ? `https://doi.org/${work.doi}` : undefined),

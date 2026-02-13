@@ -247,6 +247,17 @@ function toCitationData(citation: any): CitationData {
     isbn: citation.isbn || undefined,
     publisher: citation.publisher || undefined,
     edition: citation.edition || undefined,
+    sourceType: citation.sourceType || undefined,
+    editors: Array.isArray(citation.editors) ? citation.editors : undefined,
+    publicationPlace: citation.publicationPlace || undefined,
+    publicationDate: citation.publicationDate || undefined,
+    accessedDate: citation.accessedDate || undefined,
+    articleNumber: citation.articleNumber || undefined,
+    issn: citation.issn || undefined,
+    journalAbbreviation: citation.journalAbbreviation || undefined,
+    pmid: citation.pmid || undefined,
+    pmcid: citation.pmcid || undefined,
+    arxivId: citation.arxivId || undefined,
     citationKey: citation.citationKey
   };
 }
@@ -259,6 +270,7 @@ function getStyleCode(session: any): string {
 
 const NUMERIC_ORDER_STYLES = new Set(['IEEE', 'VANCOUVER']);
 const CITE_MARKER_REGEX = /\[CITE:([^\]]+)\]/gi;
+const LEGACY_CITATION_SPAN_REGEX = /<span\b[^>]*data-cite-key=(?:"([^"]+)"|'([^']+)')[^>]*>[\s\S]*?<\/span>/gi;
 
 type SessionCitation = Awaited<ReturnType<typeof citationService.getCitationsForSession>>[number];
 
@@ -268,6 +280,28 @@ function splitCitationKeys(rawKeys: string): string[] {
     .split(/[;,]/)
     .map(key => key.trim())
     .filter(Boolean);
+}
+
+function normalizeCitationMarkupForExtraction(content: string): string {
+  const raw = String(content || '');
+  if (!raw) return '';
+
+  const replaceLegacySpans = (value: string): string => value.replace(
+    LEGACY_CITATION_SPAN_REGEX,
+    (_full, keyA, keyB) => {
+      const citationKey = String(keyA || keyB || '').trim();
+      return citationKey ? `[CITE:${citationKey}]` : _full;
+    }
+  );
+
+  const decoded = raw
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, '\'')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&');
+
+  return replaceLegacySpans(replaceLegacySpans(decoded));
 }
 
 function buildCanonicalCitationLookup(citations: Array<{ citationKey: string }>): Map<string, string> {
@@ -563,13 +597,29 @@ function extractSectionCitationKeys(
   sectionContent: string,
   canonicalLookup: Map<string, string>
 ): string[] {
+  const normalizedContent = normalizeCitationMarkupForExtraction(sectionContent);
   const ordered: string[] = [];
   const seen = new Set<string>();
   CITE_MARKER_REGEX.lastIndex = 0;
   let match: RegExpExecArray | null = null;
 
-  while ((match = CITE_MARKER_REGEX.exec(sectionContent)) !== null) {
+  while ((match = CITE_MARKER_REGEX.exec(normalizedContent)) !== null) {
     const keys = splitCitationKeys(match[1] || '');
+    for (const rawKey of keys) {
+      const canonical = canonicalLookup.get(rawKey.toLowerCase());
+      if (!canonical || seen.has(canonical)) continue;
+      seen.add(canonical);
+      ordered.push(canonical);
+    }
+  }
+
+  // Fallback: recover canonical keys from bare [CitationKey] markers.
+  const bareMarkerRegex = /\[([^\[\]]+)\]/g;
+  bareMarkerRegex.lastIndex = 0;
+  while ((match = bareMarkerRegex.exec(normalizedContent)) !== null) {
+    const token = String(match[1] || '').trim();
+    if (!token || /^CITE:/i.test(token) || /^Figure\s+\d+/i.test(token)) continue;
+    const keys = splitCitationKeys(token);
     for (const rawKey of keys) {
       const canonical = canonicalLookup.get(rawKey.toLowerCase());
       if (!canonical || seen.has(canonical)) continue;
@@ -1066,7 +1116,8 @@ async function resolveCitationAttribution(
     where: {
       citationId,
       usageKind: 'DIMENSION_MAPPING',
-      dimension: { not: null }
+      dimension: { not: null },
+      inclusionStatus: 'INCLUDED'
     },
     select: {
       sectionKey: true,

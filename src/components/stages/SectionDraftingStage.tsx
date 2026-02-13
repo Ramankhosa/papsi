@@ -19,7 +19,10 @@ import {
 } from 'lucide-react';
 import CitationPickerModal from '@/components/paper/CitationPickerModal';
 import CitationManager from '@/components/paper/CitationManager';
-import PaperMarkdownEditor, { type PaperMarkdownEditorRef } from '@/components/paper/PaperMarkdownEditor';
+import PaperMarkdownEditor, {
+  type PaperMarkdownEditorRef,
+  type PaperCitationDisplayMeta
+} from '@/components/paper/PaperMarkdownEditor';
 
 // Import shared components from patent drafting
 import BackendActivityPanel from '@/components/drafting/BackendActivityPanel';
@@ -512,6 +515,73 @@ function normalizeSectionKey(sectionKey: string): string {
   return sectionKey.trim().toLowerCase().replace(/[\s-]+/g, '_');
 }
 
+const LEGACY_CITATION_SPAN_REGEX = /<span\b[^>]*data-cite-key=(?:"([^"]+)"|'([^']+)')[^>]*>[\s\S]*?<\/span>/gi;
+
+function normalizeCitationMarkupForExtraction(content: string): string {
+  const raw = String(content || '');
+  if (!raw) return '';
+
+  const decodeHtmlEntities = (value: string): string => value
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, '\'')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&');
+
+  const replaceLegacySpans = (value: string): string => value.replace(
+    LEGACY_CITATION_SPAN_REGEX,
+    (_full, keyA, keyB) => {
+      const citationKey = String(keyA || keyB || '').trim();
+      return citationKey ? `[CITE:${citationKey}]` : _full;
+    }
+  );
+
+  const normalized = replaceLegacySpans(raw);
+  if (!normalized.includes('data-cite-key') && !normalized.includes('&lt;span')) {
+    return normalized;
+  }
+
+  return replaceLegacySpans(decodeHtmlEntities(normalized));
+}
+
+function parseCitationStyleMeta(raw: unknown): {
+  styleCode: string;
+  sortOrder: 'alphabetical' | 'order_of_appearance';
+  isNumericStyle: boolean;
+  orderedCitationKeys: string[];
+  numberingByKey: Record<string, number>;
+} | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const data = raw as Record<string, unknown>;
+  const styleCode = String(data.styleCode || '').trim().toUpperCase();
+  if (!styleCode) return null;
+
+  const sortOrder = data.sortOrder === 'order_of_appearance'
+    ? 'order_of_appearance'
+    : 'alphabetical';
+  const isNumericStyle = Boolean(data.isNumericStyle);
+  const orderedCitationKeys = Array.isArray(data.orderedCitationKeys)
+    ? data.orderedCitationKeys.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  const numberingByKey: Record<string, number> = {};
+  if (data.numberingByKey && typeof data.numberingByKey === 'object' && !Array.isArray(data.numberingByKey)) {
+    for (const [key, value] of Object.entries(data.numberingByKey as Record<string, unknown>)) {
+      const parsed = Number(value);
+      if (key && Number.isFinite(parsed) && parsed > 0) {
+        numberingByKey[key] = Math.trunc(parsed);
+      }
+    }
+  }
+
+  return {
+    styleCode,
+    sortOrder,
+    isNumericStyle,
+    orderedCitationKeys,
+    numberingByKey
+  };
+}
+
 const displayName: Record<string, string> = {
   title: 'Title', abstract: 'Abstract', introduction: 'Introduction',
   literature_review: 'Literature Review', related_work: 'Related Work',
@@ -595,6 +665,13 @@ export default function SectionDraftingStage({
 
   // Citations
   const [citations, setCitations] = useState<any[]>([]);
+  const [citationStyleMeta, setCitationStyleMeta] = useState<{
+    styleCode: string;
+    sortOrder: 'alphabetical' | 'order_of_appearance';
+    isNumericStyle: boolean;
+    orderedCitationKeys: string[];
+    numberingByKey: Record<string, number>;
+  } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [showCitations, setShowCitations] = useState(false);
   const [insertCitationTarget, setInsertCitationTarget] = useState<string | null>(null);
@@ -622,7 +699,9 @@ export default function SectionDraftingStage({
   const [citationsPanelSize, setCitationsPanelSize] = useState({ width: 320, height: 540 });
   const [isCitationsPanelDragging, setIsCitationsPanelDragging] = useState(false);
   const [isCitationsPanelResizing, setIsCitationsPanelResizing] = useState(false);
+  const [showCitationToolsMenu, setShowCitationToolsMenu] = useState(false);
   const citationsPanelInitializedRef = useRef(false);
+  const citationToolsMenuRef = useRef<HTMLDivElement | null>(null);
   const citationsPanelDragRef = useRef<{
     startX: number;
     startY: number;
@@ -858,6 +937,23 @@ export default function SectionDraftingStage({
   }, [showCitations, resetCitationsPanelLayout]);
 
   useEffect(() => {
+    if (showCitations) return;
+    setShowCitationToolsMenu(false);
+  }, [showCitations]);
+
+  useEffect(() => {
+    if (!showCitationToolsMenu) return;
+
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (citationToolsMenuRef.current?.contains(event.target as Node)) return;
+      setShowCitationToolsMenu(false);
+    };
+
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [showCitationToolsMenu]);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
     const handleResize = () => {
       setCitationsPanelSize((prev) => {
@@ -1001,6 +1097,7 @@ export default function SectionDraftingStage({
       if (res.ok) {
         const data = await res.json();
         setCitations(data.citations || []);
+        setCitationStyleMeta(parseCitationStyleMeta(data.citationStyleMeta));
       }
     } catch (err) {
       console.error('Load citations error:', err);
@@ -1595,7 +1692,7 @@ export default function SectionDraftingStage({
     const markerRegex = /\[CITE:([^\]]+)\]/gi;
 
     for (const sectionKey of orderedSections) {
-      const sectionContent = normalizedContent[sectionKey] || '';
+      const sectionContent = normalizeCitationMarkupForExtraction(normalizedContent[sectionKey] || '');
       if (!sectionContent.trim()) continue;
 
       markerRegex.lastIndex = 0;
@@ -1614,15 +1711,119 @@ export default function SectionDraftingStage({
           usedKeys.push(canonical);
         }
       }
+
+      // Fallback: recover canonical keys from bare bracket markers like [Lee2025].
+      if (canonicalLookup.size > 0) {
+        const bareMarkerRegex = /\[([^\[\]]+)\]/g;
+        bareMarkerRegex.lastIndex = 0;
+        while ((match = bareMarkerRegex.exec(sectionContent)) !== null) {
+          const token = String(match[1] || '').trim();
+          if (!token || /^CITE:/i.test(token) || /^Figure\s+\d+/i.test(token)) continue;
+          const keysInMarker = token
+            .split(/[;,]/)
+            .map((key) => key.trim())
+            .filter(Boolean);
+          for (const rawKey of keysInMarker) {
+            const canonical = canonicalLookup.get(rawKey.toLowerCase());
+            if (!canonical) continue;
+            const identity = canonical.toLowerCase();
+            if (seen.has(identity)) continue;
+            seen.add(identity);
+            usedKeys.push(canonical);
+          }
+        }
+      }
     }
 
     return usedKeys;
   }, [content, citations, sectionConfigs]);
 
+  const citationDisplayMeta = useMemo<PaperCitationDisplayMeta>(() => {
+    const styleCode = String(bibliographyStyle || citationStyleMeta?.styleCode || 'APA7').trim().toUpperCase();
+    const isNumericStyle = ['IEEE', 'VANCOUVER'].includes(styleCode);
+    const displayByKey: Record<string, string> = {};
+    const orderByKey: Record<string, number> = {};
+
+    for (const citation of citations) {
+      const citationKey = String(citation?.citationKey || '').trim();
+      if (!citationKey) continue;
+      const previewInText = typeof citation?.preview?.inText === 'string'
+        ? citation.preview.inText.trim()
+        : '';
+      displayByKey[citationKey] = previewInText || `[${citationKey}]`;
+    }
+
+    if (isNumericStyle) {
+      const numbering: Record<string, number> = {};
+      const serverMetaMatchesStyle = citationStyleMeta?.styleCode?.toUpperCase() === styleCode;
+      if (serverMetaMatchesStyle && citationStyleMeta) {
+        for (const [citationKey, numberValue] of Object.entries(citationStyleMeta.numberingByKey || {})) {
+          const parsed = Number(numberValue);
+          if (citationKey && Number.isFinite(parsed) && parsed > 0) {
+            numbering[citationKey] = Math.trunc(parsed);
+          }
+        }
+      }
+
+      const orderedUsedKeys = extractUsedCitationKeys();
+      for (let index = 0; index < orderedUsedKeys.length; index += 1) {
+        const citationKey = orderedUsedKeys[index];
+        numbering[citationKey] = index + 1;
+      }
+
+      const usedNumbers = Object.values(numbering).filter((value) => Number.isFinite(value) && value > 0);
+      let nextNumber = usedNumbers.length > 0 ? Math.max(...usedNumbers) + 1 : 1;
+      for (const citation of citations) {
+        const citationKey = String(citation?.citationKey || '').trim();
+        if (!citationKey) continue;
+        if (!numbering[citationKey]) {
+          numbering[citationKey] = nextNumber;
+          nextNumber += 1;
+        }
+      }
+
+      for (const [citationKey, numberValue] of Object.entries(numbering)) {
+        const parsed = Number(numberValue);
+        if (!Number.isFinite(parsed) || parsed <= 0) continue;
+        const order = Math.trunc(parsed);
+        orderByKey[citationKey] = order;
+        displayByKey[citationKey] = styleCode === 'VANCOUVER'
+          ? `(${order})`
+          : `[${order}]`;
+      }
+    }
+
+    const signatureParts = Object.keys(displayByKey)
+      .sort((left, right) => left.localeCompare(right))
+      .map((citationKey) => {
+        const order = orderByKey[citationKey];
+        return `${citationKey}:${displayByKey[citationKey]}:${typeof order === 'number' ? order : ''}`;
+      });
+
+    return {
+      styleCode,
+      displayByKey,
+      orderByKey: Object.keys(orderByKey).length > 0 ? orderByKey : undefined,
+      signature: `${styleCode}|${signatureParts.join('|')}`
+    };
+  }, [bibliographyStyle, citationStyleMeta, citations, extractUsedCitationKeys]);
+
   const generateBibliography = useCallback(async () => {
-    // Get only the citation keys that are actually used in the paper
-    const usedCitationKeys = extractUsedCitationKeys();
-    
+    // Prefer explicit placeholders from draft content.
+    const extractedCitationKeys = extractUsedCitationKeys();
+    // Fallback for legacy drafts where placeholders were previously rendered as plain text spans.
+    const usageFallbackKeys = citations
+      .filter((citation) => {
+        const usageCount = Number(citation?.usageCount || 0);
+        const hasUsages = Array.isArray(citation?.usages) && citation.usages.length > 0;
+        return usageCount > 0 || hasUsages;
+      })
+      .map((citation) => String(citation?.citationKey || '').trim())
+      .filter(Boolean);
+    const usedCitationKeys = extractedCitationKeys.length > 0
+      ? extractedCitationKeys
+      : Array.from(new Set(usageFallbackKeys));
+
     if (usedCitationKeys.length === 0) {
       showMsg('No citations found in the paper. Insert citations first using [CITE:key] format.', 'warning');
       return;
@@ -1677,8 +1878,11 @@ export default function SectionDraftingStage({
         const deltaLabel = changed
           ? `, Δ +${added}/-${removed}, renumbered ${renumbered}`
           : '';
+        const recoveryLabel = extractedCitationKeys.length === 0 && usageFallbackKeys.length > 0
+          ? ', recovered from usage metadata'
+          : '';
         showMsg(
-          `Bibliography generated (${bibliographyStyle}, ${usedCount} citations${sequenceLabel}${deltaLabel})`,
+          `Bibliography generated (${bibliographyStyle}, ${usedCount} citations${sequenceLabel}${deltaLabel}${recoveryLabel})`,
           'success'
         );
         await loadCitations();
@@ -1698,6 +1902,7 @@ export default function SectionDraftingStage({
     bibliographyStyle,
     bibliographySortOrder,
     extractUsedCitationKeys,
+    citations,
     pendingChanges,
     content,
     loadCitations
@@ -1951,86 +2156,119 @@ export default function SectionDraftingStage({
                 citations={citations}
                 onCitationsUpdated={setCitations}
                 onInsertCitation={handleInsertSingleCitation}
+                usageFilterAction={
+                  <div
+                    ref={citationToolsMenuRef}
+                    className="relative"
+                    onMouseDown={(event) => event.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setShowCitationToolsMenu((prev) => !prev)}
+                      className={`h-8 w-8 rounded-md border flex items-center justify-center transition-colors ${
+                        showCitationToolsMenu
+                          ? 'bg-purple-50 border-purple-200 text-purple-700'
+                          : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                      }`}
+                      title="Citation tools"
+                    >
+                      <Settings2 className="w-3.5 h-3.5" />
+                    </button>
+                    <AnimatePresence>
+                      {showCitationToolsMenu && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -6, scale: 0.98 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -6, scale: 0.98 }}
+                          transition={{ duration: 0.14 }}
+                          className="absolute right-0 top-[calc(100%+8px)] z-[130] w-[290px] rounded-xl border border-gray-200 bg-white shadow-xl p-3 space-y-2"
+                        >
+                          <button
+                            onClick={() => {
+                              const activeSections = sectionConfigs || fallbackSections;
+                              const targetSection = focusedSection || (activeSections.length > 0 ? activeSections[0].keys[0] : null);
+                              if (targetSection) {
+                                insertCitationTargetRef.current = targetSection;
+                                setInsertCitationTarget(targetSection);
+                              }
+                              setPickerOpen(true);
+                              setShowCitationToolsMenu(false);
+                            }}
+                            className="w-full flex items-center justify-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-700 py-2 border border-blue-200 rounded-lg hover:bg-blue-50"
+                          >
+                            <Plus className="w-3 h-3" /> Add Citation
+                          </button>
+
+                          <div className="space-y-1.5 pt-1">
+                            <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Citation Style</label>
+                            <select
+                              value={bibliographyStyle}
+                              onChange={(e) => setBibliographyStyle(e.target.value)}
+                              className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:border-purple-300 focus:ring-1 focus:ring-purple-200"
+                            >
+                              <option value="APA7">APA 7th Edition</option>
+                              <option value="IEEE">IEEE</option>
+                              <option value="CHICAGO_AUTHOR_DATE">Chicago (Author-Date)</option>
+                              <option value="MLA9">MLA 9th Edition</option>
+                              <option value="HARVARD">Harvard</option>
+                              <option value="VANCOUVER">Vancouver</option>
+                            </select>
+                            <div className="flex gap-1">
+                              <button
+                                onClick={() => setBibliographySortOrder('alphabetical')}
+                                disabled={isNumericOrderBibliography}
+                                className={`flex-1 text-[10px] py-1 rounded-md border transition-colors ${
+                                  bibliographySortOrder === 'alphabetical'
+                                    ? 'bg-purple-50 border-purple-200 text-purple-700 font-medium'
+                                    : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                                } ${isNumericOrderBibliography ? 'opacity-40 cursor-not-allowed hover:bg-white' : ''}`}
+                              >
+                                A-&gt;Z Alphabetical
+                              </button>
+                              <button
+                                onClick={() => setBibliographySortOrder('order_of_appearance')}
+                                className={`flex-1 text-[10px] py-1 rounded-md border transition-colors ${
+                                  bibliographySortOrder === 'order_of_appearance'
+                                    ? 'bg-purple-50 border-purple-200 text-purple-700 font-medium'
+                                    : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                                }`}
+                              >
+                                1-&gt;N Appearance
+                              </button>
+                            </div>
+                            {isNumericOrderBibliography && (
+                              <p className="text-[10px] text-slate-500">
+                                IEEE/Vancouver uses order-of-appearance numbering by first citation in the draft.
+                              </p>
+                            )}
+                            {isNumericOrderBibliography && sequenceInfo && (
+                              <p className="text-[10px] text-slate-500">
+                                Sequence {sequenceInfo.version ? `v${sequenceInfo.version}` : 'unversioned'} | snapshots {sequenceInfo.historyCount}
+                                {sequenceInfo.changed
+                                  ? ` | delta +${sequenceInfo.added}/-${sequenceInfo.removed}, renumbered ${sequenceInfo.renumbered}`
+                                  : ' | no numbering changes'}
+                              </p>
+                            )}
+                          </div>
+
+                          <button
+                            onClick={() => {
+                              setShowCitationToolsMenu(false);
+                              generateBibliography();
+                            }}
+                            disabled={generatingBibliography}
+                            className="w-full flex items-center justify-center gap-2 text-xs font-medium text-purple-600 hover:text-purple-700 py-2 border border-purple-200 rounded-lg hover:bg-purple-50 disabled:opacity-50"
+                            title="Generates bibliography only for citations used in the paper (via [CITE:key] markers)"
+                          >
+                            {generatingBibliography ? <Loader2 className="w-3 h-3 animate-spin" /> : <BookOpen className="w-3 h-3" />}
+                            Generate Bibliography ({extractUsedCitationKeys().length} used)
+                          </button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                }
               />
-            </div>
-
-            <div className="p-3 border-t space-y-2 bg-white/95 backdrop-blur-sm">
-              <button
-                onClick={() => {
-                  const activeSections = sectionConfigs || fallbackSections;
-                  const targetSection = focusedSection || (activeSections.length > 0 ? activeSections[0].keys[0] : null);
-                  if (targetSection) {
-                    insertCitationTargetRef.current = targetSection;
-                    setInsertCitationTarget(targetSection);
-                  }
-                  setPickerOpen(true);
-                }}
-                className="w-full flex items-center justify-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-700 py-2 border border-blue-200 rounded-lg hover:bg-blue-50"
-              >
-                <Plus className="w-3 h-3" /> Add Citation
-              </button>
-
-              <div className="space-y-1.5 pt-1">
-                <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Citation Style</label>
-                <select
-                  value={bibliographyStyle}
-                  onChange={(e) => setBibliographyStyle(e.target.value)}
-                  className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:border-purple-300 focus:ring-1 focus:ring-purple-200"
-                >
-                  <option value="APA7">APA 7th Edition</option>
-                  <option value="IEEE">IEEE</option>
-                  <option value="CHICAGO_AUTHOR_DATE">Chicago (Author-Date)</option>
-                  <option value="MLA9">MLA 9th Edition</option>
-                  <option value="HARVARD">Harvard</option>
-                  <option value="VANCOUVER">Vancouver</option>
-                </select>
-                <div className="flex gap-1">
-                  <button
-                    onClick={() => setBibliographySortOrder('alphabetical')}
-                    disabled={isNumericOrderBibliography}
-                    className={`flex-1 text-[10px] py-1 rounded-md border transition-colors ${
-                      bibliographySortOrder === 'alphabetical'
-                        ? 'bg-purple-50 border-purple-200 text-purple-700 font-medium'
-                        : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                    } ${isNumericOrderBibliography ? 'opacity-40 cursor-not-allowed hover:bg-white' : ''}`}
-                  >
-                    A-&gt;Z Alphabetical
-                  </button>
-                  <button
-                    onClick={() => setBibliographySortOrder('order_of_appearance')}
-                    className={`flex-1 text-[10px] py-1 rounded-md border transition-colors ${
-                      bibliographySortOrder === 'order_of_appearance'
-                        ? 'bg-purple-50 border-purple-200 text-purple-700 font-medium'
-                        : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                    }`}
-                  >
-                    1-&gt;N Appearance
-                  </button>
-                </div>
-                {isNumericOrderBibliography && (
-                  <p className="text-[10px] text-slate-500">
-                    IEEE/Vancouver uses order-of-appearance numbering by first citation in the draft.
-                  </p>
-                )}
-                {isNumericOrderBibliography && sequenceInfo && (
-                  <p className="text-[10px] text-slate-500">
-                    Sequence {sequenceInfo.version ? `v${sequenceInfo.version}` : 'unversioned'} | snapshots {sequenceInfo.historyCount}
-                    {sequenceInfo.changed
-                      ? ` | delta +${sequenceInfo.added}/-${sequenceInfo.removed}, renumbered ${sequenceInfo.renumbered}`
-                      : ' | no numbering changes'}
-                  </p>
-                )}
-              </div>
-
-              <button
-                onClick={generateBibliography}
-                disabled={generatingBibliography}
-                className="w-full flex items-center justify-center gap-2 text-xs font-medium text-purple-600 hover:text-purple-700 py-2 border border-purple-200 rounded-lg hover:bg-purple-50 disabled:opacity-50"
-                title="Generates bibliography only for citations used in the paper (via [CITE:key] markers)"
-              >
-                {generatingBibliography ? <Loader2 className="w-3 h-3 animate-spin" /> : <BookOpen className="w-3 h-3" />}
-                Generate Bibliography ({extractUsedCitationKeys().length} used)
-              </button>
             </div>
 
             <div
@@ -2208,6 +2446,7 @@ export default function SectionDraftingStage({
                               ref={(editor) => { editorRefs.current[keyName] = editor; }}
                               value={content[keyName] || ''}
                               onChange={(markdown) => handleContentChange(keyName, markdown)}
+                              citationDisplayMeta={citationDisplayMeta}
                               onBlur={() => {
                                 handleBlur(keyName);
                                 // NOTE: Do NOT clear selectedText on blur.

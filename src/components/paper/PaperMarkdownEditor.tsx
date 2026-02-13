@@ -57,9 +57,17 @@ interface PaperMarkdownEditorProps {
   onFocus?: () => void;
   onBlur?: () => void;
   onSelectionChange?: (selection: { text: string; start: number; end: number } | null) => void;
+  citationDisplayMeta?: PaperCitationDisplayMeta;
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+}
+
+export interface PaperCitationDisplayMeta {
+  styleCode: string;
+  displayByKey: Record<string, string>;
+  orderByKey?: Record<string, number>;
+  signature?: string;
 }
 
 // ============================================================================
@@ -75,8 +83,104 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function inlineMarkdownToHtml(text: string): string {
-  let html = escapeHtml(text);
+const CITE_MARKER_REGEX = /\[CITE:([^\]]+)\]/gi;
+const LEGACY_CITATION_SPAN_REGEX = /<span\b[^>]*data-cite-key=(?:"([^"]+)"|'([^']+)')[^>]*>[\s\S]*?<\/span>/gi;
+
+function splitCitationKeys(raw: string): string[] {
+  if (!raw) return [];
+  return raw
+    .split(/[;,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeLegacyCitationSpanMarkup(markdown: string): string {
+  if (!markdown || !markdown.includes('data-cite-key')) {
+    return markdown;
+  }
+
+  return markdown.replace(LEGACY_CITATION_SPAN_REGEX, (_full, keyA, keyB) => {
+    const citationKey = String(keyA || keyB || '').trim();
+    if (!citationKey) return _full;
+    return `[CITE:${citationKey}]`;
+  });
+}
+
+function resolveCitationLabel(
+  citationKey: string,
+  citationDisplayMeta?: PaperCitationDisplayMeta
+): { label: string; order?: number } {
+  const key = String(citationKey || '').trim();
+  const displayByKey = citationDisplayMeta?.displayByKey || {};
+  const fallbackLabel = key ? `[${key}]` : '[CITE]';
+  const labelRaw = typeof displayByKey[key] === 'string' ? displayByKey[key].trim() : '';
+  const label = labelRaw || fallbackLabel;
+
+  const orderRaw = Number(citationDisplayMeta?.orderByKey?.[key]);
+  const order = Number.isFinite(orderRaw) && orderRaw > 0 ? Math.trunc(orderRaw) : undefined;
+
+  return { label, order };
+}
+
+function renderCitationChipHtml(
+  citationKey: string,
+  citationDisplayMeta?: PaperCitationDisplayMeta
+): string {
+  const key = String(citationKey || '').trim();
+  if (!key) return '';
+
+  const { label, order } = resolveCitationLabel(key, citationDisplayMeta);
+  const styleCode = String(citationDisplayMeta?.styleCode || '').trim();
+  const attrs = [
+    'class="paper-citation-chip"',
+    'contenteditable="false"',
+    `data-cite-key="${escapeHtml(key)}"`,
+    `data-cite-label="${escapeHtml(label)}"`
+  ];
+
+  if (styleCode) {
+    attrs.push(`data-cite-style="${escapeHtml(styleCode)}"`);
+  }
+  if (typeof order === 'number') {
+    attrs.push(`data-cite-order="${order}"`);
+  }
+
+  return `<span ${attrs.join(' ')}>${escapeHtml(label)}</span>`;
+}
+
+function convertCitationMarkersToInlineHtml(
+  text: string,
+  citationDisplayMeta?: PaperCitationDisplayMeta
+): string {
+  if (!text) return '';
+
+  let html = '';
+  let cursor = 0;
+  CITE_MARKER_REGEX.lastIndex = 0;
+  let match: RegExpExecArray | null = null;
+
+  while ((match = CITE_MARKER_REGEX.exec(text)) !== null) {
+    html += escapeHtml(text.slice(cursor, match.index));
+    cursor = match.index + match[0].length;
+
+    const citationKeys = splitCitationKeys(match[1] || '');
+    if (citationKeys.length === 0) {
+      html += escapeHtml(match[0]);
+      continue;
+    }
+
+    const chips = citationKeys
+      .map((citationKey) => renderCitationChipHtml(citationKey, citationDisplayMeta))
+      .filter(Boolean);
+    html += chips.length > 0 ? chips.join(' ') : escapeHtml(match[0]);
+  }
+
+  html += escapeHtml(text.slice(cursor));
+  return html;
+}
+
+function inlineMarkdownToHtml(text: string, citationDisplayMeta?: PaperCitationDisplayMeta): string {
+  let html = convertCitationMarkersToInlineHtml(text, citationDisplayMeta);
   // Bold **text**
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   // Italic *text* (but not inside bold markers)
@@ -96,6 +200,14 @@ function inlineHtmlToMarkdown(node: Node): string {
   if (node.nodeType !== Node.ELEMENT_NODE) return '';
   const el = node as HTMLElement;
   const tag = el.tagName.toLowerCase();
+
+  if (tag === 'span') {
+    const citationKey = el.getAttribute('data-cite-key');
+    if (citationKey && citationKey.trim()) {
+      return `[CITE:${citationKey.trim()}]`;
+    }
+  }
+
   const children = Array.from(el.childNodes).map(inlineHtmlToMarkdown).join('');
 
   if (tag === 'strong' || tag === 'b') return `**${children}**`;
@@ -113,8 +225,8 @@ function inlineHtmlToMarkdown(node: Node): string {
  * Convert markdown to HTML for TipTap consumption.
  * Handles: headings (##-####), bullet/ordered lists (nested), blockquotes, paragraphs
  */
-function markdownToHtml(markdown: string): string {
-  const normalized = polishDraftMarkdown(markdown || '');
+function markdownToHtml(markdown: string, citationDisplayMeta?: PaperCitationDisplayMeta): string {
+  const normalized = polishDraftMarkdown(normalizeLegacyCitationSpanMarkup(markdown || ''));
   if (!normalized) return '<p></p>';
 
   const lines = normalized.split('\n');
@@ -160,7 +272,7 @@ function markdownToHtml(markdown: string): string {
       closeBlockquote();
       closeListsToLevel(0);
       const level = Math.min(4, Math.max(2, headingMatch[1].length));
-      html.push(`<h${level}>${inlineMarkdownToHtml(headingMatch[2].trim())}</h${level}>`);
+      html.push(`<h${level}>${inlineMarkdownToHtml(headingMatch[2].trim(), citationDisplayMeta)}</h${level}>`);
       continue;
     }
 
@@ -175,7 +287,7 @@ function markdownToHtml(markdown: string): string {
       }
       const quoteContent = blockquoteMatch[1].trim();
       if (quoteContent) {
-        html.push(`<p>${inlineMarkdownToHtml(quoteContent)}</p>`);
+        html.push(`<p>${inlineMarkdownToHtml(quoteContent, citationDisplayMeta)}</p>`);
       }
       continue;
     }
@@ -189,21 +301,26 @@ function markdownToHtml(markdown: string): string {
       const level = Math.max(0, Math.floor(indentSpaces / 2));
       const listType: 'ul' | 'ol' = listMatch[2] === '-' ? 'ul' : 'ol';
 
-      // Close lists deeper than current level
-      closeListsToLevel(level);
+      // Keep the current level open so ordered lists preserve counting across items.
+      const targetDepth = level + 1;
+      closeListsToLevel(targetDepth);
 
-      // Open new list if needed at this level
-      if (listStack.length <= level) {
-        html.push(`<${listType}>`);
-        listStack.push(listType);
-      } else if (listStack[level] !== listType) {
-        // Different list type at same level - close and reopen
-        closeListsToLevel(level);
+      // Open list layers until we reach the target level.
+      while (listStack.length < targetDepth) {
         html.push(`<${listType}>`);
         listStack.push(listType);
       }
 
-      html.push(`<li>${inlineMarkdownToHtml(listMatch[3].trim())}</li>`);
+      if (listStack[level] !== listType) {
+        // Different list type at same level - replace that branch.
+        closeListsToLevel(level);
+        while (listStack.length < targetDepth) {
+          html.push(`<${listType}>`);
+          listStack.push(listType);
+        }
+      }
+
+      html.push(`<li>${inlineMarkdownToHtml(listMatch[3].trim(), citationDisplayMeta)}</li>`);
       continue;
     }
 
@@ -216,7 +333,7 @@ function markdownToHtml(markdown: string): string {
     } else {
       html.push('<br/>');
     }
-    html.push(inlineMarkdownToHtml(line));
+    html.push(inlineMarkdownToHtml(line, citationDisplayMeta));
   }
 
   closeParagraph();
@@ -478,6 +595,22 @@ const EDITOR_STYLES = `
   font-style: italic;
 }
 
+.paper-editor .ProseMirror .paper-citation-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 0.8em;
+  line-height: 1.3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-weight: 600;
+  padding: 0.05em 0.45em;
+  margin: 0 0.05em;
+  white-space: nowrap;
+}
+
 .paper-editor .ProseMirror sup {
   font-size: 0.75em;
   vertical-align: super;
@@ -500,6 +633,7 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
     onFocus,
     onBlur,
     onSelectionChange,
+    citationDisplayMeta,
     placeholder = 'Write section content...',
     disabled = false,
     className = ''
@@ -509,8 +643,10 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
   const [hasFocus, setHasFocus] = useState(false);
   const lastMarkdownRef = useRef(polishDraftMarkdown(value || ''));
   const savedSelectionRef = useRef<{ from: number; to: number } | null>(null);
+  const citationDisplayMetaRef = useRef<PaperCitationDisplayMeta | undefined>(citationDisplayMeta);
+  const citationMetaSignature = citationDisplayMeta?.signature || '';
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const initialHtml = useMemo(() => markdownToHtml(value || ''), []);
+  const initialHtml = useMemo(() => markdownToHtml(value || '', citationDisplayMeta), []);
 
   const editor = useEditor({
     extensions: [
@@ -570,13 +706,23 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
     editor.setEditable(!disabled);
   }, [editor, disabled]);
 
+  useEffect(() => {
+    citationDisplayMetaRef.current = citationDisplayMeta;
+  }, [citationDisplayMeta]);
+
+  useEffect(() => {
+    if (!editor) return;
+    const markdown = lastMarkdownRef.current || '';
+    editor.commands.setContent(markdownToHtml(markdown, citationDisplayMetaRef.current), { emitUpdate: false });
+  }, [editor, citationMetaSignature]);
+
   // Sync external value changes into the editor
   useEffect(() => {
     if (!editor) return;
     const normalized = polishDraftMarkdown(value || '');
     if (normalized === lastMarkdownRef.current) return;
     lastMarkdownRef.current = normalized;
-    editor.commands.setContent(markdownToHtml(normalized), { emitUpdate: false });
+    editor.commands.setContent(markdownToHtml(normalized, citationDisplayMetaRef.current), { emitUpdate: false });
   }, [value, editor]);
 
   // Save/restore selection helpers for external consumers (e.g., FloatingWritingPanel)
@@ -594,6 +740,20 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
     editor.chain().focus().setTextSelection(range).run();
   }, [editor]);
 
+  const resolveInsertContent = useCallback((text: string): string => {
+    return text;
+  }, []);
+
+  useEffect(() => {
+    if (!editor) return;
+    const normalized = polishDraftMarkdown(value || '');
+    if (!/\[CITE:/i.test(normalized)) return;
+    const currentHtml = editor.getHTML();
+    if (!/\[CITE:/i.test(currentHtml)) return;
+    lastMarkdownRef.current = normalized;
+    editor.commands.setContent(markdownToHtml(normalized, citationDisplayMetaRef.current), { emitUpdate: false });
+  }, [editor, value, citationMetaSignature]);
+
   useImperativeHandle(
     ref,
     () => ({
@@ -601,16 +761,17 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
 
       insertTextAtCursor: (text: string) => {
         if (!editor) return;
-        editor.chain().focus().insertContent(text).run();
+        editor.chain().focus().insertContent(resolveInsertContent(text)).run();
       },
 
       replaceSelection: (text: string) => {
         if (!editor) return;
         const { from, to } = editor.state.selection;
+        const contentToInsert = resolveInsertContent(text);
 
         if (from !== to) {
           // Active selection exists - delete it and insert replacement
-          editor.chain().focus().deleteSelection().insertContent(text).run();
+          editor.chain().focus().deleteSelection().insertContent(contentToInsert).run();
         } else if (savedSelectionRef.current) {
           // No active selection, but we have a saved one from before blur
           const saved = savedSelectionRef.current;
@@ -618,12 +779,12 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
             .focus()
             .setTextSelection(saved)
             .deleteSelection()
-            .insertContent(text)
+            .insertContent(contentToInsert)
             .run();
           savedSelectionRef.current = null;
         } else {
           // Fallback: just insert at cursor
-          editor.chain().focus().insertContent(text).run();
+          editor.chain().focus().insertContent(contentToInsert).run();
         }
       },
 
@@ -633,7 +794,7 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
           .focus()
           .setTextSelection({ from, to })
           .deleteSelection()
-          .insertContent(text)
+          .insertContent(resolveInsertContent(text))
           .run();
       },
 
@@ -651,7 +812,7 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
       saveSelection,
       restoreSelection
     }),
-    [editor, saveSelection, restoreSelection]
+    [editor, saveSelection, restoreSelection, resolveInsertContent]
   );
 
   return (

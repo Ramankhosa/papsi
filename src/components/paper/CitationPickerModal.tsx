@@ -24,6 +24,22 @@ interface SearchResult {
   authors: string[]
   year?: number
   venue?: string
+  volume?: string
+  issue?: string
+  pages?: string
+  publisher?: string
+  isbn?: string
+  edition?: string
+  editors?: string[]
+  publicationPlace?: string
+  publicationDate?: string
+  accessedDate?: string
+  articleNumber?: string
+  issn?: string
+  journalAbbreviation?: string
+  pmid?: string
+  pmcid?: string
+  arxivId?: string
   doi?: string
   abstract?: string
   citationCount?: number
@@ -200,6 +216,22 @@ export default function CitationPickerModal({
             authors: result.authors,
             year: result.year,
             venue: result.venue,
+            volume: result.volume,
+            issue: result.issue,
+            pages: result.pages,
+            publisher: result.publisher,
+            isbn: result.isbn,
+            edition: result.edition,
+            editors: result.editors,
+            publicationPlace: result.publicationPlace,
+            publicationDate: result.publicationDate,
+            accessedDate: result.accessedDate,
+            articleNumber: result.articleNumber,
+            issn: result.issn,
+            journalAbbreviation: result.journalAbbreviation,
+            pmid: result.pmid,
+            pmcid: result.pmcid,
+            arxivId: result.arxivId,
             doi: result.doi,
             abstract: result.abstract,
             source: result.source

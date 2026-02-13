@@ -369,6 +369,17 @@ export class DraftingService {
       isbn: citation.isbn ?? undefined,
       publisher: citation.publisher ?? undefined,
       edition: citation.edition ?? undefined,
+      sourceType: citation.sourceType ?? undefined,
+      editors: Array.isArray(citation.editors) ? citation.editors : undefined,
+      publicationPlace: citation.publicationPlace ?? undefined,
+      publicationDate: citation.publicationDate ?? undefined,
+      accessedDate: citation.accessedDate ?? undefined,
+      articleNumber: citation.articleNumber ?? undefined,
+      issn: citation.issn ?? undefined,
+      journalAbbreviation: citation.journalAbbreviation ?? undefined,
+      pmid: citation.pmid ?? undefined,
+      pmcid: citation.pmcid ?? undefined,
+      arxivId: citation.arxivId ?? undefined,
       citationKey: citation.citationKey
     }));
 
@@ -913,6 +924,17 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
               isbn: citation.isbn ?? undefined,
               publisher: citation.publisher ?? undefined,
               edition: citation.edition ?? undefined,
+              sourceType: citation.sourceType ?? undefined,
+              editors: Array.isArray(citation.editors) ? citation.editors : undefined,
+              publicationPlace: citation.publicationPlace ?? undefined,
+              publicationDate: citation.publicationDate ?? undefined,
+              accessedDate: citation.accessedDate ?? undefined,
+              articleNumber: citation.articleNumber ?? undefined,
+              issn: citation.issn ?? undefined,
+              journalAbbreviation: citation.journalAbbreviation ?? undefined,
+              pmid: citation.pmid ?? undefined,
+              pmcid: citation.pmcid ?? undefined,
+              arxivId: citation.arxivId ?? undefined,
               citationKey: citation.citationKey
             }, citationStyle, {
               citationNumber: options?.citationNumbering?.[citation.citationKey]

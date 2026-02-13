@@ -1020,6 +1020,10 @@ Return ONLY the JSON array, no additional text or explanation.`;
       });
 
       if (existing) {
+        // Preserve explicit user remaps from being overwritten by re-analysis.
+        if ((existing as any).mappingSource === 'manual') {
+          return;
+        }
         await prisma.citationUsage.update({
           where: { id: existing.id },
           data: usageData
@@ -1274,7 +1278,8 @@ Return ONLY the JSON array, no additional text or explanation.`;
       where: {
         citation: { sessionId, isActive: true },
         dimension: { not: null }, // Only get records with dimension mappings
-        usageKind: 'DIMENSION_MAPPING'
+        usageKind: 'DIMENSION_MAPPING',
+        inclusionStatus: 'INCLUDED'
       },
       select: {
         citationId: true,
@@ -1394,7 +1399,12 @@ Return ONLY the JSON array, no additional text or explanation.`;
       where: {
         citationId: { in: citationIds },
         citation: { sessionId },
-        usageKind: 'DIMENSION_MAPPING'
+        usageKind: 'DIMENSION_MAPPING',
+        inclusionStatus: 'INCLUDED',
+        OR: [
+          { mappingSource: null },
+          { mappingSource: 'auto' }
+        ]
       }
     });
   }

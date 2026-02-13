@@ -1,9 +1,6 @@
 import type { CitationData } from '@/lib/services/citation-style-service';
-import type { CitationSourceType } from '@prisma/client';
 
-export interface BibtexCitation extends CitationData {
-  sourceType?: CitationSourceType | null;
-}
+export type BibtexCitation = CitationData;
 
 export interface BibtexExportOptions {
   includeUrl?: boolean;
@@ -50,6 +47,17 @@ export function exportCitationsToBibtex(
     if (citation.publisher && entryType === 'book') fields.push(`publisher={${escapeBibtex(citation.publisher)}}`);
     if (citation.edition && entryType === 'book') fields.push(`edition={${escapeBibtex(citation.edition)}}`);
     if (citation.isbn) fields.push(`isbn={${escapeBibtex(citation.isbn)}}`);
+    if (citation.issn) fields.push(`issn={${escapeBibtex(citation.issn)}}`);
+    if (citation.editors && citation.editors.length > 0) fields.push(`editor={${escapeBibtex(citation.editors.join(' and '))}}`);
+    if (citation.publicationPlace) fields.push(`address={${escapeBibtex(citation.publicationPlace)}}`);
+    if (citation.articleNumber) fields.push(`article-number={${escapeBibtex(citation.articleNumber)}}`);
+    if (citation.journalAbbreviation) fields.push(`shortjournal={${escapeBibtex(citation.journalAbbreviation)}}`);
+    if (citation.pmid) fields.push(`pmid={${escapeBibtex(citation.pmid)}}`);
+    if (citation.pmcid) fields.push(`pmcid={${escapeBibtex(citation.pmcid)}}`);
+    if (citation.arxivId) {
+      fields.push(`eprint={${escapeBibtex(citation.arxivId)}}`);
+      fields.push(`archivePrefix={arXiv}`);
+    }
     if (merged.includeDoi && citation.doi) fields.push(`doi={${escapeBibtex(citation.doi)}}`);
     if (merged.includeUrl && citation.url) fields.push(`url={${escapeBibtex(citation.url)}}`);
 

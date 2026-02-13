@@ -48,6 +48,16 @@ export interface CreateCitationInput {
   isbn?: string;
   publisher?: string;
   edition?: string;
+  editors?: string[];
+  publicationPlace?: string;
+  publicationDate?: string;
+  accessedDate?: string;
+  articleNumber?: string;
+  issn?: string;
+  journalAbbreviation?: string;
+  pmid?: string;
+  pmcid?: string;
+  arxivId?: string;
   abstract?: string;
   importSource: CitationImportSource;
   importProvider?: string;
@@ -74,6 +84,17 @@ export interface UpdateCitationInput {
   isbn?: string;
   publisher?: string;
   edition?: string;
+  editors?: string[];
+  publicationPlace?: string;
+  publicationDate?: string;
+  accessedDate?: string;
+  articleNumber?: string;
+  issn?: string;
+  journalAbbreviation?: string;
+  pmid?: string;
+  pmcid?: string;
+  arxivId?: string;
+  abstract?: string;
   notes?: string;
   tags?: string[];
   isActive?: boolean;
@@ -199,11 +220,21 @@ class CitationService {
           pages: parsedCitation.pages,
           doi: parsedCitation.doi,
           url: parsedCitation.url,
-          isbn: parsedCitation.isbn,
-          publisher: parsedCitation.publisher,
-          edition: parsedCitation.edition,
-          importSource: 'BIBTEX_IMPORT'
-        });
+      isbn: parsedCitation.isbn,
+      publisher: parsedCitation.publisher,
+      edition: parsedCitation.edition,
+      editors: parsedCitation.editors,
+      publicationPlace: parsedCitation.publicationPlace,
+      publicationDate: parsedCitation.publicationDate,
+      accessedDate: parsedCitation.accessedDate,
+      articleNumber: parsedCitation.articleNumber,
+      issn: parsedCitation.issn,
+      journalAbbreviation: parsedCitation.journalAbbreviation,
+      pmid: parsedCitation.pmid,
+      pmcid: parsedCitation.pmcid,
+      arxivId: parsedCitation.arxivId,
+      importSource: 'BIBTEX_IMPORT'
+    });
 
         importedCitations.push(citation);
       } catch (error) {
@@ -259,8 +290,24 @@ class CitationService {
       authors: searchResult.authors,
       year: searchResult.year,
       venue: searchResult.venue,
+      volume: this.normalizeLooseString(searchResult.volume),
+      issue: this.normalizeLooseString(searchResult.issue),
+      pages: this.normalizeLooseString(searchResult.pages),
       doi: searchResult.doi,
       url: searchResult.url,
+      isbn: this.normalizeLooseString(searchResult.isbn),
+      publisher: this.normalizeLooseString(searchResult.publisher),
+      edition: this.normalizeLooseString(searchResult.edition),
+      editors: this.normalizeLooseStringArray(searchResult.editors),
+      publicationPlace: this.normalizeLooseString(searchResult.publicationPlace),
+      publicationDate: this.normalizeLooseString(searchResult.publicationDate),
+      accessedDate: this.normalizeLooseString(searchResult.accessedDate),
+      articleNumber: this.normalizeLooseString(searchResult.articleNumber),
+      issn: this.normalizeLooseString(searchResult.issn),
+      journalAbbreviation: this.normalizeLooseString(searchResult.journalAbbreviation),
+      pmid: this.normalizeLooseString(searchResult.pmid),
+      pmcid: this.normalizeLooseString(searchResult.pmcid),
+      arxivId: this.normalizeLooseString(searchResult.arxivId),
       abstract: searchResult.abstract,
       notes: searchResult.abstract,
       importSource: this.mapSearchSourceToImportSource(searchResult.source),
@@ -351,6 +398,17 @@ class CitationService {
         isbn: updates.isbn,
         publisher: updates.publisher,
         edition: updates.edition,
+        editors: updates.editors,
+        publicationPlace: updates.publicationPlace,
+        publicationDate: updates.publicationDate,
+        accessedDate: updates.accessedDate,
+        articleNumber: updates.articleNumber,
+        issn: updates.issn,
+        journalAbbreviation: updates.journalAbbreviation,
+        pmid: updates.pmid,
+        pmcid: updates.pmcid,
+        arxivId: updates.arxivId,
+        abstract: updates.abstract,
         notes: updates.notes,
         tags: updates.tags,
         isActive: updates.isActive,
@@ -448,6 +506,22 @@ class CitationService {
       const normalizedUrl = typeof searchResult?.url === 'string'
         ? searchResult.url
         : undefined;
+      const normalizedVolume = this.normalizeLooseString(searchResult?.volume);
+      const normalizedIssue = this.normalizeLooseString(searchResult?.issue);
+      const normalizedPages = this.normalizeLooseString(searchResult?.pages);
+      const normalizedIsbn = this.normalizeLooseString(searchResult?.isbn);
+      const normalizedPublisher = this.normalizeLooseString(searchResult?.publisher);
+      const normalizedEdition = this.normalizeLooseString(searchResult?.edition);
+      const normalizedEditors = this.normalizeLooseStringArray(searchResult?.editors);
+      const normalizedPublicationPlace = this.normalizeLooseString(searchResult?.publicationPlace);
+      const normalizedPublicationDate = this.normalizeLooseString(searchResult?.publicationDate);
+      const normalizedAccessedDate = this.normalizeLooseString(searchResult?.accessedDate);
+      const normalizedArticleNumber = this.normalizeLooseString(searchResult?.articleNumber);
+      const normalizedIssn = this.normalizeLooseString(searchResult?.issn);
+      const normalizedJournalAbbreviation = this.normalizeLooseString(searchResult?.journalAbbreviation);
+      const normalizedPmid = this.normalizeLooseString(searchResult?.pmid);
+      const normalizedPmcid = this.normalizeLooseString(searchResult?.pmcid);
+      const normalizedArxivId = this.normalizeLooseString(searchResult?.arxivId);
       const normalizedAbstract = typeof searchResult?.abstract === 'string'
         ? searchResult.abstract
         : undefined;
@@ -542,14 +616,24 @@ class CitationService {
         authors: normalizedAuthors,
         year: normalizedYear,
         venue: normalizedVenue,
-        volume: undefined,
-        issue: undefined,
-        pages: undefined,
+        volume: normalizedVolume,
+        issue: normalizedIssue,
+        pages: normalizedPages,
         doi: normalizedDoiRaw,
         url: normalizedUrl,
-        isbn: undefined,
-        publisher: undefined,
-        edition: undefined,
+        isbn: normalizedIsbn,
+        publisher: normalizedPublisher,
+        edition: normalizedEdition,
+        editors: normalizedEditors,
+        publicationPlace: normalizedPublicationPlace,
+        publicationDate: normalizedPublicationDate,
+        accessedDate: normalizedAccessedDate,
+        articleNumber: normalizedArticleNumber,
+        issn: normalizedIssn,
+        journalAbbreviation: normalizedJournalAbbreviation,
+        pmid: normalizedPmid,
+        pmcid: normalizedPmcid,
+        arxivId: normalizedArxivId,
         citationKey: ''
       };
 
@@ -580,14 +664,24 @@ class CitationService {
         authors: normalizedAuthors,
         year: normalizedYear,
         venue: normalizedVenue,
-        volume: undefined,
-        issue: undefined,
-        pages: undefined,
+        volume: normalizedVolume,
+        issue: normalizedIssue,
+        pages: normalizedPages,
         doi: normalizedDoiRaw,
         url: normalizedUrl,
-        isbn: undefined,
-        publisher: undefined,
-        edition: undefined,
+        isbn: normalizedIsbn,
+        publisher: normalizedPublisher,
+        edition: normalizedEdition,
+        editors: normalizedEditors,
+        publicationPlace: normalizedPublicationPlace,
+        publicationDate: normalizedPublicationDate,
+        accessedDate: normalizedAccessedDate,
+        articleNumber: normalizedArticleNumber,
+        issn: normalizedIssn,
+        journalAbbreviation: normalizedJournalAbbreviation,
+        pmid: normalizedPmid,
+        pmcid: normalizedPmcid,
+        arxivId: normalizedArxivId,
         abstract: normalizedAbstract,
         citationKey: citationData.citationKey,
         importSource: this.mapSearchSourceToImportSource(normalizedSource),
@@ -1067,6 +1161,16 @@ class CitationService {
       isbn: input.isbn,
       publisher: input.publisher,
       edition: input.edition,
+      editors: input.editors,
+      publicationPlace: input.publicationPlace,
+      publicationDate: input.publicationDate,
+      accessedDate: input.accessedDate,
+      articleNumber: input.articleNumber,
+      issn: input.issn,
+      journalAbbreviation: input.journalAbbreviation,
+      pmid: input.pmid,
+      pmcid: input.pmcid,
+      arxivId: input.arxivId,
       citationKey: ''
     };
 
@@ -1089,6 +1193,16 @@ class CitationService {
         isbn: input.isbn,
         publisher: input.publisher,
         edition: input.edition,
+        editors: input.editors,
+        publicationPlace: input.publicationPlace,
+        publicationDate: input.publicationDate,
+        accessedDate: input.accessedDate,
+        articleNumber: input.articleNumber,
+        issn: input.issn,
+        journalAbbreviation: input.journalAbbreviation,
+        pmid: input.pmid,
+        pmcid: input.pmcid,
+        arxivId: input.arxivId,
         abstract: input.abstract,
         citationKey: citationData.citationKey,
         importSource: input.importSource,
@@ -1161,6 +1275,27 @@ class CitationService {
   private isValidDOI(doi: string): boolean {
     // Basic DOI validation
     return /^10\.\d{4,9}\/[-._;()/:A-Z0-9]+$/i.test(doi);
+  }
+
+  private normalizeLooseString(value: unknown): string | undefined {
+    if (typeof value === 'string') {
+      const normalized = value.replace(/\s+/g, ' ').trim();
+      return normalized || undefined;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(value);
+    }
+    return undefined;
+  }
+
+  private normalizeLooseStringArray(values: unknown): string[] | undefined {
+    if (!Array.isArray(values)) {
+      return undefined;
+    }
+    const normalized = values
+      .map(value => this.normalizeLooseString(value))
+      .filter((value): value is string => Boolean(value));
+    return normalized.length > 0 ? normalized : undefined;
   }
 
   /**

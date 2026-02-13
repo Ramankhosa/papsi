@@ -22,6 +22,16 @@ export interface ParsedReference {
   isbn?: string;
   publisher?: string;
   edition?: string;
+  editors?: string[];
+  publicationPlace?: string;
+  publicationDate?: string;
+  accessedDate?: string;
+  articleNumber?: string;
+  issn?: string;
+  journalAbbreviation?: string;
+  pmid?: string;
+  pmcid?: string;
+  arxivId?: string;
   abstract?: string;
   sourceType: CitationSourceType;
   importSource: CitationImportSource;
@@ -116,6 +126,16 @@ export function parseBibTeX(bibtexString: string): ImportResult {
         isbn: cleanBibTeXValue(fields.isbn || '') || undefined,
         publisher: cleanBibTeXValue(fields.publisher || '') || undefined,
         edition: fields.edition || undefined,
+        editors: parseBibTeXAuthors(fields.editor || ''),
+        publicationPlace: cleanBibTeXValue(fields.address || fields.location || '') || undefined,
+        publicationDate: cleanBibTeXValue(fields.date || '') || undefined,
+        accessedDate: cleanBibTeXValue(fields.urldate || fields.accessed || '') || undefined,
+        articleNumber: cleanBibTeXValue(fields['article-number'] || fields.articlenumber || '') || undefined,
+        issn: cleanBibTeXValue(fields.issn || '') || undefined,
+        journalAbbreviation: cleanBibTeXValue(fields.shortjournal || fields.journalabbr || '') || undefined,
+        pmid: cleanBibTeXValue(fields.pmid || '') || undefined,
+        pmcid: cleanBibTeXValue(fields.pmcid || fields.pmc || '') || undefined,
+        arxivId: cleanBibTeXValue(fields.eprint || fields.arxivid || '') || undefined,
         abstract: cleanBibTeXValue(fields.abstract || '') || undefined,
         sourceType: BIBTEX_TYPE_MAP[entryType] || 'OTHER',
         importSource: 'BIBTEX_IMPORT',
@@ -148,7 +168,7 @@ function parseBibTeXFields(fieldsString: string): Record<string, string> {
   const fields: Record<string, string> = {};
   
   // Match field = {value} or field = "value" or field = number
-  const fieldRegex = /(\w+)\s*=\s*(?:\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}|"([^"]*)"|(\d+))/gi;
+  const fieldRegex = /([\w-]+)\s*=\s*(?:\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}|"([^"]*)"|(\d+))/gi;
   let fieldMatch;
 
   while ((fieldMatch = fieldRegex.exec(fieldsString)) !== null) {
@@ -267,7 +287,11 @@ export function parseRIS(risString: string): ImportResult {
         doi: extractDOI(fields.DO?.[0] || fields.M3?.[0] || ''),
         url: fields.UR?.[0] || fields.L1?.[0] || fields.L2?.[0] || undefined,
         isbn: fields.SN?.[0] || undefined,
+        issn: fields.SN?.[0] || undefined,
         publisher: fields.PB?.[0] || undefined,
+        publicationPlace: fields.CY?.[0] || undefined,
+        publicationDate: fields.Y1?.[0] || fields.PY?.[0] || undefined,
+        pmid: fields.AN?.[0] || undefined,
         abstract: fields.AB?.[0] || fields.N2?.[0] || undefined,
         sourceType: RIS_TYPE_MAP[fields.TY[0]] || 'OTHER',
         importSource: 'RIS_IMPORT',
@@ -372,7 +396,14 @@ export function parseMendeleyJSON(jsonString: string): ImportResult {
           doi: String(item.identifiers?.doi || item.doi || item.DOI || '') || undefined,
           url: String(item.websites?.[0] || item.url || item.URL || '') || undefined,
           isbn: String(item.identifiers?.isbn || item.isbn || item.ISBN || '') || undefined,
+          issn: String(item.identifiers?.issn || item.issn || item.ISSN || '') || undefined,
           publisher: String(item.publisher || '') || undefined,
+          publicationPlace: String(item.city || item.place || '') || undefined,
+          publicationDate: String(item.date || '') || undefined,
+          articleNumber: String(item.article_number || item.articleNumber || '') || undefined,
+          pmid: String(item.identifiers?.pmid || item.pmid || '') || undefined,
+          pmcid: String(item.identifiers?.pmcid || item.pmcid || '') || undefined,
+          arxivId: String(item.identifiers?.arxiv || item.arxiv || item.arxivId || '') || undefined,
           abstract: String(item.abstract || '') || undefined,
           sourceType: mapMendeleyType(item.type),
           importSource: 'MENDELEY_IMPORT',
@@ -476,7 +507,15 @@ export function parseZoteroCSLJSON(jsonString: string): ImportResult {
           doi: String(item.DOI || '') || undefined,
           url: String(item.URL || '') || undefined,
           isbn: String(item.ISBN || '') || undefined,
+          issn: String(item.ISSN || '') || undefined,
           publisher: String(item.publisher || '') || undefined,
+          publicationPlace: String(item['publisher-place'] || item.eventPlace || '') || undefined,
+          publicationDate: String(item.issued?.raw || '') || undefined,
+          articleNumber: String(item['article-number'] || '') || undefined,
+          journalAbbreviation: String(item['container-title-short'] || item['short-container-title'] || '') || undefined,
+          pmid: String(item.PMID || item.pmid || '') || undefined,
+          pmcid: String(item.PMCID || item.pmcid || '') || undefined,
+          arxivId: String(item.arXiv || item.arxiv || item.arxivId || '') || undefined,
           abstract: String(item.abstract || '') || undefined,
           sourceType: mapCSLType(item.type),
           importSource: 'ZOTERO_IMPORT',
@@ -617,7 +656,18 @@ export function exportToBibTeX(references: ParsedReference[]): string {
     if (ref.doi) fields.push(`  doi = {${ref.doi}}`);
     if (ref.url) fields.push(`  url = {${ref.url}}`);
     if (ref.isbn) fields.push(`  isbn = {${ref.isbn}}`);
+    if (ref.issn) fields.push(`  issn = {${ref.issn}}`);
     if (ref.publisher) fields.push(`  publisher = {${escapeBibTeX(ref.publisher)}}`);
+    if (ref.editors && ref.editors.length > 0) fields.push(`  editor = {${ref.editors.join(' and ')}}`);
+    if (ref.publicationPlace) fields.push(`  address = {${escapeBibTeX(ref.publicationPlace)}}`);
+    if (ref.articleNumber) fields.push(`  article-number = {${ref.articleNumber}}`);
+    if (ref.journalAbbreviation) fields.push(`  shortjournal = {${escapeBibTeX(ref.journalAbbreviation)}}`);
+    if (ref.pmid) fields.push(`  pmid = {${ref.pmid}}`);
+    if (ref.pmcid) fields.push(`  pmcid = {${ref.pmcid}}`);
+    if (ref.arxivId) {
+      fields.push(`  eprint = {${ref.arxivId}}`);
+      fields.push(`  archivePrefix = {arXiv}`);
+    }
     if (ref.abstract) fields.push(`  abstract = {${escapeBibTeX(ref.abstract)}}`);
 
     return `@${entryType}{${key},\n${fields.join(',\n')}\n}`;
