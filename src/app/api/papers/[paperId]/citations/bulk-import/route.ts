@@ -236,18 +236,38 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     const body = await request.json();
     const data = bulkImportSchema.parse(body);
 
-    const importResult = await citationService.importFromSearchResultsBulk(
-      sessionId,
-      data.citations.map((item, index) => ({
-        searchResult: item.searchResult,
-        citationMeta: item.citationMeta || undefined,
-        clientRef: String(index)
-      }))
+    const indexedCitations = data.citations.map((item, index) => ({
+      item,
+      clientRef: String(index)
+    }));
+
+    const recommendationSkipped = indexedCitations
+      .filter(({ item }) => item.recommendation === 'MAYBE' || item.recommendation === 'SKIP')
+      .map(({ item, clientRef }) => ({
+        clientRef,
+        reason: `AI recommendation is ${item.recommendation}; manual add required`,
+        paperId: item.searchResult?.id,
+        title: item.searchResult?.title
+      }));
+
+    const citationsToImport = indexedCitations.filter(
+      ({ item }) => item.recommendation !== 'MAYBE' && item.recommendation !== 'SKIP'
     );
+
+    const importResult = citationsToImport.length > 0
+      ? await citationService.importFromSearchResultsBulk(
+        sessionId,
+        citationsToImport.map(({ item, clientRef }) => ({
+          searchResult: item.searchResult,
+          citationMeta: item.citationMeta || undefined,
+          clientRef
+        }))
+      )
+      : { imported: [], skipped: [] };
 
     if (importResult.imported.length > 0) {
       const citationInputByRef = new Map<string, (typeof data.citations)[number]>(
-        data.citations.map((item, index) => [String(index), item])
+        citationsToImport.map(({ item, clientRef }) => [clientRef, item])
       );
 
       const mappingsToPersist: PaperBlueprintMapping[] = [];
@@ -314,17 +334,21 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       };
     }));
 
+    const serviceSkipped = importResult.skipped.map(item => ({
+      clientRef: item.clientRef,
+      reason: item.reason,
+      paperId: item.searchResult?.id,
+      title: item.searchResult?.title
+    }));
+
+    const skipped = [...serviceSkipped, ...recommendationSkipped];
+
     return NextResponse.json({
       success: true,
       importedCount: importedCitations.length,
-      skippedCount: importResult.skipped.length,
+      skippedCount: skipped.length,
       citations: importedCitations,
-      skipped: importResult.skipped.map(item => ({
-        clientRef: item.clientRef,
-        reason: item.reason,
-        paperId: item.searchResult?.id,
-        title: item.searchResult?.title
-      }))
+      skipped
     }, { status: importedCitations.length > 0 ? 201 : 200 });
   } catch (error) {
     if (error instanceof z.ZodError) {

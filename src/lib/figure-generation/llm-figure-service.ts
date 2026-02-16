@@ -20,7 +20,15 @@ import type {
   DataChartType,
   DiagramType,
   FigureSuggestion,
-  DiagramStructuredSpec
+  DiagramStructuredSpec,
+  ChartStructuredSpec,
+  IllustrationStructuredSpec,
+  IllustrationStructuredSpecV2,
+  IllustrationFigureGenre,
+  IllustrationRenderDirectives,
+  FigureRenderSpec,
+  FigureRole,
+  PaperProfile
 } from './types'
 import { normalizeFigurePreferences, type FigureSuggestionPreferences } from './preferences'
 import { chooseDiagramRenderer } from './diagram-renderer-policy'
@@ -29,10 +37,24 @@ import { chooseDiagramRenderer } from './diagram-renderer-policy'
 // TYPES
 // =============================================================================
 
+type SectionType =
+  | 'introduction'
+  | 'literature_review'
+  | 'methodology'
+  | 'results'
+  | 'discussion'
+  | 'conclusion'
+  | 'selected_content'
+
 export interface ChartGenerationRequest {
   description: string
   chartType?: DataChartType
   title?: string
+  sectionType?: SectionType | string
+  figureRole?: FigureRole
+  paperGenre?: string
+  studyType?: PaperProfile['studyType']
+  chartSpec?: ChartStructuredSpec
   data?: {
     labels?: string[]
     values?: number[]
@@ -66,6 +88,9 @@ export interface DiagramGenerationRequest {
   description: string
   diagramType?: DiagramType
   title?: string
+  sectionType?: SectionType | string
+  figureRole?: FigureRole
+  paperGenre?: string
   elements?: string[] // Optional list of elements to include
   style?: 'default' | 'forest' | 'dark' | 'neutral'
   diagramSpec?: DiagramStructuredSpec
@@ -91,6 +116,7 @@ export interface FigureSuggestionRequest {
   sections?: Record<string, string>
   researchType?: string
   datasetDescription?: string
+  paperProfile?: Partial<PaperProfile>
   paperBlueprint?: {
     thesisStatement?: string
     centralObjective?: string
@@ -135,7 +161,78 @@ export interface FigureSuggestionResult {
 // PROMPTS
 // =============================================================================
 
-const CHART_GENERATION_PROMPT = `You are an expert data visualization designer specializing in publication-quality academic figures.
+const SECTION_AWARE_ACADEMIC_FIGURE_POLICY = `SECTION-AWARE ACADEMIC FIGURE POLICY (GLOBAL)
+
+You must choose and generate figures that are academically appropriate for the paper's SECTION and STUDY TYPE.
+Do NOT optimize for "looks technical"; optimize for reviewer-expected rhetorical function:
+- Introduction: orient/motivate/preview approach
+- Literature Review: taxonomy/positioning/gaps
+- Methodology: reproducibility/pipeline/experimental design
+- Results: quantitative evidence/comparisons/ablations/error analysis
+- Discussion/Conclusion: interpretation/limitations/implications/boundary conditions
+
+FIGURE CATEGORIES (allowed outputs):
+A) DATA_CHART / STATISTICAL_PLOT (Chart.js)
+B) DIAGRAM (PlantUML or Mermaid)
+C) ILLUSTRATED_FIGURE (infographic-style overview: icons + arrows + short labels; NOT UML syntax; NOT a plot)
+
+CRITICAL GROUNDING RULE:
+Every figure must be grounded in actual paper content. If data is missing, clearly request the exact data needed; if placeholders are permitted, they must be explicitly labeled as placeholders and must look plausible (no miracle trends).
+
+SECTION FIT RULES (HARD CONSTRAINTS)
+1) INTRODUCTION:
+- Allowed: max 1 ILLUSTRATED_FIGURE, simple DIAGRAM flow/pipeline, high-level architecture only when explicitly system/framework contribution.
+- Default disallow: class/component/sequence/ER unless intro explicitly introduces named software structure.
+- Charts are rare: only when motivating statistics are explicitly present.
+
+2) LITERATURE REVIEW:
+- Allowed: taxonomy/evidence-map/PRISMA DIAGRAMS, trend/distribution DATA_CHARTs, max 1 ILLUSTRATED_FIGURE for framework summary.
+- Default disallow: UML class/component/sequence unless literature explicitly compares software structures/interactions.
+
+3) METHODOLOGY:
+- Required: at least one pipeline/flowchart/activity DIAGRAM.
+- Allowed: flowchart/activity/pipeline, architecture/deployment, ER (if schema-central), sequence (protocol-central), optional ILLUSTRATED_FIGURE.
+- Default disallow: class/component unless framework/library structure is core contribution.
+
+4) RESULTS:
+- HARD MIX: at least 70% of suggestions must be DATA_CHART or STATISTICAL_PLOT when quantitative evidence exists.
+- IF quantitative evidence is missing, suggest zero charts and provide DIAGRAM alternatives plus exact missing data fields in dataNeeded.
+- Allowed: comparisons, ablations, error analysis, sensitivity/boundary plots.
+- HARD BAN: class/component/sequence/usecase/state; architecture-overview by default.
+- Placeholder realism: modest/noisy/plausible trends only unless dramatic jumps are explicitly claimed in paper text.
+
+5) DISCUSSION/CONCLUSION:
+- Allowed: error/failure/limits plots, implication/limitations DIAGRAMS, max 1 ILLUSTRATED_FIGURE summary.
+- Default disallow: class diagrams unless maintainability/extensibility discussion explicitly requires them.
+
+DIAGRAM TYPE SELECTION RULES:
+- FLOWCHART/ACTIVITY/PIPELINE for process steps (default for Methodology).
+- SEQUENCE only when interaction protocol/time order is central.
+- CLASS/COMPONENT only for named software structure contribution.
+- ER only when data schema is central.
+- ARCHITECTURE/DEPLOYMENT only for system papers, high-level unless detailed methodology requires.
+
+ILLUSTRATED_FIGURE RULES:
+- Academic infographic overview, not art.
+- Layout: 3-5 panels OR single strip with 4-7 numbered steps.
+- Visual language: flat vector schematic; icons/boxes/arrows only.
+- Text: max 4 words per label; no paragraphs; no hype.
+- No photorealism, no 3D, no dramatic lighting, no people (silhouettes only for explicitly human-centric studies).
+- Must map to inputs -> method -> outputs -> evaluation if present.
+
+BUDGET & SPEC DISCIPLINE:
+- Diagrams: nodes <= 12 (hard max 15), edges <= 18. If larger, split Fig X(a)/X(b).
+- Every DIAGRAM must have deterministic diagramSpec.
+- Every ILLUSTRATED_FIGURE must have deterministic illustrationSpec.
+- Every DATA_CHART must define exact axes and data mapping.
+
+FAIL FAST:
+If requested figure type conflicts with section rules, propose the closest academically correct alternative for that section and state missing data/spec needed.
+`
+
+const CHART_GENERATION_PROMPT = `${SECTION_AWARE_ACADEMIC_FIGURE_POLICY}
+
+You are an expert data visualization designer specializing in publication-quality academic figures.
 
 Your task: generate a valid Chart.js configuration object that produces a BEAUTIFUL, ACCURATE, PUBLICATION-READY chart.
 
@@ -155,6 +252,12 @@ CRITICAL RULES:
 9. Use font family: "'Helvetica Neue', 'Arial', sans-serif"
 10. Grid lines: light gray (#E5E7EB), width 0.5
 11. White background (#FFFFFF) with clean spacing
+12. You will receive sectionType and figureRole context. Respect it.
+13. If sectionType=results:
+   - prioritize baseline vs proposed comparisons and uncertainty-ready layouts
+   - avoid perfectly monotonic or unrealistic trends
+   - if data is missing, placeholders must be modest, plausible, and explicitly labeled
+14. If chartSpec is provided, follow chartSpec axis labels and field mappings exactly.
 
 OUTPUT FORMAT (return ONLY this JSON):
 {
@@ -187,7 +290,9 @@ IMPORTANT: For pie, doughnut, radar, and polarArea charts, do NOT include the "s
 USER REQUEST:
 `
 
-const DIAGRAM_GENERATION_PROMPT = `You are an expert at creating compact, publication-quality Mermaid diagrams for academic papers. The output must render reliably on Kroki (Mermaid renderer).
+const DIAGRAM_GENERATION_PROMPT = `${SECTION_AWARE_ACADEMIC_FIGURE_POLICY}
+
+You are an expert at creating compact, publication-quality Mermaid diagrams for academic papers. The output must render reliably on Kroki (Mermaid renderer).
 
 OUTPUT RULES (STRICT):
 1) Return ONLY valid Mermaid code. No markdown fences, no explanations, no extra text.
@@ -206,6 +311,11 @@ OUTPUT RULES (STRICT):
    - Do NOT mix templates.
    - Do NOT introduce syntax beyond what appears in the chosen template.
    - If the request is under-specified, use a minimal template with generic nodes.
+10) You will receive sectionType and paperGenre. Enforce section fit:
+   - Results: never output class/component/sequence/usecase/state.
+   - Methodology: prefer flowchart/activity/pipeline.
+   - Introduction: keep high-level only.
+11) Labels must be academic and neutral. Avoid marketing/hype words.
 
 SUPPORTED DIAGRAM TYPES (Mermaid fallback):
 - flowchart (default for non-UML process/architecture)
@@ -301,7 +411,9 @@ YOUR TASK:
 USER REQUEST:
 `
 
-const PLANTUML_GENERATION_PROMPT = `You are an expert at creating compact, publication-quality PlantUML diagrams for top-tier academic papers (IEEE/ACM/Springer/Elsevier). You must optimize for space efficiency and Kroki compatibility.
+const PLANTUML_GENERATION_PROMPT = `${SECTION_AWARE_ACADEMIC_FIGURE_POLICY}
+
+You are an expert at creating compact, publication-quality PlantUML diagrams for top-tier academic papers (IEEE/ACM/Springer/Elsevier). You must optimize for space efficiency and Kroki compatibility.
 
 OUTPUT RULES (STRICT):
 1) Return ONLY PlantUML code starting with @startuml and ending with @enduml.
@@ -319,6 +431,11 @@ OUTPUT RULES (STRICT):
     - Do NOT mix templates.
     - Do NOT introduce syntax beyond what appears in the chosen template.
     - If the request is under-specified, use a minimal template with generic nodes.
+11) You will receive sectionType and paperGenre. Enforce section fit:
+    - Results: never output class/component/sequence/usecase/state.
+    - Methodology: prefer architecture/pipeline/activity; sequence only if protocol-centric.
+    - Introduction: high-level only (6-10 nodes).
+12) Use short academic labels only. No marketing adjectives.
 
 SUPPORTED DIAGRAM TYPES (PlantUML-first):
 - architecture (default for system overviews)
@@ -583,73 +700,141 @@ YOUR TASK:
 USER REQUEST:
 `
 
-const FIGURE_SUGGESTION_PROMPT = `You are an expert academic figure consultant. You analyze research papers and recommend the exact figures that would make the paper stronger, more publishable, and visually compelling.
+const FIGURE_SUGGESTION_PROMPT = `${SECTION_AWARE_ACADEMIC_FIGURE_POLICY}
 
-Your job: suggest 5-8 specific, actionable figures grounded in the actual paper content below.
+You are a senior academic figure editor for peer-reviewed papers. You analyze research papers and recommend figures that are section-fit, reviewer-expected, grounded in the paper, and immediately renderable by our generators.
+
+Your job: suggest 5-8 specific, actionable figures grounded in actual paper content (or 2-4 under focus constraints).
 
 CRITICAL RULES:
-1. Return ONLY a valid JSON array. No markdown fences, no explanation outside the JSON.
-2. Every suggestion MUST directly relate to specific content from the paper (reference the section, methodology, or data described).
-3. NEVER suggest generic/vague figures. Each must be specific to THIS paper.
-4. For DATA_CHART suggestions: specify exact axis labels, what data goes where, and the chart type that best represents the data relationship.
-5. For DIAGRAM suggestions: describe exact components/nodes and relationships from the paper.
-6. The "description" field must be detailed enough (50-150 words) that someone could create the figure from it alone.
-7. The "dataNeeded" field must specify exactly what data columns/variables the user needs to provide.
-8. Suggest figures that are commonly expected in this type of academic paper.
-9. Respect user preferences. If strictness is "strict", adhere tightly to preference constraints.
-10. Each suggestedType must be one of: bar, line, pie, scatter, radar, doughnut, flowchart, sequence, architecture, class, component, usecase, state, activity, er, gantt, sketch-auto, sketch-guided
-11. For every DIAGRAM suggestion, include "rendererPreference" = "plantuml" or "mermaid" using this policy:
-    - Prefer "plantuml" for UML-ish intents (class/component/usecase/state/activity), architecture/deployment/topology/system-overview/pipeline/framework, or punctuation/math-heavy labels.
-    - Use "mermaid" only when explicitly Mermaid-oriented, or for mermaid-native simple "gantt"/simple "er".
-12. For every DIAGRAM suggestion, include a "diagramSpec" object with deterministic structure.
-13. Complexity budget for diagramSpec: nodes <= 12 (hard max 15), edges <= 18.
-14. If the likely diagram exceeds the budget, include "splitSuggestion" explaining how to split into Fig X(a)/X(b).
-15. When outputMix is "include_sketches" or the paper would benefit from conceptual illustrations, include 1-2 SKETCH category suggestions using suggestedType "sketch-auto" or "sketch-guided".
-16. For every SKETCH suggestion you MUST include these extra fields:
-    - "sketchStyle": one of "academic", "scientific", "conceptual", "technical" (pick the best fit for the paper's field)
-    - "sketchPrompt": a detailed visual-composition prompt (80-200 words) describing exactly what the AI image generator should create: subject, composition, visual elements, spatial layout, colors/style constraints. This is NOT the same as "description" -- it must read like a prompt for an image generation model.
-    - "sketchMode": "SUGGEST" if AI should decide based on paper context, "GUIDED" if the description is specific enough for direct generation.
-17. SKETCH suggestions are appropriate for: conceptual framework visualizations, abstract process illustrations, metaphorical/visual-summary figures, system overview illustrations that benefit from artistic rendering rather than formal diagram syntax.
+1. Return ONLY a valid JSON array. No markdown fences, no explanation outside JSON.
+2. Every suggestion MUST be grounded in the provided PAPER CONTENT, explicitly referencing the relevant section and the concrete entities/variables/method steps described.
+3. Never output generic figure ideas. Tie each suggestion to this paper's claims, variables, entities, and methods.
+4. Respect the provided Paper Profile (paperGenre, studyType, dataAvailability) and section-fit rules.
+
+DATA AVAILABILITY HARD GATE (MUST FOLLOW):
+5. If the paper draft DOES NOT contain explicit quantitative values (numbers, metrics, tables, counts, distributions) AND the user has NOT provided data separately, then you MUST NOT suggest any DATA_CHART or STATISTICAL_PLOT figures.
+   - In this case, suggest only DIAGRAM and/or ILLUSTRATED_FIGURE alternatives.
+   - Set "dataNeeded" to the exact missing data fields/columns required to enable plots later.
+   - Do NOT invent placeholder numeric values or pretend results exist.
+6. Only suggest DATA_CHART / STATISTICAL_PLOT when (a) the paper content includes quantitative results OR (b) the user explicitly provided data for plotting. When allowed, include a deterministic chartSpec with explicit axes and variable mapping.
+
+SECTION-FIT GOVERNANCE (hard):
+7. RESULTS section: when quantitative results exist, prioritize comparisons/ablations/error analysis plots; otherwise propose results-appropriate DIAGRAM alternatives (e.g., evaluation protocol schematic, error taxonomy diagram) and request missing data in dataNeeded.
+8. METHODOLOGY: include at least one DIAGRAM explaining the method pipeline (reviewer-expected).
+9. LITERATURE_REVIEW: prefer taxonomy maps, PRISMA-like flow, evidence maps (DIAGRAM), and trends only if quantitative evidence counts exist.
+10. INTRODUCTION/DISCUSSION: allow ONE ILLUSTRATED_FIGURE only if it clarifies real-world usage or conceptual framing; keep text minimal.
+
+DIAGRAM RENDERER POLICY:
+11. For every DIAGRAM suggestion include rendererPreference ("plantuml" or "mermaid") with this policy:
+   - Prefer plantuml for UML-ish diagrams (class/component/usecase/state/activity/sequence) and architecture/deployment/topology/system overview/pipeline.
+   - Use mermaid only for simple gantt or simple er when appropriate.
+
+DETERMINISTIC SPEC REQUIREMENT (hard):
+12. category must be one of: DATA_CHART, STATISTICAL_PLOT, DIAGRAM, ILLUSTRATED_FIGURE.
+13. suggestedType must be one of:
+   - Charts: bar, line, pie, scatter, radar, doughnut
+   - Diagrams: flowchart, sequence, architecture, class, component, usecase, state, activity, er, gantt
+   - Illustrated: sketch-auto, sketch-guided
+14. For DATA_CHART / STATISTICAL_PLOT suggestions: include chartSpec with explicit axes + variable mapping and a placeholderPolicy ONLY if real data is present (see Rule 5-6).
+15. For DIAGRAM suggestions: include diagramSpec with deterministic nodes/edges plus constraints:
+   - nodesMax <= 12, edgesMax <= 18, nodeLabelMaxWords <= 3, noDuplicateNodeLabels=true.
+16. For ILLUSTRATED_FIGURE suggestions: include illustrationSpecV2 with:
+   - figureGenre: METHOD_BLOCK|SCENARIO_STORYBOARD|CONCEPTUAL_FRAMEWORK|GRAPHICAL_ABSTRACT
+   - renderDirectives: aspectRatio, fillCanvasPercentMin, whitespaceMaxPercent, textPolicy, stylePolicy, compositionPolicy
+   - sketchPrompt derived from illustrationSpecV2 only; keep label text extremely limited to avoid garbling.
+17. Every suggestion MUST include renderSpec wrapper:
+   - kind=chart|diagram|illustration and the matching deterministic spec.
+
+GOVERNANCE FIELDS (required for every suggestion):
+18. Include:
+   - figureRole: ORIENT | POSITION | EXPLAIN_METHOD | SHOW_RESULTS | INTERPRET
+   - sectionFitJustification: one sentence for section appropriateness
+   - expectedByReviewers: boolean
 
 IMPORTANCE GUIDELINES:
-- "required": Figures that reviewers/readers will expect (e.g., results comparison, methodology overview)
-- "recommended": Figures that significantly strengthen the paper
-- "optional": Nice-to-have figures that add extra polish
+- required: expected by reviewers (e.g., methodology pipeline, results comparisons when data exists)
+- recommended: significantly strengthens the paper
+- optional: useful but not essential
 
-OUTPUT FORMAT (return ONLY this JSON array):
+OUTPUT FORMAT (return ONLY JSON array):
 [
   {
-    "title": "Specific Figure Title Related to Paper Content",
-    "description": "Detailed description grounded in paper content: what this figure shows, which variables/components are on each axis or in each node, how this relates to the paper's claims. Include specific labels and structure.",
-    "category": "DATA_CHART|DIAGRAM|STATISTICAL_PLOT|SKETCH",
-    "suggestedType": "bar|line|pie|scatter|flowchart|sequence|architecture|etc|sketch-auto|sketch-guided",
+    "title": "Specific figure title",
+    "description": "50-150 words, implementation-ready, grounded in paper content",
+    "category": "DATA_CHART|STATISTICAL_PLOT|DIAGRAM|ILLUSTRATED_FIGURE",
+    "suggestedType": "bar|line|...|flowchart|...|sketch-auto|sketch-guided",
     "rendererPreference": "plantuml|mermaid (DIAGRAM only)",
-    "relevantSection": "methodology|results|discussion|introduction|literature_review",
+    "relevantSection": "introduction|literature_review|methodology|results|discussion|conclusion",
+    "figureRole": "ORIENT|POSITION|EXPLAIN_METHOD|SHOW_RESULTS|INTERPRET",
+    "sectionFitJustification": "One sentence",
+    "expectedByReviewers": true,
     "importance": "required|recommended|optional",
-    "dataNeeded": "Specific data: e.g., 'Accuracy percentages for each model variant (baseline, proposed, ablation) across all test datasets'",
-    "whyThisFigure": "One sentence explaining why this figure strengthens the paper",
+    "dataNeeded": "Exact variables/columns needed (or 'None (conceptual/method figure)')",
+    "whyThisFigure": "One sentence why this strengthens the paper",
+    "renderSpec": {
+      "kind": "chart|diagram|illustration",
+      "chartSpec": {},
+      "diagramSpec": {},
+      "illustrationSpecV2": {}
+    },
+
+    "chartSpec": {
+      "chartType": "bar|line|scatter|radar|doughnut|pie",
+      "xAxisLabel": "X label",
+      "yAxisLabel": "Y label",
+      "xField": "column_name",
+      "yField": "column_name",
+      "series": [{ "label": "Baseline", "yField": "baseline_metric" }],
+      "aggregation": "mean|median|none",
+      "baselineLabel": "Baseline model",
+      "placeholderPolicy": {
+        "allowed": false,
+        "label": "Sample Data (replace with actual values)",
+        "shape": "modest_gain|flat|tradeoff|noisy_trend",
+        "rangeHint": "e.g., 70-90 for accuracy (%)"
+      },
+      "notes": "Optional chart-specific note"
+    },
+
     "diagramSpec": {
       "layout": "LR|TD",
-      "nodes": [
-        { "idHint": "dataInput", "label": "Data Input", "group": "Input" },
-        { "idHint": "processor", "label": "Core Processor", "group": "Processing" }
-      ],
-      "edges": [
-        { "fromHint": "dataInput", "toHint": "processor", "label": "feeds", "type": "solid" }
-      ],
-      "groups": [
-        { "name": "Input", "nodeIds": ["dataInput"] },
-        { "name": "Processing", "nodeIds": ["processor"] }
-      ],
-      "splitSuggestion": "Optional split suggestion when complexity exceeds limits"
+      "nodes": [{ "idHint": "nodeA", "label": "Node A", "group": "Input" }],
+      "edges": [{ "fromHint": "nodeA", "toHint": "nodeB", "label": "flows", "type": "solid" }],
+      "groups": [{ "name": "Input", "nodeIds": ["nodeA"], "enclosesNodeIds": ["nodeA"] }],
+      "constraints": { "nodesMax": 12, "edgesMax": 18, "nodeLabelMaxWords": 3, "noDuplicateNodeLabels": true },
+      "splitSuggestion": "Optional split when too complex"
     },
-    "sketchStyle": "academic|scientific|conceptual|technical (SKETCH only)",
-    "sketchPrompt": "A detailed visual prompt for the AI image generator: describe the subject, composition, visual elements, spatial layout, and style. E.g., 'A clean academic illustration showing a neural network architecture with three hidden layers, input nodes on the left flowing rightward through interconnected layers to output nodes, using a minimalist blue-and-white color palette with thin connecting lines and labeled layer dimensions.' (SKETCH only)",
-    "sketchMode": "SUGGEST|GUIDED (SKETCH only)"
+
+    "illustrationSpecV2": {
+      "layout": "PANELS|STRIP",
+      "panelCount": 3,
+      "stepCount": 5,
+      "flowDirection": "LR|TD",
+      "figureGenre": "METHOD_BLOCK|SCENARIO_STORYBOARD|CONCEPTUAL_FRAMEWORK|GRAPHICAL_ABSTRACT",
+      "panels": [{ "idHint": "p1", "title": "Input", "elements": ["Icon", "Short label"] }],
+      "elements": ["icons", "arrows", "boxes"],
+      "steps": ["Collect", "Process", "Evaluate"],
+      "renderDirectives": {
+        "aspectRatio": "2.5:1|3:1",
+        "fillCanvasPercentMin": 85,
+        "whitespaceMaxPercent": 15,
+        "textPolicy": { "maxLabelsTotal": 4, "maxWordsPerLabel": 3, "forbidAllCaps": true, "titlesOnlyPreferred": true },
+        "stylePolicy": { "noGradients": true, "no3D": true, "noClipart": true, "whiteBackground": true, "paletteMode": "grayscale_plus_one_accent" },
+        "compositionPolicy": { "layoutMode": "PANELS|STRIP", "equalPanels": true, "noTextOutsidePanels": true }
+      },
+      "captionDraft": "Short draft caption",
+      "splitSuggestion": "Optional split"
+    },
+
+    "sketchStyle": "academic|scientific|conceptual|technical (ILLUSTRATED_FIGURE only)",
+    "sketchPrompt": "80-200 word image-generation prompt (ILLUSTRATED_FIGURE only). Keep text extremely limited; avoid tiny labels.",
+    "sketchMode": "SUGGEST|GUIDED (ILLUSTRATED_FIGURE only)"
   }
 ]
 
 PAPER CONTENT:
+\`\`\`
 `
 
 /**
@@ -667,9 +852,7 @@ function buildFocusTextBlock(
   const modeLabel = focusMode === 'selection'
     ? 'The user has selected the following excerpt from their paper'
     : 'The user wants figures specifically for the following content'
-  const sectionHint = focusSection
-    ? ` (from the "${focusSection}" section)`
-    : ''
+  const sectionHint = focusSection ? ` (from the "${focusSection}" section)` : ''
   const entities = (focusHints?.entities || []).slice(0, 10)
   const metrics = (focusHints?.metrics || []).slice(0, 10)
   const verbs = (focusHints?.verbs || []).slice(0, 8)
@@ -683,9 +866,9 @@ FOCUS HINTS (EXTRACTED ANCHORS - USE THESE TO STAY SPECIFIC):
     : ''
 
   return `
-═══════════════════════════════════════════════════
-FOCUS CONSTRAINT — READ CAREFULLY
-═══════════════════════════════════════════════════
+===================================================
+FOCUS CONSTRAINT - READ CAREFULLY
+===================================================
 ${modeLabel}${sectionHint}:
 
 """
@@ -695,17 +878,17 @@ ${hintsBlock}
 
 STRICT RULES FOR THIS FOCUSED REQUEST:
 1. EVERY suggestion MUST directly visualize, explain, or showcase the content in the excerpt above.
-2. Do NOT suggest figures for other parts of the paper — only for the focused text.
-3. Use the broader paper context (title, abstract, other sections) ONLY for grounding: correct variable names, terminology, methodology context. But each figure must illustrate the focused excerpt.
-4. If the excerpt describes a process or workflow → suggest a flowchart/activity diagram.
-5. If the excerpt contains comparisons, numbers, or measurements → suggest a chart (bar, line, scatter).
-6. If the excerpt describes relationships or structures → suggest an architecture/class/ER diagram.
-7. If the excerpt is conceptual or theoretical → suggest a sketch/illustration.
-8. Suggest 2-4 figures (not more) since this is a targeted excerpt, not a full paper.
+2. Do NOT suggest figures for other parts of the paper - only for the focused text.
+3. Use broader paper context only for terminology/grounding. Every figure must still target this excerpt.
+4. If the excerpt describes a process or workflow -> suggest a flowchart/activity diagram.
+5. If the excerpt contains comparisons, numbers, or measurements -> suggest charts.
+6. If the excerpt describes relationships or structures -> suggest architecture/class/ER only when section-fit allows.
+7. If the excerpt is conceptual or theoretical -> suggest an ILLUSTRATED_FIGURE.
+8. Suggest 2-4 figures only.
 9. The "relevantSection" field must be "${focusSection || 'selected_content'}".
-10. The "whyThisFigure" field must explain how this figure helps the reader understand the focused text specifically.
-11. Prefer suggestions that explicitly mention at least one extracted entity or metric when available.
-═══════════════════════════════════════════════════
+10. "whyThisFigure" must state how the figure improves understanding of this focused text.
+11. Prefer mentioning extracted entities/metrics when available.
+===================================================
 
 `
 }
@@ -828,7 +1011,7 @@ function sanitizeDiagramLabel(input: string): string {
     .replace(/["'`[\]{}()<>:,;]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-  const words = cleaned.split(' ').filter(Boolean).slice(0, 6)
+  const words = cleaned.split(' ').filter(Boolean).slice(0, 3)
   const clipped = words.join(' ').slice(0, 28).trim()
   return clipped || 'Node'
 }
@@ -880,9 +1063,14 @@ function sanitizeDiagramSpec(spec?: DiagramStructuredSpec | null): DiagramStruct
       nodeIds: Array.isArray(group?.nodeIds)
         ? group.nodeIds.map((id, idx) => sanitizeAlias(id, idx)).filter(id => aliasSet.has(id))
         : undefined,
+      enclosesNodeIds: Array.isArray((group as any)?.enclosesNodeIds)
+        ? (group as any).enclosesNodeIds
+            .map((id: string, idx: number) => sanitizeAlias(id, idx))
+            .filter((id: string) => aliasSet.has(id))
+        : undefined,
       description: group?.description ? sanitizeDiagramLabel(group.description) : undefined
     }))
-    .filter(group => (group.nodeIds?.length || 0) > 0)
+    .filter(group => (group.nodeIds?.length || group.enclosesNodeIds?.length || 0) > 0)
 
   if (nodes.length === 0) return undefined
 
@@ -891,6 +1079,14 @@ function sanitizeDiagramSpec(spec?: DiagramStructuredSpec | null): DiagramStruct
     nodes: nodes.slice(0, DEFAULT_SPEC_NODES),
     edges,
     groups,
+    constraints: {
+      nodesMax: Math.min(MAX_SPEC_NODES, Math.max(1, Number((spec as any)?.constraints?.nodesMax || DEFAULT_SPEC_NODES))),
+      edgesMax: Math.min(MAX_SPEC_EDGES, Math.max(1, Number((spec as any)?.constraints?.edgesMax || MAX_SPEC_EDGES))),
+      nodeLabelMaxWords: Math.min(6, Math.max(1, Number((spec as any)?.constraints?.nodeLabelMaxWords || 3))),
+      noDuplicateNodeLabels: typeof (spec as any)?.constraints?.noDuplicateNodeLabels === 'boolean'
+        ? (spec as any).constraints.noDuplicateNodeLabels
+        : true
+    },
     splitSuggestion: spec.splitSuggestion ? sanitizeAscii(spec.splitSuggestion).slice(0, 140) : undefined
   }
 }
@@ -910,13 +1106,45 @@ function buildSketchPromptFromDescription(
   style: 'academic' | 'scientific' | 'conceptual' | 'technical' = 'academic'
 ): string {
   const styleGuide: Record<string, string> = {
-    academic: 'Clean, professional academic illustration with high contrast, simple lines, white background, and clear labels.',
-    scientific: 'Precise scientific diagram with standard notation, consistent line weights, and standard scientific color coding.',
-    conceptual: 'Conceptual illustration using visual hierarchy, simple shapes, clear relationships, and minimal text.',
-    technical: 'Technical diagram with engineering precision, standard conventions, and accurate proportions.'
+    academic: 'Flat vector academic infographic with clean whitespace, restrained palette, and concise labels.',
+    scientific: 'Scientific infographic with consistent line weight, clear symbols, and panel-wise process flow.',
+    conceptual: 'Conceptual infographic with icon-based metaphors, directional arrows, and short labels.',
+    technical: 'Technical schematic infographic with modular boxes, connector arrows, and deterministic step layout.'
   }
   const guide = styleGuide[style] || styleGuide.academic
-  return `Create an illustration titled "${title}". ${description} Style: ${guide} The illustration should be suitable for inclusion in an academic research paper, with no figure numbers, no watermarks, and no title text overlaid on the image.`
+  return `Create an infographic-style academic overview titled "${title}". ${description} Style: ${guide} Layout must be 3-5 panels or a 4-7 step strip. Use icons, boxes, arrows, and badges only. Keep labels <= 4 words. No paragraphs, no photorealism, no 3D, no people unless silhouette-only is required. Do not include figure numbers, captions, or watermarks on the image.`
+}
+
+function buildSketchPromptFromIllustrationSpecV2(
+  title: string,
+  spec: IllustrationStructuredSpecV2,
+  style: 'academic' | 'scientific' | 'conceptual' | 'technical' = 'academic'
+): string {
+  const directives = sanitizeRenderDirectives(spec.renderDirectives, spec.figureGenre || 'METHOD_BLOCK')
+  const layout = spec.layout || 'PANELS'
+  const panelCount = spec.panelCount || spec.panels?.length || (layout === 'PANELS' ? 3 : undefined)
+  const stepCount = spec.stepCount || spec.steps?.length || (layout === 'STRIP' ? 5 : undefined)
+  const panels = Array.isArray(spec.panels)
+    ? spec.panels.map((p, idx) => `${idx + 1}) ${p.title}${Array.isArray(p.elements) && p.elements.length > 0 ? `: ${p.elements.join(', ')}` : ''}`).join(' | ')
+    : 'none'
+  const steps = Array.isArray(spec.steps) ? spec.steps.join(' -> ') : 'none'
+  const genre = spec.figureGenre || 'METHOD_BLOCK'
+  const peopleRule = genre === 'SCENARIO_STORYBOARD'
+    ? 'Silhouettes allowed only if needed for scenario context.'
+    : 'No people.'
+
+  return [
+    `Create an ${style} academic illustration titled "${title}".`,
+    `Figure genre: ${genre}.`,
+    `Layout: ${layout}; panelCount=${panelCount || 'n/a'}; stepCount=${stepCount || 'n/a'}; flow=${spec.flowDirection || 'LR'}.`,
+    `Aspect ratio ${directives.aspectRatio}; fill >= ${directives.fillCanvasPercentMin}%; whitespace <= ${directives.whitespaceMaxPercent}%.`,
+    `Text policy: max ${directives.textPolicy?.maxLabelsTotal} labels total, max ${directives.textPolicy?.maxWordsPerLabel} words/label, titles only preferred=${directives.textPolicy?.titlesOnlyPreferred}.`,
+    `Style policy: noGradients=${directives.stylePolicy?.noGradients}, no3D=${directives.stylePolicy?.no3D}, noClipart=${directives.stylePolicy?.noClipart}, whiteBackground=${directives.stylePolicy?.whiteBackground}, palette=${directives.stylePolicy?.paletteMode}.`,
+    `Panels: ${panels}.`,
+    `Steps: ${steps}.`,
+    `Elements: ${(spec.elements || []).join(', ') || 'icons, boxes, arrows'}.`,
+    `${peopleRule} Avoid tiny text. No figure numbers/captions/watermarks.`
+  ].join(' ')
 }
 
 function buildFallbackSpecFromDescription(description: string, title?: string): DiagramStructuredSpec {
@@ -945,6 +1173,790 @@ function buildFallbackSpecFromDescription(description: string, title?: string): 
       { name: 'Output', nodeIds: ['outputStage'] }
     ]
   }) as DiagramStructuredSpec
+}
+
+function normalizeSectionType(value?: string): SectionType {
+  const raw = sanitizeAscii((value || '').toLowerCase().trim())
+  if (!raw) return 'methodology'
+  if (raw.includes('intro')) return 'introduction'
+  if (raw.includes('literature') || raw.includes('related work') || raw.includes('background')) return 'literature_review'
+  if (raw.includes('method')) return 'methodology'
+  if (raw.includes('result') || raw.includes('evaluation') || raw.includes('experiment')) return 'results'
+  if (raw.includes('discussion')) return 'discussion'
+  if (raw.includes('conclusion') || raw.includes('future work')) return 'conclusion'
+  if (raw.includes('selected')) return 'selected_content'
+  return 'methodology'
+}
+
+function defaultFigureRole(section: SectionType): FigureRole {
+  if (section === 'introduction') return 'ORIENT'
+  if (section === 'literature_review') return 'POSITION'
+  if (section === 'methodology') return 'EXPLAIN_METHOD'
+  if (section === 'results') return 'SHOW_RESULTS'
+  return 'INTERPRET'
+}
+
+function normalizeFigureRole(value: unknown, section: SectionType): FigureRole {
+  const raw = sanitizeAscii(String(value || '')).toUpperCase().trim()
+  if (
+    raw === 'ORIENT' ||
+    raw === 'POSITION' ||
+    raw === 'EXPLAIN_METHOD' ||
+    raw === 'SHOW_RESULTS' ||
+    raw === 'INTERPRET'
+  ) {
+    return raw
+  }
+  return defaultFigureRole(section)
+}
+
+function coerceFigureCategory(value: string): FigureCategory {
+  const normalized = sanitizeAscii((value || '').trim().toUpperCase())
+  if (normalized === 'DATA_CHART') return 'DATA_CHART'
+  if (normalized === 'DIAGRAM') return 'DIAGRAM'
+  if (normalized === 'STATISTICAL_PLOT') return 'STATISTICAL_PLOT'
+  if (normalized === 'ILLUSTRATED_FIGURE') return 'ILLUSTRATED_FIGURE'
+  if (normalized === 'ILLUSTRATION' || normalized === 'SKETCH') return 'ILLUSTRATED_FIGURE'
+  return 'DIAGRAM'
+}
+
+function sanitizeChartSpec(
+  spec?: ChartStructuredSpec | null,
+  fallbackType?: string
+): ChartStructuredSpec | undefined {
+  if (!spec || typeof spec !== 'object') return undefined
+  const chartType = sanitizeAscii((spec.chartType || fallbackType || 'bar') as string).toLowerCase()
+  const validType = ['bar', 'line', 'pie', 'scatter', 'radar', 'doughnut'].includes(chartType) ? chartType : 'bar'
+  const sanitizeField = (value?: string, max: number = 80) => sanitizeAscii(value || '').replace(/\s+/g, ' ').trim().slice(0, max)
+  const xAxisLabel = sanitizeField(spec.xAxisLabel || 'X Axis')
+  const yAxisLabel = sanitizeField(spec.yAxisLabel || 'Y Axis')
+  const xField = sanitizeField(spec.xField || 'x_value', 60)
+  const yField = sanitizeField(spec.yField || 'y_value', 60)
+  const series = Array.isArray(spec.series)
+    ? spec.series.slice(0, 6).map((item, idx) => ({
+        label: sanitizeField(item?.label || `Series ${idx + 1}`, 80),
+        yField: sanitizeField(item?.yField || yField, 60),
+        confidenceField: item?.confidenceField ? sanitizeField(item.confidenceField, 60) : undefined
+      }))
+    : undefined
+
+  return {
+    chartType: validType as DataChartType,
+    xAxisLabel: xAxisLabel || 'X Axis',
+    yAxisLabel: yAxisLabel || 'Y Axis',
+    xField: xField || 'x_value',
+    yField: yField || 'y_value',
+    series,
+    aggregation: sanitizeField(spec.aggregation || '', 24) || undefined,
+    baselineLabel: sanitizeField(spec.baselineLabel || '', 80) || undefined,
+    placeholderPolicy: spec.placeholderPolicy
+      ? {
+          allowed: typeof spec.placeholderPolicy.allowed === 'boolean'
+            ? spec.placeholderPolicy.allowed
+            : undefined,
+          label: sanitizeField(spec.placeholderPolicy.label || '', 120) || undefined,
+          shape: sanitizeField(spec.placeholderPolicy.shape || '', 48) || undefined,
+          rangeHint: sanitizeField(spec.placeholderPolicy.rangeHint || '', 120) || undefined
+        }
+      : undefined,
+    notes: sanitizeAscii(spec.notes || '').slice(0, 180) || undefined
+  }
+}
+
+function buildFallbackChartSpec(
+  section: SectionType,
+  suggestedType?: string
+): ChartStructuredSpec {
+  const chartTypeRaw = sanitizeAscii((suggestedType || (section === 'results' ? 'bar' : 'line')).toLowerCase())
+  const chartType = ['bar', 'line', 'pie', 'scatter', 'radar', 'doughnut'].includes(chartTypeRaw) ? chartTypeRaw : 'bar'
+  const yLabel = section === 'results' ? 'Performance Metric (%)' : 'Metric Value'
+  return {
+    chartType: chartType as DataChartType,
+    xAxisLabel: 'Category / Condition',
+    yAxisLabel: yLabel,
+    xField: 'condition',
+    yField: 'value',
+    series: [
+      { label: 'Primary Metric', yField: 'value' },
+      { label: 'Baseline', yField: 'baseline_value' }
+    ],
+    aggregation: 'mean',
+    baselineLabel: 'Baseline',
+    placeholderPolicy: {
+      allowed: false,
+      label: 'Sample Data (replace with actual values)',
+      shape: 'modest_gain',
+      rangeHint: 'Use real observed metric ranges from the paper.'
+    }
+  }
+}
+
+function sanitizeIllustrationSpec(
+  spec?: IllustrationStructuredSpec | null
+): IllustrationStructuredSpec | undefined {
+  if (!spec || typeof spec !== 'object') return undefined
+  const layout = spec.layout === 'STRIP' ? 'STRIP' : 'PANELS'
+  const panelCountRaw = Number(spec.panelCount || (Array.isArray(spec.panels) ? spec.panels.length : 0))
+  const stepCountRaw = Number(spec.stepCount || (Array.isArray(spec.steps) ? spec.steps.length : 0))
+  const panelCount = Number.isFinite(panelCountRaw) && panelCountRaw > 0 ? Math.max(1, Math.min(6, Math.round(panelCountRaw))) : undefined
+  const stepCount = Number.isFinite(stepCountRaw) && stepCountRaw > 0 ? Math.max(1, Math.min(8, Math.round(stepCountRaw))) : undefined
+  const panels = Array.isArray(spec.panels)
+    ? spec.panels.slice(0, 6).map((panel, idx) => ({
+        idHint: sanitizeAlias(panel?.idHint || `panel${idx + 1}`, idx),
+        title: sanitizeDiagramLabel(panel?.title || `Panel ${idx + 1}`),
+        elements: Array.isArray(panel?.elements)
+          ? panel.elements.slice(0, 6).map(item => sanitizeDiagramLabel(item || 'Element'))
+          : undefined
+      }))
+    : undefined
+  const elements = Array.isArray(spec.elements)
+    ? spec.elements.slice(0, 10).map(item => sanitizeDiagramLabel(item || 'Element'))
+    : undefined
+  const steps = Array.isArray(spec.steps)
+    ? spec.steps.slice(0, 8).map(item => sanitizeDiagramLabel(item || 'Step'))
+    : undefined
+
+  return {
+    layout,
+    panelCount,
+    stepCount,
+    flowDirection: spec.flowDirection === 'TD' ? 'TD' : 'LR',
+    panels,
+    elements,
+    steps,
+    captionDraft: spec.captionDraft ? sanitizeAscii(spec.captionDraft).slice(0, 180) : undefined,
+    splitSuggestion: spec.splitSuggestion ? sanitizeAscii(spec.splitSuggestion).slice(0, 180) : undefined
+  }
+}
+
+function sanitizeIllustrationFigureGenre(input?: unknown): IllustrationFigureGenre | undefined {
+  const raw = sanitizeAscii(String(input || '')).toUpperCase().trim()
+  if (
+    raw === 'METHOD_BLOCK' ||
+    raw === 'SCENARIO_STORYBOARD' ||
+    raw === 'CONCEPTUAL_FRAMEWORK' ||
+    raw === 'GRAPHICAL_ABSTRACT'
+  ) {
+    return raw
+  }
+  return undefined
+}
+
+function buildDefaultRenderDirectives(genre: IllustrationFigureGenre): IllustrationRenderDirectives {
+  if (genre === 'SCENARIO_STORYBOARD') {
+    return {
+      aspectRatio: '2.5:1',
+      fillCanvasPercentMin: 85,
+      whitespaceMaxPercent: 15,
+      textPolicy: {
+        maxLabelsTotal: 4,
+        maxWordsPerLabel: 3,
+        forbidAllCaps: true,
+        titlesOnlyPreferred: true
+      },
+      stylePolicy: {
+        noGradients: true,
+        no3D: true,
+        noClipart: true,
+        whiteBackground: true,
+        paletteMode: 'grayscale_plus_one_accent'
+      },
+      compositionPolicy: {
+        layoutMode: 'PANELS',
+        equalPanels: true,
+        noTextOutsidePanels: true
+      }
+    }
+  }
+
+  return {
+    aspectRatio: '3:1',
+    fillCanvasPercentMin: 85,
+    whitespaceMaxPercent: 15,
+    textPolicy: {
+      maxLabelsTotal: 4,
+      maxWordsPerLabel: 3,
+      forbidAllCaps: true,
+      titlesOnlyPreferred: true
+    },
+    stylePolicy: {
+      noGradients: true,
+      no3D: true,
+      noClipart: true,
+      whiteBackground: true,
+      paletteMode: 'grayscale_plus_one_accent'
+    },
+    compositionPolicy: {
+      layoutMode: 'STRIP',
+      equalPanels: true,
+      noTextOutsidePanels: true
+    }
+  }
+}
+
+function inferIllustrationGenre(section: SectionType, spec?: IllustrationStructuredSpec | null): IllustrationFigureGenre {
+  if (section === 'methodology') return 'METHOD_BLOCK'
+  if (section === 'results') return 'METHOD_BLOCK'
+  if (section === 'introduction' || section === 'discussion' || section === 'conclusion') {
+    if ((spec?.layout === 'PANELS') || Number(spec?.panelCount || 0) >= 2) return 'SCENARIO_STORYBOARD'
+    return 'CONCEPTUAL_FRAMEWORK'
+  }
+  if (section === 'literature_review') return 'CONCEPTUAL_FRAMEWORK'
+  return 'METHOD_BLOCK'
+}
+
+function sanitizeRenderDirectives(input?: any, fallbackGenre: IllustrationFigureGenre = 'METHOD_BLOCK'): IllustrationRenderDirectives {
+  const fallback = buildDefaultRenderDirectives(fallbackGenre)
+  const directives = input && typeof input === 'object' ? input : {}
+  const sanitizeInt = (value: unknown, min: number, max: number, fallbackValue: number): number => {
+    const n = Number(value)
+    if (!Number.isFinite(n)) return fallbackValue
+    return Math.max(min, Math.min(max, Math.round(n)))
+  }
+  const sanitizeFloat = (value: unknown, min: number, max: number, fallbackValue: number): number => {
+    const n = Number(value)
+    if (!Number.isFinite(n)) return fallbackValue
+    return Math.max(min, Math.min(max, n))
+  }
+  const sanitizeRatio = (value: unknown, fallbackValue: string): string => {
+    const raw = sanitizeAscii(String(value || '')).trim()
+    if (!raw) return fallbackValue
+    if (!/^\d+(?:\.\d+)?:\d+(?:\.\d+)?$/.test(raw)) return fallbackValue
+    return raw
+  }
+
+  return {
+    aspectRatio: sanitizeRatio(directives.aspectRatio, fallback.aspectRatio || '3:1'),
+    fillCanvasPercentMin: sanitizeFloat(directives.fillCanvasPercentMin, 50, 100, fallback.fillCanvasPercentMin || 85),
+    whitespaceMaxPercent: sanitizeFloat(directives.whitespaceMaxPercent, 0, 50, fallback.whitespaceMaxPercent || 15),
+    textPolicy: {
+      maxLabelsTotal: sanitizeInt(directives?.textPolicy?.maxLabelsTotal, 0, 12, fallback.textPolicy?.maxLabelsTotal || 4),
+      maxWordsPerLabel: sanitizeInt(directives?.textPolicy?.maxWordsPerLabel, 1, 8, fallback.textPolicy?.maxWordsPerLabel || 3),
+      forbidAllCaps: typeof directives?.textPolicy?.forbidAllCaps === 'boolean'
+        ? directives.textPolicy.forbidAllCaps
+        : (fallback.textPolicy?.forbidAllCaps ?? true),
+      titlesOnlyPreferred: typeof directives?.textPolicy?.titlesOnlyPreferred === 'boolean'
+        ? directives.textPolicy.titlesOnlyPreferred
+        : (fallback.textPolicy?.titlesOnlyPreferred ?? true)
+    },
+    stylePolicy: {
+      noGradients: typeof directives?.stylePolicy?.noGradients === 'boolean'
+        ? directives.stylePolicy.noGradients
+        : (fallback.stylePolicy?.noGradients ?? true),
+      no3D: typeof directives?.stylePolicy?.no3D === 'boolean'
+        ? directives.stylePolicy.no3D
+        : (fallback.stylePolicy?.no3D ?? true),
+      noClipart: typeof directives?.stylePolicy?.noClipart === 'boolean'
+        ? directives.stylePolicy.noClipart
+        : (fallback.stylePolicy?.noClipart ?? true),
+      whiteBackground: typeof directives?.stylePolicy?.whiteBackground === 'boolean'
+        ? directives.stylePolicy.whiteBackground
+        : (fallback.stylePolicy?.whiteBackground ?? true),
+      paletteMode: sanitizeAscii(directives?.stylePolicy?.paletteMode || fallback.stylePolicy?.paletteMode || 'grayscale_plus_one_accent').slice(0, 60)
+    },
+    compositionPolicy: {
+      layoutMode: directives?.compositionPolicy?.layoutMode === 'PANELS' || directives?.compositionPolicy?.layoutMode === 'STRIP'
+        ? directives.compositionPolicy.layoutMode
+        : (fallback.compositionPolicy?.layoutMode || 'PANELS'),
+      equalPanels: typeof directives?.compositionPolicy?.equalPanels === 'boolean'
+        ? directives.compositionPolicy.equalPanels
+        : (fallback.compositionPolicy?.equalPanels ?? true),
+      noTextOutsidePanels: typeof directives?.compositionPolicy?.noTextOutsidePanels === 'boolean'
+        ? directives.compositionPolicy.noTextOutsidePanels
+        : (fallback.compositionPolicy?.noTextOutsidePanels ?? true)
+    }
+  }
+}
+
+function sanitizeIllustrationSpecV2(
+  spec?: IllustrationStructuredSpecV2 | null,
+  section: SectionType = 'methodology'
+): IllustrationStructuredSpecV2 | undefined {
+  if (!spec || typeof spec !== 'object') return undefined
+  const legacy = sanitizeIllustrationSpec(spec)
+  if (!legacy) return undefined
+  const figureGenre = sanitizeIllustrationFigureGenre(spec.figureGenre) || inferIllustrationGenre(section, legacy)
+  const renderDirectives = sanitizeRenderDirectives(spec.renderDirectives, figureGenre)
+  return {
+    ...legacy,
+    figureGenre,
+    renderDirectives,
+    actors: Array.isArray((spec as any).actors)
+      ? (spec as any).actors.slice(0, 8).map((item: unknown) => sanitizeAscii(String(item || '')).slice(0, 40)).filter(Boolean)
+      : undefined,
+    props: Array.isArray((spec as any).props)
+      ? (spec as any).props.slice(0, 10).map((item: unknown) => sanitizeAscii(String(item || '')).slice(0, 40)).filter(Boolean)
+      : undefined,
+    forbiddenElements: Array.isArray((spec as any).forbiddenElements)
+      ? (spec as any).forbiddenElements.slice(0, 12).map((item: unknown) => sanitizeAscii(String(item || '')).slice(0, 40)).filter(Boolean)
+      : undefined
+  }
+}
+
+function buildFallbackIllustrationSpec(section: SectionType): IllustrationStructuredSpec {
+  return {
+    layout: 'PANELS',
+    panelCount: 4,
+    flowDirection: 'LR',
+    panels: [
+      { idHint: 'panelInput', title: 'Inputs', elements: ['Data', 'Context'] },
+      { idHint: 'panelMethod', title: 'Method', elements: ['Pipeline', 'Model'] },
+      { idHint: 'panelOutput', title: 'Outputs', elements: ['Prediction', 'Metrics'] },
+      { idHint: 'panelEval', title: section === 'results' ? 'Summary' : 'Evaluation', elements: ['Comparison', 'Insight'] }
+    ],
+    elements: ['icons', 'boxes', 'arrows', 'badges'],
+    steps: ['Input', 'Process', 'Output', 'Evaluate'],
+    captionDraft: 'Infographic overview summarizing the study workflow and outcomes.'
+  }
+}
+
+function buildFallbackIllustrationSpecV2(section: SectionType): IllustrationStructuredSpecV2 {
+  const base = buildFallbackIllustrationSpec(section)
+  const figureGenre = inferIllustrationGenre(section, base)
+  return {
+    ...base,
+    figureGenre,
+    renderDirectives: buildDefaultRenderDirectives(figureGenre)
+  }
+}
+
+function buildRenderSpecForSuggestion(suggestion: FigureSuggestion): FigureRenderSpec {
+  if (suggestion.category === 'DIAGRAM') {
+    return {
+      kind: 'diagram',
+      diagramSpec: suggestion.diagramSpec
+    }
+  }
+  if (suggestion.category === 'DATA_CHART' || suggestion.category === 'STATISTICAL_PLOT') {
+    return {
+      kind: 'chart',
+      chartSpec: suggestion.chartSpec
+    }
+  }
+  return {
+    kind: 'illustration',
+    illustrationSpecV2: suggestion.illustrationSpecV2
+  }
+}
+
+function hasQuantitativeEvidence(request: FigureSuggestionRequest): boolean {
+  const source = sanitizeAscii(
+    `${request.datasetDescription || ''}\n${request.paperAbstract || ''}\n${Object.values(request.sections || {}).join('\n')}`
+  ).toLowerCase()
+  if (!source.trim()) return false
+
+  const numericPattern = /\b\d+(?:\.\d+)?\b/
+  const metricPattern = /\b(accuracy|precision|recall|f1|auc|rmse|mae|mape|latency|throughput|score|metric|mean|median|std|variance|error|ablation|baseline|improvement|table|distribution|count|n\s*=)\b/
+  const tabularPattern = /\b(table\s+\d+|dataset|samples|records|observations|rows|columns)\b/
+
+  return (
+    (numericPattern.test(source) && metricPattern.test(source)) ||
+    tabularPattern.test(source)
+  )
+}
+
+function detectPaperGenre(text: string): string {
+  const source = sanitizeAscii(text.toLowerCase())
+  if (/\b(neural|transformer|llm|deep learning|machine learning|classification|regression|benchmark)\b/.test(source)) return 'ml_ai'
+  if (/\b(software|repository|module|framework|codebase|api|microservice)\b/.test(source)) return 'systems_se'
+  if (/\b(education|classroom|student|learning outcomes|curriculum)\b/.test(source)) return 'education'
+  if (/\b(clinical|patient|disease|biomedical|gene|cohort|trial)\b/.test(source)) return 'biomedical'
+  if (/\b(network|routing|latency|throughput|packet|wireless)\b/.test(source)) return 'networking'
+  if (/\b(user study|usability|human computer|hci|participant)\b/.test(source)) return 'hci'
+  return 'general_research'
+}
+
+function detectStudyType(text: string): PaperProfile['studyType'] {
+  const source = sanitizeAscii(text.toLowerCase())
+  if (/\b(ablation|benchmark|experiment|accuracy|precision|recall|dataset|baseline)\b/.test(source)) return 'experimental'
+  if (/\b(systematic review|survey|taxonomy|literature review|prisma)\b/.test(source)) return 'survey'
+  if (/\b(interview|thematic|qualitative|focus group|ethnography)\b/.test(source)) return 'qualitative'
+  if (/\b(mixed methods|mixed-methods|quantitative and qualitative)\b/.test(source)) return 'mixed-methods'
+  if (/\b(simulation|simulated|monte carlo|agent-based)\b/.test(source)) return 'simulation'
+  if (/\b(theoretical|proof|formal analysis|closed-form)\b/.test(source)) return 'theoretical'
+  return 'unknown'
+}
+
+function detectDataAvailability(
+  datasetDescription?: string,
+  sections?: Record<string, string>,
+  abstract?: string
+): PaperProfile['dataAvailability'] {
+  const source = sanitizeAscii(`${datasetDescription || ''}\n${abstract || ''}\n${Object.values(sections || {}).join('\n')}`).toLowerCase()
+  if (!source.trim()) return 'none'
+  if (/\b(dataset|table|samples|records|measurements|observations|n\s*=|data collected|we report)\b/.test(source)) return 'provided'
+  if (/\b(to be collected|future work|not yet available|pending)\b/.test(source)) return 'partial'
+  if (/\b(no data|conceptual|theoretical only)\b/.test(source)) return 'none'
+  return 'partial'
+}
+
+function inferPaperProfile(request: FigureSuggestionRequest): PaperProfile {
+  const title = request.paperTitle || ''
+  const abstract = request.paperAbstract || ''
+  const sectionsText = Object.values(request.sections || {}).join('\n')
+  const researchType = request.researchType || ''
+  const corpus = `${title}\n${abstract}\n${sectionsText}\n${researchType}`
+  const provided = request.paperProfile || {}
+
+  return {
+    paperGenre: sanitizeAscii((provided.paperGenre || '').trim()) || detectPaperGenre(corpus),
+    studyType: provided.studyType || detectStudyType(corpus),
+    dataAvailability: provided.dataAvailability || detectDataAvailability(request.datasetDescription, request.sections, abstract)
+  }
+}
+
+function buildGroundingLexicon(request: FigureSuggestionRequest): Set<string> {
+  const source = sanitizeAscii(
+    `${request.paperTitle || ''}\n${request.paperAbstract || ''}\n${request.datasetDescription || ''}\n${Object.values(request.sections || {}).join('\n')}`
+  ).toLowerCase()
+  const stopwords = new Set([
+    'the', 'and', 'with', 'from', 'into', 'that', 'this', 'those', 'these', 'their', 'there', 'where',
+    'method', 'methods', 'paper', 'study', 'results', 'figure', 'analysis', 'section', 'using', 'used',
+    'which', 'while', 'when', 'were', 'been', 'have', 'has', 'had', 'over', 'under', 'between', 'across'
+  ])
+  const tokens = source.match(/\b[a-z][a-z0-9_-]{3,}\b/g) || []
+  const lexicon = new Set<string>()
+  for (const token of tokens) {
+    if (stopwords.has(token)) continue
+    lexicon.add(token)
+    if (lexicon.size >= 300) break
+  }
+  return lexicon
+}
+
+function estimateGroundingOverlap(text: string, lexicon: Set<string>): number {
+  if (lexicon.size === 0) return 0
+  const tokens = (sanitizeAscii(text).toLowerCase().match(/\b[a-z][a-z0-9_-]{3,}\b/g) || [])
+  const unique = new Set(tokens)
+  let overlap = 0
+  unique.forEach(token => {
+    if (lexicon.has(token)) overlap += 1
+  })
+  return overlap
+}
+
+type ValidationIssueCode = 'SECTION_FIT' | 'GROUNDING' | 'SPEC_COMPLETENESS' | 'COMPLEXITY' | 'DATA_GATE'
+
+interface SuggestionValidationIssue {
+  code: ValidationIssueCode
+  reason: string
+}
+
+function validateSuggestion(
+  suggestion: FigureSuggestion,
+  context: {
+    section: SectionType
+    groundingLexicon: Set<string>
+    quantitativeDataAvailable: boolean
+  }
+): SuggestionValidationIssue[] {
+  const issues: SuggestionValidationIssue[] = []
+  const section = context.section
+  const category = suggestion.category
+  const type = sanitizeAscii((suggestion.suggestedType || '').toLowerCase())
+
+  // VR-1 Section fit
+  if (section === 'results') {
+    if (category === 'ILLUSTRATED_FIGURE') {
+      issues.push({ code: 'SECTION_FIT', reason: 'Results section cannot include ILLUSTRATED_FIGURE.' })
+    }
+    if (category === 'DIAGRAM' && /(class|component|sequence|usecase|state|architecture)/.test(type)) {
+      issues.push({ code: 'SECTION_FIT', reason: 'Results section disallows UML/architecture reminder diagrams by default.' })
+    }
+  }
+  if (section === 'introduction' && category === 'DIAGRAM' && /(class|component|sequence|er)/.test(type)) {
+    issues.push({ code: 'SECTION_FIT', reason: 'Introduction should avoid detailed UML structural diagrams by default.' })
+  }
+  if (section === 'literature_review' && category === 'DIAGRAM' && /(class|component|sequence)/.test(type)) {
+    issues.push({ code: 'SECTION_FIT', reason: 'Literature review should prefer taxonomy/evidence maps over UML structures.' })
+  }
+  if ((section === 'discussion' || section === 'conclusion') && category === 'DIAGRAM' && /\bclass\b/.test(type)) {
+    issues.push({ code: 'SECTION_FIT', reason: 'Discussion/conclusion defaults to implications/limitations diagrams, not class diagrams.' })
+  }
+  if (category === 'ILLUSTRATED_FIGURE' && section === 'methodology') {
+    const genre = sanitizeIllustrationFigureGenre((suggestion.illustrationSpecV2 as any)?.figureGenre || suggestion.figureGenre)
+    if (genre && genre !== 'METHOD_BLOCK') {
+      issues.push({ code: 'SECTION_FIT', reason: 'Methodology illustrations must use METHOD_BLOCK genre.' })
+    }
+  }
+
+  // VR-1b Data gate
+  if (!context.quantitativeDataAvailable && (category === 'DATA_CHART' || category === 'STATISTICAL_PLOT')) {
+    issues.push({ code: 'DATA_GATE', reason: 'Charts/plots are not allowed without quantitative evidence or user-provided data.' })
+  }
+
+  // VR-2 Grounding
+  const overlap = estimateGroundingOverlap(
+    `${suggestion.title || ''}\n${suggestion.description || ''}\n${suggestion.dataNeeded || ''}`,
+    context.groundingLexicon
+  )
+  if (overlap < 2) {
+    issues.push({ code: 'GROUNDING', reason: 'Suggestion has weak overlap with paper entities/metrics.' })
+  }
+  if (!suggestion.dataNeeded || !suggestion.dataNeeded.trim()) {
+    issues.push({ code: 'GROUNDING', reason: 'dataNeeded is required and must specify exact variables or fields.' })
+  }
+
+  // VR-3 Spec completeness
+  if (category === 'DIAGRAM' && !suggestion.diagramSpec) {
+    issues.push({ code: 'SPEC_COMPLETENESS', reason: 'DIAGRAM suggestion is missing diagramSpec.' })
+  }
+  if ((category === 'DATA_CHART' || category === 'STATISTICAL_PLOT') && !suggestion.chartSpec) {
+    issues.push({ code: 'SPEC_COMPLETENESS', reason: 'Chart suggestion is missing chartSpec.' })
+  }
+  if (category === 'ILLUSTRATED_FIGURE' && !suggestion.illustrationSpec) {
+    issues.push({ code: 'SPEC_COMPLETENESS', reason: 'ILLUSTRATED_FIGURE suggestion is missing illustrationSpec.' })
+  }
+  if (category === 'ILLUSTRATED_FIGURE' && !suggestion.illustrationSpecV2) {
+    issues.push({ code: 'SPEC_COMPLETENESS', reason: 'ILLUSTRATED_FIGURE suggestion is missing illustrationSpecV2.' })
+  }
+  if (!suggestion.renderSpec) {
+    issues.push({ code: 'SPEC_COMPLETENESS', reason: 'renderSpec is required for every suggestion.' })
+  } else {
+    if ((category === 'DATA_CHART' || category === 'STATISTICAL_PLOT') && (suggestion.renderSpec.kind !== 'chart' || !suggestion.renderSpec.chartSpec)) {
+      issues.push({ code: 'SPEC_COMPLETENESS', reason: 'renderSpec.kind=chart with chartSpec is required for chart suggestions.' })
+    }
+    if (category === 'DIAGRAM' && (suggestion.renderSpec.kind !== 'diagram' || !suggestion.renderSpec.diagramSpec)) {
+      issues.push({ code: 'SPEC_COMPLETENESS', reason: 'renderSpec.kind=diagram with diagramSpec is required for diagram suggestions.' })
+    }
+    if (category === 'ILLUSTRATED_FIGURE' && (suggestion.renderSpec.kind !== 'illustration' || !suggestion.renderSpec.illustrationSpecV2)) {
+      issues.push({ code: 'SPEC_COMPLETENESS', reason: 'renderSpec.kind=illustration with illustrationSpecV2 is required for illustrated suggestions.' })
+    }
+  }
+
+  // VR-4 Complexity
+  const nodeCount = suggestion.diagramSpec?.nodes?.length || 0
+  const edgeCount = suggestion.diagramSpec?.edges?.length || 0
+  if (nodeCount > 15 || edgeCount > 18) {
+    issues.push({ code: 'COMPLEXITY', reason: `diagramSpec exceeds hard limits (nodes=${nodeCount}, edges=${edgeCount}).` })
+  } else if ((nodeCount > 12 || edgeCount > 18) && !suggestion.diagramSpec?.splitSuggestion) {
+    issues.push({ code: 'COMPLEXITY', reason: 'diagramSpec exceeds compact budget without splitSuggestion.' })
+  }
+  if (category === 'ILLUSTRATED_FIGURE' && suggestion.illustrationSpec) {
+    const panelCount = suggestion.illustrationSpec.panelCount || suggestion.illustrationSpec.panels?.length || 0
+    const stepCount = suggestion.illustrationSpec.stepCount || suggestion.illustrationSpec.steps?.length || 0
+    if (suggestion.illustrationSpec.layout === 'PANELS' && panelCount > 0 && (panelCount < 3 || panelCount > 5)) {
+      issues.push({ code: 'COMPLEXITY', reason: 'ILLUSTRATED_FIGURE panels must be between 3 and 5.' })
+    }
+    if (suggestion.illustrationSpec.layout === 'STRIP' && stepCount > 0 && (stepCount < 4 || stepCount > 7)) {
+      issues.push({ code: 'COMPLEXITY', reason: 'ILLUSTRATED_FIGURE strip must contain 4-7 steps.' })
+    }
+  }
+  if (category === 'DIAGRAM' && suggestion.diagramSpec) {
+    const labels = (suggestion.diagramSpec.nodes || []).map(node => sanitizeAscii(node.label || '').toLowerCase().trim()).filter(Boolean)
+    const duplicate = labels.find((label, idx) => labels.indexOf(label) !== idx)
+    if (duplicate) {
+      issues.push({ code: 'COMPLEXITY', reason: 'diagramSpec contains duplicate node labels; labels must be unique.' })
+    }
+    const overWord = (suggestion.diagramSpec.nodes || []).find(node => (sanitizeAscii(node.label || '').trim().split(/\s+/).filter(Boolean).length > 3))
+    if (overWord) {
+      issues.push({ code: 'COMPLEXITY', reason: 'diagramSpec node labels must be <= 3 words.' })
+    }
+  }
+  if (category === 'ILLUSTRATED_FIGURE' && suggestion.illustrationSpecV2) {
+    if (!suggestion.illustrationSpecV2.figureGenre) {
+      issues.push({ code: 'SPEC_COMPLETENESS', reason: 'illustrationSpecV2.figureGenre is required.' })
+    }
+    if (!suggestion.illustrationSpecV2.renderDirectives) {
+      issues.push({ code: 'SPEC_COMPLETENESS', reason: 'illustrationSpecV2.renderDirectives is required.' })
+    }
+  }
+
+  return issues
+}
+
+function buildSectionAwareFallbackSuggestion(
+  source: FigureSuggestion,
+  section: SectionType,
+  index: number,
+  options: { quantitativeDataAvailable?: boolean } = {}
+): FigureSuggestion {
+  const baseTitle = sanitizeAscii(source.title || `Figure ${index + 1}`).slice(0, 120) || `Figure ${index + 1}`
+  const baseDescription = sanitizeAscii(source.description || '').slice(0, 700)
+  const role = defaultFigureRole(section)
+  const baseImportance = source.importance || (section === 'results' || section === 'methodology' ? 'required' : 'recommended')
+  const sectionText = section === 'selected_content' ? 'methodology' : section
+  const quantitativeDataAvailable = !!options.quantitativeDataAvailable
+
+  const withRenderSpec = (candidate: FigureSuggestion): FigureSuggestion => {
+    const next: FigureSuggestion = { ...candidate }
+    if (next.category === 'ILLUSTRATED_FIGURE') {
+      next.illustrationSpec = next.illustrationSpec || buildFallbackIllustrationSpec(section)
+      next.illustrationSpecV2 = next.illustrationSpecV2 || buildFallbackIllustrationSpecV2(section)
+      next.figureGenre = next.figureGenre || next.illustrationSpecV2.figureGenre
+      next.renderDirectives = next.renderDirectives || next.illustrationSpecV2.renderDirectives
+      next.sketchMode = next.sketchMode || 'GUIDED'
+      next.sketchStyle = next.sketchStyle || 'academic'
+      next.sketchPrompt = next.sketchPrompt || buildSketchPromptFromIllustrationSpecV2(next.title, next.illustrationSpecV2, next.sketchStyle)
+    }
+    next.renderSpec = buildRenderSpecForSuggestion(next)
+    return next
+  }
+
+  if (section === 'results') {
+    if (quantitativeDataAvailable) {
+      return withRenderSpec({
+        ...source,
+        title: baseTitle,
+        description: baseDescription || 'Comparison chart showing baseline vs proposed method with plausible, modest differences and optional uncertainty markers.',
+        category: 'DATA_CHART',
+        suggestedType: 'bar',
+        relevantSection: sectionText,
+        figureRole: role,
+        sectionFitJustification: 'Results sections require quantitative evidence and direct comparisons.',
+        expectedByReviewers: true,
+        importance: baseImportance,
+        dataNeeded: source.dataNeeded || 'Per-method metric values across datasets/runs, including baseline and proposed variants.',
+        chartSpec: source.chartSpec || buildFallbackChartSpec(section, 'bar'),
+        diagramSpec: undefined,
+        illustrationSpec: undefined,
+        illustrationSpecV2: undefined,
+        figureGenre: undefined,
+        renderDirectives: undefined,
+        sketchMode: undefined,
+        sketchPrompt: undefined,
+        sketchStyle: undefined
+      })
+    }
+
+    return withRenderSpec({
+      ...source,
+      title: baseTitle.includes('Evaluation') ? baseTitle : `${baseTitle} Evaluation Protocol`,
+      description: baseDescription || 'Evaluation protocol schematic showing datasets, baselines, metrics, and analysis flow when quantitative values are not yet available.',
+      category: 'DIAGRAM',
+      suggestedType: 'flowchart',
+      rendererPreference: 'plantuml',
+      relevantSection: sectionText,
+      figureRole: role,
+      sectionFitJustification: 'Results without quantitative values should use evaluation protocol diagrams and request missing data.',
+      expectedByReviewers: true,
+      importance: baseImportance,
+      dataNeeded: source.dataNeeded || 'Missing quantitative fields: baseline metric values, proposed metric values, confidence intervals, and per-dataset sample counts.',
+      diagramSpec: source.diagramSpec || buildFallbackSpecFromDescription(baseDescription || baseTitle, `${baseTitle} Evaluation`),
+      chartSpec: undefined,
+      illustrationSpec: undefined,
+      illustrationSpecV2: undefined,
+      figureGenre: undefined,
+      renderDirectives: undefined
+    })
+  }
+
+  if (section === 'methodology') {
+    return withRenderSpec({
+      ...source,
+      title: baseTitle.includes('Pipeline') ? baseTitle : `${baseTitle} Pipeline`,
+      description: baseDescription || 'Pipeline/activity diagram showing ordered method stages from input to evaluation, with data transformations and validation checkpoints.',
+      category: 'DIAGRAM',
+      suggestedType: 'flowchart',
+      rendererPreference: 'plantuml',
+      relevantSection: sectionText,
+      figureRole: role,
+      sectionFitJustification: 'Methodology requires reproducible step-by-step process visualization.',
+      expectedByReviewers: true,
+      importance: baseImportance,
+      dataNeeded: source.dataNeeded || 'Method stages, inputs/outputs of each stage, and control/validation transitions.',
+      diagramSpec: source.diagramSpec || buildFallbackSpecFromDescription(baseDescription || baseTitle, baseTitle),
+      chartSpec: undefined,
+      illustrationSpec: undefined,
+      illustrationSpecV2: undefined,
+      figureGenre: undefined,
+      renderDirectives: undefined
+    })
+  }
+
+  if (section === 'introduction') {
+    const fallbackV2 = source.illustrationSpecV2 || buildFallbackIllustrationSpecV2(section)
+    return withRenderSpec({
+      ...source,
+      title: baseTitle.includes('Overview') ? baseTitle : `${baseTitle} Overview`,
+      description: baseDescription || 'High-level infographic overview connecting problem context, proposed approach, and expected outcomes.',
+      category: 'ILLUSTRATED_FIGURE',
+      suggestedType: 'sketch-auto',
+      relevantSection: sectionText,
+      figureRole: role,
+      sectionFitJustification: 'Introduction figures should orient readers with high-level overview context.',
+      expectedByReviewers: false,
+      importance: baseImportance,
+      dataNeeded: source.dataNeeded || 'Named problem context, key method stages, and headline outcomes to depict.',
+      illustrationSpec: source.illustrationSpec || buildFallbackIllustrationSpec(section),
+      illustrationSpecV2: fallbackV2,
+      figureGenre: source.figureGenre || fallbackV2.figureGenre,
+      renderDirectives: source.renderDirectives || fallbackV2.renderDirectives,
+      sketchStyle: source.sketchStyle || 'academic',
+      sketchMode: source.sketchMode || 'GUIDED',
+      sketchPrompt: source.sketchPrompt || buildSketchPromptFromIllustrationSpecV2(baseTitle, fallbackV2, source.sketchStyle || 'academic'),
+      diagramSpec: undefined,
+      chartSpec: undefined,
+      rendererPreference: undefined
+    })
+  }
+
+  if (section === 'literature_review') {
+    return withRenderSpec({
+      ...source,
+      title: baseTitle.includes('Taxonomy') ? baseTitle : `${baseTitle} Taxonomy`,
+      description: baseDescription || 'Taxonomy/evidence-map diagram organizing prior work categories and identifying explicit research gaps.',
+      category: 'DIAGRAM',
+      suggestedType: 'flowchart',
+      rendererPreference: 'plantuml',
+      relevantSection: sectionText,
+      figureRole: role,
+      sectionFitJustification: 'Literature review figures should position prior work and reveal gaps.',
+      expectedByReviewers: true,
+      importance: baseImportance,
+      dataNeeded: source.dataNeeded || 'Prior work categories, representative studies, and gap criteria.',
+      diagramSpec: source.diagramSpec || buildFallbackSpecFromDescription(baseDescription || baseTitle, baseTitle),
+      chartSpec: undefined,
+      illustrationSpec: undefined,
+      illustrationSpecV2: undefined,
+      figureGenre: undefined,
+      renderDirectives: undefined
+    })
+  }
+
+  if (quantitativeDataAvailable) {
+    return withRenderSpec({
+      ...source,
+      title: baseTitle,
+      description: baseDescription || 'Interpretive figure summarizing implications, limitations, and practical boundaries.',
+      category: 'STATISTICAL_PLOT',
+      suggestedType: 'line',
+      relevantSection: sectionText,
+      figureRole: role,
+      sectionFitJustification: 'Discussion/conclusion figures should interpret evidence and boundaries.',
+      expectedByReviewers: false,
+      importance: baseImportance,
+      dataNeeded: source.dataNeeded || 'Error breakdowns, subgroup sensitivities, and edge-condition metrics.',
+      chartSpec: source.chartSpec || buildFallbackChartSpec(section, 'line'),
+      diagramSpec: undefined,
+      illustrationSpec: undefined,
+      illustrationSpecV2: undefined,
+      figureGenre: undefined,
+      renderDirectives: undefined,
+      rendererPreference: undefined
+    })
+  }
+
+  return withRenderSpec({
+    ...source,
+    title: baseTitle.includes('Implications') ? baseTitle : `${baseTitle} Implications`,
+    description: baseDescription || 'Interpretive relationship diagram summarizing implications, limitations, and practical boundaries.',
+    category: 'DIAGRAM',
+    suggestedType: 'flowchart',
+    relevantSection: sectionText,
+    figureRole: role,
+    sectionFitJustification: 'Without quantitative values, discussion/conclusion should use conceptual interpretation diagrams.',
+    expectedByReviewers: false,
+    importance: baseImportance,
+    dataNeeded: source.dataNeeded || 'Missing quantitative evidence required for plots: subgroup metrics, error distributions, and confidence intervals.',
+    diagramSpec: source.diagramSpec || buildFallbackSpecFromDescription(baseDescription || baseTitle, baseTitle),
+    chartSpec: undefined,
+    illustrationSpec: undefined,
+    illustrationSpecV2: undefined,
+    figureGenre: undefined,
+    renderDirectives: undefined,
+    rendererPreference: 'plantuml'
+  })
 }
 
 function cleanPlantUMLResponse(raw: string): string {
@@ -1284,6 +2296,22 @@ export async function generateChartConfig(
         userRequest += `\n\nChart title: "${request.title}"`
       }
 
+      const sectionType = normalizeSectionType(request.sectionType)
+      userRequest += `\n\nSection type: ${sectionType}`
+
+      if (request.figureRole) {
+        userRequest += `\nFigure role: ${request.figureRole}`
+      }
+      if (request.paperGenre) {
+        userRequest += `\nPaper genre: ${sanitizeAscii(request.paperGenre).slice(0, 80)}`
+      }
+      if (request.studyType) {
+        userRequest += `\nStudy type: ${request.studyType}`
+      }
+      if (request.chartSpec) {
+        userRequest += `\n\nchartSpec (deterministic mapping - follow exactly):\n${JSON.stringify(request.chartSpec, null, 2)}`
+      }
+
       if (request.data?.labels && request.data?.values) {
         userRequest += `\n\nACTUAL DATA PROVIDED (use these exact values):`
         userRequest += `\nLabels: ${JSON.stringify(request.data.labels)}`
@@ -1292,7 +2320,10 @@ export async function generateChartConfig(
           userRequest += `\nDataset label: "${request.data.datasetLabel}"`
         }
       } else {
-        userRequest += `\n\nNOTE: No actual data provided. Use realistic placeholder labels (e.g., "Method A", "Method B") with balanced placeholder values. Mark the dataset label as "Sample Data (replace with actual values)".`
+        userRequest += `\n\nNOTE: No actual data provided. Use realistic placeholder labels (e.g., "Method A", "Method B") with modest, plausible placeholder values. Mark the dataset label as "Sample Data (replace with actual values)".`
+        if (sectionType === 'results') {
+          userRequest += `\nResults placeholder realism: include small noise and modest baseline-vs-proposed gaps. Avoid perfect trends or dramatic jumps unless explicitly requested.`
+        }
       }
 
       if (request.style) {
@@ -1310,7 +2341,14 @@ export async function generateChartConfig(
         fullPrompt,
         'PAPER_CHART_GENERATOR',
         requestHeaders,
-        { chartType: request.chartType, hasData: !!request.data, attempt }
+        {
+          chartType: request.chartType,
+          sectionType,
+          figureRole: request.figureRole || null,
+          hasData: !!request.data,
+          hasChartSpec: !!request.chartSpec,
+          attempt
+        }
       )
       totalTokensUsed += tokensUsed
 
@@ -1385,12 +2423,20 @@ export async function generateMermaidCode(
   for (let attempt = 0; attempt <= MAX_DIAGRAM_RETRIES; attempt++) {
     try {
       let userRequest = sanitizedDescription
+      const sectionType = normalizeSectionType(request.sectionType)
 
       if (request.diagramType || templateSelection.inputType) {
         userRequest += `\n\nDiagram type (input): ${request.diagramType || templateSelection.inputType}`
       }
 
       userRequest += `\n\nDiagram type (template): ${templateSelection.templateType}`
+      userRequest += `\nSection type: ${sectionType}`
+      if (request.figureRole) {
+        userRequest += `\nFigure role: ${request.figureRole}`
+      }
+      if (request.paperGenre) {
+        userRequest += `\nPaper genre: ${sanitizeAscii(request.paperGenre).slice(0, 80)}`
+      }
 
       if (templateSelection.templateType === 'flowchart') {
         userRequest += `\n\nFlowchart variant: ${templateSelection.flowchartVariant || 'pipeline'}`
@@ -1424,6 +2470,9 @@ export async function generateMermaidCode(
         requestHeaders,
         {
           diagramType: request.diagramType,
+          sectionType,
+          figureRole: request.figureRole || null,
+          paperGenre: request.paperGenre || null,
           mermaidTemplateType: templateSelection.templateType,
           mermaidFlowchartVariant: templateSelection.flowchartVariant || null,
           attempt
@@ -1483,12 +2532,20 @@ export async function generatePlantUMLCode(
   for (let attempt = 0; attempt <= MAX_PLANTUML_RETRIES; attempt++) {
     try {
       let userRequest = sanitizedDescription
+      const sectionType = normalizeSectionType(request.sectionType)
 
       if (request.diagramType || templateSelection.inputType) {
         userRequest += `\n\nDiagram type (input): ${request.diagramType || templateSelection.inputType}`
       }
 
       userRequest += `\n\nDiagram type (template): ${templateSelection.templateType}`
+      userRequest += `\nSection type: ${sectionType}`
+      if (request.figureRole) {
+        userRequest += `\nFigure role: ${request.figureRole}`
+      }
+      if (request.paperGenre) {
+        userRequest += `\nPaper genre: ${sanitizeAscii(request.paperGenre).slice(0, 80)}`
+      }
 
       if (templateSelection.compatibilityNote) {
         userRequest += `\n\nCompatibility mapping: ${templateSelection.compatibilityNote}`
@@ -1518,6 +2575,9 @@ export async function generatePlantUMLCode(
           diagramType: 'plantuml',
           inputDiagramType: request.diagramType || null,
           templateDiagramType: templateSelection.templateType,
+          sectionType,
+          figureRole: request.figureRole || null,
+          paperGenre: request.paperGenre || null,
           attempt
         }
       )
@@ -1614,6 +2674,8 @@ export async function generateFigureSuggestions(
 ): Promise<FigureSuggestionResult> {
   try {
     const preferences = normalizeFigurePreferences(request.preferences)
+    const paperProfile = inferPaperProfile(request)
+    const quantitativeDataAvailable = paperProfile.dataAvailability === 'provided' || hasQuantitativeEvidence(request)
 
     // Build paper context
     let paperContext = ''
@@ -1633,6 +2695,12 @@ export async function generateFigureSuggestions(
     if (request.datasetDescription) {
       paperContext += `Dataset / Data Availability: ${request.datasetDescription}\n\n`
     }
+
+    paperContext += `Paper Profile:\n`
+    paperContext += `- paperGenre: ${paperProfile.paperGenre}\n`
+    paperContext += `- studyType: ${paperProfile.studyType}\n`
+    paperContext += `- dataAvailability: ${paperProfile.dataAvailability}\n\n`
+    paperContext += `- quantitativeEvidenceDetected: ${quantitativeDataAvailable ? 'yes' : 'no'}\n\n`
 
     if (request.sections) {
       paperContext += 'Sections:\n'
@@ -1720,7 +2788,11 @@ export async function generateFigureSuggestions(
       { 
         hasSections: !!request.sections,
         existingFigureCount: request.existingFigures?.length || 0,
-        focusMode: request.focusMode || 'full_paper'
+        focusMode: request.focusMode || 'full_paper',
+        paperGenre: paperProfile.paperGenre,
+        studyType: paperProfile.studyType,
+        dataAvailability: paperProfile.dataAvailability,
+        quantitativeDataAvailable
       }
     )
 
@@ -1745,73 +2817,291 @@ export async function generateFigureSuggestions(
       }
     }
 
-    const normalizeCategory = (value: string): FigureCategory => {
-      const normalized = (value || '').trim().toUpperCase()
-      if (
-        normalized === 'DATA_CHART' ||
-        normalized === 'DIAGRAM' ||
-        normalized === 'STATISTICAL_PLOT' ||
-        normalized === 'ILLUSTRATION' ||
-        normalized === 'SKETCH' ||
-        normalized === 'CUSTOM'
-      ) {
-        return normalized as FigureCategory
-      }
-      return 'DIAGRAM'
-    }
-
-    // Validate and limit suggestions
+    const groundingLexicon = buildGroundingLexicon(request)
+    const focusedSection = request.focusSection ? normalizeSectionType(request.focusSection) : undefined
+    const isValidImportance = (value?: string): value is 'required' | 'recommended' | 'optional' => (
+      value === 'required' || value === 'recommended' || value === 'optional'
+    )
     const validSuggestions = suggestions
       .filter(s => s.title && s.description && s.category)
       .map((s, index) => {
-        const category = normalizeCategory(s.category as unknown as string)
+        const category = coerceFigureCategory(s.category as unknown as string)
+        const section = isFocused
+          ? (focusedSection || 'selected_content')
+          : normalizeSectionType(s.relevantSection)
+        const importance = isValidImportance(s.importance) ? s.importance : (section === 'methodology' || section === 'results' ? 'required' : 'recommended')
         const sanitizedTitle = sanitizeAscii(s.title).slice(0, 120).trim() || `Figure ${index + 1}`
         const sanitizedDescription = sanitizeAscii(s.description, true).slice(0, 1200).trim() || 'Diagram based on paper content'
+        const suggestedType = sanitizeAscii((s.suggestedType || '').trim().toLowerCase()).slice(0, 40) || undefined
+        const incomingRenderSpec = (s as any).renderSpec && typeof (s as any).renderSpec === 'object'
+          ? (s as any).renderSpec
+          : undefined
         const normalized: FigureSuggestion = {
           ...s,
           title: sanitizedTitle,
           description: sanitizedDescription,
           category,
+          suggestedType,
+          relevantSection: section,
+          figureRole: normalizeFigureRole((s as any).figureRole, section),
+          sectionFitJustification: (s as any).sectionFitJustification
+            ? sanitizeAscii((s as any).sectionFitJustification, true).slice(0, 220)
+            : `Selected to satisfy ${section} section rhetorical expectations.`,
+          expectedByReviewers: typeof (s as any).expectedByReviewers === 'boolean'
+            ? (s as any).expectedByReviewers
+            : (importance === 'required' || section === 'results' || section === 'methodology'),
+          importance,
           rendererPreference: s.rendererPreference === 'mermaid' || s.rendererPreference === 'plantuml'
             ? s.rendererPreference
             : undefined,
-          dataNeeded: s.dataNeeded ? sanitizeAscii(s.dataNeeded, true).slice(0, 500) : s.dataNeeded,
-          whyThisFigure: s.whyThisFigure ? sanitizeAscii(s.whyThisFigure, true).slice(0, 220) : s.whyThisFigure
+          dataNeeded: s.dataNeeded
+            ? sanitizeAscii(s.dataNeeded, true).slice(0, 500)
+            : 'Specify exact variables/columns required to render this figure.',
+          whyThisFigure: s.whyThisFigure
+            ? sanitizeAscii(s.whyThisFigure, true).slice(0, 220)
+            : `This figure improves reader understanding of the ${section} claims.`,
+          paperProfile,
+          renderSpec: undefined
         }
 
         if (category === 'DIAGRAM') {
           const rendererDecision = chooseDiagramRenderer({
-            diagramType: typeof s.suggestedType === 'string' ? s.suggestedType : undefined,
+            diagramType: normalized.suggestedType,
             title: sanitizedTitle,
             description: sanitizedDescription,
             rendererPreference: normalized.rendererPreference
           })
           normalized.rendererPreference = rendererDecision.renderer
-          normalized.diagramSpec = sanitizeDiagramSpec(s.diagramSpec) || buildFallbackSpecFromDescription(sanitizedDescription, sanitizedTitle)
+          normalized.suggestedType = normalized.suggestedType || 'flowchart'
+          normalized.diagramSpec = sanitizeDiagramSpec((s as any).diagramSpec || incomingRenderSpec?.diagramSpec) || buildFallbackSpecFromDescription(sanitizedDescription, sanitizedTitle)
+          normalized.diagramSpec = {
+            ...normalized.diagramSpec,
+            constraints: {
+              nodesMax: 12,
+              edgesMax: 18,
+              nodeLabelMaxWords: 3,
+              noDuplicateNodeLabels: true
+            }
+          }
         }
 
-        if (category === 'SKETCH') {
-          // Ensure sketch-specific fields are populated
+        if (category === 'DATA_CHART' || category === 'STATISTICAL_PLOT') {
+          normalized.suggestedType = normalized.suggestedType || 'bar'
+          normalized.chartSpec = sanitizeChartSpec((s as any).chartSpec || incomingRenderSpec?.chartSpec, normalized.suggestedType) || buildFallbackChartSpec(section, normalized.suggestedType)
+          if (!quantitativeDataAvailable && normalized.chartSpec) {
+            normalized.chartSpec.placeholderPolicy = {
+              allowed: false,
+              label: 'Sample Data (replace with actual values)',
+              shape: 'modest_gain',
+              rangeHint: 'Provide observed values from results tables.'
+            }
+          }
+        }
+
+        if (category === 'ILLUSTRATED_FIGURE') {
+          normalized.suggestedType = normalized.suggestedType?.startsWith('sketch-')
+            ? normalized.suggestedType
+            : 'sketch-auto'
+          normalized.illustrationSpec = sanitizeIllustrationSpec((s as any).illustrationSpec || incomingRenderSpec?.illustrationSpecV2) || buildFallbackIllustrationSpec(section)
+          normalized.illustrationSpecV2 = sanitizeIllustrationSpecV2(
+            (s as any).illustrationSpecV2 || incomingRenderSpec?.illustrationSpecV2 || {
+              ...(s as any).illustrationSpec,
+              figureGenre: (s as any).figureGenre,
+              renderDirectives: (s as any).renderDirectives
+            },
+            section
+          ) || buildFallbackIllustrationSpecV2(section)
+          normalized.figureGenre = normalized.illustrationSpecV2.figureGenre
+          normalized.renderDirectives = normalized.illustrationSpecV2.renderDirectives
           const validStyles = ['academic', 'scientific', 'conceptual', 'technical'] as const
           normalized.sketchStyle = validStyles.includes(s.sketchStyle as any) ? s.sketchStyle : 'academic'
           normalized.sketchMode = s.sketchMode === 'GUIDED' ? 'GUIDED' : 'SUGGEST'
-          // Ensure suggestedType is a valid sketch type
-          if (!normalized.suggestedType?.startsWith('sketch-')) {
-            normalized.suggestedType = normalized.sketchMode === 'GUIDED' ? 'sketch-guided' : 'sketch-auto'
-          }
-          // Build a visual prompt if the LLM didn't provide one
           normalized.sketchPrompt = s.sketchPrompt
             ? sanitizeAscii(s.sketchPrompt, true).slice(0, 800)
-            : buildSketchPromptFromDescription(sanitizedTitle, sanitizedDescription, normalized.sketchStyle)
+            : buildSketchPromptFromIllustrationSpecV2(
+                sanitizedTitle,
+                normalized.illustrationSpecV2,
+                normalized.sketchStyle
+              )
         }
+
+        normalized.renderSpec = buildRenderSpecForSuggestion(normalized)
 
         return normalized
       })
-      .slice(0, maxSuggestions)
+
+    // Validate each item and regenerate/rewrite only invalid ones.
+    const postValidated: FigureSuggestion[] = []
+    for (let i = 0; i < validSuggestions.length; i++) {
+      let candidate = validSuggestions[i]
+      const section = normalizeSectionType(candidate.relevantSection)
+      let issues = validateSuggestion(candidate, { section, groundingLexicon, quantitativeDataAvailable })
+
+      if (issues.length > 0) {
+        candidate = buildSectionAwareFallbackSuggestion(candidate, section, i, { quantitativeDataAvailable })
+        candidate.paperProfile = paperProfile
+        if (candidate.category === 'DIAGRAM') {
+          candidate.diagramSpec = sanitizeDiagramSpec(candidate.diagramSpec) || buildFallbackSpecFromDescription(candidate.description, candidate.title)
+          const rendererDecision = chooseDiagramRenderer({
+            diagramType: candidate.suggestedType,
+            title: candidate.title,
+            description: candidate.description,
+            rendererPreference: candidate.rendererPreference
+          })
+          candidate.rendererPreference = rendererDecision.renderer
+        }
+        if (candidate.category === 'DATA_CHART' || candidate.category === 'STATISTICAL_PLOT') {
+          candidate.chartSpec = sanitizeChartSpec(candidate.chartSpec, candidate.suggestedType) || buildFallbackChartSpec(section, candidate.suggestedType)
+        }
+        if (candidate.category === 'ILLUSTRATED_FIGURE') {
+          candidate.illustrationSpec = sanitizeIllustrationSpec(candidate.illustrationSpec) || buildFallbackIllustrationSpec(section)
+          candidate.illustrationSpecV2 = sanitizeIllustrationSpecV2(candidate.illustrationSpecV2, section) || buildFallbackIllustrationSpecV2(section)
+          candidate.figureGenre = candidate.figureGenre || candidate.illustrationSpecV2.figureGenre
+          candidate.renderDirectives = candidate.renderDirectives || candidate.illustrationSpecV2.renderDirectives
+          candidate.sketchMode = candidate.sketchMode || 'GUIDED'
+          candidate.sketchStyle = candidate.sketchStyle || 'academic'
+          candidate.sketchPrompt = candidate.sketchPrompt || buildSketchPromptFromIllustrationSpecV2(candidate.title, candidate.illustrationSpecV2, candidate.sketchStyle)
+        }
+        candidate.renderSpec = buildRenderSpecForSuggestion(candidate)
+        issues = validateSuggestion(candidate, { section, groundingLexicon, quantitativeDataAvailable })
+      }
+
+      if (issues.length > 0) {
+        console.warn(`[LLMFigureService] Dropping invalid suggestion "${candidate.title}" due to validation issues: ${issues.map(issue => issue.reason).join(' | ')}`)
+        continue
+      }
+      postValidated.push(candidate)
+    }
+
+    // Enforce max one ILLUSTRATED_FIGURE in intro/lit-review/discussion/conclusion.
+    const illustratedLimited: FigureSuggestion[] = []
+    const illustratedSeenBySection = new Set<string>()
+    for (const item of postValidated) {
+      const section = normalizeSectionType(item.relevantSection)
+      const cappedSection = section === 'introduction' || section === 'literature_review' || section === 'discussion' || section === 'conclusion'
+      if (item.category === 'ILLUSTRATED_FIGURE' && cappedSection) {
+        const key = section
+        if (illustratedSeenBySection.has(key)) continue
+        illustratedSeenBySection.add(key)
+      }
+      illustratedLimited.push(item)
+    }
+    postValidated.length = 0
+    postValidated.push(...illustratedLimited)
+
+    // Enforce methodology pipeline requirement when methodology content exists.
+    const hasMethodologyContent = Object.keys(request.sections || {}).some(key => normalizeSectionType(key) === 'methodology')
+    const hasMethodPipeline = postValidated.some(item => (
+      normalizeSectionType(item.relevantSection) === 'methodology' &&
+      item.category === 'DIAGRAM' &&
+      /\b(flowchart|activity|architecture|pipeline)\b/.test((item.suggestedType || '').toLowerCase())
+    ))
+    if (!isFocused && hasMethodologyContent && !hasMethodPipeline) {
+      const fallbackMethod = buildSectionAwareFallbackSuggestion({
+        title: 'Methodology Pipeline',
+        description: 'End-to-end method flow with deterministic stages and transitions.',
+        category: 'DIAGRAM',
+        suggestedType: 'flowchart',
+        relevantSection: 'methodology',
+        importance: 'required'
+      } as FigureSuggestion, 'methodology', postValidated.length, { quantitativeDataAvailable })
+      fallbackMethod.paperProfile = paperProfile
+      postValidated.push(fallbackMethod)
+    }
+
+    // Enforce results mix: >=70% charts/statistical plots within results suggestions.
+    const resultsIndexes = postValidated
+      .map((item, idx) => ({ item, idx }))
+      .filter(entry => normalizeSectionType(entry.item.relevantSection) === 'results')
+      .map(entry => entry.idx)
+    if (resultsIndexes.length > 0 && quantitativeDataAvailable) {
+      const isResultsChart = (item: FigureSuggestion) => item.category === 'DATA_CHART' || item.category === 'STATISTICAL_PLOT'
+      let chartCount = resultsIndexes.filter(idx => isResultsChart(postValidated[idx])).length
+      const requiredCharts = Math.ceil(resultsIndexes.length * 0.7)
+
+      for (const idx of resultsIndexes) {
+        if (chartCount >= requiredCharts) break
+        if (isResultsChart(postValidated[idx])) continue
+        postValidated[idx] = buildSectionAwareFallbackSuggestion(postValidated[idx], 'results', idx, { quantitativeDataAvailable })
+        postValidated[idx].paperProfile = paperProfile
+        chartCount += 1
+      }
+    } else if (resultsIndexes.length > 0 && !quantitativeDataAvailable) {
+      for (const idx of resultsIndexes) {
+        const item = postValidated[idx]
+        if (item.category === 'DATA_CHART' || item.category === 'STATISTICAL_PLOT') {
+          postValidated[idx] = buildSectionAwareFallbackSuggestion(item, 'results', idx, { quantitativeDataAvailable })
+          postValidated[idx].paperProfile = paperProfile
+        }
+      }
+    }
+
+    const finalSuggestions = postValidated.slice(0, maxSuggestions)
+    if (isFocused && finalSuggestions.length < 2) {
+      while (finalSuggestions.length < Math.min(2, maxSuggestions)) {
+        const section = focusedSection || 'selected_content'
+        const fallback = buildSectionAwareFallbackSuggestion({
+          title: `Focused Figure ${finalSuggestions.length + 1}`,
+          description: 'Focused fallback suggestion generated for selected excerpt.',
+          category: 'DIAGRAM',
+          suggestedType: 'flowchart',
+          relevantSection: section,
+          importance: 'recommended'
+        } as FigureSuggestion, section, finalSuggestions.length, { quantitativeDataAvailable })
+        fallback.paperProfile = paperProfile
+        finalSuggestions.push(fallback)
+      }
+    }
+    if (!isFocused && finalSuggestions.length < 5) {
+      const fallbackSections: SectionType[] = ['introduction', 'methodology', 'results', 'results', 'discussion']
+      for (let i = finalSuggestions.length; i < Math.min(5, maxSuggestions); i++) {
+        const section = fallbackSections[i] || 'methodology'
+        const fallback = buildSectionAwareFallbackSuggestion({
+          title: `Fallback Figure ${i + 1}`,
+          description: `Fallback suggestion for ${section}.`,
+          category: section === 'results' ? 'DATA_CHART' : 'DIAGRAM',
+          suggestedType: section === 'results' ? 'bar' : 'flowchart',
+          relevantSection: section,
+          importance: section === 'results' || section === 'methodology' ? 'required' : 'recommended'
+        } as FigureSuggestion, section, i, { quantitativeDataAvailable })
+        fallback.paperProfile = paperProfile
+        finalSuggestions.push(fallback)
+      }
+    }
+    if (finalSuggestions.length === 0) {
+      const emergency = buildSectionAwareFallbackSuggestion({
+        title: 'Methodology Pipeline',
+        description: 'Fallback reproducibility pipeline generated due validation failures.',
+        category: 'DIAGRAM',
+        suggestedType: 'flowchart',
+        relevantSection: 'methodology',
+        importance: 'required'
+      } as FigureSuggestion, 'methodology', 0, { quantitativeDataAvailable })
+      emergency.paperProfile = paperProfile
+      finalSuggestions.push(emergency)
+    }
+
+    // Final normalization pass: enforce no-data chart gate and ensure renderSpec payloads.
+    for (let i = 0; i < finalSuggestions.length; i++) {
+      const suggestion = finalSuggestions[i]
+      const section = normalizeSectionType(suggestion.relevantSection)
+      if (!quantitativeDataAvailable && (suggestion.category === 'DATA_CHART' || suggestion.category === 'STATISTICAL_PLOT')) {
+        finalSuggestions[i] = buildSectionAwareFallbackSuggestion(suggestion, section, i, { quantitativeDataAvailable })
+        finalSuggestions[i].paperProfile = paperProfile
+      } else {
+        if (suggestion.category === 'ILLUSTRATED_FIGURE') {
+          suggestion.illustrationSpec = sanitizeIllustrationSpec(suggestion.illustrationSpec) || buildFallbackIllustrationSpec(section)
+          suggestion.illustrationSpecV2 = sanitizeIllustrationSpecV2(suggestion.illustrationSpecV2, section) || buildFallbackIllustrationSpecV2(section)
+          suggestion.figureGenre = suggestion.figureGenre || suggestion.illustrationSpecV2.figureGenre
+          suggestion.renderDirectives = suggestion.renderDirectives || suggestion.illustrationSpecV2.renderDirectives
+        }
+        suggestion.renderSpec = buildRenderSpecForSuggestion(suggestion)
+      }
+    }
 
     return {
       success: true,
-      suggestions: validSuggestions,
+      suggestions: finalSuggestions,
       tokensUsed,
       model
     }
@@ -1867,6 +3157,7 @@ export async function generateDiagramCode(
 
   return generatePlantUMLCode(normalizedRequest, requestHeaders)
 }
+
 
 
 

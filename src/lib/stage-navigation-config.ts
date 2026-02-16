@@ -12,6 +12,7 @@ import {
   ListOrdered,
   PenTool,
   Search,
+  Sparkles,
   Target,
   type LucideIcon
 } from 'lucide-react'
@@ -71,18 +72,42 @@ function formatSectionLabel(sectionKey: string): string {
   return sectionKey.replace(/_/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
 }
 
+function normalizeSectionKey(sectionKey: string): string {
+  return sectionKey.trim().toLowerCase().replace(/[\s-]+/g, '_')
+}
+
+function computeContentFingerprint(content: string): string {
+  const normalized = String(content || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  let hash = 0
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash = ((hash << 5) - hash + normalized.charCodeAt(index)) | 0
+  }
+
+  const positive = hash >>> 0
+  return `${positive.toString(16)}_${normalized.length}`
+}
+
 function computeWordCount(content: string): number {
   const trimmed = content.replace(/<[^>]*>/g, ' ').trim()
   if (!trimmed) return 0
   return trimmed.split(/\s+/).filter(Boolean).length
 }
 
-function getPaperDraftSections(session: any): Record<string, string> {
+function getLatestPaperDraft(session: any): any | null {
   const drafts = Array.isArray(session?.annexureDrafts) ? session.annexureDrafts : []
   const paperDraft = drafts
     .filter((draft: any) => (draft?.jurisdiction || '').toUpperCase() === 'PAPER')
     .sort((a: any, b: any) => (b?.version || 0) - (a?.version || 0))[0]
 
+  return paperDraft || null
+}
+
+function getPaperDraftSections(session: any): Record<string, string> {
+  const paperDraft = getLatestPaperDraft(session)
   if (!paperDraft) return {}
 
   const extraSections = paperDraft.extraSections
@@ -94,6 +119,26 @@ function getPaperDraftSections(session: any): Record<string, string> {
     return extraSections as Record<string, string>
   }
   return {}
+}
+
+function getHumanizedSections(session: any): Record<string, any> {
+  const rows = Array.isArray(session?.paperSectionHumanizations)
+    ? session.paperSectionHumanizations
+    : []
+  if (rows.length === 0) return {}
+
+  const map: Record<string, any> = {}
+  for (const row of rows) {
+    const sectionKey = normalizeSectionKey(String(row?.sectionKey || ''))
+    if (!sectionKey) continue
+    map[sectionKey] = {
+      ...row,
+      sourceDraftFingerprint: row?.sourceDraftFingerprint || '',
+      humanizedContent: row?.humanizedContent || ''
+    }
+  }
+
+  return map
 }
 
 function getPaperSectionStatus(session: any, sectionKey: string): { status: SubStageStatus; wordCount: number } {
@@ -138,6 +183,53 @@ function getDraftSectionSubStages(session: any): SubStageDefinition[] {
       description: isRequired ? 'Required section' : 'Optional section',
       required: isRequired,
       getStatus: (currentSession: any) => getPaperSectionStatus(currentSession, sectionKey).status
+    }
+  })
+}
+
+function getHumanizationSectionStatus(session: any, sectionKey: string): SubStageStatus {
+  const normalizedKey = normalizeSectionKey(sectionKey)
+  const draftSections = getPaperDraftSections(session)
+  const draftContent = String(draftSections[normalizedKey] || '')
+  const draftWordCount = computeWordCount(draftContent)
+  if (draftWordCount === 0) return 'pending'
+
+  const humanizedSections = getHumanizedSections(session)
+  const record = humanizedSections[normalizedKey]
+  if (!record || typeof record !== 'object') return 'pending'
+
+  const status = String((record as any).status || '').toLowerCase()
+  if (status === 'failed') return 'in_progress'
+  if (status === 'processing') return 'in_progress'
+
+  const humanizedContent = typeof (record as any).humanizedContent === 'string'
+    ? (record as any).humanizedContent
+    : ''
+  if (!humanizedContent.trim()) return 'pending'
+
+  const sourceDraftFingerprint = typeof (record as any).sourceDraftFingerprint === 'string'
+    ? (record as any).sourceDraftFingerprint
+    : ''
+  if (sourceDraftFingerprint && sourceDraftFingerprint !== computeContentFingerprint(draftContent)) {
+    return 'in_progress'
+  }
+
+  return 'completed'
+}
+
+function getHumanizationSubStages(session: any): SubStageDefinition[] {
+  const { requiredSections, sectionOrder } = getPaperTypeSectionConfig(session)
+  if (sectionOrder.length === 0) return []
+
+  return sectionOrder.map(sectionKey => {
+    const isRequired = requiredSections.includes(sectionKey)
+    return {
+      key: sectionKey,
+      label: formatSectionLabel(sectionKey),
+      icon: FileText,
+      description: isRequired ? 'Required section' : 'Optional section',
+      required: isRequired,
+      getStatus: (currentSession: any) => getHumanizationSectionStatus(currentSession, sectionKey)
     }
   })
 }
@@ -380,7 +472,17 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
     subStages: [],
     getSubStages: getDraftSectionSubStages
   },
-  // Stage 7: Review & Export (REVIEW_EXPORT) - Finalize and export
+  // Stage 7: Humanization (HUMANIZATION) - Humanize sections
+  {
+    key: 'HUMANIZATION',
+    label: 'Humanization',
+    icon: Sparkles,
+    description: 'Humanize section drafts',
+    weight: 12,
+    subStages: [],
+    getSubStages: getHumanizationSubStages
+  },
+  // Stage 8: Review & Export (REVIEW_EXPORT) - Finalize and export
   {
     key: 'REVIEW_EXPORT',
     label: 'Review & Export',
@@ -420,6 +522,7 @@ export const STAGE_ORDER = [
   'LITERATURE_SEARCH', // Literature Review - search and import citations
   'FIGURE_PLANNER',    // Figure Planning - plan figures and tables
   'SECTION_DRAFTING',  // Section Drafting - write the paper
+  'HUMANIZATION',      // Humanization - preserve draft and humanized versions
   'REVIEW_EXPORT'      // Review & Export - finalize and export
 ]
 

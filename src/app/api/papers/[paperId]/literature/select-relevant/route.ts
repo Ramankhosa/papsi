@@ -129,6 +129,8 @@ interface PaperRelevanceAnalysis {
   paperSource?: string;
   providerPaperId?: string;
   paperIdentityKey?: string;
+  paperIsOpenAccess?: boolean | null;
+  paperPdfStatus?: 'UPLOADED' | 'PARSING' | 'READY' | 'FAILED' | 'NONE';
   isRelevant: boolean;
   relevanceScore: number; // 0-100
   reasoning: string;
@@ -380,20 +382,42 @@ function isReviewPaper(paperTypeCode?: string): boolean {
          normalized.includes('systematic');
 }
 
+function normalizePdfStatus(value: unknown): 'UPLOADED' | 'PARSING' | 'READY' | 'FAILED' | 'NONE' {
+  if (value === 'UPLOADED' || value === 'PARSING' || value === 'READY' || value === 'FAILED') {
+    return value;
+  }
+  return 'NONE';
+}
+
 function buildPrompt(
   researchQuestion: string,
-  papers: Array<{ id: string; title: string; abstract?: string; authors?: string[]; year?: number }>,
+  papers: Array<{
+    id: string;
+    title: string;
+    abstract?: string;
+    authors?: string[];
+    year?: number;
+    isOpenAccess?: boolean | null;
+    pdfStatus?: string | null;
+    archetype?: string | null;
+  }>,
   blueprint?: BlueprintWithSectionPlan | null
 ): string {
   const paperList = papers.map((p, idx) => {
     const authorStr = p.authors?.slice(0, 3).join(', ') || 'Unknown';
     const yearStr = p.year ? ` (${p.year})` : '';
+    const openAccess = p.isOpenAccess === true ? 'true' : p.isOpenAccess === false ? 'false' : 'null';
+    const pdfStatus = normalizePdfStatus(typeof p.pdfStatus === 'string' ? p.pdfStatus.trim().toUpperCase() : p.pdfStatus);
+    const archetype = typeof p.archetype === 'string' && p.archetype.trim() ? p.archetype.trim() : 'UNKNOWN';
     const abstractStr = p.abstract 
       ? `\n   Abstract: ${p.abstract.slice(0, 500)}${p.abstract.length > 500 ? '...' : ''}`
       : '\n   Abstract: Not available';
     
     return `${idx + 1}. [ID: ${p.id}] "${p.title}"
-   Authors: ${authorStr}${yearStr}${abstractStr}`;
+   Authors: ${authorStr}${yearStr}
+   isOpenAccess: ${openAccess}
+   pdfStatus: ${pdfStatus}
+   archetype: ${archetype}${abstractStr}`;
   }).join('\n\n');
 
   // Build blueprint sections string if available
@@ -539,6 +563,7 @@ IMPORTANT CRITERIA:
 - Papers with abstracts provide more context - prefer them
 - Include foundational/seminal works even if older
 - Include papers showing contrasting viewpoints
+- Do not guess pdfStatus or isOpenAccess; use provided values only
 - Consider methodological relevance${blueprint ? `
 - Prioritize papers that cover uncovered dimensions
 - A paper covering multiple dimensions is more valuable
@@ -1230,7 +1255,9 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
               paperDoi: paper?.doi,
               paperSource: paper?.source,
               providerPaperId: paper?.id,
-              paperIdentityKey: identityKey
+              paperIdentityKey: identityKey,
+              paperIsOpenAccess: typeof paper?.isOpenAccess === 'boolean' ? paper.isOpenAccess : null,
+              paperPdfStatus: normalizePdfStatus(typeof paper?.pdfStatus === 'string' ? paper.pdfStatus.trim().toUpperCase() : paper?.pdfStatus)
             };
           });
 
@@ -1536,6 +1563,10 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           const citationIds = Array.from(mappedCitationIds);
           await citationMappingService.clearMappingsForCitations(sessionId, citationIds);
           await citationMappingService.storeMappings(sessionId, mappingsToPersist);
+          await prisma.draftingSession.update({
+            where: { id: sessionId },
+            data: { archetypeEvidenceStale: false }
+          });
           console.log(`[LiteratureRelevance] Persisted ${mappingsToPersist.length} mapping row(s) to CitationUsage for ${citationIds.length} citation(s)`);
         }
       } catch (mappingError) {

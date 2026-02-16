@@ -24,6 +24,10 @@ const actionSchema = z.object({
     'save_section',
     'insert_citation',
     'check_citations',
+    'get_humanization_data',
+    'humanize_section',
+    'save_humanized_section',
+    'validate_humanized_citations',
     'generate_bibliography',
     'get_citation_sequence_history',
     'analyze_structure',
@@ -102,6 +106,22 @@ const aiFixSchema = z.object({
   previewOnly: z.boolean().optional()
 });
 
+const humanizeSectionSchema = z.object({
+  sectionKey: z.string().min(1),
+  sourceDraftFingerprint: z.string().min(3).optional(),
+  options: z.record(z.any()).optional()
+});
+
+const saveHumanizedSectionSchema = z.object({
+  sectionKey: z.string().min(1),
+  content: z.string()
+});
+
+const validateHumanizedCitationsSchema = z.object({
+  sectionKey: z.string().min(1).optional(),
+  validateAll: z.boolean().optional()
+});
+
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
   const where = user.roles?.includes('SUPER_ADMIN')
     ? { id: sessionId }
@@ -171,6 +191,27 @@ function computeWordCount(content: string): number {
 }
 
 const normalizeSectionKey = (value: string) => value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+
+function formatSectionLabel(sectionKey: string): string {
+  return normalizeSectionKey(sectionKey)
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function computeContentFingerprint(content: string): string {
+  const normalized = String(content || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  let hash = 0;
+  for (let index = 0; index < normalized.length; index += 1) {
+    hash = ((hash << 5) - hash + normalized.charCodeAt(index)) | 0;
+  }
+
+  const positive = hash >>> 0;
+  return `${positive.toString(16)}_${normalized.length}`;
+}
 
 async function updateDraftContent(
   draftId: string,
@@ -380,9 +421,294 @@ type CitationTrackingState = {
   latestByStyle: Record<string, string>;
 };
 
+type HumanizationStatus =
+  | 'not_started'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+  | 'outdated';
+
+type HumanizedCitationValidation = {
+  checkedAt: string;
+  draftCitationKeys: string[];
+  humanizedCitationKeys: string[];
+  missingCitationKeys: string[];
+  extraCitationKeys: string[];
+  valid: boolean;
+};
+
+type HumanizedSectionRecord = {
+  id?: string;
+  version?: number;
+  draftId?: string | null;
+  sectionKey: string;
+  humanizedContent?: string;
+  status?: HumanizationStatus;
+  provider?: string;
+  sourceDraftFingerprint?: string;
+  sourceDraftWordCount?: number;
+  sourceDraftUpdatedAt?: string;
+  humanizedWordCount?: number;
+  humanizedAt?: string;
+  updatedAt?: string;
+  error?: string | null;
+  citationValidation?: HumanizedCitationValidation;
+};
+
 function asPlainObject(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
   return { ...(value as Record<string, unknown>) };
+}
+
+type DbHumanizationStatus = 'NOT_STARTED' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'OUTDATED';
+
+function mapDbStatusToApi(status: DbHumanizationStatus | null | undefined): HumanizationStatus {
+  switch (status) {
+    case 'PROCESSING':
+      return 'processing';
+    case 'COMPLETED':
+      return 'completed';
+    case 'FAILED':
+      return 'failed';
+    case 'OUTDATED':
+      return 'outdated';
+    default:
+      return 'not_started';
+  }
+}
+
+function deriveHumanizationStatus(
+  draftContent: string,
+  record?: HumanizedSectionRecord
+): HumanizationStatus {
+  const normalizedDraft = String(draftContent || '').trim();
+  if (!normalizedDraft) return 'not_started';
+  if (!record) return 'not_started';
+  const mappedStatus = mapDbStatusToApi(
+    (record.status || 'not_started').toUpperCase() as DbHumanizationStatus
+  );
+  if (mappedStatus === 'failed') return 'failed';
+  if (mappedStatus === 'processing') return 'processing';
+  const hasHumanized = Boolean(record.humanizedContent && record.humanizedContent.trim());
+  if (!hasHumanized) return 'not_started';
+
+  const currentFingerprint = computeContentFingerprint(normalizedDraft);
+  if (record.sourceDraftFingerprint && record.sourceDraftFingerprint !== currentFingerprint) {
+    return 'outdated';
+  }
+
+  if (mappedStatus === 'outdated') return 'outdated';
+
+  return 'completed';
+}
+
+async function loadHumanizationRecords(
+  sessionId: string
+): Promise<Record<string, HumanizedSectionRecord>> {
+  const rows = await prisma.paperSectionHumanization.findMany({
+    where: { sessionId },
+    include: {
+      citationValidations: {
+        orderBy: { checkedAt: 'desc' },
+        take: 10
+      }
+    }
+  });
+
+  const map: Record<string, HumanizedSectionRecord> = {};
+  for (const row of rows) {
+    const sectionKey = normalizeSectionKey(row.sectionKey);
+    const latestValidation = row.citationValidations.find(
+      validation => validation.humanizationVersion === row.version
+    ) || null;
+
+    map[sectionKey] = {
+      id: row.id,
+      version: row.version,
+      draftId: row.draftId,
+      sectionKey,
+      humanizedContent: row.humanizedContent || '',
+      status: mapDbStatusToApi(row.status as DbHumanizationStatus),
+      provider: row.provider || undefined,
+      sourceDraftFingerprint: row.sourceDraftFingerprint || undefined,
+      sourceDraftWordCount: row.sourceDraftWordCount ?? undefined,
+      sourceDraftUpdatedAt: row.sourceDraftUpdatedAt ? row.sourceDraftUpdatedAt.toISOString() : undefined,
+      humanizedWordCount: row.humanizedWordCount ?? undefined,
+      humanizedAt: row.humanizedAt ? row.humanizedAt.toISOString() : undefined,
+      updatedAt: row.updatedAt ? row.updatedAt.toISOString() : undefined,
+      error: row.errorMessage || null,
+      citationValidation: latestValidation
+        ? {
+            checkedAt: latestValidation.checkedAt.toISOString(),
+            draftCitationKeys: latestValidation.draftCitationKeys,
+            humanizedCitationKeys: latestValidation.humanizedCitationKeys,
+            missingCitationKeys: latestValidation.missingCitationKeys,
+            extraCitationKeys: latestValidation.extraCitationKeys,
+            valid: latestValidation.isValid
+          }
+        : undefined
+    };
+  }
+
+  return map;
+}
+
+function extractHumanizedText(response: unknown): string {
+  if (typeof response === 'string') return response;
+  if (!response || typeof response !== 'object') return '';
+
+  const data = response as Record<string, unknown>;
+  const directCandidates = [
+    data.humanizedText,
+    data.humanized_content,
+    data.humanized,
+    data.content,
+    data.output,
+    data.text,
+    data.result
+  ];
+  for (const candidate of directCandidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate;
+    }
+  }
+
+  if (data.data && typeof data.data === 'object' && !Array.isArray(data.data)) {
+    const nested = data.data as Record<string, unknown>;
+    const nestedCandidates = [
+      nested.humanizedText,
+      nested.humanized_content,
+      nested.humanized,
+      nested.content,
+      nested.output,
+      nested.text,
+      nested.result
+    ];
+    for (const candidate of nestedCandidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        return candidate;
+      }
+    }
+  }
+
+  return '';
+}
+
+async function callHumanizerService(params: {
+  sessionId: string;
+  sectionKey: string;
+  draftContent: string;
+  styleCode?: string;
+  options?: Record<string, unknown>;
+}): Promise<{ content: string; provider: string }> {
+  const url = String(process.env.PAPER_HUMANIZER_API_URL || '').trim();
+  if (!url) {
+    throw new DraftingRequestError(
+      'Humanizer service is not configured',
+      503,
+      {
+        error: 'Humanizer service is not configured',
+        hint: 'Set PAPER_HUMANIZER_API_URL (and optional PAPER_HUMANIZER_API_KEY).'
+      }
+    );
+  }
+
+  const timeoutMs = Math.max(
+    1_000,
+    Number(process.env.PAPER_HUMANIZER_TIMEOUT_MS || 60_000)
+  );
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  const requestBody = {
+    text: params.draftContent,
+    sectionKey: params.sectionKey,
+    sessionId: params.sessionId,
+    styleCode: params.styleCode || null,
+    preserveCitations: true,
+    outputFormat: 'markdown',
+    options: params.options || {}
+  };
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json'
+  };
+  const apiKey = String(process.env.PAPER_HUMANIZER_API_KEY || '').trim();
+  if (apiKey) {
+    headers.Authorization = `Bearer ${apiKey}`;
+  }
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(requestBody),
+      signal: controller.signal
+    });
+
+    const rawText = await response.text();
+    let parsedPayload: unknown = null;
+    if (rawText) {
+      try {
+        parsedPayload = JSON.parse(rawText);
+      } catch {
+        parsedPayload = rawText;
+      }
+    }
+
+    if (!response.ok) {
+      const parsedObject = parsedPayload && typeof parsedPayload === 'object' && !Array.isArray(parsedPayload)
+        ? parsedPayload as Record<string, unknown>
+        : null;
+      const message =
+        (parsedObject && typeof parsedObject.error === 'string' && parsedObject.error)
+        || (parsedObject && typeof parsedObject.message === 'string' && parsedObject.message)
+        || (typeof parsedPayload === 'string' ? parsedPayload.slice(0, 400) : '')
+        || 'Humanizer service request failed';
+
+      throw new DraftingRequestError(message, response.status, {
+        error: message,
+        status: response.status
+      });
+    }
+
+    const extracted = extractHumanizedText(parsedPayload);
+    const content = polishDraftMarkdown(extracted || (typeof parsedPayload === 'string' ? parsedPayload : ''));
+    if (!content.trim()) {
+      throw new DraftingRequestError(
+        'Humanizer service returned empty content',
+        502,
+        { error: 'Humanizer service returned empty content' }
+      );
+    }
+
+    const provider = parsedPayload && typeof parsedPayload === 'object' && !Array.isArray(parsedPayload)
+      ? String((parsedPayload as Record<string, unknown>).provider || 'humanizer_api')
+      : 'humanizer_api';
+
+    return { content, provider };
+  } catch (error) {
+    if (error instanceof DraftingRequestError) {
+      throw error;
+    }
+
+    const isAbort = error instanceof Error && error.name === 'AbortError';
+    if (isAbort) {
+      throw new DraftingRequestError(
+        'Humanizer service timed out',
+        504,
+        { error: 'Humanizer service timed out' }
+      );
+    }
+
+    throw new DraftingRequestError(
+      error instanceof Error ? error.message : 'Humanizer service call failed',
+      502,
+      { error: 'Humanizer service call failed' }
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function buildCitationNumberingMap(orderedCitationKeys: string[]): Record<string, number> {
@@ -629,6 +955,158 @@ function extractSectionCitationKeys(
   }
 
   return ordered;
+}
+
+function buildHumanizedCitationValidation(
+  draftContent: string,
+  humanizedContent: string,
+  canonicalLookup: Map<string, string>
+): HumanizedCitationValidation {
+  const extractComparableCitationKeys = (content: string): string[] => {
+    const normalizedContent = normalizeCitationMarkupForExtraction(content);
+    const ordered: string[] = [];
+    const seen = new Set<string>();
+    CITE_MARKER_REGEX.lastIndex = 0;
+    let match: RegExpExecArray | null = null;
+
+    while ((match = CITE_MARKER_REGEX.exec(normalizedContent)) !== null) {
+      const keys = splitCitationKeys(match[1] || '');
+      for (const rawKey of keys) {
+        const fallback = rawKey.trim();
+        if (!fallback) continue;
+        const canonical = canonicalLookup.get(fallback.toLowerCase()) || fallback;
+        const identity = canonical.toLowerCase();
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        ordered.push(canonical);
+      }
+    }
+
+    const bareMarkerRegex = /\[([^\[\]]+)\]/g;
+    bareMarkerRegex.lastIndex = 0;
+    while ((match = bareMarkerRegex.exec(normalizedContent)) !== null) {
+      const token = String(match[1] || '').trim();
+      if (!token || /^CITE:/i.test(token) || /^Figure\s+\d+/i.test(token)) continue;
+      const keys = splitCitationKeys(token);
+      for (const rawKey of keys) {
+        const fallback = rawKey.trim();
+        if (!fallback) continue;
+        const canonical = canonicalLookup.get(fallback.toLowerCase()) || fallback;
+        const identity = canonical.toLowerCase();
+        if (seen.has(identity)) continue;
+        seen.add(identity);
+        ordered.push(canonical);
+      }
+    }
+
+    return ordered;
+  };
+
+  const draftCitationKeys = extractComparableCitationKeys(draftContent);
+  const humanizedCitationKeys = extractComparableCitationKeys(humanizedContent);
+  const humanizedSet = new Set(humanizedCitationKeys);
+  const draftSet = new Set(draftCitationKeys);
+
+  const missingCitationKeys = draftCitationKeys.filter((key) => !humanizedSet.has(key));
+  const extraCitationKeys = humanizedCitationKeys.filter((key) => !draftSet.has(key));
+
+  return {
+    checkedAt: new Date().toISOString(),
+    draftCitationKeys,
+    humanizedCitationKeys,
+    missingCitationKeys,
+    extraCitationKeys,
+    valid: missingCitationKeys.length === 0
+  };
+}
+
+type HumanizationSectionPayload = {
+  sectionKey: string;
+  label: string;
+  status: HumanizationStatus;
+  draftWordCount: number;
+  humanizedWordCount: number;
+  draftFingerprint: string;
+  sourceDraftFingerprint: string | null;
+  draftContent: string;
+  humanizedContent: string;
+  provider: string | null;
+  lastHumanizedAt: string | null;
+  lastValidatedAt: string | null;
+  citationValidation: HumanizedCitationValidation | null;
+  error: string | null;
+};
+
+async function buildHumanizationData(params: {
+  sessionId: string;
+  paperTypeCode: string;
+  draft: Awaited<ReturnType<typeof getPaperDraft>> | null;
+}): Promise<{
+  sections: HumanizationSectionPayload[];
+  summary: {
+    total: number;
+    completed: number;
+    outdated: number;
+    failed: number;
+    pending: number;
+  };
+}> {
+  const { sessionId, paperTypeCode, draft } = params;
+  const extraSections = draft ? normalizeExtraSections(draft.extraSections) : {};
+  const humanization = await loadHumanizationRecords(sessionId);
+
+  const paperType = await paperTypeService.getPaperType(paperTypeCode);
+  const preferredOrder = Array.isArray(paperType?.sectionOrder) ? paperType.sectionOrder : [];
+  const orderedSectionKeys = mergeSectionOrder(
+    preferredOrder,
+    extraSections,
+    Object.keys(humanization)
+  );
+
+  const sections: HumanizationSectionPayload[] = orderedSectionKeys.map((rawSectionKey) => {
+    const sectionKey = normalizeSectionKey(rawSectionKey);
+    const label = formatSectionLabel(sectionKey);
+    const draftContent = extraSections[sectionKey] || '';
+    const draftWordCount = computeWordCount(draftContent);
+    const draftFingerprint = computeContentFingerprint(draftContent);
+    const record = humanization[sectionKey];
+    const status = deriveHumanizationStatus(draftContent, record);
+    const humanizedContent = typeof record?.humanizedContent === 'string'
+      ? record.humanizedContent
+      : '';
+    const humanizedWordCount = computeWordCount(humanizedContent);
+    const citationValidation = record?.citationValidation || null;
+
+    return {
+      sectionKey,
+      label,
+      status,
+      draftWordCount,
+      humanizedWordCount,
+      draftFingerprint,
+      sourceDraftFingerprint: record?.sourceDraftFingerprint || null,
+      draftContent,
+      humanizedContent,
+      provider: record?.provider || null,
+      lastHumanizedAt: record?.humanizedAt || null,
+      lastValidatedAt: citationValidation?.checkedAt || null,
+      citationValidation,
+      error: record?.error || null
+    };
+  });
+
+  const summary = sections.reduce(
+    (acc, section) => {
+      if (section.status === 'completed') acc.completed += 1;
+      else if (section.status === 'outdated') acc.outdated += 1;
+      else if (section.status === 'failed') acc.failed += 1;
+      else acc.pending += 1;
+      return acc;
+    },
+    { total: sections.length, completed: 0, outdated: 0, failed: 0, pending: 0 }
+  );
+
+  return { sections, summary };
 }
 
 function extractOrderedCitationKeysFromSections(
@@ -943,6 +1421,17 @@ async function buildPrompt(
   const contribution = Array.isArray(topic?.contributionType)
     ? topic.contributionType.join(', ')
     : (topic?.contributionType ? String(topic.contributionType) : '');
+  const archetype = context?.archetype;
+  const archetypeId = archetype?.archetypeId ? String(archetype.archetypeId) : '(not detected)';
+  const archetypeConfidence = Number(archetype?.archetypeConfidence || 0);
+  const archetypeTags = [
+    archetype?.contributionMode ? `ContributionMode=${archetype.contributionMode}` : '',
+    archetype?.evaluationScope ? `EvaluationScope=${archetype.evaluationScope}` : '',
+    archetype?.evidenceModality ? `EvidenceModality=${archetype.evidenceModality}` : ''
+  ].filter(Boolean).join(', ');
+  const archetypeRationale = archetype?.archetypeRationale
+    ? String(archetype.archetypeRationale)
+    : '';
 
   // ============================================================================
   // CITATION MODE PLACEHOLDERS
@@ -985,6 +1474,8 @@ async function buildPrompt(
   basePrompt = basePrompt.replace(/\{\{HYPOTHESIS\}\}/g, topic?.hypothesis || '(not specified)');
   basePrompt = basePrompt.replace(/\{\{METHODOLOGY\}\}/g, methodology || '(not specified)');
   basePrompt = basePrompt.replace(/\{\{CONTRIBUTION_TYPE\}\}/g, contribution || '(not specified)');
+  basePrompt = basePrompt.replace(/\{\{RESEARCH_ARCHETYPE\}\}/g, archetypeId);
+  basePrompt = basePrompt.replace(/\{\{RESEARCH_ARCHETYPE_TAGS\}\}/g, archetypeTags || '(none)');
 
   // ============================================================================
   // EVIDENCE PACK PLACEHOLDERS
@@ -1011,6 +1502,9 @@ async function buildPrompt(
   const topicBlock = topic && !basePrompt.includes('RESEARCH TOPIC CONTEXT')
     ? `\n\nRESEARCH TOPIC CONTEXT:\nTitle: ${topic.title}\nResearch Question: ${topic.researchQuestion}\nMethodology: ${methodology}\nContribution: ${contribution}\nKeywords: ${(topic.keywords || []).join(', ')}`
     : '';
+  const archetypeBlock = archetypeId !== '(not detected)' && !basePrompt.includes('RESEARCH ARCHETYPE CONTEXT')
+    ? `\n\nRESEARCH ARCHETYPE CONTEXT:\nArchetype: ${archetypeId} (${Math.round(archetypeConfidence * 100)}% confidence)\nRouting Tags: ${archetypeTags || '(none)'}\nRationale: ${archetypeRationale || '(not provided)'}\nConstraint: Keep claims aligned with this archetype and avoid methodological overreach.`
+    : '';
 
   // Only append citation instructions if the prompt doesn't have its own citation mode section
   const citationsBlock = citationInstructions && !hasPlaceholdersForCitations 
@@ -1020,7 +1514,7 @@ async function buildPrompt(
   const userBlock = userInstructions ? `\n\nUSER INSTRUCTIONS:\n${userInstructions}` : '';
   const styleBlock = writingSampleBlock ? `\n\n${writingSampleBlock}` : '';
 
-  return `${basePrompt}${topicBlock}${citationsBlock}${styleBlock}${userBlock}
+  return `${basePrompt}${topicBlock}${archetypeBlock}${citationsBlock}${styleBlock}${userBlock}
 
 OUTPUT FORMAT (MANDATORY):
 - Return ONLY clean Markdown text. No JSON, no code fences, no explanations.
@@ -1378,6 +1872,15 @@ async function generateSection(
     paperTypeCode,
     {
       researchTopic,
+      archetype: {
+        archetypeId: session.archetypeId,
+        archetypeConfidence: session.archetypeConfidence,
+        contributionMode: session.contributionMode,
+        evaluationScope: session.evaluationScope,
+        evidenceModality: session.evidenceModality,
+        archetypeRationale: session.archetypeRationale,
+        archetypeEvidenceStale: session.archetypeEvidenceStale
+      },
       citationCount: citations.length,
       availableCitations: citations,
       previousSections: extraSections
@@ -1856,6 +2359,373 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           total: keys.length,
           found: keys.filter(key => knownKeys.has(key)),
           missing
+        });
+      }
+
+      case 'get_humanization_data': {
+        const draft = await getPaperDraft(sessionId);
+        const data = await buildHumanizationData({
+          sessionId,
+          paperTypeCode,
+          draft
+        });
+
+        return NextResponse.json(data);
+      }
+
+      case 'humanize_section': {
+        const payload = humanizeSectionSchema.parse(body);
+        const sectionKey = normalizeSectionKey(payload.sectionKey);
+        const draft = await getPaperDraft(sessionId);
+        if (!draft) {
+          return NextResponse.json(
+            { error: 'No paper draft found. Draft at least one section first.' },
+            { status: 404 }
+          );
+        }
+
+        const extraSections = normalizeExtraSections(draft.extraSections);
+        const draftContent = extraSections[sectionKey] || '';
+        if (!draftContent.trim()) {
+          return NextResponse.json(
+            { error: 'Draft content is empty for this section.' },
+            { status: 400 }
+          );
+        }
+
+        const draftFingerprint = computeContentFingerprint(draftContent);
+        if (
+          payload.sourceDraftFingerprint
+          && payload.sourceDraftFingerprint !== draftFingerprint
+        ) {
+          return NextResponse.json(
+            {
+              error: 'Draft changed before humanization. Refresh and retry.',
+              code: 'DRAFT_CHANGED',
+              latestDraftFingerprint: draftFingerprint
+            },
+            { status: 409 }
+          );
+        }
+
+        const now = new Date();
+        const existingRecord = await prisma.paperSectionHumanization.findUnique({
+          where: {
+            sessionId_sectionKey: {
+              sessionId,
+              sectionKey
+            }
+          }
+        });
+
+        if (existingRecord) {
+          await prisma.paperSectionHumanization.update({
+            where: {
+              sessionId_sectionKey: {
+                sessionId,
+                sectionKey
+              }
+            },
+            data: {
+              draftId: draft.id,
+              status: 'PROCESSING',
+              errorMessage: null,
+              sourceDraftFingerprint: draftFingerprint,
+              sourceDraftWordCount: computeWordCount(draftContent),
+              sourceDraftUpdatedAt: draft.updatedAt
+            }
+          });
+        } else {
+          await prisma.paperSectionHumanization.create({
+            data: {
+              sessionId,
+              draftId: draft.id,
+              sectionKey,
+              status: 'PROCESSING',
+              sourceDraftFingerprint: draftFingerprint,
+              sourceDraftWordCount: computeWordCount(draftContent),
+              sourceDraftUpdatedAt: draft.updatedAt
+            }
+          });
+        }
+
+        try {
+          const result = await callHumanizerService({
+            sessionId,
+            sectionKey,
+            draftContent,
+            styleCode: session?.citationStyle?.code || undefined,
+            options: payload.options
+          });
+
+          const updatedRecord = await prisma.paperSectionHumanization.update({
+            where: {
+              sessionId_sectionKey: {
+                sessionId,
+                sectionKey
+              }
+            },
+            data: {
+              draftId: draft.id,
+              status: 'COMPLETED',
+              provider: result.provider,
+              humanizedContent: result.content,
+              errorMessage: null,
+              sourceDraftFingerprint: draftFingerprint,
+              sourceDraftWordCount: computeWordCount(draftContent),
+              sourceDraftUpdatedAt: draft.updatedAt,
+              humanizedWordCount: computeWordCount(result.content),
+              humanizedAt: now,
+              citationValidationAt: null,
+              ...(existingRecord
+                ? { version: { increment: 1 as const } }
+                : {})
+            }
+          });
+
+          await prisma.paperSectionCitationValidation.deleteMany({
+            where: {
+              humanizationId: updatedRecord.id
+            }
+          });
+
+          const refreshedDraft = await getPaperDraft(sessionId);
+          const data = await buildHumanizationData({
+            sessionId,
+            paperTypeCode,
+            draft: refreshedDraft
+          });
+
+          return NextResponse.json({
+            section: data.sections.find((section) => section.sectionKey === sectionKey) || null,
+            summary: data.summary
+          });
+        } catch (error) {
+          await prisma.paperSectionHumanization.update({
+            where: {
+              sessionId_sectionKey: {
+                sessionId,
+                sectionKey
+              }
+            },
+            data: {
+              status: 'FAILED',
+              errorMessage: error instanceof Error ? error.message : 'Humanization failed'
+            }
+          });
+
+          throw error;
+        }
+      }
+
+      case 'save_humanized_section': {
+        const payload = saveHumanizedSectionSchema.parse(body);
+        const sectionKey = normalizeSectionKey(payload.sectionKey);
+        const draft = await getPaperDraft(sessionId);
+        if (!draft) {
+          return NextResponse.json(
+            { error: 'No paper draft found.' },
+            { status: 404 }
+          );
+        }
+
+        const extraSections = normalizeExtraSections(draft.extraSections);
+        const draftContent = extraSections[sectionKey] || '';
+        const polishedHumanized = polishDraftMarkdown(payload.content || '');
+        const now = new Date();
+        const draftFingerprint = computeContentFingerprint(draftContent);
+        const existingRecord = await prisma.paperSectionHumanization.findUnique({
+          where: {
+            sessionId_sectionKey: {
+              sessionId,
+              sectionKey
+            }
+          }
+        });
+
+        const status: DbHumanizationStatus = polishedHumanized.trim()
+          ? 'COMPLETED'
+          : 'NOT_STARTED';
+
+        if (existingRecord) {
+          await prisma.paperSectionHumanization.update({
+            where: {
+              sessionId_sectionKey: {
+                sessionId,
+                sectionKey
+              }
+            },
+            data: {
+              draftId: draft.id,
+              status,
+              provider: polishedHumanized.trim() ? 'manual_edit' : null,
+              humanizedContent: polishedHumanized,
+              errorMessage: null,
+              sourceDraftFingerprint: draftFingerprint,
+              sourceDraftWordCount: computeWordCount(draftContent),
+              sourceDraftUpdatedAt: draft.updatedAt,
+              humanizedWordCount: computeWordCount(polishedHumanized),
+              humanizedAt: polishedHumanized.trim() ? now : null,
+              citationValidationAt: null,
+              version: { increment: 1 }
+            }
+          });
+        } else {
+          await prisma.paperSectionHumanization.create({
+            data: {
+              sessionId,
+              draftId: draft.id,
+              sectionKey,
+              status,
+              provider: 'manual_edit',
+              humanizedContent: polishedHumanized,
+              sourceDraftFingerprint: draftFingerprint,
+              sourceDraftWordCount: computeWordCount(draftContent),
+              sourceDraftUpdatedAt: draft.updatedAt,
+              humanizedWordCount: computeWordCount(polishedHumanized),
+              humanizedAt: polishedHumanized.trim() ? now : null
+            }
+          });
+        }
+
+        const refreshedDraft = await getPaperDraft(sessionId);
+        const data = await buildHumanizationData({
+          sessionId,
+          paperTypeCode,
+          draft: refreshedDraft
+        });
+
+        return NextResponse.json({
+          section: data.sections.find((section) => section.sectionKey === sectionKey) || null,
+          summary: data.summary
+        });
+      }
+
+      case 'validate_humanized_citations': {
+        const payload = validateHumanizedCitationsSchema.parse(body);
+        const draft = await getPaperDraft(sessionId);
+        if (!draft) {
+          return NextResponse.json(
+            { error: 'No paper draft found.' },
+            { status: 404 }
+          );
+        }
+
+        const citations = await citationService.getCitationsForSession(sessionId);
+        const canonicalLookup = buildCanonicalCitationLookup(citations);
+        const extraSections = normalizeExtraSections(draft.extraSections);
+        const existingRows = await prisma.paperSectionHumanization.findMany({
+          where: { sessionId }
+        });
+        const rowBySection = new Map(
+          existingRows.map((row) => [normalizeSectionKey(row.sectionKey), row])
+        );
+
+        const paperType = await paperTypeService.getPaperType(paperTypeCode);
+        const preferredOrder = Array.isArray(paperType?.sectionOrder) ? paperType.sectionOrder : [];
+        const orderedSectionKeys = mergeSectionOrder(
+          preferredOrder,
+          extraSections,
+          Array.from(rowBySection.keys())
+        );
+
+        const targetSectionKeys = payload.validateAll
+          ? orderedSectionKeys
+          : payload.sectionKey
+            ? [normalizeSectionKey(payload.sectionKey)]
+            : orderedSectionKeys.filter((key) => {
+                const row = rowBySection.get(normalizeSectionKey(key));
+                return Boolean(row?.humanizedContent && row.humanizedContent.trim());
+              });
+
+        const now = new Date();
+        const results: Array<{
+          sectionKey: string;
+          label: string;
+          status: HumanizationStatus;
+          citationValidation: HumanizedCitationValidation;
+        }> = [];
+
+        for (const rawSectionKey of targetSectionKeys) {
+          const sectionKey = normalizeSectionKey(rawSectionKey);
+          const draftContent = extraSections[sectionKey] || '';
+          const draftFingerprint = computeContentFingerprint(draftContent);
+          let currentRow = rowBySection.get(sectionKey);
+          if (!currentRow) {
+            currentRow = await prisma.paperSectionHumanization.create({
+              data: {
+                sessionId,
+                draftId: draft.id,
+                sectionKey,
+                status: 'NOT_STARTED',
+                sourceDraftFingerprint: draftFingerprint,
+                sourceDraftWordCount: computeWordCount(draftContent),
+                sourceDraftUpdatedAt: draft.updatedAt
+              }
+            });
+            rowBySection.set(sectionKey, currentRow);
+          }
+
+          const humanizedContent = currentRow.humanizedContent || '';
+          const citationValidation = buildHumanizedCitationValidation(
+            draftContent,
+            humanizedContent,
+            canonicalLookup
+          );
+
+          await prisma.paperSectionCitationValidation.create({
+            data: {
+              sessionId,
+              humanizationId: currentRow.id,
+              sectionKey,
+              humanizationVersion: currentRow.version,
+              draftCitationKeys: citationValidation.draftCitationKeys,
+              humanizedCitationKeys: citationValidation.humanizedCitationKeys,
+              missingCitationKeys: citationValidation.missingCitationKeys,
+              extraCitationKeys: citationValidation.extraCitationKeys,
+              isValid: citationValidation.valid,
+              checkedAt: now
+            }
+          });
+
+          const dbStatus: DbHumanizationStatus = currentRow.status === 'FAILED'
+            ? 'FAILED'
+            : (currentRow.sourceDraftFingerprint && currentRow.sourceDraftFingerprint !== draftFingerprint)
+              ? 'OUTDATED'
+              : currentRow.status as DbHumanizationStatus;
+          const updatedRow = await prisma.paperSectionHumanization.update({
+            where: { id: currentRow.id },
+            data: {
+              status: dbStatus,
+              citationValidationAt: now,
+              sourceDraftFingerprint: currentRow.sourceDraftFingerprint || draftFingerprint,
+              sourceDraftWordCount: currentRow.sourceDraftWordCount ?? computeWordCount(draftContent),
+              sourceDraftUpdatedAt: draft.updatedAt
+            }
+          });
+          rowBySection.set(sectionKey, updatedRow as any);
+
+          const projectedRecord: HumanizedSectionRecord = {
+            sectionKey,
+            status: mapDbStatusToApi(updatedRow.status as DbHumanizationStatus),
+            humanizedContent: updatedRow.humanizedContent || '',
+            sourceDraftFingerprint: updatedRow.sourceDraftFingerprint || undefined
+          };
+
+          results.push({
+            sectionKey,
+            label: formatSectionLabel(sectionKey),
+            status: deriveHumanizationStatus(draftContent, projectedRecord),
+            citationValidation
+          });
+        }
+
+        const validCount = results.filter((row) => row.citationValidation.valid).length;
+        return NextResponse.json({
+          validated: results.length,
+          validCount,
+          invalidCount: results.length - validCount,
+          results
         });
       }
 

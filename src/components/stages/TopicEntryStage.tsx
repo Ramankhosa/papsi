@@ -147,6 +147,23 @@ interface ResearchSegments {
   abstractDraft: string;
 }
 
+interface ArchetypeDetectionView {
+  archetype: string;
+  routingTags: {
+    contributionMode: string;
+    evaluationScope: string;
+    evidenceModality: string;
+  };
+  confidence: number;
+  rationale: string[];
+  missingSignals: string[];
+  contradictions: string[];
+  modulePlan: string[];
+  changed?: boolean;
+  evidenceStale?: boolean;
+  skipped?: 'unchanged' | 'insufficient_signals';
+}
+
 const EMPTY_SEGMENTS: ResearchSegments = {
   basics: { title: '', field: '', subfield: '', topicDescription: '' },
   question: { mainQuestion: '', subQuestions: [], problemStatement: '', researchGaps: '' },
@@ -190,6 +207,48 @@ const GUIDED_STEPS: { key: GuidedStep; label: string; description: string; icon:
   { key: 'data', label: 'Data & Tools', description: 'What you will use', icon: Database },
   { key: 'review', label: 'Review', description: 'Confirm details', icon: CheckCircle2 }
 ];
+
+function toArchetypeDetectionView(value: any): ArchetypeDetectionView | null {
+  if (!value || typeof value !== 'object') return null;
+  if (!value.archetype || !value.routingTags) return null;
+  const tags = value.routingTags || {};
+  return {
+    archetype: String(value.archetype),
+    routingTags: {
+      contributionMode: String(tags.contributionMode || 'APPLICATION_VALIDATION'),
+      evaluationScope: String(tags.evaluationScope || 'UNSPECIFIED'),
+      evidenceModality: String(tags.evidenceModality || 'QUANTITATIVE')
+    },
+    confidence: Number(value.confidence || 0),
+    rationale: Array.isArray(value.rationale) ? value.rationale.map((v: unknown) => String(v)).filter(Boolean) : [],
+    missingSignals: Array.isArray(value.missingSignals) ? value.missingSignals.map((v: unknown) => String(v)).filter(Boolean) : [],
+    contradictions: Array.isArray(value.contradictions) ? value.contradictions.map((v: unknown) => String(v)).filter(Boolean) : [],
+    modulePlan: Array.isArray(value.modulePlan) ? value.modulePlan.map((v: unknown) => String(v)).filter(Boolean) : [],
+    changed: Boolean(value.changed),
+    evidenceStale: Boolean(value.evidenceStale),
+    skipped: value.skipped === 'unchanged' || value.skipped === 'insufficient_signals' ? value.skipped : undefined
+  };
+}
+
+function buildDetectionFromSession(session: any): ArchetypeDetectionView | null {
+  if (!session?.archetypeId) return null;
+  return {
+    archetype: String(session.archetypeId),
+    routingTags: {
+      contributionMode: String(session.contributionMode || 'APPLICATION_VALIDATION'),
+      evaluationScope: String(session.evaluationScope || 'UNSPECIFIED'),
+      evidenceModality: String(session.evidenceModality || 'QUANTITATIVE')
+    },
+    confidence: Number(session.archetypeConfidence || 0),
+    rationale: session.archetypeRationale
+      ? String(session.archetypeRationale).split(/(?<=[.!?])\s+/).filter(Boolean).slice(0, 4)
+      : [],
+    missingSignals: Array.isArray(session.archetypeMissingSignals) ? session.archetypeMissingSignals.map((v: unknown) => String(v)) : [],
+    contradictions: Array.isArray(session.archetypeContradictions) ? session.archetypeContradictions.map((v: unknown) => String(v)) : [],
+    modulePlan: [],
+    evidenceStale: Boolean(session.archetypeEvidenceStale)
+  };
+}
 
 // ============================================================================
 // Helper Components
@@ -655,6 +714,8 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
   const [extractionConfidence, setExtractionConfidence] = useState<number | null>(null);
   const [extractionNotes, setExtractionNotes] = useState<string | null>(null);
   const [topicSaved, setTopicSaved] = useState<boolean>(false);
+  const [archetypeDetection, setArchetypeDetection] = useState<ArchetypeDetectionView | null>(null);
+  const [detectingArchetype, setDetectingArchetype] = useState(false);
 
   // ============================================================================
   // Data Loading
@@ -674,6 +735,7 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
         if (sessionRes.ok) {
           const data = await sessionRes.json();
           setPaperTypeCode(data.session?.paperType?.code || null);
+          setArchetypeDetection(buildDetectionFromSession(data.session));
         }
 
         if (topicRes.ok) {
@@ -767,6 +829,33 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
     }));
   }, []);
 
+  const buildTopicPayload = useCallback((sourceSegments: ResearchSegments) => ({
+    title: sourceSegments.basics.title,
+    field: sourceSegments.basics.field,
+    subfield: sourceSegments.basics.subfield,
+    topicDescription: sourceSegments.basics.topicDescription,
+    researchQuestion: sourceSegments.question.mainQuestion,
+    subQuestions: sourceSegments.question.subQuestions,
+    problemStatement: sourceSegments.question.problemStatement,
+    researchGaps: sourceSegments.question.researchGaps,
+    methodology: sourceSegments.methodology.type,
+    methodologyApproach: sourceSegments.methodology.approach,
+    techniques: sourceSegments.methodology.techniques,
+    methodologyJustification: sourceSegments.methodology.justification,
+    datasetDescription: sourceSegments.data.datasetDescription,
+    dataCollection: sourceSegments.data.dataCollection,
+    sampleSize: sourceSegments.data.sampleSize,
+    tools: sourceSegments.data.tools,
+    experiments: sourceSegments.data.experiments,
+    hypothesis: sourceSegments.outcomes.hypothesis,
+    expectedResults: sourceSegments.outcomes.expectedResults,
+    contributionType: sourceSegments.outcomes.contributionType,
+    novelty: sourceSegments.outcomes.novelty,
+    limitations: sourceSegments.outcomes.limitations,
+    keywords: sourceSegments.keywords,
+    abstractDraft: sourceSegments.abstractDraft
+  }), []);
+
   const handleSave = async () => {
     try {
       setSaving(true);
@@ -774,32 +863,7 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
       setSuccess(null);
 
       // Flatten segments for API
-      const payload = {
-        title: segments.basics.title,
-        field: segments.basics.field,
-        subfield: segments.basics.subfield,
-        topicDescription: segments.basics.topicDescription,
-        researchQuestion: segments.question.mainQuestion,
-        subQuestions: segments.question.subQuestions,
-        problemStatement: segments.question.problemStatement,
-        researchGaps: segments.question.researchGaps,
-        methodology: segments.methodology.type,
-        methodologyApproach: segments.methodology.approach,
-        techniques: segments.methodology.techniques,
-        methodologyJustification: segments.methodology.justification,
-        datasetDescription: segments.data.datasetDescription,
-        dataCollection: segments.data.dataCollection,
-        sampleSize: segments.data.sampleSize,
-        tools: segments.data.tools,
-        experiments: segments.data.experiments,
-        hypothesis: segments.outcomes.hypothesis,
-        expectedResults: segments.outcomes.expectedResults,
-        contributionType: segments.outcomes.contributionType,
-        novelty: segments.outcomes.novelty,
-        limitations: segments.outcomes.limitations,
-        keywords: segments.keywords,
-        abstractDraft: segments.abstractDraft
-      };
+      const payload = buildTopicPayload(segments);
 
       const response = await fetch(`/api/papers/${sessionId}/topic`, {
         method: 'PUT',
@@ -815,6 +879,10 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
       const data = await response.json();
       setSuccess('Research topic saved successfully!');
       setTopicSaved(true);
+      if (data?.archetypeDetection) {
+        const parsed = toArchetypeDetectionView(data.archetypeDetection);
+        if (parsed) setArchetypeDetection(parsed);
+      }
       onTopicSaved?.(data.topic);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save topic');
@@ -870,6 +938,12 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
       if (!response.ok) throw new Error(data.error || 'AI request failed');
 
       const result = data.result;
+      if (data?.archetypeDetection) {
+        const parsedDetection = toArchetypeDetectionView(data.archetypeDetection);
+        if (parsedDetection) {
+          setArchetypeDetection(parsedDetection);
+        }
+      }
       setAiSuggestions(result);
 
       // Ensure we have a valid result object
@@ -1026,6 +1100,34 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
     }
   };
 
+  const handleRedetectArchetype = useCallback(async () => {
+    if (!authToken) return;
+    try {
+      setDetectingArchetype(true);
+      const response = await fetch(`/api/papers/${sessionId}/archetype`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          force: true,
+          topic: buildTopicPayload(segments)
+        })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to re-detect archetype');
+      }
+      const parsed = toArchetypeDetectionView(data.archetypeDetection);
+      if (parsed) {
+        setArchetypeDetection(parsed);
+        setSuccess(`Archetype updated: ${parsed.archetype} (${Math.round(parsed.confidence * 100)}%)`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to re-detect archetype');
+    } finally {
+      setDetectingArchetype(false);
+    }
+  }, [authToken, sessionId, buildTopicPayload, segments]);
+
   const goToNextStep = () => {
     const idx = GUIDED_STEPS.findIndex(s => s.key === guidedStep);
     if (idx < GUIDED_STEPS.length - 1) {
@@ -1062,30 +1164,9 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
 
       // Flatten segments for API
       const payload = {
+        ...buildTopicPayload(topicSegments),
         title: topicSegments.basics.title || 'Untitled Research',
-        field: topicSegments.basics.field,
-        subfield: topicSegments.basics.subfield,
-        topicDescription: topicSegments.basics.topicDescription,
-        researchQuestion: topicSegments.question.mainQuestion || 'Research question to be defined',
-        subQuestions: topicSegments.question.subQuestions,
-        problemStatement: topicSegments.question.problemStatement,
-        researchGaps: topicSegments.question.researchGaps,
-        methodology: topicSegments.methodology.type,
-        methodologyApproach: topicSegments.methodology.approach,
-        techniques: topicSegments.methodology.techniques,
-        methodologyJustification: topicSegments.methodology.justification,
-        datasetDescription: topicSegments.data.datasetDescription,
-        dataCollection: topicSegments.data.dataCollection,
-        sampleSize: topicSegments.data.sampleSize,
-        tools: topicSegments.data.tools,
-        experiments: topicSegments.data.experiments,
-        hypothesis: topicSegments.outcomes.hypothesis,
-        expectedResults: topicSegments.outcomes.expectedResults,
-        contributionType: topicSegments.outcomes.contributionType,
-        novelty: topicSegments.outcomes.novelty,
-        limitations: topicSegments.outcomes.limitations,
-        keywords: topicSegments.keywords,
-        abstractDraft: topicSegments.abstractDraft
+        researchQuestion: topicSegments.question.mainQuestion || 'Research question to be defined'
       };
 
       const response = await fetch(`/api/papers/${sessionId}/topic`, {
@@ -1095,6 +1176,11 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
       });
 
       if (response.ok) {
+        const data = await response.json().catch(() => null);
+        if (data?.archetypeDetection) {
+          const parsed = toArchetypeDetectionView(data.archetypeDetection);
+          if (parsed) setArchetypeDetection(parsed);
+        }
         console.log('[TopicEntry] Auto-saved extracted data successfully');
         return true;
       } else {
@@ -1105,7 +1191,7 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
       console.warn('[TopicEntry] Auto-save error:', err);
       return false;
     }
-  }, [sessionId, authToken]);
+  }, [sessionId, authToken, buildTopicPayload]);
 
   const handleFileExtracted = useCallback(async (extracted: any) => {
     if (!extracted) return;
@@ -1309,6 +1395,76 @@ export default function TopicEntryStage({ sessionId, authToken, onTopicSaved }: 
                 </div>
               </motion.div>
             )}
+
+            {/* Archetype Detection Banner */}
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              className={`mb-6 p-4 rounded-xl border ${
+                archetypeDetection?.evidenceStale
+                  ? 'bg-amber-50 border-amber-200'
+                  : 'bg-sky-50 border-sky-200'
+              }`}
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-sky-600" />
+                    <span className="text-sm font-semibold text-slate-800">Archetype Detection</span>
+                    {archetypeDetection ? (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-slate-900 text-white">
+                        {archetypeDetection.archetype}
+                      </span>
+                    ) : (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">
+                        Not detected yet
+                      </span>
+                    )}
+                    {archetypeDetection && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-sky-100 text-sky-700">
+                        {Math.round((archetypeDetection.confidence || 0) * 100)}%
+                      </span>
+                    )}
+                  </div>
+
+                  {archetypeDetection && (
+                    <div className="text-xs text-slate-700 space-y-1">
+                      <p>
+                        Tags: {archetypeDetection.routingTags.contributionMode} • {archetypeDetection.routingTags.evaluationScope} • {archetypeDetection.routingTags.evidenceModality}
+                      </p>
+                      {archetypeDetection.rationale.length > 0 && (
+                        <p>Why: {archetypeDetection.rationale.slice(0, 2).join(' ')}</p>
+                      )}
+                      {archetypeDetection.evidenceStale && (
+                        <p className="text-amber-700 font-medium">
+                          Evidence packs may be outdated. Refresh mappings in Literature stage.
+                        </p>
+                      )}
+                      {archetypeDetection.missingSignals.length > 0 && (
+                        <p className="text-slate-600">
+                          Missing signals: {archetypeDetection.missingSignals.slice(0, 4).join(', ')}
+                        </p>
+                      )}
+                      {archetypeDetection.modulePlan.length > 0 && (
+                        <p className="text-slate-600">
+                          Evidence modules: {archetypeDetection.modulePlan.slice(0, 4).join('; ')}
+                          {archetypeDetection.modulePlan.length > 4 ? ' ...' : ''}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  onClick={handleRedetectArchetype}
+                  disabled={detectingArchetype || !authToken}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+                >
+                  {detectingArchetype ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                  Re-detect archetype
+                </button>
+              </div>
+            </motion.div>
 
             <div className="space-y-8">
               {/* Basic Information */}

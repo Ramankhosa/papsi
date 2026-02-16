@@ -17,8 +17,12 @@ import crypto from 'crypto'
 import fs from 'fs/promises'
 import path from 'path'
 import { resolveModel } from '@/lib/metering/model-resolver'
-import { llmGateway } from '@/lib/metering/gateway'
 import type { TaskCode } from '@prisma/client'
+import type {
+  IllustrationStructuredSpecV2,
+  IllustrationFigureGenre,
+  IllustrationRenderDirectives
+} from './types'
 
 // Types
 export type PaperSketchMode = 'SUGGEST' | 'GUIDED' | 'REFINE'
@@ -31,6 +35,9 @@ export interface PaperSketchRequest {
   mode: PaperSketchMode
   title?: string
   userPrompt?: string
+  illustrationSpecV2?: IllustrationStructuredSpecV2
+  figureGenre?: IllustrationFigureGenre
+  renderDirectives?: IllustrationRenderDirectives
   uploadedImageBase64?: string
   uploadedImageMimeType?: string
   sourceSketchId?: string // For modification chains
@@ -53,13 +60,14 @@ export interface PaperSketchResult {
   imagePath?: string
   error?: string
   attemptCount?: number
+  qualityFlags?: string[]
 }
 
 // Constants
 const SKETCH_UPLOAD_DIR = 'public/uploads/paper-sketches'
-const MAX_MODIFY_ATTEMPTS = 10
 const SKETCH_STAGE_CODE = 'PAPER_SKETCH_GENERATION'
 const SKETCH_TASK_CODE: TaskCode = 'LLM3_DIAGRAM'
+const MAX_GENERATION_ATTEMPTS = 2
 
 /**
  * Get active plan ID for tenant
@@ -197,68 +205,188 @@ async function buildPaperContextBundle(
   }
 }
 
+type EffectiveFigureGenre = IllustrationFigureGenre
+
+interface EffectiveSketchSpec {
+  specV2?: IllustrationStructuredSpecV2
+  genre: EffectiveFigureGenre
+  directives: IllustrationRenderDirectives
+}
+
+function resolveFigureGenre(
+  explicitGenre?: IllustrationFigureGenre,
+  specV2?: IllustrationStructuredSpecV2
+): EffectiveFigureGenre {
+  if (explicitGenre) return explicitGenre
+  if (specV2?.figureGenre) return specV2.figureGenre
+
+  const panelCount = Number(specV2?.panelCount || specV2?.panels?.length || 0)
+  const layout = specV2?.layout
+  if (layout === 'PANELS' || panelCount >= 2) return 'SCENARIO_STORYBOARD'
+  return 'METHOD_BLOCK'
+}
+
+function defaultRenderDirectives(genre: EffectiveFigureGenre): IllustrationRenderDirectives {
+  if (genre === 'SCENARIO_STORYBOARD') {
+    return {
+      aspectRatio: '2.5:1',
+      fillCanvasPercentMin: 85,
+      whitespaceMaxPercent: 15,
+      textPolicy: { maxLabelsTotal: 4, maxWordsPerLabel: 3, forbidAllCaps: true, titlesOnlyPreferred: true },
+      stylePolicy: { noGradients: true, no3D: true, noClipart: true, whiteBackground: true, paletteMode: 'grayscale_plus_one_accent' },
+      compositionPolicy: { layoutMode: 'PANELS', equalPanels: true, noTextOutsidePanels: true }
+    }
+  }
+  return {
+    aspectRatio: '3:1',
+    fillCanvasPercentMin: 85,
+    whitespaceMaxPercent: 15,
+    textPolicy: { maxLabelsTotal: 4, maxWordsPerLabel: 3, forbidAllCaps: true, titlesOnlyPreferred: true },
+    stylePolicy: { noGradients: true, no3D: true, noClipart: true, whiteBackground: true, paletteMode: 'grayscale_plus_one_accent' },
+    compositionPolicy: { layoutMode: 'STRIP', equalPanels: true, noTextOutsidePanels: true }
+  }
+}
+
+function mergeRenderDirectives(
+  genre: EffectiveFigureGenre,
+  override?: IllustrationRenderDirectives
+): IllustrationRenderDirectives {
+  const base = defaultRenderDirectives(genre)
+  if (!override) return base
+  return {
+    ...base,
+    ...override,
+    textPolicy: { ...base.textPolicy, ...(override.textPolicy || {}) },
+    stylePolicy: { ...base.stylePolicy, ...(override.stylePolicy || {}) },
+    compositionPolicy: { ...base.compositionPolicy, ...(override.compositionPolicy || {}) }
+  }
+}
+
+function buildEffectiveSketchSpec(
+  specV2?: IllustrationStructuredSpecV2,
+  explicitGenre?: IllustrationFigureGenre,
+  explicitRenderDirectives?: IllustrationRenderDirectives
+): EffectiveSketchSpec {
+  const genre = resolveFigureGenre(explicitGenre, specV2)
+  const directives = mergeRenderDirectives(genre, explicitRenderDirectives || specV2?.renderDirectives)
+  return { specV2, genre, directives }
+}
+
 /**
- * Build system prompt for academic illustrations
+ * Build system prompt for genre-specific academic illustrations.
  */
-function buildSystemPrompt(style: string = 'academic'): string {
-  const styleGuides: Record<string, string> = {
-    academic: `
-Create a professional academic illustration suitable for publication in a research paper.
-- Use clean, simple lines with high contrast
-- Avoid unnecessary decoration or embellishment
-- Labels should be clear and legible
-- Use a white or light background
-- Arrows and connectors should be precise
-- Maintain professional, scholarly appearance
-    `.trim(),
-    scientific: `
-Create a scientific diagram with technical precision.
-- Use standard scientific notation and symbols
-- Include measurement scales where appropriate
-- Use consistent line weights
-- Employ standard scientific color coding if colors are needed
-- Ensure all elements are clearly labeled
-- Follow scientific illustration conventions
-    `.trim(),
-    conceptual: `
-Create a conceptual illustration that explains abstract ideas visually.
-- Use metaphorical representations where appropriate
-- Employ visual hierarchy to guide understanding
-- Use simple shapes and clear relationships
-- Include minimal text, let visuals communicate
-- Create a balanced, easy-to-understand composition
-    `.trim(),
-    technical: `
-Create a technical diagram with engineering precision.
-- Use technical drawing conventions
-- Include dimensions and specifications where relevant
-- Use cross-sections or exploded views if helpful
-- Follow technical illustration standards
-- Ensure accuracy and clarity of all elements
-    `.trim()
+function buildSystemPrompt(
+  genre: EffectiveFigureGenre,
+  style: string = 'academic',
+  directives?: IllustrationRenderDirectives
+): string {
+  const d = mergeRenderDirectives(genre, directives)
+  const textPolicy = d.textPolicy || {}
+  const stylePolicy = d.stylePolicy || {}
+
+  const styleGuide = `STYLE MODE: ${style}
+- Flat vector only, schematic academic look
+- No photorealism, no dramatic lighting, no marketing visuals
+- White background and clean line work`
+
+  if (genre === 'SCENARIO_STORYBOARD') {
+    return `You are an expert academic illustrator generating SCENARIO_STORYBOARD figures.
+
+${styleGuide}
+
+HARD REQUIREMENTS:
+1. Generate ONLY an image (no explanatory text).
+2. Use exactly 3 equal-width panels in wide landscape composition.
+3. Show a real-world scenario flow; silhouettes allowed but non-identifying.
+4. Maximum one short label per panel and optional "On-device" tag only.
+5. No tiny text, no dense captions, no figure numbers.
+6. Aspect ratio target: ${d.aspectRatio}; content fill >= ${d.fillCanvasPercentMin}% with whitespace <= ${d.whitespaceMaxPercent}%.
+7. Text policy: maxLabelsTotal=${textPolicy.maxLabelsTotal}, maxWordsPerLabel=${textPolicy.maxWordsPerLabel}, forbidAllCaps=${textPolicy.forbidAllCaps}.
+8. Style policy: noGradients=${stylePolicy.noGradients}, no3D=${stylePolicy.no3D}, noClipart=${stylePolicy.noClipart}, paletteMode=${stylePolicy.paletteMode}.
+9. No title/caption/watermark/signature on the image.`
   }
 
-  return `You are an expert academic illustrator creating figures for research papers.
+  return `You are an expert academic illustrator generating METHOD_BLOCK style figures.
 
-${styleGuides[style] || styleGuides.academic}
+${styleGuide}
 
-IMPORTANT GUIDELINES:
-1. Generate ONLY the image - no explanatory text in the response
-2. The illustration should be self-explanatory
-3. Use high resolution and clear lines
-4. Ensure the figure would be suitable for academic publication
-5. Do NOT include watermarks, signatures, or AI-generated labels like "Generated by..."
-6. Do NOT add figure numbers like "Figure 1", "Fig. 1", "Figure:", etc. - the numbering will be added separately
-7. Do NOT include any title text or caption overlaid on the image itself
-`
+HARD REQUIREMENTS:
+1. Generate ONLY an image (no explanatory text).
+2. Use modular block/pipeline composition with deterministic connectors.
+3. No people; no scenario scenes.
+4. Labels are titles-only and extremely short.
+5. No tiny text, no dense captions, no figure numbers.
+6. Aspect ratio target: ${d.aspectRatio}; content fill >= ${d.fillCanvasPercentMin}% with whitespace <= ${d.whitespaceMaxPercent}%.
+7. Text policy: maxLabelsTotal=${textPolicy.maxLabelsTotal}, maxWordsPerLabel=${textPolicy.maxWordsPerLabel}, forbidAllCaps=${textPolicy.forbidAllCaps}.
+8. Style policy: noGradients=${stylePolicy.noGradients}, no3D=${stylePolicy.no3D}, noClipart=${stylePolicy.noClipart}, paletteMode=${stylePolicy.paletteMode}.
+9. No title/caption/watermark/signature on the image.`
+}
+
+/**
+ * Convert deterministic illustration specs into prompt text for Gemini.
+ */
+function buildIllustrationSpecBlock(effective: EffectiveSketchSpec): string {
+  const spec = effective.specV2
+  if (!spec) {
+    return `ILLUSTRATION SPEC: none provided.
+- figureGenre: ${effective.genre}
+- fallback layout: ${effective.genre === 'SCENARIO_STORYBOARD' ? 'PANELS (3 panels)' : 'STRIP (5-7 blocks)'}`
+  }
+
+  const panels = Array.isArray(spec.panels)
+    ? spec.panels.slice(0, 6).map((panel, idx) => (
+        `${idx + 1}. ${panel.title || `Panel ${idx + 1}`} | elements: ${(panel.elements || []).join(', ') || 'n/a'}`
+      )).join('\n')
+    : 'none'
+  const steps = Array.isArray(spec.steps) ? spec.steps.slice(0, 8).join(' -> ') : 'none'
+  const elements = Array.isArray(spec.elements) ? spec.elements.slice(0, 12).join(', ') : 'none'
+  const actors = Array.isArray((effective.specV2 as any)?.actors) ? (effective.specV2 as any).actors.join(', ') : 'none'
+  const props = Array.isArray((effective.specV2 as any)?.props) ? (effective.specV2 as any).props.join(', ') : 'none'
+  const forbidden = Array.isArray((effective.specV2 as any)?.forbiddenElements) ? (effective.specV2 as any).forbiddenElements.join(', ') : 'none'
+
+  return `
+ILLUSTRATION SPEC (follow deterministically):
+- figureGenre: ${effective.genre}
+- layout: ${spec.layout || (effective.genre === 'SCENARIO_STORYBOARD' ? 'PANELS' : 'STRIP')}
+- panelCount: ${spec.panelCount || 'n/a'}
+- stepCount: ${spec.stepCount || 'n/a'}
+- flowDirection: ${spec.flowDirection || 'LR'}
+- globalElements: ${elements}
+- steps: ${steps}
+- panels:
+${panels}
+- actors: ${actors}
+- props: ${props}
+- forbiddenElements: ${forbidden}
+- captionDraft: ${spec.captionDraft || 'n/a'}
+
+RENDER DIRECTIVES (hard):
+- aspectRatio: ${effective.directives.aspectRatio}
+- fillCanvasPercentMin: ${effective.directives.fillCanvasPercentMin}
+- whitespaceMaxPercent: ${effective.directives.whitespaceMaxPercent}
+- textPolicy: maxLabelsTotal=${effective.directives.textPolicy?.maxLabelsTotal}, maxWordsPerLabel=${effective.directives.textPolicy?.maxWordsPerLabel}, forbidAllCaps=${effective.directives.textPolicy?.forbidAllCaps}, titlesOnlyPreferred=${effective.directives.textPolicy?.titlesOnlyPreferred}
+- stylePolicy: noGradients=${effective.directives.stylePolicy?.noGradients}, no3D=${effective.directives.stylePolicy?.no3D}, noClipart=${effective.directives.stylePolicy?.noClipart}, whiteBackground=${effective.directives.stylePolicy?.whiteBackground}, paletteMode=${effective.directives.stylePolicy?.paletteMode}
+- compositionPolicy: layoutMode=${effective.directives.compositionPolicy?.layoutMode}, equalPanels=${effective.directives.compositionPolicy?.equalPanels}, noTextOutsidePanels=${effective.directives.compositionPolicy?.noTextOutsidePanels}
+`.trim()
+}
+
+function buildGenreReminder(genre: EffectiveFigureGenre): string {
+  if (genre === 'SCENARIO_STORYBOARD') {
+    return 'GENRE REMINDER: Produce a scenario storyboard (3 equal panels). Silhouettes allowed. One short label per panel max.'
+  }
+  return 'GENRE REMINDER: Produce a method block/pipeline schematic. No people. Titles-only labels.'
 }
 
 /**
  * Build prompt for SUGGEST mode (AI-driven based on context)
  */
-function buildSuggestModePrompt(context: PaperSketchContextBundle, title?: string): string {
+function buildSuggestModePrompt(
+  context: PaperSketchContextBundle,
+  effective: EffectiveSketchSpec,
+  title?: string
+): string {
   return `
-Based on this research paper context, create an appropriate academic illustration:
+Based on this research paper context, create a render-ready academic figure:
 
 PAPER TITLE: ${context.paperTitle}
 
@@ -272,14 +400,14 @@ KEY CONTENT:
 ${context.sectionContent || 'Not provided'}
 
 ${title ? `FIGURE TITLE/FOCUS: ${title}` : ''}
+${buildGenreReminder(effective.genre)}
+${buildIllustrationSpecBlock(effective)}
 
-Create a clear, professional academic illustration that:
-1. Visualizes a key concept, process, or finding from this research
-2. Would enhance reader understanding
-3. Is suitable for academic publication
-4. Uses appropriate visual conventions for the field
-5. Does NOT include any figure numbers (like "Figure 1" or "Fig. 1") - leave numbering out
-6. Does NOT overlay any title or caption text on the image
+Create a clean, professional output that:
+1. Strictly follows the genre and render directives above
+2. Maps to real paper entities (input -> method -> output -> evaluation where applicable)
+3. Uses minimal text (no microtext)
+4. Avoids figure numbering, overlaid title text, and caption text
 `.trim()
 }
 
@@ -288,36 +416,40 @@ Create a clear, professional academic illustration that:
  */
 function buildGuidedModePrompt(
   context: PaperSketchContextBundle,
+  effective: EffectiveSketchSpec,
   userPrompt: string,
   title?: string
 ): string {
   return `
-Create an academic illustration based on these specifications:
+Create an academic figure using the user's request and hard rendering rules:
 
 USER REQUEST:
 ${userPrompt}
 
 ${title ? `FIGURE TITLE: ${title}` : ''}
+${buildGenreReminder(effective.genre)}
+${buildIllustrationSpecBlock(effective)}
 
-PAPER CONTEXT (for reference):
+PAPER CONTEXT (for grounding):
 - Paper: ${context.paperTitle}
 - Abstract: ${context.abstract?.substring(0, 300) || 'Not provided'}...
 
-Create the illustration following the user's specific instructions while maintaining academic standards.
-IMPORTANT: Do NOT add figure numbers (like "Figure 1", "Fig. 1") or title/caption text overlaid on the image.
+Apply user intent only if it does not violate genre/render directives.
+Avoid tiny text and avoid any figure numbers/title overlays.
 `.trim()
 }
 
 /**
- * Build prompt for REFINE mode (from uploaded image)
+ * Build prompt for REFINE mode (from uploaded image or correction loop)
  */
 function buildRefineModePrompt(
   context: PaperSketchContextBundle,
+  effective: EffectiveSketchSpec,
   userPrompt?: string,
   modificationRequest?: string
 ): string {
   const instructions = modificationRequest || userPrompt || 'Refine this sketch for academic publication'
-  
+
   return `
 Refine and improve the provided image/sketch for use in a research paper.
 
@@ -328,14 +460,192 @@ PAPER CONTEXT:
 - Paper: ${context.paperTitle}
 - Topic: ${context.abstract?.substring(0, 200) || 'Academic research'}
 
+${buildGenreReminder(effective.genre)}
+${buildIllustrationSpecBlock(effective)}
+
 Please:
-1. Clean up any rough lines or sketchy elements
-2. Add proper labels if needed (but NOT figure numbers like "Figure 1")
-3. Improve visual clarity and professional appearance
-4. Maintain the original concept and structure
-5. Make it suitable for academic publication
-6. Do NOT add figure numbers (like "Figure 1", "Fig. 1") or title/caption text on the image
+1. Enforce the target genre strictly
+2. Remove tiny/garbled text; keep labels minimal and structural
+3. Remove duplicated blocks/panels and fix alignment
+4. Improve clarity and flow arrows
+5. Ensure tight composition (fill canvas, low whitespace)
+6. Do NOT add figure numbers or overlaid title/caption text
 `.trim()
+}
+
+function parseAspectRatio(value?: string): number | null {
+  if (!value) return null
+  const m = value.match(/^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$/)
+  if (!m) return null
+  const left = Number(m[1])
+  const right = Number(m[2])
+  if (!Number.isFinite(left) || !Number.isFinite(right) || right <= 0) return null
+  return left / right
+}
+
+async function autoCropWhitespace(
+  imageBuffer: Buffer,
+  imageMimeType: string
+): Promise<{
+  buffer: Buffer
+  mimeType: string
+  changed: boolean
+  width?: number
+  height?: number
+  fillPercent?: number
+  whitespacePercent?: number
+}> {
+  try {
+    const jimpMod: any = await import('jimp')
+    const Jimp = jimpMod.default || jimpMod
+    const image = await Jimp.read(imageBuffer)
+    const { width, height, data } = image.bitmap
+    if (!width || !height) {
+      return { buffer: imageBuffer, mimeType: imageMimeType, changed: false }
+    }
+
+    const isContentPixel = (r: number, g: number, b: number, a: number): boolean => {
+      if (a < 20) return false
+      // Treat near-white as background.
+      return !(r > 245 && g > 245 && b > 245)
+    }
+
+    let minX = width
+    let minY = height
+    let maxX = -1
+    let maxY = -1
+    let contentPixels = 0
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = (width * y + x) << 2
+        const r = data[idx]
+        const g = data[idx + 1]
+        const b = data[idx + 2]
+        const a = data[idx + 3]
+        if (!isContentPixel(r, g, b, a)) continue
+        contentPixels += 1
+        if (x < minX) minX = x
+        if (y < minY) minY = y
+        if (x > maxX) maxX = x
+        if (y > maxY) maxY = y
+      }
+    }
+
+    const totalPixels = width * height
+    const fillPercent = totalPixels > 0 ? (contentPixels / totalPixels) * 100 : 0
+    const whitespacePercent = 100 - fillPercent
+
+    if (maxX < minX || maxY < minY) {
+      return { buffer: imageBuffer, mimeType: imageMimeType, changed: false, width, height, fillPercent, whitespacePercent }
+    }
+
+    const contentWidth = maxX - minX + 1
+    const contentHeight = maxY - minY + 1
+    const padX = Math.max(8, Math.round(contentWidth * 0.03))
+    const padY = Math.max(8, Math.round(contentHeight * 0.03))
+    const cropX = Math.max(0, minX - padX)
+    const cropY = Math.max(0, minY - padY)
+    const cropW = Math.min(width - cropX, contentWidth + padX * 2)
+    const cropH = Math.min(height - cropY, contentHeight + padY * 2)
+
+    // If crop is effectively full image, return original.
+    if (cropW >= width * 0.98 && cropH >= height * 0.98) {
+      return { buffer: imageBuffer, mimeType: imageMimeType, changed: false, width, height, fillPercent, whitespacePercent }
+    }
+
+    const cropped = image.clone().crop(cropX, cropY, cropW, cropH)
+    const targetMime = imageMimeType.includes('png') ? Jimp.MIME_PNG : Jimp.MIME_JPEG
+    const out = await cropped.getBufferAsync(targetMime)
+    const croppedTotalPixels = cropW * cropH
+    const croppedFillPercent = croppedTotalPixels > 0 ? (contentPixels / croppedTotalPixels) * 100 : fillPercent
+    const croppedWhitespacePercent = 100 - croppedFillPercent
+
+    return {
+      buffer: out,
+      mimeType: targetMime,
+      changed: true,
+      width: cropW,
+      height: cropH,
+      fillPercent: croppedFillPercent,
+      whitespacePercent: croppedWhitespacePercent
+    }
+  } catch (err) {
+    console.warn('[PaperSketchService] Auto-crop skipped (jimp unavailable or failed):', err instanceof Error ? err.message : err)
+    return { buffer: imageBuffer, mimeType: imageMimeType, changed: false }
+  }
+}
+
+function evaluateImageQuality(
+  metrics: { width?: number; height?: number; fillPercent?: number; whitespacePercent?: number },
+  effective: EffectiveSketchSpec
+): string[] {
+  const issues: string[] = []
+  const width = metrics.width || 0
+  const height = metrics.height || 0
+  const ratio = width > 0 && height > 0 ? width / height : 0
+  const targetRatio = parseAspectRatio(effective.directives.aspectRatio || '')
+  const fillMin = Number(effective.directives.fillCanvasPercentMin || 85)
+  const whitespaceMax = Number(effective.directives.whitespaceMaxPercent || 15)
+
+  if (typeof metrics.fillPercent === 'number' && metrics.fillPercent < fillMin) {
+    issues.push(`fill-too-low:${metrics.fillPercent.toFixed(1)}<${fillMin}`)
+  }
+  if (typeof metrics.whitespacePercent === 'number' && metrics.whitespacePercent > whitespaceMax) {
+    issues.push(`whitespace-too-high:${metrics.whitespacePercent.toFixed(1)}>${whitespaceMax}`)
+  }
+  if (targetRatio && ratio > 0) {
+    const ratioDiff = Math.abs(ratio - targetRatio) / targetRatio
+    if (ratioDiff > 0.22) {
+      issues.push(`aspect-ratio-mismatch:${ratio.toFixed(2)}!=${targetRatio.toFixed(2)}`)
+    }
+  }
+
+  // Lightweight genre mismatch heuristic.
+  if (effective.genre === 'SCENARIO_STORYBOARD' && ratio > 0 && ratio < 1.7) {
+    issues.push('genre-mismatch:storyboard-not-wide')
+  }
+  if (effective.genre === 'METHOD_BLOCK' && ratio > 0 && ratio < 2.0) {
+    issues.push('genre-mismatch:method-not-wide')
+  }
+
+  return issues
+}
+
+function buildCorrectiveRefineInstructions(
+  issues: string[],
+  effective: EffectiveSketchSpec
+): string {
+  const directives = effective.directives
+  const genreInstruction = effective.genre === 'SCENARIO_STORYBOARD'
+    ? 'Convert to a strict 3-panel scenario storyboard with equal panels; silhouettes allowed; one short label per panel max.'
+    : 'Convert to a method block/pipeline schematic with no people and titles-only labels.'
+
+  return [
+    'Correct the generated image while preserving core content.',
+    genreInstruction,
+    'Remove tiny/garbled text and remove duplicated blocks/panels.',
+    `Target aspect ratio: ${directives.aspectRatio}.`,
+    `Increase canvas fill to at least ${directives.fillCanvasPercentMin}% and keep whitespace below ${directives.whitespaceMaxPercent}%.`,
+    'Tight crop composition and center content.',
+    `Detected issues: ${issues.join(', ') || 'n/a'}.`
+  ].join(' ')
+}
+
+function buildPersistedIllustrationSpecV2(effective: EffectiveSketchSpec): IllustrationStructuredSpecV2 {
+  const spec: IllustrationStructuredSpecV2 = { ...(effective.specV2 || {}) }
+  if (!spec.layout) {
+    spec.layout = effective.genre === 'SCENARIO_STORYBOARD' ? 'PANELS' : 'STRIP'
+  }
+  if (!spec.panelCount && effective.genre === 'SCENARIO_STORYBOARD') {
+    spec.panelCount = 3
+  }
+  if (!spec.stepCount && effective.genre === 'METHOD_BLOCK') {
+    spec.stepCount = 5
+  }
+  spec.figureGenre = effective.genre
+  spec.renderDirectives = effective.directives
+  return spec
 }
 
 /**
@@ -447,6 +757,9 @@ export async function generatePaperSketch(
     mode,
     title,
     userPrompt,
+    illustrationSpecV2,
+    figureGenre,
+    renderDirectives,
     uploadedImageBase64,
     uploadedImageMimeType,
     modificationRequest,
@@ -473,19 +786,28 @@ export async function generatePaperSketch(
 
   console.log(`[PaperSketchService] Using model: ${modelCandidates[0]}`)
 
-  // Build prompts based on mode
-  const systemPrompt = buildSystemPrompt(style)
-  let userPromptFinal: string
+  const effective = buildEffectiveSketchSpec(
+    illustrationSpecV2,
+    figureGenre,
+    renderDirectives
+  )
+  const persistedSpecV2 = buildPersistedIllustrationSpecV2(effective)
+  const systemPrompt = buildSystemPrompt(effective.genre, style, effective.directives)
 
+  if (mode === 'GUIDED' && !userPrompt?.trim()) {
+    return { success: false, error: 'GUIDED mode requires a user prompt' }
+  }
+
+  let basePrompt: string
   switch (mode) {
     case 'SUGGEST':
-      userPromptFinal = buildSuggestModePrompt(contextBundle, title)
+      basePrompt = buildSuggestModePrompt(contextBundle, effective, title)
       break
     case 'GUIDED':
-      userPromptFinal = buildGuidedModePrompt(contextBundle, userPrompt || '', title)
+      basePrompt = buildGuidedModePrompt(contextBundle, effective, userPrompt || '', title)
       break
     case 'REFINE':
-      userPromptFinal = buildRefineModePrompt(contextBundle, userPrompt, modificationRequest)
+      basePrompt = buildRefineModePrompt(contextBundle, effective, userPrompt, modificationRequest)
       break
     default:
       return { success: false, error: `Unknown mode: ${mode}` }
@@ -498,19 +820,56 @@ export async function generatePaperSketch(
       base64: uploadedImageBase64,
       mimeType: uploadedImageMimeType
     }
+  } else if (mode === 'REFINE' && uploadedImageBase64) {
+    inputImage = {
+      base64: uploadedImageBase64,
+      mimeType: 'image/png'
+    }
   }
 
-  // Generate image
-  const genResult = await generateSketchWithGemini(
-    systemPrompt,
-    userPromptFinal,
-    modelCandidates,
-    inputImage,
-    tenantId
-  )
+  let workingPrompt = basePrompt
+  let workingInputImage = inputImage
+  let finalImageBuffer: Buffer | undefined
+  let finalMimeType = 'image/png'
+  let qualityFlags: string[] = []
+  let attemptCount = 0
 
-  if (!genResult.success || !genResult.imageBase64) {
-    return { success: false, error: genResult.error || 'Image generation failed' }
+  for (let attempt = 1; attempt <= MAX_GENERATION_ATTEMPTS; attempt++) {
+    attemptCount = attempt
+    const genResult = await generateSketchWithGemini(
+      systemPrompt,
+      workingPrompt,
+      modelCandidates,
+      workingInputImage,
+      tenantId
+    )
+    if (!genResult.success || !genResult.imageBase64) {
+      return { success: false, error: genResult.error || 'Image generation failed', attemptCount }
+    }
+
+    const rawMimeType = genResult.imageMimeType || 'image/png'
+    const rawBuffer = Buffer.from(genResult.imageBase64, 'base64')
+    const cropped = await autoCropWhitespace(rawBuffer, rawMimeType)
+
+    finalImageBuffer = cropped.buffer
+    finalMimeType = cropped.mimeType || rawMimeType
+    qualityFlags = evaluateImageQuality(cropped, effective)
+
+    if (qualityFlags.length === 0 || attempt >= MAX_GENERATION_ATTEMPTS) {
+      break
+    }
+
+    const correctiveInstructions = buildCorrectiveRefineInstructions(qualityFlags, effective)
+    console.log(`[PaperSketchService] Quality issues detected (${qualityFlags.join(', ')}). Running corrective refine attempt ${attempt + 1}/${MAX_GENERATION_ATTEMPTS}.`)
+    workingPrompt = buildRefineModePrompt(contextBundle, effective, userPrompt, correctiveInstructions)
+    workingInputImage = {
+      base64: finalImageBuffer.toString('base64'),
+      mimeType: finalMimeType
+    }
+  }
+
+  if (!finalImageBuffer) {
+    return { success: false, error: 'Image generation failed', attemptCount }
   }
 
   // Save image to disk
@@ -518,12 +877,11 @@ export async function generatePaperSketch(
     const uploadDir = path.join(process.cwd(), SKETCH_UPLOAD_DIR, sessionId)
     await fs.mkdir(uploadDir, { recursive: true })
 
-    const extension = genResult.imageMimeType?.includes('png') ? 'png' : 'jpg'
+    const extension = finalMimeType.includes('png') ? 'png' : 'jpg'
     const filename = `sketch_${Date.now()}_${crypto.randomBytes(4).toString('hex')}.${extension}`
     const filePath = path.join(uploadDir, filename)
     
-    const imageBuffer = Buffer.from(genResult.imageBase64, 'base64')
-    await fs.writeFile(filePath, imageBuffer)
+    await fs.writeFile(filePath, finalImageBuffer)
 
     const publicPath = `/uploads/paper-sketches/${sessionId}/${filename}`
     console.log(`[PaperSketchService] Saved sketch to: ${publicPath}`)
@@ -547,8 +905,13 @@ export async function generatePaperSketch(
               status: 'GENERATED',
               imagePath: publicPath,
               sketchMode: mode,
+              figureGenre: effective.genre,
+              renderDirectives: effective.directives,
+              illustrationSpecV2: persistedSpecV2,
+              qualityFlags,
+              attemptCount,
               generatedAt: new Date().toISOString()
-            }
+            } as any
           }
         })
       }
@@ -566,16 +929,21 @@ export async function generatePaperSketch(
           sessionId,
           figureNo: newFigureNo,
           title: title || `Sketch ${newFigureNo}`,
-          description: userPrompt || 'AI-generated sketch',
+          description: userPrompt || 'AI-generated infographic overview',
           nodes: {
             status: 'GENERATED',
-            category: 'SKETCH',
+            category: 'ILLUSTRATED_FIGURE',
             figureType: 'sketch',
-            caption: userPrompt || 'AI-generated sketch',
+            caption: userPrompt || 'AI-generated infographic overview',
             imagePath: publicPath,
             sketchMode: mode,
+            figureGenre: effective.genre,
+            renderDirectives: effective.directives,
+            illustrationSpecV2: persistedSpecV2,
+            qualityFlags,
+            attemptCount,
             generatedAt: new Date().toISOString()
-          },
+          } as any,
           edges: [] // Required field - empty array for sketches
         }
       })
@@ -586,7 +954,9 @@ export async function generatePaperSketch(
     return {
       success: true,
       figureId: resultFigureId,
-      imagePath: publicPath
+      imagePath: publicPath,
+      attemptCount,
+      qualityFlags
     }
 
   } catch (saveError: any) {
@@ -625,7 +995,10 @@ export async function modifyPaperSketch(
   let imageMimeType: string
 
   try {
-    const fullPath = path.join(process.cwd(), 'public', existingImagePath)
+    const relativeImagePath = existingImagePath.startsWith('/')
+      ? existingImagePath.slice(1)
+      : existingImagePath
+    const fullPath = path.join(process.cwd(), 'public', relativeImagePath)
     const imageBuffer = await fs.readFile(fullPath)
     imageBase64 = imageBuffer.toString('base64')
     imageMimeType = existingImagePath.endsWith('.png') ? 'image/png' : 'image/jpeg'
@@ -635,6 +1008,9 @@ export async function modifyPaperSketch(
 
   // Get caption from nodes or description field
   const caption = nodes.caption || figure.description || ''
+  const storedSpecV2 = (nodes.illustrationSpecV2 as IllustrationStructuredSpecV2 | undefined)
+  const storedGenre = (nodes.figureGenre as IllustrationFigureGenre | undefined)
+  const storedDirectives = (nodes.renderDirectives as IllustrationRenderDirectives | undefined)
 
   // Generate modified sketch
   return generatePaperSketch({
@@ -644,6 +1020,9 @@ export async function modifyPaperSketch(
     mode: 'REFINE',
     title: figure.title,
     userPrompt: caption,
+    illustrationSpecV2: storedSpecV2,
+    figureGenre: storedGenre,
+    renderDirectives: storedDirectives,
     uploadedImageBase64: imageBase64,
     uploadedImageMimeType: imageMimeType,
     modificationRequest,

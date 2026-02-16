@@ -8,6 +8,8 @@ import TextAlign from '@tiptap/extension-text-align';
 import Superscript from '@tiptap/extension-superscript';
 import Subscript from '@tiptap/extension-subscript';
 import Underline from '@tiptap/extension-underline';
+import { CitationNode } from './CitationNode';
+import { FigureNode } from './FigureNode';
 import {
   AlignCenter,
   AlignJustify,
@@ -58,6 +60,7 @@ interface PaperMarkdownEditorProps {
   onBlur?: () => void;
   onSelectionChange?: (selection: { text: string; start: number; end: number } | null) => void;
   citationDisplayMeta?: PaperCitationDisplayMeta;
+  figureDisplayMeta?: PaperFigureDisplayMeta;
   placeholder?: string;
   disabled?: boolean;
   className?: string;
@@ -67,6 +70,11 @@ export interface PaperCitationDisplayMeta {
   styleCode: string;
   displayByKey: Record<string, string>;
   orderByKey?: Record<string, number>;
+  signature?: string;
+}
+
+export interface PaperFigureDisplayMeta {
+  byNo: Record<number, { title?: string; imagePath?: string }>;
   signature?: string;
 }
 
@@ -83,7 +91,8 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-const CITE_MARKER_REGEX = /\[CITE:([^\]]+)\]/gi;
+const FIGURE_MARKER_REGEX = /\[Figure\s+(\d+)\]/i;
+const INLINE_MARKER_REGEX = /\[CITE:([^\]]+)\]|\[Figure\s+(\d+)\]/gi;
 const LEGACY_CITATION_SPAN_REGEX = /<span\b[^>]*data-cite-key=(?:"([^"]+)"|'([^']+)')[^>]*>[\s\S]*?<\/span>/gi;
 
 function splitCitationKeys(raw: string): string[] {
@@ -148,39 +157,98 @@ function renderCitationChipHtml(
   return `<span ${attrs.join(' ')}>${escapeHtml(label)}</span>`;
 }
 
-function convertCitationMarkersToInlineHtml(
+function resolveFigureMeta(
+  figureNo: number,
+  figureDisplayMeta?: PaperFigureDisplayMeta
+): { title: string; imagePath: string } {
+  const meta = figureDisplayMeta?.byNo?.[figureNo];
+  const title = typeof meta?.title === 'string' ? meta.title.trim() : '';
+  const imagePath = typeof meta?.imagePath === 'string' ? meta.imagePath.trim() : '';
+  return { title, imagePath };
+}
+
+function renderFigureChipHtml(
+  figureNo: number,
+  figureDisplayMeta?: PaperFigureDisplayMeta
+): string {
+  if (!Number.isFinite(figureNo) || figureNo <= 0) {
+    return '';
+  }
+
+  const safeNo = Math.trunc(figureNo);
+  const figureLabel = `Figure ${safeNo}`;
+  const { title, imagePath } = resolveFigureMeta(safeNo, figureDisplayMeta);
+  const displayLabel = title ? `${figureLabel}: ${title}` : figureLabel;
+  const attrs = [
+    'class="paper-figure-chip"',
+    'contenteditable="false"',
+    `data-figure-no="${safeNo}"`
+  ];
+
+  if (title) {
+    attrs.push(`data-figure-title="${escapeHtml(title)}"`);
+  }
+  if (imagePath) {
+    attrs.push(`data-figure-image-path="${escapeHtml(imagePath)}"`);
+  }
+
+  const thumb = imagePath
+    ? `<img class="paper-figure-chip-thumb" src="${escapeHtml(imagePath)}" alt="${escapeHtml(displayLabel)}" loading="lazy" />`
+    : '';
+
+  return `<span ${attrs.join(' ')}>${thumb}<span class="paper-figure-chip-label">${escapeHtml(displayLabel)}</span></span>`;
+}
+
+function convertMarkersToInlineHtml(
   text: string,
-  citationDisplayMeta?: PaperCitationDisplayMeta
+  citationDisplayMeta?: PaperCitationDisplayMeta,
+  figureDisplayMeta?: PaperFigureDisplayMeta
 ): string {
   if (!text) return '';
 
   let html = '';
   let cursor = 0;
-  CITE_MARKER_REGEX.lastIndex = 0;
+  INLINE_MARKER_REGEX.lastIndex = 0;
   let match: RegExpExecArray | null = null;
 
-  while ((match = CITE_MARKER_REGEX.exec(text)) !== null) {
+  while ((match = INLINE_MARKER_REGEX.exec(text)) !== null) {
     html += escapeHtml(text.slice(cursor, match.index));
     cursor = match.index + match[0].length;
 
-    const citationKeys = splitCitationKeys(match[1] || '');
-    if (citationKeys.length === 0) {
-      html += escapeHtml(match[0]);
+    if (match[1]) {
+      const citationKeys = splitCitationKeys(match[1] || '');
+      if (citationKeys.length === 0) {
+        html += escapeHtml(match[0]);
+        continue;
+      }
+
+      const chips = citationKeys
+        .map((citationKey) => renderCitationChipHtml(citationKey, citationDisplayMeta))
+        .filter(Boolean);
+      html += chips.length > 0 ? chips.join(' ') : escapeHtml(match[0]);
       continue;
     }
 
-    const chips = citationKeys
-      .map((citationKey) => renderCitationChipHtml(citationKey, citationDisplayMeta))
-      .filter(Boolean);
-    html += chips.length > 0 ? chips.join(' ') : escapeHtml(match[0]);
+    if (match[2]) {
+      const figureNo = Number.parseInt(match[2], 10);
+      const chip = renderFigureChipHtml(figureNo, figureDisplayMeta);
+      html += chip || escapeHtml(match[0]);
+      continue;
+    }
+
+    html += escapeHtml(match[0]);
   }
 
   html += escapeHtml(text.slice(cursor));
   return html;
 }
 
-function inlineMarkdownToHtml(text: string, citationDisplayMeta?: PaperCitationDisplayMeta): string {
-  let html = convertCitationMarkersToInlineHtml(text, citationDisplayMeta);
+function inlineMarkdownToHtml(
+  text: string,
+  citationDisplayMeta?: PaperCitationDisplayMeta,
+  figureDisplayMeta?: PaperFigureDisplayMeta
+): string {
+  let html = convertMarkersToInlineHtml(text, citationDisplayMeta, figureDisplayMeta);
   // Bold **text**
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   // Italic *text* (but not inside bold markers)
@@ -202,10 +270,25 @@ function inlineHtmlToMarkdown(node: Node): string {
   const tag = el.tagName.toLowerCase();
 
   if (tag === 'span') {
+    const figureNoRaw = el.getAttribute('data-figure-no');
+    if (figureNoRaw && figureNoRaw.trim()) {
+      const parsed = Number.parseInt(figureNoRaw, 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return `[Figure ${Math.trunc(parsed)}]`;
+      }
+    }
+
     const citationKey = el.getAttribute('data-cite-key');
     if (citationKey && citationKey.trim()) {
       return `[CITE:${citationKey.trim()}]`;
     }
+  }
+
+  if (tag === 'img') {
+    const src = String(el.getAttribute('src') || '').trim();
+    if (!src) return '';
+    const alt = String(el.getAttribute('alt') || '').trim();
+    return `![${alt}](${src})`;
   }
 
   const children = Array.from(el.childNodes).map(inlineHtmlToMarkdown).join('');
@@ -225,7 +308,11 @@ function inlineHtmlToMarkdown(node: Node): string {
  * Convert markdown to HTML for TipTap consumption.
  * Handles: headings (##-####), bullet/ordered lists (nested), blockquotes, paragraphs
  */
-function markdownToHtml(markdown: string, citationDisplayMeta?: PaperCitationDisplayMeta): string {
+function markdownToHtml(
+  markdown: string,
+  citationDisplayMeta?: PaperCitationDisplayMeta,
+  figureDisplayMeta?: PaperFigureDisplayMeta
+): string {
   const normalized = polishDraftMarkdown(normalizeLegacyCitationSpanMarkup(markdown || ''));
   if (!normalized) return '<p></p>';
 
@@ -272,7 +359,7 @@ function markdownToHtml(markdown: string, citationDisplayMeta?: PaperCitationDis
       closeBlockquote();
       closeListsToLevel(0);
       const level = Math.min(4, Math.max(2, headingMatch[1].length));
-      html.push(`<h${level}>${inlineMarkdownToHtml(headingMatch[2].trim(), citationDisplayMeta)}</h${level}>`);
+      html.push(`<h${level}>${inlineMarkdownToHtml(headingMatch[2].trim(), citationDisplayMeta, figureDisplayMeta)}</h${level}>`);
       continue;
     }
 
@@ -287,7 +374,7 @@ function markdownToHtml(markdown: string, citationDisplayMeta?: PaperCitationDis
       }
       const quoteContent = blockquoteMatch[1].trim();
       if (quoteContent) {
-        html.push(`<p>${inlineMarkdownToHtml(quoteContent, citationDisplayMeta)}</p>`);
+        html.push(`<p>${inlineMarkdownToHtml(quoteContent, citationDisplayMeta, figureDisplayMeta)}</p>`);
       }
       continue;
     }
@@ -320,7 +407,7 @@ function markdownToHtml(markdown: string, citationDisplayMeta?: PaperCitationDis
         }
       }
 
-      html.push(`<li>${inlineMarkdownToHtml(listMatch[3].trim(), citationDisplayMeta)}</li>`);
+      html.push(`<li>${inlineMarkdownToHtml(listMatch[3].trim(), citationDisplayMeta, figureDisplayMeta)}</li>`);
       continue;
     }
 
@@ -333,7 +420,7 @@ function markdownToHtml(markdown: string, citationDisplayMeta?: PaperCitationDis
     } else {
       html.push('<br/>');
     }
-    html.push(inlineMarkdownToHtml(line, citationDisplayMeta));
+    html.push(inlineMarkdownToHtml(line, citationDisplayMeta, figureDisplayMeta));
   }
 
   closeParagraph();
@@ -431,11 +518,13 @@ function htmlToMarkdown(html: string): string {
       // Recursively extract paragraphs inside blockquote
       const quoteLines: string[] = [];
       for (const child of Array.from(node.childNodes)) {
+        // Use inlineHtmlToMarkdown for ALL child nodes so citation spans
+        // inside blockquotes are preserved as [CITE:key].
         if (child instanceof HTMLElement && child.tagName.toLowerCase() === 'p') {
           const text = Array.from(child.childNodes).map(inlineHtmlToMarkdown).join('').trim();
           if (text) quoteLines.push(`> ${text}`);
         } else {
-          const text = (child.textContent || '').trim();
+          const text = inlineHtmlToMarkdown(child).trim();
           if (text) quoteLines.push(`> ${text}`);
         }
       }
@@ -443,7 +532,8 @@ function htmlToMarkdown(html: string): string {
       continue;
     }
 
-    const fallback = node.textContent?.trim();
+    // Fallback: use inlineHtmlToMarkdown so citation spans are not lost.
+    const fallback = inlineHtmlToMarkdown(node).trim();
     if (fallback) blocks.push(fallback);
   }
 
@@ -611,6 +701,41 @@ const EDITOR_STYLES = `
   white-space: nowrap;
 }
 
+.paper-editor .ProseMirror .paper-figure-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4em;
+  border-radius: 0.7em;
+  border: 1px solid #c7d2fe;
+  background: #eef2ff;
+  color: #3730a3;
+  line-height: 1.3;
+  padding: 0.08em 0.38em;
+  margin: 0 0.08em;
+  max-width: 100%;
+  vertical-align: middle;
+}
+
+.paper-editor .ProseMirror .paper-figure-chip-thumb {
+  width: 1.8em;
+  height: 1.8em;
+  border-radius: 0.35em;
+  border: 1px solid #cbd5e1;
+  object-fit: cover;
+  background: #ffffff;
+  flex-shrink: 0;
+}
+
+.paper-editor .ProseMirror .paper-figure-chip-label {
+  font-size: 0.78em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 18em;
+}
+
 .paper-editor .ProseMirror sup {
   font-size: 0.75em;
   vertical-align: super;
@@ -634,6 +759,7 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
     onBlur,
     onSelectionChange,
     citationDisplayMeta,
+    figureDisplayMeta,
     placeholder = 'Write section content...',
     disabled = false,
     className = ''
@@ -644,9 +770,14 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
   const lastMarkdownRef = useRef(polishDraftMarkdown(value || ''));
   const savedSelectionRef = useRef<{ from: number; to: number } | null>(null);
   const citationDisplayMetaRef = useRef<PaperCitationDisplayMeta | undefined>(citationDisplayMeta);
+  const figureDisplayMetaRef = useRef<PaperFigureDisplayMeta | undefined>(figureDisplayMeta);
   const citationMetaSignature = citationDisplayMeta?.signature || '';
+  const figureMetaSignature = figureDisplayMeta?.signature || '';
+  // Guard: suppress onChange during programmatic setContent calls so that
+  // a stale or partial HTML snapshot cannot overwrite lastMarkdownRef.
+  const isProgrammaticUpdateRef = useRef(false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const initialHtml = useMemo(() => markdownToHtml(value || '', citationDisplayMeta), []);
+  const initialHtml = useMemo(() => markdownToHtml(value || '', citationDisplayMeta, figureDisplayMeta), []);
 
   const editor = useEditor({
     extensions: [
@@ -660,7 +791,9 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       Superscript,
       Subscript,
-      Underline
+      Underline,
+      CitationNode,
+      FigureNode
     ],
     content: initialHtml,
     editable: !disabled,
@@ -695,6 +828,9 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
       onSelectionChange?.(text ? { text, start: from, end: to } : null);
     },
     onUpdate: ({ editor: ed }) => {
+      // Skip if this update was triggered by a programmatic setContent call.
+      // Some TipTap versions fire onUpdate even with emitUpdate: false.
+      if (isProgrammaticUpdateRef.current) return;
       const markdown = htmlToMarkdown(ed.getHTML());
       lastMarkdownRef.current = markdown;
       onChange(markdown);
@@ -711,10 +847,19 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
   }, [citationDisplayMeta]);
 
   useEffect(() => {
+    figureDisplayMetaRef.current = figureDisplayMeta;
+  }, [figureDisplayMeta]);
+
+  useEffect(() => {
     if (!editor) return;
     const markdown = lastMarkdownRef.current || '';
-    editor.commands.setContent(markdownToHtml(markdown, citationDisplayMetaRef.current), { emitUpdate: false });
-  }, [editor, citationMetaSignature]);
+    isProgrammaticUpdateRef.current = true;
+    editor.commands.setContent(
+      markdownToHtml(markdown, citationDisplayMetaRef.current, figureDisplayMetaRef.current),
+      { emitUpdate: false }
+    );
+    isProgrammaticUpdateRef.current = false;
+  }, [editor, citationMetaSignature, figureMetaSignature]);
 
   // Sync external value changes into the editor
   useEffect(() => {
@@ -722,7 +867,12 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
     const normalized = polishDraftMarkdown(value || '');
     if (normalized === lastMarkdownRef.current) return;
     lastMarkdownRef.current = normalized;
-    editor.commands.setContent(markdownToHtml(normalized, citationDisplayMetaRef.current), { emitUpdate: false });
+    isProgrammaticUpdateRef.current = true;
+    editor.commands.setContent(
+      markdownToHtml(normalized, citationDisplayMetaRef.current, figureDisplayMetaRef.current),
+      { emitUpdate: false }
+    );
+    isProgrammaticUpdateRef.current = false;
   }, [value, editor]);
 
   // Save/restore selection helpers for external consumers (e.g., FloatingWritingPanel)
@@ -744,15 +894,26 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
     return text;
   }, []);
 
+  // Repair effect: convert plain-text [CITE:key]/[Figure N] markers left in
+  // the editor DOM into structured atom nodes after raw-text insertion.
   useEffect(() => {
     if (!editor) return;
     const normalized = polishDraftMarkdown(value || '');
-    if (!/\[CITE:/i.test(normalized)) return;
+    const hasCitationMarker = /\[CITE:/i.test(normalized);
+    const hasFigureMarker = FIGURE_MARKER_REGEX.test(normalized);
+    if (!hasCitationMarker && !hasFigureMarker) return;
     const currentHtml = editor.getHTML();
-    if (!/\[CITE:/i.test(currentHtml)) return;
+    const citationInHtml = /\[CITE:/i.test(currentHtml);
+    const figureInHtml = FIGURE_MARKER_REGEX.test(currentHtml);
+    if (!citationInHtml && !figureInHtml) return;
     lastMarkdownRef.current = normalized;
-    editor.commands.setContent(markdownToHtml(normalized, citationDisplayMetaRef.current), { emitUpdate: false });
-  }, [editor, value, citationMetaSignature]);
+    isProgrammaticUpdateRef.current = true;
+    editor.commands.setContent(
+      markdownToHtml(normalized, citationDisplayMetaRef.current, figureDisplayMetaRef.current),
+      { emitUpdate: false }
+    );
+    isProgrammaticUpdateRef.current = false;
+  }, [editor, value, citationMetaSignature, figureMetaSignature]);
 
   useImperativeHandle(
     ref,

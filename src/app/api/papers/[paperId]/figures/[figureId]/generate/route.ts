@@ -29,7 +29,7 @@ export const runtime = 'nodejs';
 
 const generateSchema = z.object({
   figureType: z.string(),
-  category: z.enum(['DATA_CHART', 'DIAGRAM', 'STATISTICAL_PLOT', 'ILLUSTRATION', 'SKETCH', 'CUSTOM']),
+  category: z.enum(['DATA_CHART', 'DIAGRAM', 'STATISTICAL_PLOT', 'ILLUSTRATED_FIGURE', 'ILLUSTRATION', 'SKETCH', 'CUSTOM']),
   title: z.string(),
   caption: z.string().optional().nullable(),
   // User's natural language description for LLM generation
@@ -59,6 +59,9 @@ const generateSchema = z.object({
   }).optional(),
   suggestionMeta: z.object({
     relevantSection: z.string().optional(),
+    figureRole: z.enum(['ORIENT', 'POSITION', 'EXPLAIN_METHOD', 'SHOW_RESULTS', 'INTERPRET']).optional(),
+    sectionFitJustification: z.string().optional(),
+    expectedByReviewers: z.boolean().optional(),
     importance: z.enum(['required', 'recommended', 'optional']).optional(),
     dataNeeded: z.string().optional(),
     whyThisFigure: z.string().optional(),
@@ -82,6 +85,74 @@ const generateSchema = z.object({
         description: z.string().optional()
       })).optional(),
       splitSuggestion: z.string().optional()
+    }).optional(),
+    chartSpec: z.object({
+      chartType: z.string().optional(),
+      xAxisLabel: z.string().optional(),
+      yAxisLabel: z.string().optional(),
+      xField: z.string().optional(),
+      yField: z.string().optional(),
+      series: z.array(z.object({
+        label: z.string(),
+        yField: z.string(),
+        confidenceField: z.string().optional()
+      })).optional(),
+      aggregation: z.string().optional(),
+      baselineLabel: z.string().optional(),
+      placeholderPolicy: z.object({
+        allowed: z.boolean().optional(),
+        label: z.string().optional(),
+        shape: z.string().optional(),
+        rangeHint: z.string().optional()
+      }).optional(),
+      notes: z.string().optional()
+    }).optional(),
+    illustrationSpecV2: z.object({
+      layout: z.enum(['PANELS', 'STRIP']).optional(),
+      panelCount: z.number().int().min(1).max(8).optional(),
+      stepCount: z.number().int().min(1).max(10).optional(),
+      flowDirection: z.enum(['LR', 'TD']).optional(),
+      panels: z.array(z.object({
+        idHint: z.string(),
+        title: z.string(),
+        elements: z.array(z.string()).optional()
+      })).optional(),
+      elements: z.array(z.string()).optional(),
+      steps: z.array(z.string()).optional(),
+      captionDraft: z.string().optional(),
+      splitSuggestion: z.string().optional(),
+      figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT']).optional(),
+      renderDirectives: z.object({
+        aspectRatio: z.string().optional(),
+        fillCanvasPercentMin: z.number().optional(),
+        whitespaceMaxPercent: z.number().optional(),
+        textPolicy: z.any().optional(),
+        stylePolicy: z.any().optional(),
+        compositionPolicy: z.any().optional()
+      }).optional(),
+      actors: z.array(z.string()).optional(),
+      props: z.array(z.string()).optional(),
+      forbiddenElements: z.array(z.string()).optional()
+    }).optional(),
+    renderSpec: z.object({
+      kind: z.enum(['chart', 'diagram', 'illustration']),
+      chartSpec: z.any().optional(),
+      diagramSpec: z.any().optional(),
+      illustrationSpecV2: z.any().optional()
+    }).optional(),
+    figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT']).optional(),
+    renderDirectives: z.object({
+      aspectRatio: z.string().optional(),
+      fillCanvasPercentMin: z.number().optional(),
+      whitespaceMaxPercent: z.number().optional(),
+      textPolicy: z.any().optional(),
+      stylePolicy: z.any().optional(),
+      compositionPolicy: z.any().optional()
+    }).optional(),
+    paperProfile: z.object({
+      paperGenre: z.string(),
+      studyType: z.enum(['experimental', 'survey', 'qualitative', 'mixed-methods', 'simulation', 'theoretical', 'unknown']),
+      dataAvailability: z.enum(['provided', 'partial', 'none'])
     }).optional(),
     // Sketch/illustration-specific fields
     sketchStyle: z.enum(['academic', 'scientific', 'conceptual', 'technical']).optional(),
@@ -450,6 +521,11 @@ export async function POST(
               description: groundedDescription,
               chartType: data.figureType as any,
               title: data.title,
+              sectionType: chartEnrichment.relevantSection,
+              figureRole: chartEnrichment.figureRole as any,
+              paperGenre: chartEnrichment.paperProfile?.paperGenre,
+              studyType: chartEnrichment.paperProfile?.studyType,
+              chartSpec: chartEnrichment.chartSpec,
               data: data.data?.labels && data.code ? {
                 labels: data.data.labels,
                 values: data.code.split(',').map(v => parseFloat(v.trim())).filter(n => !isNaN(n)),
@@ -642,6 +718,9 @@ export async function POST(
                 description: groundedDescription,
                 diagramType: data.figureType as any,
                 title: data.title,
+                sectionType: enrichmentMeta.relevantSection,
+                figureRole: enrichmentMeta.figureRole as any,
+                paperGenre: enrichmentMeta.paperProfile?.paperGenre,
                 diagramSpec,
                 rendererPreference: rendererDecision.renderer,
                 hasRecentMermaidFailure: recentMermaidFailure,
@@ -739,6 +818,11 @@ export async function POST(
               description: groundedDescription,
               chartType: data.figureType as any || 'bar',
               title: data.title,
+              sectionType: statEnrichment.relevantSection,
+              figureRole: statEnrichment.figureRole as any,
+              paperGenre: statEnrichment.paperProfile?.paperGenre,
+              studyType: statEnrichment.paperProfile?.studyType,
+              chartSpec: statEnrichment.chartSpec,
               style: resolvedTheme as any
             },
             requestHeaders
@@ -781,6 +865,7 @@ export async function POST(
         break;
 
       case 'SKETCH':
+      case 'ILLUSTRATED_FIGURE':
       case 'ILLUSTRATION':
         {
           // Route to the Gemini-based sketch service
@@ -791,6 +876,15 @@ export async function POST(
           const sketchPrompt = sketchMeta.sketchPrompt
             || data.description
             || data.title;
+          const illustrationSpecV2 = sketchMeta.illustrationSpecV2
+            || sketchMeta.renderSpec?.illustrationSpecV2
+            || undefined;
+          const figureGenre = sketchMeta.figureGenre
+            || illustrationSpecV2?.figureGenre
+            || undefined;
+          const renderDirectives = sketchMeta.renderDirectives
+            || illustrationSpecV2?.renderDirectives
+            || undefined;
           const sketchMode = data.figureType?.startsWith('sketch-guided') || sketchMeta.sketchMode === 'GUIDED'
             ? 'GUIDED' as const
             : 'SUGGEST' as const;
@@ -804,6 +898,9 @@ export async function POST(
             mode: sketchMode,
             title: data.title,
             userPrompt: sketchPrompt,
+            illustrationSpecV2,
+            figureGenre,
+            renderDirectives,
             style: sketchStyle
           }, user.id, undefined);
 

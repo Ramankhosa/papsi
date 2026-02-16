@@ -21,6 +21,130 @@ interface CitationItem {
   citationKey: string;
   source: 'paper' | 'library';
   sourceType: string;
+  usageCount?: number;
+  abstract?: string | null;
+}
+
+function splitCitationKeys(rawKeys: string): string[] {
+  if (!rawKeys) return [];
+  return rawKeys
+    .split(/[;,]/)
+    .map((key) => key.trim())
+    .filter(Boolean);
+}
+
+function normalizeCitationMarkupForExtraction(content: string): string {
+  const raw = String(content || '');
+  if (!raw) return '';
+
+  const decoded = raw
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, '\'')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&');
+
+  return decoded.replace(
+    /<span\b[^>]*data-cite-key=(?:"([^"]+)"|'([^']+)')[^>]*>[\s\S]*?<\/span>/gi,
+    (_full, keyA, keyB) => {
+      const citationKey = String(keyA || keyB || '').trim();
+      return citationKey ? `[CITE:${citationKey}]` : _full;
+    }
+  );
+}
+
+function normalizeExtraSections(value: unknown): Record<string, string> {
+  const normalize = (sections: Record<string, unknown>): Record<string, string> => {
+    const normalized: Record<string, string> = {};
+    for (const [key, sectionValue] of Object.entries(sections)) {
+      if (typeof sectionValue === 'string') {
+        normalized[key] = sectionValue;
+      }
+    }
+    return normalized;
+  };
+
+  if (!value) return {};
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? normalize(parsed as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return normalize(value as Record<string, unknown>);
+  }
+  return {};
+}
+
+async function buildUsageCountByCitationKey(sessionId: string, citationKeys: string[]): Promise<Record<string, number>> {
+  if (citationKeys.length === 0) return {};
+
+  const canonicalLookup = new Map<string, string>();
+  for (const key of citationKeys) {
+    const normalized = String(key || '').trim().toLowerCase();
+    if (normalized && !canonicalLookup.has(normalized)) {
+      canonicalLookup.set(normalized, key);
+    }
+  }
+
+  const usageCountByKey: Record<string, number> = {};
+  canonicalLookup.forEach((_value, normalized) => {
+    usageCountByKey[normalized] = 0;
+  });
+
+  const latestPaperDraft = await prisma.annexureDraft.findFirst({
+    where: {
+      sessionId,
+      jurisdiction: 'PAPER'
+    },
+    orderBy: { version: 'desc' },
+    select: { extraSections: true }
+  });
+
+  const latestAnyDraft = latestPaperDraft
+    ? null
+    : await prisma.annexureDraft.findFirst({
+        where: { sessionId },
+        orderBy: { updatedAt: 'desc' },
+        select: { extraSections: true }
+      });
+
+  const extraSections = normalizeExtraSections(latestPaperDraft?.extraSections ?? latestAnyDraft?.extraSections);
+  const markerRegex = /\[CITE:([^\]]+)\]/gi;
+  const bareMarkerRegex = /\[([^\[\]]+)\]/g;
+
+  for (const rawContent of Object.values(extraSections)) {
+    const content = normalizeCitationMarkupForExtraction(rawContent || '');
+    if (!content.trim()) continue;
+
+    markerRegex.lastIndex = 0;
+    let match: RegExpExecArray | null = null;
+    while ((match = markerRegex.exec(content)) !== null) {
+      const keys = splitCitationKeys(String(match[1] || ''));
+      for (const rawKey of keys) {
+        const normalized = rawKey.toLowerCase();
+        if (!canonicalLookup.has(normalized)) continue;
+        usageCountByKey[normalized] = (usageCountByKey[normalized] || 0) + 1;
+      }
+    }
+
+    bareMarkerRegex.lastIndex = 0;
+    while ((match = bareMarkerRegex.exec(content)) !== null) {
+      const token = String(match[1] || '').trim();
+      if (!token || /^CITE:/i.test(token) || /^Figure\s+\d+/i.test(token)) continue;
+      const keys = splitCitationKeys(token);
+      for (const rawKey of keys) {
+        const normalized = rawKey.toLowerCase();
+        if (!canonicalLookup.has(normalized)) continue;
+        usageCountByKey[normalized] = (usageCountByKey[normalized] || 0) + 1;
+      }
+    }
+  }
+
+  return usageCountByKey;
 }
 
 // ============================================================================
@@ -51,7 +175,8 @@ export async function GET(
     const url = new URL(request.url);
     const searchQuery = url.searchParams.get('q') || '';
     const sourceFilter = url.searchParams.get('source') || 'all'; // 'all', 'paper', 'library'
-    const limit = parseInt(url.searchParams.get('limit') || '50', 10);
+    // Library limit - paper citations are never truncated (user's working set)
+    const libraryLimit = parseInt(url.searchParams.get('limit') || '50', 10);
 
     // Build search condition
     const searchCondition = searchQuery
@@ -64,9 +189,26 @@ export async function GET(
       : {};
 
     const results: CitationItem[] = [];
+    let usageByKey: Record<string, number> = {};
 
-    // Fetch paper citations (from session)
+    // Fetch ALL paper citations (from session) - never truncate the user's working set
     if (sourceFilter === 'all' || sourceFilter === 'paper') {
+      const allPaperCitationKeys = await prisma.citation.findMany({
+        where: {
+          sessionId,
+          isActive: true
+        },
+        select: {
+          citationKey: true
+        }
+      });
+
+      const usageCountByCitationKey = await buildUsageCountByCitationKey(
+        sessionId,
+        allPaperCitationKeys.map((citation) => citation.citationKey)
+      );
+      usageByKey = usageCountByCitationKey;
+
       const paperCitations = await prisma.citation.findMany({
         where: {
           sessionId,
@@ -74,10 +216,11 @@ export async function GET(
           ...searchCondition,
         },
         orderBy: { createdAt: 'desc' },
-        take: sourceFilter === 'paper' ? limit : Math.floor(limit / 2),
+        // No take limit for paper citations - return all of them
       });
 
       for (const c of paperCitations) {
+        const usageCount = usageCountByCitationKey[String(c.citationKey || '').toLowerCase()] || 0;
         results.push({
           id: c.id,
           title: c.title,
@@ -88,11 +231,13 @@ export async function GET(
           citationKey: c.citationKey,
           source: 'paper',
           sourceType: c.sourceType,
+          usageCount,
+          abstract: c.abstract,
         });
       }
     }
 
-    // Fetch user's reference library
+    // Fetch user's reference library (limited to avoid large payloads)
     if (sourceFilter === 'all' || sourceFilter === 'library') {
       const libraryRefs = await prisma.referenceLibrary.findMany({
         where: {
@@ -104,7 +249,7 @@ export async function GET(
           { isFavorite: 'desc' },
           { createdAt: 'desc' },
         ],
-        take: sourceFilter === 'library' ? limit : Math.floor(limit / 2),
+        take: libraryLimit,
       });
 
       for (const r of libraryRefs) {
@@ -138,12 +283,13 @@ export async function GET(
     ]);
 
     return NextResponse.json({
-      citations: results.slice(0, limit),
+      citations: results,
       counts: {
         paper: paperCount,
         library: libraryCount,
         total: paperCount + libraryCount,
       },
+      usageByKey,
     });
   } catch (error) {
     console.error('Failed to fetch panel citations:', error);
@@ -294,4 +440,3 @@ export async function POST(
     );
   }
 }
-

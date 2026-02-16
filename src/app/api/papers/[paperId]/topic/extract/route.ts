@@ -4,6 +4,7 @@ import mammoth from 'mammoth';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { llmGateway } from '@/lib/metering/gateway';
+import { paperArchetypeService } from '@/lib/services/paper-archetype-service';
 
 export const runtime = 'nodejs';
 
@@ -132,6 +133,34 @@ RULES:
 - For arrays, include all relevant items found
 - Set confidence between 0-1 based on how much information was extractable
 - Include helpful notes about what couldn't be extracted or needs user verification`;
+}
+
+function buildTopicOverrideFromExtracted(extracted: Record<string, any>) {
+  return {
+    title: typeof extracted.title === 'string' ? extracted.title : null,
+    field: typeof extracted.field === 'string' ? extracted.field : null,
+    subfield: typeof extracted.subfield === 'string' ? extracted.subfield : null,
+    topicDescription: typeof extracted.topicDescription === 'string' ? extracted.topicDescription : null,
+    researchQuestion: typeof extracted.researchQuestion === 'string' ? extracted.researchQuestion : null,
+    subQuestions: Array.isArray(extracted.subQuestions) ? extracted.subQuestions : [],
+    problemStatement: typeof extracted.problemStatement === 'string' ? extracted.problemStatement : null,
+    researchGaps: typeof extracted.researchGaps === 'string' ? extracted.researchGaps : null,
+    methodology: typeof extracted.methodology === 'string' ? extracted.methodology : null,
+    methodologyApproach: typeof extracted.methodologyApproach === 'string' ? extracted.methodologyApproach : null,
+    techniques: Array.isArray(extracted.techniques) ? extracted.techniques : [],
+    datasetDescription: typeof extracted.datasetDescription === 'string' ? extracted.datasetDescription : null,
+    dataCollection: typeof extracted.dataCollection === 'string' ? extracted.dataCollection : null,
+    sampleSize: typeof extracted.sampleSize === 'string' ? extracted.sampleSize : null,
+    tools: Array.isArray(extracted.tools) ? extracted.tools : [],
+    experiments: typeof extracted.experiments === 'string' ? extracted.experiments : null,
+    hypothesis: typeof extracted.hypothesis === 'string' ? extracted.hypothesis : null,
+    expectedResults: typeof extracted.expectedResults === 'string' ? extracted.expectedResults : null,
+    contributionType: typeof extracted.contributionType === 'string' ? extracted.contributionType : null,
+    novelty: typeof extracted.novelty === 'string' ? extracted.novelty : null,
+    limitations: typeof extracted.limitations === 'string' ? extracted.limitations : null,
+    keywords: Array.isArray(extracted.keywords) ? extracted.keywords : [],
+    abstractDraft: typeof extracted.abstractDraft === 'string' ? extracted.abstractDraft : null
+  };
 }
 
 export async function POST(request: NextRequest, context: { params: { paperId: string } }) {
@@ -269,13 +298,31 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       }
     });
 
+    let archetypeDetection: Awaited<ReturnType<typeof paperArchetypeService.detectAndPersist>> | null = null;
+    try {
+      archetypeDetection = await paperArchetypeService.detectAndPersist({
+        sessionId,
+        headers,
+        userId: user.id,
+        source: 'TOPIC_EXTRACT',
+        topicOverride: buildTopicOverrideFromExtracted(parsed),
+        preferPersistedTopic: true,
+        helperNotes: typeof parsed.extractionNotes === 'string'
+          ? { extractionNotes: parsed.extractionNotes }
+          : null
+      });
+    } catch (detectError) {
+      console.error('[TopicExtract] Archetype detection failed:', detectError);
+    }
+
     return NextResponse.json({
       success: true,
       extracted: parsed,
+      archetypeDetection,
       metadata: {
         fileName,
         contentLength: textContent.length,
-        tokensUsed: result.response.totalTokens || 0
+        tokensUsed: result.response.outputTokens || 0
       }
     });
 

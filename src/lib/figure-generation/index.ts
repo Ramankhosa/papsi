@@ -109,6 +109,9 @@ export async function generateFigure(
       case 'STATISTICAL_PLOT':
         return await generateStatisticalPlot(request)
       
+      case 'ILLUSTRATED_FIGURE':
+        return await generateIllustration(request)
+
       case 'ILLUSTRATION':
         return await generateIllustration(request)
       
@@ -352,6 +355,7 @@ export async function suggestFigures(
     DATA_CHART: 0,
     DIAGRAM: 0,
     STATISTICAL_PLOT: 0,
+    ILLUSTRATED_FIGURE: 0,
     ILLUSTRATION: 0,
     SKETCH: 0,
     TABLE: 0,

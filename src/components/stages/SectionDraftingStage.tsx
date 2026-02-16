@@ -6,7 +6,6 @@ import {
   Loader2, 
   AlertCircle,
   BookOpen,
-  Move,
   Settings2,
   Copy,
   Check,
@@ -18,10 +17,11 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import CitationPickerModal from '@/components/paper/CitationPickerModal';
-import CitationManager from '@/components/paper/CitationManager';
+
 import PaperMarkdownEditor, {
   type PaperMarkdownEditorRef,
-  type PaperCitationDisplayMeta
+  type PaperCitationDisplayMeta,
+  type PaperFigureDisplayMeta
 } from '@/components/paper/PaperMarkdownEditor';
 
 // Import shared components from patent drafting
@@ -68,7 +68,7 @@ interface UserInstruction {
   updatedAt?: string;
 }
 
-type CitationsPanelResizeDirection = 'corner' | 'left' | 'bottom' | 'top' | 'top-left-corner';
+
 
 // AI Review Issue Type
 interface AIReviewIssue {
@@ -673,7 +673,6 @@ export default function SectionDraftingStage({
     numberingByKey: Record<string, number>;
   } | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [showCitations, setShowCitations] = useState(false);
   const [insertCitationTarget, setInsertCitationTarget] = useState<string | null>(null);
   const insertCitationTargetRef = useRef<string | null>(null);
   const editorRefs = useRef<Record<string, PaperMarkdownEditorRef | null>>({});
@@ -695,27 +694,7 @@ export default function SectionDraftingStage({
     () => ['IEEE', 'VANCOUVER'].includes((bibliographyStyle || '').toUpperCase()),
     [bibliographyStyle]
   );
-  const [citationsPanelPosition, setCitationsPanelPosition] = useState({ x: 24, y: 24 });
-  const [citationsPanelSize, setCitationsPanelSize] = useState({ width: 320, height: 540 });
-  const [isCitationsPanelDragging, setIsCitationsPanelDragging] = useState(false);
-  const [isCitationsPanelResizing, setIsCitationsPanelResizing] = useState(false);
-  const [showCitationToolsMenu, setShowCitationToolsMenu] = useState(false);
-  const citationsPanelInitializedRef = useRef(false);
-  const citationToolsMenuRef = useRef<HTMLDivElement | null>(null);
-  const citationsPanelDragRef = useRef<{
-    startX: number;
-    startY: number;
-    startPosX: number;
-    startPosY: number;
-  } | null>(null);
-  const citationsPanelResizeRef = useRef<{
-    startX: number;
-    startY: number;
-    startWidth: number;
-    startHeight: number;
-    startPosX: number;
-    startPosY: number;
-  } | null>(null);
+  
 
   // Floating Panel State
   const [figures, setFigures] = useState<Array<{
@@ -758,214 +737,6 @@ export default function SectionDraftingStage({
     setMessageType(type);
     setTimeout(() => setMessage(null), 4000);
   };
-
-  const getViewportBounds = useCallback(() => {
-    if (typeof window === 'undefined') {
-      return { width: 1440, height: 900 };
-    }
-    return { width: window.innerWidth, height: window.innerHeight };
-  }, []);
-
-  const clampCitationsPanelSize = useCallback((size: { width: number; height: number }) => {
-    const { width: viewportWidth, height: viewportHeight } = getViewportBounds();
-    const minWidth = 300;
-    const minHeight = 380;
-    const maxWidth = Math.max(minWidth, viewportWidth - 16);
-    const maxHeight = Math.max(minHeight, viewportHeight - 16);
-    return {
-      width: Math.max(minWidth, Math.min(maxWidth, size.width)),
-      height: Math.max(minHeight, Math.min(maxHeight, size.height)),
-    };
-  }, [getViewportBounds]);
-
-  const clampCitationsPanelPosition = useCallback((
-    position: { x: number; y: number },
-    sizeOverride?: { width: number; height: number }
-  ) => {
-    const { width: viewportWidth, height: viewportHeight } = getViewportBounds();
-    const panelSize = sizeOverride ?? citationsPanelSize;
-    const minX = 8;
-    const minY = 8;
-    const maxX = Math.max(minX, viewportWidth - panelSize.width - 8);
-    const maxY = Math.max(minY, viewportHeight - panelSize.height - 8);
-    return {
-      x: Math.max(minX, Math.min(maxX, position.x)),
-      y: Math.max(minY, Math.min(maxY, position.y)),
-    };
-  }, [citationsPanelSize, getViewportBounds]);
-
-  const resetCitationsPanelLayout = useCallback(() => {
-    const defaultSize = clampCitationsPanelSize({ width: 320, height: 540 });
-    const { width: viewportWidth } = getViewportBounds();
-    const defaultPosition = clampCitationsPanelPosition(
-      { x: viewportWidth - defaultSize.width - 24, y: 24 },
-      defaultSize
-    );
-    setCitationsPanelSize(defaultSize);
-    setCitationsPanelPosition(defaultPosition);
-  }, [clampCitationsPanelPosition, clampCitationsPanelSize, getViewportBounds]);
-
-  const openCitationsPanel = useCallback((options?: { reset?: boolean }) => {
-    const shouldReset = options?.reset === true;
-    if (shouldReset) {
-      resetCitationsPanelLayout();
-      setShowCitations(true);
-      return;
-    }
-
-    setCitationsPanelSize((prevSize) => {
-      const safeSize = Number.isFinite(prevSize.width) && Number.isFinite(prevSize.height)
-        ? prevSize
-        : { width: 320, height: 540 };
-      const nextSize = clampCitationsPanelSize(safeSize);
-      setCitationsPanelPosition((prevPos) => {
-        const safePos = Number.isFinite(prevPos.x) && Number.isFinite(prevPos.y)
-          ? prevPos
-          : { x: 24, y: 24 };
-        return clampCitationsPanelPosition(safePos, nextSize);
-      });
-      return nextSize;
-    });
-    setShowCitations(true);
-  }, [clampCitationsPanelPosition, clampCitationsPanelSize, resetCitationsPanelLayout]);
-
-  const handleCitationsPanelDragStart = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    citationsPanelDragRef.current = {
-      startX: event.clientX,
-      startY: event.clientY,
-      startPosX: citationsPanelPosition.x,
-      startPosY: citationsPanelPosition.y,
-    };
-    setIsCitationsPanelDragging(true);
-
-    const handleMouseMove = (moveEvent: MouseEvent) => {
-      if (!citationsPanelDragRef.current) return;
-      const deltaX = moveEvent.clientX - citationsPanelDragRef.current.startX;
-      const deltaY = moveEvent.clientY - citationsPanelDragRef.current.startY;
-      setCitationsPanelPosition(clampCitationsPanelPosition({
-        x: citationsPanelDragRef.current.startPosX + deltaX,
-        y: citationsPanelDragRef.current.startPosY + deltaY,
-      }));
-    };
-
-    const handleMouseUp = () => {
-      setIsCitationsPanelDragging(false);
-      citationsPanelDragRef.current = null;
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-  }, [citationsPanelPosition.x, citationsPanelPosition.y, clampCitationsPanelPosition]);
-
-  const handleCitationsPanelResizeStart = useCallback((
-    event: React.MouseEvent<HTMLDivElement>,
-    direction: CitationsPanelResizeDirection
-  ) => {
-    event.preventDefault();
-    event.stopPropagation();
-    citationsPanelResizeRef.current = {
-      startX: event.clientX,
-      startY: event.clientY,
-      startWidth: citationsPanelSize.width,
-      startHeight: citationsPanelSize.height,
-      startPosX: citationsPanelPosition.x,
-      startPosY: citationsPanelPosition.y,
-    };
-    setIsCitationsPanelResizing(true);
-
-    const handleMouseMove = (moveEvent: MouseEvent) => {
-      if (!citationsPanelResizeRef.current) return;
-      const deltaX = moveEvent.clientX - citationsPanelResizeRef.current.startX;
-      const deltaY = moveEvent.clientY - citationsPanelResizeRef.current.startY;
-      let nextWidth = citationsPanelResizeRef.current.startWidth;
-      let nextHeight = citationsPanelResizeRef.current.startHeight;
-      let nextX = citationsPanelResizeRef.current.startPosX;
-      let nextY = citationsPanelResizeRef.current.startPosY;
-
-      if (direction === 'corner' || direction === 'left' || direction === 'top-left-corner') {
-        nextWidth = citationsPanelResizeRef.current.startWidth - deltaX;
-      }
-      if (direction === 'corner' || direction === 'bottom') {
-        nextHeight = citationsPanelResizeRef.current.startHeight + deltaY;
-      }
-      if (direction === 'top' || direction === 'top-left-corner') {
-        nextHeight = citationsPanelResizeRef.current.startHeight - deltaY;
-      }
-
-      const constrainedSize = clampCitationsPanelSize({ width: nextWidth, height: nextHeight });
-
-      if (direction === 'corner' || direction === 'left' || direction === 'top-left-corner') {
-        nextX = citationsPanelResizeRef.current.startPosX
-          + (citationsPanelResizeRef.current.startWidth - constrainedSize.width);
-      }
-      if (direction === 'top' || direction === 'top-left-corner') {
-        nextY = citationsPanelResizeRef.current.startPosY
-          + (citationsPanelResizeRef.current.startHeight - constrainedSize.height);
-      }
-
-      const constrainedPosition = clampCitationsPanelPosition({ x: nextX, y: nextY }, constrainedSize);
-      setCitationsPanelSize(constrainedSize);
-      setCitationsPanelPosition(constrainedPosition);
-    };
-
-    const handleMouseUp = () => {
-      setIsCitationsPanelResizing(false);
-      citationsPanelResizeRef.current = null;
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-  }, [
-    citationsPanelPosition.x,
-    citationsPanelPosition.y,
-    citationsPanelSize.height,
-    citationsPanelSize.width,
-    clampCitationsPanelPosition,
-    clampCitationsPanelSize
-  ]);
-
-  useEffect(() => {
-    if (!showCitations || citationsPanelInitializedRef.current) return;
-    resetCitationsPanelLayout();
-    citationsPanelInitializedRef.current = true;
-  }, [showCitations, resetCitationsPanelLayout]);
-
-  useEffect(() => {
-    if (showCitations) return;
-    setShowCitationToolsMenu(false);
-  }, [showCitations]);
-
-  useEffect(() => {
-    if (!showCitationToolsMenu) return;
-
-    const handleOutsideClick = (event: MouseEvent) => {
-      if (citationToolsMenuRef.current?.contains(event.target as Node)) return;
-      setShowCitationToolsMenu(false);
-    };
-
-    document.addEventListener('mousedown', handleOutsideClick);
-    return () => document.removeEventListener('mousedown', handleOutsideClick);
-  }, [showCitationToolsMenu]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const handleResize = () => {
-      setCitationsPanelSize((prev) => {
-        const next = clampCitationsPanelSize(prev);
-        setCitationsPanelPosition((prevPos) => clampCitationsPanelPosition(prevPos, next));
-        if (next.width === prev.width && next.height === prev.height) return prev;
-        return next;
-      });
-    };
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
-  }, [clampCitationsPanelPosition, clampCitationsPanelSize]);
 
   const isCitationEligibleForSection = useCallback(
     (sectionKey: string) => citationEligibleBySection[normalizeSectionKey(sectionKey)] === true,
@@ -1735,6 +1506,49 @@ export default function SectionDraftingStage({
       }
     }
 
+    // ── Rendered-label reverse lookup (last-resort recovery) ───────────
+    // If explicit markers were lost (e.g. content was saved before the
+    // CitationNode fix), try to match rendered in-text citation labels
+    // back to their citation keys.  This handles labels such as
+    // "(Smith, 2024)", "(Smith & Lee, 2024)", "(1)", "[1]", etc.
+    if (usedKeys.length === 0 && citations.length > 0) {
+      const allSectionText = orderedSections
+        .map(key => normalizedContent[key] || '')
+        .join('\n\n');
+
+      if (allSectionText.trim()) {
+        for (const citation of citations) {
+          const citationKey = String(citation?.citationKey || '').trim();
+          if (!citationKey) continue;
+          const identity = citationKey.toLowerCase();
+          if (seen.has(identity)) continue;
+
+          // Check rendered preview label from server
+          const previewInText = typeof citation?.preview?.inText === 'string'
+            ? citation.preview.inText.trim()
+            : '';
+
+          // Also check raw citation key appearing as plain text
+          const searchTerms: string[] = [];
+          if (previewInText) searchTerms.push(previewInText);
+          // Match bare citation key as word boundary (e.g. "Smith2024")
+          searchTerms.push(citationKey);
+
+          const found = searchTerms.some(term => {
+            if (!term) return false;
+            // Escape regex special chars for literal match
+            const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            return new RegExp(escaped, 'i').test(allSectionText);
+          });
+
+          if (found) {
+            seen.add(identity);
+            usedKeys.push(citationKey);
+          }
+        }
+      }
+    }
+
     return usedKeys;
   }, [content, citations, sectionConfigs]);
 
@@ -1808,10 +1622,39 @@ export default function SectionDraftingStage({
     };
   }, [bibliographyStyle, citationStyleMeta, citations, extractUsedCitationKeys]);
 
+  const figureDisplayMeta = useMemo<PaperFigureDisplayMeta>(() => {
+    const byNo: Record<number, { title?: string; imagePath?: string }> = {};
+
+    for (const figure of figures) {
+      const rawNo = Number(figure?.figureNo);
+      if (!Number.isFinite(rawNo) || rawNo <= 0) continue;
+      const figureNo = Math.trunc(rawNo);
+      const title = typeof figure?.title === 'string' ? figure.title.trim() : '';
+      const imagePath = typeof figure?.imagePath === 'string' ? figure.imagePath.trim() : '';
+
+      byNo[figureNo] = {
+        title: title || undefined,
+        imagePath: imagePath || undefined,
+      };
+    }
+
+    const signature = Object.keys(byNo)
+      .map((key) => Number(key))
+      .sort((left, right) => left - right)
+      .map((figureNo) => {
+        const meta = byNo[figureNo];
+        return `${figureNo}:${meta?.imagePath || ''}:${meta?.title || ''}`;
+      })
+      .join('|');
+
+    return { byNo, signature };
+  }, [figures]);
+
   const generateBibliography = useCallback(async () => {
-    // Prefer explicit placeholders from draft content.
+    // ── 1. Primary: extract [CITE:key] markers from in-memory content ──
     const extractedCitationKeys = extractUsedCitationKeys();
-    // Fallback for legacy drafts where placeholders were previously rendered as plain text spans.
+
+    // ── 2. Fallback: citations with tracked server-side usage ──────────
     const usageFallbackKeys = citations
       .filter((citation) => {
         const usageCount = Number(citation?.usageCount || 0);
@@ -1820,13 +1663,20 @@ export default function SectionDraftingStage({
       })
       .map((citation) => String(citation?.citationKey || '').trim())
       .filter(Boolean);
-    const usedCitationKeys = extractedCitationKeys.length > 0
+
+    let usedCitationKeys = extractedCitationKeys.length > 0
       ? extractedCitationKeys
       : Array.from(new Set(usageFallbackKeys));
 
-    if (usedCitationKeys.length === 0) {
-      showMsg('No citations found in the paper. Insert citations first using [CITE:key] format.', 'warning');
-      return;
+    // ── 3. Last-resort: let the server extract from DB draft ───────────
+    // If both client-side paths returned nothing, send an empty array so
+    // the server will read the authoritative draft from the database and
+    // extract citation keys itself (it already has this logic).
+    const clientExtractionFailed = usedCitationKeys.length === 0;
+    if (clientExtractionFailed) {
+      // Don't block here — let the server decide.  We still show a soft
+      // warning but proceed with the request.
+      console.warn('[Bibliography] Client-side citation extraction found 0 keys; delegating to server.');
     }
     
     setGeneratingBibliography(true);
@@ -1843,7 +1693,9 @@ export default function SectionDraftingStage({
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify({ 
           action: 'generate_bibliography',
-          citationKeys: usedCitationKeys,
+          // When client extraction failed, send empty so the server falls
+          // through to its own draft-based extraction.
+          citationKeys: clientExtractionFailed ? [] : usedCitationKeys,
           sortOrder: bibliographySortOrder,
           styleCode: bibliographyStyle
         })
@@ -1878,16 +1730,19 @@ export default function SectionDraftingStage({
         const deltaLabel = changed
           ? `, Δ +${added}/-${removed}, renumbered ${renumbered}`
           : '';
-        const recoveryLabel = extractedCitationKeys.length === 0 && usageFallbackKeys.length > 0
-          ? ', recovered from usage metadata'
-          : '';
+        const recoveryLabel = clientExtractionFailed
+          ? ', recovered from server draft'
+          : extractedCitationKeys.length === 0 && usageFallbackKeys.length > 0
+            ? ', recovered from usage metadata'
+            : '';
         showMsg(
           `Bibliography generated (${bibliographyStyle}, ${usedCount} citations${sequenceLabel}${deltaLabel}${recoveryLabel})`,
           'success'
         );
         await loadCitations();
       } else {
-        showMsg('Failed to generate bibliography', 'error');
+        const serverMsg = typeof data?.error === 'string' ? data.error : '';
+        showMsg(serverMsg || 'Failed to generate bibliography', 'error');
       }
     } catch {
       showMsg('Bibliography generation failed', 'error');
@@ -2080,18 +1935,6 @@ export default function SectionDraftingStage({
                   )}
                 </button>
               </Tooltip>
-              <Tooltip content="Citations panel" position="bottom">
-                <button onClick={() => {
-                    if (showCitations) {
-                      setShowCitations(false);
-                      return;
-                    }
-                    openCitationsPanel();
-                  }}
-                  className={`p-2 rounded-lg border ${showCitations ? 'bg-purple-50 border-purple-200 text-purple-700' : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'}`}>
-                  <BookOpen className="w-4 h-4" />
-                </button>
-              </Tooltip>
             </div>
 
             <div className="ml-auto flex items-center gap-2">
@@ -2101,209 +1944,11 @@ export default function SectionDraftingStage({
             </div>
           </div>
 
-            {/* Citations Panel */}
-      <AnimatePresence>
-        {showCitations && (
-          <motion.div
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            exit={{ opacity: 0, x: 20 }}
-            style={{
-              left: citationsPanelPosition.x,
-              top: citationsPanelPosition.y,
-              width: citationsPanelSize.width,
-              height: citationsPanelSize.height,
-            }}
-            className={`fixed bg-white rounded-xl shadow-2xl border z-[120] overflow-hidden flex flex-col ${
-              isCitationsPanelDragging || isCitationsPanelResizing ? 'select-none' : ''
-            }`}
-          >
-            <div
-              className={`p-3 border-b flex items-center justify-between bg-white/95 backdrop-blur-sm ${
-                isCitationsPanelDragging ? 'cursor-grabbing' : 'cursor-grab'
-              }`}
-              onMouseDown={handleCitationsPanelDragStart}
-            >
-              <div className="flex items-center gap-2 min-w-0">
-                <Move className="w-3.5 h-3.5 text-slate-400 flex-shrink-0" />
-                <BookOpen className="w-4 h-4 text-purple-500 flex-shrink-0" />
-                <span className="font-semibold text-gray-900 truncate">Citations ({citations.length})</span>
-              </div>
-              <div className="flex items-center gap-1">
-                <button
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={resetCitationsPanelLayout}
-                  className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-md transition-colors"
-                  title="Reset panel layout"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  onMouseDown={(e) => e.stopPropagation()}
-                  onClick={() => setShowCitations(false)}
-                  className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-md transition-colors"
-                  title="Close citations panel"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
-
-            <div className="flex-1 overflow-y-auto p-3 min-h-0">
-              <CitationManager
-                sessionId={sessionId}
-                authToken={authToken}
-                citations={citations}
-                onCitationsUpdated={setCitations}
-                onInsertCitation={handleInsertSingleCitation}
-                usageFilterAction={
-                  <div
-                    ref={citationToolsMenuRef}
-                    className="relative"
-                    onMouseDown={(event) => event.stopPropagation()}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setShowCitationToolsMenu((prev) => !prev)}
-                      className={`h-8 w-8 rounded-md border flex items-center justify-center transition-colors ${
-                        showCitationToolsMenu
-                          ? 'bg-purple-50 border-purple-200 text-purple-700'
-                          : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                      }`}
-                      title="Citation tools"
-                    >
-                      <Settings2 className="w-3.5 h-3.5" />
-                    </button>
-                    <AnimatePresence>
-                      {showCitationToolsMenu && (
-                        <motion.div
-                          initial={{ opacity: 0, y: -6, scale: 0.98 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, y: -6, scale: 0.98 }}
-                          transition={{ duration: 0.14 }}
-                          className="absolute right-0 top-[calc(100%+8px)] z-[130] w-[290px] rounded-xl border border-gray-200 bg-white shadow-xl p-3 space-y-2"
-                        >
-                          <button
-                            onClick={() => {
-                              const activeSections = sectionConfigs || fallbackSections;
-                              const targetSection = focusedSection || (activeSections.length > 0 ? activeSections[0].keys[0] : null);
-                              if (targetSection) {
-                                insertCitationTargetRef.current = targetSection;
-                                setInsertCitationTarget(targetSection);
-                              }
-                              setPickerOpen(true);
-                              setShowCitationToolsMenu(false);
-                            }}
-                            className="w-full flex items-center justify-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-700 py-2 border border-blue-200 rounded-lg hover:bg-blue-50"
-                          >
-                            <Plus className="w-3 h-3" /> Add Citation
-                          </button>
-
-                          <div className="space-y-1.5 pt-1">
-                            <label className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">Citation Style</label>
-                            <select
-                              value={bibliographyStyle}
-                              onChange={(e) => setBibliographyStyle(e.target.value)}
-                              className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:border-purple-300 focus:ring-1 focus:ring-purple-200"
-                            >
-                              <option value="APA7">APA 7th Edition</option>
-                              <option value="IEEE">IEEE</option>
-                              <option value="CHICAGO_AUTHOR_DATE">Chicago (Author-Date)</option>
-                              <option value="MLA9">MLA 9th Edition</option>
-                              <option value="HARVARD">Harvard</option>
-                              <option value="VANCOUVER">Vancouver</option>
-                            </select>
-                            <div className="flex gap-1">
-                              <button
-                                onClick={() => setBibliographySortOrder('alphabetical')}
-                                disabled={isNumericOrderBibliography}
-                                className={`flex-1 text-[10px] py-1 rounded-md border transition-colors ${
-                                  bibliographySortOrder === 'alphabetical'
-                                    ? 'bg-purple-50 border-purple-200 text-purple-700 font-medium'
-                                    : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                                } ${isNumericOrderBibliography ? 'opacity-40 cursor-not-allowed hover:bg-white' : ''}`}
-                              >
-                                A-&gt;Z Alphabetical
-                              </button>
-                              <button
-                                onClick={() => setBibliographySortOrder('order_of_appearance')}
-                                className={`flex-1 text-[10px] py-1 rounded-md border transition-colors ${
-                                  bibliographySortOrder === 'order_of_appearance'
-                                    ? 'bg-purple-50 border-purple-200 text-purple-700 font-medium'
-                                    : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
-                                }`}
-                              >
-                                1-&gt;N Appearance
-                              </button>
-                            </div>
-                            {isNumericOrderBibliography && (
-                              <p className="text-[10px] text-slate-500">
-                                IEEE/Vancouver uses order-of-appearance numbering by first citation in the draft.
-                              </p>
-                            )}
-                            {isNumericOrderBibliography && sequenceInfo && (
-                              <p className="text-[10px] text-slate-500">
-                                Sequence {sequenceInfo.version ? `v${sequenceInfo.version}` : 'unversioned'} | snapshots {sequenceInfo.historyCount}
-                                {sequenceInfo.changed
-                                  ? ` | delta +${sequenceInfo.added}/-${sequenceInfo.removed}, renumbered ${sequenceInfo.renumbered}`
-                                  : ' | no numbering changes'}
-                              </p>
-                            )}
-                          </div>
-
-                          <button
-                            onClick={() => {
-                              setShowCitationToolsMenu(false);
-                              generateBibliography();
-                            }}
-                            disabled={generatingBibliography}
-                            className="w-full flex items-center justify-center gap-2 text-xs font-medium text-purple-600 hover:text-purple-700 py-2 border border-purple-200 rounded-lg hover:bg-purple-50 disabled:opacity-50"
-                            title="Generates bibliography only for citations used in the paper (via [CITE:key] markers)"
-                          >
-                            {generatingBibliography ? <Loader2 className="w-3 h-3 animate-spin" /> : <BookOpen className="w-3 h-3" />}
-                            Generate Bibliography ({extractUsedCitationKeys().length} used)
-                          </button>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                }
-              />
-            </div>
-
-            <div
-              onMouseDown={(e) => handleCitationsPanelResizeStart(e, 'left')}
-              className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize group"
-            >
-              <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-8 bg-slate-300 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
-            </div>
-            <div
-              onMouseDown={(e) => handleCitationsPanelResizeStart(e, 'top')}
-              className="absolute top-0 left-0 right-0 h-2 cursor-ns-resize group"
-            >
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 h-1 w-8 bg-slate-300 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
-            </div>
-            <div
-              onMouseDown={(e) => handleCitationsPanelResizeStart(e, 'bottom')}
-              className="absolute bottom-0 left-0 right-0 h-2 cursor-ns-resize group"
-            >
-              <div className="absolute bottom-0 left-1/2 -translate-x-1/2 h-1 w-8 bg-slate-300 rounded-full opacity-0 group-hover:opacity-100 transition-opacity" />
-            </div>
-            <div
-              onMouseDown={(e) => handleCitationsPanelResizeStart(e, 'top-left-corner')}
-              className="absolute top-0 left-0 w-4 h-4 cursor-nwse-resize group z-10"
-            >
-              <div className="absolute top-1 left-1 w-2 h-2 border-l-2 border-t-2 border-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
-            </div>
-            <div
-              onMouseDown={(e) => handleCitationsPanelResizeStart(e, 'corner')}
-              className="absolute bottom-0 left-0 w-4 h-4 cursor-nesw-resize group z-10"
-            >
-              <div className="absolute bottom-1 left-1 w-2 h-2 border-l-2 border-b-2 border-slate-400 opacity-0 group-hover:opacity-100 transition-opacity" />
-            </div>
-          </motion.div>
+        {session?.archetypeEvidenceStale && (
+          <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            Evidence packs may be outdated after archetype changes. Refresh literature analysis and blueprint mapping before final drafting.
+          </div>
         )}
-      </AnimatePresence>
 
       {/* Paper Document */}
       <div className="max-w-[850px] mx-auto bg-white shadow-[0_4px_24px_rgba(0,0,0,0.06)] min-h-[1100px] px-[60px] py-[60px] relative border border-gray-100">
@@ -2447,6 +2092,7 @@ export default function SectionDraftingStage({
                               value={content[keyName] || ''}
                               onChange={(markdown) => handleContentChange(keyName, markdown)}
                               citationDisplayMeta={citationDisplayMeta}
+                              figureDisplayMeta={figureDisplayMeta}
                               onBlur={() => {
                                 handleBlur(keyName);
                                 // NOTE: Do NOT clear selectedText on blur.
@@ -2686,7 +2332,6 @@ export default function SectionDraftingStage({
         citations={citations}
         onInsertFigure={handleInsertFigure}
         onInsertCitation={(citation) => {
-          // Directly insert citation without opening modal
           if (citation.citationKey) {
             handleInsertSingleCitation(citation.citationKey);
           }
@@ -2697,8 +2342,27 @@ export default function SectionDraftingStage({
         onRefreshFigures={loadFigures}
         onRefreshCitations={loadCitations}
         onNavigateToStage={onNavigateToStage}
-        onOpenBibliographyPanel={() => openCitationsPanel({ reset: true })}
         isVisible={true}
+        // Bibliography management (merged from Citations Panel)
+        bibliographyStyle={bibliographyStyle}
+        onBibliographyStyleChange={setBibliographyStyle}
+        bibliographySortOrder={bibliographySortOrder}
+        onBibliographySortOrderChange={setBibliographySortOrder}
+        onGenerateBibliography={generateBibliography}
+        generatingBibliography={generatingBibliography}
+        usedCitationCount={extractUsedCitationKeys().length}
+        isNumericStyleBibliography={isNumericOrderBibliography}
+        sequenceInfo={sequenceInfo}
+        onAddCitationViaPicker={() => {
+          const activeSections = sectionConfigs || fallbackSections;
+          const targetSection = focusedSection || (activeSections.length > 0 ? activeSections[0].keys[0] : null);
+          if (targetSection) {
+            insertCitationTargetRef.current = targetSection;
+            setInsertCitationTarget(targetSection);
+          }
+          setPickerOpen(true);
+        }}
+        onCitationsUpdated={setCitations}
       />
     </div>
   );

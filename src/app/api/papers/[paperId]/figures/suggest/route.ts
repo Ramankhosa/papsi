@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { generateFigureSuggestions } from '@/lib/figure-generation/llm-figure-service';
-import { FigureSuggestion } from '@/lib/figure-generation/types';
+import { FigureSuggestion, type DataChartType } from '@/lib/figure-generation/types';
 import { chooseDiagramRenderer } from '@/lib/figure-generation/diagram-renderer-policy';
 import {
   normalizeFigurePreferences,
@@ -28,10 +28,20 @@ interface CachedSuggestionItem {
   suggestedType?: string;
   rendererPreference?: string;
   relevantSection?: string;
+  figureRole?: string;
+  sectionFitJustification?: string;
+  expectedByReviewers?: boolean;
   importance?: string;
   dataNeeded?: string;
   whyThisFigure?: string;
+  renderSpec?: unknown;
+  chartSpec?: unknown;
   diagramSpec?: unknown;
+  illustrationSpec?: unknown;
+  illustrationSpecV2?: unknown;
+  figureGenre?: string;
+  renderDirectives?: unknown;
+  paperProfile?: unknown;
   sketchStyle?: string;
   sketchPrompt?: string;
   sketchMode?: string;
@@ -412,10 +422,20 @@ export async function POST(
       suggestedType: s.suggestedType,
       rendererPreference: s.rendererPreference,
       relevantSection: s.relevantSection,
+      figureRole: (s as any).figureRole,
+      sectionFitJustification: (s as any).sectionFitJustification,
+      expectedByReviewers: (s as any).expectedByReviewers,
       importance: s.importance,
       dataNeeded: s.dataNeeded,
       whyThisFigure: s.whyThisFigure,
+      renderSpec: (s as any).renderSpec,
+      chartSpec: (s as any).chartSpec,
       diagramSpec: s.diagramSpec,
+      illustrationSpec: (s as any).illustrationSpec,
+      illustrationSpecV2: (s as any).illustrationSpecV2,
+      figureGenre: (s as any).figureGenre,
+      renderDirectives: (s as any).renderDirectives,
+      paperProfile: (s as any).paperProfile,
       sketchStyle: s.sketchStyle,
       sketchPrompt: s.sketchPrompt,
       sketchMode: s.sketchMode
@@ -471,198 +491,211 @@ function generateRuleBasedSuggestions(
   session: any
 ): FigureSuggestion[] {
   const content = `${title} ${abstract} ${Object.values(sections).join(' ')}`.toLowerCase();
-  
-  // All possible suggestions with relevance scores
-  const allSuggestions: Array<FigureSuggestion & { score: number }> = [];
+  const isSystemPaper = hasKeywords(content, ['system', 'architecture', 'framework', 'module', 'deployment', 'service']);
+  const suggestions: FigureSuggestion[] = [
+    {
+      title: 'Figure 1: Research Overview Infographic',
+      description: 'A compact infographic overview (4 panels) that orients readers to the paper: problem context, input data, core method, and expected outputs/evaluation. Keep labels short and schematic so it functions as an introduction-level Figure 1 without replacing methodological detail.',
+      category: 'ILLUSTRATED_FIGURE',
+      suggestedType: 'sketch-guided',
+      relevantSection: 'introduction',
+      figureRole: 'ORIENT',
+      sectionFitJustification: 'Introduction figures should orient readers at a high level.',
+      expectedByReviewers: false,
+      importance: 'recommended',
+      dataNeeded: 'Named problem statement, high-level method stages, output artifacts, and headline evaluation targets.',
+      whyThisFigure: 'It quickly orients readers before technical detail.',
+      illustrationSpec: {
+        layout: 'PANELS',
+        panelCount: 4,
+        flowDirection: 'LR',
+        panels: [
+          { idHint: 'problem', title: 'Problem', elements: ['Challenge', 'Context'] },
+          { idHint: 'input', title: 'Inputs', elements: ['Dataset', 'Signals'] },
+          { idHint: 'method', title: 'Method', elements: ['Pipeline', 'Core Model'] },
+          { idHint: 'output', title: 'Outputs', elements: ['Metrics', 'Use Case'] }
+        ],
+        elements: ['icons', 'boxes', 'arrows', 'badges'],
+        steps: ['Context', 'Input', 'Method', 'Output'],
+        captionDraft: 'Infographic overview of problem context, method, and expected outcomes.'
+      },
+      illustrationSpecV2: {
+        layout: 'PANELS',
+        panelCount: 4,
+        flowDirection: 'LR',
+        figureGenre: 'METHOD_BLOCK',
+        panels: [
+          { idHint: 'problem', title: 'Problem', elements: ['Challenge', 'Context'] },
+          { idHint: 'input', title: 'Inputs', elements: ['Dataset', 'Signals'] },
+          { idHint: 'method', title: 'Method', elements: ['Pipeline', 'Core Model'] },
+          { idHint: 'output', title: 'Outputs', elements: ['Metrics', 'Use Case'] }
+        ],
+        elements: ['icons', 'boxes', 'arrows', 'badges'],
+        steps: ['Context', 'Input', 'Method', 'Output'],
+        renderDirectives: {
+          aspectRatio: '3:1',
+          fillCanvasPercentMin: 85,
+          whitespaceMaxPercent: 15,
+          textPolicy: { maxLabelsTotal: 4, maxWordsPerLabel: 3, forbidAllCaps: true, titlesOnlyPreferred: true },
+          stylePolicy: { noGradients: true, no3D: true, noClipart: true, whiteBackground: true, paletteMode: 'grayscale_plus_one_accent' },
+          compositionPolicy: { layoutMode: 'PANELS', equalPanels: true, noTextOutsidePanels: true }
+        },
+        captionDraft: 'Infographic overview of problem context, method, and expected outcomes.'
+      },
+      figureGenre: 'METHOD_BLOCK',
+      renderDirectives: {
+        aspectRatio: '3:1',
+        fillCanvasPercentMin: 85,
+        whitespaceMaxPercent: 15,
+        textPolicy: { maxLabelsTotal: 4, maxWordsPerLabel: 3, forbidAllCaps: true, titlesOnlyPreferred: true },
+        stylePolicy: { noGradients: true, no3D: true, noClipart: true, whiteBackground: true, paletteMode: 'grayscale_plus_one_accent' },
+        compositionPolicy: { layoutMode: 'PANELS', equalPanels: true, noTextOutsidePanels: true }
+      },
+      renderSpec: {
+        kind: 'illustration',
+        illustrationSpecV2: {
+          layout: 'PANELS',
+          panelCount: 4,
+          flowDirection: 'LR',
+          figureGenre: 'METHOD_BLOCK',
+          panels: [
+            { idHint: 'problem', title: 'Problem', elements: ['Challenge', 'Context'] },
+            { idHint: 'input', title: 'Inputs', elements: ['Dataset', 'Signals'] },
+            { idHint: 'method', title: 'Method', elements: ['Pipeline', 'Core Model'] },
+            { idHint: 'output', title: 'Outputs', elements: ['Metrics', 'Use Case'] }
+          ],
+          elements: ['icons', 'boxes', 'arrows', 'badges'],
+          steps: ['Context', 'Input', 'Method', 'Output'],
+          renderDirectives: {
+            aspectRatio: '3:1',
+            fillCanvasPercentMin: 85,
+            whitespaceMaxPercent: 15,
+            textPolicy: { maxLabelsTotal: 4, maxWordsPerLabel: 3, forbidAllCaps: true, titlesOnlyPreferred: true },
+            stylePolicy: { noGradients: true, no3D: true, noClipart: true, whiteBackground: true, paletteMode: 'grayscale_plus_one_accent' },
+            compositionPolicy: { layoutMode: 'PANELS', equalPanels: true, noTextOutsidePanels: true }
+          }
+        }
+      },
+      sketchStyle: 'academic',
+      sketchMode: 'GUIDED',
+      sketchPrompt: `Create a flat-vector academic infographic for "${title}" with four left-to-right panels: Problem, Inputs, Method, Outputs. Use icons, boxes, and arrows only. Keep labels under four words each. White background, restrained color palette, consistent stroke weights, and clean spacing. No photorealism, no 3D effects, no people, no overlaid title/caption text, and no figure numbering.`
+    },
+    {
+      title: 'Methodology Pipeline Diagram',
+      description: 'A deterministic flowchart of the end-to-end methodology showing input acquisition, preprocessing, core model/algorithm stage, validation, and output generation. Include explicit transitions and any feedback loop used in training/tuning.',
+      category: 'DIAGRAM',
+      suggestedType: 'flowchart',
+      relevantSection: 'methodology',
+      figureRole: 'EXPLAIN_METHOD',
+      sectionFitJustification: 'Methodology requires reproducible, stepwise pipeline visualization.',
+      expectedByReviewers: true,
+      importance: 'required',
+      dataNeeded: 'Ordered method stages, stage inputs/outputs, optional branch conditions, and validation criteria.',
+      whyThisFigure: 'It provides the reproducibility-focused method blueprint reviewers expect.',
+      diagramSpec: buildRuleDiagramSpec('flowchart', 'Methodology Pipeline')
+    },
+    {
+      title: 'Results: Baseline vs Proposed Comparison',
+      description: 'A results bar chart comparing baseline methods against the proposed method across all reported datasets/tasks. Use consistent metric orientation and include one grouped bar set per dataset or evaluation condition.',
+      category: 'DATA_CHART',
+      suggestedType: 'bar',
+      relevantSection: 'results',
+      figureRole: 'SHOW_RESULTS',
+      sectionFitJustification: 'Results must foreground quantitative evidence and direct comparisons.',
+      expectedByReviewers: true,
+      importance: 'required',
+      dataNeeded: 'Metric values for each method (baseline and proposed) per dataset/condition.',
+      whyThisFigure: 'It directly demonstrates relative performance gains or tradeoffs.',
+      chartSpec: buildRuleChartSpec('bar', 'Dataset / Condition', 'Primary Metric (%)', 'dataset', 'metric_value')
+    },
+    {
+      title: 'Results: Ablation or Sensitivity Analysis',
+      description: 'A line or grouped chart showing how performance changes when key components/hyperparameters are removed or varied. Ensure each variant is explicitly labeled and aligned with the ablation narrative in the text.',
+      category: 'STATISTICAL_PLOT',
+      suggestedType: 'line',
+      relevantSection: 'results',
+      figureRole: 'SHOW_RESULTS',
+      sectionFitJustification: 'Ablation/sensitivity evidence is expected in experimental results.',
+      expectedByReviewers: true,
+      importance: 'required',
+      dataNeeded: 'Variant name, component toggle/parameter value, and resulting metric per run/condition.',
+      whyThisFigure: 'It validates which components drive performance.',
+      chartSpec: buildRuleChartSpec('line', 'Variant / Parameter', 'Performance Metric (%)', 'variant', 'metric_value')
+    },
+    {
+      title: 'Results: Error Breakdown by Category',
+      description: 'A chart showing error or failure distribution across classes, cohorts, or operating ranges to reveal boundary behavior and weaknesses.',
+      category: 'DATA_CHART',
+      suggestedType: 'scatter',
+      relevantSection: 'results',
+      figureRole: 'SHOW_RESULTS',
+      sectionFitJustification: 'Error analysis strengthens quantitative claims in results.',
+      expectedByReviewers: true,
+      importance: 'recommended',
+      dataNeeded: 'Category identifier, error rate/count, optional confidence interval or per-run variance.',
+      whyThisFigure: 'It makes failure patterns explicit and supports balanced interpretation.',
+      chartSpec: buildRuleChartSpec('scatter', 'Category / Range', 'Error Metric', 'category', 'error_value')
+    },
+    {
+      title: isSystemPaper ? 'Methodology: System Architecture View' : 'Discussion: Limitations and Implications Map',
+      description: isSystemPaper
+        ? 'A high-level architecture diagram of major subsystems and data/control flow, kept within compact node/edge limits.'
+        : 'A compact implication/limitations map showing where the method works, fails, and key threats to validity.',
+      category: 'DIAGRAM',
+      suggestedType: isSystemPaper ? 'architecture' : 'flowchart',
+      relevantSection: isSystemPaper ? 'methodology' : 'discussion',
+      figureRole: isSystemPaper ? 'EXPLAIN_METHOD' : 'INTERPRET',
+      sectionFitJustification: isSystemPaper
+        ? 'System papers benefit from architecture context in methodology.'
+        : 'Discussion should interpret limits and implications of findings.',
+      expectedByReviewers: false,
+      importance: 'recommended',
+      dataNeeded: isSystemPaper
+        ? 'Named subsystems/modules, interfaces, and deployment boundaries.'
+        : 'Failure modes, limitation categories, and implication statements supported by results.',
+      whyThisFigure: isSystemPaper
+        ? 'It clarifies component boundaries and interfaces.'
+        : 'It helps readers translate findings into practical boundaries.',
+      diagramSpec: buildRuleDiagramSpec(isSystemPaper ? 'architecture' : 'flowchart', isSystemPaper ? 'System Architecture' : 'Limitations Map')
+    }
+  ];
 
-  // === CORE SUGGESTIONS (Always highly relevant) ===
-  
-  // 1. Methodology flowchart - essential for any research paper
-  allSuggestions.push({
-    title: 'Research Methodology Flowchart',
-    description: 'A flowchart illustrating your research methodology, including data collection, processing, and analysis steps.',
-    category: 'DIAGRAM',
-    suggestedType: 'flowchart',
-    relevantSection: 'methodology',
-    importance: 'recommended',
-    score: 100 // Always highly relevant
+  return suggestions.map((suggestion) => {
+    if (suggestion.category === 'DIAGRAM') {
+      const rendererDecision = chooseDiagramRenderer({
+        diagramType: suggestion.suggestedType || 'flowchart',
+        title: suggestion.title,
+        description: suggestion.description
+      });
+      return {
+        ...suggestion,
+        rendererPreference: rendererDecision.renderer
+      };
+    }
+    return suggestion;
   });
+}
 
-  // 2. Results comparison - very common need
-  allSuggestions.push({
-    title: 'Results Comparison Chart',
-    description: 'A bar chart comparing key findings, performance metrics, or outcomes across different conditions or groups.',
-    category: 'DATA_CHART',
-    suggestedType: 'bar',
-    relevantSection: 'results',
-    importance: 'recommended',
-    score: hasKeywords(content, ['result', 'compar', 'performance', 'metric', 'evaluat', 'outcome', 'finding']) ? 95 : 70
-  });
-
-  // === CONTEXT-SPECIFIC SUGGESTIONS ===
-
-  // 3. System/Architecture diagram
-  allSuggestions.push({
-    title: 'System Architecture Diagram',
-    description: 'A diagram showing the system components, modules, their relationships, and data flow between them.',
-    category: 'DIAGRAM',
-    suggestedType: 'architecture',
-    relevantSection: 'methodology',
-    importance: hasKeywords(content, ['system', 'architecture', 'framework', 'platform', 'module']) ? 'recommended' : 'optional',
-    score: hasKeywords(content, ['system', 'architecture', 'framework', 'platform', 'module', 'component']) ? 90 : 50
-  });
-
-  // 4. Trend/Time series chart
-  allSuggestions.push({
-    title: 'Trend Analysis Line Chart',
-    description: 'A line chart showing trends, changes over time, or progression of key variables across different time points.',
-    category: 'DATA_CHART',
-    suggestedType: 'line',
-    relevantSection: 'results',
-    importance: hasKeywords(content, ['trend', 'time', 'temporal', 'growth', 'progress']) ? 'recommended' : 'optional',
-    score: hasKeywords(content, ['trend', 'over time', 'temporal', 'growth', 'change', 'progress', 'evolution']) ? 85 : 55
-  });
-
-  // 5. Distribution/Proportion chart
-  allSuggestions.push({
-    title: 'Distribution Pie Chart',
-    description: 'A pie or doughnut chart showing the distribution, proportions, or breakdown of categories in your data.',
-    category: 'DATA_CHART',
-    suggestedType: 'pie',
-    relevantSection: 'results',
-    importance: 'optional',
-    score: hasKeywords(content, ['distribution', 'proportion', 'percentage', 'breakdown', 'categor']) ? 80 : 45
-  });
-
-  // 6. Correlation/Scatter plot
-  allSuggestions.push({
-    title: 'Correlation Scatter Plot',
-    description: 'A scatter plot visualizing the relationship and correlation between two key variables in your study.',
-    category: 'DATA_CHART',
-    suggestedType: 'scatter',
-    relevantSection: 'results',
-    importance: hasKeywords(content, ['correlation', 'relationship', 'regression']) ? 'recommended' : 'optional',
-    score: hasKeywords(content, ['correlation', 'relationship', 'association', 'regression', 'variable']) ? 82 : 40
-  });
-
-  // 7. Process flow diagram
-  allSuggestions.push({
-    title: 'Process Flow Diagram',
-    description: 'A flowchart depicting the step-by-step process, algorithm, or workflow used in your research.',
-    category: 'DIAGRAM',
-    suggestedType: 'flowchart',
-    relevantSection: 'methodology',
-    importance: hasKeywords(content, ['process', 'workflow', 'algorithm', 'step']) ? 'recommended' : 'optional',
-    score: hasKeywords(content, ['process', 'workflow', 'step', 'procedure', 'algorithm', 'pipeline']) ? 78 : 48
-  });
-
-  // 8. Sequence diagram
-  allSuggestions.push({
-    title: 'Interaction Sequence Diagram',
-    description: 'A sequence diagram showing the interactions, message flows, or protocol exchanges between system components.',
-    category: 'DIAGRAM',
-    suggestedType: 'sequence',
-    relevantSection: 'methodology',
-    importance: 'optional',
-    score: hasKeywords(content, ['interaction', 'sequence', 'protocol', 'message', 'communication', 'api']) ? 75 : 35
-  });
-
-  // 9. Comparison radar chart
-  allSuggestions.push({
-    title: 'Multi-Criteria Radar Chart',
-    description: 'A radar chart comparing multiple criteria, dimensions, or factors across different items or methods.',
-    category: 'DATA_CHART',
-    suggestedType: 'radar',
-    relevantSection: 'results',
-    importance: 'optional',
-    score: hasKeywords(content, ['criteria', 'dimension', 'factor', 'multi', 'aspect', 'attribute']) ? 72 : 30
-  });
-
-  // 10. Timeline/Gantt chart
-  allSuggestions.push({
-    title: 'Project Timeline Chart',
-    description: 'A Gantt chart or timeline showing project phases, milestones, tasks, and their scheduling.',
-    category: 'DIAGRAM',
-    suggestedType: 'gantt',
-    relevantSection: 'methodology',
-    importance: 'optional',
-    score: hasKeywords(content, ['timeline', 'schedule', 'phase', 'milestone', 'task', 'plan']) ? 70 : 25
-  });
-
-  // 11. Entity-Relationship diagram
-  allSuggestions.push({
-    title: 'Data Model ER Diagram',
-    description: 'An entity-relationship diagram showing the data structure, entities, and their relationships.',
-    category: 'DIAGRAM',
-    suggestedType: 'er',
-    relevantSection: 'methodology',
-    importance: 'optional',
-    score: hasKeywords(content, ['database', 'entity', 'schema', 'data model', 'table', 'relation']) ? 68 : 20
-  });
-
-  // 12. Conceptual framework
-  allSuggestions.push({
-    title: 'Conceptual Framework Diagram',
-    description: 'A diagram illustrating the theoretical framework, key concepts, and their relationships in your study.',
-    category: 'DIAGRAM',
-    suggestedType: 'flowchart',
-    relevantSection: 'introduction',
-    importance: 'optional',
-    score: hasKeywords(content, ['concept', 'framework', 'theor', 'model', 'hypothesis']) ? 65 : 35
-  });
-
-  // === SKETCH / ILLUSTRATION SUGGESTIONS ===
-
-  // 13. Conceptual overview illustration
-  allSuggestions.push({
-    title: 'Research Conceptual Overview Illustration',
-    description: 'An AI-generated conceptual illustration summarizing the overall research contribution, showing the relationship between the problem, approach, and impact visually.',
-    category: 'SKETCH',
-    suggestedType: 'sketch-auto',
-    relevantSection: 'introduction',
-    importance: hasKeywords(content, ['overview', 'concept', 'framework', 'contribution', 'novel']) ? 'recommended' : 'optional',
-    sketchStyle: 'conceptual',
-    sketchMode: 'SUGGEST',
-    sketchPrompt: `Create a professional conceptual illustration for an academic paper titled "${title}". The illustration should visually summarize the core research contribution, showing the relationship between the research problem, proposed approach, and expected impact. Use clean lines, a white background, professional academic style, and a balanced composition. Do not include figure numbers or title text on the image.`,
-    score: hasKeywords(content, ['overview', 'concept', 'framework', 'novel', 'contribution', 'approach']) ? 62 : 30
-  });
-
-  // 14. Methodology illustration
-  allSuggestions.push({
-    title: 'Methodology Visual Summary',
-    description: 'An AI-generated illustration depicting the research methodology as a visual narrative, suitable for readers who prefer visual over textual explanations of the process.',
-    category: 'SKETCH',
-    suggestedType: 'sketch-guided',
-    relevantSection: 'methodology',
-    importance: hasKeywords(content, ['method', 'approach', 'pipeline', 'process', 'workflow']) ? 'recommended' : 'optional',
-    sketchStyle: 'scientific',
-    sketchMode: 'GUIDED',
-    sketchPrompt: `Create a scientific illustration showing the research methodology for a paper titled "${title}". Depict the key stages of the research process as a visual narrative with clear flow, labeled stages, and visual indicators of data transformation at each step. Use a clean scientific illustration style with precise lines, standard notation, and a white background. Do not include figure numbers or title text on the image.`,
-    score: hasKeywords(content, ['method', 'approach', 'pipeline', 'process', 'workflow', 'experiment']) ? 58 : 28
-  });
-
-  // Sort by score (highest first) and take top 6
-  const topSuggestions = allSuggestions
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 6)
-    .map(({ score, ...suggestion }) => {
-      if (suggestion.category === 'DIAGRAM') {
-        const rendererDecision = chooseDiagramRenderer({
-          diagramType: suggestion.suggestedType || 'flowchart',
-          title: suggestion.title,
-          description: suggestion.description
-        });
-        return {
-          ...suggestion,
-          rendererPreference: rendererDecision.renderer,
-          diagramSpec: buildRuleDiagramSpec(suggestion.suggestedType || 'flowchart', suggestion.title)
-        };
-      }
-      return suggestion;
-    }); // Remove score from output
-
-  // Ensure we always have at least 5 suggestions
-  return topSuggestions;
+function buildRuleChartSpec(
+  chartType: DataChartType,
+  xAxisLabel: string,
+  yAxisLabel: string,
+  xField: string,
+  yField: string
+) {
+  return {
+    chartType,
+    xAxisLabel,
+    yAxisLabel,
+    xField,
+    yField,
+    series: [
+      { label: 'Primary', yField },
+      { label: 'Baseline', yField: `baseline_${yField}` }
+    ],
+    aggregation: 'mean',
+    baselineLabel: 'Baseline'
+  };
 }
 
 function buildRuleDiagramSpec(type: string, title: string) {

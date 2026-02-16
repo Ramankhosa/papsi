@@ -31,6 +31,15 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
       paperBlueprint: true,
       paperSections: {
         orderBy: { updatedAt: 'desc' }
+      },
+      paperSectionHumanizations: {
+        select: {
+          sectionKey: true,
+          status: true,
+          humanizedContent: true,
+          sourceDraftFingerprint: true,
+          updatedAt: true
+        }
       }
     }
   });
@@ -119,6 +128,15 @@ export async function PUT(request: NextRequest, context: { params: { paperId: st
         figurePlans: true,
         paperSections: {
           orderBy: { updatedAt: 'desc' }
+        },
+        paperSectionHumanizations: {
+          select: {
+            sectionKey: true,
+            status: true,
+            humanizedContent: true,
+            sourceDraftFingerprint: true,
+            updatedAt: true
+          }
         }
       }
     });

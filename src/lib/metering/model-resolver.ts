@@ -82,7 +82,14 @@ export async function resolveModel(
 
   // 1. Try stage-specific config (most specific)
   if (stageCode) {
-    result = await getStageConfig(planId, stageCode)
+    const stageLookupCode =
+      stageCode === 'PAPER_ARCHETYPE_DETECTION' ? 'PAPER_CONTENT_GENERATION' : stageCode
+    if (stageLookupCode !== stageCode) {
+      console.log(
+        `[ModelResolver] Stage ${stageCode} re-routed to ${stageLookupCode} to reuse paper content stage config`
+      )
+    }
+    result = await getStageConfig(planId, stageLookupCode)
     if (result) {
       console.log(`[ModelResolver] Found stage config: ${result.modelCode}`)
     }

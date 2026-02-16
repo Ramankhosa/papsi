@@ -874,6 +874,10 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       const mappedCitationIds = Array.from(new Set(mappingsToPersist.map(m => m.paperId)));
       await citationMappingService.clearMappingsForCitations(sessionId, mappedCitationIds);
       await citationMappingService.storeMappings(sessionId, mappingsToPersist);
+      await prisma.draftingSession.update({
+        where: { id: sessionId },
+        data: { archetypeEvidenceStale: false }
+      });
     }
 
     // If all batches failed, return partial success with empty analysis

@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { llmGateway } from '@/lib/metering/gateway';
 import { buildTopicAssistPrompt, type TopicAssistAction } from '@/lib/prompts/paper-topic-prompts';
+import { paperArchetypeService } from '@/lib/services/paper-archetype-service';
 
 export const runtime = 'nodejs';
 
@@ -96,6 +97,98 @@ function parseJsonOutput(output: string): any | null {
   }
 }
 
+function mergeResearchGaps(existing: string | null | undefined, gaps: unknown): string | null {
+  if (!Array.isArray(gaps) || gaps.length === 0) {
+    return typeof existing === 'string' ? existing : null;
+  }
+  const normalized = gaps
+    .map(g => String(g || '').trim())
+    .filter(Boolean)
+    .map(g => `- ${g}`)
+    .join('\n');
+  if (!normalized) return typeof existing === 'string' ? existing : null;
+  if (existing && existing.trim()) {
+    return `${existing.trim()}\n\nAI Identified Gaps:\n${normalized}`;
+  }
+  return normalized;
+}
+
+function buildTopicOverrideFromAssist(
+  action: TopicAssistAction,
+  payload: z.infer<typeof assistSchema>,
+  result: Record<string, any>,
+  currentTopic: any | null
+) {
+  const baseKeywords = Array.isArray(payload.keywords)
+    ? payload.keywords
+    : Array.isArray(currentTopic?.keywords)
+      ? currentTopic.keywords
+      : [];
+  const suggestedKeywords = Array.isArray(result?.keywords)
+    ? result.keywords.map((k: unknown) => String(k || '').trim()).filter(Boolean)
+    : [];
+  const mergedKeywords = Array.from(new Set([...baseKeywords, ...suggestedKeywords]));
+
+  const methodologySuggestions = typeof result?.methodologySuggestions === 'string'
+    ? result.methodologySuggestions.trim()
+    : '';
+  const baseMethodologyApproach =
+    payload.methodologyApproach ??
+    currentTopic?.methodologyApproach ??
+    '';
+  const mergedMethodologyApproach = methodologySuggestions
+    ? (baseMethodologyApproach
+      ? `${String(baseMethodologyApproach).trim()}\n\nAI Suggestions:\n${methodologySuggestions}`
+      : methodologySuggestions)
+    : (typeof baseMethodologyApproach === 'string' ? baseMethodologyApproach : null);
+
+  const nextResearchQuestion = typeof result?.researchQuestion === 'string' && result.researchQuestion.trim()
+    ? result.researchQuestion
+    : (payload.researchQuestion ?? currentTopic?.researchQuestion ?? null);
+
+  const nextTitle = typeof result?.title === 'string' && result.title.trim()
+    ? result.title
+    : (payload.title ?? currentTopic?.title ?? null);
+
+  const nextHypothesis = typeof result?.hypothesis === 'string' && result.hypothesis.trim()
+    ? result.hypothesis
+    : (payload.hypothesis ?? currentTopic?.hypothesis ?? null);
+
+  const nextAbstract = typeof result?.abstractDraft === 'string' && result.abstractDraft.trim()
+    ? result.abstractDraft
+    : (payload.abstractDraft ?? currentTopic?.abstractDraft ?? null);
+
+  const nextResearchGaps = action === 'suggest_all'
+    ? mergeResearchGaps(payload.researchGaps ?? currentTopic?.researchGaps ?? null, result?.gaps)
+    : (payload.researchGaps ?? currentTopic?.researchGaps ?? null);
+
+  return {
+    title: nextTitle,
+    field: payload.field ?? currentTopic?.field ?? null,
+    subfield: payload.subfield ?? currentTopic?.subfield ?? null,
+    topicDescription: payload.topicDescription ?? currentTopic?.topicDescription ?? null,
+    researchQuestion: nextResearchQuestion,
+    subQuestions: Array.isArray(currentTopic?.subQuestions) ? currentTopic.subQuestions : [],
+    problemStatement: payload.problemStatement ?? currentTopic?.problemStatement ?? null,
+    researchGaps: nextResearchGaps,
+    methodology: payload.methodology ?? currentTopic?.methodology ?? null,
+    methodologyApproach: mergedMethodologyApproach,
+    techniques: Array.isArray(currentTopic?.techniques) ? currentTopic.techniques : [],
+    datasetDescription: payload.datasetDescription ?? currentTopic?.datasetDescription ?? null,
+    dataCollection: currentTopic?.dataCollection ?? null,
+    sampleSize: currentTopic?.sampleSize ?? null,
+    tools: Array.isArray(currentTopic?.tools) ? currentTopic.tools : [],
+    experiments: currentTopic?.experiments ?? null,
+    hypothesis: nextHypothesis,
+    expectedResults: payload.expectedResults ?? currentTopic?.expectedResults ?? null,
+    contributionType: payload.contributionType ?? currentTopic?.contributionType ?? null,
+    novelty: payload.novelty ?? currentTopic?.novelty ?? null,
+    limitations: currentTopic?.limitations ?? null,
+    keywords: mergedKeywords,
+    abstractDraft: nextAbstract
+  };
+}
+
 export async function POST(request: NextRequest, context: { params: { paperId: string } }) {
   try {
     const { user, error } = await authenticateUser(request);
@@ -156,9 +249,29 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       return NextResponse.json({ error: 'Failed to parse AI response' }, { status: 500 });
     }
 
+    let archetypeDetection: Awaited<ReturnType<typeof paperArchetypeService.detectAndPersist>> | null = null;
+    try {
+      const topicOverride = buildTopicOverrideFromAssist(
+        payload.action as TopicAssistAction,
+        payload,
+        parsed,
+        session.researchTopic
+      );
+      archetypeDetection = await paperArchetypeService.detectAndPersist({
+        sessionId,
+        headers,
+        userId: user.id,
+        source: 'TOPIC_ASSIST',
+        topicOverride
+      });
+    } catch (detectError) {
+      console.error('[TopicAssist] Archetype detection failed:', detectError);
+    }
+
     return NextResponse.json({
       action: payload.action,
-      result: parsed
+      result: parsed,
+      archetypeDetection
     });
   } catch (error) {
     if (error instanceof z.ZodError) {

@@ -11,12 +11,15 @@ const createSchema = z.object({
   title: z.string().min(1),
   caption: z.string().optional().default(''),
   figureType: z.string().min(1),
-  category: z.enum(['DATA_CHART', 'DIAGRAM', 'STATISTICAL_PLOT', 'ILLUSTRATION', 'SKETCH', 'CUSTOM']).optional(),
+  category: z.enum(['DATA_CHART', 'DIAGRAM', 'STATISTICAL_PLOT', 'ILLUSTRATED_FIGURE', 'ILLUSTRATION', 'SKETCH', 'CUSTOM']).optional(),
   notes: z.string().optional(),
   figureNo: z.number().optional(),
   status: z.enum(['PLANNED', 'GENERATING', 'GENERATED', 'FAILED']).optional(),
   suggestionMeta: z.object({
     relevantSection: z.string().optional().nullable(),
+    figureRole: z.enum(['ORIENT', 'POSITION', 'EXPLAIN_METHOD', 'SHOW_RESULTS', 'INTERPRET']).optional().nullable(),
+    sectionFitJustification: z.string().optional().nullable(),
+    expectedByReviewers: z.boolean().optional().nullable(),
     importance: z.enum(['required', 'recommended', 'optional']).optional().nullable(),
     dataNeeded: z.string().optional().nullable(),
     whyThisFigure: z.string().optional().nullable(),
@@ -40,6 +43,104 @@ const createSchema = z.object({
         description: z.string().optional()
       })).optional(),
       splitSuggestion: z.string().optional()
+    }).optional().nullable(),
+    chartSpec: z.object({
+      chartType: z.string().optional(),
+      xAxisLabel: z.string().optional(),
+      yAxisLabel: z.string().optional(),
+      xField: z.string().optional(),
+      yField: z.string().optional(),
+      series: z.array(z.object({
+        label: z.string(),
+        yField: z.string(),
+        confidenceField: z.string().optional()
+      })).optional(),
+      aggregation: z.string().optional(),
+      baselineLabel: z.string().optional(),
+      placeholderPolicy: z.object({
+        allowed: z.boolean().optional(),
+        label: z.string().optional(),
+        shape: z.string().optional(),
+        rangeHint: z.string().optional()
+      }).optional(),
+      notes: z.string().optional()
+    }).optional().nullable(),
+    illustrationSpec: z.object({
+      layout: z.enum(['PANELS', 'STRIP']).optional(),
+      panelCount: z.number().int().optional(),
+      stepCount: z.number().int().optional(),
+      flowDirection: z.enum(['LR', 'TD']).optional(),
+      panels: z.array(z.object({
+        idHint: z.string(),
+        title: z.string(),
+        elements: z.array(z.string()).optional()
+      })).optional(),
+      elements: z.array(z.string()).optional(),
+      steps: z.array(z.string()).optional(),
+      captionDraft: z.string().optional(),
+      splitSuggestion: z.string().optional()
+    }).optional().nullable(),
+    illustrationSpecV2: z.object({
+      layout: z.enum(['PANELS', 'STRIP']).optional(),
+      panelCount: z.number().int().optional(),
+      stepCount: z.number().int().optional(),
+      flowDirection: z.enum(['LR', 'TD']).optional(),
+      panels: z.array(z.object({
+        idHint: z.string(),
+        title: z.string(),
+        elements: z.array(z.string()).optional()
+      })).optional(),
+      elements: z.array(z.string()).optional(),
+      steps: z.array(z.string()).optional(),
+      captionDraft: z.string().optional(),
+      splitSuggestion: z.string().optional(),
+      figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT']).optional(),
+      renderDirectives: z.object({
+        aspectRatio: z.string().optional(),
+        fillCanvasPercentMin: z.number().optional(),
+        whitespaceMaxPercent: z.number().optional(),
+        textPolicy: z.object({
+          maxLabelsTotal: z.number().int().optional(),
+          maxWordsPerLabel: z.number().int().optional(),
+          forbidAllCaps: z.boolean().optional(),
+          titlesOnlyPreferred: z.boolean().optional()
+        }).optional(),
+        stylePolicy: z.object({
+          noGradients: z.boolean().optional(),
+          no3D: z.boolean().optional(),
+          noClipart: z.boolean().optional(),
+          whiteBackground: z.boolean().optional(),
+          paletteMode: z.string().optional()
+        }).optional(),
+        compositionPolicy: z.object({
+          layoutMode: z.enum(['PANELS', 'STRIP']).optional(),
+          equalPanels: z.boolean().optional(),
+          noTextOutsidePanels: z.boolean().optional()
+        }).optional()
+      }).optional(),
+      actors: z.array(z.string()).optional(),
+      props: z.array(z.string()).optional(),
+      forbiddenElements: z.array(z.string()).optional()
+    }).optional().nullable(),
+    renderSpec: z.object({
+      kind: z.enum(['chart', 'diagram', 'illustration']),
+      chartSpec: z.any().optional(),
+      diagramSpec: z.any().optional(),
+      illustrationSpecV2: z.any().optional()
+    }).optional().nullable(),
+    figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT']).optional().nullable(),
+    renderDirectives: z.object({
+      aspectRatio: z.string().optional(),
+      fillCanvasPercentMin: z.number().optional(),
+      whitespaceMaxPercent: z.number().optional(),
+      textPolicy: z.any().optional(),
+      stylePolicy: z.any().optional(),
+      compositionPolicy: z.any().optional()
+    }).optional().nullable(),
+    paperProfile: z.object({
+      paperGenre: z.string(),
+      studyType: z.enum(['experimental', 'survey', 'qualitative', 'mixed-methods', 'simulation', 'theoretical', 'unknown']),
+      dataAvailability: z.enum(['provided', 'partial', 'none'])
     }).optional().nullable(),
     // Sketch/illustration-specific fields
     sketchStyle: z.enum(['academic', 'scientific', 'conceptual', 'technical']).optional().nullable(),
@@ -92,6 +193,10 @@ function toResponse(plan: any) {
     'histogram': 'STATISTICAL_PLOT',
     'boxplot': 'STATISTICAL_PLOT',
     'heatmap': 'STATISTICAL_PLOT',
+    'sketch-auto': 'ILLUSTRATED_FIGURE',
+    'sketch-guided': 'ILLUSTRATED_FIGURE',
+    'sketch-refine': 'ILLUSTRATED_FIGURE',
+    'sketch': 'ILLUSTRATED_FIGURE',
     'custom': 'CUSTOM'
   };
   

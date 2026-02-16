@@ -1,6 +1,6 @@
-'use client';
+﻿'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -10,6 +10,8 @@ import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { DocumentStatusBadge } from './DocumentStatusBadge';
+import { DocumentUploadDialog } from './DocumentUploadDialog';
 
 interface ReferenceManagementPageProps {
   authToken: string | null;
@@ -31,12 +33,55 @@ interface Reference {
   authors: string[];
   year?: number;
   venue?: string;
+  volume?: string;
+  issue?: string;
+  pages?: string;
   doi?: string;
+  url?: string;
+  isbn?: string;
+  publisher?: string;
+  edition?: string;
+  editors?: string[];
+  publicationPlace?: string;
+  publicationDate?: string;
+  accessedDate?: string;
+  articleNumber?: string;
+  issn?: string;
+  journalAbbreviation?: string;
+  pmid?: string;
+  pmcid?: string;
+  arxivId?: string;
+  sourceType?: string;
+  citationKey?: string;
+  importSource?: string;
+  importDate?: string;
+  externalId?: string;
+  notes?: string;
+  bibtex?: string;
   abstract?: string;
+  createdAt?: string;
+  updatedAt?: string;
   isFavorite: boolean;
   isRead: boolean;
   tags: string[];
   collections: Array<{ collection: { id: string; name: string; color?: string } }>;
+  documents?: Array<{
+    document: {
+      id: string;
+      status: 'UPLOADED' | 'PARSING' | 'READY' | 'FAILED';
+      errorCode?: string;
+      originalFilename: string;
+      fileSizeBytes: number;
+      pageCount?: number;
+      sourceType?: 'UPLOAD' | 'DOI_FETCH' | 'URL_IMPORT';
+      sourceIdentifier?: string;
+      pdfTitle?: string;
+      pdfAuthors?: string;
+      pdfDoi?: string;
+      createdAt: string;
+    };
+    isPrimary: boolean;
+  }>;
 }
 
 const LIBRARY_COLORS = [
@@ -69,6 +114,30 @@ const SOURCE_TYPES = [
   { value: 'OTHER', label: 'Other' },
 ];
 
+const SOURCE_TYPE_LABELS: Record<string, string> = Object.fromEntries(
+  SOURCE_TYPES.filter((type) => type.value).map((type) => [type.value, type.label])
+);
+
+function formatSourceType(value?: string): string {
+  if (!value) return '-';
+  return SOURCE_TYPE_LABELS[value] || value.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function normalizeDoi(doi?: string): string | null {
+  if (!doi) return null;
+  const cleaned = doi
+    .trim()
+    .replace(/^https?:\/\/(dx\.)?doi\.org\//i, '')
+    .replace(/^doi:/i, '')
+    .trim();
+  return cleaned || null;
+}
+
+function toDoiUrl(doi?: string): string | null {
+  const cleaned = normalizeDoi(doi);
+  return cleaned ? `https://doi.org/${cleaned}` : null;
+}
+
 export default function ReferenceManagementPage({ authToken }: ReferenceManagementPageProps) {
   const [libraries, setLibraries] = useState<Library[]>([]);
   const [references, setReferences] = useState<Reference[]>([]);
@@ -76,6 +145,7 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
   const [loading, setLoading] = useState(true);
   const [selectedLibrary, setSelectedLibrary] = useState<string | null>(null);
   const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
+  const [expandedRefs, setExpandedRefs] = useState<Set<string>>(new Set());
   
   // Advanced filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -100,6 +170,8 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
   
   // Reference management
   const [showAddRef, setShowAddRef] = useState(false);
+  const [uploadDialogRef, setUploadDialogRef] = useState<{ id: string; title: string } | null>(null);
+  const [uploadDialogMode, setUploadDialogMode] = useState<'attach' | 'replace'>('attach');
   const [addRefForm, setAddRefForm] = useState({
     title: '',
     authors: '',
@@ -179,6 +251,7 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
   useEffect(() => {
     setCurrentPage(1);
     setSelectedRefs(new Set()); // Clear selection on filter change
+    setExpandedRefs(new Set());
   }, [selectedLibrary, searchQuery, sourceTypeFilter, yearFrom, yearTo, showFavoritesOnly, showUnreadOnly]);
 
   // Clear all filters
@@ -196,11 +269,24 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
     if (page === currentPage) return;
     setCurrentPage(page);
     setSelectedRefs(new Set()); // Clear selection on page change
+    setExpandedRefs(new Set());
     // Smooth scroll to reference list
     const referenceList = document.getElementById('reference-list');
     if (referenceList) {
       referenceList.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
+  };
+
+  const toggleReferenceDetails = (refId: string) => {
+    setExpandedRefs((prev) => {
+      const next = new Set(prev);
+      if (next.has(refId)) {
+        next.delete(refId);
+      } else {
+        next.add(refId);
+      }
+      return next;
+    });
   };
 
   // Create library
@@ -603,6 +689,74 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
     }
   };
 
+  // PDF Document handlers
+  const handleAttachPDF = (refId: string, refTitle: string) => {
+    setUploadDialogRef({ id: refId, title: refTitle });
+    setUploadDialogMode('attach');
+  };
+
+  const handleReplacePDF = (refId: string, refTitle: string) => {
+    setUploadDialogRef({ id: refId, title: refTitle });
+    setUploadDialogMode('replace');
+  };
+
+  const handleViewPDF = async (refId: string) => {
+    if (!authToken) return;
+    try {
+      const response = await fetch(`/api/library/${refId}/document/serve`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+      }
+    } catch (err) {
+      console.error('Failed to view PDF:', err);
+    }
+  };
+
+  const handleRemovePDF = async (refId: string) => {
+    if (!authToken) return;
+    if (!confirm('Remove PDF attachment from this reference?')) return;
+    try {
+      const response = await fetch(`/api/library/${refId}/document`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      if (response.ok) {
+        loadReferences(currentPage, false);
+      }
+    } catch (err) {
+      console.error('Failed to remove PDF:', err);
+    }
+  };
+
+  const handleFetchOAPDF = async (refId: string, doi: string | undefined) => {
+    if (!authToken || !doi) return;
+    try {
+      const response = await fetch(`/api/library/${refId}/document/fetch-oa`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ doi })
+      });
+      const contentType = response.headers.get('content-type') || '';
+      const data = contentType.includes('application/json')
+        ? await response.json()
+        : { error: 'Server returned a non-JSON response. Check server logs for the root error.' };
+      if (response.ok) {
+        loadReferences(currentPage, false);
+      } else {
+        alert(data.error || `Failed to fetch OA PDF (HTTP ${response.status})`);
+      }
+    } catch (err) {
+      console.error('Failed to fetch OA PDF:', err);
+      alert('Failed to fetch open access PDF. Please try again.');
+    }
+  };
+
+
+
   const currentLibrary = useMemo(() => 
     libraries.find(l => l.id === selectedLibrary),
     [libraries, selectedLibrary]
@@ -910,7 +1064,7 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
                                 min="1900"
                                 max="2100"
                               />
-                              <span className="text-gray-400">–</span>
+                              <span className="text-gray-400">â€“</span>
                               <Input
                                 type="number"
                                 value={yearTo}
@@ -1166,6 +1320,18 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
                               {ref.venue && (
                                 <p className="text-xs text-gray-500 italic mt-1">{ref.venue}</p>
                               )}
+                              <div className="flex flex-wrap items-center gap-2 mt-2">
+                                {ref.sourceType && (
+                                  <Badge variant="outline" className="text-[10px]">
+                                    {formatSourceType(ref.sourceType)}
+                                  </Badge>
+                                )}
+                                {ref.doi && (
+                                  <Badge variant="secondary" className="text-[10px] font-mono">
+                                    DOI: {normalizeDoi(ref.doi)}
+                                  </Badge>
+                                )}
+                              </div>
                               
                               {/* Libraries this reference belongs to */}
                               {ref.collections && ref.collections.length > 0 && (
@@ -1185,9 +1351,291 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
                                   ))}
                                 </div>
                               )}
+
+                              {expandedRefs.has(ref.id) && (
+                                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
+                                  <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                                    {ref.citationKey && (
+                                      <div>
+                                        <p className="text-gray-500">Citation Key</p>
+                                        <p className="font-mono text-gray-800">{ref.citationKey}</p>
+                                      </div>
+                                    )}
+                                    {ref.importSource && (
+                                      <div>
+                                        <p className="text-gray-500">Import Source</p>
+                                        <p className="text-gray-800">{ref.importSource.replace(/_/g, ' ')}</p>
+                                      </div>
+                                    )}
+                                    {ref.importDate && (
+                                      <div>
+                                        <p className="text-gray-500">Imported At</p>
+                                        <p className="text-gray-800">{new Date(ref.importDate).toLocaleString()}</p>
+                                      </div>
+                                    )}
+                                    {ref.publicationDate && (
+                                      <div>
+                                        <p className="text-gray-500">Publication Date</p>
+                                        <p className="text-gray-800">{ref.publicationDate}</p>
+                                      </div>
+                                    )}
+                                    {ref.volume && (
+                                      <div>
+                                        <p className="text-gray-500">Volume</p>
+                                        <p className="text-gray-800">{ref.volume}</p>
+                                      </div>
+                                    )}
+                                    {ref.issue && (
+                                      <div>
+                                        <p className="text-gray-500">Issue</p>
+                                        <p className="text-gray-800">{ref.issue}</p>
+                                      </div>
+                                    )}
+                                    {ref.pages && (
+                                      <div>
+                                        <p className="text-gray-500">Pages</p>
+                                        <p className="text-gray-800">{ref.pages}</p>
+                                      </div>
+                                    )}
+                                    {ref.publisher && (
+                                      <div>
+                                        <p className="text-gray-500">Publisher</p>
+                                        <p className="text-gray-800">{ref.publisher}</p>
+                                      </div>
+                                    )}
+                                    {ref.edition && (
+                                      <div>
+                                        <p className="text-gray-500">Edition</p>
+                                        <p className="text-gray-800">{ref.edition}</p>
+                                      </div>
+                                    )}
+                                    {ref.publicationPlace && (
+                                      <div>
+                                        <p className="text-gray-500">Publication Place</p>
+                                        <p className="text-gray-800">{ref.publicationPlace}</p>
+                                      </div>
+                                    )}
+                                    {ref.articleNumber && (
+                                      <div>
+                                        <p className="text-gray-500">Article Number</p>
+                                        <p className="text-gray-800">{ref.articleNumber}</p>
+                                      </div>
+                                    )}
+                                    {ref.journalAbbreviation && (
+                                      <div>
+                                        <p className="text-gray-500">Journal Abbreviation</p>
+                                        <p className="text-gray-800">{ref.journalAbbreviation}</p>
+                                      </div>
+                                    )}
+                                    {ref.issn && (
+                                      <div>
+                                        <p className="text-gray-500">ISSN</p>
+                                        <p className="text-gray-800">{ref.issn}</p>
+                                      </div>
+                                    )}
+                                    {ref.isbn && (
+                                      <div>
+                                        <p className="text-gray-500">ISBN</p>
+                                        <p className="text-gray-800">{ref.isbn}</p>
+                                      </div>
+                                    )}
+                                    {ref.pmid && (
+                                      <div>
+                                        <p className="text-gray-500">PMID</p>
+                                        <p className="text-gray-800">{ref.pmid}</p>
+                                      </div>
+                                    )}
+                                    {ref.pmcid && (
+                                      <div>
+                                        <p className="text-gray-500">PMCID</p>
+                                        <p className="text-gray-800">{ref.pmcid}</p>
+                                      </div>
+                                    )}
+                                    {ref.arxivId && (
+                                      <div>
+                                        <p className="text-gray-500">arXiv ID</p>
+                                        <p className="text-gray-800">{ref.arxivId}</p>
+                                      </div>
+                                    )}
+                                    {ref.accessedDate && (
+                                      <div>
+                                        <p className="text-gray-500">Accessed Date</p>
+                                        <p className="text-gray-800">{ref.accessedDate}</p>
+                                      </div>
+                                    )}
+                                    {ref.externalId && (
+                                      <div className="md:col-span-2">
+                                        <p className="text-gray-500">External ID</p>
+                                        <p className="text-gray-800 break-all">{ref.externalId}</p>
+                                      </div>
+                                    )}
+                                    {ref.editors && ref.editors.length > 0 && (
+                                      <div className="md:col-span-2">
+                                        <p className="text-gray-500">Editors</p>
+                                        <p className="text-gray-800">{ref.editors.join(', ')}</p>
+                                      </div>
+                                    )}
+                                    {ref.url && (
+                                      <div className="md:col-span-2">
+                                        <p className="text-gray-500">Source URL</p>
+                                        <a
+                                          href={ref.url}
+                                          target="_blank"
+                                          rel="noreferrer"
+                                          className="text-blue-600 hover:text-blue-800 hover:underline break-all"
+                                        >
+                                          {ref.url}
+                                        </a>
+                                      </div>
+                                    )}
+                                    {ref.doi && (
+                                      <div className="md:col-span-2">
+                                        <p className="text-gray-500">DOI</p>
+                                        <div className="flex flex-wrap items-center gap-2">
+                                          <span className="font-mono text-gray-800">{normalizeDoi(ref.doi)}</span>
+                                          {toDoiUrl(ref.doi) && (
+                                            <a
+                                              href={toDoiUrl(ref.doi)!}
+                                              target="_blank"
+                                              rel="noreferrer"
+                                              className="text-blue-600 hover:text-blue-800 hover:underline"
+                                            >
+                                              Open DOI
+                                            </a>
+                                          )}
+                                          {!ref.documents?.length && (
+                                            <button
+                                              onClick={(e) => { e.stopPropagation(); handleFetchOAPDF(ref.id, ref.doi); }}
+                                              className="text-emerald-600 hover:text-emerald-800 hover:underline"
+                                            >
+                                              Fetch OA PDF
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    )}
+                                    {ref.documents && ref.documents.length > 0 && (
+                                      <div className="md:col-span-2">
+                                        <p className="text-gray-500">Attached Document</p>
+                                        <p className="text-gray-800">
+                                          {ref.documents[0].document.originalFilename}
+                                          {ref.documents[0].document.pageCount
+                                            ? ` (${ref.documents[0].document.pageCount} pages)`
+                                            : ''}
+                                          {ref.documents[0].document.sourceType
+                                            ? ` - ${ref.documents[0].document.sourceType}`
+                                            : ''}
+                                        </p>
+                                        {ref.documents[0].document.pdfDoi && (
+                                          <p className="text-gray-600 font-mono mt-1">
+                                            PDF DOI: {ref.documents[0].document.pdfDoi}
+                                          </p>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {ref.tags && ref.tags.length > 0 && (
+                                    <div>
+                                      <p className="text-xs text-gray-500 mb-1">Tags</p>
+                                      <div className="flex flex-wrap gap-1">
+                                        {ref.tags.map((tag) => (
+                                          <Badge key={tag} variant="outline" className="text-[10px]">
+                                            {tag}
+                                          </Badge>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {ref.abstract && (
+                                    <div>
+                                      <p className="text-xs text-gray-500 mb-1">Abstract</p>
+                                      <p className="text-xs text-gray-700 whitespace-pre-line leading-relaxed">
+                                        {ref.abstract}
+                                      </p>
+                                    </div>
+                                  )}
+
+                                  {ref.notes && (
+                                    <div>
+                                      <p className="text-xs text-gray-500 mb-1">Notes</p>
+                                      <p className="text-xs text-gray-700 whitespace-pre-line leading-relaxed">
+                                        {ref.notes}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {/* PDF Document Status & Actions */}
+                              <div className="flex flex-wrap items-center gap-2 mt-2">
+                                {ref.documents && ref.documents.length > 0 ? (
+                                  <>
+                                    <DocumentStatusBadge
+                                      status={ref.documents[0].document.status}
+                                      errorCode={ref.documents[0].document.errorCode}
+                                      filename={ref.documents[0].document.originalFilename}
+                                      fileSizeBytes={ref.documents[0].document.fileSizeBytes}
+                                    />
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleViewPDF(ref.id); }}
+                                      className="text-[11px] text-blue-600 hover:text-blue-800 hover:underline font-medium"
+                                      title="View PDF"
+                                    >
+                                      View
+                                    </button>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleReplacePDF(ref.id, ref.title); }}
+                                      className="text-[11px] text-gray-500 hover:text-gray-700 hover:underline"
+                                      title="Replace PDF"
+                                    >
+                                      Replace
+                                    </button>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleRemovePDF(ref.id); }}
+                                      className="text-[11px] text-red-500 hover:text-red-700 hover:underline"
+                                      title="Remove PDF"
+                                    >
+                                      Remove
+                                    </button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); handleAttachPDF(ref.id, ref.title); }}
+                                      className="inline-flex items-center gap-1 text-[11px] text-indigo-600 hover:text-indigo-800 font-medium px-2 py-0.5 rounded border border-indigo-200 hover:bg-indigo-50 transition-colors"
+                                    >
+                                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                                      </svg>
+                                      Attach PDF
+                                    </button>
+                                    {ref.doi && (
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); handleFetchOAPDF(ref.id, ref.doi); }}
+                                        className="inline-flex items-center gap-1 text-[11px] text-emerald-600 hover:text-emerald-800 font-medium px-2 py-0.5 rounded border border-emerald-200 hover:bg-emerald-50 transition-colors"
+                                        title="Fetch open access PDF via Unpaywall"
+                                      >
+                                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                        </svg>
+                                        Fetch OA PDF
+                                      </button>
+                                    )}
+                                  </>
+                                )}
+                              </div>
                             </div>
 
                             <div className="flex items-center gap-2 shrink-0">
+                              <button
+                                onClick={() => toggleReferenceDetails(ref.id)}
+                                className="px-2 py-1 text-[11px] rounded border border-slate-200 text-slate-600 hover:text-slate-800 hover:bg-slate-100 transition-colors"
+                                title={expandedRefs.has(ref.id) ? 'Hide details' : 'Show details'}
+                              >
+                                {expandedRefs.has(ref.id) ? 'Hide details' : 'Details'}
+                              </button>
                               <button
                                 onClick={() => handleToggleFavorite(ref.id)}
                                 className={`p-1.5 rounded-lg transition-colors ${
@@ -1390,15 +1838,16 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
           <DialogHeader>
             <DialogTitle>Add New Reference</DialogTitle>
             <DialogDescription>
-              Add a reference to your library manually. You can also import by DOI or BibTeX.
+              Add a reference manually, import by DOI, import citations (BibTeX/RIS/JSON), or upload one or more PDFs.
             </DialogDescription>
           </DialogHeader>
           
           <Tabs defaultValue="manual" className="mt-4">
-            <TabsList className="grid grid-cols-3">
+            <TabsList className="grid grid-cols-4">
               <TabsTrigger value="manual">Manual Entry</TabsTrigger>
               <TabsTrigger value="doi">By DOI</TabsTrigger>
-              <TabsTrigger value="import">Import File</TabsTrigger>
+              <TabsTrigger value="citationImport">Citation Import</TabsTrigger>
+              <TabsTrigger value="pdfUpload">PDF Upload</TabsTrigger>
             </TabsList>
             
             <TabsContent value="manual" className="space-y-4 mt-4">
@@ -1482,7 +1931,7 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
               />
             </TabsContent>
             
-            <TabsContent value="import" className="mt-4">
+            <TabsContent value="citationImport" className="mt-4">
               <FileImportSection 
                 authToken={authToken} 
                 collectionId={selectedLibrary}
@@ -1493,9 +1942,37 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
                 }} 
               />
             </TabsContent>
+
+            <TabsContent value="pdfUpload" className="mt-4">
+              <PDFUploadImportSection
+                authToken={authToken}
+                collectionId={selectedLibrary}
+                onImported={() => {
+                  setShowAddRef(false);
+                  loadReferences();
+                  loadLibraries();
+                }}
+              />
+            </TabsContent>
           </Tabs>
         </DialogContent>
       </Dialog>
+
+      {/* PDF Upload Dialog */}
+      {uploadDialogRef && (
+        <DocumentUploadDialog
+          open={!!uploadDialogRef}
+          onClose={() => setUploadDialogRef(null)}
+          referenceId={uploadDialogRef.id}
+          referenceTitle={uploadDialogRef.title}
+          authToken={authToken}
+          onSuccess={() => {
+            setUploadDialogRef(null);
+            loadReferences(currentPage, false);
+          }}
+          mode={uploadDialogMode}
+        />
+      )}
     </div>
   );
 }
@@ -1524,13 +2001,23 @@ function DOIImportSection({
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify({ 
           doi: doi.trim(),
-          collectionId: collectionId || undefined  // Add to collection if one is selected
+          collectionId: collectionId || undefined,  // Add to collection if one is selected
+          autoFetchPdf: true,
         })
       });
       const data = await response.json();
       if (response.ok) {
         const addedTo = collectionId ? ' and added to library' : '';
-        setMessage({ type: 'success', text: `Imported: ${data.reference?.title || 'Reference'}${addedTo}` });
+        let pdfNote = '';
+        if (data.oaPdf?.success) {
+          pdfNote = ' OA PDF attached.';
+        } else if (data.oaPdf?.attempted) {
+          pdfNote = ` OA PDF not attached${data.oaPdf?.error ? `: ${data.oaPdf.error}` : '.'}`;
+        }
+        setMessage({
+          type: 'success',
+          text: `Imported: ${data.reference?.title || 'Reference'}${addedTo}.${pdfNote}`.trim(),
+        });
         setDoi('');
         onImported();
       } else {
@@ -1546,10 +2033,10 @@ function DOIImportSection({
   return (
     <div className="space-y-4">
       <p className="text-sm text-gray-600">
-        Enter a DOI to automatically fetch the reference details from CrossRef.
+        Enter a DOI to fetch citation details from CrossRef and auto-attempt open-access PDF attachment.
         {collectionId && (
           <span className="block mt-1 text-indigo-600 font-medium">
-            ✓ Will be added to the currently selected library
+            Will be added to the currently selected library
           </span>
         )}
       </p>
@@ -1569,6 +2056,165 @@ function DOIImportSection({
           message.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
         }`}>
           {message.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// PDF Upload Import Component (supports multiple files)
+function PDFUploadImportSection({
+  authToken,
+  collectionId,
+  onImported
+}: {
+  authToken: string | null;
+  collectionId?: string | null;
+  onImported: () => void;
+}) {
+  const [files, setFiles] = useState<File[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [selectionMode, setSelectionMode] = useState<'files' | 'folder'>('files');
+  const filesInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleSelectFromInput = (inputFiles: FileList | null, mode: 'files' | 'folder') => {
+    const selected = Array.from(inputFiles || []).filter((file) =>
+      file.name.toLowerCase().endsWith('.pdf')
+    );
+    setSelectionMode(mode);
+    setFiles(selected);
+    setResult(null);
+  };
+
+  const handleUpload = async () => {
+    if (!authToken || files.length === 0) return;
+
+    try {
+      setLoading(true);
+      setResult(null);
+
+      const formData = new FormData();
+      files.forEach((file) => formData.append('files', file));
+      if (collectionId) {
+        formData.append('collectionId', collectionId);
+      }
+
+      const response = await fetch('/api/library/import-pdf', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${authToken}` },
+        body: formData,
+      });
+
+      const contentType = response.headers.get('content-type') || '';
+      const data = contentType.includes('application/json')
+        ? await response.json()
+        : { error: 'Server returned a non-JSON response.' };
+
+      if (!response.ok && response.status !== 207) {
+        setResult({ type: 'error', text: data.error || 'PDF import failed' });
+        return;
+      }
+
+      const summary = data.summary || { total: files.length, imported: 0, failed: files.length };
+      const failedItems = Array.isArray(data.results)
+        ? data.results.filter((item: any) => !item.success).slice(0, 3)
+        : [];
+
+      const failedText = failedItems.length > 0
+        ? ` Failed: ${failedItems.map((item: any) => `${item.fileName} (${item.error || 'error'})`).join('; ')}`
+        : '';
+
+      setResult({
+        type: summary.imported > 0 ? 'success' : 'error',
+        text: `Imported ${summary.imported}/${summary.total} PDF file(s).${failedText}`,
+      });
+
+      if (summary.imported > 0) {
+        setFiles([]);
+        onImported();
+      }
+    } catch {
+      setResult({ type: 'error', text: 'PDF import failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-600">
+        Upload one or multiple PDF files. We extract metadata, create/update citations, and attach PDFs automatically.
+        {collectionId && (
+          <span className="block mt-1 text-indigo-600 font-medium">
+            Imported references will be added to the currently selected library
+          </span>
+        )}
+      </p>
+
+      <div className="space-y-2">
+        <div className="flex flex-wrap gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => filesInputRef.current?.click()}
+            disabled={loading}
+          >
+            Select Files
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => folderInputRef.current?.click()}
+            disabled={loading}
+          >
+            Select Folder
+          </Button>
+        </div>
+        <input
+          ref={filesInputRef}
+          type="file"
+          accept="application/pdf,.pdf"
+          multiple
+          className="hidden"
+          onChange={(e) => handleSelectFromInput(e.target.files, 'files')}
+        />
+        <input
+          ref={folderInputRef}
+          type="file"
+          accept="application/pdf,.pdf"
+          multiple
+          className="hidden"
+          onChange={(e) => handleSelectFromInput(e.target.files, 'folder')}
+          {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
+        />
+        {files.length > 0 && (
+          <p className="text-xs text-gray-500">
+            Selected {files.length} PDF file(s) from {selectionMode === 'folder' ? 'folder' : 'file picker'}:
+            {' '}
+            {files
+              .slice(0, 3)
+              .map((f) => ((f as any).webkitRelativePath && selectionMode === 'folder'
+                ? (f as any).webkitRelativePath
+                : f.name))
+              .join(', ')}
+            {files.length > 3 ? ` +${files.length - 3} more` : ''}
+          </p>
+        )}
+      </div>
+
+      <div className="flex justify-end">
+        <Button onClick={handleUpload} disabled={loading || files.length === 0}>
+          {loading ? 'Importing PDFs...' : `Import ${files.length > 0 ? files.length : ''} PDF${files.length === 1 ? '' : 's'}`}
+        </Button>
+      </div>
+
+      {result && (
+        <div className={`p-3 rounded-lg text-sm ${
+          result.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
+        }`}>
+          {result.text}
         </div>
       )}
     </div>
@@ -1633,7 +2279,7 @@ function FileImportSection({
         Paste BibTeX, RIS, or JSON exports from Mendeley/Zotero. Or upload a file.
         {collectionId && (
           <span className="block mt-1 text-indigo-600 font-medium">
-            ✓ Will be added to the currently selected library
+            Will be added to the currently selected library
           </span>
         )}
       </p>

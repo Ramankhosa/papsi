@@ -218,6 +218,9 @@ model User {
   // User-level section instructions (persistent across sessions)
   sectionInstructions UserSectionInstruction[]
 
+  // Reference document attachments (PDFs)
+  referenceDocuments ReferenceDocument[]
+
   @@map("users")
 }
 
@@ -1730,6 +1733,20 @@ model DraftingSession {
   targetWordCount        Int? // Target total word count
   currentWordCount       Int? // Computed current word count
 
+  // Archetype detection (paper methodology routing)
+  archetypeId            String?   @db.VarChar(64)
+  archetypeConfidence    Float?
+  contributionMode       String?   @db.VarChar(64)
+  evaluationScope        String?   @db.VarChar(64)
+  evidenceModality       String?   @db.VarChar(32)
+  archetypeRationale     String?   @db.Text
+  archetypeComputedAt    DateTime?
+  archetypeVersion       Int?
+  archetypeInputDigest   String?   @db.VarChar(128)
+  archetypeMissingSignals Json?
+  archetypeContradictions Json?
+  archetypeEvidenceStale Boolean   @default(false)
+
   // Relations
   patent        Patent         @relation(fields: [patentId], references: [id], onDelete: Cascade)
   user          User           @relation(fields: [userId], references: [id])
@@ -1778,6 +1795,8 @@ model DraftingSession {
   // Paper Blueprint and Sections (new coherence system)
   paperBlueprint PaperBlueprint?
   paperSections  PaperSection[]
+  paperSectionHumanizations      PaperSectionHumanization[]
+  paperSectionCitationValidations PaperSectionCitationValidation[]
 
   @@map("drafting_sessions")
 }
@@ -2018,6 +2037,7 @@ model AnnexureDraft {
   // Relations
   session   DraftingSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   aiReviews AIReviewResult[]
+  paperSectionHumanizations PaperSectionHumanization[]
 
   @@map("annexure_drafts")
 }
@@ -3978,6 +3998,74 @@ enum PaperSectionStatus {
   REGENERATING // Currently being regenerated
 }
 
+enum PaperSectionHumanizationStatus {
+  NOT_STARTED
+  PROCESSING
+  COMPLETED
+  FAILED
+  OUTDATED
+}
+
+model PaperSectionHumanization {
+  id        String          @id @default(cuid())
+  sessionId String
+  draftId   String?
+
+  sectionKey String
+
+  status PaperSectionHumanizationStatus @default(NOT_STARTED)
+  provider String?
+  humanizedContent String? @db.Text
+  errorMessage String?
+
+  sourceDraftFingerprint String?
+  sourceDraftWordCount   Int?
+  sourceDraftUpdatedAt   DateTime?
+  humanizedWordCount     Int?
+
+  version Int @default(1)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  humanizedAt DateTime?
+  citationValidationAt DateTime?
+
+  session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  draft AnnexureDraft? @relation(fields: [draftId], references: [id], onDelete: SetNull)
+  citationValidations PaperSectionCitationValidation[]
+
+  @@unique([sessionId, sectionKey])
+  @@index([sessionId])
+  @@index([sessionId, status])
+  @@index([draftId])
+  @@map("paper_section_humanizations")
+}
+
+model PaperSectionCitationValidation {
+  id String @id @default(cuid())
+
+  sessionId String
+  humanizationId String
+  sectionKey String
+  humanizationVersion Int
+
+  draftCitationKeys String[]
+  humanizedCitationKeys String[]
+  missingCitationKeys String[]
+  extraCitationKeys String[]
+  isValid Boolean
+
+  checkedAt DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  session DraftingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  humanization PaperSectionHumanization @relation(fields: [humanizationId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, sectionKey, checkedAt])
+  @@index([humanizationId, checkedAt])
+  @@map("paper_section_citation_validations")
+}
+
 // ============================================================================
 // PAPER SUPERSET SECTION SYSTEM (Admin-Configurable Prompts)
 // Mirrors SupersetSection/CountrySectionPrompt pattern for papers
@@ -4481,6 +4569,7 @@ model ReferenceLibrary {
   // Relations
   user        User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
   collections ReferenceCollectionItem[]
+  documents   ReferenceDocumentLink[]    // PDF attachments
 
   @@unique([userId, doi]) // Prevent duplicate DOIs per user
   @@index([userId])
@@ -4540,4 +4629,87 @@ model ReferenceCollectionItem {
   @@index([collectionId])
   @@index([referenceId])
   @@map("reference_collection_items")
+}
+
+// ============================================================================
+// REFERENCE DOCUMENTS (PDF Attachments for Deep Analysis)
+// ============================================================================
+
+enum ReferenceDocumentSource {
+  UPLOAD       // User uploaded PDF file
+  DOI_FETCH    // Fetched via Unpaywall/OA source
+  URL_IMPORT   // Downloaded from direct URL
+}
+
+enum ReferenceDocumentStatus {
+  UPLOADED  // File stored, not yet parsed
+  PARSING   // Text extraction in progress
+  READY     // Parsed and ready for deep analysis
+  FAILED    // Parsing failed (see errorCode)
+}
+
+model ReferenceDocument {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+
+  // File metadata
+  storagePath      String  @map("storage_path")       // uploads/references/{userId}/{id}.pdf
+  originalFilename String  @map("original_filename")
+  fileHash         String  @unique @map("file_hash")   // SHA-256 for deduplication
+  fileSizeBytes    Int     @map("file_size_bytes")
+  mimeType         String  @default("application/pdf") @map("mime_type")
+
+  // Source tracking
+  sourceType       ReferenceDocumentSource @default(UPLOAD)  @map("source_type")
+  sourceIdentifier String?                 @map("source_identifier") // DOI or URL used to fetch
+
+  // Processing status
+  status    ReferenceDocumentStatus @default(UPLOADED)
+  errorCode String?                 @map("error_code")  // password_protected, corrupted, scanned_only, unsupported
+
+  // Extracted content
+  parsedText  String? @db.Text @map("parsed_text")   // Full extracted text
+  pageCount   Int?    @map("page_count")              // Number of pages
+
+  // Extracted PDF metadata (auto-populated from PDF XMP/Info dict)
+  pdfTitle    String? @map("pdf_title")    // Title from PDF metadata
+  pdfAuthors  String? @map("pdf_authors")  // Authors from PDF metadata
+  pdfSubject  String? @map("pdf_subject")  // Subject/keywords from PDF metadata
+  pdfCreator  String? @map("pdf_creator")  // Creator application
+  pdfProducer String? @map("pdf_producer") // PDF producer
+  pdfCreationDate DateTime? @map("pdf_creation_date") // PDF creation date
+  pdfDoi      String? @map("pdf_doi")      // DOI extracted from PDF metadata or text
+
+  // Timestamps
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  // Relations
+  user       User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  references ReferenceDocumentLink[]
+
+  @@index([userId])
+  @@index([fileHash])
+  @@index([status])
+  @@map("reference_documents")
+}
+
+model ReferenceDocumentLink {
+  id          String @id @default(cuid())
+  referenceId String @map("reference_id")
+  documentId  String @map("document_id")
+  isPrimary   Boolean @default(true) @map("is_primary") // v1: one primary document per reference
+  linkedBy    String  @map("linked_by")                 // userId who created the link
+
+  // Timestamps
+  linkedAt DateTime @default(now()) @map("linked_at")
+
+  // Relations
+  reference ReferenceLibrary   @relation(fields: [referenceId], references: [id], onDelete: Cascade)
+  document  ReferenceDocument  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([referenceId, documentId])
+  @@index([referenceId])
+  @@index([documentId])
+  @@map("reference_document_links")
 }

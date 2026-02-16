@@ -13,6 +13,7 @@ export type FigureCategory =
   | 'DATA_CHART'        // Bar, line, scatter, pie - via QuickChart.io
   | 'DIAGRAM'           // Flowcharts, sequences - via PlantUML/Mermaid
   | 'STATISTICAL_PLOT'  // Complex stats - via Python execution
+  | 'ILLUSTRATED_FIGURE' // Infographic-style Figure 1 overviews
   | 'ILLUSTRATION'      // Conceptual - via AI image generation
   | 'SKETCH'            // AI-generated sketch or refinement
   | 'TABLE'             // Data tables - via HTML/LaTeX rendering
@@ -62,7 +63,15 @@ export interface DiagramSpecEdge {
 export interface DiagramSpecGroup {
   name: string
   nodeIds?: string[]
+  enclosesNodeIds?: string[]
   description?: string
+}
+
+export interface DiagramConstraints {
+  nodesMax?: number
+  edgesMax?: number
+  nodeLabelMaxWords?: number
+  noDuplicateNodeLabels?: boolean
 }
 
 export interface DiagramStructuredSpec {
@@ -70,8 +79,109 @@ export interface DiagramStructuredSpec {
   nodes?: DiagramSpecNode[]
   edges?: DiagramSpecEdge[]
   groups?: DiagramSpecGroup[]
+  constraints?: DiagramConstraints
   splitSuggestion?: string
 }
+
+export interface ChartSpecSeries {
+  label: string
+  yField: string
+  confidenceField?: string
+}
+
+export interface ChartStructuredSpec {
+  chartType?: DataChartType
+  xAxisLabel?: string
+  yAxisLabel?: string
+  xField?: string
+  yField?: string
+  series?: ChartSpecSeries[]
+  aggregation?: string
+  baselineLabel?: string
+  placeholderPolicy?: {
+    allowed?: boolean
+    label?: string
+    shape?: string
+    rangeHint?: string
+  }
+  notes?: string
+}
+
+export interface IllustrationSpecPanel {
+  idHint: string
+  title: string
+  elements?: string[]
+}
+
+export interface IllustrationStructuredSpec {
+  layout?: 'PANELS' | 'STRIP'
+  panelCount?: number
+  stepCount?: number
+  flowDirection?: 'LR' | 'TD'
+  panels?: IllustrationSpecPanel[]
+  elements?: string[]
+  steps?: string[]
+  captionDraft?: string
+  splitSuggestion?: string
+}
+
+export type IllustrationFigureGenre =
+  | 'METHOD_BLOCK'
+  | 'SCENARIO_STORYBOARD'
+  | 'CONCEPTUAL_FRAMEWORK'
+  | 'GRAPHICAL_ABSTRACT'
+
+export interface IllustrationRenderDirectives {
+  aspectRatio?: string
+  fillCanvasPercentMin?: number
+  whitespaceMaxPercent?: number
+  textPolicy?: {
+    maxLabelsTotal?: number
+    maxWordsPerLabel?: number
+    forbidAllCaps?: boolean
+    titlesOnlyPreferred?: boolean
+  }
+  stylePolicy?: {
+    noGradients?: boolean
+    no3D?: boolean
+    noClipart?: boolean
+    whiteBackground?: boolean
+    paletteMode?: string
+  }
+  compositionPolicy?: {
+    layoutMode?: 'PANELS' | 'STRIP'
+    equalPanels?: boolean
+    noTextOutsidePanels?: boolean
+  }
+}
+
+export interface IllustrationStructuredSpecV2 extends IllustrationStructuredSpec {
+  figureGenre?: IllustrationFigureGenre
+  renderDirectives?: IllustrationRenderDirectives
+  actors?: string[]
+  props?: string[]
+  forbiddenElements?: string[]
+}
+
+export interface FigureRenderSpec {
+  kind: 'chart' | 'diagram' | 'illustration'
+  chartSpec?: ChartStructuredSpec
+  diagramSpec?: DiagramStructuredSpec
+  illustrationSpecV2?: IllustrationStructuredSpecV2
+}
+
+export interface PaperProfile {
+  paperGenre: string
+  studyType: 'experimental' | 'survey' | 'qualitative' | 'mixed-methods' | 'simulation' | 'theoretical' | 'unknown'
+  dataAvailability: 'provided' | 'partial' | 'none'
+}
+
+export type FigureRole =
+  | 'ORIENT'
+  | 'POSITION'
+  | 'EXPLAIN_METHOD'
+  | 'SHOW_RESULTS'
+  | 'INTERPRET'
 
 export type StatisticalPlotType = 
   | 'histogram'
@@ -314,13 +424,24 @@ export interface FigureSuggestion {
   suggestedType?: string
   rendererPreference?: 'plantuml' | 'mermaid' | 'auto'
   relevantSection?: string      // Which paper section it relates to
+  figureRole?: FigureRole
+  sectionFitJustification?: string
+  expectedByReviewers?: boolean
   dataSources?: string[]        // What data it would visualize
   dataNeeded?: string
   whyThisFigure?: string
+  renderSpec?: FigureRenderSpec
+  chartSpec?: ChartStructuredSpec
   diagramSpec?: DiagramStructuredSpec
+  illustrationSpec?: IllustrationStructuredSpec
+  illustrationSpecV2?: IllustrationStructuredSpecV2
+  figureGenre?: IllustrationFigureGenre
+  renderDirectives?: IllustrationRenderDirectives
+  paperProfile?: PaperProfile
   importance: 'required' | 'recommended' | 'optional'
 
-  // Sketch/illustration-specific fields (used when category is SKETCH)
+  // Legacy sketch fields retained for backwards compatibility.
+  // New suggestions should use category=ILLUSTRATED_FIGURE plus illustrationSpec.
   sketchStyle?: 'academic' | 'scientific' | 'conceptual' | 'technical'
   sketchPrompt?: string         // Purpose-built visual prompt for Gemini image generation
   sketchMode?: 'SUGGEST' | 'GUIDED'  // SUGGEST = AI-driven from context, GUIDED = description-driven

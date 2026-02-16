@@ -22,6 +22,7 @@ import LiteratureSearchStage from '@/components/stages/LiteratureSearchStage'
 import OutlinePlanningStage from '@/components/stages/OutlinePlanningStage'
 import PaperFigurePlannerStage from '@/components/stages/PaperFigurePlannerStage'
 import SectionDraftingStage from '@/components/stages/SectionDraftingStage'
+import HumanizationStage from '@/components/stages/HumanizationStage'
 import ReviewExportStage from '@/components/stages/ReviewExportStage'
 import PaperVerticalStageNav from '@/components/stages/PaperVerticalStageNav'
 
@@ -32,6 +33,7 @@ const STAGES = [
   { key: 'LITERATURE_SEARCH', label: 'Literature Review', description: 'Search and import citations' },
   { key: 'FIGURE_PLANNER', label: 'Figure Planning', description: 'Plan figures and tables' },
   { key: 'SECTION_DRAFTING', label: 'Section Drafting', description: 'Generate and edit sections' },
+  { key: 'HUMANIZATION', label: 'Humanization', description: 'Humanize sections and validate citations' },
   { key: 'REVIEW_EXPORT', label: 'Review & Export', description: 'Validate and export' }
 ] as const
 
@@ -57,6 +59,7 @@ const STAGE_COMPONENTS: Record<StageKey, StageComponent> = {
   OUTLINE_PLANNING: OutlinePlanningStage as any,
   FIGURE_PLANNER: PaperFigurePlannerStage as any,
   SECTION_DRAFTING: SectionDraftingStage as any,
+  HUMANIZATION: HumanizationStage as any,
   REVIEW_EXPORT: ReviewExportStage as any
 }
 
@@ -67,6 +70,7 @@ const STAGE_ORDER: StageKey[] = [
   'LITERATURE_SEARCH',
   'FIGURE_PLANNER',
   'SECTION_DRAFTING',
+  'HUMANIZATION',
   'REVIEW_EXPORT'
 ]
 

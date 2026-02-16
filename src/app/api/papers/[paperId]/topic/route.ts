@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
+import { paperArchetypeService } from '@/lib/services/paper-archetype-service';
 
 export const runtime = 'nodejs';
 
@@ -219,7 +220,20 @@ export async function PUT(request: NextRequest, context: { params: { paperId: st
       }
     });
 
-    return NextResponse.json({ topic });
+    let archetypeDetection: Awaited<ReturnType<typeof paperArchetypeService.detectAndPersist>> | null = null;
+    try {
+      const headers = Object.fromEntries(request.headers.entries());
+      archetypeDetection = await paperArchetypeService.detectAndPersist({
+        sessionId,
+        headers,
+        userId: user.id,
+        source: 'TOPIC_SAVE'
+      });
+    } catch (detectError) {
+      console.error('[ResearchTopic] Archetype detection failed:', detectError);
+    }
+
+    return NextResponse.json({ topic, archetypeDetection });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.errors[0]?.message || 'Invalid payload' }, { status: 400 });

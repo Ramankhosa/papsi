@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { motion, AnimatePresence, useDragControls } from 'framer-motion';
 import {
   ChevronLeft,
@@ -38,12 +38,20 @@ import {
   BarChart3,
   Network,
   ExternalLink,
-  Copy
+  Copy,
+  Trash2,
+  ChevronDown,
+  ChevronUp,
+  Settings2,
+  ListFilter,
+  CheckCircle2,
+  Circle
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 // ============================================================================
 // Types
@@ -86,6 +94,35 @@ interface Citation {
   citationKey: string;
   source: 'paper' | 'library';
   sourceType?: string;
+  usageCount?: number;
+  abstract?: string;
+  usages?: Array<{ id: string; sectionKey?: string }>;
+  tags?: string[];
+  url?: string;
+}
+
+interface CitationAiReviewData {
+  citationId: string;
+  citationKey: string;
+  hasReview: boolean;
+  aiReview: {
+    relevanceScore: number | null;
+    relevanceToResearch: string | null;
+    keyContribution: string | null;
+    keyFindings: string | null;
+    methodologicalApproach: string | null;
+    limitationsOrGaps: string | null;
+    analyzedAt: string | null;
+  };
+  mappings: Array<{
+    sectionKey: string;
+    dimension: string | null;
+    remark: string | null;
+    confidence: string | null;
+    mappingSource: string | null;
+    updatedAt: string | Date;
+  }>;
+  error?: string;
 }
 
 interface FloatingWritingPanelProps {
@@ -105,6 +142,26 @@ interface FloatingWritingPanelProps {
   onNavigateToStage?: (stageKey: string) => void;
   onOpenBibliographyPanel?: () => void;
   isVisible?: boolean;
+  // Bibliography management (merged from Citations Panel)
+  bibliographyStyle?: string;
+  onBibliographyStyleChange?: (style: string) => void;
+  bibliographySortOrder?: 'alphabetical' | 'order_of_appearance';
+  onBibliographySortOrderChange?: (order: 'alphabetical' | 'order_of_appearance') => void;
+  onGenerateBibliography?: () => void;
+  generatingBibliography?: boolean;
+  usedCitationCount?: number;
+  isNumericStyleBibliography?: boolean;
+  sequenceInfo?: {
+    styleCode: string;
+    version: number | null;
+    changed: boolean;
+    added: number;
+    removed: number;
+    renumbered: number;
+    historyCount: number;
+  } | null;
+  onAddCitationViaPicker?: () => void;
+  onCitationsUpdated?: (citations: any[]) => void;
 }
 
 /** Metadata passed from the floating panel's smart figure suggestion flow */
@@ -479,7 +536,19 @@ export default function FloatingWritingPanel({
   onRefreshCitations,
   onNavigateToStage,
   onOpenBibliographyPanel,
-  isVisible = true
+  isVisible = true,
+  // Bibliography management props
+  bibliographyStyle = 'APA7',
+  onBibliographyStyleChange,
+  bibliographySortOrder = 'alphabetical',
+  onBibliographySortOrderChange,
+  onGenerateBibliography,
+  generatingBibliography = false,
+  usedCitationCount = 0,
+  isNumericStyleBibliography = false,
+  sequenceInfo = null,
+  onAddCitationViaPicker,
+  onCitationsUpdated,
 }: FloatingWritingPanelProps) {
   // Panel state
   const [isCollapsed, setIsCollapsed] = useState(false);
@@ -743,6 +812,7 @@ export default function FloatingWritingPanel({
   const [loadingCitations, setLoadingCitations] = useState(false);
   const [paperCitations, setPaperCitations] = useState<Citation[]>([]);
   const [citationCounts, setCitationCounts] = useState({ paper: 0, library: 0, total: 0 });
+  const [citationUsageByKey, setCitationUsageByKey] = useState<Record<string, number>>({});
   const [importingCitation, setImportingCitation] = useState<string | null>(null);
   
   // Add citation state (DOI / BibTeX)
@@ -753,9 +823,105 @@ export default function FloatingWritingPanel({
   const [addingCitation, setAddingCitation] = useState(false);
   const [addCitationError, setAddCitationError] = useState<string | null>(null);
   
+  // Merged citations management state
+  const [usageFilter, setUsageFilter] = useState<'all' | 'used' | 'unused'>('all');
+  const [showBibTools, setShowBibTools] = useState(false);
+  const [expandedAbstracts, setExpandedAbstracts] = useState<Set<string>>(new Set());
+  const [expandedAiReviews, setExpandedAiReviews] = useState<Set<string>>(new Set());
+  const [loadingAiReviews, setLoadingAiReviews] = useState<Record<string, boolean>>({});
+  const [aiReviewsByCitation, setAiReviewsByCitation] = useState<Record<string, CitationAiReviewData>>({});
+  const [editingCitation, setEditingCitation] = useState<any | null>(null);
+  const [editValues, setEditValues] = useState({
+    title: '', authors: '', year: '', venue: '', volume: '', issue: '', pages: '',
+    doi: '', url: '', isbn: '', publisher: '', edition: '', editors: '',
+    publicationPlace: '', publicationDate: '', accessedDate: '', articleNumber: '',
+    issn: '', journalAbbreviation: '', pmid: '', pmcid: '', arxivId: '',
+    abstract: '', notes: '', tags: ''
+  });
+  const [editStatusMessage, setEditStatusMessage] = useState<string | null>(null);
+  const [fetchingAbstract, setFetchingAbstract] = useState(false);
+  
   // Help panel state
   const [showHelp, setShowHelp] = useState(false);
   const paperCitationCount = Math.max(citationCounts.paper, citations.length);
+
+  // Enrich panel citations with usage extracted from section content.
+  // `citationUsageByKey` is computed server-side from draft section markers.
+  const enrichedCitations = useMemo(() => {
+    const parentMap = new Map<string, any>();
+    for (const c of citations) {
+      const key = c.citationKey || c.id;
+      if (key) parentMap.set(key, c);
+    }
+
+    const merged: Citation[] = [];
+    const seenIds = new Set<string>();
+
+    for (const pc of paperCitations) {
+      seenIds.add(pc.id);
+      const parent = parentMap.get(pc.citationKey);
+      const normalizedKey = String(pc.citationKey || '').trim().toLowerCase();
+      const usageCount = pc.source === 'paper'
+        ? Number(citationUsageByKey[normalizedKey] || 0)
+        : Number(pc.usageCount || 0);
+      merged.push({
+        ...pc,
+        usageCount,
+        abstract: pc.abstract || parent?.abstract || '',
+        usages: parent?.usages ?? pc.usages ?? [],
+        tags: parent?.tags ?? pc.tags ?? [],
+      });
+    }
+
+    for (const c of citations) {
+      if (seenIds.has(c.id)) continue;
+      seenIds.add(c.id);
+      const normalizedKey = String(c.citationKey || '').trim().toLowerCase();
+      merged.push({
+        id: c.id,
+        title: typeof c.title === 'string' ? c.title : String(c.title || ''),
+        authors: typeof c.authors === 'string' ? c.authors : '',
+        year: c.year,
+        venue: typeof c.venue === 'string' ? c.venue : undefined,
+        doi: typeof c.doi === 'string' ? c.doi : undefined,
+        citationKey: c.citationKey || '',
+        source: 'paper' as const,
+        sourceType: c.sourceType,
+        usageCount: Number(citationUsageByKey[normalizedKey] || 0),
+        abstract: typeof c.abstract === 'string' ? c.abstract : '',
+        usages: c.usages ?? [],
+        tags: c.tags ?? [],
+      });
+    }
+
+    return merged;
+  }, [paperCitations, citations, citationUsageByKey]);
+
+  // Usage summary for paper citations - uses full enriched set
+  const usageSummary = useMemo(() => {
+    const paperItems = enrichedCitations.filter(c => c.source === 'paper');
+    const used = paperItems.filter(c => Number(c.usageCount || 0) > 0).length;
+    // Also consider the parent-provided usedCitationCount (client-side extraction)
+    // which may be more up-to-date than DB-backed CitationUsage records
+    const effectiveUsed = Math.max(used, usedCitationCount);
+    return {
+      total: paperItems.length,
+      used: effectiveUsed,
+      unused: Math.max(0, paperItems.length - effectiveUsed),
+    };
+  }, [enrichedCitations, usedCitationCount]);
+
+  // Apply usage filter on top of source filter
+  const displayCitations = useMemo(() => {
+    if (usageFilter === 'all') return enrichedCitations;
+    return enrichedCitations.filter(c => {
+      if (c.source === 'library') return false; // hide library items when filtering by usage
+      const count = Number(c.usageCount || 0);
+      if (usageFilter === 'used') return count > 0;
+      if (usageFilter === 'unused') return count <= 0;
+      return true;
+    });
+  }, [enrichedCitations, usageFilter]);
 
   // Tabs configuration
   const tabs: PanelTab[] = [
@@ -985,7 +1151,7 @@ export default function FloatingWritingPanel({
       const params = new URLSearchParams({
         source: citationSourceFilter,
         q: citationSearch,
-        limit: '50',
+        limit: '100', // limit applies to library items only; paper citations are always returned in full
       });
       
       const response = await fetch(`/api/papers/${sessionId}/panel-citations?${params}`, {
@@ -998,6 +1164,12 @@ export default function FloatingWritingPanel({
         const data = await response.json();
         setPaperCitations(data.citations || []);
         setCitationCounts(data.counts || { paper: 0, library: 0, total: 0 });
+        if (citationSourceFilter !== 'library' && data.usageByKey && typeof data.usageByKey === 'object') {
+          setCitationUsageByKey((prev) => ({
+            ...prev,
+            ...(data.usageByKey as Record<string, number>)
+          }));
+        }
       }
     } catch (err) {
       console.error('Failed to fetch citations:', err);
@@ -1065,6 +1237,207 @@ export default function FloatingWritingPanel({
       setImportingCitation(null);
     }
   };
+
+  // Open edit dialog for a citation
+  const openEditCitation = useCallback((citation: any) => {
+    setEditingCitation(citation);
+    setEditValues({
+      title: citation.title || '',
+      authors: typeof citation.authors === 'string' ? citation.authors : (Array.isArray(citation.authors) ? citation.authors.join(', ') : ''),
+      year: citation.year ? String(citation.year) : '',
+      venue: citation.venue || '',
+      volume: citation.volume || '',
+      issue: citation.issue || '',
+      pages: citation.pages || '',
+      doi: citation.doi || '',
+      url: citation.url || '',
+      isbn: citation.isbn || '',
+      publisher: citation.publisher || '',
+      edition: citation.edition || '',
+      editors: Array.isArray(citation.editors) ? citation.editors.join(', ') : '',
+      publicationPlace: citation.publicationPlace || '',
+      publicationDate: citation.publicationDate || '',
+      accessedDate: citation.accessedDate || '',
+      articleNumber: citation.articleNumber || '',
+      issn: citation.issn || '',
+      journalAbbreviation: citation.journalAbbreviation || '',
+      pmid: citation.pmid || '',
+      pmcid: citation.pmcid || '',
+      arxivId: citation.arxivId || '',
+      abstract: citation.abstract || '',
+      notes: citation.notes || '',
+      tags: Array.isArray(citation.tags) ? citation.tags.join(', ') : ''
+    });
+    setEditStatusMessage(null);
+  }, []);
+
+  // Save edited citation
+  const handleEditSave = async () => {
+    if (!editingCitation || !authToken) return;
+    try {
+      setEditStatusMessage(null);
+      const payload = {
+        title: editValues.title,
+        authors: editValues.authors.split(',').map(a => a.trim()).filter(Boolean),
+        year: editValues.year ? Number(editValues.year) : undefined,
+        venue: editValues.venue || undefined,
+        volume: editValues.volume || undefined,
+        issue: editValues.issue || undefined,
+        pages: editValues.pages || undefined,
+        doi: editValues.doi || undefined,
+        url: editValues.url || undefined,
+        isbn: editValues.isbn || undefined,
+        publisher: editValues.publisher || undefined,
+        edition: editValues.edition || undefined,
+        editors: editValues.editors.split(',').map(a => a.trim()).filter(Boolean),
+        publicationPlace: editValues.publicationPlace || undefined,
+        publicationDate: editValues.publicationDate || undefined,
+        accessedDate: editValues.accessedDate || undefined,
+        articleNumber: editValues.articleNumber || undefined,
+        issn: editValues.issn || undefined,
+        journalAbbreviation: editValues.journalAbbreviation || undefined,
+        pmid: editValues.pmid || undefined,
+        pmcid: editValues.pmcid || undefined,
+        arxivId: editValues.arxivId || undefined,
+        abstract: editValues.abstract || undefined,
+        notes: editValues.notes || undefined,
+        tags: editValues.tags.split(',').map(tag => tag.trim()).filter(Boolean)
+      };
+      const response = await fetch(`/api/papers/${sessionId}/citations/${editingCitation.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify(payload)
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to update citation');
+      }
+      setEditingCitation(null);
+      fetchCitations();
+      onRefreshCitations?.();
+    } catch (err) {
+      setEditStatusMessage(err instanceof Error ? err.message : 'Failed to update citation');
+    }
+  };
+
+  // Delete a citation
+  const handleDeleteCitation = async (citation: any) => {
+    if (!citation || !authToken) return;
+    const confirmed = window.confirm('Delete this citation? This cannot be undone.');
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/citations/${citation.id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      const data = await response.json();
+
+      if (response.status === 409 && data.warning) {
+        const archive = window.confirm(`${data.warning} Archive instead?`);
+        if (archive) {
+          await fetch(`/api/papers/${sessionId}/citations/${citation.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+            body: JSON.stringify({ isActive: false })
+          });
+        }
+      }
+
+      fetchCitations();
+      onRefreshCitations?.();
+    } catch (err) {
+      console.error('Failed to delete citation:', err);
+    }
+  };
+
+  // Fetch abstract from external sources
+  const handleFetchAbstract = async () => {
+    if (!editingCitation || !authToken) return;
+    try {
+      setFetchingAbstract(true);
+      setEditStatusMessage(null);
+      const response = await fetch(
+        `/api/papers/${sessionId}/citations/${editingCitation.id}/abstract`,
+        { headers: { Authorization: `Bearer ${authToken}` } }
+      );
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to fetch abstract');
+      if (data.found && data.abstracts?.length > 0) {
+        setEditValues(prev => ({ ...prev, abstract: data.abstracts[0].abstract }));
+        setEditStatusMessage(`Abstract found from ${data.abstracts[0].source}`);
+      } else {
+        setEditStatusMessage('No abstract found online.');
+      }
+    } catch (err) {
+      setEditStatusMessage(err instanceof Error ? err.message : 'Failed to fetch abstract');
+    } finally {
+      setFetchingAbstract(false);
+      setTimeout(() => setEditStatusMessage(null), 5000);
+    }
+  };
+
+  // Toggle abstract visibility
+  const toggleAbstract = useCallback((citationId: string) => {
+    setExpandedAbstracts(prev => {
+      const next = new Set(prev);
+      if (next.has(citationId)) next.delete(citationId);
+      else next.add(citationId);
+      return next;
+    });
+  }, []);
+
+  const toggleAiReview = useCallback(async (citation: Citation) => {
+    if (citation.source === 'library') return;
+
+    const citationId = citation.id;
+    const isExpanded = expandedAiReviews.has(citationId);
+    setExpandedAiReviews((prev) => {
+      const next = new Set(prev);
+      if (next.has(citationId)) next.delete(citationId);
+      else next.add(citationId);
+      return next;
+    });
+
+    if (isExpanded) return;
+    if (!authToken || !sessionId) return;
+    if (aiReviewsByCitation[citationId] || loadingAiReviews[citationId]) return;
+
+    setLoadingAiReviews((prev) => ({ ...prev, [citationId]: true }));
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/citations/${citationId}`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to load AI relevance review');
+      }
+      setAiReviewsByCitation((prev) => ({ ...prev, [citationId]: data as CitationAiReviewData }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to load AI relevance review';
+      setAiReviewsByCitation((prev) => ({
+        ...prev,
+        [citationId]: {
+          citationId,
+          citationKey: citation.citationKey,
+          hasReview: false,
+          aiReview: {
+            relevanceScore: null,
+            relevanceToResearch: null,
+            keyContribution: null,
+            keyFindings: null,
+            methodologicalApproach: null,
+            limitationsOrGaps: null,
+            analyzedAt: null
+          },
+          mappings: [],
+          error: message
+        }
+      }));
+    } finally {
+      setLoadingAiReviews((prev) => ({ ...prev, [citationId]: false }));
+    }
+  }, [aiReviewsByCitation, authToken, expandedAiReviews, loadingAiReviews, sessionId]);
 
   // Handle DOI lookup and add citation
   const handleAddCitationByDOI = async () => {
@@ -1898,7 +2271,7 @@ export default function FloatingWritingPanel({
                     </motion.div>
                   )}
 
-                  {/* Citations Tab */}
+                  {/* Citations Tab - Merged Citations Manager */}
                   {activeTab === 'citations' && (
                     <motion.div
                       key="citations"
@@ -1907,15 +2280,30 @@ export default function FloatingWritingPanel({
                       exit={{ opacity: 0, y: -10 }}
                       className="p-3 space-y-2 flex flex-col h-full"
                     >
-                      {/* Header with Add button */}
+                      {/* Header with Add + Refresh + Picker */}
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-1.5">
                           <p className="text-xs font-medium text-slate-600">Citations</p>
                           <span className="text-[10px] text-slate-400">
                             ({paperCitationCount} in paper)
                           </span>
+                          {usageSummary.used > 0 && (
+                            <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-green-100 text-green-700 font-medium flex items-center gap-0.5">
+                              <CheckCircle2 className="w-2.5 h-2.5" />
+                              {usageSummary.used} cited
+                            </span>
+                          )}
                         </div>
                         <div className="flex items-center gap-1">
+                          {onAddCitationViaPicker && (
+                            <button
+                              onClick={onAddCitationViaPicker}
+                              className="p-1.5 rounded-md hover:bg-blue-100 text-blue-500 transition-colors"
+                              title="Search & pick citations"
+                            >
+                              <Search className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                           <button
                             onClick={() => setShowAddCitation(!showAddCitation)}
                             className={`p-1.5 rounded-md transition-colors ${
@@ -1942,16 +2330,105 @@ export default function FloatingWritingPanel({
                         </div>
                       </div>
 
-                      <button
-                        onClick={handleOpenBibliographyPanel}
-                        disabled={!canOpenBibliographyPanel}
-                        className="w-full h-8 inline-flex items-center justify-center gap-1.5 rounded-lg border border-purple-200 bg-purple-50 text-[11px] font-medium text-purple-700 hover:bg-purple-100 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        title="Open bibliography generator and citation style options"
-                      >
-                        <BookOpen className="w-3.5 h-3.5" />
-                        Bibliography & Style
-                        <ArrowUpRight className="w-3 h-3" />
-                      </button>
+                      {/* Bibliography & Style - Expandable Inline Section */}
+                      <div className="rounded-lg border border-purple-200 bg-purple-50/50 overflow-hidden">
+                        <button
+                          onClick={() => setShowBibTools(!showBibTools)}
+                          className="w-full flex items-center justify-between px-2.5 py-1.5 hover:bg-purple-100/50 transition-colors"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            <BookOpen className="w-3.5 h-3.5 text-purple-600" />
+                            <span className="text-[11px] font-medium text-purple-700">Bibliography & Style</span>
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-purple-100 text-purple-600 font-medium">
+                              {bibliographyStyle}
+                            </span>
+                          </div>
+                          {showBibTools ? (
+                            <ChevronUp className="w-3.5 h-3.5 text-purple-500" />
+                          ) : (
+                            <ChevronDown className="w-3.5 h-3.5 text-purple-500" />
+                          )}
+                        </button>
+                        <AnimatePresence>
+                          {showBibTools && (
+                            <motion.div
+                              initial={{ height: 0, opacity: 0 }}
+                              animate={{ height: 'auto', opacity: 1 }}
+                              exit={{ height: 0, opacity: 0 }}
+                              className="overflow-hidden"
+                            >
+                              <div className="px-2.5 pb-2.5 space-y-2 border-t border-purple-100">
+                                <div className="space-y-1.5 pt-2">
+                                  <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Citation Style</label>
+                                  <select
+                                    value={bibliographyStyle}
+                                    onChange={(e) => onBibliographyStyleChange?.(e.target.value)}
+                                    className="w-full text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-gray-700 focus:border-purple-300 focus:ring-1 focus:ring-purple-200"
+                                  >
+                                    <option value="APA7">APA 7th Edition</option>
+                                    <option value="IEEE">IEEE</option>
+                                    <option value="CHICAGO_AUTHOR_DATE">Chicago (Author-Date)</option>
+                                    <option value="MLA9">MLA 9th Edition</option>
+                                    <option value="HARVARD">Harvard</option>
+                                    <option value="VANCOUVER">Vancouver</option>
+                                  </select>
+
+                                  <div className="flex gap-1">
+                                    <button
+                                      onClick={() => onBibliographySortOrderChange?.('alphabetical')}
+                                      disabled={isNumericStyleBibliography}
+                                      className={`flex-1 text-[10px] py-1 rounded-md border transition-colors ${
+                                        bibliographySortOrder === 'alphabetical'
+                                          ? 'bg-purple-50 border-purple-200 text-purple-700 font-medium'
+                                          : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                                      } ${isNumericStyleBibliography ? 'opacity-40 cursor-not-allowed hover:bg-white' : ''}`}
+                                    >
+                                      A→Z Alphabetical
+                                    </button>
+                                    <button
+                                      onClick={() => onBibliographySortOrderChange?.('order_of_appearance')}
+                                      className={`flex-1 text-[10px] py-1 rounded-md border transition-colors ${
+                                        bibliographySortOrder === 'order_of_appearance'
+                                          ? 'bg-purple-50 border-purple-200 text-purple-700 font-medium'
+                                          : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+                                      }`}
+                                    >
+                                      1→N Appearance
+                                    </button>
+                                  </div>
+
+                                  {isNumericStyleBibliography && (
+                                    <p className="text-[10px] text-slate-500">
+                                      IEEE/Vancouver uses order-of-appearance numbering.
+                                    </p>
+                                  )}
+                                  {isNumericStyleBibliography && sequenceInfo && (
+                                    <p className="text-[10px] text-slate-500">
+                                      Sequence {sequenceInfo.version ? `v${sequenceInfo.version}` : 'unversioned'} | snapshots {sequenceInfo.historyCount}
+                                      {sequenceInfo.changed
+                                        ? ` | delta +${sequenceInfo.added}/-${sequenceInfo.removed}, renumbered ${sequenceInfo.renumbered}`
+                                        : ' | no numbering changes'}
+                                    </p>
+                                  )}
+                                </div>
+
+                                <button
+                                  onClick={() => {
+                                    setShowBibTools(false);
+                                    onGenerateBibliography?.();
+                                  }}
+                                  disabled={generatingBibliography}
+                                  className="w-full flex items-center justify-center gap-2 text-[11px] font-medium text-purple-600 hover:text-purple-700 py-1.5 border border-purple-200 rounded-lg hover:bg-purple-50 disabled:opacity-50 bg-white"
+                                  title="Generates bibliography only for citations used in the paper"
+                                >
+                                  {generatingBibliography ? <Loader2 className="w-3 h-3 animate-spin" /> : <BookOpen className="w-3 h-3" />}
+                                  Generate Bibliography ({usedCitationCount} used)
+                                </button>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
 
                       {/* Add Citation Panel (DOI / BibTeX) */}
                       <AnimatePresence>
@@ -1963,7 +2440,6 @@ export default function FloatingWritingPanel({
                             className="overflow-hidden"
                           >
                             <div className="p-2.5 bg-emerald-50 rounded-xl border border-emerald-100 space-y-2">
-                              {/* Mode Toggle */}
                               <div className="flex p-0.5 bg-emerald-100 rounded-lg">
                                 <button
                                   onClick={() => { setAddCitationMode('doi'); setAddCitationError(null); }}
@@ -2033,7 +2509,7 @@ export default function FloatingWritingPanel({
                         )}
                       </AnimatePresence>
 
-                      {/* Source Filter Tabs - Compact */}
+                      {/* Source Filter Tabs */}
                       <div className="flex p-0.5 bg-slate-100 rounded-lg">
                         {[
                           { id: 'all' as const, label: 'All', count: citationCounts.total },
@@ -2042,7 +2518,7 @@ export default function FloatingWritingPanel({
                         ].map((filter) => (
                           <button
                             key={filter.id}
-                            onClick={() => setCitationSourceFilter(filter.id)}
+                            onClick={() => { setCitationSourceFilter(filter.id); setUsageFilter('all'); }}
                             className={`flex-1 py-1 px-1.5 text-[10px] font-medium rounded-md transition-all ${
                               citationSourceFilter === filter.id
                                 ? 'bg-white text-slate-800 shadow-sm'
@@ -2061,7 +2537,33 @@ export default function FloatingWritingPanel({
                         ))}
                       </div>
 
-                      {/* Search - Compact */}
+                      {/* Usage Filter - only when viewing Paper or All */}
+                      {citationSourceFilter !== 'library' && usageSummary.total > 0 && (
+                        <div className="flex items-center gap-1">
+                          <ListFilter className="w-3 h-3 text-slate-400 flex-shrink-0" />
+                          <div className="flex p-0.5 bg-slate-50 rounded-md flex-1">
+                            {[
+                              { id: 'all' as const, label: 'All' },
+                              { id: 'used' as const, label: `Used (${usageSummary.used})` },
+                              { id: 'unused' as const, label: `Unused (${usageSummary.unused})` },
+                            ].map((uf) => (
+                              <button
+                                key={uf.id}
+                                onClick={() => setUsageFilter(uf.id)}
+                                className={`flex-1 py-0.5 px-1 text-[9px] font-medium rounded transition-all ${
+                                  usageFilter === uf.id
+                                    ? 'bg-white text-slate-700 shadow-sm'
+                                    : 'text-slate-400 hover:text-slate-600'
+                                }`}
+                              >
+                                {uf.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Search */}
                       <div className="relative">
                         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400" />
                         <Input
@@ -2072,117 +2574,255 @@ export default function FloatingWritingPanel({
                         />
                       </div>
 
-                      {/* Citation List - Takes remaining space */}
+                      {/* Citation List */}
                       {loadingCitations ? (
                         <div className="py-6 text-center flex-1">
                           <Loader2 className="w-5 h-5 animate-spin text-blue-500 mx-auto mb-2" />
                           <p className="text-xs text-slate-500">Loading...</p>
                         </div>
-                      ) : paperCitations.length > 0 ? (
-                        <div className="space-y-1 flex-1 overflow-y-auto pr-1" style={{ minHeight: 0 }}>
-                          {paperCitations.map(citation => (
-                            <div
-                              key={citation.id}
-                              className={`p-2 rounded-lg border transition-all group ${
-                                citation.source === 'paper'
-                                  ? 'border-blue-200 bg-blue-50/50 hover:border-blue-300 hover:bg-blue-50'
-                                  : 'border-amber-200 bg-amber-50/50 hover:border-amber-300 hover:bg-amber-50'
-                              }`}
-                            >
-                              <div className="flex items-start gap-2">
-                                <div className="flex-1 min-w-0">
-                                  <button
-                                    onClick={() => {
-                                      if (citation.source === 'library') {
-                                        handleImportCitation(citation.id);
-                                      } else {
-                                        onInsertCitation?.(citation);
-                                      }
-                                    }}
-                                    className="w-full text-left"
-                                  >
-                                    <p className={`text-xs font-medium line-clamp-2 ${
-                                      citation.source === 'paper' ? 'text-blue-800' : 'text-amber-800'
-                                    }`}>
-                                      {citation.title}
-                                    </p>
-                                  </button>
-                                  <div className="flex items-center gap-2 mt-1 flex-wrap">
-                                    {citation.authors && (
-                                      <span className="text-[10px] text-slate-500 truncate max-w-[140px]">
-                                        {citation.authors}
+                      ) : displayCitations.length > 0 ? (
+                        <div className="space-y-1.5 flex-1 overflow-y-auto pr-1" style={{ minHeight: 0 }}>
+                          {displayCitations.map(citation => {
+                            const isLibrary = citation.source === 'library';
+                            const usageCount = Number(citation.usageCount || 0);
+                            const hasAbstract = citation.abstract && citation.abstract.length > 30;
+                            const isAbstractExpanded = expandedAbstracts.has(citation.id);
+                            const isAiReviewExpanded = expandedAiReviews.has(citation.id);
+                            const isAiReviewLoading = Boolean(loadingAiReviews[citation.id]);
+                            const aiReviewData = aiReviewsByCitation[citation.id];
+
+                            return (
+                              <div
+                                key={citation.id}
+                                className={`p-2 rounded-lg border transition-all group ${
+                                  isLibrary
+                                    ? 'border-amber-200 bg-amber-50/50 hover:border-amber-300 hover:bg-amber-50'
+                                    : usageCount > 0
+                                      ? 'border-green-200 bg-green-50/30 hover:border-green-300 hover:bg-green-50/50 border-l-2 border-l-green-400'
+                                      : 'border-blue-200 bg-blue-50/50 hover:border-blue-300 hover:bg-blue-50'
+                                }`}
+                              >
+                                {/* Title + Primary Action */}
+                                <div className="flex items-start gap-1.5">
+                                  {/* Usage indicator symbol - always visible */}
+                                  {!isLibrary && (
+                                    <div className="flex-shrink-0 mt-0.5" title={usageCount > 0 ? `Cited ${usageCount} time${usageCount > 1 ? 's' : ''} in paper` : 'Not yet cited in paper'}>
+                                      {usageCount > 0 ? (
+                                        <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+                                      ) : (
+                                        <Circle className="w-3.5 h-3.5 text-slate-300" />
+                                      )}
+                                    </div>
+                                  )}
+                                  <div className="flex-1 min-w-0">
+                                    <button
+                                      onClick={() => {
+                                        if (isLibrary) {
+                                          handleImportCitation(citation.id);
+                                        } else {
+                                          onInsertCitation?.(citation);
+                                          // Refresh citations after a short delay to pick up updated usage counts
+                                          setTimeout(() => {
+                                            fetchCitations();
+                                            onRefreshCitations?.();
+                                          }, 1500);
+                                        }
+                                      }}
+                                      className="w-full text-left"
+                                      title={isLibrary ? 'Import to paper & insert' : 'Insert citation at cursor'}
+                                    >
+                                      <p className={`text-xs font-medium line-clamp-2 ${
+                                        isLibrary ? 'text-amber-800' : 'text-blue-800'
+                                      }`}>
+                                        {citation.title}
+                                      </p>
+                                    </button>
+                                    <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                                      {citation.authors && (
+                                        <span className="text-[10px] text-slate-500 truncate max-w-[120px]">
+                                          {citation.authors}
+                                        </span>
+                                      )}
+                                      {citation.year && (
+                                        <span className="text-[10px] text-slate-400">({citation.year})</span>
+                                      )}
+                                      <span className={`text-[9px] px-1 py-0.5 rounded-full ${
+                                        isLibrary ? 'bg-amber-100 text-amber-600' : 'bg-blue-100 text-blue-600'
+                                      }`}>
+                                        {isLibrary ? 'Library' : 'Paper'}
                                       </span>
+                                      {!isLibrary && usageCount > 0 && (
+                                        <span className="text-[9px] px-1 py-0.5 rounded-full bg-green-100 text-green-700 font-medium">
+                                          {usageCount}x
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  {/* Primary action button */}
+                                  <div className="flex-shrink-0">
+                                    {isLibrary ? (
+                                      <button
+                                        onClick={() => handleImportCitation(citation.id)}
+                                        disabled={importingCitation === citation.id}
+                                        className="p-1.5 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-700 transition-colors disabled:opacity-50"
+                                        title="Import to paper & insert"
+                                      >
+                                        {importingCitation === citation.id ? (
+                                          <Loader2 className="w-3 h-3 animate-spin" />
+                                        ) : (
+                                          <Download className="w-3 h-3" />
+                                        )}
+                                      </button>
+                                    ) : (
+                                      <button
+                                        onClick={() => {
+                                          onInsertCitation?.(citation);
+                                          setTimeout(() => {
+                                            fetchCitations();
+                                            onRefreshCitations?.();
+                                          }, 1500);
+                                        }}
+                                        className="p-1.5 rounded-md bg-blue-100 hover:bg-blue-200 text-blue-700 transition-colors"
+                                        title="Insert citation at cursor"
+                                      >
+                                        <Plus className="w-3 h-3" />
+                                      </button>
                                     )}
-                                    {citation.year && (
-                                      <span className="text-[10px] text-slate-400">
-                                        ({citation.year})
-                                      </span>
-                                    )}
-                                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${
-                                      citation.source === 'paper'
-                                        ? 'bg-blue-100 text-blue-600'
-                                        : 'bg-amber-100 text-amber-600'
-                                    }`}>
-                                      {citation.source === 'paper' ? 'Paper' : 'Library'}
-                                    </span>
                                   </div>
                                 </div>
-                                
-                                {/* Action buttons */}
-                                <div className="flex flex-col gap-1">
-                                  {citation.source === 'library' ? (
-                                    <button
-                                      onClick={() => handleImportCitation(citation.id)}
-                                      disabled={importingCitation === citation.id}
-                                      className="p-1.5 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-700 transition-colors disabled:opacity-50"
-                                      title="Import to paper & insert"
-                                    >
-                                      {importingCitation === citation.id ? (
-                                        <Loader2 className="w-3 h-3 animate-spin" />
-                                      ) : (
-                                        <Download className="w-3 h-3" />
+
+                                {/* Abstract + AI relevance (on-demand) */}
+                                {(hasAbstract || !isLibrary) && (
+                                  <div className="mt-1 space-y-1">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      {hasAbstract && (
+                                        <button
+                                          onClick={() => toggleAbstract(citation.id)}
+                                          className="text-[10px] text-indigo-500 hover:text-indigo-700 flex items-center gap-0.5 transition-colors"
+                                        >
+                                          {isAbstractExpanded ? <ChevronUp className="w-2.5 h-2.5" /> : <ChevronDown className="w-2.5 h-2.5" />}
+                                          {isAbstractExpanded ? 'Hide abstract' : 'View abstract'}
+                                        </button>
                                       )}
-                                    </button>
-                                  ) : (
-                                    <button
-                                      onClick={() => onInsertCitation?.(citation)}
-                                      className="p-1.5 rounded-md bg-blue-100 hover:bg-blue-200 text-blue-700 transition-colors"
-                                      title="Insert citation"
-                                    >
-                                      <Plus className="w-3 h-3" />
-                                    </button>
-                                  )}
-                                  {citation.doi && (
-                                    <button
-                                      onClick={() => window.open(`https://doi.org/${citation.doi}`, '_blank')}
-                                      className="p-1.5 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors"
-                                      title="View source"
-                                    >
-                                      <ExternalLink className="w-3 h-3" />
-                                    </button>
-                                  )}
+                                      {!isLibrary && (
+                                        <button
+                                          onClick={() => toggleAiReview(citation)}
+                                          className="text-[10px] text-rose-500 hover:text-rose-700 flex items-center gap-0.5 transition-colors"
+                                        >
+                                          {isAiReviewLoading ? (
+                                            <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                                          ) : isAiReviewExpanded ? (
+                                            <ChevronUp className="w-2.5 h-2.5" />
+                                          ) : (
+                                            <ChevronDown className="w-2.5 h-2.5" />
+                                          )}
+                                          AI Relevance
+                                        </button>
+                                      )}
+                                    </div>
+
+                                    {isAbstractExpanded && hasAbstract && (
+                                      <p className="text-[10px] text-slate-600 bg-white/70 p-1.5 rounded leading-relaxed line-clamp-6">
+                                        {citation.abstract}
+                                      </p>
+                                    )}
+
+                                    {isAiReviewExpanded && !isLibrary && (
+                                      <div className="text-[10px] text-slate-600 bg-white/70 p-1.5 rounded leading-relaxed space-y-1">
+                                        {isAiReviewLoading ? (
+                                          <p className="flex items-center gap-1 text-slate-500">
+                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                            Loading AI relevance review...
+                                          </p>
+                                        ) : aiReviewData?.error ? (
+                                          <p className="text-red-600">{aiReviewData.error}</p>
+                                        ) : aiReviewData?.hasReview ? (
+                                          <>
+                                            {aiReviewData.aiReview.relevanceScore !== null && (
+                                              <p><span className="font-medium text-slate-700">Relevance score:</span> {aiReviewData.aiReview.relevanceScore}/100</p>
+                                            )}
+                                            {aiReviewData.aiReview.relevanceToResearch && (
+                                              <p><span className="font-medium text-slate-700">Why relevant:</span> {aiReviewData.aiReview.relevanceToResearch}</p>
+                                            )}
+                                            {aiReviewData.aiReview.keyContribution && (
+                                              <p><span className="font-medium text-slate-700">Contribution:</span> {aiReviewData.aiReview.keyContribution}</p>
+                                            )}
+                                            {aiReviewData.aiReview.keyFindings && (
+                                              <p><span className="font-medium text-slate-700">Key findings:</span> {aiReviewData.aiReview.keyFindings}</p>
+                                            )}
+                                            {aiReviewData.aiReview.methodologicalApproach && (
+                                              <p><span className="font-medium text-slate-700">Method:</span> {aiReviewData.aiReview.methodologicalApproach}</p>
+                                            )}
+                                            {aiReviewData.aiReview.limitationsOrGaps && (
+                                              <p><span className="font-medium text-slate-700">Limitations:</span> {aiReviewData.aiReview.limitationsOrGaps}</p>
+                                            )}
+                                            {Array.isArray(aiReviewData.mappings) && aiReviewData.mappings.length > 0 && (
+                                              <p><span className="font-medium text-slate-700">Mapped evidence:</span> {aiReviewData.mappings[0].remark || `${aiReviewData.mappings[0].sectionKey} - ${aiReviewData.mappings[0].dimension || 'dimension'}`}</p>
+                                            )}
+                                          </>
+                                        ) : (
+                                          <p className="text-slate-500">AI relevance review is not available for this citation yet.</p>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Bottom row: citation key + actions */}
+                                <div className="mt-1.5 flex items-center justify-between gap-1">
+                                  <button
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(`[${citation.citationKey}]`);
+                                    }}
+                                    className="text-[10px] text-slate-500 hover:text-slate-700 flex items-center gap-0.5 transition-colors truncate"
+                                    title="Copy citation key"
+                                  >
+                                    <Copy className="w-2.5 h-2.5 flex-shrink-0" />
+                                    <span className="truncate">[{citation.citationKey}]</span>
+                                  </button>
+                                  
+                                  {/* Inline action buttons */}
+                                  <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+                                    {!isLibrary && (
+                                      <>
+                                        <button
+                                          onClick={() => openEditCitation(citation)}
+                                          className="p-1 rounded hover:bg-white/80 text-slate-400 hover:text-blue-600 transition-colors"
+                                          title="Edit citation details"
+                                        >
+                                          <Pencil className="w-3 h-3" />
+                                        </button>
+                                        <button
+                                          onClick={() => handleDeleteCitation(citation)}
+                                          className="p-1 rounded hover:bg-white/80 text-slate-400 hover:text-red-500 transition-colors"
+                                          title="Delete citation"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                        </button>
+                                      </>
+                                    )}
+                                    {citation.doi && (
+                                      <button
+                                        onClick={() => window.open(`https://doi.org/${citation.doi}`, '_blank')}
+                                        className="p-1 rounded hover:bg-white/80 text-slate-400 hover:text-slate-600 transition-colors"
+                                        title="View source"
+                                      >
+                                        <ExternalLink className="w-3 h-3" />
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
-                              </div>
-                              
-                              {/* Citation key for quick copy */}
-                              <div className="mt-1.5 flex items-center justify-between">
-                                <button
-                                  onClick={() => {
-                                    navigator.clipboard.writeText(`[${citation.citationKey}]`);
-                                  }}
-                                  className="text-[10px] text-slate-500 hover:text-slate-700 flex items-center gap-1 transition-colors"
-                                >
-                                  <Copy className="w-2.5 h-2.5" />
-                                  [{citation.citationKey}]
-                                </button>
+
+                                {/* Venue */}
                                 {citation.venue && (
-                                  <span className="text-[9px] text-slate-400 truncate max-w-[120px]">
-                                    {citation.venue}
-                                  </span>
+                                  <div className="mt-0.5">
+                                    <span className="text-[9px] text-slate-400 truncate block">{citation.venue}</span>
+                                  </div>
                                 )}
                               </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       ) : citationCounts.total === 0 ? (
                         <div className="text-center py-4 flex-1 flex flex-col items-center justify-center">
@@ -2194,6 +2834,14 @@ export default function FloatingWritingPanel({
                         <div className="text-center py-4 flex-1 flex flex-col items-center justify-center">
                           <Search className="w-5 h-5 text-slate-300 mb-1" />
                           <p className="text-xs text-slate-500">No matches</p>
+                          {usageFilter !== 'all' && (
+                            <button
+                              onClick={() => setUsageFilter('all')}
+                              className="text-[10px] text-blue-500 hover:text-blue-700 mt-1"
+                            >
+                              Clear usage filter
+                            </button>
+                          )}
                         </div>
                       )}
 
@@ -2397,7 +3045,192 @@ export default function FloatingWritingPanel({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Edit Citation Dialog */}
+      <Dialog open={!!editingCitation} onOpenChange={() => setEditingCitation(null)}>
+        <DialogContent className="max-w-2xl bg-white border-gray-200 shadow-2xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Edit citation</DialogTitle>
+            <DialogDescription>Update the bibliographic details below.</DialogDescription>
+          </DialogHeader>
+
+          {editStatusMessage && (
+            <div className="text-xs text-gray-600 bg-gray-50 p-2 rounded">{editStatusMessage}</div>
+          )}
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <Input
+              value={editValues.title}
+              onChange={e => setEditValues(prev => ({ ...prev, title: e.target.value }))}
+              placeholder="Title"
+            />
+            <Input
+              value={editValues.authors}
+              onChange={e => setEditValues(prev => ({ ...prev, authors: e.target.value }))}
+              placeholder="Authors (comma-separated)"
+            />
+            <Input
+              value={editValues.year}
+              onChange={e => setEditValues(prev => ({ ...prev, year: e.target.value }))}
+              placeholder="Year"
+            />
+            <Input
+              value={editValues.venue}
+              onChange={e => setEditValues(prev => ({ ...prev, venue: e.target.value }))}
+              placeholder="Venue / Journal"
+            />
+            <Input
+              value={editValues.volume}
+              onChange={e => setEditValues(prev => ({ ...prev, volume: e.target.value }))}
+              placeholder="Volume"
+            />
+            <Input
+              value={editValues.issue}
+              onChange={e => setEditValues(prev => ({ ...prev, issue: e.target.value }))}
+              placeholder="Issue"
+            />
+            <Input
+              value={editValues.pages}
+              onChange={e => setEditValues(prev => ({ ...prev, pages: e.target.value }))}
+              placeholder="Pages"
+            />
+            <Input
+              value={editValues.doi}
+              onChange={e => setEditValues(prev => ({ ...prev, doi: e.target.value }))}
+              placeholder="DOI"
+            />
+            <Input
+              value={editValues.url}
+              onChange={e => setEditValues(prev => ({ ...prev, url: e.target.value }))}
+              placeholder="URL"
+            />
+            <Input
+              value={editValues.publisher}
+              onChange={e => setEditValues(prev => ({ ...prev, publisher: e.target.value }))}
+              placeholder="Publisher"
+            />
+            <Input
+              value={editValues.edition}
+              onChange={e => setEditValues(prev => ({ ...prev, edition: e.target.value }))}
+              placeholder="Edition"
+            />
+            <Input
+              value={editValues.editors}
+              onChange={e => setEditValues(prev => ({ ...prev, editors: e.target.value }))}
+              placeholder="Editors (comma-separated)"
+            />
+            <Input
+              value={editValues.isbn}
+              onChange={e => setEditValues(prev => ({ ...prev, isbn: e.target.value }))}
+              placeholder="ISBN"
+            />
+            <Input
+              value={editValues.publicationPlace}
+              onChange={e => setEditValues(prev => ({ ...prev, publicationPlace: e.target.value }))}
+              placeholder="Publication place"
+            />
+            <Input
+              value={editValues.publicationDate}
+              onChange={e => setEditValues(prev => ({ ...prev, publicationDate: e.target.value }))}
+              placeholder="Publication date (YYYY-MM-DD)"
+            />
+            <Input
+              value={editValues.accessedDate}
+              onChange={e => setEditValues(prev => ({ ...prev, accessedDate: e.target.value }))}
+              placeholder="Accessed date (YYYY-MM-DD)"
+            />
+            <Input
+              value={editValues.articleNumber}
+              onChange={e => setEditValues(prev => ({ ...prev, articleNumber: e.target.value }))}
+              placeholder="Article number"
+            />
+            <Input
+              value={editValues.issn}
+              onChange={e => setEditValues(prev => ({ ...prev, issn: e.target.value }))}
+              placeholder="ISSN"
+            />
+            <Input
+              value={editValues.journalAbbreviation}
+              onChange={e => setEditValues(prev => ({ ...prev, journalAbbreviation: e.target.value }))}
+              placeholder="Journal abbreviation"
+            />
+            <Input
+              value={editValues.pmid}
+              onChange={e => setEditValues(prev => ({ ...prev, pmid: e.target.value }))}
+              placeholder="PMID"
+            />
+            <Input
+              value={editValues.pmcid}
+              onChange={e => setEditValues(prev => ({ ...prev, pmcid: e.target.value }))}
+              placeholder="PMCID"
+            />
+            <Input
+              value={editValues.arxivId}
+              onChange={e => setEditValues(prev => ({ ...prev, arxivId: e.target.value }))}
+              placeholder="arXiv ID"
+            />
+            <Input
+              value={editValues.tags}
+              onChange={e => setEditValues(prev => ({ ...prev, tags: e.target.value }))}
+              placeholder="Tags (comma-separated)"
+            />
+          </div>
+
+          {/* Abstract Section */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium text-gray-700">Abstract</label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={handleFetchAbstract}
+                disabled={fetchingAbstract}
+                className="text-xs"
+              >
+                {fetchingAbstract ? (
+                  <>
+                    <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                    Fetching...
+                  </>
+                ) : (
+                  <>
+                    <Search className="w-3 h-3 mr-1" />
+                    Auto-fetch from web
+                  </>
+                )}
+              </Button>
+            </div>
+            <Textarea
+              value={editValues.abstract}
+              onChange={e => setEditValues(prev => ({ ...prev, abstract: e.target.value }))}
+              placeholder="Paste or type the abstract here, or click 'Auto-fetch from web' to search academic databases..."
+              rows={4}
+              className="font-serif text-sm"
+            />
+            <p className="text-xs text-gray-500">
+              {editValues.abstract.length} characters
+              {editValues.abstract.length > 0 && editValues.abstract.length < 50 && ' (recommended: 50+ for better AI analysis)'}
+            </p>
+          </div>
+
+          <Textarea
+            value={editValues.notes}
+            onChange={e => setEditValues(prev => ({ ...prev, notes: e.target.value }))}
+            placeholder="Notes"
+            rows={2}
+          />
+
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setEditingCitation(null)}>
+              Cancel
+            </Button>
+            <Button onClick={handleEditSave}>
+              Save changes
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
-

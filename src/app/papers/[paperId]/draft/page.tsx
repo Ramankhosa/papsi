@@ -11,6 +11,7 @@ import LiteratureSearchStage from '@/components/stages/LiteratureSearchStage';
 import OutlinePlanningStage from '@/components/stages/OutlinePlanningStage';
 import PaperFigurePlannerStage from '@/components/stages/PaperFigurePlannerStage';
 import SectionDraftingStage from '@/components/stages/SectionDraftingStage';
+import HumanizationStage from '@/components/stages/HumanizationStage';
 import ReviewExportStage from '@/components/stages/ReviewExportStage';
 import VerticalStageNav from '@/components/drafting/VerticalStageNav';
 import { STAGE_ORDER } from '@/lib/stage-navigation-config';
@@ -22,6 +23,7 @@ const STAGES = [
   { key: 'LITERATURE_SEARCH', label: 'Literature Review', description: 'Search and import citations' },
   { key: 'FIGURE_PLANNER', label: 'Figure Planning', description: 'Plan figures and tables' },
   { key: 'SECTION_DRAFTING', label: 'Section Drafting', description: 'Generate and edit sections' },
+  { key: 'HUMANIZATION', label: 'Humanization', description: 'Humanize sections and validate citations' },
   { key: 'REVIEW_EXPORT', label: 'Review & Export', description: 'Validate and export' }
 ] as const;
 
@@ -44,6 +46,7 @@ const STAGE_COMPONENTS: Record<StageKey, StageComponent> = {
   OUTLINE_PLANNING: OutlinePlanningStage as any,
   FIGURE_PLANNER: PaperFigurePlannerStage as any,
   SECTION_DRAFTING: SectionDraftingStage as any,
+  HUMANIZATION: HumanizationStage as any,
   REVIEW_EXPORT: ReviewExportStage as any
 };
 
@@ -186,6 +189,13 @@ export default function PaperDraftingPage() {
       return words >= 20;
     });
   }, [paperSections, requiredSectionKeys]);
+  const hasDraftContent = useMemo(
+    () => Object.values(paperSections).some((value) => {
+      const words = String(value || '').replace(/<[^>]*>/g, ' ').trim().split(/\s+/).filter(Boolean).length;
+      return words > 0;
+    }),
+    [paperSections]
+  );
   const hasDraft = Array.isArray(session?.annexureDrafts)
     ? session.annexureDrafts.some((draft: any) => (draft.jurisdiction || '').toUpperCase() === 'PAPER')
     : false;
@@ -202,6 +212,11 @@ export default function PaperDraftingPage() {
         return hasPaperType && hasSectionConfig ? null : 'Complete paper foundation and research topic first.';
       case 'SECTION_DRAFTING':
         return hasPaperType && hasSectionConfig ? null : 'Complete paper foundation setup before drafting sections.';
+      case 'HUMANIZATION':
+        if (!(hasPaperType && hasSectionConfig)) {
+          return 'Complete paper foundation setup before humanizing sections.';
+        }
+        return hasDraftContent ? null : 'Draft at least one section before starting humanization.';
       case 'REVIEW_EXPORT':
         if (!hasPaperType) {
           return 'Complete paper foundation first.';
@@ -227,6 +242,8 @@ export default function PaperDraftingPage() {
         return hasPaperType && hasSectionConfig;
       case 'SECTION_DRAFTING':
         return hasPaperType && hasSectionConfig;
+      case 'HUMANIZATION':
+        return hasPaperType && hasSectionConfig && hasDraftContent;
       case 'REVIEW_EXPORT':
         if (!hasPaperType) return false;
         if (requiredSectionKeys.length === 0) {
@@ -357,7 +374,7 @@ export default function PaperDraftingPage() {
                     onClick={() => handleStageChange(prevStage as StageKey)}
                     className="gap-2"
                   >
-                    <span>←</span>
+                    <span>{'<-'}</span>
                     <span>{STAGES.find(s => s.key === prevStage)?.label || 'Previous'}</span>
                   </Button>
                 )}
@@ -369,7 +386,7 @@ export default function PaperDraftingPage() {
                     className="gap-2"
                   >
                     <span>{STAGES.find(s => s.key === nextStage)?.label || 'Next'}</span>
-                    <span>→</span>
+                    <span>{'->'}</span>
                   </Button>
                 )}
               </div>

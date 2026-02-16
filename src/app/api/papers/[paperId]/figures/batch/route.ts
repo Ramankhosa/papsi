@@ -28,10 +28,13 @@ const preferencesSchema = z.object({
 const suggestionSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional(),
-  category: z.enum(['DATA_CHART', 'DIAGRAM', 'STATISTICAL_PLOT', 'ILLUSTRATION', 'SKETCH', 'CUSTOM']).optional(),
+  category: z.enum(['DATA_CHART', 'DIAGRAM', 'STATISTICAL_PLOT', 'ILLUSTRATED_FIGURE', 'ILLUSTRATION', 'SKETCH', 'CUSTOM']).optional(),
   suggestedType: z.string().optional(),
   rendererPreference: z.enum(['plantuml', 'mermaid', 'auto']).optional(),
   relevantSection: z.string().optional(),
+  figureRole: z.enum(['ORIENT', 'POSITION', 'EXPLAIN_METHOD', 'SHOW_RESULTS', 'INTERPRET']).optional(),
+  sectionFitJustification: z.string().optional(),
+  expectedByReviewers: z.boolean().optional(),
   importance: z.enum(['required', 'recommended', 'optional']).optional(),
   dataNeeded: z.string().optional(),
   whyThisFigure: z.string().optional(),
@@ -54,6 +57,75 @@ const suggestionSchema = z.object({
       description: z.string().optional()
     })).optional(),
     splitSuggestion: z.string().optional()
+  }).optional(),
+  chartSpec: z.object({
+    chartType: z.string().optional(),
+    xAxisLabel: z.string().optional(),
+    yAxisLabel: z.string().optional(),
+    xField: z.string().optional(),
+    yField: z.string().optional(),
+    series: z.array(z.object({
+      label: z.string(),
+      yField: z.string(),
+      confidenceField: z.string().optional()
+    })).optional(),
+    aggregation: z.string().optional(),
+    baselineLabel: z.string().optional(),
+    placeholderPolicy: z.object({
+      allowed: z.boolean().optional(),
+      label: z.string().optional(),
+      shape: z.string().optional(),
+      rangeHint: z.string().optional()
+    }).optional(),
+    notes: z.string().optional()
+  }).optional(),
+  illustrationSpec: z.object({
+    layout: z.enum(['PANELS', 'STRIP']).optional(),
+    panelCount: z.number().int().min(1).max(8).optional(),
+    stepCount: z.number().int().min(1).max(10).optional(),
+    flowDirection: z.enum(['LR', 'TD']).optional(),
+    panels: z.array(z.object({
+      idHint: z.string(),
+      title: z.string(),
+      elements: z.array(z.string()).optional()
+    })).optional(),
+    elements: z.array(z.string()).optional(),
+    steps: z.array(z.string()).optional(),
+    captionDraft: z.string().optional(),
+    splitSuggestion: z.string().optional()
+  }).optional(),
+  illustrationSpecV2: z.object({
+    layout: z.enum(['PANELS', 'STRIP']).optional(),
+    panelCount: z.number().int().min(1).max(8).optional(),
+    stepCount: z.number().int().min(1).max(10).optional(),
+    flowDirection: z.enum(['LR', 'TD']).optional(),
+    panels: z.array(z.object({
+      idHint: z.string(),
+      title: z.string(),
+      elements: z.array(z.string()).optional()
+    })).optional(),
+    elements: z.array(z.string()).optional(),
+    steps: z.array(z.string()).optional(),
+    captionDraft: z.string().optional(),
+    splitSuggestion: z.string().optional(),
+    figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT']).optional(),
+    renderDirectives: z.any().optional(),
+    actors: z.array(z.string()).optional(),
+    props: z.array(z.string()).optional(),
+    forbiddenElements: z.array(z.string()).optional()
+  }).optional(),
+  renderSpec: z.object({
+    kind: z.enum(['chart', 'diagram', 'illustration']),
+    chartSpec: z.any().optional(),
+    diagramSpec: z.any().optional(),
+    illustrationSpecV2: z.any().optional()
+  }).optional(),
+  figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT']).optional(),
+  renderDirectives: z.any().optional(),
+  paperProfile: z.object({
+    paperGenre: z.string(),
+    studyType: z.enum(['experimental', 'survey', 'qualitative', 'mixed-methods', 'simulation', 'theoretical', 'unknown']),
+    dataAvailability: z.enum(['provided', 'partial', 'none'])
   }).optional(),
   // Sketch/illustration-specific fields
   sketchStyle: z.enum(['academic', 'scientific', 'conceptual', 'technical']).optional(),
@@ -86,7 +158,7 @@ type BatchTask =
       description: string;
       caption: string;
       figureType: string;
-      category: 'DATA_CHART' | 'DIAGRAM' | 'STATISTICAL_PLOT' | 'ILLUSTRATION' | 'SKETCH' | 'CUSTOM';
+      category: 'DATA_CHART' | 'DIAGRAM' | 'STATISTICAL_PLOT' | 'ILLUSTRATED_FIGURE' | 'ILLUSTRATION' | 'SKETCH' | 'CUSTOM';
       suggestionMeta?: Record<string, unknown>;
     }
   | {
@@ -97,6 +169,10 @@ type BatchTask =
       mode: 'SUGGEST' | 'GUIDED' | 'REFINE';
       sketchStyle?: 'academic' | 'scientific' | 'conceptual' | 'technical';
       sketchPrompt?: string;
+      illustrationSpec?: Record<string, unknown>;
+      illustrationSpecV2?: Record<string, unknown>;
+      figureGenre?: 'METHOD_BLOCK' | 'SCENARIO_STORYBOARD' | 'CONCEPTUAL_FRAMEWORK' | 'GRAPHICAL_ABSTRACT';
+      renderDirectives?: Record<string, unknown>;
     };
 
 function inferFigureType(
@@ -109,27 +185,40 @@ function inferFigureType(
 
   if (category === 'DATA_CHART') return 'bar';
   if (category === 'STATISTICAL_PLOT') return 'scatter';
-  if (category === 'SKETCH') return 'sketch-auto';
+  if (category === 'SKETCH' || category === 'ILLUSTRATED_FIGURE') return 'sketch-auto';
   return 'flowchart';
 }
 
 function inferCategory(
   category?: string,
   suggestedType?: string
-): 'DATA_CHART' | 'DIAGRAM' | 'STATISTICAL_PLOT' | 'ILLUSTRATION' | 'SKETCH' | 'CUSTOM' {
-  if (category === 'DATA_CHART' || category === 'DIAGRAM' || category === 'STATISTICAL_PLOT' || category === 'ILLUSTRATION' || category === 'SKETCH' || category === 'CUSTOM') {
+): 'DATA_CHART' | 'DIAGRAM' | 'STATISTICAL_PLOT' | 'ILLUSTRATED_FIGURE' | 'ILLUSTRATION' | 'SKETCH' | 'CUSTOM' {
+  if (
+    category === 'DATA_CHART' ||
+    category === 'DIAGRAM' ||
+    category === 'STATISTICAL_PLOT' ||
+    category === 'ILLUSTRATED_FIGURE' ||
+    category === 'ILLUSTRATION' ||
+    category === 'SKETCH' ||
+    category === 'CUSTOM'
+  ) {
     return category;
   }
 
   const type = (suggestedType || '').toLowerCase();
-  if (type.startsWith('sketch')) return 'SKETCH';
+  if (type.startsWith('sketch')) return 'ILLUSTRATED_FIGURE';
   if (['bar', 'line', 'pie', 'scatter', 'radar', 'doughnut'].includes(type)) return 'DATA_CHART';
   if (['histogram', 'boxplot', 'heatmap'].includes(type)) return 'STATISTICAL_PLOT';
   return 'DIAGRAM';
 }
 
 function isSketchFigure(category: string, figureType: string): boolean {
-  return category === 'SKETCH' || figureType.toLowerCase().startsWith('sketch');
+  return (
+    category === 'SKETCH' ||
+    category === 'ILLUSTRATED_FIGURE' ||
+    category === 'ILLUSTRATION' ||
+    figureType.toLowerCase().startsWith('sketch')
+  );
 }
 
 function getSketchMode(figureType: string): 'SUGGEST' | 'GUIDED' | 'REFINE' {
@@ -226,7 +315,11 @@ export async function POST(
             description,
             mode: getSketchMode(figureType),
             sketchStyle: sketchMeta.sketchStyle || nodes.sketchStyle || undefined,
-            sketchPrompt: sketchMeta.sketchPrompt || undefined
+            sketchPrompt: sketchMeta.sketchPrompt || undefined,
+            illustrationSpec: sketchMeta.illustrationSpec || undefined,
+            illustrationSpecV2: sketchMeta.illustrationSpecV2 || sketchMeta.renderSpec?.illustrationSpecV2 || undefined,
+            figureGenre: sketchMeta.figureGenre || sketchMeta.illustrationSpecV2?.figureGenre || undefined,
+            renderDirectives: sketchMeta.renderDirectives || sketchMeta.illustrationSpecV2?.renderDirectives || undefined
           });
           continue;
         }
@@ -260,18 +353,31 @@ export async function POST(
           // Persist a figurePlan record before generating so the sketch has an ID
           const sketchNodePayload: Record<string, unknown> = {
             status: 'PLANNED',
-            category: 'SKETCH',
+            category: 'ILLUSTRATED_FIGURE',
             figureType,
             caption: description,
             notes: description,
             relevantSection: suggestion.relevantSection || null,
+            figureRole: (suggestion as any).figureRole || null,
+            sectionFitJustification: (suggestion as any).sectionFitJustification || null,
+            expectedByReviewers: (suggestion as any).expectedByReviewers ?? null,
             importance: suggestion.importance || null,
             appliedPreferences: preferences as unknown as Record<string, unknown>,
             suggestionMeta: {
               relevantSection: suggestion.relevantSection || null,
+              figureRole: (suggestion as any).figureRole || null,
+              sectionFitJustification: (suggestion as any).sectionFitJustification || null,
+              expectedByReviewers: (suggestion as any).expectedByReviewers ?? null,
               importance: suggestion.importance || null,
               dataNeeded: suggestion.dataNeeded || null,
               whyThisFigure: suggestion.whyThisFigure || null,
+              renderSpec: (suggestion as any).renderSpec || null,
+              chartSpec: (suggestion as any).chartSpec || null,
+              illustrationSpec: (suggestion as any).illustrationSpec || null,
+              illustrationSpecV2: (suggestion as any).illustrationSpecV2 || null,
+              figureGenre: (suggestion as any).figureGenre || (suggestion as any).illustrationSpecV2?.figureGenre || null,
+              renderDirectives: (suggestion as any).renderDirectives || (suggestion as any).illustrationSpecV2?.renderDirectives || null,
+              paperProfile: (suggestion as any).paperProfile || null,
               sketchStyle: (suggestion as any).sketchStyle || null,
               sketchPrompt: (suggestion as any).sketchPrompt || null,
               sketchMode: (suggestion as any).sketchMode || null
@@ -297,7 +403,11 @@ export async function POST(
             description,
             mode: getSketchMode(figureType),
             sketchStyle: (suggestion as any).sketchStyle || undefined,
-            sketchPrompt: (suggestion as any).sketchPrompt || undefined
+            sketchPrompt: (suggestion as any).sketchPrompt || undefined,
+            illustrationSpec: (suggestion as any).illustrationSpec || undefined,
+            illustrationSpecV2: (suggestion as any).illustrationSpecV2 || (suggestion as any).renderSpec?.illustrationSpecV2 || undefined,
+            figureGenre: (suggestion as any).figureGenre || (suggestion as any).illustrationSpecV2?.figureGenre || undefined,
+            renderDirectives: (suggestion as any).renderDirectives || (suggestion as any).illustrationSpecV2?.renderDirectives || undefined
           });
           continue;
         }
@@ -309,15 +419,28 @@ export async function POST(
           caption: description,
           notes: description,
           relevantSection: suggestion.relevantSection || null,
+          figureRole: (suggestion as any).figureRole || null,
+          sectionFitJustification: (suggestion as any).sectionFitJustification || null,
+          expectedByReviewers: (suggestion as any).expectedByReviewers ?? null,
           importance: suggestion.importance || null,
           appliedPreferences: preferences as unknown as Record<string, unknown>,
           suggestionMeta: {
             relevantSection: suggestion.relevantSection || null,
+            figureRole: (suggestion as any).figureRole || null,
+            sectionFitJustification: (suggestion as any).sectionFitJustification || null,
+            expectedByReviewers: (suggestion as any).expectedByReviewers ?? null,
             importance: suggestion.importance || null,
             dataNeeded: suggestion.dataNeeded || null,
             whyThisFigure: suggestion.whyThisFigure || null,
+            renderSpec: (suggestion as any).renderSpec || null,
             rendererPreference: suggestion.rendererPreference || null,
-            diagramSpec: suggestion.diagramSpec || null
+            diagramSpec: suggestion.diagramSpec || null,
+            chartSpec: (suggestion as any).chartSpec || null,
+            illustrationSpec: (suggestion as any).illustrationSpec || null,
+            illustrationSpecV2: (suggestion as any).illustrationSpecV2 || null,
+            figureGenre: (suggestion as any).figureGenre || (suggestion as any).illustrationSpecV2?.figureGenre || null,
+            renderDirectives: (suggestion as any).renderDirectives || (suggestion as any).illustrationSpecV2?.renderDirectives || null,
+            paperProfile: (suggestion as any).paperProfile || null
           }
         };
 
@@ -343,11 +466,21 @@ export async function POST(
           category,
           suggestionMeta: {
             relevantSection: suggestion.relevantSection,
+            figureRole: (suggestion as any).figureRole,
+            sectionFitJustification: (suggestion as any).sectionFitJustification,
+            expectedByReviewers: (suggestion as any).expectedByReviewers,
             importance: suggestion.importance,
             dataNeeded: suggestion.dataNeeded,
             whyThisFigure: suggestion.whyThisFigure,
+            renderSpec: (suggestion as any).renderSpec,
             rendererPreference: suggestion.rendererPreference,
-            diagramSpec: suggestion.diagramSpec
+            diagramSpec: suggestion.diagramSpec,
+            chartSpec: (suggestion as any).chartSpec,
+            illustrationSpec: (suggestion as any).illustrationSpec,
+            illustrationSpecV2: (suggestion as any).illustrationSpecV2,
+            figureGenre: (suggestion as any).figureGenre || (suggestion as any).illustrationSpecV2?.figureGenre,
+            renderDirectives: (suggestion as any).renderDirectives || (suggestion as any).illustrationSpecV2?.renderDirectives,
+            paperProfile: (suggestion as any).paperProfile
           }
         });
       }
@@ -442,6 +575,10 @@ export async function POST(
             mode: task.mode,
             title: task.title,
             userPrompt: sketchUserPrompt,
+            illustrationSpec: task.illustrationSpec || undefined,
+            illustrationSpecV2: task.illustrationSpecV2 || undefined,
+            figureGenre: task.figureGenre || undefined,
+            renderDirectives: task.renderDirectives || undefined,
             style: resolvedSketchStyle
           })
         });

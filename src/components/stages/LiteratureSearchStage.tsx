@@ -272,6 +272,23 @@ const SEARCH_QUERY_CATEGORIES: Array<{ value: SearchQueryCategory; label: string
   { value: 'CUSTOM', label: 'Custom' }
 ];
 
+type PdfStatusValue = 'UPLOADED' | 'PARSING' | 'READY' | 'FAILED' | 'NONE';
+
+const normalizePdfStatusValue = (value: unknown): PdfStatusValue => {
+  if (value === 'UPLOADED' || value === 'PARSING' || value === 'READY' || value === 'FAILED') {
+    return value;
+  }
+  return 'NONE';
+};
+
+const preferredPdfStatus = (current: unknown, incoming: unknown): PdfStatusValue => {
+  const currentNormalized = normalizePdfStatusValue(current);
+  if (currentNormalized !== 'NONE') {
+    return currentNormalized;
+  }
+  return normalizePdfStatusValue(incoming);
+};
+
 export default function LiteratureSearchStage({ sessionId, authToken, onSessionUpdated }: LiteratureSearchStageProps) {
   const { showToast } = useToast();
   const [query, setQuery] = useState('');
@@ -333,6 +350,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     isRelevant: boolean; 
     score: number; 
     reasoning: string;
+    recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';
     citationMeta?: {
       keyContribution: string;
       keyFindings: string;
@@ -391,6 +409,16 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   const RESULTS_PER_PAGE_OPTIONS = [10, 25, 50, 100];
 
   const importedKeys = useMemo(() => new Set(citations.map(c => c.doi || c.title)), [citations]);
+  const aiImportSuggestionIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const [paperId, suggestion] of aiSuggestions.entries()) {
+      if (suggestion.recommendation === 'IMPORT') {
+        ids.add(paperId);
+      }
+    }
+    return ids;
+  }, [aiSuggestions]);
+  const aiImportSuggestionCount = aiImportSuggestionIds.size;
   
   // Filtered results (applying all filters)
   const filteredResults = useMemo(() => {
@@ -398,8 +426,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       // Skip removed results
       if (removedResults.has(r.id)) return false;
       
-      // Hide non-relevant if toggle is on
-      if (hideNonRelevant && aiSuggestions.size > 0 && !aiSuggestions.has(r.id)) return false;
+      // Hide non-import recommendations if toggle is on
+      if (hideNonRelevant && aiImportSuggestionCount > 0 && !aiImportSuggestionIds.has(r.id)) return false;
       
       // AI relevant only filter
       if (resultFilters.aiRelevantOnly && !aiSuggestions.has(r.id)) return false;
@@ -429,7 +457,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       
       return true;
     });
-  }, [results, removedResults, hideNonRelevant, aiSuggestions, resultFilters]);
+  }, [results, removedResults, hideNonRelevant, aiImportSuggestionCount, aiImportSuggestionIds, aiSuggestions, resultFilters]);
   
   // Paginated results
   const totalResultPages = Math.ceil(filteredResults.length / resultsPerPage);
@@ -811,7 +839,13 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         const allRunIds: string[] = [];
         const allResults: any[] = [];
         const removedIds = new Set<string>();
-        const allAiSuggestions = new Map<string, { isRelevant: boolean; score: number; reasoning: string; citationMeta?: any }>();
+        const allAiSuggestions = new Map<string, {
+          isRelevant: boolean;
+          score: number;
+          reasoning: string;
+          recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';
+          citationMeta?: any;
+        }>();
         const allDimensionMappings = new Map<string, Array<{
           sectionKey: string;
           dimension: string;
@@ -872,17 +906,27 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
             if (removedIds.has(result.id)) continue;
             // Check for duplicate by DOI or title
             const key = result.doi?.toLowerCase() || result.title?.toLowerCase()?.substring(0, 100);
-            const isDuplicate = allResults.some(r => {
+            const duplicateIndex = allResults.findIndex(r => {
               const existingKey = r.doi?.toLowerCase() || r.title?.toLowerCase()?.substring(0, 100);
               return existingKey && existingKey === key;
             });
-            
-            if (!isDuplicate) {
+
+            if (duplicateIndex === -1) {
               allResults.push({
                 ...result,
                 _sourceQuery: searchRun.query,
                 _searchRunId: searchRun.id
               });
+            } else {
+              const existing = allResults[duplicateIndex];
+              allResults[duplicateIndex] = {
+                ...existing,
+                abstract: existing.abstract || result.abstract,
+                isOpenAccess: existing.isOpenAccess ?? result.isOpenAccess,
+                pdfStatus: preferredPdfStatus(existing.pdfStatus, result.pdfStatus),
+                libraryReferenceId: existing.libraryReferenceId || result.libraryReferenceId,
+                libraryDocumentId: existing.libraryDocumentId || result.libraryDocumentId
+              };
             }
           }
           
@@ -976,6 +1020,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
               isRelevant: suggestion.isRelevant,
               score: suggestion.relevanceScore,
               reasoning: suggestion.reasoning,
+              recommendation: suggestion.recommendation,
               citationMeta: suggestion.citationMeta
             });
             
@@ -1113,15 +1158,28 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     for (const result of newResults) {
       if (deletedIds.has(result.id)) continue;
       const key = result.doi?.toLowerCase() || result.title?.toLowerCase()?.substring(0, 100);
-      if (key && !seen.has(key)) {
-        seen.set(key, { 
-          ...result, 
+      if (!key) continue;
+
+      if (!seen.has(key)) {
+        seen.set(key, {
+          ...result,
           _sourceQuery: sourceQuery,
           _addedAt: Date.now(),
           _searchRunId: searchRunId || undefined
         });
-        addedCount++;
+        addedCount += 1;
+        continue;
       }
+
+      const existing = seen.get(key);
+      seen.set(key, {
+        ...existing,
+        abstract: existing?.abstract || result.abstract,
+        isOpenAccess: existing?.isOpenAccess ?? result.isOpenAccess,
+        pdfStatus: preferredPdfStatus(existing?.pdfStatus, result.pdfStatus),
+        libraryReferenceId: existing?.libraryReferenceId || result.libraryReferenceId,
+        libraryDocumentId: existing?.libraryDocumentId || result.libraryDocumentId
+      });
     }
     
     console.log(`[Search] Added ${addedCount} new unique results from query: "${sourceQuery.substring(0, 50)}..."`);
@@ -1236,7 +1294,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       // Track search run ID for this batch
       if (data.searchRunId) {
         setSearchRunId(data.searchRunId);
-        setSearchRunIds(prev => [...prev, data.searchRunId]);
+        setSearchRunIds(prev => (prev.includes(data.searchRunId) ? prev : [...prev, data.searchRunId]));
       }
       
       // Show feedback about accumulation
@@ -1355,6 +1413,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         isRelevant: boolean; 
         score: number; 
         reasoning: string;
+        recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';
         citationMeta?: {
           keyContribution: string;
           keyFindings: string;
@@ -1464,6 +1523,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
           isRelevant: suggestion.isRelevant,
           score: suggestion.relevanceScore,
           reasoning: suggestion.reasoning,
+          recommendation: suggestion.recommendation,
           citationMeta: suggestion.citationMeta
         });
         
@@ -1558,13 +1618,15 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
 
   // Add all AI-suggested papers at once
   const handleAddAllSuggested = async () => {
-    const suggestedPapers = results.filter(r => aiSuggestions.has(r.id) && !importedKeys.has(r.doi || r.title));
+    const suggestedPapers = results.filter(
+      r => aiImportSuggestionIds.has(r.id) && !importedKeys.has(r.doi || r.title)
+    );
     
     if (suggestedPapers.length === 0) {
       showToast({
         type: 'info',
         title: 'No Papers to Add',
-        message: 'All suggested papers are already in your citations',
+        message: 'No AI import-recommended papers are pending citation import',
         duration: 3000
       });
       return;
@@ -1635,8 +1697,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         type: importedCount > 0 ? 'success' : 'info',
         title: importedCount > 0 ? 'Papers Added' : 'No New Papers Added',
         message: skippedCount > 0
-          ? `Added ${importedCount} AI-suggested papers (${skippedCount} skipped as duplicates)`
-          : `Added ${importedCount} AI-suggested papers to citations`,
+          ? `Added ${importedCount} AI import-recommended papers (${skippedCount} skipped as duplicates)`
+          : `Added ${importedCount} AI import-recommended papers to citations`,
         duration: 4000
       });
     } catch (err) {
@@ -1846,6 +1908,9 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       // Update coverage from last successful response
       if (latestCoverage) {
         setCitationBlueprintCoverage(latestCoverage);
+      }
+      if (allSuggestions.length > 0) {
+        setSession((prev: any) => prev ? { ...prev, archetypeEvidenceStale: false } : prev);
       }
 
       // Final review status
@@ -3345,6 +3410,22 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         </div>
       )}
 
+      {session?.archetypeEvidenceStale && (
+        <div className="flex items-center justify-between gap-3 px-4 py-3 bg-amber-50 border border-amber-200 rounded-lg">
+          <div className="text-sm text-amber-800">
+            Evidence packs may be outdated after archetype changes. Refresh mappings before drafting.
+          </div>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={handleAnalyzeUnanalyzedCitations}
+            className="border-amber-300 text-amber-800 hover:bg-amber-100"
+          >
+            Refresh evidence mappings
+          </Button>
+        </div>
+      )}
+
       {/* Main Tabs */}
       <Tabs value={mainTab} onValueChange={(v) => setMainTab(v as 'find' | 'citations')} className="space-y-4">
         <TabsList className="grid w-full grid-cols-2">
@@ -4063,17 +4144,23 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                 <InlineLibraryImport
                   authToken={authToken}
                   sessionId={sessionId}
-                  onImported={async () => {
-                    try {
-                      const response = await fetch(`/api/papers/${sessionId}/citations`, {
-                        headers: { Authorization: `Bearer ${authToken}` }
-                      });
-                      if (response.ok) {
-                        const data = await response.json();
-                        setCitations(data.citations || []);
-                      }
-                    } catch {}
-                    await refreshSession();
+                  onImported={async (payload) => {
+                    if (payload?.results?.length) {
+                      setResults(prev => deduplicateResults(
+                        prev,
+                        payload.results,
+                        'My Library import',
+                        payload.searchRunId || null,
+                        deletedResultIds
+                      ));
+                    }
+
+                    if (payload?.searchRunId) {
+                      setSearchRunId(payload.searchRunId);
+                      setSearchRunIds(prev => (prev.includes(payload.searchRunId as string)
+                        ? prev
+                        : [...prev, payload.searchRunId as string]));
+                    }
                   }}
                 />
               )}
@@ -4336,7 +4423,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                 onCheckedChange={(checked) => setResultFilters(prev => ({ ...prev, aiRelevantOnly: !!checked }))}
                                 className="w-3.5 h-3.5"
                               />
-                              <span className="text-violet-700">🤖 AI Picks Only</span>
+                              <span className="text-violet-700">🤖 AI Reviewed Only</span>
                             </label>
                           )}
                           
@@ -4595,9 +4682,9 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                       <div className="space-y-1">
                         <div className="flex items-center justify-between gap-2">
                           <p className="text-[10px] uppercase tracking-wide font-semibold text-teal-700">Coverage</p>
-                          {aiSuggestions.size > 0 && (
+                          {aiImportSuggestionCount > 0 && (
                             <Badge className="bg-violet-100 text-violet-700 border-0 text-[10px]">
-                              {aiSuggestions.size} AI picks
+                              {aiImportSuggestionCount} AI import picks
                             </Badge>
                           )}
                         </div>
@@ -4656,7 +4743,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                     </div>
 
                     {/* Row 2: Quick actions (only show after analysis) */}
-                    {aiSuggestions.size > 0 && (
+                    {aiImportSuggestionCount > 0 && (
                       <div className="flex items-center gap-2 mt-2 pl-0.5 pt-2 border-t border-gray-100">
                         <span className="text-[10px] text-emerald-700 uppercase tracking-wider font-semibold mr-1">Add / Import:</span>
                         <Button
@@ -4665,12 +4752,12 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                           size="sm"
                           variant="outline"
                           className="h-6 text-[11px] text-emerald-700 border-emerald-300 hover:bg-emerald-50"
-                          title="Add All Suggested: Import all AI-recommended papers in one action."
+                          title="Add All Suggested: Import all AI papers marked with recommendation IMPORT."
                         >
                           <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                           </svg>
-                          {bulkAddingSuggested ? 'Adding...' : `Add All Suggested (${aiSuggestions.size})`}
+                          {bulkAddingSuggested ? 'Adding...' : `Add All Suggested (${aiImportSuggestionCount})`}
                         </Button>
                         <Button
                           onClick={() => setHideNonRelevant(!hideNonRelevant)}
@@ -4682,7 +4769,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                           }`}
                           title={hideNonRelevant 
                             ? "Show all results again, including papers not suggested by AI." 
-                            : "Hide Others: Show only AI-suggested papers to focus your selection."
+                            : "Hide Others: Show only AI papers marked IMPORT."
                           }
                         >
                           {hideNonRelevant ? (
@@ -4698,7 +4785,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                               <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
                               </svg>
-                              Hide Others ({results.length - aiSuggestions.size})
+                              Hide Others ({Math.max(0, results.length - aiImportSuggestionCount)})
                             </>
                           )}
                         </Button>
@@ -5240,8 +5327,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                     <AnimatePresence mode="popLayout">
                       {[...paginatedResults]
                         .sort((a, b) => {
-                          const aIsSuggested = aiSuggestions.has(a.id);
-                          const bIsSuggested = aiSuggestions.has(b.id);
+                          const aIsSuggested = aiImportSuggestionIds.has(a.id);
+                          const bIsSuggested = aiImportSuggestionIds.has(b.id);
                           if (aIsSuggested && !bIsSuggested) return -1;
                           if (!aIsSuggested && bIsSuggested) return 1;
                           // If both suggested, sort by score
@@ -5257,7 +5344,9 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                         const isSelected = selectedResults.has(result.id);
                         const isFetchingThis = fetchingAbstract === result.id;
                         const aiSuggestion = aiSuggestions.get(result.id);
-                        const isAiSuggested = !!aiSuggestion;
+                        const isAiAnalyzed = !!aiSuggestion;
+                        const isAiSuggested = aiSuggestion?.recommendation === 'IMPORT';
+                        const resultPdfStatus = normalizePdfStatusValue(result.pdfStatus);
 
                         return (
                           <motion.div
@@ -5298,11 +5387,11 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                 {/* AI Suggested Badge */}
                                 {isAiSuggested && (
                                   <Badge className="shrink-0 text-[10px] bg-gradient-to-r from-violet-500 to-indigo-500 text-white border-0 shadow-sm">
-                                    🤖 AI Pick
+                                    🤖 AI Import Pick
                                   </Badge>
                                 )}
                                 {/* Usage Badges (I/L/M/C) */}
-                                {isAiSuggested && aiSuggestion?.citationMeta?.usage && (
+                                {isAiAnalyzed && aiSuggestion?.citationMeta?.usage && (
                                   <div className="flex gap-0.5 shrink-0">
                                     {aiSuggestion.citationMeta.usage.introduction && (
                                       <Badge variant="outline" className="text-[9px] px-1 py-0 bg-blue-50 text-blue-700 border-blue-300" title="Cite in Introduction">
@@ -5392,7 +5481,20 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                     🔓 Open Access
                                   </Badge>
                                 )}
-                                {/* Citation Count */}
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[9px] px-1.5 py-0 ${
+                                    resultPdfStatus === 'READY'
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                      : resultPdfStatus === 'FAILED'
+                                        ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                        : resultPdfStatus === 'UPLOADED' || resultPdfStatus === 'PARSING'
+                                          ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                        : 'bg-gray-50 text-gray-600 border-gray-200'
+                                  }`}
+                                >
+                                  PDF {resultPdfStatus}
+                                </Badge>
                                 {result.citationCount !== undefined && result.citationCount > 0 && (
                                   <span className="text-[10px] text-gray-400">
                                     📊 {result.citationCount.toLocaleString()} citations
@@ -5527,7 +5629,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                               )}
                               
                               {/* AI Reasoning & Citation Metadata - Show why this paper was suggested */}
-                              {isAiSuggested && aiSuggestion && (
+                              {isAiAnalyzed && aiSuggestion && (
                                 <motion.div
                                   initial={{ opacity: 0, height: 0 }}
                                   animate={{ opacity: 1, height: 'auto' }}
@@ -6111,9 +6213,9 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                 <div className="space-y-1">
                   <div className="flex flex-wrap items-center gap-1.5">
                     <p className="text-sm font-medium text-gray-900">{activeCoverageEvidence.paperTitle}</p>
-                    {aiSuggestion && (
+                    {recommendation === 'IMPORT' && (
                       <Badge className="text-[10px] bg-gradient-to-r from-violet-500 to-indigo-500 text-white border-0 shadow-sm">
-                        AI Pick
+                        AI Import Pick
                       </Badge>
                     )}
                     {recommendation && (
@@ -6575,6 +6677,13 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
 // Inline Library Import Component (for tab view)
 const LIBRARY_PAGE_SIZE = 15;
 
+type LibraryWorkspaceImportPayload = {
+  searchRunId: string | null;
+  results: any[];
+  workspaceAdded: number;
+  workspaceSkipped: number;
+};
+
 function InlineLibraryImport({
   authToken,
   sessionId,
@@ -6582,7 +6691,7 @@ function InlineLibraryImport({
 }: {
   authToken: string | null;
   sessionId: string;
-  onImported: () => void;
+  onImported: (payload: LibraryWorkspaceImportPayload) => void | Promise<void>;
 }) {
   const [references, setReferences] = useState<any[]>([]);
   const [libraries, setLibraries] = useState<Array<{ id: string; name: string; color?: string; referenceCount: number }>>([]);
@@ -6592,7 +6701,10 @@ function InlineLibraryImport({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
   const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState<{ imported: number; skipped: number } | null>(null);
+  const [importResult, setImportResult] = useState<{
+    workspaceAdded: number;
+    workspaceSkipped: number;
+  } | null>(null);
   
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
@@ -6698,17 +6810,34 @@ function InlineLibraryImport({
     if (!authToken || selected.size === 0) return;
     try {
       setImporting(true);
-      const response = await fetch('/api/library/copy-to-session', {
+      const selectedIds = Array.from(selected);
+
+      const workspaceResponse = await fetch(`/api/papers/${sessionId}/literature/library-push`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ sessionId, referenceIds: Array.from(selected) })
+        body: JSON.stringify({ referenceIds: selectedIds })
       });
-      if (response.ok) {
-        const data = await response.json();
-        setImportResult({ imported: data.imported, skipped: data.skipped || 0 });
-        setSelected(new Set());
-        onImported();
+
+      if (!workspaceResponse.ok) {
+        const workspaceErr = await workspaceResponse.json().catch(() => null);
+        throw new Error(workspaceErr?.error || 'Failed to add library papers to AI analysis workspace');
       }
+
+      const workspaceData = await workspaceResponse.json();
+
+      const payload: LibraryWorkspaceImportPayload = {
+        searchRunId: workspaceData.searchRunId ?? null,
+        results: Array.isArray(workspaceData.results) ? workspaceData.results : [],
+        workspaceAdded: Number(workspaceData.importedFromLibrary || 0),
+        workspaceSkipped: Number(workspaceData.skipped || 0)
+      };
+
+      setImportResult({
+        workspaceAdded: payload.workspaceAdded,
+        workspaceSkipped: payload.workspaceSkipped
+      });
+      setSelected(new Set());
+      await onImported(payload);
     } catch (err) {
       console.error('Failed to import:', err);
     } finally {
@@ -6731,14 +6860,17 @@ function InlineLibraryImport({
         </div>
         
         <h3 className="text-lg font-semibold text-gray-900 mb-2">
-          Import Successful!
+          Added to AI Analysis Workspace
         </h3>
         
         <p className="text-gray-600 mb-4">
-          <span className="font-medium text-emerald-600">{importResult.imported} citation{importResult.imported !== 1 ? 's' : ''}</span> imported
-          {importResult.skipped > 0 && (
-            <span className="text-amber-600"> ({importResult.skipped} skipped as duplicates)</span>
+          <span className="font-medium text-emerald-600">{importResult.workspaceAdded} paper{importResult.workspaceAdded !== 1 ? 's' : ''}</span> added for AI relevance and dimension mapping
+          {importResult.workspaceSkipped > 0 && (
+            <span className="text-amber-600"> ({importResult.workspaceSkipped} skipped as duplicates)</span>
           )}
+          <span className="block mt-1 text-indigo-600">
+            Papers are available in AI workspace only until you choose to add citations.
+          </span>
         </p>
 
         <Button onClick={() => setImportResult(null)} variant="outline">
@@ -6883,42 +7015,81 @@ function InlineLibraryImport({
             ) : (
               <div className="divide-y divide-gray-200 bg-white rounded-lg">
                 {references.map(ref => (
-                  <div 
-                    key={ref.id} 
-                    className={`p-2.5 cursor-pointer transition-colors ${
-                      selected.has(ref.id) 
-                        ? 'bg-indigo-50 border-l-4 border-l-indigo-500' 
-                        : 'hover:bg-gray-50 border-l-4 border-l-transparent'
-                    }`}
-                    onClick={() => {
-                      setSelected(prev => {
-                        const next = new Set(prev);
-                        if (next.has(ref.id)) {
-                          next.delete(ref.id);
-                        } else {
-                          next.add(ref.id);
-                        }
-                        return next;
-                      });
-                    }}
-                  >
-                    <div className="flex items-start gap-2">
-                      <Checkbox checked={selected.has(ref.id)} className="mt-0.5" />
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-sm text-gray-900 line-clamp-1">{ref.title}</p>
-                        <p className="text-xs text-gray-500">
-                          {ref.authors?.slice(0, 2).join(', ')}
-                          {ref.authors?.length > 2 && ' et al.'}
-                          {ref.year && ` (${ref.year})`}
-                        </p>
+                  (() => {
+                    const primaryDocument = Array.isArray(ref.documents) && ref.documents.length > 0
+                      ? ref.documents[0]?.document
+                      : null;
+                    const pdfStatus = normalizePdfStatusValue(primaryDocument?.status);
+                    return (
+                      <div
+                        key={ref.id}
+                        className={`p-2.5 cursor-pointer transition-colors ${
+                          selected.has(ref.id)
+                            ? 'bg-indigo-50 border-l-4 border-l-indigo-500'
+                            : 'hover:bg-gray-50 border-l-4 border-l-transparent'
+                        }`}
+                        onClick={() => {
+                          setSelected(prev => {
+                            const next = new Set(prev);
+                            if (next.has(ref.id)) {
+                              next.delete(ref.id);
+                            } else {
+                              next.add(ref.id);
+                            }
+                            return next;
+                          });
+                        }}
+                      >
+                        <div className="flex items-start gap-2">
+                          <Checkbox checked={selected.has(ref.id)} className="mt-0.5" />
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-sm text-gray-900 line-clamp-1">{ref.title}</p>
+                            <p className="text-xs text-gray-500">
+                              {ref.authors?.slice(0, 2).join(', ')}
+                              {ref.authors?.length > 2 && ' et al.'}
+                              {ref.year && ` (${ref.year})`}
+                            </p>
+                            <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                              {pdfStatus !== 'NONE' ? (
+                                <Badge
+                                  variant="outline"
+                                  className={`text-[9px] px-1.5 py-0 ${
+                                    pdfStatus === 'READY'
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                      : pdfStatus === 'FAILED'
+                                        ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                      : 'bg-amber-50 text-amber-700 border-amber-200'
+                                  }`}
+                                >
+                                  PDF {pdfStatus}
+                                </Badge>
+                              ) : (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[9px] px-1.5 py-0 bg-gray-50 text-gray-600 border-gray-200"
+                                >
+                                  PDF NONE
+                                </Badge>
+                              )}
+                              {primaryDocument?.sourceType === 'DOI_FETCH' && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[9px] px-1.5 py-0 bg-emerald-50 text-emerald-700 border-emerald-200"
+                                >
+                                  OA
+                                </Badge>
+                              )}
+                            </div>
+                          </div>
+                          {ref.isFavorite && (
+                            <svg className="w-3.5 h-3.5 text-amber-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                              <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
+                            </svg>
+                          )}
+                        </div>
                       </div>
-                      {ref.isFavorite && (
-                        <svg className="w-3.5 h-3.5 text-amber-500 shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                          <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" />
-                        </svg>
-                      )}
-                    </div>
-                  </div>
+                    );
+                  })()
                 ))}
               </div>
             )}
@@ -6968,14 +7139,14 @@ function InlineLibraryImport({
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
-              Importing...
+              Adding...
             </>
           ) : (
             <>
               <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
               </svg>
-              Add {selected.size} to Paper
+              Add {selected.size} to AI Map
             </>
           )}
         </Button>
@@ -7645,5 +7816,4 @@ function ManualCitationModal({
     </Dialog>
   );
 }
-
 

@@ -85,6 +85,125 @@ function getDefaultStyleCode(session: any): string {
     || 'APA7';
 }
 
+function normalizeAiReview(raw: unknown): {
+  relevanceScore: number | null;
+  relevanceToResearch: string | null;
+  keyContribution: string | null;
+  keyFindings: string | null;
+  methodologicalApproach: string | null;
+  limitationsOrGaps: string | null;
+  analyzedAt: string | null;
+} {
+  const value = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const relevanceScoreRaw = Number(value.relevanceScore);
+  const relevanceScore = Number.isFinite(relevanceScoreRaw)
+    ? Math.max(0, Math.min(100, Math.round(relevanceScoreRaw)))
+    : null;
+
+  const readString = (key: string, limit = 500): string | null => {
+    const candidate = value[key];
+    if (typeof candidate !== 'string') return null;
+    const trimmed = candidate.trim();
+    return trimmed ? trimmed.slice(0, limit) : null;
+  };
+
+  return {
+    relevanceScore,
+    relevanceToResearch: readString('relevanceToResearch'),
+    keyContribution: readString('keyContribution', 400),
+    keyFindings: readString('keyFindings', 400),
+    methodologicalApproach: readString('methodologicalApproach', 400),
+    limitationsOrGaps: readString('limitationsOrGaps', 500),
+    analyzedAt: readString('analyzedAt', 80)
+  };
+}
+
+export async function GET(request: NextRequest, context: { params: { paperId: string; citationId: string } }) {
+  try {
+    const { user, error } = await authenticateUser(request);
+    if (error || !user) {
+      return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 });
+    }
+
+    const sessionId = context.params.paperId;
+    const session = await getSessionForUser(sessionId, user);
+    if (!session) {
+      return NextResponse.json({ error: 'Paper session not found' }, { status: 404 });
+    }
+
+    const citationId = context.params.citationId;
+    if (!citationId) {
+      return NextResponse.json({ error: 'Citation ID is required' }, { status: 400 });
+    }
+
+    const citation = await prisma.citation.findFirst({
+      where: {
+        id: citationId,
+        sessionId,
+        isActive: true
+      },
+      select: {
+        id: true,
+        citationKey: true,
+        aiMeta: true,
+        usages: {
+          where: {
+            usageKind: 'DIMENSION_MAPPING',
+            inclusionStatus: 'INCLUDED'
+          },
+          select: {
+            sectionKey: true,
+            dimension: true,
+            remark: true,
+            confidence: true,
+            mappingSource: true,
+            updatedAt: true
+          },
+          orderBy: { updatedAt: 'desc' },
+          take: 12
+        }
+      }
+    });
+
+    if (!citation) {
+      return NextResponse.json({ error: 'Citation not found' }, { status: 404 });
+    }
+
+    const aiReview = normalizeAiReview(citation.aiMeta);
+    const mappings = citation.usages
+      .map((usage) => ({
+        sectionKey: usage.sectionKey,
+        dimension: usage.dimension || null,
+        remark: usage.remark ? usage.remark.trim().slice(0, 500) : null,
+        confidence: usage.confidence || null,
+        mappingSource: usage.mappingSource || null,
+        updatedAt: usage.updatedAt
+      }))
+      .filter((mapping) => Boolean(mapping.dimension || mapping.remark));
+
+    const hasReview = Boolean(
+      aiReview.relevanceScore !== null
+      || aiReview.relevanceToResearch
+      || aiReview.keyContribution
+      || aiReview.keyFindings
+      || aiReview.methodologicalApproach
+      || aiReview.limitationsOrGaps
+      || mappings.length > 0
+    );
+
+    return NextResponse.json({
+      citationId: citation.id,
+      citationKey: citation.citationKey,
+      hasReview,
+      aiReview,
+      mappings
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to load citation AI review';
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
 export async function PUT(request: NextRequest, context: { params: { paperId: string; citationId: string } }) {
   try {
     const { user, error } = await authenticateUser(request);

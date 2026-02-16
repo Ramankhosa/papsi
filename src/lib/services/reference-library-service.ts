@@ -88,42 +88,87 @@ class ReferenceLibraryService {
   // ============================================================================
 
   async createReference(input: CreateReferenceInput) {
+    const cleanedDoi = input.doi ? this.cleanDOI(input.doi) || input.doi.trim() : undefined;
+
+    let existingByDoi: { id: string; isActive: boolean; citationKey: string | null } | null = null;
+    if (cleanedDoi) {
+      existingByDoi = await prisma.referenceLibrary.findFirst({
+        where: {
+          userId: input.userId,
+          doi: { equals: cleanedDoi, mode: 'insensitive' },
+        },
+        select: {
+          id: true,
+          isActive: true,
+          citationKey: true,
+        },
+      });
+
+      if (existingByDoi?.isActive) {
+        throw new Error('Reference with this DOI already exists in your library');
+      }
+    }
+
     const existingKeys = await this.getExistingCitationKeys(input.userId);
-    const citationKey = this.generateCitationKey(input, existingKeys);
+    const citationKey =
+      existingByDoi?.citationKey ||
+      this.generateCitationKey(
+        {
+          title: input.title,
+          authors: input.authors,
+          year: input.year,
+        },
+        existingKeys
+      );
+
+    const referenceData = {
+      userId: input.userId,
+      title: input.title,
+      authors: input.authors,
+      year: input.year,
+      venue: input.venue,
+      volume: input.volume,
+      issue: input.issue,
+      pages: input.pages,
+      doi: cleanedDoi,
+      url: input.url,
+      isbn: input.isbn,
+      publisher: input.publisher,
+      edition: input.edition,
+      editors: input.editors || [],
+      publicationPlace: input.publicationPlace,
+      publicationDate: input.publicationDate,
+      accessedDate: input.accessedDate,
+      articleNumber: input.articleNumber,
+      issn: input.issn,
+      journalAbbreviation: input.journalAbbreviation,
+      pmid: input.pmid,
+      pmcid: input.pmcid,
+      arxivId: input.arxivId,
+      abstract: input.abstract,
+      sourceType: input.sourceType || 'OTHER',
+      importSource: input.importSource || 'MANUAL',
+      citationKey,
+      notes: input.notes,
+      tags: input.tags || [],
+      pdfUrl: input.pdfUrl,
+    };
+
+    // If a previously deleted DOI exists, reactivate and refresh its metadata.
+    if (existingByDoi && !existingByDoi.isActive) {
+      return prisma.referenceLibrary.update({
+        where: { id: existingByDoi.id },
+        data: {
+          ...referenceData,
+          isActive: true,
+          updatedAt: new Date(),
+          importDate: new Date(),
+        },
+      });
+    }
 
     return prisma.referenceLibrary.create({
-      data: {
-        userId: input.userId,
-        title: input.title,
-        authors: input.authors,
-        year: input.year,
-        venue: input.venue,
-        volume: input.volume,
-        issue: input.issue,
-        pages: input.pages,
-        doi: input.doi,
-        url: input.url,
-        isbn: input.isbn,
-        publisher: input.publisher,
-        edition: input.edition,
-        editors: input.editors || [],
-        publicationPlace: input.publicationPlace,
-        publicationDate: input.publicationDate,
-        accessedDate: input.accessedDate,
-        articleNumber: input.articleNumber,
-        issn: input.issn,
-        journalAbbreviation: input.journalAbbreviation,
-        pmid: input.pmid,
-        pmcid: input.pmcid,
-        arxivId: input.arxivId,
-        abstract: input.abstract,
-        sourceType: input.sourceType || 'OTHER',
-        importSource: input.importSource || 'MANUAL',
-        citationKey,
-        notes: input.notes,
-        tags: input.tags || [],
-        pdfUrl: input.pdfUrl,
-      },
+      data: referenceData,
     });
   }
 
@@ -133,6 +178,27 @@ class ReferenceLibraryService {
       include: {
         collections: {
           include: { collection: true },
+        },
+        documents: {
+          where: { isPrimary: true },
+          include: {
+            document: {
+              select: {
+                id: true,
+                status: true,
+                errorCode: true,
+                originalFilename: true,
+                fileSizeBytes: true,
+                pageCount: true,
+                sourceType: true,
+                sourceIdentifier: true,
+                pdfTitle: true,
+                pdfAuthors: true,
+                pdfDoi: true,
+                createdAt: true,
+              },
+            },
+          },
         },
       },
     });
@@ -197,6 +263,27 @@ class ReferenceLibraryService {
         include: {
           collections: {
             include: { collection: { select: { id: true, name: true, color: true } } },
+          },
+          documents: {
+            where: { isPrimary: true },
+            include: {
+              document: {
+                select: {
+                  id: true,
+                  status: true,
+                  errorCode: true,
+                  originalFilename: true,
+                  fileSizeBytes: true,
+                  pageCount: true,
+                  sourceType: true,
+                  sourceIdentifier: true,
+                  pdfTitle: true,
+                  pdfAuthors: true,
+                  pdfDoi: true,
+                  createdAt: true,
+                },
+              },
+            },
           },
         },
       }),
@@ -364,7 +451,7 @@ class ReferenceLibraryService {
 
     // Check if already exists
     const existing = await prisma.referenceLibrary.findFirst({
-      where: { userId, doi: { equals: cleanedDOI, mode: 'insensitive' } },
+      where: { userId, isActive: true, doi: { equals: cleanedDOI, mode: 'insensitive' } },
     });
     if (existing) {
       throw new Error('Reference with this DOI already exists in your library');
