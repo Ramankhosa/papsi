@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import CitationManager from '@/components/paper/CitationManager';
 import { useToast } from '@/components/ui/toast';
+import { DocumentUploadDialog } from '@/components/library/DocumentUploadDialog';
 
 interface LiteratureSearchStageProps {
   sessionId: string;
@@ -273,6 +274,22 @@ const SEARCH_QUERY_CATEGORIES: Array<{ value: SearchQueryCategory; label: string
 ];
 
 type PdfStatusValue = 'UPLOADED' | 'PARSING' | 'READY' | 'FAILED' | 'NONE';
+type DeepAnalysisRecommendation = 'DEEP_ANCHOR' | 'DEEP_SUPPORT' | 'DEEP_STRESS_TEST' | 'LIT_ONLY';
+type DeepAnalysisFilterValue = 'ALL' | DeepAnalysisRecommendation;
+type ImportDecisionFilterValue = 'ALL' | 'IMPORT' | 'MAYBE' | 'SKIP';
+type PasteTextFormat = 'plain' | 'html';
+
+interface PdfActionModalPaper {
+  id: string;
+  title: string;
+  referenceId: string;
+}
+
+interface PaperPdfActionResult {
+  success: boolean;
+  errorCode?: string;
+  docId?: string;
+}
 
 const normalizePdfStatusValue = (value: unknown): PdfStatusValue => {
   if (value === 'UPLOADED' || value === 'PARSING' || value === 'READY' || value === 'FAILED') {
@@ -281,12 +298,20 @@ const normalizePdfStatusValue = (value: unknown): PdfStatusValue => {
   return 'NONE';
 };
 
+const PDF_STATUS_PRIORITY: Record<PdfStatusValue, number> = {
+  NONE: 0,
+  FAILED: 1,
+  UPLOADED: 2,
+  PARSING: 3,
+  READY: 4,
+};
+
 const preferredPdfStatus = (current: unknown, incoming: unknown): PdfStatusValue => {
   const currentNormalized = normalizePdfStatusValue(current);
-  if (currentNormalized !== 'NONE') {
-    return currentNormalized;
-  }
-  return normalizePdfStatusValue(incoming);
+  const incomingNormalized = normalizePdfStatusValue(incoming);
+  return PDF_STATUS_PRIORITY[incomingNormalized] > PDF_STATUS_PRIORITY[currentNormalized]
+    ? incomingNormalized
+    : currentNormalized;
 };
 
 export default function LiteratureSearchStage({ sessionId, authToken, onSessionUpdated }: LiteratureSearchStageProps) {
@@ -351,6 +376,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     score: number; 
     reasoning: string;
     recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';
+    deepAnalysisRecommendation?: DeepAnalysisRecommendation;
+    deepAnalysisRationale?: string;
     citationMeta?: {
       keyContribution: string;
       keyFindings: string;
@@ -375,6 +402,21 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   const [bulkAddingSuggested, setBulkAddingSuggested] = useState(false);
   const [aiSummary, setAiSummary] = useState<string | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [pdfRetrievalRunning, setPdfRetrievalRunning] = useState(false);
+  const [pdfRetrievalByPaper, setPdfRetrievalByPaper] = useState<Set<string>>(new Set());
+  const [pdfRetrievalSummary, setPdfRetrievalSummary] = useState<string | null>(null);
+  const [pdfLinkModalPaper, setPdfLinkModalPaper] = useState<PdfActionModalPaper | null>(null);
+  const [pasteTextModalPaper, setPasteTextModalPaper] = useState<PdfActionModalPaper | null>(null);
+  const [pdfUploadModalPaper, setPdfUploadModalPaper] = useState<PdfActionModalPaper | null>(null);
+  const [fullTextModalPaper, setFullTextModalPaper] = useState<PdfActionModalPaper | null>(null);
+  const [fullTextModalContent, setFullTextModalContent] = useState<string>('');
+  const [loadingFullTextPaper, setLoadingFullTextPaper] = useState<string | null>(null);
+  const [pdfLinkUrl, setPdfLinkUrl] = useState('');
+  const [pasteTextContent, setPasteTextContent] = useState('');
+  const [pasteTextFormat, setPasteTextFormat] = useState<PasteTextFormat>('plain');
+  const [submittingPdfLink, setSubmittingPdfLink] = useState<Set<string>>(new Set());
+  const [submittingPasteText, setSubmittingPasteText] = useState<Set<string>>(new Set());
+  const [paperPdfActionResults, setPaperPdfActionResults] = useState<Map<string, PaperPdfActionResult>>(new Map());
   
   // Hide non-relevant papers feature
   const [hideNonRelevant, setHideNonRelevant] = useState(false);
@@ -388,6 +430,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     yearFrom: string;
     yearTo: string;
     aiRelevantOnly: boolean;
+    importDecision: ImportDecisionFilterValue;
+    deepAnalysisRecommendation: DeepAnalysisFilterValue;
     publicationType: string | null;  // For Review filter
     minCitations: string;            // Citation count filter
     openAccessOnly: boolean;         // Open Access filter
@@ -397,6 +441,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     yearFrom: '',
     yearTo: '',
     aiRelevantOnly: false,
+    importDecision: 'ALL',
+    deepAnalysisRecommendation: 'ALL',
     publicationType: null,
     minCitations: '',
     openAccessOnly: false
@@ -411,14 +457,67 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   const importedKeys = useMemo(() => new Set(citations.map(c => c.doi || c.title)), [citations]);
   const aiImportSuggestionIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const [paperId, suggestion] of aiSuggestions.entries()) {
+    aiSuggestions.forEach((suggestion, paperId) => {
       if (suggestion.recommendation === 'IMPORT') {
         ids.add(paperId);
       }
-    }
+    });
     return ids;
   }, [aiSuggestions]);
   const aiImportSuggestionCount = aiImportSuggestionIds.size;
+  const deepRelevantCount = useMemo(() => {
+    let count = 0;
+    aiSuggestions.forEach(suggestion => {
+      if (
+        suggestion.isRelevant &&
+        (
+          suggestion.deepAnalysisRecommendation === 'DEEP_ANCHOR' ||
+          suggestion.deepAnalysisRecommendation === 'DEEP_SUPPORT' ||
+          suggestion.deepAnalysisRecommendation === 'DEEP_STRESS_TEST'
+        )
+      ) {
+        count += 1;
+      }
+    });
+    return count;
+  }, [aiSuggestions]);
+  const relevantCount = useMemo(() => {
+    let count = 0;
+    aiSuggestions.forEach(suggestion => {
+      if (suggestion.isRelevant) {
+        count += 1;
+      }
+    });
+    return count;
+  }, [aiSuggestions]);
+  const importDecisionCounts = useMemo(() => {
+    const counts: Record<'IMPORT' | 'MAYBE' | 'SKIP', number> = {
+      IMPORT: 0,
+      MAYBE: 0,
+      SKIP: 0
+    };
+    aiSuggestions.forEach(suggestion => {
+      if (suggestion.recommendation === 'IMPORT' || suggestion.recommendation === 'MAYBE' || suggestion.recommendation === 'SKIP') {
+        counts[suggestion.recommendation] += 1;
+      }
+    });
+    return counts;
+  }, [aiSuggestions]);
+  const deepRecommendationCounts = useMemo(() => {
+    const counts: Record<DeepAnalysisRecommendation, number> = {
+      DEEP_ANCHOR: 0,
+      DEEP_SUPPORT: 0,
+      DEEP_STRESS_TEST: 0,
+      LIT_ONLY: 0
+    };
+    aiSuggestions.forEach(suggestion => {
+      const label = suggestion.deepAnalysisRecommendation;
+      if (label === 'DEEP_ANCHOR' || label === 'DEEP_SUPPORT' || label === 'DEEP_STRESS_TEST' || label === 'LIT_ONLY') {
+        counts[label] += 1;
+      }
+    });
+    return counts;
+  }, [aiSuggestions]);
   
   // Filtered results (applying all filters)
   const filteredResults = useMemo(() => {
@@ -431,6 +530,14 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       
       // AI relevant only filter
       if (resultFilters.aiRelevantOnly && !aiSuggestions.has(r.id)) return false;
+      if (resultFilters.importDecision !== 'ALL') {
+        const importDecision = aiSuggestions.get(r.id)?.recommendation;
+        if (importDecision !== resultFilters.importDecision) return false;
+      }
+      if (resultFilters.deepAnalysisRecommendation !== 'ALL') {
+        const deepLabel = aiSuggestions.get(r.id)?.deepAnalysisRecommendation;
+        if (deepLabel !== resultFilters.deepAnalysisRecommendation) return false;
+      }
       
       // Has abstract filter
       if (resultFilters.hasAbstract === true && !r.abstract) return false;
@@ -844,6 +951,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
           score: number;
           reasoning: string;
           recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';
+          deepAnalysisRecommendation?: DeepAnalysisRecommendation;
+          deepAnalysisRationale?: string;
           citationMeta?: any;
         }>();
         const allDimensionMappings = new Map<string, Array<{
@@ -868,6 +977,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
             confidence: 'HIGH' | 'MEDIUM' | 'LOW';
           }>;
           recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';
+          deepAnalysisRecommendation?: DeepAnalysisRecommendation;
+          deepAnalysisRationale?: string;
         }> = [];
         let latestAiSummary: string | null = null;
         let latestBlueprintCoverage: any = null;
@@ -925,7 +1036,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                 isOpenAccess: existing.isOpenAccess ?? result.isOpenAccess,
                 pdfStatus: preferredPdfStatus(existing.pdfStatus, result.pdfStatus),
                 libraryReferenceId: existing.libraryReferenceId || result.libraryReferenceId,
-                libraryDocumentId: existing.libraryDocumentId || result.libraryDocumentId
+                libraryDocumentId: existing.libraryDocumentId || result.libraryDocumentId,
+                documentSourceType: existing.documentSourceType || result.documentSourceType,
               };
             }
           }
@@ -948,6 +1060,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                   confidence: 'HIGH' | 'MEDIUM' | 'LOW';
                 }>;
                 recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';
+                deepAnalysisRecommendation?: DeepAnalysisRecommendation;
+                deepAnalysisRationale?: string;
               }>; 
               summary?: string;
               blueprintCoverage?: {
@@ -1021,6 +1135,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
               score: suggestion.relevanceScore,
               reasoning: suggestion.reasoning,
               recommendation: suggestion.recommendation,
+              deepAnalysisRecommendation: suggestion.deepAnalysisRecommendation,
+              deepAnalysisRationale: suggestion.deepAnalysisRationale,
               citationMeta: suggestion.citationMeta
             });
             
@@ -1178,7 +1294,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         isOpenAccess: existing?.isOpenAccess ?? result.isOpenAccess,
         pdfStatus: preferredPdfStatus(existing?.pdfStatus, result.pdfStatus),
         libraryReferenceId: existing?.libraryReferenceId || result.libraryReferenceId,
-        libraryDocumentId: existing?.libraryDocumentId || result.libraryDocumentId
+        libraryDocumentId: existing?.libraryDocumentId || result.libraryDocumentId,
+        documentSourceType: existing?.documentSourceType || result.documentSourceType
       });
     }
     
@@ -1414,6 +1531,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         score: number; 
         reasoning: string;
         recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';
+        deepAnalysisRecommendation?: DeepAnalysisRecommendation;
+        deepAnalysisRationale?: string;
         citationMeta?: {
           keyContribution: string;
           keyFindings: string;
@@ -1524,6 +1643,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
           score: suggestion.relevanceScore,
           reasoning: suggestion.reasoning,
           recommendation: suggestion.recommendation,
+          deepAnalysisRecommendation: suggestion.deepAnalysisRecommendation,
+          deepAnalysisRationale: suggestion.deepAnalysisRationale,
           citationMeta: suggestion.citationMeta
         });
         
@@ -1712,6 +1833,474 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       setBulkAddingSuggested(false);
     }
   };
+
+  const applyPdfRetrievalResults = useCallback((items: any[]) => {
+    if (!Array.isArray(items) || items.length === 0) return;
+
+    const byPaperId = new Map<string, any>();
+    for (const item of items) {
+      if (typeof item?.paperId === 'string' && item.paperId.trim()) {
+        byPaperId.set(item.paperId, item);
+      }
+    }
+    if (byPaperId.size === 0) return;
+
+    setResults(prev => prev.map(result => {
+      const matched = byPaperId.get(result.id);
+      if (!matched) return result;
+
+      const nextStatus = matched.success
+        ? (() => {
+            const normalized = normalizePdfStatusValue(matched.pdfStatus);
+            return normalized === 'NONE' ? 'UPLOADED' : normalized;
+          })()
+        : 'FAILED';
+
+      return {
+        ...result,
+        pdfStatus: nextStatus,
+        libraryReferenceId: matched.referenceId || result.libraryReferenceId,
+        libraryDocumentId: matched.documentId || result.libraryDocumentId,
+        documentSourceType: matched.documentSourceType || result.documentSourceType,
+      };
+    }));
+  }, []);
+
+  const setPaperActionResult = useCallback((paperId: string, payload: PaperPdfActionResult) => {
+    setPaperPdfActionResults(prev => {
+      const next = new Map(prev);
+      next.set(paperId, payload);
+      return next;
+    });
+  }, []);
+
+  const updateSingleResultPdfState = useCallback((paperId: string, patch: Record<string, any>) => {
+    setResults(prev => prev.map(result => {
+      if (result.id !== paperId) return result;
+      return {
+        ...result,
+        ...patch,
+      };
+    }));
+  }, []);
+
+  const ensureReferenceForPaper = useCallback(async (paper: any): Promise<string | null> => {
+    const existingRef = typeof paper?.libraryReferenceId === 'string'
+      ? paper.libraryReferenceId.trim()
+      : (typeof paper?.referenceId === 'string' ? paper.referenceId.trim() : '');
+    if (existingRef) return existingRef;
+    if (!authToken) return null;
+
+    const manualRunId = paper?._searchRunId || searchRunId || '';
+    if (!manualRunId) {
+      showToast({
+        type: 'error',
+        title: 'Missing Search Context',
+        message: 'Could not resolve this paper to a search run. Re-run search and try again.',
+        duration: 4500,
+      });
+      return null;
+    }
+
+    try {
+      setPdfRetrievalByPaper(prev => new Set(prev).add(paper.id));
+
+      const response = await fetch(`/api/papers/${sessionId}/literature/retrieve-pdfs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          mode: 'manual',
+          searchRunIds: [manualRunId],
+          paperIds: [paper.id],
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Could not initialize paper reference');
+      }
+
+      applyPdfRetrievalResults(data.results || []);
+      const matched = Array.isArray(data.results)
+        ? data.results.find((item: any) => item?.paperId === paper.id)
+        : null;
+      const referenceId = typeof matched?.referenceId === 'string' ? matched.referenceId : '';
+      if (referenceId) {
+        return referenceId;
+      }
+
+      const latestResult = results.find(r => r.id === paper.id);
+      const fallbackRef = typeof latestResult?.libraryReferenceId === 'string' ? latestResult.libraryReferenceId : '';
+      if (fallbackRef) {
+        return fallbackRef;
+      }
+
+      showToast({
+        type: 'error',
+        title: 'Reference Not Ready',
+        message: 'Could not prepare a library reference for this paper yet.',
+        duration: 4500,
+      });
+      return null;
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'Reference Setup Failed',
+        message: err instanceof Error ? err.message : 'Could not prepare paper reference',
+        duration: 5000,
+      });
+      return null;
+    } finally {
+      setPdfRetrievalByPaper(prev => {
+        const next = new Set(prev);
+        next.delete(paper.id);
+        return next;
+      });
+    }
+  }, [authToken, searchRunId, sessionId, showToast, applyPdfRetrievalResults, results]);
+
+  const runPdfRetrieval = useCallback(async (
+    mode: 'deep' | 'relevant' | 'manual',
+    options?: { manualPaperId?: string; manualSearchRunId?: string }
+  ) => {
+    if (!authToken) return;
+
+    const runIds = (() => {
+      if (mode === 'manual') {
+        const manualRunId = options?.manualSearchRunId || searchRunId || '';
+        return manualRunId ? [manualRunId] : [];
+      }
+      return searchRunIds.length > 0
+        ? searchRunIds
+        : (searchRunId ? [searchRunId] : []);
+    })();
+
+    if (runIds.length === 0) {
+      showToast({
+        type: 'error',
+        title: 'No Search Run Selected',
+        message: 'Run literature search and AI relevance review first.',
+        duration: 4000
+      });
+      return;
+    }
+
+    const paperIds = mode === 'manual' && options?.manualPaperId
+      ? [options.manualPaperId]
+      : undefined;
+
+    try {
+      if (mode === 'manual' && options?.manualPaperId) {
+        setPdfRetrievalByPaper(prev => new Set(prev).add(options.manualPaperId as string));
+      } else {
+        setPdfRetrievalRunning(true);
+      }
+
+      const response = await fetch(`/api/papers/${sessionId}/literature/retrieve-pdfs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          mode,
+          searchRunIds: runIds,
+          paperIds,
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'PDF retrieval failed');
+      }
+
+      applyPdfRetrievalResults(data.results || []);
+
+      const summary = `Retrieved ${data.succeeded || 0}/${data.attempted || 0} PDFs (${data.reused || 0} reused by DOI, ${data.downloaded || 0} downloaded)`;
+      setPdfRetrievalSummary(summary);
+      showToast({
+        type: data.failed > 0 ? 'info' : 'success',
+        title: data.failed > 0 ? 'PDF Retrieval Finished with Skips' : 'PDF Retrieval Complete',
+        message: summary,
+        duration: 4500
+      });
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'PDF Retrieval Failed',
+        message: err instanceof Error ? err.message : 'Could not retrieve PDFs',
+        duration: 5000
+      });
+    } finally {
+      if (mode === 'manual' && options?.manualPaperId) {
+        setPdfRetrievalByPaper(prev => {
+          const next = new Set(prev);
+          next.delete(options.manualPaperId as string);
+          return next;
+        });
+      } else {
+        setPdfRetrievalRunning(false);
+      }
+    }
+  }, [authToken, searchRunId, searchRunIds, sessionId, showToast, applyPdfRetrievalResults]);
+
+  const openProvideLinkModal = useCallback(async (paper: any) => {
+    const referenceId = await ensureReferenceForPaper(paper);
+    if (!referenceId) return;
+    setPdfLinkUrl('');
+    setPdfLinkModalPaper({
+      id: paper.id,
+      title: paper.title || 'Untitled paper',
+      referenceId,
+    });
+  }, [ensureReferenceForPaper]);
+
+  const openPasteTextModal = useCallback(async (paper: any, presetText = '') => {
+    const referenceId = await ensureReferenceForPaper(paper);
+    if (!referenceId) return;
+    setPasteTextContent(presetText);
+    setPasteTextFormat('plain');
+    setPasteTextModalPaper({
+      id: paper.id,
+      title: paper.title || 'Untitled paper',
+      referenceId,
+    });
+  }, [ensureReferenceForPaper]);
+
+  const openUploadPdfModal = useCallback(async (paper: any) => {
+    const referenceId = await ensureReferenceForPaper(paper);
+    if (!referenceId) return;
+    setPdfUploadModalPaper({
+      id: paper.id,
+      title: paper.title || 'Untitled paper',
+      referenceId,
+    });
+  }, [ensureReferenceForPaper]);
+
+  const handleSubmitPdfLink = useCallback(async () => {
+    if (!authToken || !pdfLinkModalPaper) return;
+
+    const url = pdfLinkUrl.trim();
+    if (!url) {
+      showToast({
+        type: 'error',
+        title: 'URL Required',
+        message: 'Enter a PDF URL first.',
+        duration: 3500,
+      });
+      return;
+    }
+
+    const paperId = pdfLinkModalPaper.id;
+    setSubmittingPdfLink(prev => new Set(prev).add(paperId));
+    try {
+      const response = await fetch(`/api/references/${pdfLinkModalPaper.referenceId}/acquire-pdf`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ url }),
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        const errorCode = data?.errorCode || 'DOWNLOAD_FAILED';
+        setPaperActionResult(paperId, {
+          success: false,
+          errorCode,
+        });
+
+        if (errorCode === 'NOT_PDF') {
+          setPdfLinkModalPaper(null);
+          setPdfLinkUrl('');
+          showToast({
+            type: 'info',
+            title: 'Web Page Detected',
+            message: 'That URL is not a direct PDF. Paste full text instead.',
+            duration: 4500,
+          });
+          await openPasteTextModal({ ...pdfLinkModalPaper, id: paperId, title: pdfLinkModalPaper.title }, '');
+          return;
+        }
+
+        throw new Error(data?.error || 'Failed to import PDF from URL');
+      }
+
+      setPaperActionResult(paperId, {
+        success: true,
+        docId: data.documentId,
+      });
+      updateSingleResultPdfState(paperId, {
+        pdfStatus: normalizePdfStatusValue(data.pdfStatus),
+        libraryReferenceId: pdfLinkModalPaper.referenceId,
+        libraryDocumentId: data.documentId || null,
+        documentSourceType: data.sourceType || 'URL_IMPORT',
+      });
+      setPdfLinkModalPaper(null);
+      setPdfLinkUrl('');
+      showToast({
+        type: 'success',
+        title: 'PDF Linked',
+        message: 'PDF retrieval started for this paper.',
+        duration: 3500,
+      });
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'Provide Link Failed',
+        message: err instanceof Error ? err.message : 'Could not retrieve PDF from URL',
+        duration: 5000,
+      });
+    } finally {
+      setSubmittingPdfLink(prev => {
+        const next = new Set(prev);
+        next.delete(paperId);
+        return next;
+      });
+    }
+  }, [authToken, pdfLinkModalPaper, pdfLinkUrl, showToast, setPaperActionResult, updateSingleResultPdfState, openPasteTextModal]);
+
+  const handleSubmitPasteText = useCallback(async () => {
+    if (!authToken || !pasteTextModalPaper) return;
+    const text = pasteTextContent.trim();
+    if (!text) {
+      showToast({
+        type: 'error',
+        title: 'Text Required',
+        message: 'Paste full text content before submitting.',
+        duration: 3500,
+      });
+      return;
+    }
+
+    const paperId = pasteTextModalPaper.id;
+    setSubmittingPasteText(prev => new Set(prev).add(paperId));
+    try {
+      const response = await fetch(`/api/references/${pasteTextModalPaper.referenceId}/paste-text`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          text,
+          format: pasteTextFormat,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        setPaperActionResult(paperId, {
+          success: false,
+          errorCode: data?.errorCode || 'INTERNAL_ERROR',
+        });
+        throw new Error(data?.error || 'Failed to store pasted full text');
+      }
+
+      setPaperActionResult(paperId, {
+        success: true,
+        docId: data.documentId,
+      });
+      updateSingleResultPdfState(paperId, {
+        pdfStatus: 'READY',
+        libraryReferenceId: pasteTextModalPaper.referenceId,
+        libraryDocumentId: data.documentId || null,
+        documentSourceType: data.sourceType || 'TEXT_PASTE',
+      });
+      setPasteTextModalPaper(null);
+      setPasteTextContent('');
+      setPasteTextFormat('plain');
+      showToast({
+        type: 'success',
+        title: 'Full Text Saved',
+        message: `Stored ${data.characterCount || text.length} characters for deep analysis.`,
+        duration: 4000,
+      });
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'Paste Text Failed',
+        message: err instanceof Error ? err.message : 'Could not store pasted text',
+        duration: 5000,
+      });
+    } finally {
+      setSubmittingPasteText(prev => {
+        const next = new Set(prev);
+        next.delete(paperId);
+        return next;
+      });
+    }
+  }, [authToken, pasteTextModalPaper, pasteTextContent, pasteTextFormat, showToast, setPaperActionResult, updateSingleResultPdfState]);
+
+  const handleViewPdf = useCallback(async (paper: any) => {
+    if (!authToken) return;
+    const referenceId = await ensureReferenceForPaper(paper);
+    if (!referenceId) return;
+
+    try {
+      const response = await fetch(`/api/library/${referenceId}/document/serve`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || 'Could not open PDF');
+      }
+
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      window.open(objectUrl, '_blank', 'noopener,noreferrer');
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'View PDF Failed',
+        message: err instanceof Error ? err.message : 'Could not open PDF',
+        duration: 4500,
+      });
+    }
+  }, [authToken, ensureReferenceForPaper, showToast]);
+
+  const handleViewFullText = useCallback(async (paper: any) => {
+    if (!authToken) return;
+    const referenceId = await ensureReferenceForPaper(paper);
+    if (!referenceId) return;
+
+    setLoadingFullTextPaper(paper.id);
+    try {
+      const response = await fetch(`/api/references/${referenceId}/full-text`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) {
+        throw new Error(data?.error || 'Full text is not ready yet');
+      }
+
+      if (!data.text || !String(data.text).trim()) {
+        throw new Error('Full text is not available yet. Try again shortly.');
+      }
+
+      setFullTextModalPaper({
+        id: paper.id,
+        title: paper.title || 'Untitled paper',
+        referenceId,
+      });
+      setFullTextModalContent(String(data.text));
+    } catch (err) {
+      showToast({
+        type: 'error',
+        title: 'Full Text Unavailable',
+        message: err instanceof Error ? err.message : 'Could not load full text',
+        duration: 4500,
+      });
+    } finally {
+      setLoadingFullTextPaper(null);
+    }
+  }, [authToken, ensureReferenceForPaper, showToast]);
 
   // Analyze unanalyzed citations against blueprint dimensions
   const handleAnalyzeUnanalyzedCitations = async () => {
@@ -4426,6 +5015,43 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                               <span className="text-violet-700">🤖 AI Reviewed Only</span>
                             </label>
                           )}
+                          {aiSuggestions.size > 0 && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs text-gray-600">AI Decision:</span>
+                              <select
+                                value={resultFilters.importDecision}
+                                onChange={e => setResultFilters(prev => ({
+                                  ...prev,
+                                  importDecision: e.target.value as ImportDecisionFilterValue
+                                }))}
+                                className="h-7 text-xs border border-gray-300 rounded px-2"
+                              >
+                                <option value="ALL">All ({aiSuggestions.size})</option>
+                                <option value="IMPORT">Import ({importDecisionCounts.IMPORT})</option>
+                                <option value="MAYBE">Maybe ({importDecisionCounts.MAYBE})</option>
+                                <option value="SKIP">Skip ({importDecisionCounts.SKIP})</option>
+                              </select>
+                            </div>
+                          )}
+                          {aiSuggestions.size > 0 && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-xs text-gray-600">Deep:</span>
+                              <select
+                                value={resultFilters.deepAnalysisRecommendation}
+                                onChange={e => setResultFilters(prev => ({
+                                  ...prev,
+                                  deepAnalysisRecommendation: e.target.value as DeepAnalysisFilterValue
+                                }))}
+                                className="h-7 text-xs border border-gray-300 rounded px-2"
+                              >
+                                <option value="ALL">All ({aiSuggestions.size})</option>
+                                <option value="DEEP_ANCHOR">Anchor ({deepRecommendationCounts.DEEP_ANCHOR})</option>
+                                <option value="DEEP_SUPPORT">Support ({deepRecommendationCounts.DEEP_SUPPORT})</option>
+                                <option value="DEEP_STRESS_TEST">Stress Test ({deepRecommendationCounts.DEEP_STRESS_TEST})</option>
+                                <option value="LIT_ONLY">Lit Only ({deepRecommendationCounts.LIT_ONLY})</option>
+                              </select>
+                            </div>
+                          )}
                           
                           {/* Clear Filters */}
                           <Button
@@ -4437,6 +5063,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                               yearFrom: '', 
                               yearTo: '', 
                               aiRelevantOnly: false,
+                              importDecision: 'ALL',
+                              deepAnalysisRecommendation: 'ALL',
                               publicationType: null,
                               minCitations: '',
                               openAccessOnly: false
@@ -4791,6 +5419,35 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                         </Button>
                       </div>
                     )}
+
+                    {aiSuggestions.size > 0 && (
+                      <div className="flex items-center gap-2 mt-2 pl-0.5 pt-2 border-t border-gray-100 flex-wrap">
+                        <span className="text-[10px] text-indigo-700 uppercase tracking-wider font-semibold mr-1">Full Text:</span>
+                        <Button
+                          onClick={() => runPdfRetrieval('deep')}
+                          disabled={pdfRetrievalRunning || deepRelevantCount === 0}
+                          size="sm"
+                          variant="outline"
+                          className="h-6 text-[11px] text-indigo-700 border-indigo-300 hover:bg-indigo-50"
+                          title="Retrieve PDFs for relevant DEEP_ANCHOR / DEEP_SUPPORT / DEEP_STRESS_TEST papers."
+                        >
+                          {pdfRetrievalRunning ? 'Retrieving...' : `Retrieve Deep PDFs (${deepRelevantCount})`}
+                        </Button>
+                        <Button
+                          onClick={() => runPdfRetrieval('relevant')}
+                          disabled={pdfRetrievalRunning || relevantCount === 0}
+                          size="sm"
+                          variant="outline"
+                          className="h-6 text-[11px] text-sky-700 border-sky-300 hover:bg-sky-50"
+                          title="Retrieve PDFs for all papers marked relevant by AI."
+                        >
+                          {pdfRetrievalRunning ? 'Retrieving...' : `Retrieve Relevant PDFs (${relevantCount})`}
+                        </Button>
+                        {pdfRetrievalSummary && (
+                          <span className="text-[11px] text-gray-600">{pdfRetrievalSummary}</span>
+                        )}
+                      </div>
+                    )}
                     
                     {/* AI Summary */}
                     {aiSummary && (
@@ -4930,6 +5587,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                             yearFrom: '', 
                             yearTo: '', 
                             aiRelevantOnly: false,
+                            importDecision: 'ALL',
+                            deepAnalysisRecommendation: 'ALL',
                             publicationType: null,
                             minCitations: '',
                             openAccessOnly: false
@@ -5347,6 +6006,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                         const isAiAnalyzed = !!aiSuggestion;
                         const isAiSuggested = aiSuggestion?.recommendation === 'IMPORT';
                         const resultPdfStatus = normalizePdfStatusValue(result.pdfStatus);
+                        const resultSourceType = typeof result.documentSourceType === 'string' ? result.documentSourceType : undefined;
+                        const availabilityLabel = resultSourceType === 'TEXT_PASTE' ? 'Full Text' : 'PDF';
 
                         return (
                           <motion.div
@@ -5434,6 +6095,22 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                     {paperRecommendations.get(result.id)}
                                   </Badge>
                                 )}
+                                {aiSuggestion?.deepAnalysisRecommendation && (
+                                  <Badge
+                                    className={`shrink-0 text-[10px] ${
+                                      aiSuggestion.deepAnalysisRecommendation === 'DEEP_ANCHOR'
+                                        ? 'bg-indigo-600 text-white'
+                                        : aiSuggestion.deepAnalysisRecommendation === 'DEEP_SUPPORT'
+                                          ? 'bg-sky-600 text-white'
+                                          : aiSuggestion.deepAnalysisRecommendation === 'DEEP_STRESS_TEST'
+                                            ? 'bg-rose-600 text-white'
+                                            : 'bg-gray-500 text-white'
+                                    }`}
+                                    title={aiSuggestion.deepAnalysisRationale || 'Deep analysis recommendation'}
+                                  >
+                                    {aiSuggestion.deepAnalysisRecommendation}
+                                  </Badge>
+                                )}
                                 {hasAbstract ? (
                                   <Badge variant="secondary" className="shrink-0 text-[10px] bg-blue-50 text-blue-600">
                                     📄 Abstract
@@ -5493,7 +6170,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                         : 'bg-gray-50 text-gray-600 border-gray-200'
                                   }`}
                                 >
-                                  PDF {resultPdfStatus}
+                                  {availabilityLabel} {resultPdfStatus}
                                 </Badge>
                                 {result.citationCount !== undefined && result.citationCount > 0 && (
                                   <span className="text-[10px] text-gray-400">
@@ -5653,6 +6330,13 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                       <p className="text-xs text-violet-800 leading-relaxed">
                                         {aiSuggestion.reasoning}
                                       </p>
+                                      {aiSuggestion.deepAnalysisRecommendation && (
+                                        <p className="text-[11px] text-indigo-800">
+                                          <span className="font-semibold">Deep analysis:</span>{' '}
+                                          {aiSuggestion.deepAnalysisRecommendation}
+                                          {aiSuggestion.deepAnalysisRationale ? ` — ${aiSuggestion.deepAnalysisRationale}` : ''}
+                                        </p>
+                                      )}
                                       
                                       {/* Enhanced Citation Metadata */}
                                       {aiSuggestion.citationMeta && (
@@ -5710,7 +6394,114 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                                 </motion.div>
                               )}
                             </div>
-                            <div className="shrink-0 flex flex-col gap-1">
+                            <div className="shrink-0 flex flex-col gap-1 min-w-[134px]">
+                              {(() => {
+                                const isRetrievingThisPdf = pdfRetrievalByPaper.has(result.id);
+                                const isSubmittingLink = submittingPdfLink.has(result.id);
+                                const isSubmittingText = submittingPasteText.has(result.id);
+                                const isLoadingText = loadingFullTextPaper === result.id;
+                                const sourceType = resultSourceType;
+                                const isTextOnly = sourceType === 'TEXT_PASTE';
+                                const isReady = resultPdfStatus === 'READY';
+                                const isProcessing = isRetrievingThisPdf || isSubmittingLink || isSubmittingText || resultPdfStatus === 'UPLOADED' || resultPdfStatus === 'PARSING';
+                                const actionResult = paperPdfActionResults.get(result.id);
+                                const hasAttachedDocument = Boolean(result.libraryDocumentId)
+                                  || resultPdfStatus === 'UPLOADED'
+                                  || resultPdfStatus === 'PARSING'
+                                  || resultPdfStatus === 'READY';
+                                const canViewPdf = hasAttachedDocument && !isTextOnly;
+                                const canViewText = hasAttachedDocument && (isTextOnly || isReady);
+                                const showFallbackActions = !hasAttachedDocument && !isReady;
+
+                                return (
+                                  <>
+                                    {canViewPdf && (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => handleViewPdf(result)}
+                                        className="text-xs h-7 border-indigo-300 text-indigo-700 hover:bg-indigo-50"
+                                        title="Open attached PDF."
+                                      >
+                                        View PDF
+                                      </Button>
+                                    )}
+                                    {canViewText && (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => handleViewFullText(result)}
+                                        disabled={isLoadingText}
+                                        className="text-xs h-7 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                                        title="Open extracted full text."
+                                      >
+                                        {isLoadingText ? 'Loading...' : 'View Text'}
+                                      </Button>
+                                    )}
+                                    {isProcessing && (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        disabled
+                                        className="text-xs h-7 border-amber-300 text-amber-700 bg-amber-50"
+                                      >
+                                        Processing...
+                                      </Button>
+                                    )}
+                                    {showFallbackActions && (
+                                      <>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() => runPdfRetrieval('manual', {
+                                            manualPaperId: result.id,
+                                            manualSearchRunId: result._searchRunId || searchRunId || undefined,
+                                          })}
+                                          disabled={isRetrievingThisPdf}
+                                          className="text-xs h-7 border-indigo-300 text-indigo-700 hover:bg-indigo-50"
+                                          title="Try automatic retrieval from DOI and direct PDF URL."
+                                        >
+                                          Retrieve PDF
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() => openProvideLinkModal(result)}
+                                          disabled={isSubmittingLink}
+                                          className="text-xs h-7 border-sky-300 text-sky-700 hover:bg-sky-50"
+                                          title="Provide a direct PDF link."
+                                        >
+                                          Provide Link
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() => openUploadPdfModal(result)}
+                                          className="text-xs h-7 border-violet-300 text-violet-700 hover:bg-violet-50"
+                                          title="Upload a PDF file from your device."
+                                        >
+                                          Upload PDF
+                                        </Button>
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={() => openPasteTextModal(result)}
+                                          disabled={isSubmittingText}
+                                          className="text-xs h-7 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+                                          title="Paste full text when PDF is unavailable."
+                                        >
+                                          Paste Text
+                                        </Button>
+                                      </>
+                                    )}
+                                    {actionResult && !actionResult.success && (
+                                      <span className="text-[10px] text-rose-600">
+                                        {actionResult.errorCode || 'Failed'}
+                                      </span>
+                                    )}
+                                  </>
+                                );
+                              })()}
                               <Button
                                 size="sm"
                                 onClick={() => handleImport(result)}
@@ -6229,6 +7020,19 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
                         {recommendation}
                       </Badge>
                     )}
+                    {aiSuggestion?.deepAnalysisRecommendation && (
+                      <Badge className={`text-[10px] ${
+                        aiSuggestion.deepAnalysisRecommendation === 'DEEP_ANCHOR'
+                          ? 'bg-indigo-600 text-white'
+                          : aiSuggestion.deepAnalysisRecommendation === 'DEEP_SUPPORT'
+                            ? 'bg-sky-600 text-white'
+                            : aiSuggestion.deepAnalysisRecommendation === 'DEEP_STRESS_TEST'
+                              ? 'bg-rose-600 text-white'
+                              : 'bg-gray-500 text-white'
+                      }`}>
+                        {aiSuggestion.deepAnalysisRecommendation}
+                      </Badge>
+                    )}
                   </div>
                   <p className="text-[11px] text-gray-500">
                     {[
@@ -6658,6 +7462,179 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Provide PDF Link Modal */}
+      <Dialog
+        open={Boolean(pdfLinkModalPaper)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPdfLinkModalPaper(null);
+            setPdfLinkUrl('');
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg bg-white border-gray-200 shadow-2xl">
+          <DialogHeader>
+            <DialogTitle>Provide PDF Link</DialogTitle>
+            <DialogDescription>
+              Paste a direct PDF URL for: {pdfLinkModalPaper?.title || 'paper'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <Input
+              value={pdfLinkUrl}
+              onChange={(event) => setPdfLinkUrl(event.target.value)}
+              placeholder="https://.../paper.pdf"
+            />
+            <p className="text-xs text-gray-500">
+              If this URL is a web page (not a PDF), you can paste full text in the next step.
+            </p>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setPdfLinkModalPaper(null);
+                setPdfLinkUrl('');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSubmitPdfLink}
+              disabled={!pdfLinkUrl.trim() || !pdfLinkModalPaper || submittingPdfLink.has(pdfLinkModalPaper.id)}
+              className="bg-indigo-600 hover:bg-indigo-700"
+            >
+              {pdfLinkModalPaper && submittingPdfLink.has(pdfLinkModalPaper.id) ? 'Submitting...' : 'Submit Link'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Paste Full Text Modal */}
+      <Dialog
+        open={Boolean(pasteTextModalPaper)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPasteTextModalPaper(null);
+            setPasteTextContent('');
+            setPasteTextFormat('plain');
+          }
+        }}
+      >
+        <DialogContent className="max-w-2xl bg-white border-gray-200 shadow-2xl">
+          <DialogHeader>
+            <DialogTitle>Paste Full Text</DialogTitle>
+            <DialogDescription>
+              Paste text for: {pasteTextModalPaper?.title || 'paper'}
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-medium text-gray-600">Format:</span>
+              <Button
+                size="sm"
+                variant={pasteTextFormat === 'plain' ? 'default' : 'outline'}
+                className="h-7 text-xs"
+                onClick={() => setPasteTextFormat('plain')}
+              >
+                Plain
+              </Button>
+              <Button
+                size="sm"
+                variant={pasteTextFormat === 'html' ? 'default' : 'outline'}
+                className="h-7 text-xs"
+                onClick={() => setPasteTextFormat('html')}
+              >
+                HTML
+              </Button>
+            </div>
+
+            <Textarea
+              value={pasteTextContent}
+              onChange={(event) => setPasteTextContent(event.target.value)}
+              placeholder="Paste full paper text here..."
+              className="min-h-[260px] text-sm"
+            />
+            <div className="text-xs text-gray-500">
+              Characters: {pasteTextContent.trim().length.toLocaleString()}
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setPasteTextModalPaper(null);
+                setPasteTextContent('');
+                setPasteTextFormat('plain');
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSubmitPasteText}
+              disabled={!pasteTextModalPaper || !pasteTextContent.trim() || submittingPasteText.has(pasteTextModalPaper.id)}
+              className="bg-emerald-600 hover:bg-emerald-700"
+            >
+              {pasteTextModalPaper && submittingPasteText.has(pasteTextModalPaper.id) ? 'Saving...' : 'Save Full Text'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Full Text Viewer Modal */}
+      <Dialog
+        open={Boolean(fullTextModalPaper)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setFullTextModalPaper(null);
+            setFullTextModalContent('');
+          }
+        }}
+      >
+        <DialogContent className="max-w-4xl bg-white border-gray-200 shadow-2xl max-h-[85vh]">
+          <DialogHeader>
+            <DialogTitle>Full Text</DialogTitle>
+            <DialogDescription>{fullTextModalPaper?.title || ''}</DialogDescription>
+          </DialogHeader>
+          <div className="overflow-y-auto border rounded-md p-3 bg-gray-50 max-h-[62vh]">
+            <pre className="whitespace-pre-wrap text-xs leading-relaxed text-gray-800 font-sans">
+              {fullTextModalContent}
+            </pre>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Upload PDF Modal */}
+      {pdfUploadModalPaper && (
+        <DocumentUploadDialog
+          open={Boolean(pdfUploadModalPaper)}
+          onClose={() => setPdfUploadModalPaper(null)}
+          referenceId={pdfUploadModalPaper.referenceId}
+          referenceTitle={pdfUploadModalPaper.title}
+          authToken={authToken}
+          onSuccess={async () => {
+            if (!pdfUploadModalPaper) return;
+            updateSingleResultPdfState(pdfUploadModalPaper.id, {
+              pdfStatus: 'UPLOADED',
+              libraryReferenceId: pdfUploadModalPaper.referenceId,
+              documentSourceType: 'UPLOAD',
+            });
+            showToast({
+              type: 'success',
+              title: 'PDF Uploaded',
+              message: 'Uploaded file is queued for text extraction.',
+              duration: 3500,
+            });
+            setPdfUploadModalPaper(null);
+          }}
+          mode="attach"
+        />
+      )}
 
       {/* Manual Entry Modal */}
       <ManualCitationModal

@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { referenceLibraryService } from '@/lib/services/reference-library-service';
 import { authenticateUser } from '@/lib/auth-middleware';
+import { paperLibraryService } from '@/lib/services/paper-library-service';
 
 const copySchema = z.object({
   sessionId: z.string().min(1),
@@ -33,6 +34,18 @@ export async function POST(request: NextRequest) {
       data.sessionId,
       data.referenceIds
     );
+
+    if (data.referenceIds.length > 0) {
+      try {
+        await paperLibraryService.addReferencesToPaperCollection(
+          user.id,
+          data.sessionId,
+          data.referenceIds
+        );
+      } catch (collectionError) {
+        console.warn('[LibraryCopyToSession] Failed to add references to paper library collection:', collectionError);
+      }
+    }
 
     return NextResponse.json(result);
   } catch (err) {

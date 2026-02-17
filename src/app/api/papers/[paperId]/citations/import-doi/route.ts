@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { citationService } from '@/lib/services/citation-service';
+import { paperLibraryService } from '@/lib/services/paper-library-service';
 
 export const runtime = 'nodejs';
 
@@ -35,6 +36,13 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     const data = schema.parse(body);
 
     const citation = await citationService.importFromDOI(sessionId, data.doi);
+
+    try {
+      await paperLibraryService.syncCitationToLibraryAndCollection(user.id, sessionId, citation);
+    } catch (syncError) {
+      console.warn('[Citations][DOI] Failed to sync citation to paper library collection:', syncError);
+    }
+
     return NextResponse.json({ citation }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {

@@ -5,6 +5,7 @@ import { authenticateUser } from '@/lib/auth-middleware';
 import { citationService } from '@/lib/services/citation-service';
 import { citationStyleService, type CitationData } from '@/lib/services/citation-style-service';
 import { citationMappingService, type CitationMetaSnapshot, type PaperBlueprintMapping } from '@/lib/services/citation-mapping-service';
+import { paperLibraryService } from '@/lib/services/paper-library-service';
 
 export const runtime = 'nodejs';
 
@@ -308,6 +309,16 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       if (importedCitationIds.length > 0 && mappingsToPersist.length > 0) {
         await citationMappingService.clearMappingsForCitations(sessionId, importedCitationIds);
         await citationMappingService.storeMappings(sessionId, mappingsToPersist);
+      }
+
+      try {
+        await paperLibraryService.syncCitationsToLibraryAndCollection(
+          user.id,
+          sessionId,
+          importResult.imported.map(item => item.citation)
+        );
+      } catch (syncError) {
+        console.warn('[Citations][Bulk Import] Failed to sync imported citations to paper library collection:', syncError);
       }
     }
 

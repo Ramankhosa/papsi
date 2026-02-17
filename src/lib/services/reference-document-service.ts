@@ -10,6 +10,7 @@ import type { ExtractedPdfMetadata } from './pdf-parser-service';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import * as net from 'net';
 
 // Default limits
 const DEFAULT_MAX_FILE_SIZE_MB = parseInt(process.env.MAX_REFERENCE_PDF_SIZE_MB || '50', 10);
@@ -31,7 +32,14 @@ export interface FetchOAResult {
     document?: any;
     link?: any;
     oaUrl?: string;
+    errorCode?: 'INVALID_URL' | 'NOT_PDF' | 'DOWNLOAD_FAILED' | 'REFERENCE_NOT_FOUND' | 'ALREADY_ATTACHED';
     error?: string;
+}
+
+export interface ImportPdfFromUrlOptions {
+    sourceIdentifier?: string;
+    sourceType?: 'DOI_FETCH' | 'URL_IMPORT';
+    originalFilenameHint?: string;
 }
 
 class ReferenceDocumentService {
@@ -407,9 +415,143 @@ class ReferenceDocumentService {
         return doc;
     }
 
+    /**
+     * Public wrapper used by paper-acquisition-service for URL pre-validation.
+     */
+    validatePdfImportUrl(candidate: string): string | null {
+        return this.validateExternalPdfUrl(candidate);
+    }
+
     // ============================================================================
     // OPEN ACCESS PDF FETCHING (Unpaywall)
     // ============================================================================
+
+    /**
+     * Import a PDF from a direct URL and attach it to a reference.
+     * Uses the same validation + dedup + async parsing pipeline as DOI fetch.
+     */
+    async importPdfFromUrl(
+        userId: string,
+        referenceId: string,
+        pdfUrl: string,
+        options: ImportPdfFromUrlOptions = {}
+    ): Promise<FetchOAResult> {
+        // Verify reference exists and belongs to user
+        const reference = await prisma.referenceLibrary.findFirst({
+            where: { id: referenceId, userId, isActive: true },
+        });
+        if (!reference) {
+            return { success: false, errorCode: 'REFERENCE_NOT_FOUND', error: 'Reference not found' };
+        }
+
+        // Check if already has a document
+        const existingLink = await prisma.referenceDocumentLink.findFirst({
+            where: { referenceId, isPrimary: true },
+        });
+        if (existingLink) {
+            return { success: false, errorCode: 'ALREADY_ATTACHED', error: 'Reference already has a PDF attached' };
+        }
+
+        const validatedUrl = this.validateExternalPdfUrl(pdfUrl);
+        if (!validatedUrl) {
+            return { success: false, errorCode: 'INVALID_URL', error: 'Invalid or unsafe PDF URL' };
+        }
+
+        try {
+            const downloadResult = await this.downloadPdfBufferFromUrlWithFallback(validatedUrl);
+            if (!downloadResult.success) {
+                return {
+                    success: false,
+                    errorCode: downloadResult.errorCode,
+                    error: downloadResult.error,
+                };
+            }
+
+            const pdfBuffer = downloadResult.buffer;
+
+            const validationError = this.validateFile(pdfBuffer, 'downloaded.pdf');
+            if (validationError) {
+                return { success: false, errorCode: validationError.includes('valid PDF') ? 'NOT_PDF' : 'DOWNLOAD_FAILED', error: validationError };
+            }
+
+            // Check for duplicate by hash
+            const fileHash = this.computeHash(pdfBuffer);
+            const existingDoc = await prisma.referenceDocument.findUnique({
+                where: { fileHash },
+            });
+
+            if (existingDoc) {
+                const link = await prisma.referenceDocumentLink.create({
+                    data: {
+                        referenceId,
+                        documentId: existingDoc.id,
+                        isPrimary: true,
+                        linkedBy: userId,
+                    },
+                });
+
+                return {
+                    success: true,
+                    document: existingDoc,
+                    link,
+                    oaUrl: downloadResult.resolvedUrl,
+                };
+            }
+
+            // Store file
+            const userDir = this.ensureUserDir(userId);
+            const docId = crypto.randomUUID().replace(/-/g, '');
+            const storagePath = path.join(userDir, `${docId}.pdf`);
+            fs.writeFileSync(storagePath, pdfBuffer);
+
+            const sourceIdentifier = options.sourceIdentifier?.trim() || downloadResult.resolvedUrl;
+            const filenameBase = (options.originalFilenameHint || sourceIdentifier || 'reference')
+                .replace(/[/\\]/g, '_')
+                .trim();
+            const originalFilename = `${filenameBase || 'reference'}.pdf`;
+
+            // Create record
+            const document = await prisma.referenceDocument.create({
+                data: {
+                    userId,
+                    storagePath,
+                    originalFilename,
+                    fileHash,
+                    fileSizeBytes: pdfBuffer.length,
+                    mimeType: 'application/pdf',
+                    sourceType: options.sourceType || 'URL_IMPORT',
+                    sourceIdentifier,
+                    status: 'UPLOADED',
+                },
+            });
+
+            // Create link
+            const link = await prisma.referenceDocumentLink.create({
+                data: {
+                    referenceId,
+                    documentId: document.id,
+                    isPrimary: true,
+                    linkedBy: userId,
+                },
+            });
+
+            // Start async parsing
+            this.processDocumentAsync(document.id);
+
+            return {
+                success: true,
+                document,
+                link,
+                oaUrl: downloadResult.resolvedUrl,
+            };
+        } catch (error: any) {
+            return {
+                success: false,
+                errorCode: 'DOWNLOAD_FAILED',
+                error: `Failed to import PDF from URL: ${error?.message || 'Unknown error'}`,
+            };
+        }
+    }
 
     /**
      * Fetch an OA PDF for a DOI via Unpaywall and attach to a reference.
@@ -599,7 +741,22 @@ class ReferenceDocumentService {
      */
     async getDocumentFilePath(userId: string, documentId: string): Promise<string | null> {
         const doc = await prisma.referenceDocument.findFirst({
-            where: { id: documentId, userId },
+            where: {
+                id: documentId,
+                OR: [
+                    { userId },
+                    {
+                        references: {
+                            some: {
+                                reference: {
+                                    userId,
+                                    isActive: true,
+                                },
+                            },
+                        },
+                    },
+                ],
+            },
             select: { storagePath: true },
         });
 
@@ -626,6 +783,402 @@ class ReferenceDocumentService {
                 console.error(`[RefDocService] Async processing failed for ${documentId}:`, error);
             }
         });
+    }
+
+    /**
+     * Validate external PDF URL to reduce SSRF risk.
+     */
+    private validateExternalPdfUrl(candidate: string): string | null {
+        if (!candidate || typeof candidate !== 'string') return null;
+
+        let parsed: URL;
+        try {
+            parsed = new URL(candidate.trim());
+        } catch {
+            return null;
+        }
+
+        if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+            return null;
+        }
+
+        if (this.isPrivateOrLocalAddress(parsed.hostname)) {
+            return null;
+        }
+
+        return parsed.toString();
+    }
+
+    private isPrivateOrLocalAddress(hostnameRaw: string): boolean {
+        const hostname = (hostnameRaw || '').trim().toLowerCase();
+        if (!hostname) return true;
+
+        if (
+            hostname === 'localhost' ||
+            hostname === '0.0.0.0' ||
+            hostname === '::1' ||
+            hostname.endsWith('.local')
+        ) {
+            return true;
+        }
+
+        const ipType = net.isIP(hostname);
+        if (ipType === 0) {
+            return false;
+        }
+
+        if (ipType === 4) {
+            if (
+                hostname.startsWith('10.') ||
+                hostname.startsWith('127.') ||
+                hostname.startsWith('192.168.') ||
+                hostname.startsWith('169.254.')
+            ) {
+                return true;
+            }
+
+            const octets = hostname.split('.').map(part => parseInt(part, 10));
+            if (octets.length === 4) {
+                const second = octets[1];
+                // 172.16.0.0 - 172.31.255.255
+                if (octets[0] === 172 && Number.isFinite(second) && second >= 16 && second <= 31) {
+                    return true;
+                }
+                // 100.64.0.0 - 100.127.255.255 (carrier-grade NAT)
+                if (octets[0] === 100 && Number.isFinite(second) && second >= 64 && second <= 127) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // IPv6 local / link-local / unique local
+        if (
+            hostname === '::1' ||
+            hostname.startsWith('fe80:') ||
+            hostname.startsWith('fc') ||
+            hostname.startsWith('fd')
+        ) {
+            return true;
+        }
+
+        return false;
+    }
+
+    private async downloadPdfBufferFromUrlWithFallback(
+        candidateUrl: string,
+        visited: Set<string> = new Set(),
+        depth = 0
+    ): Promise<
+        | { success: true; buffer: Buffer; resolvedUrl: string }
+        | { success: false; errorCode: 'NOT_PDF' | 'DOWNLOAD_FAILED'; error: string }
+    > {
+        if (depth > 2) {
+            return {
+                success: false,
+                errorCode: 'NOT_PDF',
+                error: 'Could not find a direct PDF file in the provided URL',
+            };
+        }
+
+        const safeUrl = this.validateExternalPdfUrl(candidateUrl);
+        if (!safeUrl) {
+            return {
+                success: false,
+                errorCode: 'DOWNLOAD_FAILED',
+                error: 'Resolved URL is invalid or unsafe',
+            };
+        }
+
+        if (visited.has(safeUrl)) {
+            return {
+                success: false,
+                errorCode: 'NOT_PDF',
+                error: 'Could not find a direct PDF file in the provided URL',
+            };
+        }
+        visited.add(safeUrl);
+
+        const fetchResult = await this.fetchWithCookieRedirects(safeUrl);
+        if (!fetchResult.success) {
+            return {
+                success: false,
+                errorCode: 'DOWNLOAD_FAILED',
+                error: fetchResult.error,
+            };
+        }
+        const response = fetchResult.response;
+
+        if (!response.ok) {
+            return {
+                success: false,
+                errorCode: 'DOWNLOAD_FAILED',
+                error: `Failed to fetch URL (HTTP ${response.status})`,
+            };
+        }
+
+        const contentLength = parseInt(response.headers.get('content-length') || '0', 10);
+        if (contentLength > 0 && contentLength > this.maxFileSizeBytes) {
+            return {
+                success: false,
+                errorCode: 'DOWNLOAD_FAILED',
+                error: `File exceeds maximum size of ${DEFAULT_MAX_FILE_SIZE_MB}MB`,
+            };
+        }
+
+        const contentType = (response.headers.get('content-type') || '').toLowerCase();
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        const finalUrl = fetchResult.finalUrl || response.url || safeUrl;
+
+        if (this.isLikelyPdfContentType(contentType) || this.hasPdfSignature(buffer)) {
+            return {
+                success: true,
+                buffer,
+                resolvedUrl: finalUrl,
+            };
+        }
+
+        if (!this.isLikelyHtmlPayload(contentType, buffer)) {
+            return {
+                success: false,
+                errorCode: 'NOT_PDF',
+                error: 'The URL did not return a PDF file',
+            };
+        }
+
+        const html = buffer.toString('utf8', 0, Math.min(buffer.length, 1_000_000));
+        const candidates = this.extractPdfCandidateUrlsFromHtml(html, finalUrl);
+
+        for (const candidate of candidates) {
+            const nested = await this.downloadPdfBufferFromUrlWithFallback(candidate, visited, depth + 1);
+            if (nested.success) {
+                return nested;
+            }
+        }
+
+        return {
+            success: false,
+            errorCode: 'NOT_PDF',
+            error: 'The provided URL is not a direct PDF and no downloadable PDF link was found on the page',
+        };
+    }
+
+    private buildPdfFetchHeaders(): Record<string, string> {
+        return {
+            'User-Agent': 'Papsi/1.0 Academic Research Tool',
+            'Accept': 'application/pdf,text/html,application/xhtml+xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        };
+    }
+
+    private isLikelyPdfContentType(contentType: string): boolean {
+        const normalized = (contentType || '').toLowerCase();
+        return normalized.includes('application/pdf') || normalized.includes('application/octet-stream');
+    }
+
+    private hasPdfSignature(buffer: Buffer): boolean {
+        if (!buffer || buffer.length < 5) return false;
+        return buffer.slice(0, 5).toString('ascii') === '%PDF-';
+    }
+
+    private isLikelyHtmlPayload(contentType: string, buffer: Buffer): boolean {
+        const normalized = (contentType || '').toLowerCase();
+        if (normalized.includes('text/html') || normalized.includes('application/xhtml+xml')) {
+            return true;
+        }
+
+        const preview = buffer.toString('utf8', 0, Math.min(buffer.length, 512)).trim().toLowerCase();
+        return (
+            preview.startsWith('<!doctype html') ||
+            preview.startsWith('<html') ||
+            preview.startsWith('<script') ||
+            preview.startsWith('<apm_do_not_touch>')
+        );
+    }
+
+    private extractPdfCandidateUrlsFromHtml(html: string, baseUrl: string): string[] {
+        const candidates: string[] = [];
+        const seen = new Set<string>();
+
+        const addCandidate = (raw: string) => {
+            if (!raw || typeof raw !== 'string') return;
+
+            const decoded = raw
+                .trim()
+                .replace(/&amp;/gi, '&')
+                .replace(/&quot;/gi, '"')
+                .replace(/&#39;/gi, "'");
+            if (!decoded) return;
+
+            let absoluteUrl: string;
+            try {
+                absoluteUrl = new URL(decoded, baseUrl).toString();
+            } catch {
+                return;
+            }
+
+            const safe = this.validateExternalPdfUrl(absoluteUrl);
+            if (!safe || seen.has(safe)) return;
+            seen.add(safe);
+            candidates.push(safe);
+        };
+
+        const signals = ['.pdf', '/pdf/', 'pdf=', 'downloadpdf', 'stamppdf/getpdf.jsp'];
+        const looksLikePdfTarget = (value: string): boolean => {
+            const normalized = value.toLowerCase();
+            return signals.some(signal => normalized.includes(signal));
+        };
+
+        const metaRegex = /<meta[^>]+(?:name|property)\s*=\s*["']citation_pdf_url["'][^>]*content\s*=\s*["']([^"']+)["'][^>]*>/gi;
+        for (const match of html.matchAll(metaRegex)) {
+            addCandidate(match[1] || '');
+        }
+
+        const attrRegex = /<(?:iframe|embed|object|a)[^>]+(?:src|href|data)\s*=\s*["']([^"']+)["'][^>]*>/gi;
+        for (const match of html.matchAll(attrRegex)) {
+            const value = match[1] || '';
+            if (looksLikePdfTarget(value)) {
+                addCandidate(value);
+            }
+        }
+
+        const absoluteRegex = /https?:\/\/[^\s"'<>]+/gi;
+        for (const match of html.matchAll(absoluteRegex)) {
+            const value = match[0] || '';
+            if (looksLikePdfTarget(value)) {
+                addCandidate(value);
+            }
+        }
+
+        const ieeeStampRegex = /(?:\/?stampPDF\/getPDF\.jsp\?[^\s"'<>]+)/gi;
+        for (const match of html.matchAll(ieeeStampRegex)) {
+            addCandidate(match[0] || '');
+        }
+
+        return candidates;
+    }
+
+    private async fetchWithCookieRedirects(
+        initialUrl: string,
+        maxRedirects = 8
+    ): Promise<
+        | { success: true; response: Response; finalUrl: string }
+        | { success: false; error: string }
+    > {
+        const cookieJar = new Map<string, string>();
+        let currentUrl = initialUrl;
+
+        for (let i = 0; i <= maxRedirects; i++) {
+            const headers = this.buildPdfFetchHeaders();
+            const cookieHeader = this.serializeCookieJar(cookieJar);
+            if (cookieHeader) {
+                headers.Cookie = cookieHeader;
+            }
+
+            let response: Response;
+            try {
+                response = await fetch(currentUrl, {
+                    headers,
+                    redirect: 'manual',
+                });
+            } catch (error: any) {
+                return {
+                    success: false,
+                    error: error?.message || `Failed to fetch URL ${currentUrl}`,
+                };
+            }
+
+            this.captureResponseCookies(response.headers, cookieJar);
+
+            if (!this.isRedirectStatus(response.status)) {
+                return {
+                    success: true,
+                    response,
+                    finalUrl: response.url || currentUrl,
+                };
+            }
+
+            const location = response.headers.get('location');
+            if (!location) {
+                return {
+                    success: false,
+                    error: `Failed to follow redirect for URL ${currentUrl}`,
+                };
+            }
+
+            let nextUrl: string;
+            try {
+                nextUrl = new URL(location, currentUrl).toString();
+            } catch {
+                return {
+                    success: false,
+                    error: `Invalid redirect URL returned by ${currentUrl}`,
+                };
+            }
+
+            const validatedNext = this.validateExternalPdfUrl(nextUrl);
+            if (!validatedNext) {
+                return {
+                    success: false,
+                    error: 'Resolved redirect URL is invalid or unsafe',
+                };
+            }
+
+            currentUrl = validatedNext;
+        }
+
+        return {
+            success: false,
+            error: `Too many redirects while fetching ${initialUrl}`,
+        };
+    }
+
+    private isRedirectStatus(status: number): boolean {
+        return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+    }
+
+    private serializeCookieJar(cookieJar: Map<string, string>): string {
+        if (!cookieJar || cookieJar.size === 0) return '';
+        return Array.from(cookieJar.entries())
+            .map(([name, value]) => `${name}=${value}`)
+            .join('; ');
+    }
+
+    private captureResponseCookies(headers: Headers, cookieJar: Map<string, string>): void {
+        const setCookieHeaders = this.readSetCookieHeaders(headers);
+        for (const line of setCookieHeaders) {
+            const trimmed = (line || '').trim();
+            if (!trimmed) continue;
+            const match = trimmed.match(/^([^=;\s]+)=([^;]*)/);
+            if (!match) continue;
+            const cookieName = match[1];
+            const cookieValue = match[2];
+            if (!cookieName) continue;
+            cookieJar.set(cookieName, cookieValue);
+        }
+    }
+
+    private readSetCookieHeaders(headers: Headers): string[] {
+        const anyHeaders = headers as any;
+        if (typeof anyHeaders.getSetCookie === 'function') {
+            const values = anyHeaders.getSetCookie();
+            if (Array.isArray(values)) {
+                return values.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0);
+            }
+        }
+
+        const combined = headers.get('set-cookie');
+        if (!combined) {
+            return [];
+        }
+
+        // Split cookie list while preserving commas inside Expires attributes.
+        return combined
+            .split(/,(?=[^;,]+=)/g)
+            .map(part => part.trim())
+            .filter(Boolean);
     }
 
     /**

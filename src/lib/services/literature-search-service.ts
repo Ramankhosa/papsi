@@ -63,6 +63,7 @@ export interface SearchResult {
   source: string; // Which provider returned this result
   publicationType?: PublicationType;
   isOpenAccess?: boolean;
+  pdfUrl?: string;
   fieldsOfStudy?: string[];
   rawData?: any; // Original API response for debugging
 }
@@ -541,7 +542,8 @@ class LiteratureSearchService {
       url: primary.url || secondary.url,
       citationCount: citationCounts.length > 0 ? Math.max(...citationCounts) : undefined,
       publicationType: primary.publicationType || secondary.publicationType,
-      isOpenAccess: primary.isOpenAccess ?? secondary.isOpenAccess,
+      isOpenAccess: primary.isOpenAccess ?? secondary.isOpenAccess ?? (primary.pdfUrl || secondary.pdfUrl ? true : undefined),
+      pdfUrl: primary.pdfUrl || secondary.pdfUrl,
       fieldsOfStudy: primary.fieldsOfStudy?.length ? primary.fieldsOfStudy : secondary.fieldsOfStudy,
       rawData: primary.rawData ?? secondary.rawData
     };
@@ -631,6 +633,7 @@ class GoogleScholarProvider implements SearchProvider {
         url: result.link,
         citationCount: result.inline_links?.cited_by?.total || 0,
         source: 'google_scholar',
+        pdfUrl: result.resources?.[0]?.link || undefined,
         rawData: result
       }));
     } catch (error) {
@@ -951,6 +954,7 @@ class SemanticScholarProvider implements SearchProvider {
       source: 'semantic_scholar',
       publicationType: this.mapPublicationType(paper.publicationTypes),
       isOpenAccess: paper.isOpenAccess || !!paper.openAccessPdf?.url,
+      pdfUrl: paper.openAccessPdf?.url || undefined,
       fieldsOfStudy: (paper.fieldsOfStudy || []).map((f: any) => f.category || f),
       rawData: paper
     };
@@ -1191,6 +1195,15 @@ class CrossRefProvider implements SearchProvider {
       url: work.URL,
       citationCount: work['is-referenced-by-count'],
       source: 'crossref',
+      pdfUrl: Array.isArray(work.link)
+        ? work.link.find((link: any) =>
+            typeof link?.URL === 'string' &&
+            (
+              String(link['content-type'] || '').toLowerCase().includes('pdf') ||
+              String(link['content_type'] || '').toLowerCase().includes('pdf')
+            )
+          )?.URL
+        : undefined,
       rawData: work
     };
   }
@@ -1427,6 +1440,7 @@ class OpenAlexProvider implements SearchProvider {
       source: 'openalex',
       publicationType: this.mapPublicationType(work.type),
       isOpenAccess: work.is_oa,
+      pdfUrl: work.primary_location?.pdf_url || work.best_oa_location?.pdf_url || undefined,
       fieldsOfStudy: (work.concepts || []).slice(0, 5).map((c: any) => c.display_name),
       rawData: work
     };
@@ -1691,6 +1705,9 @@ class PubMedProvider implements SearchProvider {
             doi,
             url: `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
             source: 'pubmed',
+            pdfUrl: pmcidMatch
+              ? `https://www.ncbi.nlm.nih.gov/pmc/articles/${this.decodeXmlEntities(pmcidMatch[1])}/pdf/`
+              : undefined,
             rawData: { pmid }
           });
         }
@@ -1930,6 +1947,7 @@ class ArXivProvider implements SearchProvider {
             url: `https://arxiv.org/abs/${arxivId}`,
             arxivId,
             source: 'arxiv',
+            pdfUrl: pdfUrl || (arxivId ? `https://arxiv.org/pdf/${arxivId}.pdf` : undefined),
             rawData: { arxivId, pdfUrl, categories }
           });
         }
@@ -2124,6 +2142,7 @@ class COREProvider implements SearchProvider {
             url: work.downloadUrl || work.sourceFulltextUrls?.[0] || (work.doi ? `https://doi.org/${work.doi}` : undefined),
             citationCount: work.citationCount,
             source: 'core',
+            pdfUrl: work.downloadUrl || work.sourceFulltextUrls?.[0] || undefined,
             rawData: work
           });
         } catch (err) {

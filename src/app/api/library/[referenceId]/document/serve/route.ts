@@ -7,7 +7,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { referenceDocumentService } from '@/lib/services/reference-document-service';
 import * as fs from 'fs';
-import * as path from 'path';
 
 export async function GET(
     request: NextRequest,
@@ -34,6 +33,13 @@ export async function GET(
 
         if (!link || !link.document) {
             return NextResponse.json({ error: 'No document attached' }, { status: 404 });
+        }
+
+        if ((link.document as any).mimeType !== 'application/pdf') {
+            return NextResponse.json(
+                { error: 'Attached document is not a PDF. Use Full Text view instead.' },
+                { status: 400 }
+            );
         }
 
         // Get the file path (verifies ownership)

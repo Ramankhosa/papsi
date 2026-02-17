@@ -54,6 +54,8 @@ export interface CitationMetaSnapshot {
   };
   relevanceScore?: number;
   analyzedAt?: string;
+  referenceArchetype?: string | null;
+  archetypeSignal?: string | null;
 }
 
 /**

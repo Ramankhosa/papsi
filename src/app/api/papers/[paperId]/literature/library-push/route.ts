@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { featureFlags } from '@/lib/feature-flags';
+import { paperLibraryService } from '@/lib/services/paper-library-service';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -118,6 +119,16 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       });
     }
 
+    try {
+      await paperLibraryService.addReferencesToPaperCollection(
+        user.id,
+        sessionId,
+        references.map(reference => reference.id)
+      );
+    } catch (collectionError) {
+      console.warn('[LiteratureLibraryPush] Failed to add references to paper library collection:', collectionError);
+    }
+
     const results = references.map((ref) => {
       const primaryDocument = ref.documents[0]?.document;
       const pdfStatus = toPdfStatus(primaryDocument?.status);
@@ -150,6 +161,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         abstract: ref.abstract ?? undefined,
         doi: ref.doi ?? undefined,
         url: ref.url ?? undefined,
+        pdfUrl: ref.pdfUrl ?? undefined,
         source: 'library',
         publicationType: mapSourceTypeToPublicationType(ref.sourceType),
         isOpenAccess,

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
+import { paperLibraryService } from '@/lib/services/paper-library-service';
 
 export async function GET(request: NextRequest) {
   const { user, error } = await authenticateUser(request);
@@ -210,6 +211,14 @@ export async function POST(request: NextRequest) {
       newData: { paperTypeCode: paperTypeCode || null, citationStyleCode: citationStyleCode || null, title }
     }
   });
+
+  // Auto-create a dedicated collection for this paper in the user's library.
+  // Fail-open: paper creation should still succeed even if collection setup fails.
+  try {
+    await paperLibraryService.ensurePaperCollection(user.id, paper.id, title);
+  } catch (collectionError) {
+    console.warn('[Papers] Failed to auto-create paper library collection:', collectionError);
+  }
 
   return NextResponse.json({ paper }, { status: 201 });
 }

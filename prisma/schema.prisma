@@ -4639,6 +4639,7 @@ enum ReferenceDocumentSource {
   UPLOAD       // User uploaded PDF file
   DOI_FETCH    // Fetched via Unpaywall/OA source
   URL_IMPORT   // Downloaded from direct URL
+  TEXT_PASTE   // User pasted full text directly
 }
 
 enum ReferenceDocumentStatus {

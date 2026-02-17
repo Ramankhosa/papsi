@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { citationService } from '@/lib/services/citation-service';
+import { paperLibraryService } from '@/lib/services/paper-library-service';
 
 export const runtime = 'nodejs';
 
@@ -35,6 +36,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     const data = schema.parse(body);
 
     const citations = await citationService.importFromBibTeX(sessionId, data.bibtex);
+
+    if (citations.length > 0) {
+      try {
+        await paperLibraryService.syncCitationsToLibraryAndCollection(user.id, sessionId, citations);
+      } catch (syncError) {
+        console.warn('[Citations][BibTeX] Failed to sync citations to paper library collection:', syncError);
+      }
+    }
+
     return NextResponse.json({ citations }, { status: 201 });
   } catch (error) {
     if (error instanceof z.ZodError) {

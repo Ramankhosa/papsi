@@ -102,6 +102,26 @@ const CLAIM_TYPE_VALUES = [
 type ClaimType = (typeof CLAIM_TYPE_VALUES)[number];
 const CLAIM_TYPE_SET = new Set<string>(CLAIM_TYPE_VALUES);
 
+const DEEP_ANALYSIS_RECOMMENDATION_VALUES = [
+  'DEEP_ANCHOR',
+  'DEEP_SUPPORT',
+  'DEEP_STRESS_TEST',
+  'LIT_ONLY'
+] as const;
+type DeepAnalysisRecommendation = (typeof DEEP_ANALYSIS_RECOMMENDATION_VALUES)[number];
+const DEEP_ANALYSIS_RECOMMENDATION_SET = new Set<string>(DEEP_ANALYSIS_RECOMMENDATION_VALUES);
+
+const REFERENCE_ARCHETYPE_VALUES = [
+  'SYSTEM_ALGO_EVALUATION',
+  'CONTROLLED_EXPERIMENTAL_STUDY',
+  'EMPIRICAL_OBSERVATIONAL_STUDY',
+  'MIXED_METHODS_APPLIED_STUDY',
+  'SYNTHESIS_REVIEW',
+  'POSITION_CONCEPTUAL'
+] as const;
+type ReferenceArchetype = (typeof REFERENCE_ARCHETYPE_VALUES)[number];
+const REFERENCE_ARCHETYPE_SET = new Set<string>(REFERENCE_ARCHETYPE_VALUES);
+
 // Dimension mapping for blueprint integration
 interface DimensionMapping {
   sectionKey: string;
@@ -120,6 +140,8 @@ interface CitationMeta {
   claimTypesSupported: ClaimType[]; // Structured claim categories this paper can support
   evidenceBoundary: string | null;  // What should NOT be claimed from this paper
   usage: CitationUsage;
+  referenceArchetype: ReferenceArchetype | null;
+  archetypeSignal: string | null;
 }
 
 interface PaperRelevanceAnalysis {
@@ -137,6 +159,10 @@ interface PaperRelevanceAnalysis {
   citationMeta: CitationMeta;  // Enhanced metadata for section generation
   dimensionMappings?: DimensionMapping[];  // Blueprint dimension mappings
   recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';  // Import recommendation
+  deepAnalysisRecommendation: DeepAnalysisRecommendation;
+  deepAnalysisRationale: string;
+  referenceArchetype: ReferenceArchetype | null;
+  archetypeSignal: string | null;
 }
 
 // Coverage analysis for blueprint gaps
@@ -159,10 +185,19 @@ interface BlueprintCoverage {
   }>;
 }
 
+interface ShortlistSummary {
+  anchors: string[];
+  supports: string[];
+  stressTests: string[];
+  targetCount: number;
+  notes: string;
+}
+
 interface LLMResponse {
   suggestions: PaperRelevanceAnalysis[];
   summary: string;
   blueprintCoverage?: BlueprintCoverage;
+  shortlistSummary?: ShortlistSummary;
 }
 
 // Normalize DOIs / titles to build deduplication keys
@@ -241,7 +276,15 @@ function toCitationMetaSnapshot(
     relevanceScore: Number.isFinite(Number(suggestion.relevanceScore))
       ? Math.max(0, Math.min(100, Number(suggestion.relevanceScore)))
       : undefined,
-    analyzedAt: new Date().toISOString()
+    analyzedAt: new Date().toISOString(),
+    referenceArchetype: typeof meta.referenceArchetype === 'string'
+      ? (REFERENCE_ARCHETYPE_SET.has(meta.referenceArchetype.toUpperCase())
+        ? meta.referenceArchetype.toUpperCase()
+        : null)
+      : null,
+    archetypeSignal: typeof meta.archetypeSignal === 'string'
+      ? meta.archetypeSignal.slice(0, 300)
+      : null
   };
 }
 
@@ -389,6 +432,499 @@ function normalizePdfStatus(value: unknown): 'UPLOADED' | 'PARSING' | 'READY' | 
   return 'NONE';
 }
 
+function normalizeDocumentSourceType(
+  sourceType: unknown,
+  sourceIdentifier?: unknown,
+  mimeType?: unknown
+): 'UPLOAD' | 'DOI_FETCH' | 'URL_IMPORT' | 'TEXT_PASTE' | undefined {
+  const normalizedSourceIdentifier = typeof sourceIdentifier === 'string'
+    ? sourceIdentifier.toLowerCase()
+    : '';
+  const normalizedMimeType = typeof mimeType === 'string'
+    ? mimeType.toLowerCase()
+    : '';
+
+  if (
+    sourceType === 'TEXT_PASTE' ||
+    normalizedSourceIdentifier.startsWith('text:') ||
+    normalizedMimeType.startsWith('text/')
+  ) {
+    return 'TEXT_PASTE';
+  }
+
+  if (sourceType === 'UPLOAD' || sourceType === 'DOI_FETCH' || sourceType === 'URL_IMPORT') {
+    return sourceType;
+  }
+
+  return undefined;
+}
+
+function normalizeDoiKey(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\/(dx\.)?doi\.org\//, '')
+    .replace(/^doi:/, '')
+    .replace(/\s+/g, '');
+}
+
+function normalizeTitleKey(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function toYearOrNull(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number.parseInt(value.trim(), 10);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function buildTitleYearKey(title: unknown, year: unknown): string {
+  const normalizedTitle = normalizeTitleKey(title);
+  if (!normalizedTitle) return '';
+  const normalizedYear = toYearOrNull(year);
+  return `${normalizedTitle}::${normalizedYear ?? 'na'}`;
+}
+
+function getPrimaryDocument(reference: any): any | null {
+  const links = Array.isArray(reference?.documents) ? reference.documents : [];
+  const first = links[0];
+  return first?.document || null;
+}
+
+function referenceRank(reference: any): number {
+  const document = getPrimaryDocument(reference);
+  const status = normalizePdfStatus(document?.status);
+  let rank = 0;
+
+  if (document) rank += 100;
+  if (status === 'READY') rank += 30;
+  if (status === 'UPLOADED' || status === 'PARSING') rank += 20;
+  if (status === 'FAILED') rank += 5;
+  if (reference?.pdfUrl) rank += 1;
+
+  return rank;
+}
+
+function pickPreferredReference(current: any, incoming: any): any {
+  if (!current) return incoming;
+  return referenceRank(incoming) > referenceRank(current) ? incoming : current;
+}
+
+async function hydrateSearchRunResultsWithReferenceState(userId: string, rawResults: unknown): Promise<any[]> {
+  if (!Array.isArray(rawResults) || rawResults.length === 0) {
+    return [];
+  }
+
+  const results = rawResults.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    return { ...(item as Record<string, any>) };
+  });
+
+  const referenceIds = new Set<string>();
+  const doiKeys = new Set<string>();
+  const titleKeys = new Set<string>();
+
+  for (const item of results) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const result = item as Record<string, any>;
+
+    const referenceId = typeof result.libraryReferenceId === 'string'
+      ? result.libraryReferenceId.trim()
+      : (typeof result.referenceId === 'string' ? result.referenceId.trim() : '');
+    if (referenceId) {
+      referenceIds.add(referenceId);
+    }
+
+    const doiKey = normalizeDoiKey(result.doi);
+    if (doiKey) {
+      doiKeys.add(doiKey);
+    }
+
+    const titleKey = normalizeTitleKey(result.title);
+    if (titleKey) {
+      titleKeys.add(titleKey);
+    }
+  }
+
+  const orFilters: any[] = [];
+  if (referenceIds.size > 0) {
+    orFilters.push({ id: { in: Array.from(referenceIds) } });
+  }
+  for (const doi of Array.from(doiKeys)) {
+    orFilters.push({ doi: { equals: doi, mode: 'insensitive' } });
+  }
+  for (const title of Array.from(titleKeys)) {
+    orFilters.push({ title: { equals: title, mode: 'insensitive' } });
+  }
+
+  if (orFilters.length === 0) {
+    return results.map(item => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+      const result = item as Record<string, any>;
+      return {
+        ...result,
+        pdfStatus: normalizePdfStatus(result.pdfStatus),
+      };
+    });
+  }
+
+  const references = await prisma.referenceLibrary.findMany({
+    where: {
+      userId,
+      isActive: true,
+      OR: orFilters,
+    },
+    select: {
+      id: true,
+      doi: true,
+      title: true,
+      year: true,
+      pdfUrl: true,
+      documents: {
+        where: { isPrimary: true },
+        orderBy: { linkedAt: 'desc' },
+        take: 1,
+        select: {
+          document: {
+            select: {
+              id: true,
+              status: true,
+              sourceType: true,
+              sourceIdentifier: true,
+              mimeType: true,
+              updatedAt: true,
+            },
+          },
+        },
+      },
+    },
+    take: 200,
+  });
+
+  const byId = new Map<string, any>();
+  const byDoi = new Map<string, any>();
+  const byTitleYear = new Map<string, any>();
+  const byTitle = new Map<string, any>();
+
+  for (const reference of references) {
+    byId.set(reference.id, pickPreferredReference(byId.get(reference.id), reference));
+
+    const doiKey = normalizeDoiKey(reference.doi);
+    if (doiKey) {
+      byDoi.set(doiKey, pickPreferredReference(byDoi.get(doiKey), reference));
+    }
+
+    const titleYearKey = buildTitleYearKey(reference.title, reference.year);
+    if (titleYearKey) {
+      byTitleYear.set(titleYearKey, pickPreferredReference(byTitleYear.get(titleYearKey), reference));
+    }
+
+    const titleKey = normalizeTitleKey(reference.title);
+    if (titleKey) {
+      byTitle.set(titleKey, pickPreferredReference(byTitle.get(titleKey), reference));
+    }
+  }
+
+  return results.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+    const result = item as Record<string, any>;
+
+    const referenceId = typeof result.libraryReferenceId === 'string'
+      ? result.libraryReferenceId.trim()
+      : (typeof result.referenceId === 'string' ? result.referenceId.trim() : '');
+    const doiKey = normalizeDoiKey(result.doi);
+    const titleYearKey = buildTitleYearKey(result.title, result.year);
+    const titleKey = normalizeTitleKey(result.title);
+
+    const matchedReference =
+      (referenceId ? byId.get(referenceId) : undefined) ||
+      (doiKey ? byDoi.get(doiKey) : undefined) ||
+      (titleYearKey ? byTitleYear.get(titleYearKey) : undefined) ||
+      (titleKey ? byTitle.get(titleKey) : undefined);
+
+    const primaryDocument = getPrimaryDocument(matchedReference);
+    const existingStatus = normalizePdfStatus(result.pdfStatus);
+    const primaryStatus = normalizePdfStatus(primaryDocument?.status);
+    const nextStatus = primaryStatus !== 'NONE'
+      ? primaryStatus
+      : (result.libraryDocumentId ? (existingStatus === 'NONE' ? 'UPLOADED' : existingStatus) : existingStatus);
+
+    const nextSourceType = normalizeDocumentSourceType(
+      primaryDocument?.sourceType,
+      primaryDocument?.sourceIdentifier,
+      primaryDocument?.mimeType
+    );
+
+    return {
+      ...result,
+      pdfStatus: nextStatus,
+      libraryReferenceId: matchedReference?.id || result.libraryReferenceId || null,
+      libraryDocumentId: primaryDocument?.id || result.libraryDocumentId || null,
+      documentSourceType: nextSourceType || result.documentSourceType,
+      pdfUrl: result.pdfUrl || matchedReference?.pdfUrl || null,
+    };
+  });
+}
+
+function normalizeRecommendation(
+  recommendation: unknown,
+  dimensionMappings?: DimensionMapping[]
+): 'IMPORT' | 'MAYBE' | 'SKIP' | undefined {
+  if (recommendation === 'IMPORT' || recommendation === 'MAYBE' || recommendation === 'SKIP') {
+    return recommendation;
+  }
+  if (!dimensionMappings || dimensionMappings.length === 0) {
+    return undefined;
+  }
+  const highMediumCount = dimensionMappings.filter(
+    dm => dm.confidence === 'HIGH' || dm.confidence === 'MEDIUM'
+  ).length;
+  return highMediumCount >= 2 ? 'IMPORT' : highMediumCount >= 1 ? 'MAYBE' : 'SKIP';
+}
+
+function normalizeReferenceArchetype(value: unknown): ReferenceArchetype | null {
+  if (typeof value !== 'string') return null;
+  const upper = value.trim().toUpperCase().replace(/[\s-]+/g, '_');
+  if (REFERENCE_ARCHETYPE_SET.has(upper)) {
+    return upper as ReferenceArchetype;
+  }
+  // Fuzzy fallback for common LLM variations
+  if (upper.includes('REVIEW') || upper.includes('META') || upper.includes('SURVEY') || upper.includes('SYNTHESIS')) {
+    return 'SYNTHESIS_REVIEW';
+  }
+  if (upper.includes('POSITION') || upper.includes('CONCEPTUAL') || upper.includes('EDITORIAL') || upper.includes('COMMENTARY')) {
+    return 'POSITION_CONCEPTUAL';
+  }
+  if (upper.includes('MIXED') || upper.includes('QUAL')) {
+    return 'MIXED_METHODS_APPLIED_STUDY';
+  }
+  if (upper.includes('EXPERIMENT') || upper.includes('RCT') || upper.includes('CONTROLLED') || upper.includes('INTERVENTION')) {
+    return 'CONTROLLED_EXPERIMENTAL_STUDY';
+  }
+  if (upper.includes('OBSERVATIONAL') || upper.includes('COHORT') || upper.includes('RETROSPECTIVE')) {
+    return 'EMPIRICAL_OBSERVATIONAL_STUDY';
+  }
+  return 'SYSTEM_ALGO_EVALUATION'; // safe default
+}
+
+function hasStressSignalStrong(
+  citationMeta: CitationMeta | undefined,
+  reasoning: string
+): boolean {
+  if (Array.isArray(citationMeta?.claimTypesSupported) && citationMeta.claimTypesSupported.includes('LIMITATION')) {
+    return true;
+  }
+
+  const limitations = citationMeta?.limitationsOrGaps || '';
+  const evidenceBoundary = citationMeta?.evidenceBoundary || '';
+  const combined = `${reasoning} ${limitations} ${evidenceBoundary}`.toLowerCase();
+
+  return /\b(contradict|contrary|counter|challenge|inconsisten|mixed|null|negative|no significant|fails?|limitation|trade[\s-]?off|underperform)\b/i.test(combined);
+}
+
+function buildDeepAnalysisFallbackRationale(
+  recommendation: DeepAnalysisRecommendation,
+  score: number,
+  mappingCount: number,
+  highMedCount: number,
+  sectionSpread: number
+): string {
+  const mappingFacts = mappingCount > 0
+    ? `mappings ${mappingCount} (${highMedCount} HIGH/MED), section spread ${sectionSpread}`
+    : 'no confident mapping evidence';
+
+  if (recommendation === 'DEEP_ANCHOR') {
+    return `Score ${score}; ${mappingFacts}; strong coverage -> DEEP_ANCHOR.`;
+  }
+  if (recommendation === 'DEEP_STRESS_TEST') {
+    return `Score ${score}; ${mappingFacts}; contradiction/limitation signals -> DEEP_STRESS_TEST.`;
+  }
+  if (recommendation === 'DEEP_SUPPORT') {
+    return `Score ${score}; ${mappingFacts}; useful but narrower coverage -> DEEP_SUPPORT.`;
+  }
+  return `Score ${score}; ${mappingFacts}; low deep-extraction ROI -> LIT_ONLY.`;
+}
+
+function deriveDeepAnalysisFields(input: {
+  isRelevant: boolean;
+  relevanceScore: number;
+  recommendation?: 'IMPORT' | 'MAYBE' | 'SKIP';
+  dimensionMappings?: DimensionMapping[];
+  citationMeta?: CitationMeta;
+  reasoning: string;
+  rawDeepAnalysisRecommendation?: unknown;
+  rawDeepAnalysisRationale?: unknown;
+}): {
+  deepAnalysisRecommendation: DeepAnalysisRecommendation;
+  deepAnalysisRationale: string;
+} {
+  const score = Math.min(100, Math.max(0, Number(input.relevanceScore) || 0));
+  const mappings = Array.isArray(input.dimensionMappings) ? input.dimensionMappings : [];
+  const highMedCount = mappings.filter(dm => dm.confidence === 'HIGH' || dm.confidence === 'MEDIUM').length;
+  const sectionSpread = new Set(mappings.map(dm => dm.sectionKey).filter(Boolean)).size;
+  const hasConfidentMapping = highMedCount > 0;
+  const strongCoverage = highMedCount >= 2 || (highMedCount >= 1 && sectionSpread >= 2);
+  const stressSignalStrong = hasStressSignalStrong(input.citationMeta, input.reasoning);
+
+  let deepAnalysisRecommendation: DeepAnalysisRecommendation;
+  if (typeof input.rawDeepAnalysisRecommendation === 'string' && DEEP_ANALYSIS_RECOMMENDATION_SET.has(input.rawDeepAnalysisRecommendation)) {
+    deepAnalysisRecommendation = input.rawDeepAnalysisRecommendation as DeepAnalysisRecommendation;
+  } else if (input.isRelevant === false || score < 50) {
+    deepAnalysisRecommendation = 'LIT_ONLY';
+  } else if (score >= 80 && strongCoverage) {
+    deepAnalysisRecommendation = 'DEEP_ANCHOR';
+  } else if (stressSignalStrong && score >= 70 && hasConfidentMapping) {
+    deepAnalysisRecommendation = 'DEEP_STRESS_TEST';
+  } else if (score >= 65 && (hasConfidentMapping || input.recommendation === 'IMPORT' || input.recommendation === 'MAYBE')) {
+    deepAnalysisRecommendation = 'DEEP_SUPPORT';
+  } else {
+    deepAnalysisRecommendation = 'LIT_ONLY';
+  }
+
+  const candidateRationale = typeof input.rawDeepAnalysisRationale === 'string'
+    ? input.rawDeepAnalysisRationale.trim()
+    : '';
+  const deepAnalysisRationale = candidateRationale
+    ? candidateRationale.slice(0, 280)
+    : buildDeepAnalysisFallbackRationale(
+      deepAnalysisRecommendation,
+      score,
+      mappings.length,
+      highMedCount,
+      sectionSpread
+    );
+
+  return {
+    deepAnalysisRecommendation,
+    deepAnalysisRationale
+  };
+}
+
+function buildAdvisoryShortlistSummary(
+  suggestions: PaperRelevanceAnalysis[],
+  maxSuggestions: number
+): ShortlistSummary | undefined {
+  if (!Array.isArray(suggestions) || suggestions.length === 0) {
+    return undefined;
+  }
+
+  const desiredTarget = Math.max(12, Math.min(15, maxSuggestions || 12));
+  const targetCount = Math.min(desiredTarget, suggestions.length);
+  const sorted = [...suggestions].sort((a, b) => {
+    const scoreDiff = (b.relevanceScore || 0) - (a.relevanceScore || 0);
+    if (scoreDiff !== 0) return scoreDiff;
+    return String(a.paperId).localeCompare(String(b.paperId));
+  });
+
+  const anchorsPool = sorted.filter(s => s.deepAnalysisRecommendation === 'DEEP_ANCHOR');
+  const stressPool = sorted.filter(s => s.deepAnalysisRecommendation === 'DEEP_STRESS_TEST');
+  const supportsPool = sorted.filter(s => s.deepAnalysisRecommendation === 'DEEP_SUPPORT');
+  const litPool = sorted.filter(s => s.deepAnalysisRecommendation === 'LIT_ONLY');
+
+  const selected: PaperRelevanceAnalysis[] = [];
+  const selectedIds = new Set<string>();
+  const pushUnique = (paper: PaperRelevanceAnalysis | undefined) => {
+    if (!paper || selectedIds.has(paper.paperId) || selected.length >= targetCount) return;
+    selected.push(paper);
+    selectedIds.add(paper.paperId);
+  };
+
+  for (const paper of anchorsPool) pushUnique(paper);
+  for (const paper of stressPool) pushUnique(paper);
+  for (const paper of supportsPool) pushUnique(paper);
+  for (const paper of litPool) pushUnique(paper);
+
+  if (stressPool.length > 0 && !selected.some(s => s.deepAnalysisRecommendation === 'DEEP_STRESS_TEST')) {
+    const topStress = stressPool[0];
+    if (topStress) {
+      if (selected.length < targetCount) {
+        pushUnique(topStress);
+      } else if (selected.length > 0) {
+        const replaceIdx = selected.findIndex(s => s.deepAnalysisRecommendation !== 'DEEP_ANCHOR');
+        const idx = replaceIdx >= 0 ? replaceIdx : selected.length - 1;
+        selectedIds.delete(selected[idx].paperId);
+        selected[idx] = topStress;
+        selectedIds.add(topStress.paperId);
+      }
+    }
+  }
+
+  return {
+    anchors: selected.filter(s => s.deepAnalysisRecommendation === 'DEEP_ANCHOR').map(s => s.paperId),
+    supports: selected.filter(s => s.deepAnalysisRecommendation === 'DEEP_SUPPORT').map(s => s.paperId),
+    stressTests: selected.filter(s => s.deepAnalysisRecommendation === 'DEEP_STRESS_TEST').map(s => s.paperId),
+    targetCount,
+    notes: 'Advisory shortlist optimized for coverage breadth and at least one stress-test paper when available.'
+  };
+}
+
+function logDeepAnalysisDistribution(suggestions: PaperRelevanceAnalysis[]) {
+  const counts: Record<DeepAnalysisRecommendation, number> = {
+    DEEP_ANCHOR: 0,
+    DEEP_SUPPORT: 0,
+    DEEP_STRESS_TEST: 0,
+    LIT_ONLY: 0
+  };
+
+  for (const suggestion of suggestions) {
+    counts[suggestion.deepAnalysisRecommendation] += 1;
+  }
+
+  const total = suggestions.length;
+  const anchorRatio = total > 0 ? counts.DEEP_ANCHOR / total : 0;
+  console.log('[LiteratureRelevance] Deep analysis label distribution:', counts);
+  if (total > 0 && anchorRatio > 0.7) {
+    console.warn(`[LiteratureRelevance] Deep labels may be too permissive: DEEP_ANCHOR is ${(anchorRatio * 100).toFixed(1)}% of suggestions`);
+  }
+  if (total >= 15 && counts.DEEP_STRESS_TEST === 0) {
+    console.warn('[LiteratureRelevance] No DEEP_STRESS_TEST papers found for >=15 suggestions (bias risk)');
+  }
+}
+
+function normalizeSuggestionForOutput(
+  suggestion: any,
+  blueprint: BlueprintWithSectionPlan | null
+): any {
+  const mappings = Array.isArray(suggestion?.dimensionMappings)
+    ? suggestion.dimensionMappings.filter((dm: any) => dm?.sectionKey && dm?.dimension)
+    : [];
+  const recommendation = blueprint
+    ? (normalizeRecommendation(suggestion?.recommendation, mappings) || 'SKIP')
+    : normalizeRecommendation(suggestion?.recommendation, mappings);
+  const isRelevant = suggestion?.isRelevant !== false;
+  const relevanceScore = Math.min(100, Math.max(0, Number(suggestion?.relevanceScore) || 50));
+  const reasoning = String(suggestion?.reasoning || 'No reasoning provided').slice(0, 500);
+  const { deepAnalysisRecommendation, deepAnalysisRationale } = deriveDeepAnalysisFields({
+    isRelevant,
+    relevanceScore,
+    recommendation,
+    dimensionMappings: mappings,
+    citationMeta: suggestion?.citationMeta,
+    reasoning,
+    rawDeepAnalysisRecommendation: suggestion?.deepAnalysisRecommendation,
+    rawDeepAnalysisRationale: suggestion?.deepAnalysisRationale
+  });
+
+  return {
+    ...suggestion,
+    isRelevant,
+    relevanceScore,
+    reasoning,
+    recommendation,
+    deepAnalysisRecommendation,
+    deepAnalysisRationale,
+    referenceArchetype: normalizeReferenceArchetype(suggestion?.referenceArchetype ?? suggestion?.citationMeta?.referenceArchetype),
+    archetypeSignal: typeof (suggestion?.archetypeSignal ?? suggestion?.citationMeta?.archetypeSignal) === 'string'
+      ? String(suggestion?.archetypeSignal ?? suggestion?.citationMeta?.archetypeSignal).trim().slice(0, 300)
+      : null
+  };
+}
+
 function buildPrompt(
   researchQuestion: string,
   papers: Array<{
@@ -466,6 +1002,14 @@ ${sectionsText}
    - "IMPORT" if paper maps to 2+ dimensions with HIGH/MEDIUM confidence
    - "MAYBE" if paper maps to 1 dimension or has only LOW confidence mappings
    - "SKIP" if paper doesn't map to any blueprint dimensions (but might still be useful for background)
+
+9. DEEP ANALYSIS RECOMMENDATION (WORTHINESS ONLY):
+   Assign exactly one: DEEP_ANCHOR, DEEP_SUPPORT, DEEP_STRESS_TEST, LIT_ONLY
+   - DEEP_ANCHOR: high relevance (typically >=80), strong mapping coverage, likely extractable evidence
+   - DEEP_SUPPORT: relevant and mapped but narrower/redundant vs anchors
+   - DEEP_STRESS_TEST: contradiction/null/negative/limitation-heavy or alternative setting/method
+   - LIT_ONLY: conceptual/background-heavy or weak evidence density for deep extraction
+   Do NOT use PDF/Open Access status to decide deep-worthiness.
 `;
   }
 
@@ -482,7 +1026,19 @@ For each paper, determine:
    - Introduction: Good for background/context/motivation?
    - Literature Review: Needs detailed analysis/comparison?
    - Methodology: Reference their method/approach?
-   - Comparison: Use as baseline/competing approach?`;
+   - Comparison: Use as baseline/competing approach?
+9. DEEP ANALYSIS RECOMMENDATION (WORTHINESS ONLY):
+   - Assign exactly one: DEEP_ANCHOR, DEEP_SUPPORT, DEEP_STRESS_TEST, LIT_ONLY
+   - Use only title/abstract/mapping signals for this decision
+   - Do NOT use PDF/Open Access status for this decision
+10. REFERENCE ARCHETYPE (classify the paper's own research type):
+   - SYSTEM_ALGO_EVALUATION: proposes/evaluates a model, algorithm, pipeline, or system with quantitative metrics
+   - CONTROLLED_EXPERIMENTAL_STUDY: tests a hypothesis with intervention/control design, statistical tests, effect sizes
+   - EMPIRICAL_OBSERVATIONAL_STUDY: analyzes existing data (cohort, registry, EHR, retrospective) without intervention
+   - MIXED_METHODS_APPLIED_STUDY: combines quantitative evaluation with qualitative methods (surveys, interviews, thematic analysis)
+   - SYNTHESIS_REVIEW: systematic review, meta-analysis, survey paper, or scoping review that synthesizes other studies
+   - POSITION_CONCEPTUAL: position paper, editorial, commentary, or conceptual/theoretical framework proposal
+   Classify based on the paper's OWN methodology, not its relevance to your research.`;
 
   // Build JSON schema based on whether blueprint exists
   const jsonSchema = blueprint ? `{
@@ -493,6 +1049,10 @@ For each paper, determine:
       "relevanceScore": <0-100>,
       "reasoning": "<1-2 sentence explanation of overall relevance>",
       "recommendation": "<IMPORT|MAYBE|SKIP>",
+      "deepAnalysisRecommendation": "<DEEP_ANCHOR|DEEP_SUPPORT|DEEP_STRESS_TEST|LIT_ONLY>",
+      "deepAnalysisRationale": "<1-2 factual lines explaining deep-worthiness>",
+      "referenceArchetype": "<SYSTEM_ALGO_EVALUATION|CONTROLLED_EXPERIMENTAL_STUDY|EMPIRICAL_OBSERVATIONAL_STUDY|MIXED_METHODS_APPLIED_STUDY|SYNTHESIS_REVIEW|POSITION_CONCEPTUAL>",
+      "archetypeSignal": "<1-line reason for archetype choice based on abstract>",
       "dimensionMappings": [
         {
           "sectionKey": "<exact section key from blueprint>",
@@ -527,6 +1087,10 @@ For each paper, determine:
       "isRelevant": true,
       "relevanceScore": <0-100>,
       "reasoning": "<1-2 sentence explanation of overall relevance>",
+      "deepAnalysisRecommendation": "<DEEP_ANCHOR|DEEP_SUPPORT|DEEP_STRESS_TEST|LIT_ONLY>",
+      "deepAnalysisRationale": "<1-2 factual lines explaining deep-worthiness>",
+      "referenceArchetype": "<SYSTEM_ALGO_EVALUATION|CONTROLLED_EXPERIMENTAL_STUDY|EMPIRICAL_OBSERVATIONAL_STUDY|MIXED_METHODS_APPLIED_STUDY|SYNTHESIS_REVIEW|POSITION_CONCEPTUAL>",
+      "archetypeSignal": "<1-line reason for archetype choice based on abstract>",
       "citationMeta": {
         "keyContribution": "<main contribution in 1 sentence>",
         "keyFindings": "<main results/findings in 1 sentence>",
@@ -556,7 +1120,7 @@ CANDIDATE PAPERS:
 ${paperList}
 
 TASK:
-Analyze EVERY paper in the list above for relevance to the research question.${blueprint ? ' Map each paper to the blueprint dimensions it supports.' : ''} Assign a relevance score (0-100) and recommendation to each paper — do NOT skip any.
+Analyze EVERY paper in the list above for relevance to the research question.${blueprint ? ' Map each paper to the blueprint dimensions it supports.' : ''} Assign a relevance score (0-100), recommendation, and deep analysis recommendation to each paper — do NOT skip any.
 ${baseTasks}${dimensionMappingInstructions}
 
 IMPORTANT CRITERIA:
@@ -564,6 +1128,7 @@ IMPORTANT CRITERIA:
 - Include foundational/seminal works even if older
 - Include papers showing contrasting viewpoints
 - Do not guess pdfStatus or isOpenAccess; use provided values only
+- Do NOT use PDF/Open Access status to decide deepAnalysisRecommendation
 - Consider methodological relevance${blueprint ? `
 - Prioritize papers that cover uncovered dimensions
 - A paper covering multiple dimensions is more valuable
@@ -694,7 +1259,11 @@ function parseAndValidateLLMResponse(
         literatureReview: Boolean(usage.literatureReview !== false), // Default true for relevant papers
         methodology: Boolean(usage.methodology),
         comparison: Boolean(usage.comparison),
-      }
+      },
+      referenceArchetype: normalizeReferenceArchetype(suggestion.referenceArchetype),
+      archetypeSignal: typeof suggestion.archetypeSignal === 'string'
+        ? suggestion.archetypeSignal.trim().slice(0, 300)
+        : null
     };
     
     // Parse dimension mappings if blueprint exists
@@ -735,29 +1304,35 @@ function parseAndValidateLLMResponse(
       }
     }
     
-    // Determine recommendation based on dimension mappings
-    let recommendation: 'IMPORT' | 'MAYBE' | 'SKIP' | undefined;
-    if (blueprint) {
-      if (suggestion.recommendation && ['IMPORT', 'MAYBE', 'SKIP'].includes(suggestion.recommendation)) {
-        recommendation = suggestion.recommendation;
-      } else if (dimensionMappings && dimensionMappings.length > 0) {
-        const highMediumCount = dimensionMappings.filter(
-          dm => dm.confidence === 'HIGH' || dm.confidence === 'MEDIUM'
-        ).length;
-        recommendation = highMediumCount >= 2 ? 'IMPORT' : highMediumCount >= 1 ? 'MAYBE' : 'SKIP';
-      } else {
-        recommendation = 'SKIP';
-      }
-    }
-    
+    const recommendation = blueprint
+      ? (normalizeRecommendation(suggestion.recommendation, dimensionMappings) || 'SKIP')
+      : undefined;
+    const normalizedIsRelevant = suggestion.isRelevant !== false;
+    const normalizedRelevanceScore = Math.min(100, Math.max(0, Number(suggestion.relevanceScore) || 50));
+    const normalizedReasoning = String(suggestion.reasoning || 'No reasoning provided').slice(0, 500);
+    const { deepAnalysisRecommendation, deepAnalysisRationale } = deriveDeepAnalysisFields({
+      isRelevant: normalizedIsRelevant,
+      relevanceScore: normalizedRelevanceScore,
+      recommendation,
+      dimensionMappings,
+      citationMeta,
+      reasoning: normalizedReasoning,
+      rawDeepAnalysisRecommendation: suggestion.deepAnalysisRecommendation,
+      rawDeepAnalysisRationale: suggestion.deepAnalysisRationale
+    });
+
     validatedSuggestions.push({
       paperId: suggestion.paperId,
-      isRelevant: suggestion.isRelevant !== false,
-      relevanceScore: Math.min(100, Math.max(0, Number(suggestion.relevanceScore) || 50)),
-      reasoning: String(suggestion.reasoning || 'No reasoning provided').slice(0, 500),
+      isRelevant: normalizedIsRelevant,
+      relevanceScore: normalizedRelevanceScore,
+      reasoning: normalizedReasoning,
       citationMeta,
       dimensionMappings,
       recommendation,
+      deepAnalysisRecommendation,
+      deepAnalysisRationale,
+      referenceArchetype: citationMeta.referenceArchetype,
+      archetypeSignal: citationMeta.archetypeSignal,
     });
   }
 
@@ -1082,11 +1657,14 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     // final result.  Pass forceReanalyze=true to bypass this and re-analyze everything.
     const existingAnalysis = (searchRun.aiAnalysis as any) || {};
     const existingSuggestions: any[] = Array.isArray(existingAnalysis.suggestions) ? existingAnalysis.suggestions : [];
+    const normalizedExistingSuggestions = existingSuggestions
+      .map(suggestion => normalizeSuggestionForOutput(suggestion, blueprint))
+      .filter(suggestion => Boolean(suggestion?.paperId));
     const previouslyFailedIds = new Set<string>(
       Array.isArray(existingAnalysis.analysisMeta?.failedPaperIds) ? existingAnalysis.analysisMeta.failedPaperIds : []
     );
     const alreadyAnalyzedIds = new Set<string>(
-      existingSuggestions.map((s: any) => String(s.paperId || ''))
+      normalizedExistingSuggestions.map((s: any) => String(s.paperId || ''))
     );
 
     let papersNeedingAnalysis: typeof papersToAnalyze;
@@ -1102,7 +1680,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         return !alreadyAnalyzedIds.has(pid) || previouslyFailedIds.has(pid);
       });
       // Carry over successful suggestions from the previous run
-      carriedOverSuggestions = existingSuggestions.filter((s: any) => {
+      carriedOverSuggestions = normalizedExistingSuggestions.filter((s: any) => {
         const pid = String(s.paperId || '');
         return !previouslyFailedIds.has(pid);
       });
@@ -1112,23 +1690,45 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
     // If all papers were already analyzed and none need re-analysis, return the existing data
     if (papersNeedingAnalysis.length === 0 && carriedOverSuggestions.length > 0) {
+      const normalizedCarryOver = carriedOverSuggestions
+        .map(suggestion => normalizeSuggestionForOutput(suggestion, blueprint))
+        .sort((a: any, b: any) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+      const shortlistSummary = buildAdvisoryShortlistSummary(normalizedCarryOver, maxSuggestions);
+      logDeepAnalysisDistribution(normalizedCarryOver);
+      const existingRemoved = Array.isArray(existingAnalysis.removedResultIds)
+        ? existingAnalysis.removedResultIds
+        : [];
       const blueprintCoverage = blueprint?.sectionPlan
-        ? calculateBlueprintCoverage(blueprint, carriedOverSuggestions)
+        ? calculateBlueprintCoverage(blueprint, normalizedCarryOver)
         : undefined;
+      await prisma.literatureSearchRun.update({
+        where: { id: searchRunId },
+        data: {
+          aiAnalysis: {
+            ...existingAnalysis,
+            suggestions: normalizedCarryOver,
+            summary: existingAnalysis.summary || 'All papers already analyzed.',
+            blueprintCoverage,
+            shortlistSummary,
+            removedResultIds: existingRemoved,
+          } as any
+        }
+      });
       return NextResponse.json({
         success: true,
         searchRunId,
         analysis: {
-          suggestions: carriedOverSuggestions,
+          suggestions: normalizedCarryOver,
           summary: 'All papers already analyzed. Click again with force re-analyze to refresh.',
           blueprintCoverage,
+          shortlistSummary,
           analyzedAt: existingAnalysis.analyzedAt || new Date().toISOString(),
           papersAnalyzed: papersToAnalyze.length,
           blueprintIncluded: !!blueprint,
           parseError: false,
           analysisMeta: existingAnalysis.analysisMeta || {
             totalPapers: papersToAnalyze.length,
-            reviewedPapers: carriedOverSuggestions.length,
+            reviewedPapers: normalizedCarryOver.length,
             failedPapers: 0,
             failedPaperIds: [],
             skippedNoAbstractIds,
@@ -1377,7 +1977,9 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     const mergedSuggestions = [
       ...newSuggestions,
       ...carriedOverSuggestions.filter((s: any) => !newSuggestionIds.has(String(s.paperId || '')))
-    ];
+    ]
+      .map(suggestion => normalizeSuggestionForOutput(suggestion, blueprint))
+      .filter(suggestion => Boolean(suggestion?.paperId));
 
     const totalPapers = papersToAnalyze.length;
     const reviewedPapers = Math.max(0, mergedSuggestions.length);
@@ -1386,12 +1988,14 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     // The frontend can filter/paginate as needed.
     const sortedSuggestions = mergedSuggestions
       .sort((a: any, b: any) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
+    logDeepAnalysisDistribution(sortedSuggestions);
     const summary = totalBatches > 1
       ? `AI analysis completed across ${totalBatches} batches.`
       : (batchResults[0]?.summary || 'AI analysis completed.');
     const blueprintCoverage = blueprint?.sectionPlan
       ? calculateBlueprintCoverage(blueprint, sortedSuggestions)
       : undefined;
+    const shortlistSummary = buildAdvisoryShortlistSummary(sortedSuggestions, maxSuggestions);
 
     // If all batches failed, return partial success with empty analysis
     if (sortedSuggestions.length === 0 && parseError) {
@@ -1440,6 +2044,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           suggestions: sortedSuggestions,
           summary,
           blueprintCoverage,
+          shortlistSummary,
           parseError: parseError || undefined,
           removedResultIds: existingRemoved,
           analysisMeta: {
@@ -1575,6 +2180,14 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       }
     }
 
+    const deepLabelCounts = sortedSuggestions.reduce((acc: Record<string, number>, suggestion: any) => {
+      const label = suggestion?.deepAnalysisRecommendation;
+      if (typeof label === 'string') {
+        acc[label] = (acc[label] || 0) + 1;
+      }
+      return acc;
+    }, {});
+
     // Log audit
     await prisma.auditLog.create({
       data: {
@@ -1589,6 +2202,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           tokensUsed: totalOutputTokens,
           blueprintIncluded: !!blueprint,
           dimensionsCovered: blueprintCoverage?.coveredDimensions || 0,
+          deepLabelCounts,
         }
       }
     });
@@ -1600,6 +2214,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         suggestions: sortedSuggestions,
         summary,
         blueprintCoverage,
+        shortlistSummary,
         analyzedAt: new Date().toISOString(),
         papersAnalyzed: papersToAnalyze.length,
         blueprintIncluded: !!blueprint,
@@ -1707,11 +2322,13 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
         return NextResponse.json({ error: 'Search run not found' }, { status: 404 });
       }
 
+      const hydratedResults = await hydrateSearchRunResultsWithReferenceState(user.id, searchRun.results);
+
       return NextResponse.json({
         searchRun: {
           id: searchRun.id,
           query: searchRun.query,
-          results: searchRun.results,
+          results: hydratedResults,
           aiAnalysis: searchRun.aiAnalysis,
           aiAnalyzedAt: searchRun.aiAnalyzedAt,
           createdAt: searchRun.createdAt,
