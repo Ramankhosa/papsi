@@ -41,7 +41,10 @@ type CitationSnapshot = Pick<
   | 'importSource'
   | 'notes'
   | 'tags'
->;
+> & {
+  id?: string;
+  libraryReferenceId?: string | null;
+};
 
 interface SyncResult {
   referenceId: string;
@@ -126,6 +129,14 @@ class PaperLibraryService {
 
     await referenceLibraryService.addToCollection(userId, collection.id, [reference.id]);
 
+    // Backfill libraryReferenceId on the citation if not already set
+    if (citation.id && !citation.libraryReferenceId) {
+      prisma.citation.update({
+        where: { id: citation.id },
+        data: { libraryReferenceId: reference.id },
+      }).catch(() => {});
+    }
+
     return {
       referenceId: reference.id,
       collectionId: collection.id,
@@ -184,6 +195,85 @@ class PaperLibraryService {
       collectionId: collection.id,
       added: result.added,
       skipped: result.skipped,
+    };
+  }
+
+  async backfillPaperCollectionFromSessionCitations(
+    userId: string,
+    sessionId: string
+  ): Promise<{ collectionId: string; synced: number; skipped: boolean }> {
+    const session = await prisma.draftingSession.findFirst({
+      where: { id: sessionId, userId },
+      select: { id: true },
+    });
+    if (!session) {
+      throw new Error('Session not found');
+    }
+
+    const collection = await this.ensurePaperCollection(userId, sessionId);
+    const existingCollectionCount = await prisma.referenceCollectionItem.count({
+      where: { collectionId: collection.id },
+    });
+
+    // Repair legacy papers where the auto-created paper collection exists
+    // but citations were added before collection sync was introduced.
+    if (existingCollectionCount > 0) {
+      return {
+        collectionId: collection.id,
+        synced: 0,
+        skipped: true,
+      };
+    }
+
+    const citations = await prisma.citation.findMany({
+      where: {
+        sessionId,
+        isActive: true,
+      },
+      select: {
+        sourceType: true,
+        title: true,
+        authors: true,
+        year: true,
+        venue: true,
+        volume: true,
+        issue: true,
+        pages: true,
+        doi: true,
+        url: true,
+        isbn: true,
+        publisher: true,
+        edition: true,
+        editors: true,
+        publicationPlace: true,
+        publicationDate: true,
+        accessedDate: true,
+        articleNumber: true,
+        issn: true,
+        journalAbbreviation: true,
+        pmid: true,
+        pmcid: true,
+        arxivId: true,
+        abstract: true,
+        importSource: true,
+        notes: true,
+        tags: true,
+      },
+    });
+
+    if (citations.length === 0) {
+      return {
+        collectionId: collection.id,
+        synced: 0,
+        skipped: true,
+      };
+    }
+
+    const synced = await this.syncCitationsToLibraryAndCollection(userId, sessionId, citations);
+    return {
+      collectionId: collection.id,
+      synced: synced.length,
+      skipped: false,
     };
   }
 
@@ -427,4 +517,3 @@ class PaperLibraryService {
 }
 
 export const paperLibraryService = new PaperLibraryService();
-

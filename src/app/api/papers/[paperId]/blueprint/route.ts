@@ -16,6 +16,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { blueprintService, type SectionPlanItem } from '@/lib/services/blueprint-service';
+import { deepAnalysisService } from '@/lib/services/deep-analysis-service';
 
 export const runtime = 'nodejs';
 
@@ -161,6 +162,17 @@ export async function POST(
             newData: { blueprintVersion: blueprint.version }
           }
         });
+
+        // If deep-analysis cards already exist, remap them to the latest frozen blueprint.
+        // This keeps dimension mappings current without forcing re-extraction.
+        const hasExtractedCards = await prisma.evidenceCard.count({
+          where: { sessionId },
+        });
+        if (hasExtractedCards > 0) {
+          await deepAnalysisService.remapAll(sessionId, null).catch(err => {
+            console.warn('[Blueprint] Auto-remap after freeze failed:', err);
+          });
+        }
 
         return NextResponse.json({
           success: true,

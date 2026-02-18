@@ -78,6 +78,7 @@ export interface ReferenceFilter {
   collectionId?: string;
   isFavorite?: boolean;
   isRead?: boolean;
+  hasAttachment?: boolean;
   yearFrom?: number;
   yearTo?: number;
 }
@@ -180,7 +181,8 @@ class ReferenceLibraryService {
           include: { collection: true },
         },
         documents: {
-          where: { isPrimary: true },
+          orderBy: [{ isPrimary: 'desc' }, { linkedAt: 'desc' }],
+          take: 1,
           include: {
             document: {
               select: {
@@ -189,6 +191,7 @@ class ReferenceLibraryService {
                 errorCode: true,
                 originalFilename: true,
                 fileSizeBytes: true,
+                mimeType: true,
                 pageCount: true,
                 sourceType: true,
                 sourceIdentifier: true,
@@ -230,6 +233,11 @@ class ReferenceLibraryService {
     if (filter.sourceType) where.sourceType = filter.sourceType;
     if (filter.isFavorite !== undefined) where.isFavorite = filter.isFavorite;
     if (filter.isRead !== undefined) where.isRead = filter.isRead;
+    if (filter.hasAttachment !== undefined) {
+      where.documents = filter.hasAttachment
+        ? { some: {} }
+        : { none: {} };
+    }
     if (filter.tags && filter.tags.length > 0) where.tags = { hasSome: filter.tags };
     
     // Handle year range properly
@@ -265,7 +273,8 @@ class ReferenceLibraryService {
             include: { collection: { select: { id: true, name: true, color: true } } },
           },
           documents: {
-            where: { isPrimary: true },
+            orderBy: [{ isPrimary: 'desc' }, { linkedAt: 'desc' }],
+            take: 1,
             include: {
               document: {
                 select: {
@@ -274,6 +283,7 @@ class ReferenceLibraryService {
                   errorCode: true,
                   originalFilename: true,
                   fileSizeBytes: true,
+                  mimeType: true,
                   pageCount: true,
                   sourceType: true,
                   sourceIdentifier: true,
@@ -731,6 +741,7 @@ class ReferenceLibraryService {
             importSource: 'LIBRARY_IMPORT',
             notes: ref.notes,
             tags: ref.tags,
+            libraryReferenceId: ref.id,
           },
         });
         created.push(citation);

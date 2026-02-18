@@ -56,6 +56,7 @@ interface StageDefinition {
   label: string
   icon: any
   description: string
+  groupLabel?: string
   subStages: SubStageDefinition[]
   weight: number
   getSubStages?: (session: any) => SubStageDefinition[]
@@ -265,6 +266,71 @@ function getCitationsCount(session: any): number {
   return Array.isArray(session?.citations) ? session.citations.length : 0
 }
 
+function getDeepAnalysisJobs(session: any): any[] {
+  return Array.isArray(session?.deepAnalysisJobs) ? session.deepAnalysisJobs : []
+}
+
+function estimateDeepLabelFromCitation(citation: any): string {
+  const explicit = String(citation?.deepAnalysisLabel || '').trim().toUpperCase()
+  if (explicit) {
+    return explicit
+  }
+
+  const fromMeta = citation?.aiMeta && typeof citation.aiMeta === 'object'
+    ? String((citation.aiMeta as any).deepAnalysisRecommendation || '').trim().toUpperCase()
+    : ''
+  if (fromMeta) {
+    return fromMeta
+  }
+
+  const score = Number(citation?.aiMeta && typeof citation.aiMeta === 'object'
+    ? (citation.aiMeta as any).relevanceScore
+    : 0)
+  if (score >= 85) return 'DEEP_ANCHOR'
+  if (score >= 65) return 'DEEP_SUPPORT'
+  if (score >= 45) return 'DEEP_STRESS_TEST'
+  return 'LIT_ONLY'
+}
+
+function getDeepAnalysisSummary(session: any): {
+  eligible: number
+  completed: number
+  failed: number
+  running: number
+  cards: number
+} {
+  const citations = Array.isArray(session?.citations) ? session.citations : []
+  const jobs = getDeepAnalysisJobs(session)
+
+  const eligible = citations.filter((citation: any) => {
+    const label = estimateDeepLabelFromCitation(citation)
+    return Boolean(label) && label !== 'LIT_ONLY'
+  }).length
+
+  const runningStatuses = new Set(['PENDING', 'PREPARING', 'EXTRACTING', 'MAPPING'])
+  const completed = jobs.filter((job: any) => String(job?.status || '') === 'COMPLETED').length
+  const failed = jobs.filter((job: any) => String(job?.status || '') === 'FAILED').length
+  const running = jobs.filter((job: any) => runningStatuses.has(String(job?.status || ''))).length
+
+  const citationCards = citations.reduce((sum: number, citation: any) => {
+    const count = Number(citation?.evidenceCardCount || 0)
+    return sum + (Number.isFinite(count) ? count : 0)
+  }, 0)
+
+  const jobCards = jobs.reduce((sum: number, job: any) => {
+    const count = Number(job?._count?.cards || 0)
+    return sum + (Number.isFinite(count) ? count : 0)
+  }, 0)
+
+  return {
+    eligible,
+    completed,
+    failed,
+    running,
+    cards: Math.max(citationCards, jobCards)
+  }
+}
+
 function getRequiredSectionsCompletion(session: any): SubStageStatus {
   const { requiredSections } = getPaperTypeSectionConfig(session)
   if (requiredSections.length === 0) return 'pending'
@@ -417,10 +483,11 @@ const STAGE_DEFINITIONS: StageDefinition[] = [
   },
   {
     key: 'LITERATURE_SEARCH',
-    label: 'Literature Review',
+    label: 'Literature Search',
     icon: Search,
     description: 'Search and import citations',
-    weight: 15,
+    groupLabel: 'Literature Review',
+    weight: 8,
     subStages: [
       {
         key: 'citations_imported',
@@ -445,6 +512,58 @@ const STAGE_DEFINITIONS: StageDefinition[] = [
           const status = session?.literatureReviewStatus
           if (status === 'COMPLETED') return 'completed'
           if (status === 'IN_PROGRESS') return 'in_progress'
+          return 'pending'
+        }
+      }
+    ]
+  },
+  {
+    key: 'FULL_TEXT_EVIDENCE_EXTRACTION',
+    label: 'Full-Text Evidence Extraction',
+    icon: BookOpen,
+    description: 'Retrieve full text and validate evidence coverage',
+    groupLabel: 'Literature Review',
+    weight: 7,
+    subStages: [
+      {
+        key: 'paper_selection',
+        label: 'Paper Selection',
+        icon: FileText,
+        description: 'Select eligible papers for deep extraction',
+        required: true,
+        getStatus: (session) => {
+          const count = getCitationsCount(session)
+          if (count === 0) return 'pending'
+          const summary = getDeepAnalysisSummary(session)
+          if (summary.eligible > 0) return 'completed'
+          return 'in_progress'
+        }
+      },
+      {
+        key: 'extraction_progress',
+        label: 'Extraction Progress',
+        icon: FileText,
+        description: 'Track extraction and mapping job statuses',
+        required: true,
+        getStatus: (session) => {
+          const summary = getDeepAnalysisSummary(session)
+          if (summary.eligible === 0) return 'pending'
+          if (summary.running > 0) return 'in_progress'
+          if (summary.completed >= summary.eligible && summary.failed === 0) return 'completed'
+          if (summary.completed > 0 || summary.failed > 0) return 'in_progress'
+          return 'pending'
+        }
+      },
+      {
+        key: 'evidence_review',
+        label: 'Evidence Review',
+        icon: FileText,
+        description: 'Review extracted cards and coverage',
+        required: false,
+        getStatus: (session) => {
+          const summary = getDeepAnalysisSummary(session)
+          if (summary.cards > 0) return 'completed'
+          if (summary.completed > 0 || summary.running > 0 || summary.failed > 0) return 'in_progress'
           return 'pending'
         }
       }
@@ -785,6 +904,8 @@ export default function PaperVerticalStageNav({
       <nav className={`flex-1 overflow-y-auto py-3 px-2 ${theme === 'dark' ? 'dark-scrollbar' : 'light-scrollbar'}`}>
         {STAGE_DEFINITIONS.map((stage, stageIndex) => {
           const StageIcon = stage.icon
+          const previousGroup = stageIndex > 0 ? STAGE_DEFINITIONS[stageIndex - 1]?.groupLabel : undefined
+          const showGroupLabel = Boolean(stage.groupLabel && stage.groupLabel !== previousGroup)
           const isExpanded = expandedStages.has(stage.key)
           const completion = calculateStageCompletion(stage, session)
           const currentIndex = Math.max(0, STAGE_DEFINITIONS.findIndex(s => s.key === resolvedCurrentStage))
@@ -796,6 +917,11 @@ export default function PaperVerticalStageNav({
 
           return (
             <div key={stage.key} className="mb-1">
+              {showGroupLabel && (
+                <div className={`px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide ${themeClasses.textSubtle}`}>
+                  {stage.groupLabel}
+                </div>
+              )}
               {/* Stage Header */}
               <div
                 className={`

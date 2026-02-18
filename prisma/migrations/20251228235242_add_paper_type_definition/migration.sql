@@ -4,7 +4,7 @@
 -- ============================================================================
 
 -- Create PaperTypeDefinition table
-CREATE TABLE "paper_type_definitions" (
+CREATE TABLE IF NOT EXISTS "paper_type_definitions" (
     "id" TEXT NOT NULL,
     "code" TEXT NOT NULL,
     "name" TEXT NOT NULL,
@@ -17,17 +17,17 @@ CREATE TABLE "paper_type_definitions" (
     "isActive" BOOLEAN NOT NULL DEFAULT true,
     "sortOrder" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "paper_type_definitions_pkey" PRIMARY KEY ("id")
 );
 
 -- Create unique index on code
-CREATE UNIQUE INDEX "paper_type_definitions_code_key" ON "paper_type_definitions"("code");
+CREATE UNIQUE INDEX IF NOT EXISTS "paper_type_definitions_code_key" ON "paper_type_definitions"("code");
 
 -- Create indexes for performance
-CREATE INDEX "paper_type_definitions_isActive_idx" ON "paper_type_definitions"("isActive");
-CREATE INDEX "paper_type_definitions_sortOrder_idx" ON "paper_type_definitions"("sortOrder");
+CREATE INDEX IF NOT EXISTS "paper_type_definitions_isActive_idx" ON "paper_type_definitions"("isActive");
+CREATE INDEX IF NOT EXISTS "paper_type_definitions_sortOrder_idx" ON "paper_type_definitions"("sortOrder");
 
 -- Insert initial paper type definitions
 INSERT INTO "paper_type_definitions" ("id", "code", "name", "description", "requiredSections", "optionalSections", "sectionOrder", "defaultWordLimits", "defaultCitationStyle", "sortOrder") VALUES
@@ -45,4 +45,5 @@ INSERT INTO "paper_type_definitions" ("id", "code", "name", "description", "requ
 
 ('paper_type_case_study', 'CASE_STUDY', 'Case Study', 'In-depth analysis of a specific case or phenomenon', '["abstract", "introduction", "case_description", "analysis", "discussion", "conclusion"]', '["literature_review", "recommendations", "references"]', '["abstract", "introduction", "literature_review", "case_description", "analysis", "discussion", "recommendations", "conclusion", "references"]', '{"abstract": 200, "introduction": 600, "literature_review": 1000, "case_description": 1500, "analysis": 2000, "discussion": 1500, "recommendations": 800, "conclusion": 500}', 'APA7', 7),
 
-('paper_type_short_communication', 'SHORT_COMMUNICATION', 'Short Communication', 'Brief research communication or letter to the editor', '["abstract", "introduction", "main_findings", "conclusion"]', '["methodology", "references"]', '["abstract", "introduction", "methodology", "main_findings", "conclusion", "references"]', '{"abstract": 150, "introduction": 400, "methodology": 500, "main_findings": 800, "conclusion": 300}', 'APA7', 8);
+('paper_type_short_communication', 'SHORT_COMMUNICATION', 'Short Communication', 'Brief research communication or letter to the editor', '["abstract", "introduction", "main_findings", "conclusion"]', '["methodology", "references"]', '["abstract", "introduction", "methodology", "main_findings", "conclusion", "references"]', '{"abstract": 150, "introduction": 400, "methodology": 500, "main_findings": 800, "conclusion": 300}', 'APA7', 8)
+ON CONFLICT ("code") DO NOTHING;

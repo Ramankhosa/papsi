@@ -18,6 +18,7 @@ interface LiteratureSearchStageProps {
   sessionId: string;
   authToken: string | null;
   onSessionUpdated?: (session: any) => void;
+  stageMode?: 'literature_search' | 'full_text_evidence_extraction';
 }
 
 type SearchQueryCategory =
@@ -314,8 +315,14 @@ const preferredPdfStatus = (current: unknown, incoming: unknown): PdfStatusValue
     : currentNormalized;
 };
 
-export default function LiteratureSearchStage({ sessionId, authToken, onSessionUpdated }: LiteratureSearchStageProps) {
+export default function LiteratureSearchStage({
+  sessionId,
+  authToken,
+  onSessionUpdated,
+  stageMode = 'literature_search'
+}: LiteratureSearchStageProps) {
   const { showToast } = useToast();
+  const isFullTextEvidenceMode = stageMode === 'full_text_evidence_extraction';
   const [query, setQuery] = useState('');
   const [yearFrom, setYearFrom] = useState('');
   const [yearTo, setYearTo] = useState('');
@@ -722,7 +729,8 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   const loadLibraries = useCallback(async () => {
     if (!authToken) return;
     try {
-      const response = await fetch('/api/library/collections', {
+      const params = new URLSearchParams({ paperId: sessionId });
+      const response = await fetch(`/api/library/collections?${params.toString()}`, {
         headers: { Authorization: `Bearer ${authToken}` }
       });
       if (response.ok) {
@@ -732,7 +740,7 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
     } catch (err) {
       console.error('Failed to load libraries:', err);
     }
-  }, [authToken]);
+  }, [authToken, sessionId]);
 
   useEffect(() => {
     loadLibraries();
@@ -3138,7 +3146,15 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
   const [pendingDeleteIds, setPendingDeleteIds] = useState<Set<string>>(new Set());
   
   // Toggle view: 'results' | 'coverage' for blueprint dimension coverage view
-  const [searchViewMode, setSearchViewMode] = useState<'results' | 'coverage'>('results');
+  const [searchViewMode, setSearchViewMode] = useState<'results' | 'coverage'>(
+    isFullTextEvidenceMode ? 'coverage' : 'results'
+  );
+
+  useEffect(() => {
+    if (!isFullTextEvidenceMode) return;
+    setMainTab('find');
+    setSearchViewMode('coverage');
+  }, [isFullTextEvidenceMode]);
   
   // Blueprint coverage data from AI analysis
   const [blueprintCoverage, setBlueprintCoverage] = useState<{
@@ -3958,8 +3974,14 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
       {/* Header with Progress */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-xl font-semibold text-gray-900">Literature Review</h2>
-          <p className="text-sm text-gray-500">Find papers, analyze relevance, check coverage, and manage citations</p>
+          <h2 className="text-xl font-semibold text-gray-900">
+            {isFullTextEvidenceMode ? 'Full-Text Evidence Extraction' : 'Literature Search'}
+          </h2>
+          <p className="text-sm text-gray-500">
+            {isFullTextEvidenceMode
+              ? 'Retrieve full text, validate mappings, and review grounded evidence coverage.'
+              : 'Find papers, analyze relevance, check coverage, and manage citations'}
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <div className="text-right">
@@ -3981,8 +4003,22 @@ export default function LiteratureSearchStage({ sessionId, authToken, onSessionU
         </div>
       </div>
 
+      {isFullTextEvidenceMode && (
+        <div className="flex items-start gap-3 px-4 py-3 bg-gradient-to-r from-indigo-50 to-sky-50 rounded-lg border border-indigo-200 text-xs text-indigo-900">
+          <svg className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m2 9H7a2 2 0 01-2-2V5a2 2 0 012-2h5l5 5v11a2 2 0 01-2 2zm-3-10v6m3-3H9" />
+          </svg>
+          <div>
+            <p className="font-medium mb-0.5">Focus</p>
+            <p className="text-indigo-800/90 leading-relaxed">
+              Use this stage to run Analyze &amp; Map, retrieve and attach full text, and review the Evidence Table / Coverage Matrix before drafting.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Workflow Guide - subtle hint for new users */}
-      {citations.length === 0 && !searchStrategy && (
+      {!isFullTextEvidenceMode && citations.length === 0 && !searchStrategy && (
         <div className="flex items-start gap-3 px-4 py-3 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200 text-xs text-blue-800">
           <svg className="w-4 h-4 text-blue-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -7696,7 +7732,8 @@ function InlineLibraryImport({
   const loadLibraries = useCallback(async () => {
     if (!authToken) return;
     try {
-      const response = await fetch('/api/library/collections', {
+      const params = new URLSearchParams({ paperId: sessionId });
+      const response = await fetch(`/api/library/collections?${params.toString()}`, {
         headers: { Authorization: `Bearer ${authToken}` }
       });
       if (response.ok) {
@@ -7707,7 +7744,7 @@ function InlineLibraryImport({
     } catch (err) {
       console.error('Failed to load libraries:', err);
     }
-  }, [authToken]);
+  }, [authToken, sessionId]);
 
   const loadReferences = useCallback(async (page = 1) => {
     if (!authToken) return;
@@ -8173,7 +8210,8 @@ function LibraryImportModal({
   const loadLibraries = useCallback(async () => {
     if (!authToken) return;
     try {
-      const response = await fetch('/api/library/collections', {
+      const params = new URLSearchParams({ paperId: sessionId });
+      const response = await fetch(`/api/library/collections?${params.toString()}`, {
         headers: { Authorization: `Bearer ${authToken}` }
       });
       if (response.ok) {
@@ -8184,7 +8222,7 @@ function LibraryImportModal({
     } catch (err) {
       console.error('Failed to load libraries:', err);
     }
-  }, [authToken]);
+  }, [authToken, sessionId]);
 
   const loadReferences = useCallback(async (page = 1) => {
     if (!authToken) return;

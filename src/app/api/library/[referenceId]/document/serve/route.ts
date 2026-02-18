@@ -1,6 +1,6 @@
 /**
- * Serve Reference Document PDF
- * GET /api/library/[referenceId]/document/serve - Stream PDF file to client
+ * Serve Reference Document File
+ * GET /api/library/[referenceId]/document/serve - Stream attached file to client
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -35,13 +35,6 @@ export async function GET(
             return NextResponse.json({ error: 'No document attached' }, { status: 404 });
         }
 
-        if ((link.document as any).mimeType !== 'application/pdf') {
-            return NextResponse.json(
-                { error: 'Attached document is not a PDF. Use Full Text view instead.' },
-                { status: 400 }
-            );
-        }
-
         // Get the file path (verifies ownership)
         const filePath = await referenceDocumentService.getDocumentFilePath(
             user.id,
@@ -55,11 +48,12 @@ export async function GET(
         // Read file and stream as response
         const fileBuffer = fs.readFileSync(filePath);
         const filename = (link.document as any).originalFilename || 'document.pdf';
+        const mimeType = (link.document as any).mimeType || 'application/octet-stream';
 
         return new NextResponse(fileBuffer, {
             status: 200,
             headers: {
-                'Content-Type': 'application/pdf',
+                'Content-Type': mimeType,
                 'Content-Disposition': `inline; filename="${encodeURIComponent(filename)}"`,
                 'Content-Length': String(fileBuffer.length),
                 'Cache-Control': 'private, max-age=3600',

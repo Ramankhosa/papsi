@@ -52,6 +52,7 @@ const filterSchema = z.object({
   collectionId: z.string().optional(),
   isFavorite: z.boolean().optional(),
   isRead: z.boolean().optional(),
+  hasAttachment: z.boolean().optional(),
   yearFrom: z.number().optional(),
   yearTo: z.number().optional(),
   limit: z.number().min(1).max(100).default(50),
@@ -86,6 +87,9 @@ export async function GET(request: NextRequest) {
     
     const isRead = searchParams.get('isRead');
     if (isRead !== null) rawParams.isRead = isRead === 'true';
+
+    const hasAttachment = searchParams.get('hasAttachment');
+    if (hasAttachment !== null) rawParams.hasAttachment = hasAttachment === 'true';
     
     // Array parameters
     const tags = searchParams.get('tags');

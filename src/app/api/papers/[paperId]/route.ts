@@ -26,6 +26,14 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
       publicationVenue: true,
       researchTopic: true,
       citations: true,
+      deepAnalysisJobs: {
+        orderBy: { createdAt: 'desc' },
+        include: {
+          _count: {
+            select: { cards: true }
+          }
+        }
+      },
       annexureDrafts: true,
       figurePlans: true,
       paperBlueprint: true,
@@ -125,6 +133,15 @@ export async function PUT(request: NextRequest, context: { params: { paperId: st
         citationStyle: true,
         publicationVenue: true,
         researchTopic: true,
+        citations: true,
+        deepAnalysisJobs: {
+          orderBy: { createdAt: 'desc' },
+          include: {
+            _count: {
+              select: { cards: true }
+            }
+          }
+        },
         figurePlans: true,
         paperSections: {
           orderBy: { updatedAt: 'desc' }

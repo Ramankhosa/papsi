@@ -2,11 +2,33 @@ import { prisma } from '../prisma';
 import { blueprintService } from './blueprint-service';
 import { citationMappingService, type CitationMetaSnapshot, type PaperBlueprintMapping } from './citation-mapping-service';
 
+export interface EvidenceCardSnippet {
+  cardId: string;
+  claim: string;
+  claimType: string;
+  referenceArchetype?: string | null;
+  deepAnalysisLabel?: string | null;
+  sourceSection?: string | null;
+  quantitativeDetail: string | null;
+  conditions: string | null;
+  doesNotSupport: string | null;
+  studyDesign: string | null;
+  rigorIndicators: string | null;
+  sourceFragment: string;
+  pageHint: string | null;
+  quoteVerified: boolean;
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+  useAs: 'SUPPORT' | 'CONTRAST' | 'CONTEXT' | 'DEFINITION';
+  mappingConfidence: 'HIGH' | 'MEDIUM' | 'LOW';
+}
+
 export interface EvidenceCitation {
   citationId: string;
   citationKey: string;
   title: string;
   year: number | null;
+  referenceArchetype?: string | null;
+  deepAnalysisLabel?: string | null;
   confidence: 'HIGH' | 'MEDIUM' | 'LOW';
   relevanceScore: number;
   remark: string;
@@ -24,6 +46,8 @@ export interface EvidenceCitation {
     'IMPLEMENTATION_CONSTRAINT'
   >;
   evidenceBoundary?: string | null;
+  hasDeepAnalysis?: boolean;
+  evidenceCards?: EvidenceCardSnippet[];
 }
 
 export interface DimensionEvidence {
@@ -71,6 +95,73 @@ const normalizeAuthor = (value?: string | null) =>
   typeof value === 'string'
     ? value.trim().toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
     : '';
+
+function strongerConfidence(
+  a: 'HIGH' | 'MEDIUM' | 'LOW',
+  b: 'HIGH' | 'MEDIUM' | 'LOW'
+): 'HIGH' | 'MEDIUM' | 'LOW' {
+  return CONFIDENCE_WEIGHT[a] >= CONFIDENCE_WEIGHT[b] ? a : b;
+}
+
+function mergeEvidenceCards(
+  existing: EvidenceCardSnippet[] | undefined,
+  incoming: EvidenceCardSnippet[] | undefined
+): EvidenceCardSnippet[] | undefined {
+  const rows = [...(existing || []), ...(incoming || [])];
+  if (!rows.length) return undefined;
+  const byId = new Map<string, EvidenceCardSnippet>();
+  for (const row of rows) {
+    if (!byId.has(row.cardId)) {
+      byId.set(row.cardId, row);
+      continue;
+    }
+    const current = byId.get(row.cardId)!;
+    const confidence = strongerConfidence(current.confidence, row.confidence);
+    byId.set(row.cardId, { ...current, ...row, confidence });
+  }
+  return Array.from(byId.values());
+}
+
+function mergeEvidenceCitationEntry(existing: EvidenceCitation, incoming: EvidenceCitation): EvidenceCitation {
+  return {
+    ...existing,
+    remark: existing.remark || incoming.remark,
+    confidence: strongerConfidence(existing.confidence, incoming.confidence),
+    relevanceScore: Math.max(existing.relevanceScore || 0, incoming.relevanceScore || 0),
+    keyContribution: existing.keyContribution || incoming.keyContribution,
+    keyFindings: existing.keyFindings || incoming.keyFindings,
+    methodologicalApproach: existing.methodologicalApproach || incoming.methodologicalApproach || null,
+    relevanceToResearch: existing.relevanceToResearch || incoming.relevanceToResearch,
+    limitationsOrGaps: existing.limitationsOrGaps || incoming.limitationsOrGaps || null,
+    claimTypesSupported: existing.claimTypesSupported?.length
+      ? existing.claimTypesSupported
+      : incoming.claimTypesSupported,
+    evidenceBoundary: existing.evidenceBoundary || incoming.evidenceBoundary || null,
+    hasDeepAnalysis: Boolean(existing.hasDeepAnalysis || incoming.hasDeepAnalysis),
+    referenceArchetype: existing.referenceArchetype || incoming.referenceArchetype || null,
+    deepAnalysisLabel: existing.deepAnalysisLabel || incoming.deepAnalysisLabel || null,
+    evidenceCards: mergeEvidenceCards(existing.evidenceCards, incoming.evidenceCards),
+  };
+}
+
+function upsertDimensionCitation(
+  perDimension: Map<string, EvidenceCitation[]>,
+  normalizedDimension: string,
+  citation: EvidenceCitation
+): void {
+  if (!perDimension.has(normalizedDimension)) {
+    perDimension.set(normalizedDimension, []);
+  }
+
+  const rows = perDimension.get(normalizedDimension)!;
+  const existingIndex = rows.findIndex(row => row.citationId === citation.citationId);
+  if (existingIndex === -1) {
+    rows.push(citation);
+    return;
+  }
+
+  rows[existingIndex] = mergeEvidenceCitationEntry(rows[existingIndex], citation);
+}
 
 function clampText(value: unknown, max = 500): string | undefined {
   if (typeof value !== 'string') {
@@ -319,6 +410,32 @@ function toSnapshotFromSuggestion(suggestion: SuggestionForBackfill): CitationMe
 }
 
 class EvidencePackService {
+  private async loadDeepCardMappings(sessionId: string) {
+    return prisma.evidenceCardMapping.findMany({
+      where: {
+        card: {
+          sessionId,
+        }
+      },
+      include: {
+        card: {
+          include: {
+            citation: {
+              select: {
+                id: true,
+                citationKey: true,
+                title: true,
+                year: true,
+                aiMeta: true,
+                deepAnalysisLabel: true
+              }
+            }
+          }
+        }
+      }
+    });
+  }
+
   private async loadDimensionMappings(sessionId: string) {
     return prisma.citationUsage.findMany({
       where: {
@@ -337,7 +454,8 @@ class EvidencePackService {
             citationKey: true,
             title: true,
             year: true,
-            aiMeta: true
+            aiMeta: true,
+            deepAnalysisLabel: true
           }
         }
       }
@@ -504,6 +622,88 @@ class EvidencePackService {
       };
     }
 
+    const perDimension = new Map<string, EvidenceCitation[]>();
+    const sectionKeyNormalized = normalizeSectionKey(section.sectionKey);
+
+    // Deep evidence cards are primary evidence. They are linked by section/dimension via EvidenceCardMapping.
+    const deepMappings = await this.loadDeepCardMappings(sessionId);
+    const deepRowsForSection = deepMappings.filter(
+      mapping => normalizeSectionKey(mapping.sectionKey) === sectionKeyNormalized
+    );
+
+    for (const mapping of deepRowsForSection) {
+      const normalized = normalizeDimension(mapping.dimension || '');
+      if (!normalized) continue;
+
+      const card = mapping.card;
+      const citation = card.citation;
+      const citationMeta = extractCitationMeta(citation.aiMeta);
+      const cardConfidence = card.confidence === 'HIGH' || card.confidence === 'MEDIUM' || card.confidence === 'LOW'
+        ? card.confidence
+        : 'MEDIUM';
+      const mappingConfidence = mapping.mappingConfidence === 'HIGH'
+        || mapping.mappingConfidence === 'MEDIUM'
+        || mapping.mappingConfidence === 'LOW'
+        ? mapping.mappingConfidence
+        : 'MEDIUM';
+      const useAs = mapping.useAs === 'SUPPORT'
+        || mapping.useAs === 'CONTRAST'
+        || mapping.useAs === 'CONTEXT'
+        || mapping.useAs === 'DEFINITION'
+        ? mapping.useAs
+        : 'CONTEXT';
+
+      const supportNote = card.claim
+        || citationMeta.relevanceToResearch
+        || citationMeta.keyFindings
+        || citationMeta.keyContribution
+        || citation.title;
+
+      const cardSnippet: EvidenceCardSnippet = {
+        cardId: card.id,
+        claim: card.claim,
+        claimType: card.claimType,
+        referenceArchetype: card.referenceArchetype || null,
+        deepAnalysisLabel: card.deepAnalysisLabel || null,
+        sourceSection: card.sourceSection || null,
+        quantitativeDetail: card.quantitativeDetail,
+        conditions: card.conditions,
+        doesNotSupport: card.doesNotSupport,
+        studyDesign: card.studyDesign,
+        rigorIndicators: card.rigorIndicators,
+        sourceFragment: card.sourceFragment,
+        pageHint: card.pageHint,
+        quoteVerified: Boolean(card.quoteVerified),
+        confidence: cardConfidence,
+        useAs,
+        mappingConfidence,
+      };
+
+      const entry: EvidenceCitation = {
+        citationId: citation.id,
+        citationKey: citation.citationKey,
+        title: citation.title,
+        year: citation.year,
+        referenceArchetype: card.referenceArchetype || null,
+        deepAnalysisLabel: card.deepAnalysisLabel || citation.deepAnalysisLabel || null,
+        confidence: strongerConfidence(cardConfidence, mappingConfidence),
+        relevanceScore: Math.max(citationMeta.relevanceScore, 50),
+        remark: supportNote,
+        keyContribution: citationMeta.keyContribution,
+        keyFindings: citationMeta.keyFindings,
+        methodologicalApproach: citationMeta.methodologicalApproach,
+        relevanceToResearch: citationMeta.relevanceToResearch,
+        limitationsOrGaps: citationMeta.limitationsOrGaps,
+        claimTypesSupported: citationMeta.claimTypesSupported,
+        evidenceBoundary: citationMeta.evidenceBoundary,
+        hasDeepAnalysis: true,
+        evidenceCards: [cardSnippet],
+      };
+
+      upsertDimensionCitation(perDimension, normalized, entry);
+    }
+
+    // Legacy citation usage mappings are fallback for LIT_ONLY papers or dimensions with no deep cards.
     let allUsages = await this.loadDimensionMappings(sessionId);
     if (allUsages.length === 0) {
       const backfilled = await this.backfillMappingsFromLatestAnalysis(sessionId);
@@ -513,31 +713,31 @@ class EvidencePackService {
     }
 
     const usages = allUsages.filter(
-      usage => normalizeSectionKey(usage.sectionKey) === normalizeSectionKey(section.sectionKey)
+      usage => normalizeSectionKey(usage.sectionKey) === sectionKeyNormalized
     );
 
-    const perDimension = new Map<string, EvidenceCitation[]>();
-
     for (const usage of usages) {
-      const dim = usage.dimension || '';
-      const normalized = normalizeDimension(dim);
+      const normalized = normalizeDimension(usage.dimension || '');
       if (!normalized) continue;
 
       const citation = usage.citation;
       const citationMeta = extractCitationMeta(citation.aiMeta);
-      const confidence = (usage.confidence || 'MEDIUM') as 'HIGH' | 'MEDIUM' | 'LOW';
+      const confidence = usage.confidence === 'HIGH' || usage.confidence === 'MEDIUM' || usage.confidence === 'LOW'
+        ? usage.confidence
+        : 'MEDIUM';
       const supportNote = usage.remark
         || citationMeta.relevanceToResearch
         || citationMeta.evidenceBoundary
         || citationMeta.keyFindings
         || citationMeta.keyContribution
-        || '';
+        || citation.title;
 
       const entry: EvidenceCitation = {
         citationId: citation.id,
         citationKey: citation.citationKey,
         title: citation.title,
         year: citation.year,
+        deepAnalysisLabel: citation.deepAnalysisLabel || null,
         confidence,
         relevanceScore: citationMeta.relevanceScore,
         remark: supportNote,
@@ -547,13 +747,11 @@ class EvidencePackService {
         relevanceToResearch: citationMeta.relevanceToResearch,
         limitationsOrGaps: citationMeta.limitationsOrGaps,
         claimTypesSupported: citationMeta.claimTypesSupported,
-        evidenceBoundary: citationMeta.evidenceBoundary
+        evidenceBoundary: citationMeta.evidenceBoundary,
+        hasDeepAnalysis: false,
       };
 
-      if (!perDimension.has(normalized)) {
-        perDimension.set(normalized, []);
-      }
-      perDimension.get(normalized)!.push(entry);
+      upsertDimensionCitation(perDimension, normalized, entry);
     }
 
     const dimensionEvidence: DimensionEvidence[] = [];
@@ -564,6 +762,10 @@ class EvidencePackService {
       const normalized = normalizeDimension(dim);
       const rows = (perDimension.get(normalized) || [])
         .sort((a, b) => {
+          const deep = Number(Boolean(b.hasDeepAnalysis)) - Number(Boolean(a.hasDeepAnalysis));
+          if (deep !== 0) return deep;
+          const cards = (b.evidenceCards?.length || 0) - (a.evidenceCards?.length || 0);
+          if (cards !== 0) return cards;
           const c = CONFIDENCE_WEIGHT[b.confidence] - CONFIDENCE_WEIGHT[a.confidence];
           if (c !== 0) return c;
           const r = b.relevanceScore - a.relevanceScore;
@@ -573,15 +775,7 @@ class EvidencePackService {
           return a.citationKey.localeCompare(b.citationKey);
         });
 
-      const uniqueRows: EvidenceCitation[] = [];
-      const seen = new Set<string>();
-      for (const row of rows) {
-        if (seen.has(row.citationId)) continue;
-        seen.add(row.citationId);
-        uniqueRows.push(row);
-      }
-
-      const top = uniqueRows.slice(0, 3);
+      const top = rows.slice(0, 3);
       if (!top.length) {
         gaps.push(dim);
       }
@@ -592,7 +786,9 @@ class EvidencePackService {
       });
 
       for (const citation of top) {
-        const score = CONFIDENCE_WEIGHT[citation.confidence] * 10000
+        const score = (citation.hasDeepAnalysis ? 1_000_000 : 0)
+          + (citation.evidenceCards?.length || 0) * 50_000
+          + CONFIDENCE_WEIGHT[citation.confidence] * 10_000
           + citation.relevanceScore * 100
           + (citation.year || 0);
         const prev = allowedScore.get(citation.citationKey) || 0;

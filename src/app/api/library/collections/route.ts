@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { referenceLibraryService } from '@/lib/services/reference-library-service';
+import { paperLibraryService } from '@/lib/services/paper-library-service';
 import { authenticateUser } from '@/lib/auth-middleware';
 
 const createSchema = z.object({
@@ -20,6 +21,17 @@ export async function GET(request: NextRequest) {
     const { user, error } = await authenticateUser(request);
     if (error || !user) {
       return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 });
+    }
+
+    const url = new URL(request.url);
+    const paperId = (url.searchParams.get('paperId') || '').trim();
+    if (paperId) {
+      try {
+        await paperLibraryService.backfillPaperCollectionFromSessionCitations(user.id, paperId);
+      } catch (syncError) {
+        // Fail-open for collection listing; don't block UI if repair fails.
+        console.warn('[LibraryCollections] Paper collection backfill failed:', syncError);
+      }
     }
 
     const result = await referenceLibraryService.getCollections(user.id);

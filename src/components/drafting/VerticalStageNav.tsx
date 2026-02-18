@@ -293,6 +293,8 @@ export default function VerticalStageNav({
       <nav className={`flex-1 overflow-y-auto py-2 ${isCollapsed ? 'px-1' : 'px-2'} ${theme === 'dark' ? 'dark-scrollbar' : 'light-scrollbar'}`}>
         {visibleStages.map((stage, stageIndex) => {
           const StageIcon = stage.icon
+          const previousGroup = stageIndex > 0 ? visibleStages[stageIndex - 1]?.groupLabel : undefined
+          const showGroupLabel = !isCollapsed && Boolean(stage.groupLabel && stage.groupLabel !== previousGroup)
           const isExpanded = expandedStages.has(stage.key) && !isCollapsed
           const completion = calculateStageCompletion(stage, session)
           const currentIndex = Math.max(0, visibleStages.findIndex(s => s.key === resolvedCurrentStage))
@@ -304,6 +306,11 @@ export default function VerticalStageNav({
 
           return (
             <div key={stage.key} className="mb-1">
+              {showGroupLabel && (
+                <div className={`px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide ${themeClasses.textSubtle}`}>
+                  {stage.groupLabel}
+                </div>
+              )}
               {/* Collapsed View - Icon Only */}
               {isCollapsed ? (
                 <button

@@ -1,11 +1,11 @@
 DO $$
 BEGIN
-  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ReferenceDocumentSource') THEN
+  IF to_regtype('"ReferenceDocumentSource"') IS NOT NULL THEN
     IF NOT EXISTS (
       SELECT 1
       FROM pg_enum
       WHERE enumlabel = 'TEXT_PASTE'
-        AND enumtypid = 'ReferenceDocumentSource'::regtype
+        AND enumtypid = to_regtype('"ReferenceDocumentSource"')
     ) THEN
       ALTER TYPE "ReferenceDocumentSource" ADD VALUE 'TEXT_PASTE';
     END IF;

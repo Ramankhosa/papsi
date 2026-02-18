@@ -4,10 +4,14 @@
 -- ============================================================================
 
 -- Create VenueType enum
-CREATE TYPE "VenueType" AS ENUM ('JOURNAL', 'CONFERENCE', 'BOOK_PUBLISHER');
+DO $$ BEGIN
+    CREATE TYPE "VenueType" AS ENUM ('JOURNAL', 'CONFERENCE', 'BOOK_PUBLISHER');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
 -- Create PublicationVenue table
-CREATE TABLE "publication_venues" (
+CREATE TABLE IF NOT EXISTS "publication_venues" (
     "id" TEXT NOT NULL,
     "code" TEXT NOT NULL,
     "name" TEXT NOT NULL,
@@ -24,23 +28,27 @@ CREATE TABLE "publication_venues" (
     "isActive" BOOLEAN NOT NULL DEFAULT true,
     "sortOrder" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "publication_venues_pkey" PRIMARY KEY ("id")
 );
 
 -- Create unique index on code
-CREATE UNIQUE INDEX "publication_venues_code_key" ON "publication_venues"("code");
+CREATE UNIQUE INDEX IF NOT EXISTS "publication_venues_code_key" ON "publication_venues"("code");
 
 -- Create indexes for performance
-CREATE INDEX "publication_venues_venueType_idx" ON "publication_venues"("venueType");
-CREATE INDEX "publication_venues_citationStyleId_idx" ON "publication_venues"("citationStyleId");
-CREATE INDEX "publication_venues_isActive_idx" ON "publication_venues"("isActive");
-CREATE INDEX "publication_venues_sortOrder_idx" ON "publication_venues"("sortOrder");
+CREATE INDEX IF NOT EXISTS "publication_venues_venueType_idx" ON "publication_venues"("venueType");
+CREATE INDEX IF NOT EXISTS "publication_venues_citationStyleId_idx" ON "publication_venues"("citationStyleId");
+CREATE INDEX IF NOT EXISTS "publication_venues_isActive_idx" ON "publication_venues"("isActive");
+CREATE INDEX IF NOT EXISTS "publication_venues_sortOrder_idx" ON "publication_venues"("sortOrder");
 
 -- Add foreign key constraint
-ALTER TABLE "publication_venues" ADD CONSTRAINT "publication_venues_citationStyleId_fkey"
-FOREIGN KEY ("citationStyleId") REFERENCES "citation_style_definitions"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+DO $$ BEGIN
+    ALTER TABLE "publication_venues" ADD CONSTRAINT "publication_venues_citationStyleId_fkey"
+    FOREIGN KEY ("citationStyleId") REFERENCES "citation_style_definitions"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
 
 -- Insert major academic venues
 INSERT INTO "publication_venues" ("id", "code", "name", "venueType", "citationStyleId", "acceptedPaperTypes", "sectionOverrides", "wordLimitOverrides", "formattingGuidelines", "impactFactor", "website", "sortOrder") VALUES
@@ -195,4 +203,5 @@ INSERT INTO "publication_venues" ("id", "code", "name", "venueType", "citationSt
   "lineSpacing": 1.5,
   "margins": "1 inch",
   "bibliography": "references"
-}', NULL, 'https://mitpress.mit.edu/', 10);
+}', NULL, 'https://mitpress.mit.edu/', 10)
+ON CONFLICT ("code") DO NOTHING;

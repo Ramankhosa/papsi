@@ -1314,25 +1314,73 @@ interface EvidencePromptContext {
 function formatDimensionEvidence(evidence: EvidencePromptContext['dimensionEvidence']): string {
   if (!evidence || evidence.length === 0) return '(No dimension evidence available)';
 
-  return evidence.map(dim => {
-    const citationNotes = dim.citations.length > 0
-      ? dim.citations.map(c => {
-          const primaryNote = c.remark || c.relevanceToResearch || c.keyFindings || c.keyContribution || c.title;
-          const details = [
-            c.claimTypesSupported?.length ? `claimTypes: ${c.claimTypesSupported.join(', ')}` : '',
-            c.keyContribution ? `contribution: ${c.keyContribution}` : '',
-            c.keyFindings ? `findings: ${c.keyFindings}` : '',
-            c.methodologicalApproach ? `method: ${c.methodologicalApproach}` : '',
-            c.limitationsOrGaps ? `gap: ${c.limitationsOrGaps}` : '',
-            c.evidenceBoundary ? `boundary: ${c.evidenceBoundary}` : ''
-          ].filter(Boolean).join(' | ');
-          return details
-            ? `  - [${c.citationKey}] (${c.year || 'n.d.'}, ${c.confidence}): ${primaryNote}\n    ${details}`
-            : `  - [${c.citationKey}] (${c.year || 'n.d.'}, ${c.confidence}): ${primaryNote}`;
-        }).join('\n')
-      : '  (no citations mapped)';
-    return `${dim.dimension}:\n${citationNotes}`;
-  }).join('\n\n');
+  const lines: string[] = [
+    '[PRIORITY 2.5 - EVIDENCE] VERIFIED CITATIONS FOR THIS SECTION',
+    'Use these evidence cards as your PRIMARY citation source.',
+    'Rules:',
+    '- Do not invent findings that are not present below.',
+    '- Prefer cards with HIGH confidence and verified quotes.',
+    '- Include quantitative details when available.',
+    '- Acknowledge evidence boundaries via "Does NOT support".',
+    '- Use the card useAs tag to choose citation tone (SUPPORT/CONTRAST/CONTEXT/DEFINITION).',
+    '',
+  ];
+
+  for (const dim of evidence) {
+    lines.push(`Dimension: "${dim.dimension}"`);
+
+    if (!dim.citations.length) {
+      lines.push('  (no citations mapped)');
+      lines.push('');
+      continue;
+    }
+
+    for (const citation of dim.citations) {
+      const cards = Array.isArray(citation.evidenceCards) ? citation.evidenceCards : [];
+
+      if (cards.length === 0) {
+        const fallback = citation.remark
+          || citation.relevanceToResearch
+          || citation.keyFindings
+          || citation.keyContribution
+          || citation.title;
+        lines.push(
+          `  [${citation.citationKey}] (${citation.year || 'n.d.'}, ${citation.confidence}) [fallback-meta]: ${fallback}`
+        );
+        continue;
+      }
+
+      for (const card of cards.slice(0, 3)) {
+        const archetype = citation.referenceArchetype || card.referenceArchetype || 'UNKNOWN_ARCHETYPE';
+        const depth = citation.deepAnalysisLabel || card.deepAnalysisLabel || 'UNKNOWN_DEPTH';
+        const verificationLabel = card.quoteVerified ? 'quote-verified' : 'quote-unverified';
+
+        lines.push(
+          `  [${citation.citationKey}] [${archetype}] (${depth}) useAs=${card.useAs} confidence=${card.confidence} ${verificationLabel}`
+        );
+        lines.push(`    Claim: ${card.claim}`);
+        if (card.quantitativeDetail) {
+          lines.push(`    Detail: ${card.quantitativeDetail}`);
+        }
+        if (card.conditions) {
+          lines.push(`    Conditions: ${card.conditions}`);
+        }
+        if (card.studyDesign) {
+          lines.push(`    Study design: ${card.studyDesign}`);
+        }
+        if (card.doesNotSupport) {
+          lines.push(`    Does NOT support: ${card.doesNotSupport}`);
+        }
+        if (card.sourceFragment) {
+          lines.push(`    Quote: "${card.sourceFragment}"${card.pageHint ? ` (${card.pageHint})` : ''}`);
+        }
+      }
+    }
+
+    lines.push('');
+  }
+
+  return lines.join('\n').trim();
 }
 
 function formatRelevanceNotes(evidence: EvidencePromptContext['dimensionEvidence']): string {
@@ -1348,6 +1396,10 @@ function formatRelevanceNotes(evidence: EvidencePromptContext['dimensionEvidence
     limitations?: string | null;
     claimTypes?: string[];
     boundary?: string | null;
+    hasDeepAnalysis?: boolean;
+    archetype?: string | null;
+    depth?: string | null;
+    cardClaims?: string[];
   }>();
 
   for (const dim of evidence) {
@@ -1362,7 +1414,16 @@ function formatRelevanceNotes(evidence: EvidencePromptContext['dimensionEvidence
           method: c.methodologicalApproach,
           limitations: c.limitationsOrGaps,
           claimTypes: c.claimTypesSupported ? [...c.claimTypesSupported] : [],
-          boundary: c.evidenceBoundary
+          boundary: c.evidenceBoundary,
+          hasDeepAnalysis: Boolean(c.hasDeepAnalysis),
+          archetype: c.referenceArchetype || null,
+          depth: c.deepAnalysisLabel || null,
+          cardClaims: Array.isArray(c.evidenceCards)
+            ? c.evidenceCards
+                .map(card => String(card.claim || '').trim())
+                .filter(Boolean)
+                .slice(0, 3)
+            : []
         });
       }
       const existing = allCitations.get(c.citationKey)!;
@@ -1373,9 +1434,22 @@ function formatRelevanceNotes(evidence: EvidencePromptContext['dimensionEvidence
       if (!existing.method && c.methodologicalApproach) existing.method = c.methodologicalApproach;
       if (!existing.limitations && c.limitationsOrGaps) existing.limitations = c.limitationsOrGaps;
       if (!existing.boundary && c.evidenceBoundary) existing.boundary = c.evidenceBoundary;
+      if (!existing.archetype && c.referenceArchetype) existing.archetype = c.referenceArchetype;
+      if (!existing.depth && c.deepAnalysisLabel) existing.depth = c.deepAnalysisLabel;
+      if (c.hasDeepAnalysis) existing.hasDeepAnalysis = true;
       if (c.claimTypesSupported?.length) {
         const merged = new Set([...(existing.claimTypes || []), ...c.claimTypesSupported]);
         existing.claimTypes = Array.from(merged);
+      }
+      if (Array.isArray(c.evidenceCards) && c.evidenceCards.length) {
+        const mergedClaims = [...(existing.cardClaims || [])];
+        for (const card of c.evidenceCards) {
+          const claim = String(card.claim || '').trim();
+          if (!claim || mergedClaims.includes(claim)) continue;
+          mergedClaims.push(claim);
+          if (mergedClaims.length >= 4) break;
+        }
+        existing.cardClaims = mergedClaims;
       }
     }
   }
@@ -1383,13 +1457,17 @@ function formatRelevanceNotes(evidence: EvidencePromptContext['dimensionEvidence
   return Array.from(allCitations.entries())
     .map(([key, data]) => {
       const parts = [
+        data.hasDeepAnalysis ? 'source=deep-cards' : 'source=fallback-meta',
+        data.archetype ? `archetype: ${data.archetype}` : '',
+        data.depth ? `depth: ${data.depth}` : '',
         data.claimTypes?.length ? `claimTypes: ${data.claimTypes.join(', ')}` : '',
         data.relevance ? `relevance: ${data.relevance}` : '',
         data.contribution ? `contribution: ${data.contribution}` : '',
         data.findings ? `findings: ${data.findings}` : '',
         data.method ? `method: ${data.method}` : '',
         data.limitations ? `gap: ${data.limitations}` : '',
-        data.boundary ? `boundary: ${data.boundary}` : ''
+        data.boundary ? `boundary: ${data.boundary}` : '',
+        data.cardClaims?.length ? `cardClaims: ${data.cardClaims.join(' || ')}` : '',
       ].filter(Boolean);
       const base = `[${key}]: "${data.title}" - dimensions: ${Array.from(data.dimensions).join(', ')}`;
       return parts.length > 0 ? `${base}; ${parts.join(' | ')}` : base;
@@ -1408,6 +1486,8 @@ async function buildPrompt(
   evidenceContext?: EvidencePromptContext
 ): Promise<string> {
   let basePrompt = await sectionTemplateService.getPromptForSection(sectionKey, paperTypeCode, context);
+  const hasCitationModePlaceholders = /\{\{AUTO_CITATION_MODE\}\}|\{\{ALLOWED_CITATION_KEYS\}\}/.test(basePrompt);
+  const hasEvidencePlaceholders = /\{\{DIMENSION_EVIDENCE_NOTES\}\}|\{\{RELEVANCE_NOTES\}\}|\{\{EVIDENCE_GAPS\}\}/.test(basePrompt);
   const topic = context?.researchTopic;
   const sectionTitle = sectionKey
     .replace(/[_-]+/g, ' ')
@@ -1497,7 +1577,9 @@ async function buildPrompt(
   // ============================================================================
   // FALLBACK: Append blocks if prompt doesn't use placeholders
   // ============================================================================
-  const hasPlaceholdersForCitations = basePrompt.includes('CITATION MODE') || basePrompt.includes('AUTO_CITATION_MODE');
+  const hasPlaceholdersForCitations = hasCitationModePlaceholders
+    || basePrompt.includes('CITATION MODE')
+    || basePrompt.includes('AUTO_CITATION_MODE');
   
   const topicBlock = topic && !basePrompt.includes('RESEARCH TOPIC CONTEXT')
     ? `\n\nRESEARCH TOPIC CONTEXT:\nTitle: ${topic.title}\nResearch Question: ${topic.researchQuestion}\nMethodology: ${methodology}\nContribution: ${contribution}\nKeywords: ${(topic.keywords || []).join(', ')}`
@@ -1510,11 +1592,19 @@ async function buildPrompt(
   const citationsBlock = citationInstructions && !hasPlaceholdersForCitations 
     ? `\n\n${citationInstructions}` 
     : '';
+
+  // Always inject evidence block when mapped evidence is enabled, even if prompt templates
+  // do not have dedicated placeholders.
+  const evidenceBlock = evidenceContext?.useMappedEvidence
+    && evidenceContext.dimensionEvidence.length > 0
+    && !hasEvidencePlaceholders
+      ? `\n\n${dimensionEvidenceNotes}\n\n[EVIDENCE GAPS]\n${evidenceGaps}`
+      : '';
   
   const userBlock = userInstructions ? `\n\nUSER INSTRUCTIONS:\n${userInstructions}` : '';
   const styleBlock = writingSampleBlock ? `\n\n${writingSampleBlock}` : '';
 
-  return `${basePrompt}${topicBlock}${archetypeBlock}${citationsBlock}${styleBlock}${userBlock}
+  return `${basePrompt}${topicBlock}${archetypeBlock}${evidenceBlock}${citationsBlock}${styleBlock}${userBlock}
 
 OUTPUT FORMAT (MANDATORY):
 - Return ONLY clean Markdown text. No JSON, no code fences, no explanations.
@@ -1549,6 +1639,18 @@ async function repairSectionCitations(
     for (const dim of dimensionEvidence) {
       if (dim.citations.length === 0) continue;
       const citLines = dim.citations.map(c => {
+        const cards = Array.isArray(c.evidenceCards) ? c.evidenceCards : [];
+        if (cards.length > 0) {
+          const cardNotes = cards
+            .slice(0, 2)
+            .map(card => {
+              const detail = card.quantitativeDetail ? ` | detail=${card.quantitativeDetail}` : '';
+              const support = card.doesNotSupport ? ` | doesNotSupport=${card.doesNotSupport}` : '';
+              return `claim=${card.claim}${detail}${support} | useAs=${card.useAs}`;
+            })
+            .join(' || ');
+          return `  [${c.citationKey}]: ${cardNotes}`;
+        }
         const note = c.remark || c.relevanceToResearch || c.keyFindings || c.title;
         return `  [${c.citationKey}]: ${note}`;
       }).join('\n');
@@ -1581,10 +1683,10 @@ Return ONLY the corrected section content, no markdown fences.`;
     { headers },
     {
       taskCode: 'LLM2_DRAFT',
-      stageCode: 'PAPER_SECTION_DRAFT',
+      stageCode: 'PAPER_SECTION_IMPROVE',
       prompt,
       parameters: {
-        temperature: 0.1
+        temperature: 0
       },
       idempotencyKey: crypto.randomUUID(),
       metadata: {

@@ -62,7 +62,8 @@ CREATE INDEX IF NOT EXISTS "country_section_prompt_history_country_code_section_
 -- CreateTable: User section instructions per drafting session
 CREATE TABLE IF NOT EXISTS "user_section_instructions" (
     "id" TEXT NOT NULL,
-    "session_id" TEXT NOT NULL,
+    "session_id" TEXT,
+    "user_id" TEXT NOT NULL,
     "jurisdiction" TEXT NOT NULL DEFAULT '*',
     "section_key" TEXT NOT NULL,
     "instruction" TEXT NOT NULL,
@@ -77,19 +78,29 @@ CREATE TABLE IF NOT EXISTS "user_section_instructions" (
     CONSTRAINT "user_section_instructions_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex: Unique constraint for user instruction per session/jurisdiction/section
-CREATE UNIQUE INDEX IF NOT EXISTS "user_section_instructions_session_id_section_key_key" 
-    ON "user_section_instructions"("session_id", "jurisdiction", "section_key");
+-- CreateIndex: Unique per user + optional session + jurisdiction + section
+CREATE UNIQUE INDEX IF NOT EXISTS "user_section_instructions_user_id_session_id_jurisdiction_s_key"
+    ON "user_section_instructions"("user_id", "session_id", "jurisdiction", "section_key");
 
 -- CreateIndex: Fast lookups
 CREATE INDEX IF NOT EXISTS "user_section_instructions_session_id_idx" ON "user_section_instructions"("session_id");
-CREATE INDEX IF NOT EXISTS "user_section_instructions_session_id_jurisdiction_idx" ON "user_section_instructions"("session_id", "jurisdiction");
+CREATE INDEX IF NOT EXISTS "user_section_instructions_user_id_idx" ON "user_section_instructions"("user_id");
+CREATE INDEX IF NOT EXISTS "user_section_instructions_user_id_jurisdiction_idx" ON "user_section_instructions"("user_id", "jurisdiction");
+CREATE INDEX IF NOT EXISTS "user_section_instructions_user_id_session_id_jurisdiction_idx" ON "user_section_instructions"("user_id", "session_id", "jurisdiction");
 CREATE INDEX IF NOT EXISTS "user_section_instructions_section_key_idx" ON "user_section_instructions"("section_key");
 
 -- AddForeignKey
 DO $$ BEGIN
     ALTER TABLE "user_section_instructions" ADD CONSTRAINT "user_section_instructions_session_id_fkey" 
         FOREIGN KEY ("session_id") REFERENCES "drafting_sessions"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- AddForeignKey: user owner link
+DO $$ BEGIN
+    ALTER TABLE "user_section_instructions" ADD CONSTRAINT "user_section_instructions_user_id_fkey"
+        FOREIGN KEY ("user_id") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;

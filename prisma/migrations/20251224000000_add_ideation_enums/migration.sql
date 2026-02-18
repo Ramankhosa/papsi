@@ -8,6 +8,23 @@
 -- migration separately or mark as applied after running manually.
 -- ============================================================================
 
+-- Ensure prerequisite enums exist in legacy environments where enum creation
+-- happened outside migration history.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ServiceType') THEN
+    CREATE TYPE "ServiceType" AS ENUM (
+      'PATENT_DRAFTING',
+      'NOVELTY_SEARCH',
+      'PRIOR_ART_SEARCH',
+      'IDEA_BANK',
+      'PERSONA_SYNC',
+      'DIAGRAM_GENERATION',
+      'PATENT_REVIEW'
+    );
+  END IF;
+END $$;
+
 -- Add IDEATION to FeatureCode enum (used by features table)
 ALTER TYPE "FeatureCode" ADD VALUE IF NOT EXISTS 'IDEATION';
 

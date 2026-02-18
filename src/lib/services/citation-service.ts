@@ -317,6 +317,7 @@ class CitationService {
       titleFingerprint,
       firstAuthorNormalized,
       paperIdentityKey,
+      libraryReferenceId: this.normalizeLooseString(searchResult.libraryReferenceId) || undefined,
       // Store AI-generated citation metadata for section generation
       aiMeta: citationMeta ? {
         keyContribution: citationMeta.keyContribution,
@@ -656,6 +657,10 @@ class CitationService {
       const titleFingerprint = this.buildTitleFingerprint(normalizedTitle);
       const firstAuthorNormalized = this.normalizeAuthor(normalizedAuthors[0]);
 
+      const rawLibraryRefId = typeof searchResult?.libraryReferenceId === 'string'
+        ? searchResult.libraryReferenceId.trim()
+        : undefined;
+
       createRows.push({
         id: citationId,
         sessionId,
@@ -691,6 +696,7 @@ class CitationService {
         titleFingerprint,
         firstAuthorNormalized,
         paperIdentityKey,
+        libraryReferenceId: rawLibraryRefId || undefined,
         notes: normalizedAbstract,
         tags: [],
         aiMeta: aiMeta as Prisma.InputJsonValue | undefined

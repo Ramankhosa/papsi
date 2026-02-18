@@ -15,6 +15,8 @@
     "superadminviewerbirth": "node scripts/create-super-admin-viewer.js ramandeep.singh@lpu.co.in",
     "db:migrate": "prisma migrate dev",
     "db:seed": "node scripts/seed-plans-hierarchy.js",
+    "seed:super-admin:export": "node scripts/production-seed-script.js export",
+    "seed:super-admin:import": "node scripts/production-seed-script.js import",
     "db:seed:comprehensive": "node scripts/comprehensive-seed.js",
     "db:export": "node scripts/comprehensive-seed.js --export-only",
     "import:local-patents": "node scripts/import-local-patents-from-csv.js patients11.csv",
@@ -119,5 +121,8 @@
     "tsx": "^4.20.0",
     "typescript": "^5",
     "vitest": "^2.1.9"
+  },
+  "prisma": {
+    "seed": "node scripts/production-seed-script.js import"
   }
 }

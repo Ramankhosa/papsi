@@ -367,7 +367,8 @@ class ReferenceDocumentService {
         if (!reference) return null;
 
         const link = await prisma.referenceDocumentLink.findFirst({
-            where: { referenceId, isPrimary: true },
+            where: { referenceId },
+            orderBy: [{ isPrimary: 'desc' }, { linkedAt: 'desc' }],
             include: {
                 document: {
                     select: {

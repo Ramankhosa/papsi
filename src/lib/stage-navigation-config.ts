@@ -37,6 +37,7 @@ export interface StageDefinition {
   label: string
   icon: LucideIcon
   description: string
+  groupLabel?: string
   subStages: SubStageDefinition[]
   weight: number
   getSubStages?: (session: any) => SubStageDefinition[]
@@ -238,6 +239,71 @@ function getCitationsCount(session: any): number {
   return Array.isArray(session?.citations) ? session.citations.length : 0
 }
 
+function getDeepAnalysisJobs(session: any): any[] {
+  return Array.isArray(session?.deepAnalysisJobs) ? session.deepAnalysisJobs : []
+}
+
+function estimateDeepLabelFromCitation(citation: any): string {
+  const explicit = String(citation?.deepAnalysisLabel || '').trim().toUpperCase();
+  if (explicit) {
+    return explicit;
+  }
+
+  const fromMeta = citation?.aiMeta && typeof citation.aiMeta === 'object'
+    ? String((citation.aiMeta as any).deepAnalysisRecommendation || '').trim().toUpperCase()
+    : '';
+  if (fromMeta) {
+    return fromMeta;
+  }
+
+  const score = Number(citation?.aiMeta && typeof citation.aiMeta === 'object'
+    ? (citation.aiMeta as any).relevanceScore
+    : 0);
+  if (score >= 85) return 'DEEP_ANCHOR';
+  if (score >= 65) return 'DEEP_SUPPORT';
+  if (score >= 45) return 'DEEP_STRESS_TEST';
+  return 'LIT_ONLY';
+}
+
+function getDeepAnalysisSummary(session: any): {
+  eligible: number
+  completed: number
+  failed: number
+  running: number
+  cards: number
+} {
+  const citations = Array.isArray(session?.citations) ? session.citations : []
+  const jobs = getDeepAnalysisJobs(session)
+
+  const eligible = citations.filter((citation: any) => {
+    const label = estimateDeepLabelFromCitation(citation)
+    return Boolean(label) && label !== 'LIT_ONLY'
+  }).length
+
+  const runningStatuses = new Set(['PENDING', 'PREPARING', 'EXTRACTING', 'MAPPING'])
+  const completed = jobs.filter((job: any) => String(job?.status || '') === 'COMPLETED').length
+  const failed = jobs.filter((job: any) => String(job?.status || '') === 'FAILED').length
+  const running = jobs.filter((job: any) => runningStatuses.has(String(job?.status || ''))).length
+
+  const citationCards = citations.reduce((sum: number, citation: any) => {
+    const count = Number(citation?.evidenceCardCount || 0)
+    return sum + (Number.isFinite(count) ? count : 0)
+  }, 0)
+
+  const jobCards = jobs.reduce((sum: number, job: any) => {
+    const count = Number(job?._count?.cards || 0)
+    return sum + (Number.isFinite(count) ? count : 0)
+  }, 0)
+
+  return {
+    eligible,
+    completed,
+    failed,
+    running,
+    cards: Math.max(citationCards, jobCards)
+  }
+}
+
 function getRequiredSectionsCompletion(session: any): SubStageStatus {
   const { requiredSections } = getPaperTypeSectionConfig(session)
   if (requiredSections.length === 0) return 'pending'
@@ -405,13 +471,14 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
       }
     ]
   },
-  // Stage 4: Literature Review (LITERATURE_SEARCH) - Search and import citations
+  // Stage 4: Literature Search (LITERATURE_SEARCH) - Search and import citations
   {
     key: 'LITERATURE_SEARCH',
-    label: 'Literature Review',
+    label: 'Literature Search',
     icon: Search,
     description: 'Search and import citations',
-    weight: 15,
+    groupLabel: 'Literature Review',
+    weight: 8,
     subStages: [
       {
         key: 'citations_imported',
@@ -441,7 +508,60 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
       }
     ]
   },
-  // Stage 5: Figure Planning (FIGURE_PLANNER) - Plan figures and tables
+  // Stage 5: Full-Text Evidence Extraction (FULL_TEXT_EVIDENCE_EXTRACTION)
+  {
+    key: 'FULL_TEXT_EVIDENCE_EXTRACTION',
+    label: 'Full-Text Evidence Extraction',
+    icon: FileText,
+    description: 'Retrieve full text and verify evidence coverage',
+    groupLabel: 'Literature Review',
+    weight: 7,
+    subStages: [
+      {
+        key: 'paper_selection',
+        label: 'Paper Selection',
+        icon: FileText,
+        description: 'Select eligible papers for deep extraction',
+        required: true,
+        getStatus: (session) => {
+          const citationCount = getCitationsCount(session)
+          if (citationCount === 0) return 'pending'
+          const summary = getDeepAnalysisSummary(session)
+          if (summary.eligible > 0) return 'completed'
+          return 'in_progress'
+        }
+      },
+      {
+        key: 'extraction_progress',
+        label: 'Extraction Progress',
+        icon: FileText,
+        description: 'Track deep-analysis extraction and mapping jobs',
+        required: true,
+        getStatus: (session) => {
+          const summary = getDeepAnalysisSummary(session)
+          if (summary.eligible === 0) return 'pending'
+          if (summary.running > 0) return 'in_progress'
+          if (summary.completed >= summary.eligible && summary.failed === 0) return 'completed'
+          if (summary.completed > 0 || summary.failed > 0) return 'in_progress'
+          return 'pending'
+        }
+      },
+      {
+        key: 'evidence_review',
+        label: 'Evidence Review',
+        icon: FileText,
+        description: 'Review extracted evidence cards and coverage',
+        required: false,
+        getStatus: (session) => {
+          const summary = getDeepAnalysisSummary(session)
+          if (summary.cards > 0) return 'completed'
+          if (summary.completed > 0 || summary.running > 0 || summary.failed > 0) return 'in_progress'
+          return 'pending'
+        }
+      }
+    ]
+  },
+  // Stage 6: Figure Planning (FIGURE_PLANNER) - Plan figures and tables
   {
     key: 'FIGURE_PLANNER',
     label: 'Figure Planning',
@@ -462,7 +582,7 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
       }
     ]
   },
-  // Stage 6: Section Drafting (SECTION_DRAFTING) - Write the paper
+  // Stage 7: Section Drafting (SECTION_DRAFTING) - Write the paper
   {
     key: 'SECTION_DRAFTING',
     label: 'Section Drafting',
@@ -472,7 +592,7 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
     subStages: [],
     getSubStages: getDraftSectionSubStages
   },
-  // Stage 7: Humanization (HUMANIZATION) - Humanize sections
+  // Stage 8: Humanization (HUMANIZATION) - Humanize sections
   {
     key: 'HUMANIZATION',
     label: 'Humanization',
@@ -482,7 +602,7 @@ export const STAGE_DEFINITIONS: StageDefinition[] = [
     subStages: [],
     getSubStages: getHumanizationSubStages
   },
-  // Stage 8: Review & Export (REVIEW_EXPORT) - Finalize and export
+  // Stage 9: Review & Export (REVIEW_EXPORT) - Finalize and export
   {
     key: 'REVIEW_EXPORT',
     label: 'Review & Export',
@@ -519,7 +639,8 @@ export const STAGE_ORDER = [
   'OUTLINE_PLANNING',  // Paper Foundation - configure paper type & structure first
   'TOPIC_ENTRY',       // Research Topic - define research question
   'BLUEPRINT',         // Paper Blueprint - define paper structure & dimensions
-  'LITERATURE_SEARCH', // Literature Review - search and import citations
+  'LITERATURE_SEARCH', // Literature Review -> Literature Search
+  'FULL_TEXT_EVIDENCE_EXTRACTION', // Literature Review -> Full-Text Evidence Extraction
   'FIGURE_PLANNER',    // Figure Planning - plan figures and tables
   'SECTION_DRAFTING',  // Section Drafting - write the paper
   'HUMANIZATION',      // Humanization - preserve draft and humanized versions

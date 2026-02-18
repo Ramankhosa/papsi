@@ -72,8 +72,9 @@ interface Reference {
       errorCode?: string;
       originalFilename: string;
       fileSizeBytes: number;
+      mimeType?: string;
       pageCount?: number;
-      sourceType?: 'UPLOAD' | 'DOI_FETCH' | 'URL_IMPORT';
+      sourceType?: 'UPLOAD' | 'DOI_FETCH' | 'URL_IMPORT' | 'TEXT_PASTE';
       sourceIdentifier?: string;
       pdfTitle?: string;
       pdfAuthors?: string;
@@ -154,6 +155,7 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
   const [yearTo, setYearTo] = useState('');
   const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
+  const [showHasAttachmentOnly, setShowHasAttachmentOnly] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   
   // Pagination
@@ -187,7 +189,8 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
     yearFrom,
     yearTo,
     showFavoritesOnly,
-    showUnreadOnly
+    showUnreadOnly,
+    showHasAttachmentOnly
   ].filter(Boolean).length;
 
   // Load libraries
@@ -220,6 +223,7 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
       if (yearTo) params.set('yearTo', yearTo);
       if (showFavoritesOnly) params.set('isFavorite', 'true');
       if (showUnreadOnly) params.set('isRead', 'false');
+      if (showHasAttachmentOnly) params.set('hasAttachment', 'true');
       params.set('limit', String(PAGE_SIZE));
       params.set('offset', String((page - 1) * PAGE_SIZE));
       
@@ -237,7 +241,7 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
     } finally {
       setLoading(false);
     }
-  }, [authToken, selectedLibrary, searchQuery, sourceTypeFilter, yearFrom, yearTo, showFavoritesOnly, showUnreadOnly, currentPage]);
+  }, [authToken, selectedLibrary, searchQuery, sourceTypeFilter, yearFrom, yearTo, showFavoritesOnly, showUnreadOnly, showHasAttachmentOnly, currentPage]);
 
   useEffect(() => {
     loadLibraries();
@@ -252,7 +256,7 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
     setCurrentPage(1);
     setSelectedRefs(new Set()); // Clear selection on filter change
     setExpandedRefs(new Set());
-  }, [selectedLibrary, searchQuery, sourceTypeFilter, yearFrom, yearTo, showFavoritesOnly, showUnreadOnly]);
+  }, [selectedLibrary, searchQuery, sourceTypeFilter, yearFrom, yearTo, showFavoritesOnly, showUnreadOnly, showHasAttachmentOnly]);
 
   // Clear all filters
   const clearFilters = () => {
@@ -262,6 +266,7 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
     setYearTo('');
     setShowFavoritesOnly(false);
     setShowUnreadOnly(false);
+    setShowHasAttachmentOnly(false);
     setCurrentPage(1);
   };
 
@@ -700,19 +705,85 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
     setUploadDialogMode('replace');
   };
 
+  const escapeHtml = (value: string) =>
+    value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
   const handleViewPDF = async (refId: string) => {
     if (!authToken) return;
     try {
       const response = await fetch(`/api/library/${refId}/document/serve`, {
         headers: { Authorization: `Bearer ${authToken}` }
       });
-      if (response.ok) {
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        window.open(url, '_blank');
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || `Failed to open document (HTTP ${response.status})`);
       }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const popup = window.open(url, '_blank', 'noopener,noreferrer');
+      if (!popup) {
+        URL.revokeObjectURL(url);
+        throw new Error('Popup blocked. Please allow popups and try again.');
+      }
+
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+      }, 60_000);
     } catch (err) {
       console.error('Failed to view PDF:', err);
+      alert(err instanceof Error ? err.message : 'Failed to open document');
+    }
+  };
+
+  const handleViewText = async (refId: string, refTitle: string) => {
+    if (!authToken) return;
+    try {
+      const response = await fetch(`/api/references/${refId}/full-text`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.error || `Failed to open full text (HTTP ${response.status})`);
+      }
+
+      const text = String(data.text || '');
+      if (!text.trim()) {
+        throw new Error('No extracted text available for this document yet.');
+      }
+
+      const popup = window.open('', '_blank', 'noopener,noreferrer');
+      if (!popup) {
+        throw new Error('Popup blocked. Please allow popups and try again.');
+      }
+
+      const safeTitle = escapeHtml(refTitle || 'Document Text');
+      const safeText = escapeHtml(text);
+      popup.document.write(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${safeTitle}</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 16px; color: #111827; }
+      h1 { font-size: 16px; margin: 0 0 12px; }
+      pre { white-space: pre-wrap; word-wrap: break-word; line-height: 1.5; font-size: 13px; margin: 0; }
+    </style>
+  </head>
+  <body>
+    <h1>${safeTitle}</h1>
+    <pre>${safeText}</pre>
+  </body>
+</html>`);
+      popup.document.close();
+    } catch (err) {
+      console.error('Failed to view full text:', err);
+      alert(err instanceof Error ? err.message : 'Failed to open full text');
     }
   };
 
@@ -1105,6 +1176,19 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                                 </svg>
                                 <span className="text-sm">Unread</span>
+                              </label>
+
+                              <label className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border cursor-pointer transition-colors ${
+                                showHasAttachmentOnly ? 'bg-emerald-50 border-emerald-300 text-emerald-700' : 'bg-white hover:bg-gray-50'
+                              }`}>
+                                <Checkbox
+                                  checked={showHasAttachmentOnly}
+                                  onCheckedChange={checked => setShowHasAttachmentOnly(!!checked)}
+                                />
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21.44 11.05l-8.49 8.49a5 5 0 01-7.07-7.07l8.49-8.48a3 3 0 114.24 4.24l-8.49 8.49a1 1 0 01-1.41-1.42l7.78-7.78" />
+                                </svg>
+                                <span className="text-sm">Attachment</span>
                               </label>
                             </div>
                           </div>
@@ -1572,33 +1656,52 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
                               <div className="flex flex-wrap items-center gap-2 mt-2">
                                 {ref.documents && ref.documents.length > 0 ? (
                                   <>
-                                    <DocumentStatusBadge
-                                      status={ref.documents[0].document.status}
-                                      errorCode={ref.documents[0].document.errorCode}
-                                      filename={ref.documents[0].document.originalFilename}
-                                      fileSizeBytes={ref.documents[0].document.fileSizeBytes}
-                                    />
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); handleViewPDF(ref.id); }}
-                                      className="text-[11px] text-blue-600 hover:text-blue-800 hover:underline font-medium"
-                                      title="View PDF"
-                                    >
-                                      View
-                                    </button>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); handleReplacePDF(ref.id, ref.title); }}
-                                      className="text-[11px] text-gray-500 hover:text-gray-700 hover:underline"
-                                      title="Replace PDF"
-                                    >
-                                      Replace
-                                    </button>
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); handleRemovePDF(ref.id); }}
-                                      className="text-[11px] text-red-500 hover:text-red-700 hover:underline"
-                                      title="Remove PDF"
-                                    >
-                                      Remove
-                                    </button>
+                                    {(() => {
+                                      const primaryDocument = ref.documents?.[0]?.document;
+                                      const mimeType = String(primaryDocument?.mimeType || '').toLowerCase();
+                                      const isPdfDocument = mimeType.includes('pdf');
+                                      const documentLabel = isPdfDocument ? 'PDF' : 'Text';
+                                      return (
+                                        <>
+                                          <DocumentStatusBadge
+                                            status={primaryDocument.status}
+                                            errorCode={primaryDocument.errorCode}
+                                            filename={primaryDocument.originalFilename}
+                                            fileSizeBytes={primaryDocument.fileSizeBytes}
+                                            mimeType={primaryDocument.mimeType}
+                                            sourceType={primaryDocument.sourceType}
+                                          />
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              if (isPdfDocument) {
+                                                handleViewPDF(ref.id);
+                                              } else {
+                                                handleViewText(ref.id, ref.title);
+                                              }
+                                            }}
+                                            className="text-[11px] text-blue-600 hover:text-blue-800 hover:underline font-medium"
+                                            title={isPdfDocument ? 'View PDF' : 'View Text'}
+                                          >
+                                            {isPdfDocument ? 'View' : 'View Text'}
+                                          </button>
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); handleReplacePDF(ref.id, ref.title); }}
+                                            className="text-[11px] text-gray-500 hover:text-gray-700 hover:underline"
+                                            title={`Replace ${documentLabel}`}
+                                          >
+                                            Replace
+                                          </button>
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); handleRemovePDF(ref.id); }}
+                                            className="text-[11px] text-red-500 hover:text-red-700 hover:underline"
+                                            title={`Remove ${documentLabel}`}
+                                          >
+                                            Remove
+                                          </button>
+                                        </>
+                                      );
+                                    })()}
                                   </>
                                 ) : (
                                   <>

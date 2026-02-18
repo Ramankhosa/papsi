@@ -59,6 +59,7 @@ uploads/
 
 # Database backups
 database-backup-*/
+prisma/super-admin-settings.snapshot.json
 
 # Test results and reports
 test-results/

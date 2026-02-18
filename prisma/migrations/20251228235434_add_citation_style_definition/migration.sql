@@ -4,7 +4,7 @@
 -- ============================================================================
 
 -- Create CitationStyleDefinition table
-CREATE TABLE "citation_style_definitions" (
+CREATE TABLE IF NOT EXISTS "citation_style_definitions" (
     "id" TEXT NOT NULL,
     "code" TEXT NOT NULL,
     "name" TEXT NOT NULL,
@@ -16,17 +16,17 @@ CREATE TABLE "citation_style_definitions" (
     "isActive" BOOLEAN NOT NULL DEFAULT true,
     "sortOrder" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
+    "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "citation_style_definitions_pkey" PRIMARY KEY ("id")
 );
 
 -- Create unique index on code
-CREATE UNIQUE INDEX "citation_style_definitions_code_key" ON "citation_style_definitions"("code");
+CREATE UNIQUE INDEX IF NOT EXISTS "citation_style_definitions_code_key" ON "citation_style_definitions"("code");
 
 -- Create indexes for performance
-CREATE INDEX "citation_style_definitions_isActive_idx" ON "citation_style_definitions"("isActive");
-CREATE INDEX "citation_style_definitions_sortOrder_idx" ON "citation_style_definitions"("sortOrder");
+CREATE INDEX IF NOT EXISTS "citation_style_definitions_isActive_idx" ON "citation_style_definitions"("isActive");
+CREATE INDEX IF NOT EXISTS "citation_style_definitions_sortOrder_idx" ON "citation_style_definitions"("sortOrder");
 
 -- Insert initial citation style definitions
 INSERT INTO "citation_style_definitions" ("id", "code", "name", "inTextFormatTemplate", "bibliographyRules", "bibliographySortOrder", "supportsShortTitles", "maxAuthorsBeforeEtAl", "sortOrder") VALUES
@@ -268,4 +268,5 @@ INSERT INTO "citation_style_definitions" ("id", "code", "name", "inTextFormatTem
     "authors": "Last A",
     "title": "sentence-case"
   }
-}', 'order_of_appearance', false, 6, 10);
+}', 'order_of_appearance', false, 6, 10)
+ON CONFLICT ("code") DO NOTHING;

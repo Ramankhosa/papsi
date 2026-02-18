@@ -19,6 +19,7 @@ import { isFeatureEnabled } from '@/lib/feature-flags'
 import TopicEntryStage from '@/components/stages/TopicEntryStage'
 import BlueprintStage from '@/components/stages/BlueprintStage'
 import LiteratureSearchStage from '@/components/stages/LiteratureSearchStage'
+import FullTextEvidenceExtractionStage from '@/components/stages/FullTextEvidenceExtractionStage'
 import OutlinePlanningStage from '@/components/stages/OutlinePlanningStage'
 import PaperFigurePlannerStage from '@/components/stages/PaperFigurePlannerStage'
 import SectionDraftingStage from '@/components/stages/SectionDraftingStage'
@@ -30,7 +31,8 @@ const STAGES = [
   { key: 'OUTLINE_PLANNING', label: 'Paper Foundation', description: 'Set up paper type & structure' },
   { key: 'TOPIC_ENTRY', label: 'Research Topic', description: 'Define your research question' },
   { key: 'BLUEPRINT', label: 'Paper Blueprint', description: 'Define paper structure & dimensions' },
-  { key: 'LITERATURE_SEARCH', label: 'Literature Review', description: 'Search and import citations' },
+  { key: 'LITERATURE_SEARCH', label: 'Literature Search', description: 'Search and import citations' },
+  { key: 'FULL_TEXT_EVIDENCE_EXTRACTION', label: 'Full-Text Evidence Extraction', description: 'Extract and validate grounded evidence from full text' },
   { key: 'FIGURE_PLANNER', label: 'Figure Planning', description: 'Plan figures and tables' },
   { key: 'SECTION_DRAFTING', label: 'Section Drafting', description: 'Generate and edit sections' },
   { key: 'HUMANIZATION', label: 'Humanization', description: 'Humanize sections and validate citations' },
@@ -56,6 +58,7 @@ const STAGE_COMPONENTS: Record<StageKey, StageComponent> = {
   TOPIC_ENTRY: TopicEntryStage as any,
   BLUEPRINT: BlueprintStage as any,
   LITERATURE_SEARCH: LiteratureSearchStage as any,
+  FULL_TEXT_EVIDENCE_EXTRACTION: FullTextEvidenceExtractionStage as any,
   OUTLINE_PLANNING: OutlinePlanningStage as any,
   FIGURE_PLANNER: PaperFigurePlannerStage as any,
   SECTION_DRAFTING: SectionDraftingStage as any,
@@ -68,6 +71,7 @@ const STAGE_ORDER: StageKey[] = [
   'TOPIC_ENTRY',
   'BLUEPRINT',
   'LITERATURE_SEARCH',
+  'FULL_TEXT_EVIDENCE_EXTRACTION',
   'FIGURE_PLANNER',
   'SECTION_DRAFTING',
   'HUMANIZATION',
@@ -77,6 +81,9 @@ const STAGE_ORDER: StageKey[] = [
 interface PaperSession {
   id: string
   title?: string
+  paperBlueprint?: {
+    status?: string
+  }
   paperType?: {
     code: string
     name: string
@@ -116,6 +123,7 @@ export default function PaperSessionPage() {
   const [currentStage, setCurrentStage] = useState<StageKey>('OUTLINE_PLANNING')
   const [hasHydratedStage, setHasHydratedStage] = useState(false)
   const [autoSaveStatus, setAutoSaveStatus] = useState<'saved' | 'saving' | 'error'>('saved')
+  const [stageWarning, setStageWarning] = useState<string | null>(null)
   const [aiAssistantOpen, setAiAssistantOpen] = useState(false)
   const [selectedSection, setSelectedSection] = useState<string>('')
 
@@ -222,8 +230,56 @@ export default function PaperSessionPage() {
     )
   }
 
+  const citationsCount = Array.isArray(session?.citations) ? session.citations.length : 0
+  const hasTopic = !!session?.researchTopic?.researchQuestion
+  const hasPaperType = !!session?.paperType?.code
+  const hasFrozenBlueprint = session?.paperBlueprint?.status === 'FROZEN'
+  const deepCandidatesCount = Array.isArray(session?.citations)
+    ? session.citations.filter((citation: any) => {
+        const explicit = String(citation?.deepAnalysisLabel || '').trim().toUpperCase()
+        const fromMeta = citation?.aiMeta && typeof citation.aiMeta === 'object'
+          ? String((citation.aiMeta as any).deepAnalysisRecommendation || '').trim().toUpperCase()
+          : ''
+        const score = Number(citation?.aiMeta && typeof citation.aiMeta === 'object'
+          ? (citation.aiMeta as any).relevanceScore
+          : 0)
+        const label = explicit
+          || fromMeta
+          || (score >= 85 ? 'DEEP_ANCHOR' : score >= 65 ? 'DEEP_SUPPORT' : score >= 45 ? 'DEEP_STRESS_TEST' : 'LIT_ONLY')
+        return Boolean(label) && label !== 'LIT_ONLY'
+      }).length
+    : 0
+
+  const getStageLockReason = (stageKey: StageKey): string | null => {
+    switch (stageKey) {
+      case 'OUTLINE_PLANNING':
+        return null
+      case 'TOPIC_ENTRY':
+        return hasPaperType ? null : 'Select a paper type first to define your research topic.'
+      case 'LITERATURE_SEARCH':
+        return hasTopic ? null : 'Define your research topic to begin literature search.'
+      case 'FULL_TEXT_EVIDENCE_EXTRACTION':
+        if (!hasTopic) return 'Define your research topic before extracting full-text evidence.'
+        if (!hasFrozenBlueprint) return 'Freeze the blueprint before running full-text evidence extraction.'
+        if (citationsCount === 0) return 'Import at least one citation in Literature Search before deep evidence extraction.'
+        return deepCandidatesCount > 0
+          ? null
+          : 'Run Analyze & Map in Literature Search so papers are labeled for deep analysis.'
+      case 'SECTION_DRAFTING':
+        return hasPaperType ? null : 'Complete paper foundation setup before drafting sections.'
+      default:
+        return null
+    }
+  }
+
   const handleNavigateToStage = async (stageKey: string) => {
     const nextStage = stageKey as StageKey
+    const lockReason = getStageLockReason(nextStage)
+    if (lockReason) {
+      setStageWarning(lockReason)
+      return
+    }
+    setStageWarning(null)
     setCurrentStage(nextStage)
 
     if (paperId) {
@@ -413,6 +469,11 @@ export default function PaperSessionPage() {
 
         {/* Main Content */}
         <main className="w-full max-w-[1400px] mx-auto py-6 px-4 sm:px-6 lg:px-8">
+          {stageWarning && (
+            <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              {stageWarning}
+            </div>
+          )}
           <AnimatePresence mode="wait">
             <motion.div
               key={currentStage}

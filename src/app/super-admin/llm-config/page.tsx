@@ -170,27 +170,195 @@ function getPaperStageForSectionLocal(sectionCode: string): string {
   return PAPER_SECTION_TO_STAGE_MAP[normalized] || 'PAPER_CONTENT_GENERATION'
 }
 
-// Paper stage info for UI display
-const PAPER_STAGE_INFO: Record<string, { icon: string; description: string; tip: string }> = {
-  'PAPER_ABSTRACT_TITLE': {
-    icon: '📝',
-    description: 'Titles, abstracts, and keywords',
-    tip: 'Short-form content requiring precision. Higher quality models improve clarity and impact.'
+interface StageHelpInfo {
+  summary: string
+  responsibility: string
+  tip: string
+}
+
+// Human-friendly help text for super-admin LLM controls.
+// Covers all paper drafting stage codes and deep-analysis linked operations.
+const STAGE_CONTROL_HELP: Record<string, StageHelpInfo> = {
+  PAPER_TOPIC_EXTRACT_FROM_FILE: {
+    summary: 'Paper idea normalization from uploaded files.',
+    responsibility: 'Extracts and structures topic details from PDF/DOCX/text into normalized drafting fields.',
+    tip: 'Use strong extraction models with high input limits for long source files.'
   },
-  'PAPER_CONTENT_GENERATION': {
-    icon: '📄',
-    description: 'All main sections (Introduction, Methods, Results, Discussion, etc.)',
-    tip: 'Long-form academic writing. Benefit from models with strong reasoning and writing capabilities.'
+  PAPER_ABSTRACT_TITLE: {
+    summary: 'Short-form title, abstract, and keyword generation.',
+    responsibility: 'Produces concise front-matter content requiring high precision and language quality.',
+    tip: 'Prefer models that are strong at concise academic writing.'
   },
-  'PAPER_CITATION_FORMATTING': {
-    icon: '📚',
-    description: 'References, bibliography, and in-text citations',
-    tip: 'Structured output requiring consistency. Cost-effective models work well here.'
+  PAPER_TOPIC_REFINE_QUESTION: {
+    summary: 'Research question refinement.',
+    responsibility: 'Improves the user-provided question for clarity, scope, and testability.',
+    tip: 'Medium context and reasoning are usually sufficient.'
   },
-  'PAPER_LITERATURE_ANALYSIS': {
-    icon: '🔍',
-    description: 'Literature review, related work synthesis',
-    tip: 'Requires large context windows for analyzing multiple sources. Pro models recommended.'
+  PAPER_CONTENT_GENERATION: {
+    summary: 'Long-form section writing.',
+    responsibility: 'Generates main paper sections such as Introduction, Methods, Results, and Discussion.',
+    tip: 'Use high-capability models with large output limits for better structure and coherence.'
+  },
+  PAPER_TOPIC_SUGGEST_KEYWORDS: {
+    summary: 'Academic keyword suggestion.',
+    responsibility: 'Suggests domain-relevant search and indexing keywords from topic context.',
+    tip: 'Cost-efficient models are usually enough for this stage.'
+  },
+  PAPER_CITATION_FORMATTING: {
+    summary: 'Reference and bibliography formatting (legacy generic stage).',
+    responsibility: 'Handles citation style normalization and bibliography formatting tasks.',
+    tip: 'Consistency matters most; deterministic and cheaper models generally work well.'
+  },
+  PAPER_TOPIC_GENERATE_HYPOTHESIS: {
+    summary: 'Hypothesis generation.',
+    responsibility: 'Generates testable hypotheses aligned to question, methods, and expected outcomes.',
+    tip: 'Choose reasoning-strong models to reduce generic hypotheses.'
+  },
+  PAPER_TOPIC_DRAFT_ABSTRACT: {
+    summary: 'Topic-level abstract drafting.',
+    responsibility: 'Drafts an initial abstract from early topic and methodology context.',
+    tip: 'Balanced reasoning and writing quality works best here.'
+  },
+  PAPER_LITERATURE_ANALYSIS: {
+    summary: 'Literature synthesis and analysis (legacy generic stage).',
+    responsibility: 'Synthesizes multiple papers to summarize patterns, evidence, and research direction.',
+    tip: 'Prefer larger context windows for multi-paper inputs.'
+  },
+  PAPER_TOPIC_FORMULATE_QUESTION: {
+    summary: 'Guided question formulation.',
+    responsibility: 'Assists users in forming a viable research question from broad topic intent.',
+    tip: 'Fast models are usually enough unless topic complexity is high.'
+  },
+  PAPER_FIGURE_SUGGESTION: {
+    summary: 'Figure and visualization planning.',
+    responsibility: 'Suggests useful charts, diagrams, and visual artifacts based on paper content.',
+    tip: 'Use reasoning-capable models for better relevance to section goals.'
+  },
+  PAPER_TOPIC_ENHANCE_ALL: {
+    summary: 'Full topic enhancement.',
+    responsibility: 'Improves all topic fields together for consistency across question, scope, and framing.',
+    tip: 'Stronger models reduce contradictions across fields.'
+  },
+  PAPER_CHART_GENERATOR: {
+    summary: 'Chart specification generation.',
+    responsibility: 'Creates structured chart configurations (e.g., Chart.js) from prompts or data.',
+    tip: 'Favor models with strong structured-output reliability.'
+  },
+  PAPER_DIAGRAM_GENERATOR: {
+    summary: 'Diagram code generation.',
+    responsibility: 'Generates Mermaid or PlantUML diagrams from requirements or prose.',
+    tip: 'Use models with good syntax reliability to minimize repair passes.'
+  },
+  PAPER_SKETCH_GENERATION: {
+    summary: 'AI sketch and illustration generation.',
+    responsibility: 'Generates paper visuals using image-capable models from textual guidance.',
+    tip: 'Ensure the selected model supports image generation.'
+  },
+  PAPER_TEXT_ACTION: {
+    summary: 'Targeted text transformations.',
+    responsibility: 'Applies rewrite, expand, condense, formalize, or simplify actions on selected text.',
+    tip: 'Choose models with controllable style behavior and low latency.'
+  },
+  PAPER_REWRITER: {
+    summary: 'Full rewrite with academic tone.',
+    responsibility: 'Rewrites larger passages while preserving meaning and improving clarity and flow.',
+    tip: 'Prefer higher-quality writing models for this stage.'
+  },
+  PAPER_LITERATURE_SEARCH: {
+    summary: 'Literature search assistance.',
+    responsibility: 'Supports retrieval-oriented prompting for finding relevant academic references.',
+    tip: 'Fast, cost-efficient models are usually sufficient.'
+  },
+  PAPER_LITERATURE_SUMMARIZE: {
+    summary: 'Deep Analysis: Full-Text Evidence Extraction.',
+    responsibility: 'Deep analysis extraction step that builds structured Evidence Cards from full text with claims, metrics, boundaries, and verbatim source fragments.',
+    tip: 'Primary Deep Analysis extraction gateway; keep generous token limits for full papers.'
+  },
+  PAPER_DIAGRAM_FROM_TEXT: {
+    summary: 'Diagram generation from selected text.',
+    responsibility: 'Transforms highlighted document text into diagram specifications automatically.',
+    tip: 'Structured-output accuracy is more important than creative writing quality.'
+  },
+  PAPER_LITERATURE_GAP: {
+    summary: 'Research gap analysis.',
+    responsibility: 'Identifies missing evidence, unresolved questions, and contribution opportunities from reviewed literature.',
+    tip: 'Use reasoning-strong models for higher-quality gap statements.'
+  },
+  LITERATURE_RELEVANCE: {
+    summary: 'Relevance scoring for discovered papers.',
+    responsibility: 'Ranks and filters candidate papers by fit with the active research topic and blueprint intent.',
+    tip: 'A balance of speed and ranking quality is ideal.'
+  },
+  PAPER_BLUEPRINT_GEN: {
+    summary: 'Blueprint generation.',
+    responsibility: 'Builds thesis, section plan, must-cover dimensions, and terminology policy.',
+    tip: 'Critical planning stage; use a top-tier reasoning model.'
+  },
+  PAPER_SECTION_GEN: {
+    summary: 'Section generation with memory.',
+    responsibility: 'Generates section drafts using blueprint constraints and cross-section memory.',
+    tip: 'Higher reasoning and long-context support improve global coherence.'
+  },
+  PAPER_MEMORY_EXTRACT: {
+    summary: 'Section memory extraction.',
+    responsibility: 'Extracts compact structured memory from edited sections for downstream drafting consistency.',
+    tip: 'Fast models are often enough for this structured extraction.'
+  },
+  PAPER_SECTION_DRAFT: {
+    summary: 'Legacy section drafting endpoint.',
+    responsibility: 'Generates section content in drafting routes that still use the legacy stage code.',
+    tip: 'Keep aligned with the primary section generation model to avoid style drift.'
+  },
+  PAPER_SECTION_IMPROVE: {
+    summary: 'Deep Analysis support: Section improvement and citation-repair pass.',
+    responsibility: 'Runs post-draft improvement tasks, including Deep Analysis aware citation whitelist correction in drafting flow.',
+    tip: 'Used as a Deep Analysis downstream support stage during citation repair.'
+  },
+  PAPER_CITATION_FORMAT: {
+    summary: 'Citation formatting (newer stage code).',
+    responsibility: 'Formats in-text citations and references to target style rules.',
+    tip: 'Deterministic formatting quality is more important than deep reasoning.'
+  },
+  PAPER_REVIEW_GAPS: {
+    summary: 'Draft gap review.',
+    responsibility: 'Reviews draft sections for missing arguments, evidence gaps, and under-supported claims.',
+    tip: 'Use reasoning-focused models for more actionable critique.'
+  },
+  PAPER_REVIEW_COHERENCE: {
+    summary: 'Deep Analysis: Evidence card to dimension mapping.',
+    responsibility: 'Deep analysis mapping step that maps extracted Evidence Cards to blueprint dimensions (sectionKey/dimension/useAs) and also supports coherence-oriented review tasks.',
+    tip: 'Primary Deep Analysis mapping gateway; prioritize structured JSON reliability and reasoning.'
+  },
+  PAPER_AI_REVIEW: {
+    summary: 'Automated draft quality review.',
+    responsibility: 'Performs high-level quality checks before fix/rewrite loops.',
+    tip: 'Reasoning quality matters more than raw speed.'
+  },
+  PAPER_AI_FIX: {
+    summary: 'Automated remediation pass.',
+    responsibility: 'Applies structured fixes based on review findings to improve clarity and compliance.',
+    tip: 'Use models with strong instruction-following and edit fidelity.'
+  },
+  PAPER_ARCHETYPE_DETECTION: {
+    summary: 'Reference archetype detection.',
+    responsibility: 'Classifies papers into archetypes for downstream extraction and mapping logic.',
+    tip: 'Reliable classification is more important than creative output.'
+  },
+  PAPER_DIAGRAM_REPAIR: {
+    summary: 'Diagram repair and retry.',
+    responsibility: 'Fixes invalid diagram syntax after generation failures.',
+    tip: 'Use models with high syntax discipline for repair iterations.'
+  }
+}
+
+function getStageHelpInfo(stage: WorkflowStage): StageHelpInfo {
+  const mapped = STAGE_CONTROL_HELP[stage.code]
+  if (mapped) return mapped
+
+  return {
+    summary: stage.description?.trim() || 'No explicit description configured for this stage.',
+    responsibility: 'Controls model selection, fallback order, and token limits for this workflow operation.',
+    tip: 'Use larger models for reasoning-heavy synthesis and smaller models for deterministic transforms.'
   }
 }
 
@@ -651,20 +819,29 @@ export default function LLMConfigPage() {
                   <div key={featureCode} className="mb-6">
                     <h3 className="text-md font-medium text-slate-300 mb-3">{featureLabel}</h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {featureStages.map(stage => (
-                        <div
-                          key={stage.id}
-                          className={`p-4 rounded-lg border ${
-                            stage.isActive ? 'bg-slate-700 border-slate-600' : 'bg-slate-800 border-slate-700 opacity-50'
-                          }`}
-                        >
-                          <div className="font-medium">{stage.displayName}</div>
-                          <div className="text-xs text-slate-500 mt-1">{stage.code}</div>
-                          {stage.description && (
-                            <div className="text-sm text-slate-400 mt-2">{stage.description}</div>
-                          )}
-                        </div>
-                      ))}
+                      {featureStages.map(stage => {
+                        const stageHelp = getStageHelpInfo(stage)
+
+                        return (
+                          <div
+                            key={stage.id}
+                            className={`p-4 rounded-lg border ${
+                              stage.isActive ? 'bg-slate-700 border-slate-600' : 'bg-slate-800 border-slate-700 opacity-50'
+                            }`}
+                          >
+                            <div className="font-medium">{stage.displayName}</div>
+                            <div className="text-xs text-slate-500 mt-1">{stage.code}</div>
+                            <div className="text-sm text-slate-300 mt-2">{stageHelp.summary}</div>
+                            <div className="mt-2 p-2 rounded border border-cyan-700/40 bg-cyan-900/20">
+                              <div className="text-xs text-cyan-200">
+                                <span className="font-semibold text-cyan-100">What this controls:</span>{' '}
+                                {stageHelp.responsibility}
+                              </div>
+                              <div className="text-xs text-cyan-300 mt-1">{stageHelp.tip}</div>
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
                   </div>
                 )
@@ -733,6 +910,7 @@ export default function LLMConfigPage() {
                 {filteredStages.map(stage => {
                   const config = getConfigForStage(stage.id)
                   const isEditing = editingConfig?.stageId === stage.id
+                  const stageHelp = getStageHelpInfo(stage)
 
                   return (
                     <div key={stage.id} className="p-4 hover:bg-slate-700/30">
@@ -740,16 +918,14 @@ export default function LLMConfigPage() {
                         <div className="flex-1">
                           <div className="font-medium">{stage.displayName}</div>
                           <div className="text-xs text-slate-500">{stage.code}</div>
-                          {stage.description && (
-                            <div className="text-sm text-slate-400 mt-1">{stage.description}</div>
-                          )}
-                          {/* Show paper stage recommendations */}
-                          {PAPER_STAGE_INFO[stage.code] && (
-                            <div className="text-xs mt-2 px-2 py-1 rounded inline-flex items-center gap-1 bg-cyan-900/30 text-cyan-400 border border-cyan-700/50">
-                              <span>{PAPER_STAGE_INFO[stage.code].icon}</span>
-                              <span>{PAPER_STAGE_INFO[stage.code].tip}</span>
+                          <div className="text-sm text-slate-300 mt-1">{stageHelp.summary}</div>
+                          <div className="mt-2 p-2 rounded border border-cyan-700/40 bg-cyan-900/20 max-w-3xl">
+                            <div className="text-xs text-cyan-200">
+                              <span className="font-semibold text-cyan-100">What this controls:</span>{' '}
+                              {stageHelp.responsibility}
                             </div>
-                          )}
+                            <div className="text-xs text-cyan-300 mt-1">{stageHelp.tip}</div>
+                          </div>
                           {/* Show model recommendation for ideation stages (if enabled) */}
                           {IDEATION_STAGE_INFO[stage.code] && (
                             <div className={`text-xs mt-2 px-2 py-1 rounded inline-flex items-center gap-1 ${

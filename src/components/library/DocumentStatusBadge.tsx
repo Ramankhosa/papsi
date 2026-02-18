@@ -1,13 +1,15 @@
 'use client';
 
 import React from 'react';
-import { FileText, Loader2, AlertCircle, Upload, CheckCircle } from 'lucide-react';
+import { Loader2, AlertCircle, Upload, CheckCircle } from 'lucide-react';
 
 interface DocumentStatusBadgeProps {
     status: 'UPLOADED' | 'PARSING' | 'READY' | 'FAILED';
     errorCode?: string | null;
     filename?: string;
     fileSizeBytes?: number;
+    mimeType?: string | null;
+    sourceType?: 'UPLOAD' | 'DOI_FETCH' | 'URL_IMPORT' | 'TEXT_PASTE' | string | null;
     compact?: boolean;
 }
 
@@ -44,7 +46,7 @@ const ERROR_MESSAGES: Record<string, string> = {
     scanned_only: 'Scanned PDF (no text)',
     unsupported: 'Unsupported format',
     file_not_found: 'File missing',
-    parse_error: 'Processing error',
+    parse_error: 'Text extraction failed',
 };
 
 function formatFileSize(bytes: number): string {
@@ -58,32 +60,46 @@ export function DocumentStatusBadge({
     errorCode,
     filename,
     fileSizeBytes,
+    mimeType,
+    sourceType,
     compact = false,
 }: DocumentStatusBadgeProps) {
     const config = STATUS_CONFIG[status] || STATUS_CONFIG.UPLOADED;
     const Icon = config.icon;
+    const normalizedMimeType = String(mimeType || '').toLowerCase();
+    const isPdfDocument = normalizedMimeType.includes('pdf');
+    const isTextDocument = normalizedMimeType.startsWith('text/') || sourceType === 'TEXT_PASTE';
+    const failedButViewablePdf = status === 'FAILED' && errorCode === 'parse_error' && isPdfDocument;
     const errorMessage = errorCode ? ERROR_MESSAGES[errorCode] || errorCode : null;
+    const resolvedLabel = status === 'READY'
+        ? (isTextDocument && !isPdfDocument ? 'Text Ready' : 'PDF Ready')
+        : (status === 'FAILED' && failedButViewablePdf
+            ? 'PDF available (text extraction failed)'
+            : (status === 'FAILED' && errorMessage ? errorMessage : config.label));
+    const resolvedColor = failedButViewablePdf
+        ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+        : config.color;
 
     if (compact) {
         return (
             <span
-                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border ${config.color}`}
-                title={errorMessage || config.label}
+                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border ${resolvedColor}`}
+                title={resolvedLabel}
             >
                 <Icon className={`h-3 w-3 ${config.animate ? 'animate-spin' : ''}`} />
-                {status === 'READY' ? 'PDF' : status === 'FAILED' ? '!' : '...'}
+                {status === 'READY' ? (isPdfDocument ? 'PDF' : 'TXT') : status === 'FAILED' ? '!' : '...'}
             </span>
         );
     }
 
     return (
         <div
-            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium border ${config.color}`}
+            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium border ${resolvedColor}`}
             title={filename || ''}
         >
             <Icon className={`h-3.5 w-3.5 flex-shrink-0 ${config.animate ? 'animate-spin' : ''}`} />
             <span className="truncate max-w-[120px]">
-                {status === 'FAILED' && errorMessage ? errorMessage : config.label}
+                {resolvedLabel}
             </span>
             {fileSizeBytes && status === 'READY' && (
                 <span className="text-[10px] opacity-60 ml-0.5">
