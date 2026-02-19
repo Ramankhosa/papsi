@@ -121,7 +121,7 @@ export const DEFAULT_CARD_TARGETS: Record<Exclude<DeepAnalysisLabel, 'LIT_ONLY'>
 };
 
 export const DEFAULT_EXTRACTION_CONCURRENCY = Number.parseInt(
-  process.env.DEEP_ANALYSIS_CONCURRENCY || '10',
+  process.env.DEEP_ANALYSIS_CONCURRENCY || '4',
   10
 );
 

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { prisma } from '@/lib/prisma';
 import { featureFlags } from '@/lib/feature-flags';
+import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 import { deepAnalysisService } from '@/lib/services/deep-analysis-service';
 
 export const runtime = 'nodejs';
@@ -15,13 +16,27 @@ const retrySchema = z.object({
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
   if (user.roles?.includes('SUPER_ADMIN')) {
-    return prisma.draftingSession.findUnique({ where: { id: sessionId }, select: { id: true } });
+    return prisma.draftingSession.findUnique({
+      where: { id: sessionId },
+      select: { id: true, tenantId: true },
+    });
   }
 
   return prisma.draftingSession.findFirst({
     where: { id: sessionId, userId: user.id },
-    select: { id: true },
+    select: { id: true, tenantId: true },
   });
+}
+
+async function resolveTenantContext(request: NextRequest, userId: string) {
+  const authorization = request.headers.get('authorization');
+  if (!authorization) return null;
+  const tenantContext = await extractTenantContextFromRequest({ headers: { authorization } });
+  if (!tenantContext) return null;
+  return {
+    ...tenantContext,
+    userId: tenantContext.userId || userId,
+  };
 }
 
 export async function POST(request: NextRequest, context: { params: { paperId: string } }) {
@@ -43,10 +58,11 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
     const body = await request.json().catch(() => ({}));
     const input = retrySchema.parse(body || {});
+    const tenantContext = await resolveTenantContext(request, user.id);
 
     const result = await deepAnalysisService.retryFailed(sessionId, input.jobIds, {
       concurrency: input.concurrency,
-      tenantContext: null,
+      tenantContext,
     });
 
     return NextResponse.json(result);

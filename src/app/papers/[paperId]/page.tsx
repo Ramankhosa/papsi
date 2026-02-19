@@ -289,8 +289,7 @@ export default function PaperSessionPage() {
 
   const handleSessionUpdated = (updatedSession: any) => {
     setSession(updatedSession)
-    setAutoSaveStatus('saving')
-    setTimeout(() => setAutoSaveStatus('saved'), 1000)
+    setAutoSaveStatus('saved')
   }
 
   const handleTitleEdit = async (newTitle: string) => {

@@ -35,7 +35,7 @@ For each card, map it to relevant section/dimension pairs and assign:
 RULES:
 1. A card can map to multiple section/dimension pairs.
 2. Only map when relevance is genuine; do not force mappings.
-3. Return each cardId exactly as provided in the input cards.
+3. Return each cardId exactly as provided in the input cards. Do not invent, truncate, or reformat IDs.
 4. UseAs guidance:
    - SUPPORT: backs a claim in that dimension
    - CONTRAST: challenges or differs from expected approach/result
@@ -62,7 +62,8 @@ function buildMappingPrompt(
   cards: ExtractedCardWithIdentity[],
   blueprint: BlueprintWithSectionPlan
 ): MappingPrompt {
-  const cardSummaries = cards.map(card => ({
+  const cardSummaries = cards.map((card, inputIndex) => ({
+    inputIndex,
     cardId: card.cardId,
     claim: card.claim,
     claimType: card.claimType,
@@ -81,6 +82,9 @@ function buildMappingPrompt(
     '=== EVIDENCE CARDS ===',
     JSON.stringify(cardSummaries, null, 2),
     '',
+    '=== ALLOWED CARD IDS (COPY EXACTLY) ===',
+    JSON.stringify(cards.map(card => card.cardId), null, 2),
+    '',
     '=== PAPER BLUEPRINT ===',
     JSON.stringify(blueprintStructure, null, 2),
   ].join('\n');
@@ -97,6 +101,27 @@ function tokenize(text: string): string[] {
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
     .filter(token => token.length > 2);
+}
+
+function normalizeSectionKey(value: string): string {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
+function normalizeDimension(value: string): string {
+  return String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function normalizeCardId(value: string): string {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
 }
 
 function inferUseAs(card: ExtractedCardWithIdentity): EvidenceMappingUseAs {
@@ -275,42 +300,70 @@ class EvidenceMappingService {
     }
 
     const idMap = new Map<string, string>();
+    const normalizedIdMap = new Map<string, string>();
     cards.forEach((card, index) => {
-      idMap.set(`card_${index}`, card.cardId);
-      idMap.set(card.cardId, card.cardId);
+      const aliases = new Set([
+        card.cardId,
+        `card_${index}`,
+      ]);
+      aliases.forEach(alias => {
+        const clean = String(alias || '').trim();
+        if (!clean) return;
+        if (!idMap.has(clean)) {
+          idMap.set(clean, card.cardId);
+        }
+        const normalized = normalizeCardId(clean);
+        if (normalized && !normalizedIdMap.has(normalized)) {
+          normalizedIdMap.set(normalized, card.cardId);
+        }
+      });
     });
 
-    const validSectionKeys = new Set(blueprint.sectionPlan.map(section => section.sectionKey));
-    const dimensionsBySection = new Map<string, Set<string>>();
+    const sectionKeyMap = new Map<string, string>();
+    const dimensionsBySection = new Map<string, Map<string, string>>();
     blueprint.sectionPlan.forEach(section => {
-      dimensionsBySection.set(section.sectionKey, new Set(section.mustCover || []));
+      sectionKeyMap.set(section.sectionKey, section.sectionKey);
+      sectionKeyMap.set(normalizeSectionKey(section.sectionKey), section.sectionKey);
+
+      const dimMap = new Map<string, string>();
+      for (const dimension of section.mustCover || []) {
+        const normalized = normalizeDimension(dimension);
+        if (!dimMap.has(normalized)) {
+          dimMap.set(normalized, dimension);
+        }
+      }
+      dimensionsBySection.set(section.sectionKey, dimMap);
     });
 
     const mappings: CardDimensionMapping[] = [];
 
     for (const cardMapping of parsed.data) {
-      const resolvedCardId = idMap.get(cardMapping.cardId);
+      const rawCardId = String(cardMapping.cardId || '').trim();
+      const resolvedCardId = idMap.get(rawCardId) || normalizedIdMap.get(normalizeCardId(rawCardId));
       if (!resolvedCardId) {
-        warnings.push(`Dropped mapping for unknown card id: ${cardMapping.cardId}`);
+        warnings.push(`Dropped mapping for unknown card id: ${rawCardId || '(empty)'}`);
         continue;
       }
 
       for (const mapping of cardMapping.mappings) {
-        if (!validSectionKeys.has(mapping.sectionKey)) {
+        const sectionKeyInput = String(mapping.sectionKey || '').trim();
+        const resolvedSectionKey = sectionKeyMap.get(sectionKeyInput) || sectionKeyMap.get(normalizeSectionKey(sectionKeyInput));
+        if (!resolvedSectionKey) {
           warnings.push(`Dropped mapping with invalid sectionKey: ${mapping.sectionKey}`);
           continue;
         }
 
-        const validDimensions = dimensionsBySection.get(mapping.sectionKey);
-        if (!validDimensions || !validDimensions.has(mapping.dimension)) {
-          warnings.push(`Dropped mapping with invalid dimension for section ${mapping.sectionKey}`);
+        const validDimensions = dimensionsBySection.get(resolvedSectionKey);
+        const resolvedDimension = validDimensions?.get(normalizeDimension(mapping.dimension));
+        if (!resolvedDimension) {
+          warnings.push(`Dropped mapping with invalid dimension for section ${resolvedSectionKey}`);
           continue;
         }
 
         mappings.push({
           cardId: resolvedCardId,
-          sectionKey: mapping.sectionKey,
-          dimension: mapping.dimension,
+          sectionKey: resolvedSectionKey,
+          dimension: resolvedDimension,
           useAs: mapping.useAs,
           mappingConfidence: mapping.mappingConfidence,
         });

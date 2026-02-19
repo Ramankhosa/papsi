@@ -9,6 +9,8 @@ export interface VerificationResult {
 
 const MAX_SIMILARITY_PAPER_CHARS = 60_000;
 const SIMILARITY_CONTEXT_WINDOW = 10_000;
+const TOKEN_OVERLAP_SHORT_CIRCUIT = 0.7;
+const TOKEN_OVERLAP_MIN_TOKENS = 12;
 
 function normalize(text: string): string {
   return String(text || '')
@@ -146,6 +148,14 @@ class QuoteVerificationService {
     const quoteTokens = tokenize(normQuote);
     const overlap = slidingWindowTokenOverlap(quoteTokens, normText);
     if (overlap.score >= 0.85) {
+      return {
+        verified: true,
+        method: 'TOKEN_OVERLAP',
+        score: overlap.score,
+        matchedSpan: overlap.span,
+      };
+    }
+    if (overlap.score >= TOKEN_OVERLAP_SHORT_CIRCUIT && quoteTokens.length >= TOKEN_OVERLAP_MIN_TOKENS) {
       return {
         verified: true,
         method: 'TOKEN_OVERLAP',

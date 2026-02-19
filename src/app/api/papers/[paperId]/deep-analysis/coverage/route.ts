@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { prisma } from '@/lib/prisma';
 import { featureFlags } from '@/lib/feature-flags';
-import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 import { deepAnalysisService } from '@/lib/services/deep-analysis-service';
 
 export const runtime = 'nodejs';
@@ -10,27 +9,13 @@ export const dynamic = 'force-dynamic';
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
   if (user.roles?.includes('SUPER_ADMIN')) {
-    return prisma.draftingSession.findUnique({
-      where: { id: sessionId },
-      select: { id: true, tenantId: true },
-    });
+    return prisma.draftingSession.findUnique({ where: { id: sessionId }, select: { id: true } });
   }
 
   return prisma.draftingSession.findFirst({
     where: { id: sessionId, userId: user.id },
-    select: { id: true, tenantId: true },
+    select: { id: true },
   });
-}
-
-async function resolveTenantContext(request: NextRequest, userId: string) {
-  const authorization = request.headers.get('authorization');
-  if (!authorization) return null;
-  const tenantContext = await extractTenantContextFromRequest({ headers: { authorization } });
-  if (!tenantContext) return null;
-  return {
-    ...tenantContext,
-    userId: tenantContext.userId || userId,
-  };
 }
 
 export async function GET(request: NextRequest, context: { params: { paperId: string } }) {
@@ -50,11 +35,10 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
       return NextResponse.json({ error: 'Paper session not found' }, { status: 404 });
     }
 
-    const tenantContext = await resolveTenantContext(request, user.id);
-    const result = await deepAnalysisService.getStatus(sessionId, { tenantContext });
+    const result = await deepAnalysisService.getCoverage(sessionId);
     return NextResponse.json(result);
   } catch (error: any) {
-    console.error('[DeepAnalysis] status error:', error);
-    return NextResponse.json({ error: error?.message || 'Failed to fetch deep analysis status' }, { status: 500 });
+    console.error('[DeepAnalysis] coverage error:', error);
+    return NextResponse.json({ error: error?.message || 'Failed to fetch deep analysis coverage' }, { status: 500 });
   }
 }

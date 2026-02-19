@@ -1,7 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import LiteratureSearchStage from '@/components/stages/LiteratureSearchStage';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -11,6 +10,7 @@ import {
   CardHeader,
   CardTitle
 } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 interface FullTextEvidenceExtractionStageProps {
   sessionId: string;
@@ -110,8 +110,6 @@ type ActionState =
   | 'stopping'
   | 'retrying'
   | 'remapping'
-  | 'refreshing'
-  | 'loading_cards'
   | null;
 
 type ViewMode = 'paper' | 'dimension' | 'section';
@@ -158,12 +156,26 @@ export default function FullTextEvidenceExtractionStage({
 
   const [lastEstimatedSeconds, setLastEstimatedSeconds] = useState<number | null>(null);
   const [actionState, setActionState] = useState<ActionState>(null);
+  const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
+  const [cardsLoading, setCardsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [fullTextModalCandidate, setFullTextModalCandidate] = useState<CandidateRow | null>(null);
+  const [fullTextModalContent, setFullTextModalContent] = useState<string>('');
+  const [fullTextModalError, setFullTextModalError] = useState<string | null>(null);
+  const [loadingFullTextCitationId, setLoadingFullTextCitationId] = useState<string | null>(null);
+  const hasInitializedSelectionRef = useRef(false);
+  const cardsRequestIdRef = useRef(0);
+  const refreshRequestIdRef = useRef(0);
+  const onSessionUpdatedRef = useRef(onSessionUpdated);
 
   const authHeaders = useMemo<Record<string, string>>(
     () => (authToken ? { Authorization: `Bearer ${authToken}` } : ({} as Record<string, string>)),
     [authToken]
   );
+
+  useEffect(() => {
+    onSessionUpdatedRef.current = onSessionUpdated;
+  }, [onSessionUpdated]);
 
   const loadSession = useCallback(async () => {
     if (!authToken) return;
@@ -172,8 +184,8 @@ export default function FullTextEvidenceExtractionStage({
     if (!response.ok) {
       throw new Error(payload?.error || 'Failed to load session');
     }
-    onSessionUpdated?.(payload.session);
-  }, [authHeaders, authToken, onSessionUpdated, sessionId]);
+    onSessionUpdatedRef.current?.(payload.session);
+  }, [authHeaders, authToken, sessionId]);
 
   const loadCandidates = useCallback(async () => {
     if (!authToken) return;
@@ -214,7 +226,8 @@ export default function FullTextEvidenceExtractionStage({
 
   const loadCards = useCallback(async () => {
     if (!authToken) return;
-    setActionState(prev => (prev === null ? 'loading_cards' : prev));
+    const requestId = ++cardsRequestIdRef.current;
+    setCardsLoading(true);
     try {
       const query = new URLSearchParams();
       query.set('view', viewMode);
@@ -228,14 +241,20 @@ export default function FullTextEvidenceExtractionStage({
       if (!response.ok) {
         throw new Error((payload as any)?.error || 'Failed to load evidence cards');
       }
+      if (requestId !== cardsRequestIdRef.current) {
+        return;
+      }
       setCardsPayload(payload);
     } finally {
-      setActionState(prev => (prev === 'loading_cards' ? null : prev));
+      if (requestId === cardsRequestIdRef.current) {
+        setCardsLoading(false);
+      }
     }
   }, [authHeaders, authToken, claimTypeFilter, confidenceFilter, sessionId, verifiedFilter, viewMode]);
 
   const refreshAll = useCallback(async () => {
-    setActionState('refreshing');
+    const requestId = ++refreshRequestIdRef.current;
+    setIsRefreshing(true);
     setError(null);
     try {
       await Promise.all([
@@ -248,26 +267,37 @@ export default function FullTextEvidenceExtractionStage({
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to refresh full-text evidence extraction state');
     } finally {
-      setActionState(null);
+      if (requestId === refreshRequestIdRef.current) {
+        setIsRefreshing(false);
+      }
     }
   }, [loadCandidates, loadCards, loadCoverage, loadSession, loadStatus]);
 
+  const refreshAllRef = useRef(refreshAll);
+
   useEffect(() => {
-    void refreshAll();
+    refreshAllRef.current = refreshAll;
   }, [refreshAll]);
+
+  useEffect(() => {
+    if (!authToken) return;
+    void refreshAllRef.current();
+  }, [authToken, sessionId]);
 
   useEffect(() => {
     setSelectedIds(prev => {
       const readySet = new Set(readyCandidates.map(candidate => candidate.citationId));
-      if (readySet.size === 0) return new Set();
-      const preserved = new Set<string>();
-      for (const id of Array.from(prev)) {
-        if (readySet.has(id)) preserved.add(id);
+      if (readySet.size === 0) {
+        hasInitializedSelectionRef.current = false;
+        return new Set();
       }
-      if (preserved.size > 0) {
-        return preserved;
+
+      if (!hasInitializedSelectionRef.current) {
+        hasInitializedSelectionRef.current = true;
+        return readySet;
       }
-      return readySet;
+
+      return new Set(Array.from(prev).filter(id => readySet.has(id)));
     });
   }, [readyCandidates]);
 
@@ -387,6 +417,41 @@ export default function FullTextEvidenceExtractionStage({
     }
   }, [authHeaders, authToken, loadCards, loadCoverage, loadStatus, sessionId]);
 
+  const handleViewExtractedText = useCallback(async (candidate: CandidateRow) => {
+    if (!authToken) return;
+
+    setFullTextModalCandidate(candidate);
+    setFullTextModalContent('');
+    setFullTextModalError(null);
+
+    if (!candidate.referenceId) {
+      setFullTextModalError('This citation is not linked to a library reference yet.');
+      return;
+    }
+
+    setLoadingFullTextCitationId(candidate.citationId);
+    try {
+      const response = await fetch(`/api/references/${candidate.referenceId}/full-text`, {
+        headers: authHeaders,
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload?.success) {
+        throw new Error(payload?.error || 'Failed to load extracted full text');
+      }
+
+      const text = String(payload?.text || '').trim();
+      if (!text) {
+        throw new Error('Extracted text is not available yet.');
+      }
+
+      setFullTextModalContent(text);
+    } catch (err) {
+      setFullTextModalError(err instanceof Error ? err.message : 'Failed to load extracted full text');
+    } finally {
+      setLoadingFullTextCitationId(null);
+    }
+  }, [authHeaders, authToken]);
+
   const eligibleCount = readyCandidates.length + notReadyCandidates.length;
 
   const selectedReadyCount = useMemo(() => {
@@ -474,6 +539,7 @@ export default function FullTextEvidenceExtractionStage({
   }, [dimensionGroups]);
 
   const running = statusPayload?.status === 'RUNNING';
+  const isMutating = actionState !== null;
 
   return (
     <div className="space-y-4">
@@ -515,7 +581,7 @@ export default function FullTextEvidenceExtractionStage({
           <div className="flex flex-wrap gap-2">
             <Button
               onClick={handleStart}
-              disabled={actionState !== null || selectedReadyCount === 0}
+              disabled={isMutating || running || selectedReadyCount === 0}
               size="sm"
               className="bg-indigo-600 hover:bg-indigo-700 text-white"
             >
@@ -525,7 +591,7 @@ export default function FullTextEvidenceExtractionStage({
               variant="outline"
               size="sm"
               onClick={handleStop}
-              disabled={actionState !== null || !running}
+              disabled={isMutating || !running}
             >
               {actionState === 'stopping' ? 'Stopping...' : 'Stop Processing'}
             </Button>
@@ -533,7 +599,7 @@ export default function FullTextEvidenceExtractionStage({
               variant="outline"
               size="sm"
               onClick={handleRetryFailed}
-              disabled={actionState !== null || failedJobCount === 0}
+              disabled={isMutating || failedJobCount === 0}
             >
               {actionState === 'retrying' ? 'Retrying...' : `Retry Failed (${failedJobCount})`}
             </Button>
@@ -541,7 +607,7 @@ export default function FullTextEvidenceExtractionStage({
               variant="outline"
               size="sm"
               onClick={handleRemap}
-              disabled={actionState !== null}
+              disabled={isMutating}
             >
               {actionState === 'remapping' ? 'Remapping...' : 'Re-map Cards'}
             </Button>
@@ -549,9 +615,9 @@ export default function FullTextEvidenceExtractionStage({
               variant="outline"
               size="sm"
               onClick={refreshAll}
-              disabled={actionState !== null}
+              disabled={isMutating || isRefreshing}
             >
-              {actionState === 'refreshing' ? 'Refreshing...' : 'Refresh'}
+              {isRefreshing ? 'Refreshing...' : 'Refresh'}
             </Button>
           </div>
 
@@ -574,7 +640,7 @@ export default function FullTextEvidenceExtractionStage({
                   const checked = selectedIds.has(candidate.citationId);
                   const status = String(candidate.deepAnalysisStatus || 'PENDING').toUpperCase();
                   return (
-                    <label
+                    <div
                       key={candidate.citationId}
                       className="flex items-start gap-2 px-3 py-2 border-b last:border-b-0 text-xs"
                     >
@@ -604,7 +670,17 @@ export default function FullTextEvidenceExtractionStage({
                           )}
                         </div>
                       </div>
-                    </label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-[11px] whitespace-nowrap"
+                        onClick={() => void handleViewExtractedText(candidate)}
+                        disabled={!candidate.referenceId || loadingFullTextCitationId === candidate.citationId}
+                      >
+                        {loadingFullTextCitationId === candidate.citationId ? 'Loading...' : 'View Text'}
+                      </Button>
+                    </div>
                   );
                 })}
               </div>
@@ -628,6 +704,18 @@ export default function FullTextEvidenceExtractionStage({
                     </div>
                     <div className="mt-1 text-red-700">
                       {candidate.readinessReason || 'No extractable text available'}
+                    </div>
+                    <div className="mt-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-[11px]"
+                        onClick={() => void handleViewExtractedText(candidate)}
+                        disabled={!candidate.referenceId || loadingFullTextCitationId === candidate.citationId}
+                      >
+                        {loadingFullTextCitationId === candidate.citationId ? 'Loading...' : 'View Text'}
+                      </Button>
                     </div>
                   </div>
                 ))}
@@ -727,7 +815,7 @@ export default function FullTextEvidenceExtractionStage({
           </div>
 
           <div className="text-xs text-slate-700">
-            {cardsPayload?.totalCards || 0} cards loaded | showing {filteredCards.length} after search | coverage{' '}
+            {cardsLoading ? 'Loading evidence cards...' : `${cardsPayload?.totalCards || 0} cards loaded`} | showing {filteredCards.length} after search | coverage{' '}
             {Math.round(Number(coveragePayload?.overallCoverage || 0) * 100)}%
             {' '}| mapped dimensions {coveragePayload?.dimensionCoverage?.length || 0}
             {' '}| matrix rows {coveragePayload?.matrix?.length || 0}
@@ -853,12 +941,38 @@ export default function FullTextEvidenceExtractionStage({
         </CardContent>
       </Card>
 
-      <LiteratureSearchStage
-        sessionId={sessionId}
-        authToken={authToken}
-        onSessionUpdated={onSessionUpdated}
-        stageMode="full_text_evidence_extraction"
-      />
+      <Dialog
+        open={Boolean(fullTextModalCandidate)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setFullTextModalCandidate(null);
+            setFullTextModalContent('');
+            setFullTextModalError(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-4xl bg-white border-gray-200 shadow-2xl max-h-[85vh]">
+          <DialogHeader>
+            <DialogTitle>Extracted Full Text</DialogTitle>
+            <DialogDescription>
+              {fullTextModalCandidate
+                ? `${fullTextModalCandidate.citationKey} - ${fullTextModalCandidate.title}`
+                : ''}
+            </DialogDescription>
+          </DialogHeader>
+          {fullTextModalError ? (
+            <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+              {fullTextModalError}
+            </div>
+          ) : (
+            <div className="overflow-y-auto border rounded-md p-3 bg-gray-50 max-h-[62vh]">
+              <pre className="whitespace-pre-wrap text-xs leading-relaxed text-gray-800 font-sans">
+                {fullTextModalContent}
+              </pre>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

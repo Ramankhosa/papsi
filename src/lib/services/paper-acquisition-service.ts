@@ -507,6 +507,8 @@ class PaperAcquisitionService {
             sourceIdentifier: true,
             mimeType: true,
             parsedText: true,
+            sectionsJson: true,
+            parserUsed: true,
             pageCount: true,
           },
         },
@@ -521,6 +523,21 @@ class PaperAcquisitionService {
       };
     }
 
+    let resolvedText = typeof link.document.parsedText === 'string' ? link.document.parsedText.trim() : '';
+    if (!resolvedText) {
+      const derived = this.buildTextFromSectionsJson(link.document.sectionsJson);
+      if (derived) {
+        resolvedText = derived;
+        await prisma.referenceDocument.update({
+          where: { id: link.document.id },
+          data: {
+            parsedText: derived,
+            parserUsed: link.document.parserUsed || 'GROBID',
+          },
+        }).catch(() => undefined);
+      }
+    }
+
     return {
       success: true,
       referenceId,
@@ -530,7 +547,7 @@ class PaperAcquisitionService {
         sourceIdentifier: link.document.sourceIdentifier,
         mimeType: link.document.mimeType,
       }),
-      text: link.document.parsedText || undefined,
+      text: resolvedText || undefined,
       pageCount: link.document.pageCount,
     };
   }
@@ -758,6 +775,23 @@ class PaperAcquisitionService {
       where: { id: referenceId },
       data: { pdfUrl },
     });
+  }
+
+  private buildTextFromSectionsJson(raw: unknown): string | null {
+    if (!Array.isArray(raw)) return null;
+
+    const chunks = raw
+      .map(item => {
+        if (!item || typeof item !== 'object') return '';
+        const heading = String((item as any).heading || '').trim();
+        const text = String((item as any).text || '').trim();
+        if (!text) return '';
+        return heading ? `## ${heading}\n\n${text}` : text;
+      })
+      .filter(Boolean);
+
+    if (chunks.length === 0) return null;
+    return chunks.join('\n\n').trim() || null;
   }
 
   private normalizePdfStatus(status: unknown): 'UPLOADED' | 'PARSING' | 'READY' | 'FAILED' | 'NONE' {

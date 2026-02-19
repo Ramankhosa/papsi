@@ -15,6 +15,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
+import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 import { blueprintService, type SectionPlanItem } from '@/lib/services/blueprint-service';
 import { deepAnalysisService } from '@/lib/services/deep-analysis-service';
 
@@ -71,6 +72,17 @@ async function getSessionWithTopic(sessionId: string, user: { id: string; roles?
       paperBlueprint: true
     }
   });
+}
+
+async function resolveTenantContext(request: NextRequest, userId: string) {
+  const authorization = request.headers.get('authorization');
+  if (!authorization) return null;
+  const tenantContext = await extractTenantContextFromRequest({ headers: { authorization } });
+  if (!tenantContext) return null;
+  return {
+    ...tenantContext,
+    userId: tenantContext.userId || userId,
+  };
 }
 
 // ============================================================================
@@ -169,7 +181,8 @@ export async function POST(
           where: { sessionId },
         });
         if (hasExtractedCards > 0) {
-          await deepAnalysisService.remapAll(sessionId, null).catch(err => {
+          const tenantContext = await resolveTenantContext(request, user.id);
+          await deepAnalysisService.remapAll(sessionId, tenantContext).catch(err => {
             console.warn('[Blueprint] Auto-remap after freeze failed:', err);
           });
         }

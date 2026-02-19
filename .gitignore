@@ -23,6 +23,8 @@ pids
 
 # Coverage directory used by tools like istanbul
 coverage/
+!src/app/api/papers/[[]paperId[]]/deep-analysis/coverage/
+!src/app/api/papers/[[]paperId[]]/deep-analysis/coverage/route.ts
 
 # Logs
 logs

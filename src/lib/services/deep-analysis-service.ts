@@ -996,11 +996,14 @@ class DeepAnalysisService {
     };
   }
 
-  async getStatus(sessionId: string): Promise<DeepAnalysisStatusResult> {
+  async getStatus(
+    sessionId: string,
+    options: { tenantContext?: TenantContext | null; concurrency?: number } = {}
+  ): Promise<DeepAnalysisStatusResult> {
     await this.recoverStaleJobs(sessionId);
     await this.triggerActiveBatches(sessionId, {
-      concurrency: clampConcurrency(DEFAULT_EXTRACTION_CONCURRENCY),
-      tenantContext: null,
+      concurrency: clampConcurrency(options.concurrency ?? DEFAULT_EXTRACTION_CONCURRENCY),
+      tenantContext: options.tenantContext || null,
     });
 
     const jobs = await prisma.deepAnalysisJob.findMany({
@@ -1237,8 +1240,23 @@ class DeepAnalysisService {
     const allMappings: CardDimensionMapping[] = [];
 
     for (const citationCards of Array.from(cardsByCitation.values())) {
-      const mapped = await evidenceMappingService.mapCardsToDimensions(citationCards, blueprint, tenantContext || null);
-      allMappings.push(...mapped.mappings);
+      const idAliasMap = new Map<string, string>();
+      const promptCards: ExtractedCardWithIdentity[] = citationCards.map((card, index) => {
+        const promptCardId = `card_${index}`;
+        idAliasMap.set(promptCardId, card.cardId);
+        return {
+          ...card,
+          cardId: promptCardId,
+        };
+      });
+
+      const mapped = await evidenceMappingService.mapCardsToDimensions(promptCards, blueprint, tenantContext || null);
+      allMappings.push(
+        ...mapped.mappings.map(mapping => ({
+          ...mapping,
+          cardId: idAliasMap.get(mapping.cardId) || mapping.cardId,
+        }))
+      );
     }
 
     if (allMappings.length > 0) {
