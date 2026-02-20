@@ -11,7 +11,9 @@ export interface EvidenceCardSnippet {
   sourceSection?: string | null;
   quantitativeDetail: string | null;
   conditions: string | null;
+  comparableMetrics?: Record<string, string | number | boolean | null> | null;
   doesNotSupport: string | null;
+  scopeCondition?: string | null;
   studyDesign: string | null;
   rigorIndicators: string | null;
   sourceFragment: string;
@@ -668,7 +670,11 @@ class EvidencePackService {
         sourceSection: card.sourceSection || null,
         quantitativeDetail: card.quantitativeDetail,
         conditions: card.conditions,
+        comparableMetrics: (card.comparableMetrics && typeof card.comparableMetrics === 'object' && !Array.isArray(card.comparableMetrics))
+          ? card.comparableMetrics as Record<string, string | number | boolean | null>
+          : null,
         doesNotSupport: card.doesNotSupport,
+        scopeCondition: card.scopeCondition || null,
         studyDesign: card.studyDesign,
         rigorIndicators: card.rigorIndicators,
         sourceFragment: card.sourceFragment,

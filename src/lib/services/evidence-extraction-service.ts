@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { llmGateway, type TenantContext } from '../metering';
 import {
   extractionCardSchema,
+  EVIDENCE_CLAIM_TYPES,
+  EVIDENCE_CONFIDENCE_LEVELS,
   type ExtractedEvidenceCard,
   type PreparedPaperText,
   type DeepAnalysisLabel,
@@ -11,6 +13,8 @@ import {
 } from './deep-analysis-types';
 
 const SINGLE_CALL_TOKEN_LIMIT = 25_000;
+const LLM_MAX_RETRIES = 1;
+const LLM_RETRY_DELAY_MS = 2_000;
 
 const SYSTEM_PROMPT_BASE = `You are a research evidence extractor.
 Read the paper text and return structured evidence cards for academic drafting.
@@ -176,6 +180,182 @@ function enforceCardRules(card: ExtractedEvidenceCard, index: number, warnings: 
   return next;
 }
 
+const CLAIM_TYPE_SET = new Set<string>(EVIDENCE_CLAIM_TYPES);
+const CONFIDENCE_SET = new Set<string>(EVIDENCE_CONFIDENCE_LEVELS);
+
+const CLAIM_TYPE_ALIASES: Record<string, string> = {
+  FINDINGS: 'FINDING',
+  RESULT: 'FINDING',
+  RESULTS: 'FINDING',
+  OBSERVATION: 'FINDING',
+  EVIDENCE: 'FINDING',
+  OUTCOME: 'FINDING',
+  PERFORMANCE: 'FINDING',
+  COMPARISON: 'FINDING',
+  METHODOLOGY: 'METHOD',
+  METHODS: 'METHOD',
+  APPROACH: 'METHOD',
+  TECHNIQUE: 'METHOD',
+  PROCEDURE: 'METHOD',
+  ALGORITHM: 'METHOD',
+  IMPLEMENTATION: 'METHOD',
+  DESIGN: 'METHOD',
+  SETUP: 'METHOD',
+  DATASET: 'METHOD',
+  DATA: 'METHOD',
+  EXPERIMENT: 'METHOD',
+  EVALUATION: 'METHOD',
+  BENCHMARK: 'METHOD',
+  METRIC: 'METHOD',
+  BOUNDARY: 'LIMITATION',
+  CONSTRAINT: 'LIMITATION',
+  WEAKNESS: 'LIMITATION',
+  THREAT: 'LIMITATION',
+  CAVEAT: 'LIMITATION',
+  BIAS: 'LIMITATION',
+  RESEARCH_GAP: 'GAP',
+  FUTURE_WORK: 'GAP',
+  OPEN_PROBLEM: 'GAP',
+  CONCEPT: 'DEFINITION',
+  TERM: 'DEFINITION',
+  THEORY: 'FRAMEWORK',
+  MODEL: 'FRAMEWORK',
+  ARCHITECTURE: 'FRAMEWORK',
+  PARADIGM: 'FRAMEWORK',
+  CONTEXT: 'FINDING',
+  BACKGROUND: 'FINDING',
+  CONTRIBUTION: 'FINDING',
+};
+
+function coerceToStringOrNull(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) {
+    const joined = value.map(item => String(item ?? '')).filter(Boolean).join('; ');
+    return joined || null;
+  }
+  return String(value);
+}
+
+function normalizeCardBeforeParse(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const obj = raw as Record<string, unknown>;
+  const result = { ...obj };
+
+  if (typeof result.claimType === 'string') {
+    const upper = result.claimType.trim().toUpperCase().replace(/[\s-]+/g, '_');
+    if (CLAIM_TYPE_SET.has(upper)) {
+      result.claimType = upper;
+    } else if (CLAIM_TYPE_ALIASES[upper]) {
+      result.claimType = CLAIM_TYPE_ALIASES[upper];
+    } else {
+      result.claimType = 'FINDING';
+    }
+  }
+
+  if (typeof result.confidence === 'string') {
+    const upper = result.confidence.trim().toUpperCase();
+    result.confidence = CONFIDENCE_SET.has(upper) ? upper : 'MEDIUM';
+  }
+
+  if (typeof result.claim_type === 'string' && !result.claimType) {
+    const upper = String(result.claim_type).trim().toUpperCase().replace(/[\s-]+/g, '_');
+    if (CLAIM_TYPE_SET.has(upper)) {
+      result.claimType = upper;
+    } else if (CLAIM_TYPE_ALIASES[upper]) {
+      result.claimType = CLAIM_TYPE_ALIASES[upper];
+    } else {
+      result.claimType = 'FINDING';
+    }
+    delete result.claim_type;
+  }
+  if (result.source_fragment !== undefined && !result.sourceFragment) {
+    result.sourceFragment = coerceToStringOrNull(result.source_fragment) ?? result.source_fragment;
+    delete result.source_fragment;
+  }
+  if (result.source_section !== undefined && !result.sourceSection) {
+    result.sourceSection = coerceToStringOrNull(result.source_section) ?? result.source_section;
+    delete result.source_section;
+  }
+  if (result.quantitative_detail !== undefined && result.quantitativeDetail === undefined) {
+    result.quantitativeDetail = coerceToStringOrNull(result.quantitative_detail);
+    delete result.quantitative_detail;
+  }
+  if (result.does_not_support !== undefined && result.doesNotSupport === undefined) {
+    result.doesNotSupport = coerceToStringOrNull(result.does_not_support);
+    delete result.does_not_support;
+  }
+  if (result.scope_condition !== undefined && result.scopeCondition === undefined) {
+    result.scopeCondition = coerceToStringOrNull(result.scope_condition);
+    delete result.scope_condition;
+  }
+  if (result.study_design !== undefined && result.studyDesign === undefined) {
+    result.studyDesign = coerceToStringOrNull(result.study_design);
+    delete result.study_design;
+  }
+  if (result.rigor_indicators !== undefined && result.rigorIndicators === undefined) {
+    result.rigorIndicators = coerceToStringOrNull(result.rigor_indicators);
+    delete result.rigor_indicators;
+  }
+  if (result.page_hint !== undefined && result.pageHint === undefined) {
+    result.pageHint = coerceToStringOrNull(result.page_hint);
+    delete result.page_hint;
+  }
+  if (result.comparable_metrics !== undefined && result.comparableMetrics === undefined) {
+    result.comparableMetrics = result.comparable_metrics;
+    delete result.comparable_metrics;
+  }
+
+  // Coerce camelCase fields that LLMs may return as arrays instead of strings
+  const stringFields = [
+    'rigorIndicators', 'studyDesign', 'scopeCondition', 'doesNotSupport',
+    'quantitativeDetail', 'conditions', 'pageHint',
+  ] as const;
+  for (const field of stringFields) {
+    if (result[field] !== undefined && result[field] !== null && typeof result[field] !== 'string') {
+      result[field] = coerceToStringOrNull(result[field]);
+    }
+  }
+
+  if (typeof result.comparableMetrics === 'string') {
+    const metricsStr = result.comparableMetrics.trim();
+    if (!metricsStr) {
+      result.comparableMetrics = null;
+    } else {
+      try {
+        const parsed = JSON.parse(metricsStr);
+        result.comparableMetrics = typeof parsed === 'object' && parsed !== null ? parsed : { value: metricsStr };
+      } catch {
+        const pairs: Record<string, string> = {};
+        const segments = metricsStr.split(/[;,]\s*/);
+        for (const segment of segments) {
+          const colonIdx = segment.indexOf(':');
+          if (colonIdx > 0) {
+            pairs[segment.slice(0, colonIdx).trim()] = segment.slice(colonIdx + 1).trim();
+          } else {
+            pairs.value = (pairs.value ? pairs.value + '; ' : '') + segment.trim();
+          }
+        }
+        result.comparableMetrics = Object.keys(pairs).length > 0 ? pairs : { value: metricsStr };
+      }
+    }
+  }
+
+  if (Array.isArray(result.comparableMetrics)) {
+    const obj: Record<string, string> = {};
+    (result.comparableMetrics as unknown[]).forEach((item, i) => {
+      if (typeof item === 'string') {
+        obj[`metric_${i}`] = item;
+      } else if (item && typeof item === 'object') {
+        Object.assign(obj, item);
+      }
+    });
+    result.comparableMetrics = Object.keys(obj).length > 0 ? obj : null;
+  }
+
+  return result;
+}
+
 function parseExtractionResponse(rawOutput: string, depthLabel: Exclude<DeepAnalysisLabel, 'LIT_ONLY'>): { cards: ExtractedEvidenceCard[]; warnings: string[] } {
   const warnings: string[] = [];
   let jsonText = stripJsonFences(rawOutput);
@@ -189,31 +369,45 @@ function parseExtractionResponse(rawOutput: string, depthLabel: Exclude<DeepAnal
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'invalid output';
+    console.error(`[EvidenceExtraction] JSON parse failed. Raw output (first 500 chars): ${rawOutput.slice(0, 500)}`);
     throw new Error(`LLM returned invalid JSON (${message})`);
   }
 
   if (!Array.isArray(parsed)) {
+    console.error(`[EvidenceExtraction] Output is not array. Type=${typeof parsed}. Raw (first 300 chars): ${rawOutput.slice(0, 300)}`);
     throw new Error('LLM extraction output is not an array');
   }
+
+  console.log(`[EvidenceExtraction] Received ${parsed.length} raw cards from LLM, validating...`);
 
   const validCards: ExtractedEvidenceCard[] = [];
 
   for (let index = 0; index < parsed.length; index += 1) {
-    const strict = extractionCardSchema.safeParse(parsed[index]);
+    const normalized = normalizeCardBeforeParse(parsed[index]);
+
+    const strict = extractionCardSchema.safeParse(normalized);
     if (strict.success) {
       validCards.push(enforceCardRules(strict.data, index, warnings));
       continue;
     }
 
-    const lenient = extractionCardSchema
-      .extend({ sourceFragment: z.string().min(1).max(1200) })
-      .safeParse(parsed[index]);
+    const lenientSchema = extractionCardSchema.extend({
+      sourceFragment: z.string().min(1).max(1200),
+      rigorIndicators: z.string().nullable().default(null),
+      studyDesign: z.string().nullable().default(null),
+      conditions: z.string().nullable().default(null),
+    });
+    const lenient = lenientSchema.safeParse(normalized);
 
     if (lenient.success) {
-      warnings.push(`Card ${index}: sourceFragment too short, confidence downgraded to LOW`);
+      warnings.push(`Card ${index}: lenient validation applied, confidence downgraded to LOW`);
       validCards.push(enforceCardRules({ ...lenient.data, confidence: 'LOW' }, index, warnings));
     } else {
-      const message = strict.error.errors[0]?.message || 'validation failed';
+      const firstError = strict.error.errors[0];
+      const message = firstError
+        ? `${firstError.path.join('.')}: ${firstError.message}`
+        : 'validation failed';
+      console.warn(`[EvidenceExtraction] Card ${index} dropped: ${message}. Keys: ${Object.keys(parsed[index] || {}).join(',')}`);
       warnings.push(`Card ${index}: dropped (${message})`);
     }
   }
@@ -224,9 +418,13 @@ function parseExtractionResponse(rawOutput: string, depthLabel: Exclude<DeepAnal
   }
 
   if (validCards.length === 0) {
-    throw new Error('No valid evidence cards extracted');
+    const sampleKeys = parsed[0] ? Object.keys(parsed[0] as object).join(', ') : '(empty)';
+    const sampleClaimType = parsed[0] ? String((parsed[0] as any).claimType || (parsed[0] as any).claim_type || '(missing)') : '(no card)';
+    console.error(`[EvidenceExtraction] All ${parsed.length} cards failed validation. Sample keys=[${sampleKeys}], claimType="${sampleClaimType}"`);
+    throw new Error(`No valid evidence cards extracted (${parsed.length} cards received but all failed schema validation)`);
   }
 
+  console.log(`[EvidenceExtraction] Validated ${validCards.length}/${parsed.length} cards`);
   return { cards: validCards, warnings };
 }
 
@@ -267,16 +465,25 @@ function splitAtMidpoint(text: string): [string, string] {
 function splitPreparedText(preparedText: PreparedPaperText): [PreparedPaperText, PreparedPaperText] {
   if (preparedText.sections && preparedText.sections.length >= 2) {
     const sections = preparedText.sections;
-    const front = sections.filter(section => /intro|method|material|experimental|dataset|setup|participant/i.test(section.heading));
-    const back = sections.filter(section => /result|finding|discussion|conclusion|limitation|future/i.test(section.heading));
+    const frontPattern = /intro|method|material|experimental|dataset|setup|participant/i;
+    const backPattern = /result|finding|discussion|conclusion|limitation|future/i;
+    const frontMatches = sections.filter(section => frontPattern.test(section.heading));
+    const backMatches = sections.filter(section => backPattern.test(section.heading));
 
-    if (front.length > 0 && back.length > 0) {
-      const frontText = front.map(section => `## ${section.heading}\n\n${section.text}`).join('\n\n');
-      const backText = back.map(section => `## ${section.heading}\n\n${section.text}`).join('\n\n');
-      return [
-        { ...preparedText, sections: front, fullText: frontText, estimatedTokens: Math.ceil(frontText.length / 4) },
-        { ...preparedText, sections: back, fullText: backText, estimatedTokens: Math.ceil(backText.length / 4) },
-      ];
+    if (frontMatches.length > 0 && backMatches.length > 0) {
+      const firstBackIdx = sections.indexOf(backMatches[0]);
+      const splitPoint = Math.max(1, firstBackIdx);
+      const firstHalf = sections.slice(0, splitPoint);
+      const secondHalf = sections.slice(splitPoint);
+
+      if (firstHalf.length > 0 && secondHalf.length > 0) {
+        const frontText = firstHalf.map(section => `## ${section.heading}\n\n${section.text}`).join('\n\n');
+        const backText = secondHalf.map(section => `## ${section.heading}\n\n${section.text}`).join('\n\n');
+        return [
+          { ...preparedText, sections: firstHalf, fullText: frontText, estimatedTokens: Math.ceil(frontText.length / 4) },
+          { ...preparedText, sections: secondHalf, fullText: backText, estimatedTokens: Math.ceil(backText.length / 4) },
+        ];
+      }
     }
 
     const midpoint = Math.ceil(sections.length / 2);
@@ -331,40 +538,74 @@ class EvidenceExtractionService {
       input.blueprintDimensions
     );
 
-    const response = await llmGateway.executeLLMOperation(
-      input.tenantContext ? { tenantContext: input.tenantContext } : { headers: {} },
-      {
-        taskCode: 'LLM2_DRAFT',
-        stageCode: 'PAPER_LITERATURE_SUMMARIZE',
-        prompt: `${prompt.system}\n\n${prompt.user}`,
-        parameters: {
-          purpose: 'full_text_evidence_extraction',
-          temperature: 0,
-        },
-        idempotencyKey: crypto.randomUUID(),
-        metadata: {
-          citationId: input.citationId,
-          citationKey: input.citationKey,
-          archetype,
-          depthLabel,
-          source: preparedText.source,
-        },
-      }
-    );
+    let lastError: Error | null = null;
 
-    if (!response.success || !response.response) {
-      throw new Error(response.error?.message || 'Evidence extraction LLM call failed');
+    for (let attempt = 0; attempt <= LLM_MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        console.log(`[EvidenceExtraction] Retrying ${input.citationKey} (attempt ${attempt}/${LLM_MAX_RETRIES}) after ${LLM_RETRY_DELAY_MS}ms...`);
+        await new Promise(resolve => setTimeout(resolve, LLM_RETRY_DELAY_MS));
+      }
+
+      try {
+        const response = await llmGateway.executeLLMOperation(
+          input.tenantContext ? { tenantContext: input.tenantContext } : { headers: {} },
+          {
+            taskCode: 'LLM2_DRAFT',
+            stageCode: 'PAPER_LITERATURE_SUMMARIZE',
+            prompt: `${prompt.system}\n\n${prompt.user}`,
+            parameters: {
+              purpose: 'full_text_evidence_extraction',
+              temperature: 0,
+            },
+            idempotencyKey: `evidence_extract_${input.citationId}_${depthLabel}_${archetype}_${preparedText.source}_a${attempt}`,
+            metadata: {
+              citationId: input.citationId,
+              citationKey: input.citationKey,
+              archetype,
+              depthLabel,
+              source: preparedText.source,
+              attempt,
+            },
+          }
+        );
+
+        if (!response.success || !response.response) {
+          const err = new Error(response.error?.message || 'Evidence extraction LLM call failed');
+          console.error(`[EvidenceExtraction] LLM call failed for ${input.citationKey} (attempt ${attempt}):`, response.error?.message);
+          if (attempt < LLM_MAX_RETRIES) {
+            lastError = err;
+            continue;
+          }
+          throw err;
+        }
+
+        const rawOutput = response.response.output;
+        console.log(`[EvidenceExtraction] LLM returned ${rawOutput?.length ?? 0} chars for ${input.citationKey}. First 200: ${String(rawOutput || '').slice(0, 200)}`);
+
+        const parsed = parseExtractionResponse(rawOutput, depthLabel);
+        const warnings = [...parsed.warnings];
+        if (attempt > 0) {
+          warnings.push(`Succeeded on retry attempt ${attempt}`);
+        }
+        return {
+          cards: parsed.cards,
+          warnings,
+          usage: {
+            inputTokens: Number((response.response.metadata as any)?.inputTokens || preparedText.estimatedTokens || 0),
+            outputTokens: Number(response.response.outputTokens || 0),
+          },
+        };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        console.error(`[EvidenceExtraction] Attempt ${attempt} failed for ${input.citationKey}: ${lastError.message}`);
+        if (attempt < LLM_MAX_RETRIES) {
+          continue;
+        }
+        throw lastError;
+      }
     }
 
-    const parsed = parseExtractionResponse(response.response.output, depthLabel);
-    return {
-      cards: parsed.cards,
-      warnings: parsed.warnings,
-      usage: {
-        inputTokens: Number((response.response.metadata as any)?.inputTokens || preparedText.estimatedTokens || 0),
-        outputTokens: Number(response.response.outputTokens || 0),
-      },
-    };
+    throw lastError || new Error('Evidence extraction failed after retries');
   }
 
   async extractCards(input: ExtractEvidenceCardsInput): Promise<ExtractEvidenceCardsResult> {

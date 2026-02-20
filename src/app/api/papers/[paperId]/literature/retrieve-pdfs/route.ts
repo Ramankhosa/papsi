@@ -8,6 +8,7 @@ import {
   type PaperAcquisitionItemInput,
 } from '@/lib/services/paper-acquisition-service';
 import { paperLibraryService } from '@/lib/services/paper-library-service';
+import { proactiveParsingService } from '@/lib/services/proactive-parsing-service';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -289,6 +290,10 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           });
         })
       );
+    }
+
+    if (batch.succeeded > 0) {
+      proactiveParsingService.triggerForSessionCitations(sessionId);
     }
 
     return NextResponse.json({

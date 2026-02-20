@@ -294,16 +294,19 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       || session.ideaRecord?.title 
       || 'Untitled Research';
     
-    const paperAbstract = session.researchTopic?.researchQuestion
-      || session.researchTopic?.significance
+    const paperAbstract = session.researchTopic?.abstractDraft
+      || session.researchTopic?.researchQuestion
+      || session.researchTopic?.problemStatement
       || session.ideaRecord?.problem
       || '';
     
     const keywords = session.researchTopic?.keywords || [];
     
-    const researchFocus = session.researchTopic?.objectives
-      || session.researchTopic?.scope
-      || session.ideaRecord?.solution
+    const researchFocus = session.researchTopic?.topicDescription
+      || session.researchTopic?.researchGaps
+      || session.researchTopic?.methodologyApproach
+      || session.ideaRecord?.objectives
+      || session.ideaRecord?.logic
       || '';
 
     if (!paperAbstract && !researchFocus) {

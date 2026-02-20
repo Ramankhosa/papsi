@@ -5,6 +5,7 @@ import { prisma } from '../prisma';
 import { referenceDocumentService } from './reference-document-service';
 import { referenceLibraryService } from './reference-library-service';
 import type { SearchResult } from './literature-search-service';
+import { sanitizeTextForPostgres } from '../utils/postgres-sanitize';
 
 export type PaperAcquisitionOutcomeCode =
   | 'ALREADY_ATTACHED'
@@ -531,8 +532,8 @@ class PaperAcquisitionService {
         await prisma.referenceDocument.update({
           where: { id: link.document.id },
           data: {
-            parsedText: derived,
-            parserUsed: link.document.parserUsed || 'GROBID',
+            parsedText: sanitizeTextForPostgres(derived),
+            parserUsed: link.document.parserUsed || 'PDFJS',
           },
         }).catch(() => undefined);
       }
@@ -837,7 +838,7 @@ class PaperAcquisitionService {
       mimeType: 'text/plain',
       sourceIdentifier: `text:${input.fileHash}`,
       status: 'READY' as const,
-      parsedText: input.parsedText,
+      parsedText: sanitizeTextForPostgres(input.parsedText),
     };
 
     try {

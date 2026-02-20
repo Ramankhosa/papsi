@@ -47,7 +47,7 @@ export interface PreparedPaperSection {
 export interface PreparedPaperText {
   fullText: string;
   sections?: PreparedPaperSection[];
-  source: 'GROBID' | 'REGEX_FALLBACK';
+  source: 'PDFJS' | 'GROBID' | 'REGEX_FALLBACK';
   estimatedTokens: number;
   rawFullText?: string;
 }
@@ -87,7 +87,18 @@ export const extractionCardSchema = z.object({
   claimType: z.enum(EVIDENCE_CLAIM_TYPES),
   quantitativeDetail: z.string().nullable().default(null),
   conditions: z.string().nullable().default(null),
-  comparableMetrics: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).nullable().default(null),
+  comparableMetrics: z.union([
+    z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])),
+    z.string().transform(v => v.trim() ? { value: v.trim() } : null),
+    z.array(z.any()).transform(arr => {
+      const obj: Record<string, string> = {};
+      arr.forEach((item: unknown, i: number) => {
+        if (typeof item === 'string') obj[`metric_${i}`] = item;
+        else if (item && typeof item === 'object') Object.assign(obj, item);
+      });
+      return Object.keys(obj).length > 0 ? obj : null;
+    }),
+  ]).nullable().default(null),
   doesNotSupport: z.string().nullable().default(null),
   scopeCondition: z.string().nullable().default(null),
   studyDesign: z.string().nullable().default(null),
@@ -121,8 +132,10 @@ export const DEFAULT_CARD_TARGETS: Record<Exclude<DeepAnalysisLabel, 'LIT_ONLY'>
 };
 
 export const DEFAULT_EXTRACTION_CONCURRENCY = Number.parseInt(
-  process.env.DEEP_ANALYSIS_CONCURRENCY || '4',
+  process.env.DEEP_ANALYSIS_CONCURRENCY || '10',
   10
 );
+
+export const BATCH_MAPPING_CHUNK_SIZE = 50;
 
 export const MAX_CARD_PAGE_SIZE = 200;

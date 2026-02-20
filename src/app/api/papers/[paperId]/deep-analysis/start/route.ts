@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
 
 const startSchema = z.object({
   citationIds: z.array(z.string().min(1)).min(1).max(50),
-  concurrency: z.number().int().min(1).max(20).optional(),
+  concurrency: z.number().int().min(1).max(30).optional(),
 });
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {

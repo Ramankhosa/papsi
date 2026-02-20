@@ -200,7 +200,12 @@ class QuoteVerificationService {
     if (!result.verified) {
       confidence = 'LOW';
     } else if (result.method === 'SIMILARITY' && result.score < 0.9) {
-      confidence = downgradeConfidence(confidence);
+      // For decent similarity (0.8-0.9), only downgrade HIGH→MEDIUM.
+      // Don't push MEDIUM→LOW to avoid double-penalty when extraction
+      // rules already downgraded the card (e.g. missing doesNotSupport).
+      if (confidence === 'HIGH') {
+        confidence = 'MEDIUM';
+      }
     }
 
     return {

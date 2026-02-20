@@ -164,11 +164,11 @@ async function importSinglePdf(
       success: true,
       referenceId: existingLinkedReference.reference.id,
       referenceTitle: existingLinkedReference.reference.title,
-      doi: normalizeDoi(existingLinkedReference.reference.doi) || normalizeDoi(existingDocument.pdfDoi) || null,
+      doi: normalizeDoi(existingLinkedReference.reference.doi) || normalizeDoi(existingDocument?.pdfDoi) || null,
       doiEnriched: Boolean(existingLinkedReference.reference.doi),
       pdfAttached: false,
       pdfAlreadyExistsForReference: true,
-      pdfStatus: existingDocument.status,
+      pdfStatus: existingDocument?.status,
     };
   }
 

@@ -3,6 +3,7 @@ import type { DeepAnalysisStatus, Prisma } from '@prisma/client';
 import { prisma } from '../prisma';
 import { blueprintService, type BlueprintWithSectionPlan } from './blueprint-service';
 import {
+  BATCH_MAPPING_CHUNK_SIZE,
   DEEP_ANALYSIS_LABELS,
   DEFAULT_EXTRACTION_CONCURRENCY,
   MAX_CARD_PAGE_SIZE,
@@ -89,7 +90,7 @@ export interface DeepAnalysisCandidate {
   readinessReason: string | null;
   documentId: string | null;
   referenceId: string | null;
-  parserCandidate: 'GROBID' | 'REGEX_FALLBACK' | null;
+  parserCandidate: 'PDFJS' | 'GROBID' | 'REGEX_FALLBACK' | null;
 }
 
 export interface DeepAnalysisCandidatesResult {
@@ -222,7 +223,7 @@ function rankConfidence(value: EvidenceConfidenceLevel): number {
 
 function clampConcurrency(value?: number): number {
   const parsed = Number.isFinite(Number(value)) ? Number(value) : DEFAULT_EXTRACTION_CONCURRENCY;
-  return Math.max(1, Math.min(20, parsed || DEFAULT_EXTRACTION_CONCURRENCY || 10));
+  return Math.max(1, Math.min(30, parsed || DEFAULT_EXTRACTION_CONCURRENCY || 10));
 }
 
 function nowIso(value?: Date | null): string | null {
@@ -254,8 +255,18 @@ async function runWithConcurrency<T>(items: T[], limit: number, worker: (item: T
   await Promise.all(runners);
 }
 
+// Persist runner tracking across Next.js HMR reloads in dev mode
+const globalForRunners = globalThis as unknown as {
+  __deepAnalysisActiveRunners?: Map<string, Promise<void>>;
+};
+if (!globalForRunners.__deepAnalysisActiveRunners) {
+  globalForRunners.__deepAnalysisActiveRunners = new Map<string, Promise<void>>();
+}
+
 class DeepAnalysisService {
-  private activeRunners = new Map<string, Promise<void>>();
+  private get activeRunners(): Map<string, Promise<void>> {
+    return globalForRunners.__deepAnalysisActiveRunners!;
+  }
 
   private runnerKey(sessionId: string, batchId: string): string {
     return `${sessionId}:${batchId}`;
@@ -504,6 +515,8 @@ class DeepAnalysisService {
         continue;
       }
 
+      const textSource = readiness.parserCandidate || 'REGEX_FALLBACK';
+
       const job = await prisma.deepAnalysisJob.upsert({
         where: {
           sessionId_citationId: {
@@ -520,7 +533,7 @@ class DeepAnalysisService {
           warning: null,
           referenceArchetype: archetype,
           deepAnalysisLabel: depthLabel,
-          textSource: 'REGEX_FALLBACK',
+          textSource,
           inputTokens: null,
           outputTokens: null,
           updatedAt: now,
@@ -532,7 +545,7 @@ class DeepAnalysisService {
           status: 'PENDING',
           referenceArchetype: archetype,
           deepAnalysisLabel: depthLabel,
-          textSource: 'REGEX_FALLBACK',
+          textSource,
         },
       });
 
@@ -608,9 +621,12 @@ class DeepAnalysisService {
       orderBy: [{ createdAt: 'asc' }],
     });
 
-    const eligible = citations.filter(citation => estimateDepthLabelFromCitation(citation) !== 'LIT_ONLY');
+    const eligible = citations.filter(citation => {
+      const label = estimateDepthLabelFromCitation(citation);
+      return label === 'DEEP_ANCHOR' || label === 'DEEP_SUPPORT' || label === 'DEEP_STRESS_TEST';
+    });
 
-    const candidates: DeepAnalysisCandidate[] = await Promise.all(eligible.map(async citation => {
+    const candidates: Array<DeepAnalysisCandidate | null> = await Promise.all(eligible.map(async citation => {
       const depthLabel = estimateDepthLabelFromCitation(citation);
       const archetype = estimateArchetypeFromCitation(citation);
 
@@ -627,7 +643,12 @@ class DeepAnalysisService {
         referenceId: null,
         documentId: null,
         parserCandidate: null,
+        hasAttachedSource: false,
       }));
+
+      if (!readiness.hasAttachedSource) {
+        return null;
+      }
 
       return {
         citationId: citation.id,
@@ -645,13 +666,15 @@ class DeepAnalysisService {
       };
     }));
 
-    const ready = candidates.filter(candidate => candidate.ready);
-    const notReady = candidates.filter(candidate => !candidate.ready);
+    const visibleCandidates = candidates.filter((candidate): candidate is DeepAnalysisCandidate => Boolean(candidate));
+
+    const ready = visibleCandidates.filter(candidate => candidate.ready);
+    const notReady = visibleCandidates.filter(candidate => !candidate.ready);
 
     return {
       ready,
       notReady,
-      totalEligible: candidates.length,
+      totalEligible: visibleCandidates.length,
     };
   }
 
@@ -685,12 +708,180 @@ class DeepAnalysisService {
 
     const { blueprint, dimensions } = await this.getBlueprintContext(sessionId);
 
+    // Phase 1: Extract evidence cards for all jobs concurrently (no mapping)
+    console.log(`[DeepAnalysis] Batch ${batchId}: starting extraction for ${jobs.length} jobs (concurrency=${options.concurrency})`);
     await runWithConcurrency(jobs, options.concurrency, async (job) => {
       await this.processJob(job, {
         batchId,
         dimensions,
         blueprint,
         tenantContext: options.tenantContext || null,
+      });
+    });
+
+    // Phase 2: Batch-map all extracted cards in 2-3 LLM calls instead of N
+    if (blueprint) {
+      await this.batchMapExtractedCards(sessionId, batchId, blueprint, options.tenantContext || null);
+    } else {
+      await this.finalizeJobsWithoutMapping(sessionId, batchId);
+    }
+  }
+
+  private async batchMapExtractedCards(
+    sessionId: string,
+    batchId: string,
+    blueprint: BlueprintWithSectionPlan,
+    tenantContext: TenantContext | null
+  ): Promise<void> {
+    const mappingJobs = await prisma.deepAnalysisJob.findMany({
+      where: { sessionId, batchId, status: 'MAPPING' },
+      select: { id: true, citationId: true },
+    });
+
+    if (mappingJobs.length === 0) return;
+
+    const jobIds = mappingJobs.map(j => j.id);
+    const citationIds = Array.from(new Set(mappingJobs.map(j => j.citationId)));
+
+    const cards = await prisma.evidenceCard.findMany({
+      where: { jobId: { in: jobIds } },
+      select: {
+        id: true,
+        citationId: true,
+        citationKey: true,
+        referenceArchetype: true,
+        deepAnalysisLabel: true,
+        claim: true,
+        claimType: true,
+        quantitativeDetail: true,
+        conditions: true,
+        comparableMetrics: true,
+        doesNotSupport: true,
+        scopeCondition: true,
+        studyDesign: true,
+        rigorIndicators: true,
+        sourceFragment: true,
+        pageHint: true,
+        confidence: true,
+        sourceSection: true,
+        quoteVerified: true,
+        quoteVerificationMethod: true,
+        quoteVerificationScore: true,
+      },
+    });
+
+    if (cards.length === 0) {
+      await this.finalizeJobsWithoutMapping(sessionId, batchId);
+      return;
+    }
+
+    console.log(`[DeepAnalysis] Batch ${batchId}: batch-mapping ${cards.length} cards from ${mappingJobs.length} jobs`);
+
+    const identityCards: ExtractedCardWithIdentity[] = cards.map(card => ({
+      cardId: card.id,
+      citationId: card.citationId,
+      citationKey: card.citationKey,
+      referenceArchetype: normalizeArchetype(card.referenceArchetype),
+      deepAnalysisLabel: normalizeDepthLabel(card.deepAnalysisLabel),
+      claim: card.claim,
+      claimType: card.claimType as any,
+      quantitativeDetail: card.quantitativeDetail,
+      conditions: card.conditions,
+      comparableMetrics: (card.comparableMetrics || null) as any,
+      doesNotSupport: card.doesNotSupport,
+      scopeCondition: card.scopeCondition,
+      studyDesign: card.studyDesign,
+      rigorIndicators: card.rigorIndicators,
+      sourceFragment: card.sourceFragment,
+      pageHint: card.pageHint,
+      confidence: card.confidence as any,
+      sourceSection: card.sourceSection || 'unknown',
+      quoteVerified: card.quoteVerified,
+      quoteVerificationMethod: card.quoteVerificationMethod,
+      quoteVerificationScore: card.quoteVerificationScore,
+    }));
+
+    let mappingWarnings: string[] = [];
+    let allMappings: CardDimensionMapping[] = [];
+
+    try {
+      const mapped = await evidenceMappingService.batchMapMultipleCitations(
+        identityCards,
+        blueprint,
+        tenantContext
+      );
+      allMappings = mapped.mappings;
+      mappingWarnings = mapped.warnings;
+      console.log(`[DeepAnalysis] Batch ${batchId}: batch mapping produced ${allMappings.length} mappings (warnings=${mappingWarnings.length})`);
+    } catch (mappingError) {
+      const message = mappingError instanceof Error ? mappingError.message : 'Unknown batch mapping error';
+      mappingWarnings.push(`Batch mapping failed: ${message.slice(0, 400)}. Cards saved without mappings.`);
+      console.error(`[DeepAnalysis] Batch ${batchId}: batch mapping failed:`, message);
+    }
+
+    await prisma.$transaction(async tx => {
+      await tx.evidenceCardMapping.deleteMany({
+        where: { card: { jobId: { in: jobIds } } },
+      });
+
+      if (allMappings.length > 0) {
+        await tx.evidenceCardMapping.createMany({
+          data: allMappings.map(mapping => ({
+            cardId: mapping.cardId,
+            sectionKey: mapping.sectionKey,
+            dimension: mapping.dimension,
+            useAs: mapping.useAs,
+            mappingConfidence: mapping.mappingConfidence,
+          })),
+        });
+      }
+
+      const warningText = mappingWarnings.length > 0
+        ? mappingWarnings.join(' | ').slice(0, 6000)
+        : null;
+
+      await tx.deepAnalysisJob.updateMany({
+        where: { id: { in: jobIds }, status: 'MAPPING' },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+          ...(warningText ? { warning: warningText } : {}),
+        },
+      });
+
+      await tx.citation.updateMany({
+        where: { id: { in: citationIds } },
+        data: { deepAnalysisStatus: 'COMPLETED' },
+      });
+    });
+  }
+
+  private async finalizeJobsWithoutMapping(
+    sessionId: string,
+    batchId: string
+  ): Promise<void> {
+    const mappingJobs = await prisma.deepAnalysisJob.findMany({
+      where: { sessionId, batchId, status: 'MAPPING' },
+      select: { id: true, citationId: true },
+    });
+
+    if (mappingJobs.length === 0) return;
+
+    const jobIds = mappingJobs.map(j => j.id);
+    const citationIds = Array.from(new Set(mappingJobs.map(j => j.citationId)));
+
+    await prisma.$transaction(async tx => {
+      await tx.deepAnalysisJob.updateMany({
+        where: { id: { in: jobIds }, status: 'MAPPING' },
+        data: {
+          status: 'COMPLETED',
+          completedAt: new Date(),
+        },
+      });
+
+      await tx.citation.updateMany({
+        where: { id: { in: citationIds } },
+        data: { deepAnalysisStatus: 'COMPLETED' },
       });
     });
   }
@@ -726,6 +917,8 @@ class DeepAnalysisService {
 
       await this.throwIfJobCancelled(jobId);
 
+      console.log(`[DeepAnalysis] Job ${jobId}: preparing text for citation ${job.citation.citationKey} (depth=${job.deepAnalysisLabel})`);
+
       const prepared = await textPreparationService.prepareForCitation(
         job.sessionId,
         {
@@ -738,6 +931,8 @@ class DeepAnalysisService {
         },
         normalizeDepthLabel(job.deepAnalysisLabel)
       );
+
+      console.log(`[DeepAnalysis] Job ${jobId}: text ready (source=${prepared.preparedText.source}, tokens≈${prepared.preparedText.estimatedTokens}, sections=${prepared.preparedText.sections?.length ?? 0})`);
 
       const movedToExtracting = await prisma.deepAnalysisJob.updateMany({
         where: {
@@ -753,6 +948,8 @@ class DeepAnalysisService {
         return;
       }
 
+      console.log(`[DeepAnalysis] Job ${jobId}: sending to LLM for evidence extraction...`);
+
       const extracted = await evidenceExtractionService.extractCards({
         citationId: job.citation.id,
         citationKey: job.citation.citationKey,
@@ -762,6 +959,11 @@ class DeepAnalysisService {
         blueprintDimensions: context.dimensions,
         tenantContext: context.tenantContext || null,
       });
+
+      console.log(`[DeepAnalysis] Job ${jobId}: extracted ${extracted.cards.length} cards (warnings=${extracted.warnings.length})`);
+      if (extracted.warnings.length > 0) {
+        console.log(`[DeepAnalysis] Job ${jobId} warnings: ${extracted.warnings.slice(0, 3).join('; ')}`);
+      }
 
       await this.throwIfJobCancelled(jobId);
 
@@ -777,43 +979,9 @@ class DeepAnalysisService {
         deepAnalysisLabel: normalizeDepthLabel(job.deepAnalysisLabel),
       }));
 
-      const movedToMapping = await prisma.deepAnalysisJob.updateMany({
-        where: {
-          id: jobId,
-          status: 'EXTRACTING',
-        },
-        data: {
-          status: 'MAPPING',
-        },
-      });
-      if (movedToMapping.count === 0) {
-        return;
-      }
-
-      let mappingWarnings: string[] = [];
-      let mappings: CardDimensionMapping[] = [];
-      let mappingUsage = { inputTokens: 0, outputTokens: 0 };
-
-      if (context.blueprint) {
-        try {
-          const mapped = await evidenceMappingService.mapCardsToDimensions(
-            cardIdentityRows,
-            context.blueprint,
-            context.tenantContext || null
-          );
-          mappings = mapped.mappings;
-          mappingWarnings = mapped.warnings;
-          mappingUsage = mapped.usage;
-        } catch (mappingError) {
-          const message = mappingError instanceof Error ? mappingError.message : 'Unknown mapping error';
-          mappingWarnings.push(`Mapping failed: ${message.slice(0, 400)}. Cards were saved without mappings.`);
-        }
-      }
-
       await this.throwIfJobCancelled(jobId);
 
-      const cardIdMap = new Map<string, string>();
-
+      // Persist cards and set status to MAPPING (awaiting batch mapping phase)
       await prisma.$transaction(async tx => {
         const currentJob = await tx.deepAnalysisJob.findUnique({
           where: { id: jobId },
@@ -829,7 +997,7 @@ class DeepAnalysisService {
         });
 
         for (const card of cardIdentityRows) {
-          const created = await tx.evidenceCard.create({
+          await tx.evidenceCard.create({
             data: {
               jobId,
               sessionId: job.sessionId,
@@ -857,63 +1025,46 @@ class DeepAnalysisService {
               confidence: card.confidence,
               extractedFrom: 'FULL_TEXT',
             },
-            select: { id: true },
           });
-          cardIdMap.set(card.cardId, created.id);
         }
 
-        const mappingRows = mappings
-          .map(mapping => {
-            const resolvedCardId = cardIdMap.get(mapping.cardId);
-            if (!resolvedCardId) return null;
-            return {
-              cardId: resolvedCardId,
-              sectionKey: mapping.sectionKey,
-              dimension: mapping.dimension,
-              useAs: mapping.useAs,
-              mappingConfidence: mapping.mappingConfidence,
-            };
-          })
-          .filter((row): row is NonNullable<typeof row> => Boolean(row));
+        const warningParts = [...extracted.warnings];
 
-        if (mappingRows.length > 0) {
-          await tx.evidenceCardMapping.createMany({ data: mappingRows });
-        }
-
-        const warningParts = [...extracted.warnings, ...mappingWarnings];
-
-        const completedUpdate = await tx.deepAnalysisJob.updateMany({
+        await tx.deepAnalysisJob.updateMany({
           where: {
             id: jobId,
-            status: 'MAPPING',
+            status: 'EXTRACTING',
           },
           data: {
-            status: 'COMPLETED',
-            completedAt: new Date(),
+            status: 'MAPPING',
             warning: warningParts.length > 0 ? warningParts.join(' | ').slice(0, 6000) : null,
             error: null,
-            inputTokens: extracted.usage.inputTokens + mappingUsage.inputTokens,
-            outputTokens: extracted.usage.outputTokens + mappingUsage.outputTokens,
+            inputTokens: extracted.usage.inputTokens,
+            outputTokens: extracted.usage.outputTokens,
           },
         });
 
-        if (completedUpdate.count > 0) {
-          await tx.citation.update({
-            where: { id: job.citation.id },
-            data: {
-              deepAnalysisStatus: 'COMPLETED',
-              deepAnalysisLabel: job.deepAnalysisLabel,
-              evidenceCardCount: cardIdentityRows.length,
-            },
-          });
-        }
+        await tx.citation.update({
+          where: { id: job.citation.id },
+          data: {
+            deepAnalysisStatus: 'MAPPING',
+            deepAnalysisLabel: job.deepAnalysisLabel,
+            evidenceCardCount: cardIdentityRows.length,
+          },
+        });
       });
+
+      console.log(`[DeepAnalysis] Job ${jobId}: extraction complete, ${cardIdentityRows.length} cards persisted (awaiting batch mapping)`);
     } catch (error) {
       if (isCancelledError(error)) {
         return;
       }
 
       const message = error instanceof Error ? error.message : 'Unknown deep analysis error';
+      console.error(`[DeepAnalysis] Job ${jobId} (citation ${job.citation?.citationKey}) FAILED:`, message);
+      if (error instanceof Error && error.stack) {
+        console.error(`[DeepAnalysis] Stack:`, error.stack.split('\n').slice(0, 5).join('\n'));
+      }
       const failedUpdate = await prisma.deepAnalysisJob.updateMany({
         where: {
           id: jobId,
@@ -1000,11 +1151,14 @@ class DeepAnalysisService {
     sessionId: string,
     options: { tenantContext?: TenantContext | null; concurrency?: number } = {}
   ): Promise<DeepAnalysisStatusResult> {
-    await this.recoverStaleJobs(sessionId);
-    await this.triggerActiveBatches(sessionId, {
-      concurrency: clampConcurrency(options.concurrency ?? DEFAULT_EXTRACTION_CONCURRENCY),
-      tenantContext: options.tenantContext || null,
-    });
+    const hasActiveRunner = Array.from(this.activeRunners.keys()).some(key => key.startsWith(`${sessionId}:`));
+    if (!hasActiveRunner) {
+      await this.recoverStaleJobs(sessionId);
+      await this.triggerActiveBatches(sessionId, {
+        concurrency: clampConcurrency(options.concurrency ?? DEFAULT_EXTRACTION_CONCURRENCY),
+        tenantContext: options.tenantContext || null,
+      });
+    }
 
     const jobs = await prisma.deepAnalysisJob.findMany({
       where: { sessionId },
@@ -1054,8 +1208,11 @@ class DeepAnalysisService {
       .filter(job => job.status !== 'COMPLETED' && job.status !== 'FAILED')
       .sort((a, b) => (a.startedAt?.getTime() || 0) - (b.startedAt?.getTime() || 0))[0];
 
+    const pendingCount = jobs.filter(job => job.status === 'PENDING').length;
+    const extractingCount = jobs.filter(job => ['PREPARING', 'EXTRACTING'].includes(job.status)).length;
+    const mappingCount = jobs.filter(job => job.status === 'MAPPING').length;
     const estimatedSecondsRemaining = inProgress > 0
-      ? inProgress * 18 + jobs.filter(job => job.status === 'PENDING').length * 28
+      ? extractingCount * 15 + pendingCount * 20 + (mappingCount > 0 ? 15 : 0)
       : null;
 
     return {
@@ -1271,6 +1428,35 @@ class DeepAnalysisService {
       });
     }
 
+    // Finalize any jobs stuck in MAPPING status (cards extracted but batch mapping failed earlier)
+    const stuckMappingJobs = await prisma.deepAnalysisJob.findMany({
+      where: { sessionId, status: 'MAPPING' },
+      select: { id: true, citationId: true },
+    });
+
+    if (stuckMappingJobs.length > 0) {
+      const stuckJobIds = stuckMappingJobs.map(j => j.id);
+      const stuckCitationIds = Array.from(new Set(stuckMappingJobs.map(j => j.citationId)));
+
+      await prisma.$transaction(async tx => {
+        await tx.deepAnalysisJob.updateMany({
+          where: { id: { in: stuckJobIds }, status: 'MAPPING' },
+          data: {
+            status: 'COMPLETED',
+            completedAt: new Date(),
+            warning: 'Completed via manual remap',
+          },
+        });
+
+        await tx.citation.updateMany({
+          where: { id: { in: stuckCitationIds } },
+          data: { deepAnalysisStatus: 'COMPLETED' },
+        });
+      });
+
+      console.log(`[DeepAnalysis] remapAll: finalized ${stuckMappingJobs.length} jobs stuck in MAPPING status`);
+    }
+
     return {
       cardsRemapped: cards.length,
       newMappingsCreated: allMappings.length,
@@ -1370,13 +1556,13 @@ class DeepAnalysisService {
       ...(typeof query.verified === 'boolean' ? { quoteVerified: query.verified } : {}),
       ...(query.sectionKey || query.dimension
         ? {
-            mappings: {
-              some: {
-                ...(query.sectionKey ? { sectionKey: query.sectionKey } : {}),
-                ...(query.dimension ? { dimension: query.dimension } : {}),
-              },
+          mappings: {
+            some: {
+              ...(query.sectionKey ? { sectionKey: query.sectionKey } : {}),
+              ...(query.dimension ? { dimension: query.dimension } : {}),
             },
-          }
+          },
+        }
         : {}),
     };
 
@@ -1592,8 +1778,8 @@ class DeepAnalysisService {
 
     const blueprintDimensions = blueprint
       ? blueprint.sectionPlan.flatMap(section =>
-          (section.mustCover || []).map(dimension => ({ sectionKey: section.sectionKey, dimension }))
-        )
+        (section.mustCover || []).map(dimension => ({ sectionKey: section.sectionKey, dimension }))
+      )
       : [];
 
     const covered = new Set(dimensionCoverage.map(item => `${item.sectionKey}::${item.dimension}`));

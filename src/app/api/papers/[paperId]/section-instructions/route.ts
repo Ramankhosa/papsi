@@ -163,40 +163,67 @@ export async function POST(
     // Use provided paperTypeCode, or session's paper type, or '*' for universal
     const targetPaperTypeCode = paperTypeCode || draftingSession.paperType?.code || '*';
 
-    // Upsert the instruction
-    const result = await prisma.userSectionInstruction.upsert({
-      where: {
-        userId_sessionId_jurisdiction_sectionKey: {
+    const instructionData = {
+      instruction,
+      paperTypeCode: targetPaperTypeCode,
+      emphasis: emphasis || null,
+      avoid: avoid || null,
+      style: style || null,
+      wordCount: wordCount || null,
+      isActive: true,
+      updatedAt: new Date()
+    };
+
+    let result;
+
+    // Prisma composite unique input does not accept null sessionId for upsert.
+    if (targetSessionId) {
+      result = await prisma.userSectionInstruction.upsert({
+        where: {
+          userId_sessionId_jurisdiction_sectionKey: {
+            userId: session.user.id,
+            sessionId: targetSessionId,
+            jurisdiction: '*', // Legacy field, kept for backward compat
+            sectionKey
+          }
+        },
+        update: instructionData,
+        create: {
           userId: session.user.id,
           sessionId: targetSessionId,
-          jurisdiction: '*', // Legacy field, kept for backward compat
-          sectionKey
+          jurisdiction: '*',
+          sectionKey,
+          ...instructionData
         }
-      },
-      update: {
-        instruction,
-        paperTypeCode: targetPaperTypeCode,
-        emphasis: emphasis || null,
-        avoid: avoid || null,
-        style: style || null,
-        wordCount: wordCount || null,
-        isActive: true,
-        updatedAt: new Date()
-      },
-      create: {
-        userId: session.user.id,
-        sessionId: targetSessionId,
-        jurisdiction: '*',
-        paperTypeCode: targetPaperTypeCode,
-        sectionKey,
-        instruction,
-        emphasis: emphasis || null,
-        avoid: avoid || null,
-        style: style || null,
-        wordCount: wordCount || null,
-        isActive: true
+      });
+    } else {
+      const existingUserLevelInstruction = await prisma.userSectionInstruction.findFirst({
+        where: {
+          userId: session.user.id,
+          sessionId: null,
+          jurisdiction: '*',
+          sectionKey
+        },
+        select: { id: true }
+      });
+
+      if (existingUserLevelInstruction) {
+        result = await prisma.userSectionInstruction.update({
+          where: { id: existingUserLevelInstruction.id },
+          data: instructionData
+        });
+      } else {
+        result = await prisma.userSectionInstruction.create({
+          data: {
+            userId: session.user.id,
+            sessionId: null,
+            jurisdiction: '*',
+            sectionKey,
+            ...instructionData
+          }
+        });
       }
-    });
+    }
 
     return NextResponse.json({
       success: true,

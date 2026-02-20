@@ -6,6 +6,7 @@
 
 import { prisma } from '../prisma';
 import { pdfParserService } from './pdf-parser-service';
+import { proactiveParsingService } from './proactive-parsing-service';
 import type { ExtractedPdfMetadata } from './pdf-parser-service';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -773,13 +774,47 @@ class ReferenceDocumentService {
     // ============================================================================
 
     /**
-     * Fire and forget document processing.
+     * Adaptive async processing: basic PDF parse → structured extraction → notify deep-analysis pipeline.
+     *
+     * After structured sections are queued, looks up whether the document is linked to
+     * any DEEP_* classified citation.  If so, log it so operators know the paper
+     * will be ready for evidence extraction without user intervention.
      */
     private processDocumentAsync(documentId: string): void {
-        // Use setImmediate to not block the request
         setImmediate(async () => {
             try {
                 await pdfParserService.processDocument(documentId);
+                proactiveParsingService.triggerForDocument(documentId, 'pdf-upload');
+
+                const links = await prisma.referenceDocumentLink.findMany({
+                    where: { documentId, isPrimary: true },
+                    select: { referenceId: true },
+                });
+                const referenceIds = links.map(l => l.referenceId);
+                if (referenceIds.length > 0) {
+                    const DEEP_LABELS = new Set(['DEEP_ANCHOR', 'DEEP_SUPPORT', 'DEEP_STRESS_TEST']);
+                    const linkedCitations = await prisma.citation.findMany({
+                        where: {
+                            libraryReferenceId: { in: referenceIds },
+                            isActive: true,
+                        },
+                        select: { id: true, citationKey: true, deepAnalysisLabel: true, aiMeta: true },
+                    });
+
+                    const deepCitations = linkedCitations.filter(c => {
+                        if (c.deepAnalysisLabel && DEEP_LABELS.has(c.deepAnalysisLabel)) return true;
+                        const rec = (c.aiMeta as any)?.deepAnalysisRecommendation;
+                        return typeof rec === 'string' && DEEP_LABELS.has(rec);
+                    });
+
+                    if (deepCitations.length > 0) {
+                        const labels = deepCitations.map(c => {
+                            const label = c.deepAnalysisLabel || (c.aiMeta as any)?.deepAnalysisRecommendation || 'DEEP';
+                            return `${c.citationKey ?? c.id}[${label}]`;
+                        }).join(', ');
+                        console.log(`[RefDocService] PDF for ${deepCitations.length} DEEP citation(s) uploaded — PDF.js parsing queued: ${labels}`);
+                    }
+                }
             } catch (error) {
                 console.error(`[RefDocService] Async processing failed for ${documentId}:`, error);
             }

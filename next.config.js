@@ -3,7 +3,8 @@ const nextConfig = {
   // Minimal config for development
   experimental: {
     webpackBuildWorker: false,
-    optimizeCss: true, // Optimize CSS loading and preloading
+    optimizeCss: true,
+    serverComponentsExternalPackages: ['pdfjs-dist'],
   },
 
   // Webpack configuration to handle offline scenarios

@@ -420,7 +420,15 @@ export class LLMGateway {
       'o1-mini': { maxInput: 128000, maxOutput: 65536 },
       'o1-preview': { maxInput: 128000, maxOutput: 32768 },
       
-      // Anthropic - Friendly names
+      // Anthropic - Claude 4 models
+      'claude-sonnet-4': { maxInput: 200000, maxOutput: 16384 },
+      'claude-sonnet-4-20250514': { maxInput: 200000, maxOutput: 16384 },
+      'claude-opus-4': { maxInput: 200000, maxOutput: 16384 },
+      'claude-opus-4-20250514': { maxInput: 200000, maxOutput: 16384 },
+      // Anthropic - Claude 3.7 models
+      'claude-3-7-sonnet': { maxInput: 200000, maxOutput: 16384 },
+      'claude-3-7-sonnet-20250219': { maxInput: 200000, maxOutput: 16384 },
+      // Anthropic - Claude 3.5 models
       'claude-3.5-sonnet': { maxInput: 200000, maxOutput: 8192 },
       'claude-3.5-haiku': { maxInput: 200000, maxOutput: 8192 },
       'claude-3-opus': { maxInput: 200000, maxOutput: 4096 },

@@ -2,6 +2,14 @@ import fs from 'fs';
 import path from 'path';
 import { prisma } from '../prisma';
 import type { DeepAnalysisLabel, PreparedPaperSection, PreparedPaperText } from './deep-analysis-types';
+import {
+  detectSections,
+  normalizeExtractedText,
+  HARD_STOP_HEADING,
+  SOFT_DROP_HEADING,
+  stripTrailingSections,
+} from './proactive-parsing-service';
+import { removeNullCharacters, sanitizeForPostgres } from '../utils/postgres-sanitize';
 
 interface CitationIdentity {
   id: string;
@@ -16,7 +24,7 @@ export interface PreparedCitationTextResult {
   preparedText: PreparedPaperText;
   referenceId: string | null;
   documentId: string | null;
-  parserUsed: 'GROBID' | 'REGEX_FALLBACK';
+  parserUsed: 'PDFJS' | 'GROBID' | 'REGEX_FALLBACK';
 }
 
 export interface CitationTextReadinessResult {
@@ -24,7 +32,8 @@ export interface CitationTextReadinessResult {
   reason: string | null;
   referenceId: string | null;
   documentId: string | null;
-  parserCandidate: 'GROBID' | 'REGEX_FALLBACK' | null;
+  parserCandidate: 'PDFJS' | 'GROBID' | 'REGEX_FALLBACK' | null;
+  hasAttachedSource: boolean;
 }
 
 interface MatchedReferenceDocument {
@@ -61,24 +70,6 @@ const normalizeDoi = (value?: string | null): string => {
     .replace(/\s+/g, '');
 };
 
-const decodeXmlEntities = (value: string): string => {
-  return value
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;|&#39;/g, "'")
-    .replace(/&#x2013;|&#8211;/g, '-')
-    .replace(/&#x2014;|&#8212;/g, '-')
-    .replace(/&#x2018;|&#8216;/g, "'")
-    .replace(/&#x2019;|&#8217;/g, "'")
-    .replace(/&#x201C;|&#8220;/g, '"')
-    .replace(/&#x201D;|&#8221;/g, '"');
-};
-
-const stripTags = (value: string): string => decodeXmlEntities(value.replace(/<[^>]+>/g, ' '));
-const normalizeWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
-
 const estimateTokens = (text: string): number => Math.ceil(String(text || '').length / 4);
 
 const clampByTokenBudget = (text: string, maxChars = MAX_CHARS): string => {
@@ -101,10 +92,6 @@ const clampByTokenBudget = (text: string, maxChars = MAX_CHARS): string => {
 };
 
 class TextPreparationService {
-  private static grobidInFlight = 0;
-  private static grobidWaiters: Array<() => void> = [];
-  private static grobidHealthCache: { url: string; checkedAt: number; reachable: boolean } | null = null;
-
   async prepareForCitation(
     sessionId: string,
     citation: CitationIdentity,
@@ -150,6 +137,7 @@ class TextPreparationService {
         referenceId: null,
         documentId: null,
         parserCandidate: null,
+        hasAttachedSource: false,
       };
     }
 
@@ -161,33 +149,28 @@ class TextPreparationService {
         referenceId: null,
         documentId: null,
         parserCandidate: null,
+        hasAttachedSource: false,
       };
     }
 
     const hasParsedText = typeof matched.document.parsedText === 'string' && matched.document.parsedText.trim().length > 0;
     const storedSections = this.parseSectionsJson(matched.document.sectionsJson);
+    const hasStoredSections = Boolean(storedSections && storedSections.length > 0);
+    const hasTextData = hasParsedText || hasStoredSections;
+    const rawStoragePath = String(matched.document.storagePath || '').trim();
+    const mime = String(matched.document.mimeType || '').toLowerCase();
+    const hasPdfAttachment = mime.includes('pdf') || (rawStoragePath ? /\.pdf$/i.test(rawStoragePath) : false);
+    const hasAttachedSource = hasTextData || hasPdfAttachment;
 
-    if (hasParsedText || (storedSections && storedSections.length > 0)) {
-      const parserCandidate = (storedSections && storedSections.length > 0) || this.hasGrobidCandidate(matched.document)
-        ? 'GROBID'
-        : 'REGEX_FALLBACK';
+    if (hasTextData) {
+      const parserCandidate = hasStoredSections ? 'PDFJS' : 'REGEX_FALLBACK';
       return {
         ready: true,
         reason: null,
         referenceId: matched.referenceId,
         documentId: matched.document.id,
         parserCandidate,
-      };
-    }
-
-    const grobidUrl = this.getGrobidUrl();
-    if (!grobidUrl) {
-      return {
-        ready: false,
-        reason: 'Document has no parsed text and GROBID is not configured (set GROBID_URL)',
-        referenceId: matched.referenceId,
-        documentId: matched.document.id,
-        parserCandidate: null,
+        hasAttachedSource,
       };
     }
 
@@ -200,29 +183,19 @@ class TextPreparationService {
         referenceId: matched.referenceId,
         documentId: matched.document.id,
         parserCandidate: null,
+        hasAttachedSource,
       };
     }
 
-    const mime = String(matched.document.mimeType || '').toLowerCase();
     const looksLikePdfPath = /\.pdf$/i.test(storagePath);
     if (!mime.includes('pdf') && !looksLikePdfPath) {
       return {
         ready: false,
-        reason: `Document mime type ${matched.document.mimeType || 'unknown'} is not supported by GROBID`,
+        reason: `Document mime type ${matched.document.mimeType || 'unknown'} is not a PDF`,
         referenceId: matched.referenceId,
         documentId: matched.document.id,
         parserCandidate: null,
-      };
-    }
-
-    const grobidHealth = await this.getGrobidHealth();
-    if (!grobidHealth.reachable) {
-      return {
-        ready: false,
-        reason: `GROBID service unreachable at ${grobidHealth.url}. Check that the Docker container is running.`,
-        referenceId: matched.referenceId,
-        documentId: matched.document.id,
-        parserCandidate: null,
+        hasAttachedSource,
       };
     }
 
@@ -231,7 +204,8 @@ class TextPreparationService {
       reason: null,
       referenceId: matched.referenceId,
       documentId: matched.document.id,
-      parserCandidate: 'GROBID',
+      parserCandidate: 'PDFJS',
+      hasAttachedSource,
     };
   }
 
@@ -407,71 +381,85 @@ class TextPreparationService {
     document: MatchedReferenceDocument['document'],
     depthLabel: DeepAnalysisLabel
   ): Promise<PreparedPaperText> {
-    let grobidSections = this.parseSectionsJson(document.sectionsJson);
-    let grobidFailureReason: string | null = null;
-    let parsedWithGrobidThisRun = false;
+    let storedSections = this.parseSectionsJson(document.sectionsJson);
 
-    if (!grobidSections && this.shouldUseGrobid(document)) {
-      const parsed = await this.tryParseWithGrobid(document);
-      grobidSections = parsed.sections;
-      grobidFailureReason = parsed.failureReason;
-      if (grobidSections && grobidSections.length > 0) {
-        parsedWithGrobidThisRun = true;
-        const extractedFullText = this.joinSections(grobidSections);
-        await prisma.referenceDocument.update({
-          where: { id: document.id },
-          data: {
-            parsedText: extractedFullText,
-            sectionsJson: grobidSections as any,
-            parserUsed: 'GROBID',
-          },
-        }).catch(() => undefined);
+    if (storedSections && storedSections.length > 0) {
+      const totalChars = storedSections.reduce((sum, s) => sum + s.heading.length + s.text.length, 0);
+      let cumChars = 0;
+      let hardStopIdx = -1;
+
+      for (let i = 0; i < storedSections.length; i++) {
+        const progress = totalChars > 0 ? cumChars / totalChars : 0;
+        if (progress >= 0.2 && HARD_STOP_HEADING.test(storedSections[i].heading)) {
+          hardStopIdx = i;
+          break;
+        }
+        cumChars += storedSections[i].heading.length + storedSections[i].text.length;
       }
+      if (hardStopIdx >= 0) {
+        storedSections = storedSections.slice(0, hardStopIdx);
+      }
+
+      // SOFT_DROP: filter out acknowledgments/author bios but keep appendices
+      storedSections = storedSections.filter(s => !SOFT_DROP_HEADING.test(s.heading));
     }
 
-    if (grobidSections && grobidSections.length > 0) {
-      const selectedSections = this.selectSectionsByDepth(grobidSections, depthLabel);
-      const fullBody = this.joinSections(grobidSections);
-      const selectedText = this.joinSections(selectedSections.length > 0 ? selectedSections : grobidSections);
+    if (storedSections && storedSections.length > 0) {
+      console.log(`[TextPrep] Document ${document.id}: using pre-parsed sections (${storedSections.length} sections)`);
+      const selectedSections = this.selectSectionsByDepth(storedSections, depthLabel);
+      const fullBody = this.joinSections(storedSections);
+      const selectedText = this.joinSections(selectedSections.length > 0 ? selectedSections : storedSections);
       const bounded = clampByTokenBudget(selectedText);
-
-      const hasStoredParsedText = typeof document.parsedText === 'string' && document.parsedText.trim().length > 0;
-      if (!parsedWithGrobidThisRun && !hasStoredParsedText && fullBody) {
-        await prisma.referenceDocument.update({
-          where: { id: document.id },
-          data: {
-            parsedText: fullBody,
-            parserUsed: document.parserUsed || 'GROBID',
-          },
-        }).catch(() => undefined);
-      }
 
       return {
         fullText: bounded,
         rawFullText: clampByTokenBudget(fullBody, MAX_CHARS * 2),
-        sections: selectedSections.length > 0 ? selectedSections : grobidSections,
-        source: 'GROBID',
+        sections: selectedSections.length > 0 ? selectedSections : storedSections,
+        source: 'PDFJS',
         estimatedTokens: estimateTokens(bounded),
       };
     }
 
-    const cleaned = this.regexClean(document.parsedText || '');
+    const rawText = document.parsedText || '';
+    const cleaned = normalizeExtractedText(this.regexClean(rawText));
     if (!cleaned) {
-      throw new Error(grobidFailureReason || 'Document has no parseable full text');
+      throw new Error('Document has no parseable full text');
+    }
+
+    const sections = detectSections(cleaned);
+    if (sections.length > 0) {
+      await prisma.referenceDocument.update({
+        where: { id: document.id },
+        data: { sectionsJson: sanitizeForPostgres(sections) as any, parserUsed: document.parserUsed || 'PDFJS' },
+      }).catch(() => undefined);
+
+      const selectedSections = this.selectSectionsByDepth(sections, depthLabel);
+      const fullBody = this.joinSections(sections);
+      const selectedText = this.joinSections(selectedSections.length > 0 ? selectedSections : sections);
+      const bounded = clampByTokenBudget(selectedText);
+
+      return {
+        fullText: bounded,
+        rawFullText: clampByTokenBudget(fullBody, MAX_CHARS * 2),
+        sections: selectedSections.length > 0 ? selectedSections : sections,
+        source: 'PDFJS',
+        estimatedTokens: estimateTokens(bounded),
+      };
     }
 
     await prisma.referenceDocument.update({
       where: { id: document.id },
-      data: {
-        parserUsed: document.parserUsed || 'REGEX_FALLBACK',
-      },
+      data: { parserUsed: document.parserUsed || 'REGEX_FALLBACK' },
     }).catch(() => undefined);
 
     const bounded = clampByTokenBudget(cleaned);
+    const rawForVerification = normalizeExtractedText(
+      stripTrailingSections(removeNullCharacters(String(rawText || '')).replace(/\r\n/g, '\n'))
+    );
 
     return {
       fullText: bounded,
-      rawFullText: bounded,
+      rawFullText: clampByTokenBudget(rawForVerification || cleaned, MAX_CHARS * 2),
       source: 'REGEX_FALLBACK',
       estimatedTokens: estimateTokens(bounded),
     };
@@ -485,8 +473,8 @@ class TextPreparationService {
     const sections = raw
       .map(item => {
         if (!item || typeof item !== 'object') return null;
-        const heading = String((item as any).heading || '').trim() || 'Untitled Section';
-        const text = String((item as any).text || '').trim();
+        const heading = removeNullCharacters(String((item as any).heading || '').trim()) || 'Untitled Section';
+        const text = removeNullCharacters(String((item as any).text || '').trim());
         if (!text) return null;
         return { heading, text };
       })
@@ -501,375 +489,11 @@ class TextPreparationService {
     return path.isAbsolute(candidate) ? candidate : path.resolve(process.cwd(), candidate);
   }
 
-  private hasGrobidCandidate(document: MatchedReferenceDocument['document']): boolean {
-    const grobidUrl = this.getGrobidUrl();
-    if (!grobidUrl) return false;
-    const resolvedPath = this.resolveStoragePath(document.storagePath);
-    if (!resolvedPath || !fs.existsSync(resolvedPath)) return false;
-    const mime = String(document.mimeType || '').toLowerCase();
-    return mime.includes('pdf') || /\.pdf$/i.test(resolvedPath);
-  }
-
-  private shouldUseGrobid(document: MatchedReferenceDocument['document']): boolean {
-    return this.hasGrobidCandidate(document);
-  }
-
-  private getGrobidTimeoutMs(): number {
-    const parsed = Number.parseInt(String(process.env.GROBID_TIMEOUT_MS || '90000'), 10);
-    if (!Number.isFinite(parsed)) return 90_000;
-    return Math.max(15_000, Math.min(300_000, parsed));
-  }
-
-  private getGrobidMaxRetries(): number {
-    const parsed = Number.parseInt(String(process.env.GROBID_MAX_RETRIES || '4'), 10);
-    if (!Number.isFinite(parsed)) return 4;
-    return Math.max(1, Math.min(8, parsed));
-  }
-
-  private getGrobidConcurrency(): number {
-    const parsed = Number.parseInt(String(process.env.GROBID_CONCURRENCY || '2'), 10);
-    if (!Number.isFinite(parsed)) return 2;
-    return Math.max(1, Math.min(8, parsed));
-  }
-
-  private getGrobidUrl(): string {
-    return String(process.env.GROBID_URL || process.env.GROBID_BASE_URL || '')
-      .trim()
-      .replace(/\/$/, '');
-  }
-
-  private async getGrobidHealth(): Promise<{ url: string; reachable: boolean }> {
-    const url = this.getGrobidUrl();
-    if (!url) {
-      return { url: '', reachable: false };
-    }
-
-    const cached = TextPreparationService.grobidHealthCache;
-    const now = Date.now();
-    if (cached && cached.url === url && now - cached.checkedAt < 30_000) {
-      return { url, reachable: cached.reachable };
-    }
-
-    let reachable = false;
-    const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), 5_000);
-    try {
-      const response = await fetch(`${url}/api/isalive`, {
-        method: 'GET',
-        signal: abortController.signal,
-      });
-      reachable = response.ok;
-    } catch {
-      reachable = false;
-    } finally {
-      clearTimeout(timeout);
-    }
-
-    TextPreparationService.grobidHealthCache = {
-      url,
-      checkedAt: now,
-      reachable,
-    };
-
-    return { url, reachable };
-  }
-
-  private getGrobidVariants(): Array<{ endpointPath: string; fieldName: 'input' | 'inputFile' }> {
-    const configuredEndpoint = String(process.env.GROBID_FULLTEXT_ENDPOINT || '/api/processFulltextDocument').trim();
-    const normalizedEndpoint = configuredEndpoint.startsWith('/') ? configuredEndpoint : `/${configuredEndpoint}`;
-    const configuredField = String(process.env.GROBID_INPUT_FIELD || 'input').trim().toLowerCase() === 'inputfile'
-      ? 'inputFile'
-      : 'input';
-
-    const variants: Array<{ endpointPath: string; fieldName: 'input' | 'inputFile' }> = [
-      { endpointPath: normalizedEndpoint, fieldName: configuredField },
-      { endpointPath: '/api/processFulltextDocument', fieldName: 'input' },
-      { endpointPath: '/api/processFulltextDocument', fieldName: 'inputFile' },
-    ];
-
-    const deduped = new Map<string, { endpointPath: string; fieldName: 'input' | 'inputFile' }>();
-    for (const variant of variants) {
-      const key = `${variant.endpointPath}::${variant.fieldName}`;
-      if (!deduped.has(key)) {
-        deduped.set(key, variant);
-      }
-    }
-    return Array.from(deduped.values());
-  }
-
-  private async acquireGrobidSlot(limit: number): Promise<void> {
-    while (TextPreparationService.grobidInFlight >= limit) {
-      await new Promise<void>(resolve => {
-        TextPreparationService.grobidWaiters.push(resolve);
-      });
-    }
-    TextPreparationService.grobidInFlight += 1;
-  }
-
-  private releaseGrobidSlot(): void {
-    TextPreparationService.grobidInFlight = Math.max(0, TextPreparationService.grobidInFlight - 1);
-    const next = TextPreparationService.grobidWaiters.shift();
-    if (next) {
-      next();
-    }
-  }
-
-  private async withGrobidSlot<T>(task: () => Promise<T>): Promise<T> {
-    const limit = this.getGrobidConcurrency();
-    await this.acquireGrobidSlot(limit);
-    try {
-      return await task();
-    } finally {
-      this.releaseGrobidSlot();
-    }
-  }
-
-  private buildGrobidFormData(
-    fileBuffer: Buffer,
-    fileName: string,
-    fieldName: 'input' | 'inputFile'
-  ): FormData {
-    const formData = new FormData();
-    formData.append(
-      fieldName,
-      new Blob([fileBuffer as unknown as ArrayBuffer], { type: 'application/pdf' }),
-      fileName
-    );
-    formData.append('consolidateHeader', '1');
-    formData.append('consolidateCitations', '0');
-    formData.append('segmentSentences', '1');
-    return formData;
-  }
-
-  private async requestGrobidTEI(
-    grobidUrl: string,
-    endpointPath: string,
-    fileBuffer: Buffer,
-    fileName: string,
-    fieldName: 'input' | 'inputFile',
-    timeoutMs: number
-  ): Promise<{ teiXml: string | null; retryable: boolean; unreachable: boolean }> {
-    const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), timeoutMs);
-
-    try {
-      const response = await fetch(`${grobidUrl}${endpointPath}`, {
-        method: 'POST',
-        body: this.buildGrobidFormData(fileBuffer, fileName, fieldName),
-        signal: abortController.signal,
-        headers: {
-          Accept: 'application/xml,text/xml;q=0.9,*/*;q=0.8',
-        },
-      });
-
-      if (!response.ok) {
-        const retryableStatuses = new Set([408, 425, 429, 500, 502, 503, 504]);
-        return {
-          teiXml: null,
-          retryable: retryableStatuses.has(response.status),
-          unreachable: false,
-        };
-      }
-
-      const teiXml = await response.text();
-      return { teiXml, retryable: false, unreachable: false };
-    } catch {
-      return { teiXml: null, retryable: true, unreachable: true };
-    } finally {
-      clearTimeout(timeout);
-    }
-  }
-
-  private async delay(ms: number): Promise<void> {
-    await new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  private async tryParseWithGrobid(
-    document: MatchedReferenceDocument['document']
-  ): Promise<{ sections: PreparedPaperSection[] | null; failureReason: string | null }> {
-    const grobidUrl = this.getGrobidUrl();
-    if (!grobidUrl) {
-      return {
-        sections: null,
-        failureReason: 'GROBID URL is not configured (set GROBID_URL)',
-      };
-    }
-
-    try {
-      const storagePath = this.resolveStoragePath(document.storagePath);
-      if (!storagePath || !fs.existsSync(storagePath)) {
-        const missingPath = storagePath || document.storagePath || '(missing storagePath)';
-        console.warn(`[TextPreparation] GROBID skipped for document ${document.id}: file not found at ${missingPath}`);
-        return {
-          sections: null,
-          failureReason: `Document file not found at ${missingPath}`,
-        };
-      }
-
-      const fileBuffer = fs.readFileSync(storagePath);
-      const fileName = path.basename(storagePath || 'document.pdf');
-      const timeoutMs = this.getGrobidTimeoutMs();
-      const maxRetries = this.getGrobidMaxRetries();
-      const variants = this.getGrobidVariants();
-
-      return await this.withGrobidSlot(async () => {
-        let sawConnectionFailure = false;
-
-        for (let attempt = 0; attempt < maxRetries; attempt += 1) {
-          let shouldRetry = false;
-
-          for (const variant of variants) {
-            const response = await this.requestGrobidTEI(
-              grobidUrl,
-              variant.endpointPath,
-              fileBuffer,
-              fileName,
-              variant.fieldName,
-              timeoutMs
-            );
-
-            if (response.teiXml) {
-              try {
-                const parsed = this.parseGrobidTEI(response.teiXml);
-                if (parsed.sections.length > 0) {
-                  return {
-                    sections: parsed.sections,
-                    failureReason: null,
-                  };
-                }
-              } catch {
-                // Continue trying compatible endpoint/field combinations.
-              }
-            }
-
-            if (response.unreachable) {
-              sawConnectionFailure = true;
-            }
-            if (response.retryable) {
-              shouldRetry = true;
-            }
-          }
-
-          if (!shouldRetry || attempt >= maxRetries - 1) {
-            break;
-          }
-
-          await this.delay(Math.min(1_500 * (attempt + 1), 6_000));
-        }
-
-        if (sawConnectionFailure) {
-          return {
-            sections: null,
-            failureReason: `GROBID service unreachable at ${grobidUrl}. Check that the Docker container is running.`,
-          };
-        }
-
-        return {
-          sections: null,
-          failureReason: 'GROBID returned no parseable sections',
-        };
-      });
-    } catch (error) {
-      console.warn(`[TextPreparation] GROBID parse failed for document ${document.id}:`, error);
-      return {
-        sections: null,
-        failureReason: `GROBID parsing failed for document ${document.id}`,
-      };
-    }
-  }
-
-  private extractGrobidBodyXml(teiXml: string): { bodyXml: string | null; selfClosingBody: boolean } {
-    const explicitBodyMatch = teiXml.match(/<(?:\w+:)?body\b[^>]*>([\s\S]*?)<\/(?:\w+:)?body>/i);
-    if (explicitBodyMatch) {
-      return {
-        bodyXml: explicitBodyMatch[1],
-        selfClosingBody: false,
-      };
-    }
-
-    const selfClosingBodyMatch = teiXml.match(/<(?:\w+:)?body\b[^>]*\/>/i);
-    if (selfClosingBodyMatch) {
-      return {
-        bodyXml: '',
-        selfClosingBody: true,
-      };
-    }
-
-    return {
-      bodyXml: null,
-      selfClosingBody: false,
-    };
-  }
-
-  private parseGrobidTEI(teiXml: string): { sections: PreparedPaperSection[] } {
-    const { bodyXml: extractedBodyXml, selfClosingBody } = this.extractGrobidBodyXml(teiXml);
-    if (extractedBodyXml === null) {
-      throw new Error('GROBID TEI has no body');
-    }
-
-    const bodyXml = extractedBodyXml
-      .replace(/<(?:\w+:)?figure[\s\S]*?<\/(?:\w+:)?figure>/gi, ' ')
-      .replace(/<(?:\w+:)?note[\s\S]*?<\/(?:\w+:)?note>/gi, ' ');
-
-    const sections: PreparedPaperSection[] = [];
-    const divRegex = /<(?:\w+:)?div\b[^>]*>([\s\S]*?)<\/(?:\w+:)?div>/gi;
-    let divMatch: RegExpExecArray | null;
-
-    while ((divMatch = divRegex.exec(bodyXml)) !== null) {
-      const divXml = divMatch[1];
-      const headingMatch = divXml.match(/<(?:\w+:)?head[^>]*>([\s\S]*?)<\/(?:\w+:)?head>/i);
-      const headingRaw = headingMatch ? stripTags(headingMatch[1]) : 'Untitled Section';
-      const heading = headingRaw.replace(/^\d+(?:\.\d+)*\s*/, '').trim() || 'Untitled Section';
-
-      const paragraphs: string[] = [];
-      const paragraphRegex = /<(?:\w+:)?p\b[^>]*>([\s\S]*?)<\/(?:\w+:)?p>/gi;
-      let paragraphMatch: RegExpExecArray | null;
-      while ((paragraphMatch = paragraphRegex.exec(divXml)) !== null) {
-        const text = normalizeWhitespace(stripTags(paragraphMatch[1]));
-        if (text) paragraphs.push(text);
-      }
-
-      if (paragraphs.length === 0) {
-        const fallbackText = normalizeWhitespace(stripTags(divXml));
-        if (fallbackText) {
-          paragraphs.push(fallbackText);
-        }
-      }
-
-      const joined = paragraphs.join('\n\n').trim();
-      if (joined) {
-        sections.push({ heading, text: joined });
-      }
-    }
-
-    if (sections.length === 0 && bodyXml.trim().length > 0) {
-      const text = normalizeWhitespace(stripTags(bodyXml));
-      if (text) {
-        sections.push({ heading: 'Body', text });
-      }
-    }
-
-    if (sections.length === 0 && selfClosingBody) {
-      const fallbackText = normalizeWhitespace(stripTags(teiXml));
-      if (fallbackText) {
-        sections.push({ heading: 'Body', text: fallbackText });
-      }
-    }
-
-    if (sections.length === 0) {
-      throw new Error('GROBID returned no parseable sections');
-    }
-
-    return { sections };
-  }
-
   regexClean(text: string): string {
-    let value = String(text || '').replace(/\r\n/g, '\n');
+    let value = removeNullCharacters(String(text || '')).replace(/\r\n/g, '\n');
 
-    const referencesMatch = value.match(/\n\s*(references|bibliography|works\s+cited)\s*\n/i);
-    if (referencesMatch && typeof referencesMatch.index === 'number') {
-      value = value.slice(0, referencesMatch.index);
-    }
+    // Use the same deterministic truncation logic as proactive parsing.
+    value = stripTrailingSections(value);
 
     const lines = value.split('\n');
     const shortLineCounts = new Map<string, number>();
@@ -883,12 +507,17 @@ class TextPreparationService {
       }
     }
 
+    const KEEP_PATTERN = /^(?:algorithm|theorem|lemma|corollary|proposition|definition|proof|figure|table|equation|step|case|example|property|claim|remark|observation)\s+\d/i;
+
     const cleanedLines = lines.filter(rawLine => {
       const line = rawLine.trim();
       if (!line) return true;
       if (/^[\[(]?\d{1,4}[\])]?$/.test(line)) return false;
       const shortCount = shortLineCounts.get(line) || 0;
-      if (line.length <= 80 && shortCount >= 3) return false;
+      if (line.length <= 80 && shortCount >= 3) {
+        if (KEEP_PATTERN.test(line)) return true;
+        return false;
+      }
       return true;
     });
 
@@ -910,7 +539,7 @@ class TextPreparationService {
     }
 
     const supportPattern = /method|material|dataset|participant|experiment|evaluation|result|finding|analysis|experimental|setup|data|performance|outcome|benchmark|ablation|implementation|approach|design|procedure|framework|sample|measure|test|comparison|effect|impact/i;
-    const stressPattern = /method|material|result|finding|discussion|limitation|threat|failure|conclusion|analysis/i;
+    const stressPattern = /method|material|result|finding|discussion|limitation|threat|failure|conclusion|analysis|validity|bias|caveat|weakness|boundary|constraint|generalizab/i;
 
     const pattern = depthLabel === 'DEEP_STRESS_TEST' ? stressPattern : supportPattern;
     const selected = sections.filter(section => pattern.test(section.heading));
@@ -919,19 +548,21 @@ class TextPreparationService {
       return selected;
     }
 
-    const midpoint = Math.ceil(sections.length / 2);
-    if (depthLabel === 'DEEP_SUPPORT') {
-      return sections.slice(Math.max(0, midpoint - 1));
+    if (depthLabel === 'DEEP_STRESS_TEST') {
+      const thirdPoint = Math.ceil((sections.length * 2) / 3);
+      return sections.slice(Math.max(0, thirdPoint - 1));
     }
 
+    const midpoint = Math.ceil(sections.length / 2);
     return sections.slice(Math.max(0, midpoint - 1));
   }
 
   private joinSections(sections: PreparedPaperSection[]): string {
-    return sections
+    const raw = sections
       .map(section => `## ${section.heading}\n\n${section.text}`)
       .join('\n\n')
       .trim();
+    return normalizeExtractedText(raw);
   }
 }
 

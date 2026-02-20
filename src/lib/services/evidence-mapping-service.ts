@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { llmGateway, type TenantContext } from '../metering';
 import type { BlueprintWithSectionPlan } from './blueprint-service';
 import {
+  BATCH_MAPPING_CHUNK_SIZE,
   mappingResponseSchema,
   type ExtractedCardWithIdentity,
   type EvidenceMappingUseAs,
@@ -212,7 +213,78 @@ function dedupeMappings(mappings: CardDimensionMapping[]): CardDimensionMapping[
   return Array.from(byKey.values());
 }
 
+const MAPPING_MAX_RETRIES = 1;
+const MAPPING_RETRY_DELAY_MS = 2_000;
+
 class EvidenceMappingService {
+  private async callMappingLLM(
+    prompt: MappingPrompt,
+    idempotencyKey: string,
+    cards: ExtractedCardWithIdentity[],
+    blueprint: BlueprintWithSectionPlan,
+    tenantContext?: TenantContext | null
+  ): Promise<{ rawOutput: string; usage: { inputTokens: number; outputTokens: number } }> {
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= MAPPING_MAX_RETRIES; attempt++) {
+      if (attempt > 0) {
+        console.log(`[EvidenceMapping] Retrying mapping (attempt ${attempt}/${MAPPING_MAX_RETRIES}) after ${MAPPING_RETRY_DELAY_MS}ms...`);
+        await new Promise(resolve => setTimeout(resolve, MAPPING_RETRY_DELAY_MS));
+      }
+
+      try {
+        const attemptKey = attempt > 0 ? `${idempotencyKey}_r${attempt}` : idempotencyKey;
+
+        const response = await llmGateway.executeLLMOperation(
+          tenantContext ? { tenantContext } : { headers: {} },
+          {
+            taskCode: 'LLM2_DRAFT',
+            stageCode: 'PAPER_REVIEW_COHERENCE',
+            prompt: `${prompt.system}\n\n${prompt.user}`,
+            parameters: {
+              purpose: 'evidence_dimension_mapping',
+              temperature: 0,
+            },
+            idempotencyKey: attemptKey,
+            metadata: {
+              purpose: 'evidence_dimension_mapping',
+              cards: cards.length,
+              sections: blueprint.sectionPlan.length,
+              attempt,
+            },
+          }
+        );
+
+        if (!response.success || !response.response) {
+          const err = new Error(response.error?.message || 'Mapping LLM call failed');
+          console.error(`[EvidenceMapping] LLM call failed (attempt ${attempt}):`, response.error?.message);
+          if (attempt < MAPPING_MAX_RETRIES) {
+            lastError = err;
+            continue;
+          }
+          throw err;
+        }
+
+        return {
+          rawOutput: String(response.response.output || '').trim(),
+          usage: {
+            inputTokens: Number((response.response.metadata as any)?.inputTokens || 0),
+            outputTokens: Number(response.response.outputTokens || 0),
+          },
+        };
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        console.error(`[EvidenceMapping] Attempt ${attempt} failed: ${lastError.message}`);
+        if (attempt < MAPPING_MAX_RETRIES) {
+          continue;
+        }
+        throw lastError;
+      }
+    }
+
+    throw lastError || new Error('Mapping LLM call failed after retries');
+  }
+
   async mapCardsToDimensions(
     cards: ExtractedCardWithIdentity[],
     blueprint: BlueprintWithSectionPlan,
@@ -229,27 +301,20 @@ class EvidenceMappingService {
     const warnings: string[] = [];
     const prompt = buildMappingPrompt(cards, blueprint);
 
-    const response = await llmGateway.executeLLMOperation(
-      tenantContext ? { tenantContext } : { headers: {} },
-      {
-        taskCode: 'LLM2_DRAFT',
-        stageCode: 'PAPER_REVIEW_COHERENCE',
-        prompt: `${prompt.system}\n\n${prompt.user}`,
-        parameters: {
-          purpose: 'evidence_dimension_mapping',
-          temperature: 0,
-        },
-        idempotencyKey: crypto.randomUUID(),
-        metadata: {
-          purpose: 'evidence_dimension_mapping',
-          cards: cards.length,
-          sections: blueprint.sectionPlan.length,
-        },
-      }
-    );
+    const cardFingerprint = cards.map(c => c.cardId).sort().join(',');
+    const sectionFingerprint = blueprint.sectionPlan.map(s => s.sectionKey).sort().join(',');
+    const mappingIdempotencyKey = `evidence_map_${crypto.createHash('md5').update(`${cardFingerprint}|${sectionFingerprint}`).digest('hex').slice(0, 16)}`;
 
-    if (!response.success || !response.response) {
-      warnings.push(response.error?.message || 'Mapping LLM call failed, used heuristic fallback');
+    let rawOutput: string;
+    let usage = { inputTokens: 0, outputTokens: 0 };
+
+    try {
+      const llmResult = await this.callMappingLLM(prompt, mappingIdempotencyKey, cards, blueprint, tenantContext);
+      rawOutput = llmResult.rawOutput;
+      usage = llmResult.usage;
+    } catch (llmError) {
+      const message = llmError instanceof Error ? llmError.message : 'Unknown error';
+      warnings.push(`Mapping LLM failed after retry: ${message.slice(0, 200)}. Used heuristic fallback.`);
       const fallback = heuristicMapCards(cards, blueprint);
       return {
         mappings: dedupeMappings(fallback),
@@ -259,9 +324,8 @@ class EvidenceMappingService {
     }
 
     let parsedRaw: unknown;
-    const raw = String(response.response.output || '').trim();
-    const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    const candidate = fenced ? fenced[1].trim() : raw;
+    const fenced = rawOutput.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidate = fenced ? fenced[1].trim() : rawOutput;
 
     try {
       parsedRaw = JSON.parse(candidate);
@@ -277,10 +341,7 @@ class EvidenceMappingService {
         return {
           mappings: dedupeMappings(fallback),
           warnings,
-          usage: {
-            inputTokens: Number((response.response.metadata as any)?.inputTokens || 0),
-            outputTokens: Number(response.response.outputTokens || 0),
-          },
+          usage,
         };
       }
     }
@@ -292,10 +353,7 @@ class EvidenceMappingService {
       return {
         mappings: dedupeMappings(fallback),
         warnings,
-        usage: {
-          inputTokens: Number((response.response.metadata as any)?.inputTokens || 0),
-          outputTokens: Number(response.response.outputTokens || 0),
-        },
+        usage,
       };
     }
 
@@ -378,10 +436,47 @@ class EvidenceMappingService {
     return {
       mappings: dedupeMappings(mappings),
       warnings,
-      usage: {
-        inputTokens: Number((response.response.metadata as any)?.inputTokens || 0),
-        outputTokens: Number(response.response.outputTokens || 0),
-      },
+      usage,
+    };
+  }
+
+  async batchMapMultipleCitations(
+    cards: ExtractedCardWithIdentity[],
+    blueprint: BlueprintWithSectionPlan,
+    tenantContext?: TenantContext | null
+  ): Promise<{ mappings: CardDimensionMapping[]; warnings: string[]; usage: { inputTokens: number; outputTokens: number } }> {
+    if (!cards.length || !blueprint.sectionPlan.length) {
+      return { mappings: [], warnings: [], usage: { inputTokens: 0, outputTokens: 0 } };
+    }
+
+    const chunkSize = BATCH_MAPPING_CHUNK_SIZE;
+    const chunks: ExtractedCardWithIdentity[][] = [];
+    for (let i = 0; i < cards.length; i += chunkSize) {
+      chunks.push(cards.slice(i, i + chunkSize));
+    }
+
+    console.log(`[EvidenceMapping] Batch mapping ${cards.length} cards in ${chunks.length} chunk(s) (chunkSize=${chunkSize})`);
+
+    const results = await Promise.all(
+      chunks.map(chunk => this.mapCardsToDimensions(chunk, blueprint, tenantContext))
+    );
+
+    const allMappings: CardDimensionMapping[] = [];
+    const allWarnings: string[] = [];
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+
+    for (const result of results) {
+      allMappings.push(...result.mappings);
+      allWarnings.push(...result.warnings);
+      totalInputTokens += result.usage.inputTokens;
+      totalOutputTokens += result.usage.outputTokens;
+    }
+
+    return {
+      mappings: dedupeMappings(allMappings),
+      warnings: allWarnings,
+      usage: { inputTokens: totalInputTokens, outputTokens: totalOutputTokens },
     };
   }
 }

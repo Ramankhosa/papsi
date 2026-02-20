@@ -8,6 +8,7 @@ import { createReservationService } from '@/lib/metering/reservation';
 import { featureFlags } from '@/lib/feature-flags';
 import { blueprintService, type BlueprintWithSectionPlan, type SectionPlanItem } from '@/lib/services/blueprint-service';
 import { citationMappingService, type CitationMetaSnapshot, type PaperBlueprintMapping } from '@/lib/services/citation-mapping-service';
+import { proactiveParsingService } from '@/lib/services/proactive-parsing-service';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -2187,6 +2188,12 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       }
       return acc;
     }, {});
+
+    const deepCandidateCount = (deepLabelCounts['DEEP_ANCHOR'] || 0) + (deepLabelCounts['DEEP_SUPPORT'] || 0) + (deepLabelCounts['DEEP_STRESS_TEST'] || 0);
+    if (deepCandidateCount > 0) {
+      console.log(`[LiteratureRelevance] ${deepCandidateCount} DEEP candidates classified (A:${deepLabelCounts['DEEP_ANCHOR'] || 0} S:${deepLabelCounts['DEEP_SUPPORT'] || 0} T:${deepLabelCounts['DEEP_STRESS_TEST'] || 0}) — triggering proactive PDF parsing for papers with PDFs`);
+      proactiveParsingService.triggerForSessionCitations(sessionId, ['DEEP_ANCHOR', 'DEEP_SUPPORT', 'DEEP_STRESS_TEST'], 'classification');
+    }
 
     // Log audit
     await prisma.auditLog.create({

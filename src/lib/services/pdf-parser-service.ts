@@ -1,14 +1,16 @@
 /**
  * PDF Parser Service
- * Extracts text content and metadata from PDF files.
+ * Extracts text content and metadata from PDF files using pdfjs-dist (Mozilla PDF.js).
  * Updates ReferenceDocument status through the processing pipeline:
  *   UPLOADED -> PARSING -> READY (or FAILED)
  */
 
 import { prisma } from '../prisma';
 import * as fs from 'fs';
+import { normalizeExtractedText, reconstructPageText } from './proactive-parsing-service';
+import type { TextItem } from './proactive-parsing-service';
+import { removeNullCharacters, sanitizeTextForPostgres } from '../utils/postgres-sanitize';
 
-// Error codes for failed parsing
 export const PDF_ERROR_CODES = {
   PASSWORD_PROTECTED: 'password_protected',
   CORRUPTED: 'corrupted',
@@ -20,7 +22,6 @@ export const PDF_ERROR_CODES = {
 
 export type PdfErrorCode = typeof PDF_ERROR_CODES[keyof typeof PDF_ERROR_CODES];
 
-// Human-readable error messages for each code
 export const PDF_ERROR_MESSAGES: Record<PdfErrorCode, string> = {
   password_protected: 'PDF is password-protected. Please upload an unprotected version.',
   corrupted: 'PDF file appears to be corrupted or damaged. Please upload a different copy.',
@@ -50,90 +51,32 @@ export interface PdfParseResult {
   errorMessage?: string;
 }
 
-interface PDFTextResult {
-  text?: string;
-  total?: number;
-}
+let pdfjsPromise: Promise<typeof import('pdfjs-dist')> | null = null;
 
-interface PDFDateNode {
-  CreationDate?: Date | null;
-  XmpCreateDate?: Date | null;
-  XapCreateDate?: Date | null;
-}
-
-interface PDFInfoResult {
-  total?: number;
-  info?: Record<string, unknown>;
-  metadata?: unknown;
-  getDateNode?: () => PDFDateNode;
-}
-
-interface PDFParserInstance {
-  getText: () => Promise<PDFTextResult>;
-  getInfo: () => Promise<PDFInfoResult>;
-  destroy: () => Promise<void>;
-}
-
-type PDFParseConstructor = new (options: { data: Buffer | Uint8Array }) => PDFParserInstance;
-
-let pdfParseConstructorPromise: Promise<PDFParseConstructor> | null = null;
-
-async function getPDFParseConstructor(): Promise<PDFParseConstructor> {
-  if (!pdfParseConstructorPromise) {
-    pdfParseConstructorPromise = import('pdf-parse').then((module: any) => {
-      const ctor = module?.PDFParse || module?.default?.PDFParse;
-      if (!ctor) {
-        throw new Error('PDFParse class not found in pdf-parse module');
+function getPdfjs() {
+  if (!pdfjsPromise) {
+    pdfjsPromise = import('pdfjs-dist/legacy/build/pdf.mjs').then((mod: any) => {
+      try {
+        const pkgDir = require('path').dirname(require.resolve('pdfjs-dist/package.json'));
+        const workerPath = require('path').join(pkgDir, 'legacy', 'build', 'pdf.worker.mjs');
+        if (require('fs').existsSync(workerPath)) {
+          mod.GlobalWorkerOptions.workerSrc = `file://${workerPath.replace(/\\/g, '/')}`;
+        }
+      } catch {
+        console.warn('[PdfParser] Could not resolve pdfjs worker path, using main-thread fallback');
       }
-      return ctor as PDFParseConstructor;
+      return mod;
     });
   }
-  return pdfParseConstructorPromise;
+  return pdfjsPromise;
 }
 
 function asString(value: unknown): string | undefined {
   if (typeof value === 'string') {
-    const trimmed = value.trim();
+    const trimmed = removeNullCharacters(value).trim();
     return trimmed.length > 0 ? trimmed : undefined;
   }
-  if (typeof value === 'number') {
-    return String(value);
-  }
-  return undefined;
-}
-
-function extractDoiFromMetadata(metadata: unknown): string | undefined {
-  if (!metadata || typeof metadata !== 'object') {
-    return undefined;
-  }
-
-  const meta = metadata as {
-    get?: (key: string) => unknown;
-    getAll?: () => Record<string, unknown> | undefined;
-  };
-
-  const candidateKeys = ['dc:identifier', 'prism:doi', 'doi', 'dc:doi'];
-  for (const key of candidateKeys) {
-    const value = asString(meta.get?.(key));
-    if (!value) continue;
-    const doiMatch = value.match(/(10\.\d{4,9}\/[^\s,;)}\]]+)/i);
-    if (doiMatch) {
-      return cleanExtractedDoi(doiMatch[1]);
-    }
-  }
-
-  const allValues = meta.getAll?.();
-  if (allValues && typeof allValues === 'object') {
-    for (const value of Object.values(allValues)) {
-      const text = asString(value);
-      if (!text) continue;
-      const doiMatch = text.match(/(10\.\d{4,9}\/[^\s,;)}\]]+)/i);
-      if (doiMatch) {
-        return cleanExtractedDoi(doiMatch[1]);
-      }
-    }
-  }
-
+  if (typeof value === 'number') return String(value);
   return undefined;
 }
 
@@ -148,154 +91,112 @@ function cleanExtractedDoi(rawDoi: string | undefined): string | undefined {
     .replace(/[)\],;]+$/, '')
     .replace(/\.+$/, '');
 
-  if (!/^10\.\d{4,9}\/\S+$/i.test(normalized)) {
-    return undefined;
-  }
-
+  if (!/^10\.\d{4,9}\/\S+$/i.test(normalized)) return undefined;
   return normalized;
 }
 
-/**
- * Extract a DOI from text content.
- * Looks for DOI patterns in the first few pages of text.
- */
 function extractDoiFromText(text: string): string | undefined {
   if (!text) return undefined;
 
-  // Search a wider text window because many PDFs place DOI outside page 1.
   const searchArea = text.substring(0, 50000);
-
-  // Common DOI patterns:
-  // doi:10.xxxx/xxxxx
-  // DOI: 10.xxxx/xxxxx
-  // https://doi.org/10.xxxx/xxxxx
-  // http://dx.doi.org/10.xxxx/xxxxx
   const doiPatterns = [
     /(?:doi[:\s]+)(10\.\d{4,9}\/[^\s,;)}\]]+)/i,
     /(?:https?:\/\/(?:dx\.)?doi\.org\/)(10\.\d{4,9}\/[^\s,;)}\]]+)/i,
-    /(10\.\d{4,9}\/[^\s,;)}\]]{3,})/i, // bare DOI as fallback
+    /(10\.\d{4,9}\/[^\s,;)}\]]{3,})/i,
   ];
 
   for (const pattern of doiPatterns) {
     const match = searchArea.match(pattern);
-    if (match && match[1]) {
+    if (match?.[1]) {
       const cleaned = cleanExtractedDoi(match[1]);
-      if (cleaned) {
-        return cleaned;
-      }
+      if (cleaned) return cleaned;
     }
   }
 
   return undefined;
 }
 
-/**
- * Parse PDF creation date from various formats.
- * PDF dates can be in format: D:YYYYMMDDHHmmSSOHH'mm'
- */
 function parsePdfDate(dateStr: string | undefined): Date | undefined {
   if (!dateStr) return undefined;
 
   try {
-    // Standard PDF date format: D:YYYYMMDDHHmmSSOHH'mm'
-    const pdfDateMatch = dateStr.match(
-      /D:(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?/
-    );
+    const pdfDateMatch = dateStr.match(/D:(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?(\d{2})?/);
     if (pdfDateMatch) {
       const [, year, month, day, hour = '0', min = '0', sec = '0'] = pdfDateMatch;
-      return new Date(
-        parseInt(year),
-        parseInt(month) - 1,
-        parseInt(day),
-        parseInt(hour),
-        parseInt(min),
-        parseInt(sec)
-      );
+      return new Date(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(hour), parseInt(min), parseInt(sec));
     }
-
-    // Try standard Date parsing as fallback
     const parsed = new Date(dateStr);
-    if (!isNaN(parsed.getTime())) {
-      return parsed;
-    }
-  } catch {
-    // Ignore parse errors
-  }
+    if (!isNaN(parsed.getTime())) return parsed;
+  } catch { /* ignore */ }
 
   return undefined;
 }
 
 class PdfParserService {
-  /**
-   * Parse a PDF file and extract text + metadata.
-   * Returns parsed data without touching the database.
-   */
   async parsePdf(filePath: string): Promise<PdfParseResult> {
-    // Check file exists
     if (!fs.existsSync(filePath)) {
-      return {
-        success: false,
-        errorCode: PDF_ERROR_CODES.FILE_NOT_FOUND,
-        errorMessage: PDF_ERROR_MESSAGES.file_not_found,
-      };
+      return { success: false, errorCode: PDF_ERROR_CODES.FILE_NOT_FOUND, errorMessage: PDF_ERROR_MESSAGES.file_not_found };
     }
 
     try {
-      const dataBuffer = fs.readFileSync(filePath);
-      const PDFParse = await getPDFParseConstructor();
-      const parser = new PDFParse({ data: dataBuffer });
+      const pdfjs = await getPdfjs();
+      const data = new Uint8Array(fs.readFileSync(filePath));
 
-      let text = '';
-      let pageCount = 1;
-      let info: Record<string, unknown> = {};
-      let parserMetadata: unknown;
-      let creationDate: Date | undefined;
+      const doc = await pdfjs.getDocument({
+        data,
+        useSystemFonts: true,
+        disableFontFace: true,
+        isEvalSupported: false,
+      }).promise;
 
-      try {
-        // NOTE: pdf-parse v2 cannot run getText/getInfo concurrently on one parser
-        // instance; doing so triggers "Cannot transfer object of unsupported type."
-        const infoResult = await parser.getInfo();
-        const textResult = await parser.getText();
+      const pageCount = doc.numPages;
+      const pages: string[] = [];
 
-        text = textResult.text || '';
-        pageCount = infoResult.total || textResult.total || 1;
-        info = (infoResult.info || {}) as Record<string, unknown>;
-        parserMetadata = infoResult.metadata;
+      for (let i = 1; i <= pageCount; i++) {
+        const page = await doc.getPage(i);
+        const content = await page.getTextContent();
+        const viewport = page.getViewport({ scale: 1.0 });
 
-        // Prefer parser-normalized date extraction when available.
-        const dateNode = infoResult.getDateNode?.();
-        creationDate =
-          dateNode?.CreationDate ||
-          dateNode?.XmpCreateDate ||
-          dateNode?.XapCreateDate ||
-          parsePdfDate(asString(info.CreationDate));
-      } finally {
-        await parser.destroy().catch(() => undefined);
+        const textItems: TextItem[] = [];
+        for (const item of content.items) {
+          if (!('str' in item)) continue;
+          const ti = item as { str: string; transform: number[]; width: number };
+          textItems.push({
+            str: ti.str,
+            x: ti.transform[4],
+            y: ti.transform[5],
+            width: ti.width ?? 0,
+          });
+        }
+
+        pages.push(reconstructPageText(textItems, viewport.width));
       }
 
-      // Extract metadata from PDF info dictionary
-      const metadata: ExtractedPdfMetadata = {
-        title: asString(info.Title),
-        authors: asString(info.Author),
-        subject: asString(info.Subject) || asString(info.Keywords),
-        creator: asString(info.Creator),
-        producer: asString(info.Producer),
-        creationDate,
-      };
+      const text = normalizeExtractedText(pages.join('\n\n'));
 
-      // Try to extract DOI from XMP metadata first, then from text
-      metadata.doi = extractDoiFromMetadata(parserMetadata);
+      // Extract metadata from PDF info
+      let metadata: ExtractedPdfMetadata = {};
+      try {
+        const pdfMetadata = await doc.getMetadata();
+        const info = (pdfMetadata?.info || {}) as Record<string, unknown>;
+        metadata = {
+          title: asString(info.Title),
+          authors: asString(info.Author),
+          subject: asString(info.Subject),
+          keywords: asString(info.Keywords),
+          creator: asString(info.Creator),
+          producer: asString(info.Producer),
+          creationDate: parsePdfDate(asString(info.CreationDate)),
+        };
+      } catch { /* metadata extraction is best-effort */ }
 
-      // Fallback: extract DOI from text content
       if (!metadata.doi && text) {
         metadata.doi = extractDoiFromText(text);
       }
 
-      // Check for scanned-only PDFs (very little text relative to page count)
-      const textLength = text.trim().length;
-      const avgCharsPerPage = textLength / pageCount;
+      const textLength = text.length;
+      const avgCharsPerPage = textLength / Math.max(pageCount, 1);
 
-      // If average characters per page is very low, it's likely scanned
       if (avgCharsPerPage < 30 && pageCount > 0) {
         return {
           success: false,
@@ -306,67 +207,35 @@ class PdfParserService {
         };
       }
 
-      return {
-        success: true,
-        text,
-        pageCount,
-        metadata,
-      };
+      return { success: true, text, pageCount, metadata };
     } catch (error: any) {
       const errorMessage = error?.message || String(error);
 
-      // Detect password-protected PDFs
-      if (
-        errorMessage.includes('password') ||
-        errorMessage.includes('encrypted') ||
-        errorMessage.includes('Permission denied')
-      ) {
-        return {
-          success: false,
-          errorCode: PDF_ERROR_CODES.PASSWORD_PROTECTED,
-          errorMessage: PDF_ERROR_MESSAGES.password_protected,
-        };
+      if (errorMessage.includes('password') || errorMessage.includes('encrypted') || errorMessage.includes('Permission denied')) {
+        return { success: false, errorCode: PDF_ERROR_CODES.PASSWORD_PROTECTED, errorMessage: PDF_ERROR_MESSAGES.password_protected };
       }
 
-      // Detect corrupted files
-      if (
-        errorMessage.includes('Invalid PDF') ||
-        errorMessage.includes('not a PDF') ||
-        errorMessage.includes('stream') ||
-        errorMessage.includes('xref')
-      ) {
-        return {
-          success: false,
-          errorCode: PDF_ERROR_CODES.CORRUPTED,
-          errorMessage: PDF_ERROR_MESSAGES.corrupted,
-        };
+      if (errorMessage.includes('Invalid PDF') || errorMessage.includes('not a PDF') || errorMessage.includes('stream') || errorMessage.includes('xref')) {
+        return { success: false, errorCode: PDF_ERROR_CODES.CORRUPTED, errorMessage: PDF_ERROR_MESSAGES.corrupted };
       }
 
-      // Generic parse error
-      return {
-        success: false,
-        errorCode: PDF_ERROR_CODES.PARSE_ERROR,
-        errorMessage: `${PDF_ERROR_MESSAGES.parse_error} (${errorMessage.substring(0, 200)})`,
-      };
+      return { success: false, errorCode: PDF_ERROR_CODES.PARSE_ERROR, errorMessage: `${PDF_ERROR_MESSAGES.parse_error} (${errorMessage.substring(0, 200)})` };
     }
   }
 
-  /**
-   * Parse a PDF and update the corresponding ReferenceDocument in the database.
-   * This is the main entry point for the async processing pipeline.
-   */
   async processDocument(documentId: string): Promise<void> {
-    // Set status to PARSING
-    await prisma.referenceDocument.update({
-      where: { id: documentId },
-      data: { status: 'PARSING' },
-    });
+    try {
+      await prisma.referenceDocument.update({
+        where: { id: documentId },
+        data: { status: 'PARSING' },
+      });
+    } catch {
+      console.error(`[PdfParser] Document ${documentId} not found or cannot update status`);
+      return;
+    }
 
     try {
-      const document = await prisma.referenceDocument.findUnique({
-        where: { id: documentId },
-      });
-
+      const document = await prisma.referenceDocument.findUnique({ where: { id: documentId } });
       if (!document) {
         console.error(`[PdfParser] Document ${documentId} not found`);
         return;
@@ -379,15 +248,15 @@ class PdfParserService {
           where: { id: documentId },
           data: {
             status: 'READY',
-            parsedText: result.text,
+            parsedText: sanitizeTextForPostgres(result.text),
             pageCount: result.pageCount,
-            pdfTitle: result.metadata?.title,
-            pdfAuthors: result.metadata?.authors,
-            pdfSubject: result.metadata?.subject,
-            pdfCreator: result.metadata?.creator,
-            pdfProducer: result.metadata?.producer,
+            pdfTitle: sanitizeTextForPostgres(result.metadata?.title),
+            pdfAuthors: sanitizeTextForPostgres(result.metadata?.authors),
+            pdfSubject: sanitizeTextForPostgres(result.metadata?.subject),
+            pdfCreator: sanitizeTextForPostgres(result.metadata?.creator),
+            pdfProducer: sanitizeTextForPostgres(result.metadata?.producer),
             pdfCreationDate: result.metadata?.creationDate,
-            pdfDoi: result.metadata?.doi,
+            pdfDoi: sanitizeTextForPostgres(result.metadata?.doi),
             errorCode: null,
           },
         });
@@ -397,10 +266,9 @@ class PdfParserService {
           data: {
             status: 'FAILED',
             errorCode: result.errorCode,
-            // Still save partial metadata even on failure
             pageCount: result.pageCount,
-            pdfTitle: result.metadata?.title,
-            pdfAuthors: result.metadata?.authors,
+            pdfTitle: sanitizeTextForPostgres(result.metadata?.title),
+            pdfAuthors: sanitizeTextForPostgres(result.metadata?.authors),
           },
         });
       }
@@ -408,18 +276,11 @@ class PdfParserService {
       console.error(`[PdfParser] Unexpected error processing document ${documentId}:`, error);
       await prisma.referenceDocument.update({
         where: { id: documentId },
-        data: {
-          status: 'FAILED',
-          errorCode: PDF_ERROR_CODES.PARSE_ERROR,
-        },
+        data: { status: 'FAILED', errorCode: PDF_ERROR_CODES.PARSE_ERROR },
       });
     }
   }
 
-  /**
-   * Extract metadata from a PDF file without full text extraction.
-   * Useful for quick metadata extraction during upload to auto-populate citation fields.
-   */
   async extractMetadataOnly(filePath: string): Promise<ExtractedPdfMetadata | null> {
     const result = await this.parsePdf(filePath);
     return result.metadata || null;
@@ -427,4 +288,3 @@ class PdfParserService {
 }
 
 export const pdfParserService = new PdfParserService();
-
