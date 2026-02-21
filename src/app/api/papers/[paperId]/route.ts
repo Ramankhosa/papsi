@@ -3,6 +3,24 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 
+const INTERNAL_SECTION_FIELDS = [
+  'baseContentInternal', 'baseMemory',
+  'pass1PromptUsed', 'pass1LlmResponse', 'pass1TokensUsed',
+  'pass2PromptUsed', 'promptUsed', 'llmResponse',
+] as const;
+
+function sanitizePaperSections(session: any) {
+  if (!session?.paperSections || !Array.isArray(session.paperSections)) return session;
+  return {
+    ...session,
+    paperSections: session.paperSections.map((s: any) => {
+      const clean = { ...s };
+      for (const key of INTERNAL_SECTION_FIELDS) delete clean[key];
+      return clean;
+    }),
+  };
+}
+
 export const runtime = 'nodejs';
 
 const updateSchema = z.object({
@@ -66,7 +84,7 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
       return NextResponse.json({ error: 'Paper session not found' }, { status: 404 });
     }
 
-    return NextResponse.json({ session });
+    return NextResponse.json({ session: sanitizePaperSections(session) });
   } catch (error) {
     console.error('[PaperSession] GET error:', error);
     return NextResponse.json({ error: 'Failed to fetch paper session' }, { status: 500 });
@@ -174,7 +192,7 @@ export async function PUT(request: NextRequest, context: { params: { paperId: st
       }
     });
 
-    return NextResponse.json({ session: updated });
+    return NextResponse.json({ session: sanitizePaperSections(updated) });
   } catch (error) {
     if (error instanceof z.ZodError) {
       return NextResponse.json({ error: error.errors[0]?.message || 'Invalid payload' }, { status: 400 });

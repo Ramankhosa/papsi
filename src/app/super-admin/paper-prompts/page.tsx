@@ -70,6 +70,7 @@ export default function PaperPromptsPage() {
   } | null>(null)
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
   const [showHierarchy, setShowHierarchy] = useState(true)
+  const [refreshingCache, setRefreshingCache] = useState(false)
 
   const showToast = useCallback((type: 'success' | 'error', message: string) => {
     setToast({ type, message })
@@ -155,6 +156,35 @@ export default function PaperPromptsPage() {
     } catch (err) {
       console.error('Failed to save:', err)
       showToast('error', 'Failed to save prompt')
+    }
+  }
+
+  const handleRefreshDraftingCache = async () => {
+    try {
+      setRefreshingCache(true)
+      const response = await fetch('/api/super-admin/paper-section-prompts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+        },
+        body: JSON.stringify({
+          action: 'refresh_cache'
+        })
+      })
+
+      if (response.ok) {
+        await fetchData()
+        showToast('success', 'Drafting prompt cache reloaded. New prompts are now live.')
+      } else {
+        const error = await response.json()
+        showToast('error', error.error || 'Failed to reload drafting prompt cache')
+      }
+    } catch (err) {
+      console.error('Failed to refresh drafting prompt cache:', err)
+      showToast('error', 'Failed to reload drafting prompt cache')
+    } finally {
+      setRefreshingCache(false)
     }
   }
 
@@ -272,6 +302,18 @@ export default function PaperPromptsPage() {
               </p>
             </div>
             <div className="flex items-center gap-4">
+              <button
+                onClick={handleRefreshDraftingCache}
+                disabled={refreshingCache}
+                className={`px-3 py-1.5 rounded text-sm transition-colors ${
+                  refreshingCache
+                    ? 'bg-slate-700 text-slate-400 cursor-not-allowed'
+                    : 'bg-blue-500/20 text-blue-300 hover:bg-blue-500/30'
+                }`}
+                title="Clear in-memory prompt cache and reload latest prompts for drafting"
+              >
+                {refreshingCache ? 'Reloading Cache...' : 'Reload Drafting Cache'}
+              </button>
               <button
                 onClick={() => setShowHierarchy(!showHierarchy)}
                 className={`px-3 py-1.5 rounded text-sm ${

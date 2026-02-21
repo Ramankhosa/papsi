@@ -2,12 +2,13 @@
  * Paper Section Service
  * Generates paper sections with inline memory for coherence
  * 
- * Key Innovation: Each section generation returns:
- * - content: The actual section text
- * - memory: Structured summary (keyPoints, termsIntroduced, mainClaims, forwardReferences)
+ * Supports two generation modes:
+ *   single_pass — original flow (prompt → content + memory)
+ *   two_pass    — Pass 1 (evidence draft with [CITE:key]) → Pass 2 (publication polish)
  * 
- * The memory is passed to subsequent sections, enabling coherence without
- * passing full section text (token efficient).
+ * Pass 1 preserves all [CITE:key] anchors and is stored internally for audit.
+ * Pass 2 polishes prose while retaining every citation anchor; downstream
+ * formatting (DraftingService.formatContent) converts them to styled citations.
  */
 
 import { prisma } from '../prisma';
@@ -31,6 +32,8 @@ import {
   type LLMDebugInfo,
   type FullDebugReport
 } from './paper-prompt-debug';
+import { sectionPolishService, type DriftReport } from './section-polish-service';
+import { isFeatureEnabled } from '../feature-flags';
 import type { PaperSection, PaperSectionStatus } from '@prisma/client';
 import crypto from 'crypto';
 import { polishDraftMarkdown } from '../markdown-draft-formatter';
@@ -80,6 +83,19 @@ export interface PreviousSectionSummary {
   memory: SectionMemory;
 }
 
+export interface BackgroundGenProgress {
+  total: number;
+  completed: number;
+  failed: number;
+  sections: Record<string, 'pending' | 'running' | 'done' | 'failed'>;
+}
+
+export interface BackgroundGenResult {
+  success: boolean;
+  progress: BackgroundGenProgress;
+  error?: string;
+}
+
 // ============================================================================
 // Section Names Map
 // ============================================================================
@@ -126,6 +142,8 @@ class PaperSectionService {
       regenerate 
     } = input;
 
+    const twoPassEnabled = isFeatureEnabled('ENABLE_TWO_PASS_GENERATION');
+
     try {
       // Check if blueprint is ready
       const blueprintReady = await blueprintService.isBlueprintReady(sessionId);
@@ -141,7 +159,13 @@ class PaperSectionService {
         where: { sessionId_sectionKey: { sessionId, sectionKey } }
       });
 
-      if (existingSection && !regenerate && !existingSection.isStale) {
+      // Two-pass fast path: if Pass 1 is done (BASE_READY), skip to Pass 2
+      if (twoPassEnabled && existingSection?.status === 'BASE_READY' && existingSection.baseContentInternal && !regenerate) {
+        return this.runPass2Only(existingSection);
+      }
+
+      const reuseStatuses = ['DRAFT', 'REVIEWED', 'APPROVED'];
+      if (existingSection && !regenerate && !existingSection.isStale && reuseStatuses.includes(existingSection.status)) {
         return {
           success: true,
           section: this.transformSection(existingSection)
@@ -190,14 +214,13 @@ class PaperSectionService {
           session.userId,
           sessionId,
           sectionKey,
-          paperTypeCode // Pass paper type for type-specific instructions
+          paperTypeCode
         );
         if (storedInstructions) {
           combinedUserInstructions = this.formatUserInstructions(storedInstructions);
         }
       }
       
-      // One-time instructions take precedence but are combined
       if (userInstructions) {
         if (combinedUserInstructions) {
           combinedUserInstructions += `\n\nADDITIONAL ONE-TIME INSTRUCTIONS:\n${userInstructions}`;
@@ -237,21 +260,19 @@ class PaperSectionService {
         sectionKey
       );
 
-      // Log prompt hierarchy if debug is enabled
       if (isDebugEnabled() && debugInfo) {
         paperPromptDebug.logPromptHierarchy(debugInfo);
       }
 
       const llmStartTime = Date.now();
 
-      // Call LLM
+      // Call LLM (Pass 1 in two-pass mode, or the only pass in single-pass)
       const result = await llmGateway.executeLLMOperation(
         { headers: {} },
         {
           taskCode: 'LLM2_DRAFT',
           stageCode: 'PAPER_SECTION_GEN',
           prompt,
-          // maxTokensOut is controlled via super admin LLM config for PAPER_SECTION_GEN stage
           parameters: {
             purpose: 'paper_section_generation',
             temperature: 0.5,
@@ -260,7 +281,7 @@ class PaperSectionService {
           metadata: {
             sessionId,
             sectionKey,
-            purpose: 'paper_section_generation'
+            purpose: twoPassEnabled ? 'paper_section_pass1' : 'paper_section_generation'
           }
         }
       );
@@ -268,7 +289,6 @@ class PaperSectionService {
       const llmEndTime = Date.now();
       const llmLatencyMs = llmEndTime - llmStartTime;
 
-      // Log LLM result if debug is enabled
       if (isDebugEnabled()) {
         const llmDebugInfo = buildLLMDebugInfo(
           result.response?.modelClass || 'unknown',
@@ -282,7 +302,6 @@ class PaperSectionService {
         );
         paperPromptDebug.logLLMResult(llmDebugInfo);
 
-        // Log output preview
         if (result.response?.output) {
           const preview = result.response.output.substring(0, 500);
           console.log(`\n\x1b[33m\x1b[1mOUTPUT PREVIEW\x1b[0m`);
@@ -300,50 +319,55 @@ class PaperSectionService {
         };
       }
 
-      // Parse the response
       const parsed = this.parseSectionResponse(result.response.output);
-
-      // Get blueprint version (reuse existing blueprint)
       const blueprintVersion = blueprint?.version || 1;
 
-      // Upsert section
-      const sectionData = {
+      // ── Single-pass path ──
+      if (!twoPassEnabled) {
+        const sectionData = {
+          sectionKey,
+          displayName: SECTION_DISPLAY_NAMES[sectionKey] || sectionKey,
+          content: parsed.content,
+          wordCount: this.countWords(parsed.content),
+          memory: parsed.memory as any,
+          blueprintVersion,
+          promptUsed: prompt,
+          llmResponse: result.response.output,
+          tokensUsed: result.response.outputTokens,
+          generationMode: 'single_pass',
+          status: 'DRAFT' as PaperSectionStatus,
+          isStale: false,
+          generatedAt: new Date()
+        };
+
+        const section = await this.upsertSection(sessionId, sectionKey, sectionData, existingSection);
+        return { success: true, section: this.transformSection(section) };
+      }
+
+      // ── Two-pass path: persist Pass 1, then run Pass 2 ──
+      const pass1Data = {
         sectionKey,
         displayName: SECTION_DISPLAY_NAMES[sectionKey] || sectionKey,
-        content: parsed.content,
+        content: parsed.content, // temporary — will be overwritten by Pass 2
         wordCount: this.countWords(parsed.content),
         memory: parsed.memory as any,
+        baseContentInternal: parsed.content,
+        baseMemory: parsed.memory as any,
         blueprintVersion,
-        promptUsed: prompt,
-        llmResponse: result.response.output,
-        tokensUsed: result.response.outputTokens,
-        status: 'DRAFT' as PaperSectionStatus,
+        pass1PromptUsed: prompt,
+        pass1LlmResponse: result.response.output,
+        pass1TokensUsed: result.response.outputTokens,
+        pass1CompletedAt: new Date(),
+        generationMode: 'two_pass',
+        status: 'BASE_READY' as PaperSectionStatus,
         isStale: false,
         generatedAt: new Date()
       };
 
-      let section: PaperSection;
-      if (existingSection) {
-        section = await prisma.paperSection.update({
-          where: { sessionId_sectionKey: { sessionId, sectionKey } },
-          data: {
-            ...sectionData,
-            version: { increment: 1 }
-          }
-        });
-      } else {
-        section = await prisma.paperSection.create({
-          data: {
-            sessionId,
-            ...sectionData
-          }
-        });
-      }
+      const pass1Section = await this.upsertSection(sessionId, sectionKey, pass1Data, existingSection);
 
-      return {
-        success: true,
-        section: this.transformSection(section)
-      };
+      // Immediately run Pass 2 polish (pass paperTypeCode to avoid re-lookup)
+      return this.runPass2Only(pass1Section, paperTypeCode);
 
     } catch (error) {
       console.error('Section generation error:', error);
@@ -352,6 +376,295 @@ class PaperSectionService {
         error: error instanceof Error ? error.message : 'Unknown error'
       };
     }
+  }
+
+  /**
+   * Run Pass 2 (polish) on a section that already has Pass 1 content.
+   * Preserves all [CITE:key] anchors from the base content.
+   *
+   * paperTypeCode is optional — if not provided, it is resolved from the
+   * session so callers on the fast path (line 164) don't need to pre-load it.
+   */
+  private async runPass2Only(section: PaperSection, paperTypeCode?: string): Promise<SectionGenerationResult> {
+    const baseContent = section.baseContentInternal || section.content;
+    if (!baseContent) {
+      return { success: false, error: 'No base content available for polish pass' };
+    }
+
+    if (!paperTypeCode) {
+      const session = await prisma.draftingSession.findUnique({
+        where: { id: section.sessionId },
+        include: { paperType: true }
+      });
+      paperTypeCode = session?.paperType?.code || 'JOURNAL_ARTICLE';
+    }
+
+    await prisma.paperSection.update({
+      where: { id: section.id },
+      data: { status: 'POLISHING' as PaperSectionStatus }
+    });
+
+    const polishResult = await sectionPolishService.polishWithRetry({
+      sectionKey: section.sectionKey,
+      displayName: section.displayName,
+      baseContent,
+      sessionId: section.sessionId,
+      paperTypeCode,
+    });
+
+    if (!polishResult.success || !polishResult.polishedContent) {
+      // Revert status — never expose Pass 1 as final
+      await prisma.paperSection.update({
+        where: { id: section.id },
+        data: {
+          status: 'BASE_READY' as PaperSectionStatus,
+          validationReport: polishResult.driftReport as any,
+        }
+      });
+      return {
+        success: false,
+        error: polishResult.error || 'Polish pass failed',
+      };
+    }
+
+    const updated = await prisma.paperSection.update({
+      where: { id: section.id },
+      data: {
+        content: polishResult.polishedContent,
+        wordCount: this.countWords(polishResult.polishedContent),
+        promptUsed: polishResult.promptUsed,
+        llmResponse: polishResult.polishedContent,
+        tokensUsed: polishResult.tokensUsed,
+        pass2PromptUsed: polishResult.promptUsed,
+        pass2TokensUsed: polishResult.tokensUsed,
+        pass2CompletedAt: new Date(),
+        validationReport: polishResult.driftReport as any,
+        status: 'DRAFT' as PaperSectionStatus,
+        version: { increment: 1 },
+      }
+    });
+
+    return { success: true, section: this.transformSection(updated) };
+  }
+
+  // ============================================================================
+  // Background Parallel Pass 1 (auto-fired after evidence extraction)
+  // ============================================================================
+
+  /**
+   * Run Pass 1 for ALL sections in parallel. Each section gets its own
+   * blueprint context but no cross-section memory (traded for speed).
+   * Results are stored as BASE_READY for fast Pass 2 when the user arrives.
+   */
+  async runParallelPass1(sessionId: string): Promise<BackgroundGenResult> {
+    const progress: BackgroundGenProgress = { total: 0, completed: 0, failed: 0, sections: {} };
+
+    try {
+      const blueprintReady = await blueprintService.isBlueprintReady(sessionId);
+      if (!blueprintReady.ready) {
+        return { success: false, progress, error: blueprintReady.reason || 'Blueprint not ready' };
+      }
+
+      const generationOrder = await this.getSectionGenerationOrder(sessionId);
+      if (generationOrder.length === 0) {
+        return { success: false, progress, error: 'No sections in blueprint' };
+      }
+
+      progress.total = generationOrder.length;
+      for (const key of generationOrder) progress.sections[key] = 'pending';
+
+      // Mark session as running
+      await prisma.draftingSession.update({
+        where: { id: sessionId },
+        data: {
+          bgGenStatus: 'RUNNING',
+          bgGenStartedAt: new Date(),
+          bgGenCompletedAt: null,
+          bgGenProgress: progress as any,
+        }
+      });
+
+      // Load shared context once
+      const session = await prisma.draftingSession.findUnique({
+        where: { id: sessionId },
+        include: { researchTopic: true, paperType: true }
+      });
+      if (!session || !session.researchTopic) {
+        await this.updateBgGenStatus(sessionId, 'FAILED', progress);
+        return { success: false, progress, error: 'Session or research topic not found' };
+      }
+
+      const paperTypeCode = session.paperType?.code || 'JOURNAL_ARTICLE';
+      const blueprint = await blueprintService.getBlueprint(sessionId);
+      const methodologyType = (blueprint as any)?.methodologyType || null;
+      const blueprintVersion = blueprint?.version || 1;
+
+      // Fire all Pass 1 calls in parallel
+      const promises = generationOrder.map(async (sectionKey) => {
+        try {
+          progress.sections[sectionKey] = 'running';
+          await this.flushBgProgress(sessionId, progress);
+
+          const existing = await prisma.paperSection.findUnique({
+            where: { sessionId_sectionKey: { sessionId, sectionKey } }
+          });
+
+          // Skip sections that already have base content or have progressed past Pass 1
+          const protectedStatuses = ['DRAFT', 'REVIEWED', 'APPROVED', 'POLISHING'] as const;
+          if (
+            (existing?.baseContentInternal && existing.status === 'BASE_READY' && !existing.isStale) ||
+            (existing && protectedStatuses.includes(existing.status as any))
+          ) {
+            progress.sections[sectionKey] = 'done';
+            progress.completed++;
+            return;
+          }
+
+          const blueprintContext = await blueprintService.getSectionContext(sessionId, sectionKey);
+          if (!blueprintContext) {
+            throw new Error(`Section ${sectionKey} not in blueprint`);
+          }
+
+          // No previous memories in parallel mode — traded for speed
+          const { prompt } = await this.buildSectionPromptWithDebug(
+            blueprintContext,
+            [],
+            session.researchTopic,
+            paperTypeCode,
+            methodologyType,
+            undefined,
+            undefined,
+            sessionId,
+            sectionKey
+          );
+
+          // Mark section as PREPARING
+          await this.upsertSection(sessionId, sectionKey, {
+            sectionKey,
+            displayName: SECTION_DISPLAY_NAMES[sectionKey] || sectionKey,
+            content: '',
+            wordCount: 0,
+            generationMode: 'two_pass',
+            status: 'PREPARING' as PaperSectionStatus,
+            isStale: false,
+            generatedAt: new Date(),
+          }, existing);
+
+          const result = await llmGateway.executeLLMOperation(
+            { headers: {} },
+            {
+              taskCode: 'LLM2_DRAFT',
+              stageCode: 'PAPER_SECTION_GEN',
+              prompt,
+              parameters: { purpose: 'paper_section_pass1_bg', temperature: 0.5 },
+              idempotencyKey: crypto.randomUUID(),
+              metadata: { sessionId, sectionKey, purpose: 'paper_section_pass1_bg' }
+            }
+          );
+
+          if (!result.success || !result.response) {
+            throw new Error(result.error?.message || 'LLM call failed');
+          }
+
+          const parsed = this.parseSectionResponse(result.response.output);
+
+          await prisma.paperSection.update({
+            where: { sessionId_sectionKey: { sessionId, sectionKey } },
+            data: {
+              baseContentInternal: parsed.content,
+              baseMemory: parsed.memory as any,
+              memory: parsed.memory as any,
+              content: parsed.content, // temporary preview
+              wordCount: this.countWords(parsed.content),
+              blueprintVersion,
+              pass1PromptUsed: prompt,
+              pass1LlmResponse: result.response.output,
+              pass1TokensUsed: result.response.outputTokens,
+              pass1CompletedAt: new Date(),
+              status: 'BASE_READY' as PaperSectionStatus,
+            }
+          });
+
+          progress.sections[sectionKey] = 'done';
+          progress.completed++;
+        } catch (err) {
+          console.error(`[BgGen] Pass 1 failed for ${sectionKey}:`, err);
+          progress.sections[sectionKey] = 'failed';
+          progress.failed++;
+        }
+      });
+
+      await Promise.all(promises);
+
+      const finalStatus = progress.failed === 0
+        ? 'COMPLETED'
+        : progress.completed > 0
+          ? 'PARTIAL'
+          : 'FAILED';
+      await this.updateBgGenStatus(sessionId, finalStatus, progress);
+
+      return { success: progress.failed === 0, progress };
+    } catch (error) {
+      console.error('[BgGen] runParallelPass1 error:', error);
+      await this.updateBgGenStatus(sessionId, 'FAILED', progress);
+      return { success: false, progress, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  /**
+   * Get background generation status for a session.
+   */
+  async getBackgroundGenStatus(sessionId: string): Promise<{
+    status: string;
+    progress: BackgroundGenProgress | null;
+    startedAt: Date | null;
+    completedAt: Date | null;
+  }> {
+    const session = await prisma.draftingSession.findUnique({
+      where: { id: sessionId },
+      select: { bgGenStatus: true, bgGenStartedAt: true, bgGenCompletedAt: true, bgGenProgress: true }
+    });
+    return {
+      status: session?.bgGenStatus || 'IDLE',
+      progress: (session?.bgGenProgress as unknown as BackgroundGenProgress) || null,
+      startedAt: session?.bgGenStartedAt || null,
+      completedAt: session?.bgGenCompletedAt || null,
+    };
+  }
+
+  private async updateBgGenStatus(sessionId: string, status: string, progress: BackgroundGenProgress) {
+    await prisma.draftingSession.update({
+      where: { id: sessionId },
+      data: {
+        bgGenStatus: status,
+        bgGenCompletedAt: status !== 'RUNNING' ? new Date() : undefined,
+        bgGenProgress: progress as any,
+      }
+    });
+  }
+
+  private async flushBgProgress(sessionId: string, progress: BackgroundGenProgress) {
+    await prisma.draftingSession.update({
+      where: { id: sessionId },
+      data: { bgGenProgress: progress as any }
+    }).catch(() => { /* non-critical */ });
+  }
+
+  private async upsertSection(
+    sessionId: string,
+    sectionKey: string,
+    data: Record<string, any>,
+    existing: PaperSection | null
+  ): Promise<PaperSection> {
+    if (existing) {
+      return prisma.paperSection.update({
+        where: { sessionId_sectionKey: { sessionId, sectionKey } },
+        data: { ...data, version: { increment: 1 } }
+      });
+    }
+    return prisma.paperSection.create({
+      data: { sessionId, ...data } as any
+    });
   }
 
   /**
@@ -732,34 +1045,16 @@ class PaperSectionService {
       userInstructions?: string;
     } = { basePrompt: '' };
 
-    // Get base section prompt from template service
+    // Pass 1: base section prompt only — paper-type-specific guidance is
+    // deferred to Pass 2 (the polish pipeline reads it from the database).
     let basePrompt = '';
-    let paperTypeOverride = '';
     try {
-      // Get base prompt
-      const templateResult = await sectionTemplateService.getPromptForSection(
+      basePrompt = await sectionTemplateService.getPass1PromptForSection(
         currentSection.sectionKey,
-        paperTypeCode,
         { researchTopic }
       );
-      basePrompt = templateResult;
       debugComponents.basePrompt = basePrompt;
-
-      // Try to get paper type override separately for debug purposes
-      try {
-        const overrideResult = await sectionTemplateService.getPaperTypeOverride(
-          currentSection.sectionKey,
-          paperTypeCode
-        );
-        if (overrideResult) {
-          paperTypeOverride = overrideResult;
-          debugComponents.paperTypeOverride = paperTypeOverride;
-        }
-      } catch {
-        // No override - that's fine
-      }
     } catch (e) {
-      // Use generic prompt if template not found
       basePrompt = `Write the ${currentSection.sectionKey} section for an academic paper.`;
       debugComponents.basePrompt = basePrompt;
     }

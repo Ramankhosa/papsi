@@ -19,6 +19,30 @@ import { authenticateUser } from '@/lib/auth-middleware';
 import { paperSectionService } from '@/lib/services/paper-section-service';
 import { blueprintService } from '@/lib/services/blueprint-service';
 
+/**
+ * Strip internal-only fields from section payloads before returning to clients.
+ * Pass 1 content is never exposed — only polished (Pass 2) content is public.
+ */
+function sanitizeSection(section: any) {
+  if (!section) return section;
+  const {
+    baseContentInternal: _b,
+    baseMemory: _bm,
+    pass1PromptUsed: _p1p,
+    pass1LlmResponse: _p1r,
+    pass1TokensUsed: _p1t,
+    pass2PromptUsed: _p2p,
+    promptUsed: _pu,
+    llmResponse: _lr,
+    ...publicFields
+  } = section;
+  return publicFields;
+}
+
+function sanitizeSections(sections: any[]) {
+  return sections.map(sanitizeSection);
+}
+
 export const runtime = 'nodejs';
 
 // ============================================================================
@@ -108,7 +132,7 @@ export async function GET(
       const section = await paperSectionService.getSection(sessionId, sectionKey);
       return NextResponse.json({
         success: true,
-        section
+        section: sanitizeSection(section)
       });
     }
 
@@ -122,14 +146,18 @@ export async function GET(
     const blueprint = await blueprintService.getBlueprint(sessionId);
     const plannedSections = blueprint?.sectionPlan.map(s => s.sectionKey) || [];
 
+    // Include background generation status
+    const bgStatus = await paperSectionService.getBackgroundGenStatus(sessionId);
+
     return NextResponse.json({
       success: true,
-      sections,
+      sections: sanitizeSections(sections),
       generationOrder,
       plannedSections,
       generatedSections: sections.map(s => s.sectionKey),
       staleSections: sections.filter(s => s.isStale).map(s => s.sectionKey),
-      blueprintStatus: blueprint?.status || null
+      blueprintStatus: blueprint?.status || null,
+      backgroundGeneration: bgStatus,
     });
   } catch (error) {
     console.error('[Sections] GET error:', error);
@@ -190,10 +218,16 @@ export async function POST(
       const existingKeys = new Set(existingSections.map(s => s.sectionKey));
       const staleKeys = new Set(existingSections.filter(s => s.isStale).map(s => s.sectionKey));
 
-      // Determine which sections to generate
+      // Sections that still need Pass 2 (BASE_READY = Pass 1 done, polish pending)
+      const baseReadyKeys = new Set(
+        existingSections.filter(s => s.status === 'BASE_READY').map(s => s.sectionKey)
+      );
+
+      // Determine which sections to generate (missing, stale, or needing Pass 2)
       const sectionsToGenerate = generationOrder.filter(key => {
         if (!existingKeys.has(key)) return true;
         if (data.regenerateStale && staleKeys.has(key)) return true;
+        if (baseReadyKeys.has(key)) return true;
         return false;
       });
 
@@ -201,7 +235,7 @@ export async function POST(
         return NextResponse.json({
           success: true,
           message: 'All sections already generated',
-          sections: existingSections
+          sections: sanitizeSections(existingSections)
         });
       }
 
@@ -251,7 +285,7 @@ export async function POST(
         success: results.every(r => r.success),
         message: `Generated ${generatedSections.length} of ${sectionsToGenerate.length} sections`,
         results,
-        sections: generatedSections
+        sections: sanitizeSections(generatedSections)
       });
     }
 
@@ -288,7 +322,7 @@ export async function POST(
 
     return NextResponse.json({
       success: true,
-      section: result.section,
+      section: sanitizeSection(result.section),
       message: `Section "${data.sectionKey}" generated successfully`
     });
   } catch (error) {
@@ -366,7 +400,7 @@ export async function PUT(
 
     return NextResponse.json({
       success: true,
-      section,
+      section: sanitizeSection(section),
       message: 'Section updated. Consider re-extracting memory if content changed significantly.'
     });
   } catch (error) {
@@ -438,7 +472,7 @@ export async function PATCH(
 
       return NextResponse.json({
         success: true,
-        section,
+        section: sanitizeSection(section),
         message: `Section "${data.sectionKey}" approved`
       });
     }
@@ -457,7 +491,7 @@ export async function PATCH(
 
       return NextResponse.json({
         success: true,
-        section,
+        section: sanitizeSection(section),
         message: 'Memory re-extracted successfully'
       });
     }

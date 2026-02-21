@@ -153,6 +153,11 @@ export default function FullTextEvidenceExtractionStage({
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [cardsLoading, setCardsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Background section preparation state (two-pass pipeline)
+  const [bgGenStatus, setBgGenStatus] = useState<string | null>(null);
+  const [bgGenProgress, setBgGenProgress] = useState<{ total: number; completed: number; failed: number } | null>(null);
+  const bgGenTriggeredRef = useRef(false);
   const [fullTextModalCandidate, setFullTextModalCandidate] = useState<CandidateRow | null>(null);
   const [fullTextModalContent, setFullTextModalContent] = useState<string>('');
   const [fullTextModalError, setFullTextModalError] = useState<string | null>(null);
@@ -196,6 +201,22 @@ export default function FullTextEvidenceExtractionStage({
     const payload: DeepAnalysisStatusPayload = await response.json();
     if (!response.ok) throw new Error((payload as any)?.error || 'Failed to load status');
     setStatusPayload(payload);
+    if ((payload as any).backgroundGenerationTriggered && !bgGenTriggeredRef.current) {
+      bgGenTriggeredRef.current = true;
+      setBgGenStatus('RUNNING');
+    }
+  }, [authHeaders, authToken, sessionId]);
+
+  const loadBgGenStatus = useCallback(async () => {
+    if (!authToken) return;
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/sections/prepare`, { headers: authHeaders });
+      const payload = await response.json();
+      if (response.ok) {
+        setBgGenStatus(payload.status || null);
+        if (payload.progress) setBgGenProgress(payload.progress);
+      }
+    } catch { /* non-critical */ }
   }, [authHeaders, authToken, sessionId]);
 
   const loadCoverage = useCallback(async () => {
@@ -291,6 +312,23 @@ export default function FullTextEvidenceExtractionStage({
   useEffect(() => {
     if (statusPayload?.status === 'IDLE') setLastEstimatedSeconds(null);
   }, [statusPayload?.status]);
+
+  // Poll background generation progress while RUNNING
+  useEffect(() => {
+    if (bgGenStatus !== 'RUNNING') return;
+    void loadBgGenStatus();
+    const timer = window.setInterval(() => {
+      void loadBgGenStatus().catch(() => undefined);
+    }, 6000);
+    return () => window.clearInterval(timer);
+  }, [bgGenStatus, loadBgGenStatus]);
+
+  // Load bg gen status on mount to catch already-running background generation
+  useEffect(() => {
+    if (authToken && statusPayload?.status === 'COMPLETED') {
+      void loadBgGenStatus().catch(() => undefined);
+    }
+  }, [authToken, statusPayload?.status, loadBgGenStatus]);
 
   const textExtractionPending = (textExtractionStatus?.pending ?? 0) + (textExtractionStatus?.basicTextOnly ?? 0);
   const textExtractionProcessing = isExtractingText || (textExtractionStatus?.queueDepth ?? 0) > 0 || (textExtractionStatus?.inFlight ?? 0) > 0;
@@ -583,6 +621,50 @@ export default function FullTextEvidenceExtractionStage({
           </div>
         ))}
       </div>
+
+      {/* ── Background Section Preparation Banner ── */}
+      {(bgGenStatus === 'RUNNING' || bgGenStatus === 'COMPLETED' || bgGenStatus === 'PARTIAL') && (
+        <div className={`rounded-lg border px-4 py-3 flex items-center gap-3 ${
+          bgGenStatus === 'RUNNING'
+            ? 'bg-indigo-50 border-indigo-200'
+            : bgGenStatus === 'PARTIAL'
+              ? 'bg-amber-50 border-amber-200'
+              : 'bg-emerald-50 border-emerald-200'
+        }`}>
+          {bgGenStatus === 'RUNNING' && (
+            <span className="relative flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-indigo-500" />
+            </span>
+          )}
+          {bgGenStatus === 'COMPLETED' && (
+            <span className="inline-flex h-3 w-3 rounded-full bg-emerald-500" />
+          )}
+          {bgGenStatus === 'PARTIAL' && (
+            <span className="inline-flex h-3 w-3 rounded-full bg-amber-500" />
+          )}
+          <div className="flex-1">
+            <p className={`text-sm font-medium ${
+              bgGenStatus === 'RUNNING'
+                ? 'text-indigo-800'
+                : bgGenStatus === 'PARTIAL'
+                  ? 'text-amber-800'
+                  : 'text-emerald-800'
+            }`}>
+              {bgGenStatus === 'RUNNING'
+                ? 'Assembling overall paper structure for final content generation...'
+                : bgGenStatus === 'PARTIAL'
+                  ? `Paper structure partially ready — ${bgGenProgress?.failed || 0} section(s) could not be prepared`
+                  : 'Paper structure ready — sections are prepared for final generation'}
+            </p>
+            {bgGenStatus === 'RUNNING' && bgGenProgress && bgGenProgress.total > 0 && (
+              <p className="text-xs text-indigo-600 mt-0.5">
+                {bgGenProgress.completed} of {bgGenProgress.total} sections prepared
+              </p>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Control Bar ── */}
       <div className="bg-white rounded-lg border border-slate-200 shadow-sm">

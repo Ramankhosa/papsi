@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { authenticateUser } from '@/lib/auth-middleware'
 import { prisma } from '@/lib/prisma'
+import { sectionTemplateService } from '@/lib/services/section-template-service'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -146,7 +147,21 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { action, paperTypeCode, sectionKey, instruction, constraints, changeReason } = body
+    const { action } = body
+
+    // Manually refresh in-memory prompt cache used by drafting routes
+    if (action === 'refresh_cache') {
+      await sectionTemplateService.refreshFromDatabase()
+      const cacheStats = sectionTemplateService.getCacheStats()
+
+      return NextResponse.json({
+        success: true,
+        message: 'Drafting prompt cache refreshed from database',
+        cacheStats
+      })
+    }
+
+    const { paperTypeCode, sectionKey, instruction, constraints, changeReason } = body
 
     if (!paperTypeCode || !sectionKey) {
       return NextResponse.json({ error: 'Missing paperTypeCode or sectionKey' }, { status: 400 })

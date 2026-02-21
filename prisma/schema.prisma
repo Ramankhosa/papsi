@@ -1792,6 +1792,12 @@ model DraftingSession {
   figureSequence          Json?
   figureSequenceFinalized Boolean @default(false) @map("figure_sequence_finalized")
 
+  // Background section pre-generation (two-pass pipeline)
+  bgGenStatus      String?   @map("bg_gen_status") // IDLE | RUNNING | COMPLETED | FAILED
+  bgGenStartedAt   DateTime? @map("bg_gen_started_at")
+  bgGenCompletedAt DateTime? @map("bg_gen_completed_at")
+  bgGenProgress    Json?     @map("bg_gen_progress") // { total, completed, failed, sections: { key: status } }
+
   // Paper Blueprint and Sections (new coherence system)
   paperBlueprint                  PaperBlueprint?
   paperSections                   PaperSection[]
@@ -3954,7 +3960,7 @@ model PaperSection {
   sectionKey  String // e.g., "introduction", "methodology", "results"
   displayName String // Human-readable name
 
-  // Generated content
+  // Generated content (user-facing — Pass 2 output in two-pass mode)
   content   String @db.Text
   wordCount Int?
 
@@ -3962,7 +3968,20 @@ model PaperSection {
   // JSON: { keyPoints[], termsIntroduced[], mainClaims[], forwardReferences[] }
   memory Json?
 
-  // Generation metadata
+  // Two-pass generation fields
+  generationMode       String  @default("single_pass") @map("generation_mode") // "single_pass" | "two_pass"
+  baseContentInternal  String? @db.Text @map("base_content_internal") // Pass 1 evidence-grounded draft (internal only)
+  baseMemory           Json?   @map("base_memory") // Memory extracted from Pass 1
+  pass1PromptUsed      String? @db.Text @map("pass1_prompt_used")
+  pass1LlmResponse     String? @db.Text @map("pass1_llm_response")
+  pass1TokensUsed      Int?    @map("pass1_tokens_used")
+  pass1CompletedAt     DateTime? @map("pass1_completed_at")
+  pass2PromptUsed      String? @db.Text @map("pass2_prompt_used")
+  pass2TokensUsed      Int?    @map("pass2_tokens_used")
+  pass2CompletedAt     DateTime? @map("pass2_completed_at")
+  validationReport     Json?   @map("validation_report") // Drift guard results
+
+  // Generation metadata (backward-compat: stores Pass 2 data in two-pass, or single-pass data)
   blueprintVersion Int? // Which blueprint version was used
   promptUsed       String? @db.Text
   llmResponse      String? @db.Text
@@ -3994,7 +4013,10 @@ enum BlueprintStatus {
 }
 
 enum PaperSectionStatus {
-  DRAFT // Initial generation
+  PREPARING // Pass 1 in progress (background pre-generation)
+  BASE_READY // Pass 1 complete, awaiting Pass 2 polish
+  POLISHING // Pass 2 in progress
+  DRAFT // Generation complete (single-pass or two-pass)
   REVIEWED // User has reviewed
   APPROVED // User approved final
   REGENERATING // Currently being regenerated

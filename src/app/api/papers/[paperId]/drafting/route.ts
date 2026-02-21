@@ -13,6 +13,8 @@ import { getWritingSample, buildWritingSampleBlock } from '@/lib/writing-sample-
 import { blueprintService } from '@/lib/services/blueprint-service';
 import { evidencePackService, type SectionEvidencePack } from '@/lib/services/evidence-pack-service';
 import { formatBibliographyMarkdown, polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
+import { isFeatureEnabled } from '@/lib/feature-flags';
+import { sectionPolishService } from '@/lib/services/section-polish-service';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -2004,61 +2006,112 @@ async function generateSection(
     console.warn('[PaperDrafting] WARNING: No allowed citation keys - evidence pack may be empty');
   }
 
-  const llmRequest = {
-    taskCode: 'LLM2_DRAFT' as const,
-    stageCode: 'PAPER_SECTION_DRAFT',
-    prompt,
-    parameters: {
-      temperature: payload.temperature,
-    },
-    idempotencyKey: crypto.randomUUID(),
-    metadata: {
-      sessionId,
-      paperId: sessionId,
-      sectionKey,
-      action: `generate_section_${sectionKey}`,
-      module: 'publication_ideation',
-      purpose: 'paper_section_generation'
+  // ── Two-pass shortcut: use pre-generated Pass 1 content if available ──
+  let rawContent: string | null = null;
+  let llmTokensUsed: number | undefined;
+  const twoPassEnabled = isFeatureEnabled('ENABLE_TWO_PASS_GENERATION');
+
+  if (twoPassEnabled) {
+    const preGenerated = await prisma.paperSection.findUnique({
+      where: { sessionId_sectionKey: { sessionId, sectionKey } }
+    });
+
+    if (preGenerated?.baseContentInternal && preGenerated.status === 'BASE_READY') {
+      await emitStatus?.('llm_generation', 'Polishing pre-built evidence draft for publication');
+
+      const polishResult = await sectionPolishService.polishWithRetry({
+        sectionKey,
+        displayName: preGenerated.displayName || sectionKey,
+        baseContent: preGenerated.baseContentInternal,
+        sessionId,
+        paperTypeCode,
+      });
+
+      if (polishResult.success && polishResult.polishedContent) {
+        rawContent = polishResult.polishedContent;
+        console.log(`[PaperDrafting] Two-pass: used BASE_READY content + Pass 2 polish (${rawContent.length} chars)`);
+
+        await prisma.paperSection.update({
+          where: { id: preGenerated.id },
+          data: {
+            content: polishResult.polishedContent,
+            wordCount: polishResult.polishedContent.split(/\s+/).length,
+            pass2PromptUsed: polishResult.promptUsed,
+            pass2TokensUsed: polishResult.tokensUsed,
+            pass2CompletedAt: new Date(),
+            validationReport: polishResult.driftReport as any,
+            status: 'DRAFT',
+            version: { increment: 1 },
+          }
+        });
+      } else {
+        console.warn(`[PaperDrafting] Two-pass polish failed, falling back to full generation:`, polishResult.error);
+      }
     }
-  };
-
-  await emitStatus?.('llm_generation', 'Generating section draft');
-  const result = await llmGateway.executeLLMOperation({ headers: requestHeaders }, llmRequest);
-
-  if (!result.success || !result.response) {
-    throw new Error(result.error?.message || 'Generation failed');
   }
 
-  const rawOutput = (result.response.output || '').trim();
-
-  let rawContent = rawOutput;
-  try {
-    if (rawOutput.startsWith('{') || rawOutput.includes('"content"')) {
-      let jsonText = rawOutput;
-
-      const fenceMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (fenceMatch) {
-        jsonText = fenceMatch[1].trim();
+  // ── Standard generation (single-pass or two-pass fallback) ──
+  if (rawContent === null) {
+    const llmRequest = {
+      taskCode: 'LLM2_DRAFT' as const,
+      stageCode: 'PAPER_SECTION_DRAFT',
+      prompt,
+      parameters: {
+        temperature: payload.temperature,
+      },
+      idempotencyKey: crypto.randomUUID(),
+      metadata: {
+        sessionId,
+        paperId: sessionId,
+        sectionKey,
+        action: `generate_section_${sectionKey}`,
+        module: 'publication_ideation',
+        purpose: twoPassEnabled ? 'paper_section_pass1_inline' : 'paper_section_generation'
       }
+    };
 
-      const start = jsonText.indexOf('{');
-      const end = jsonText.lastIndexOf('}');
+    await emitStatus?.('llm_generation', 'Generating section draft');
+    const result = await llmGateway.executeLLMOperation({ headers: requestHeaders }, llmRequest);
 
-      if (start !== -1 && end !== -1 && end > start) {
-        jsonText = jsonText.slice(start, end + 1);
-        const parsed = JSON.parse(jsonText);
+    if (!result.success || !result.response) {
+      throw new Error(result.error?.message || 'Generation failed');
+    }
 
-        if (parsed.content && typeof parsed.content === 'string') {
-          rawContent = parsed.content;
-          console.log(`[PaperDrafting] Extracted content from JSON (${rawContent.length} chars), discarded memory`);
+    llmTokensUsed = result.response.outputTokens;
+    const rawOutput = (result.response.output || '').trim();
+
+    rawContent = rawOutput;
+    try {
+      if (rawOutput.startsWith('{') || rawOutput.includes('"content"')) {
+        let jsonText = rawOutput;
+
+        const fenceMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (fenceMatch) {
+          jsonText = fenceMatch[1].trim();
+        }
+
+        const start = jsonText.indexOf('{');
+        const end = jsonText.lastIndexOf('}');
+
+        if (start !== -1 && end !== -1 && end > start) {
+          jsonText = jsonText.slice(start, end + 1);
+          const parsed = JSON.parse(jsonText);
+
+          if (parsed.content && typeof parsed.content === 'string') {
+            rawContent = parsed.content;
+            console.log(`[PaperDrafting] Extracted content from JSON (${parsed.content.length} chars), discarded memory`);
+          }
         }
       }
+    } catch (parseErr) {
+      console.warn('[PaperDrafting] Could not parse JSON output, using raw:', parseErr);
     }
-  } catch (parseErr) {
-    console.warn('[PaperDrafting] Could not parse JSON output, using raw:', parseErr);
   }
 
-  if (useMappedEvidence && rawContent.includes('[CITATION_NEEDED')) {
+  // At this point rawContent is guaranteed non-null (either from two-pass or standard gen)
+  const sectionContent = rawContent!;
+
+  if (useMappedEvidence && sectionContent.includes('[CITATION_NEEDED')) {
     throw new DraftingRequestError(
       'Generated section contains [CITATION_NEEDED] placeholders which are not allowed when Auto citations is ON',
       422,
@@ -2075,7 +2128,7 @@ async function generateSection(
       ? 'Validating mapped citation whitelist for this section'
       : 'Validating citation keys (mapped whitelist disabled)'
   );
-  let contentForPostProcess = polishDraftMarkdown(rawContent);
+  let contentForPostProcess = polishDraftMarkdown(sectionContent);
   const initialValidation = DraftingService.validateCitationKeys(
     contentForPostProcess,
     useMappedEvidence ? citationContext.allowedCitationKeys : undefined
@@ -2203,8 +2256,8 @@ async function generateSection(
     paperTypeCode,
     {
       prompt,
-      response: rawContent,
-      tokensUsed: result.response.outputTokens
+      response: sectionContent,
+      tokensUsed: llmTokensUsed
     }
   );
 
@@ -2249,7 +2302,7 @@ async function generateSection(
       usedEvidencePack: useMappedEvidence ? citationContext.usedEvidencePack : false,
       gaps: citationContext.evidenceGaps
     },
-    tokensUsed: result.response.outputTokens,
+    tokensUsed: llmTokensUsed,
     prompt
   };
 }

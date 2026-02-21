@@ -717,6 +717,10 @@ export default function SectionDraftingStage({
     description?: string;
   } | null>(null);
 
+  // Background generation (two-pass pipeline)
+  const [bgGenStatus, setBgGenStatus] = useState<string | null>(null);
+  const [bgGenProgress, setBgGenProgress] = useState<{ total: number; completed: number; failed: number } | null>(null);
+
   // Regeneration
   const [regenOpen, setRegenOpen] = useState<Record<string, boolean>>({});
   const [regenRemarks, setRegenRemarks] = useState<Record<string, string>>({});
@@ -900,6 +904,31 @@ export default function SectionDraftingStage({
   }, [sessionId, authToken]);
 
   useEffect(() => { loadSession(); loadCitations(); loadFigures(); }, [loadSession, loadCitations, loadFigures]);
+
+  // Load and poll background generation status (two-pass pipeline)
+  const loadBgGenStatus = useCallback(async () => {
+    if (!authToken || !sessionId) return;
+    try {
+      const res = await fetch(`/api/papers/${sessionId}/sections/prepare`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setBgGenStatus(data.status || null);
+        if (data.progress) setBgGenProgress(data.progress);
+      }
+    } catch { /* non-critical */ }
+  }, [authToken, sessionId]);
+
+  useEffect(() => { loadBgGenStatus(); }, [loadBgGenStatus]);
+
+  useEffect(() => {
+    if (bgGenStatus !== 'RUNNING') return;
+    const timer = window.setInterval(() => {
+      void loadBgGenStatus().catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [bgGenStatus, loadBgGenStatus]);
 
   useEffect(() => {
     if (!isNumericOrderBibliography) return;
@@ -1947,6 +1976,44 @@ export default function SectionDraftingStage({
         {session?.archetypeEvidenceStale && (
           <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
             Evidence packs may be outdated after archetype changes. Refresh literature analysis and blueprint mapping before final drafting.
+          </div>
+        )}
+
+        {/* Background section preparation status (two-pass pipeline) */}
+        {bgGenStatus === 'RUNNING' && (
+          <div className="mt-4 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 flex items-center gap-3">
+            <span className="relative flex h-3 w-3 shrink-0">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-indigo-500" />
+            </span>
+            <div>
+              <p className="text-sm font-medium text-indigo-800">
+                Assembling paper structure for final content generation...
+              </p>
+              {bgGenProgress && bgGenProgress.total > 0 && (
+                <p className="text-xs text-indigo-600 mt-0.5">
+                  {bgGenProgress.completed} of {bgGenProgress.total} sections prepared
+                  {bgGenProgress.failed > 0 && ` (${bgGenProgress.failed} failed)`}
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+        {(bgGenStatus === 'COMPLETED' || bgGenStatus === 'PARTIAL') && bgGenProgress && bgGenProgress.completed > 0 && (
+          <div className={`mt-4 rounded-lg border px-4 py-3 flex items-center gap-3 ${
+            bgGenStatus === 'PARTIAL'
+              ? 'border-amber-200 bg-amber-50'
+              : 'border-emerald-200 bg-emerald-50'
+          }`}>
+            <span className={`inline-flex h-3 w-3 rounded-full shrink-0 ${
+              bgGenStatus === 'PARTIAL' ? 'bg-amber-500' : 'bg-emerald-500'
+            }`} />
+            <p className={`text-sm ${bgGenStatus === 'PARTIAL' ? 'text-amber-800' : 'text-emerald-800'}`}>
+              {bgGenStatus === 'PARTIAL'
+                ? `Paper structure partially ready — ${bgGenProgress.completed} of ${bgGenProgress.total} sections prepared (${bgGenProgress.failed} failed).`
+                : 'Paper structure ready — sections will generate faster with pre-built evidence drafts.'
+              }
+            </p>
           </div>
         )}
 

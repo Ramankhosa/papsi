@@ -255,7 +255,7 @@ export function buildPromptDebugInfo(
 ): PromptDebugInfo {
   const layers: PromptLayer[] = [
     createPromptLayer(1, 'BASE PROMPT', `PaperSupersetSection.${sectionKey}`, components.basePrompt),
-    createPromptLayer(2, 'PAPER TYPE OVERRIDE', `PaperTypeSectionPrompt.${paperTypeCode}`, components.paperTypeOverride || ''),
+    createPromptLayer(2, 'PAPER TYPE OVERRIDE (Pass 2 only)', `PaperTypeSectionPrompt.${paperTypeCode} → deferred to polish pipeline`, components.paperTypeOverride || ''),
     createPromptLayer(3, 'METHODOLOGY CONSTRAINTS', `methodology-constraints.ts / ${methodologyType || 'none'}`, components.methodologyConstraints || ''),
     createPromptLayer(4, 'BLUEPRINT CONTEXT', `PaperBlueprint (frozen plan)`, components.blueprintContext || ''),
     createPromptLayer(4, 'PREVIOUS SECTIONS MEMORY', `PaperSection.memory (accumulated)`, components.previousMemories || ''),

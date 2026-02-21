@@ -464,6 +464,69 @@ ${typeAdditions}`;
   }
 
   /**
+   * Pass 1 prompt: base section instruction + context variable injection
+   * + base constraints + guidance. No paper-type layering.
+   *
+   * In the two-pass strategy, Pass 1 is paper-type-agnostic and focuses on
+   * evidence-grounded content generation. The paper-type-specific guidance
+   * is deferred to Pass 2 (polish).
+   */
+  async getPass1PromptForSection(
+    sectionKey: string,
+    context: SectionPromptContext = {}
+  ): Promise<string> {
+    await this.loadFromDatabase();
+
+    const dbBase = this.findSupersetSection(sectionKey);
+    if (!dbBase) {
+      throw new Error(`Base section template not found: ${sectionKey}. Seed PaperSupersetSection.`);
+    }
+
+    let prompt = dbBase.instruction;
+    prompt = this.injectContextVariables(prompt, context);
+
+    const constraints = (dbBase.constraints || {}) as SectionConstraints;
+    const constraintsBlock = this.buildConstraintsBlock(constraints, context);
+    if (constraintsBlock) {
+      prompt += `\n\n${constraintsBlock}`;
+    }
+
+    const guidanceBlock = this.buildGuidanceBlock(sectionKey, context);
+    if (guidanceBlock) {
+      prompt += `\n\n${guidanceBlock}`;
+    }
+
+    return prompt;
+  }
+
+  /**
+   * Pass 2 prompt: paper-type-specific instruction from PaperTypeSectionPrompt.
+   * Used by the polish pipeline as publication-type guidance.
+   * Returns null if no override exists for this paper type + section combination.
+   */
+  async getPass2TypePrompt(
+    sectionKey: string,
+    paperTypeCode: string
+  ): Promise<{ instruction: string; constraints: SectionConstraints; additions: string[] } | null> {
+    await this.loadFromDatabase();
+    const normalized = paperTypeCode.toUpperCase();
+
+    const overrideKey = `${normalized}:${sectionKey}`;
+    const dbOverride = this.dbTypeOverrides.get(overrideKey);
+    if (!dbOverride) return null;
+
+    const additions = Array.isArray(dbOverride.additions)
+      ? (dbOverride.additions as string[])
+      : [];
+
+    return {
+      instruction: dbOverride.instruction,
+      constraints: (dbOverride.constraints || {}) as SectionConstraints,
+      additions,
+    };
+  }
+
+  /**
    * Get just the paper type additions (for preview/editing)
    */
   async getPaperTypeAdditions(sectionKey: string, paperTypeCode: string): Promise<string | null> {
