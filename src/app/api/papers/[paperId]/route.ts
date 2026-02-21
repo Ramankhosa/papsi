@@ -9,6 +9,8 @@ const INTERNAL_SECTION_FIELDS = [
   'pass2PromptUsed', 'promptUsed', 'llmResponse',
 ] as const;
 
+const HIDE_CONTENT_STATUSES = new Set(['PREPARING', 'BASE_READY', 'POLISHING', 'REGENERATING']);
+
 function sanitizePaperSections(session: any) {
   if (!session?.paperSections || !Array.isArray(session.paperSections)) return session;
   return {
@@ -16,6 +18,10 @@ function sanitizePaperSections(session: any) {
     paperSections: session.paperSections.map((s: any) => {
       const clean = { ...s };
       for (const key of INTERNAL_SECTION_FIELDS) delete clean[key];
+      if (HIDE_CONTENT_STATUSES.has(String(clean.status || ''))) {
+        clean.content = '';
+        clean.wordCount = 0;
+      }
       return clean;
     }),
   };

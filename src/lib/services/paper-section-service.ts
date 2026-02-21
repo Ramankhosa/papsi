@@ -348,8 +348,8 @@ class PaperSectionService {
       const pass1Data = {
         sectionKey,
         displayName: SECTION_DISPLAY_NAMES[sectionKey] || sectionKey,
-        content: parsed.content, // temporary — will be overwritten by Pass 2
-        wordCount: this.countWords(parsed.content),
+        content: existingSection?.content || '',
+        wordCount: existingSection?.content ? this.countWords(existingSection.content) : 0,
         memory: parsed.memory as any,
         baseContentInternal: parsed.content,
         baseMemory: parsed.memory as any,
@@ -510,7 +510,7 @@ class PaperSectionService {
           });
 
           // Skip sections that already have base content or have progressed past Pass 1
-          const protectedStatuses = ['DRAFT', 'REVIEWED', 'APPROVED', 'POLISHING'] as const;
+          const protectedStatuses = ['DRAFT', 'REVIEWED', 'APPROVED', 'POLISHING', 'REGENERATING'] as const;
           if (
             (existing?.baseContentInternal && existing.status === 'BASE_READY' && !existing.isStale) ||
             (existing && protectedStatuses.includes(existing.status as any))
@@ -574,8 +574,8 @@ class PaperSectionService {
               baseContentInternal: parsed.content,
               baseMemory: parsed.memory as any,
               memory: parsed.memory as any,
-              content: parsed.content, // temporary preview
-              wordCount: this.countWords(parsed.content),
+              content: existing?.content || '',
+              wordCount: existing?.content ? this.countWords(existing.content) : 0,
               blueprintVersion,
               pass1PromptUsed: prompt,
               pass1LlmResponse: result.response.output,

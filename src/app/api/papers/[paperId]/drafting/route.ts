@@ -2006,52 +2006,145 @@ async function generateSection(
     console.warn('[PaperDrafting] WARNING: No allowed citation keys - evidence pack may be empty');
   }
 
-  // ── Two-pass shortcut: use pre-generated Pass 1 content if available ──
+  const extractSectionContent = (rawOutput: string): string => {
+    let extracted = rawOutput;
+    try {
+      if (rawOutput.startsWith('{') || rawOutput.includes('"content"')) {
+        let jsonText = rawOutput;
+        const fenceMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
+        if (fenceMatch) {
+          jsonText = fenceMatch[1].trim();
+        }
+
+        const start = jsonText.indexOf('{');
+        const end = jsonText.lastIndexOf('}');
+        if (start !== -1 && end !== -1 && end > start) {
+          jsonText = jsonText.slice(start, end + 1);
+          const parsed = JSON.parse(jsonText);
+          if (parsed.content && typeof parsed.content === 'string') {
+            extracted = parsed.content;
+            console.log(`[PaperDrafting] Extracted content from JSON (${parsed.content.length} chars), discarded memory`);
+          }
+        }
+      }
+    } catch (parseErr) {
+      console.warn('[PaperDrafting] Could not parse JSON output, using raw:', parseErr);
+    }
+    return extracted;
+  };
+
   let rawContent: string | null = null;
   let llmTokensUsed: number | undefined;
+  let sectionRecord: any | null = null;
+  let pass2PromptUsed: string | undefined;
+  let pass2TokensUsed: number | undefined;
+  let pass2ValidationReport: unknown;
+  let pass2CompletedAt: Date | undefined;
   const twoPassEnabled = isFeatureEnabled('ENABLE_TWO_PASS_GENERATION');
 
   if (twoPassEnabled) {
-    const preGenerated = await prisma.paperSection.findUnique({
+    sectionRecord = await prisma.paperSection.findUnique({
       where: { sessionId_sectionKey: { sessionId, sectionKey } }
     });
 
-    if (preGenerated?.baseContentInternal && preGenerated.status === 'BASE_READY') {
-      await emitStatus?.('llm_generation', 'Polishing pre-built evidence draft for publication');
+    let pass1Content: string | null = null;
 
-      const polishResult = await sectionPolishService.polishWithRetry({
-        sectionKey,
-        displayName: preGenerated.displayName || sectionKey,
-        baseContent: preGenerated.baseContentInternal,
-        sessionId,
-        paperTypeCode,
-      });
+    // Fast path: reuse pre-generated Pass 1 draft if available
+    if (sectionRecord?.baseContentInternal && sectionRecord.status === 'BASE_READY') {
+      pass1Content = sectionRecord.baseContentInternal;
+      llmTokensUsed = sectionRecord.pass1TokensUsed ?? undefined;
+    }
 
-      if (polishResult.success && polishResult.polishedContent) {
-        rawContent = polishResult.polishedContent;
-        console.log(`[PaperDrafting] Two-pass: used BASE_READY content + Pass 2 polish (${rawContent.length} chars)`);
+    // No pre-generated base content: run inline Pass 1 and persist as BASE_READY
+    if (!pass1Content) {
+      const pass1Request = {
+        taskCode: 'LLM2_DRAFT' as const,
+        stageCode: 'PAPER_SECTION_DRAFT',
+        prompt,
+        parameters: {
+          temperature: payload.temperature,
+        },
+        idempotencyKey: crypto.randomUUID(),
+        metadata: {
+          sessionId,
+          paperId: sessionId,
+          sectionKey,
+          action: `generate_section_${sectionKey}`,
+          module: 'publication_ideation',
+          purpose: 'paper_section_pass1_inline'
+        }
+      };
 
-        await prisma.paperSection.update({
-          where: { id: preGenerated.id },
-          data: {
-            content: polishResult.polishedContent,
-            wordCount: polishResult.polishedContent.split(/\s+/).length,
-            pass2PromptUsed: polishResult.promptUsed,
-            pass2TokensUsed: polishResult.tokensUsed,
-            pass2CompletedAt: new Date(),
-            validationReport: polishResult.driftReport as any,
-            status: 'DRAFT',
-            version: { increment: 1 },
-          }
+      await emitStatus?.('llm_generation', 'Generating evidence-grounded base draft');
+      const pass1Result = await llmGateway.executeLLMOperation({ headers: requestHeaders }, pass1Request);
+      if (!pass1Result.success || !pass1Result.response) {
+        throw new Error(pass1Result.error?.message || 'Pass 1 generation failed');
+      }
+
+      llmTokensUsed = pass1Result.response.outputTokens;
+      const pass1RawOutput = (pass1Result.response.output || '').trim();
+      pass1Content = extractSectionContent(pass1RawOutput);
+
+      if (!pass1Content?.trim()) {
+        throw new Error('Pass 1 generation returned empty content');
+      }
+
+      const pass1Data = {
+        displayName: sectionRecord?.displayName || formatSectionLabel(sectionKey),
+        content: sectionRecord?.content || '',
+        wordCount: sectionRecord?.wordCount || 0,
+        generationMode: 'two_pass',
+        baseContentInternal: pass1Content,
+        pass1PromptUsed: prompt,
+        pass1LlmResponse: pass1RawOutput,
+        pass1TokensUsed: pass1Result.response.outputTokens,
+        pass1CompletedAt: new Date(),
+        status: 'BASE_READY' as const,
+        isStale: false,
+        generatedAt: new Date()
+      };
+
+      if (sectionRecord) {
+        sectionRecord = await prisma.paperSection.update({
+          where: { id: sectionRecord.id },
+          data: { ...pass1Data, version: { increment: 1 } }
         });
       } else {
-        console.warn(`[PaperDrafting] Two-pass polish failed, falling back to full generation:`, polishResult.error);
+        sectionRecord = await prisma.paperSection.create({
+          data: {
+            sessionId,
+            sectionKey,
+            ...pass1Data
+          } as any
+        });
       }
     }
-  }
 
-  // ── Standard generation (single-pass or two-pass fallback) ──
-  if (rawContent === null) {
+    await emitStatus?.('llm_generation', 'Polishing evidence draft for publication');
+    const polishResult = await sectionPolishService.polishWithRetry({
+      sectionKey,
+      displayName: sectionRecord?.displayName || formatSectionLabel(sectionKey),
+      baseContent: pass1Content!,
+      sessionId,
+      paperTypeCode,
+    });
+
+    if (!polishResult.success || !polishResult.polishedContent) {
+      throw new DraftingRequestError(
+        polishResult.error || 'Pass 2 polish failed',
+        422,
+        { error: polishResult.error || 'Pass 2 polish failed' }
+      );
+    }
+
+    rawContent = polishResult.polishedContent;
+    pass2PromptUsed = polishResult.promptUsed;
+    pass2TokensUsed = polishResult.tokensUsed ?? undefined;
+    pass2ValidationReport = polishResult.driftReport;
+    pass2CompletedAt = new Date();
+    llmTokensUsed = (llmTokensUsed || 0) + (polishResult.tokensUsed || 0);
+    if (llmTokensUsed === 0) llmTokensUsed = undefined;
+  } else {
     const llmRequest = {
       taskCode: 'LLM2_DRAFT' as const,
       stageCode: 'PAPER_SECTION_DRAFT',
@@ -2066,49 +2159,21 @@ async function generateSection(
         sectionKey,
         action: `generate_section_${sectionKey}`,
         module: 'publication_ideation',
-        purpose: twoPassEnabled ? 'paper_section_pass1_inline' : 'paper_section_generation'
+        purpose: 'paper_section_generation'
       }
     };
 
     await emitStatus?.('llm_generation', 'Generating section draft');
     const result = await llmGateway.executeLLMOperation({ headers: requestHeaders }, llmRequest);
-
     if (!result.success || !result.response) {
       throw new Error(result.error?.message || 'Generation failed');
     }
 
     llmTokensUsed = result.response.outputTokens;
     const rawOutput = (result.response.output || '').trim();
-
-    rawContent = rawOutput;
-    try {
-      if (rawOutput.startsWith('{') || rawOutput.includes('"content"')) {
-        let jsonText = rawOutput;
-
-        const fenceMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (fenceMatch) {
-          jsonText = fenceMatch[1].trim();
-        }
-
-        const start = jsonText.indexOf('{');
-        const end = jsonText.lastIndexOf('}');
-
-        if (start !== -1 && end !== -1 && end > start) {
-          jsonText = jsonText.slice(start, end + 1);
-          const parsed = JSON.parse(jsonText);
-
-          if (parsed.content && typeof parsed.content === 'string') {
-            rawContent = parsed.content;
-            console.log(`[PaperDrafting] Extracted content from JSON (${parsed.content.length} chars), discarded memory`);
-          }
-        }
-      }
-    } catch (parseErr) {
-      console.warn('[PaperDrafting] Could not parse JSON output, using raw:', parseErr);
-    }
+    rawContent = extractSectionContent(rawOutput);
   }
 
-  // At this point rawContent is guaranteed non-null (either from two-pass or standard gen)
   const sectionContent = rawContent!;
 
   if (useMappedEvidence && sectionContent.includes('[CITATION_NEEDED')) {
@@ -2282,6 +2347,40 @@ async function generateSection(
   const attributedCount = usageSync.attributedCount;
   const ambiguousCount = usageSync.ambiguousCount;
   const unattributedKeys = usageSync.unattributedKeys;
+
+  if (twoPassEnabled) {
+    const resolvedSectionRecord = sectionRecord ?? await prisma.paperSection.findUnique({
+      where: { sessionId_sectionKey: { sessionId, sectionKey } },
+      select: { id: true }
+    });
+
+    if (resolvedSectionRecord?.id) {
+      await prisma.paperSection.update({
+        where: { id: resolvedSectionRecord.id },
+        data: {
+          content: polishedContent,
+          wordCount: computeWordCount(polishedContent),
+          generationMode: 'two_pass',
+          promptUsed: pass2PromptUsed || prompt,
+          llmResponse: polishedContent,
+          tokensUsed: llmTokensUsed,
+          pass2PromptUsed,
+          pass2TokensUsed,
+          pass2CompletedAt: pass2CompletedAt || new Date(),
+          validationReport: pass2ValidationReport as any,
+          status: 'DRAFT',
+          isStale: false,
+          generatedAt: new Date(),
+          version: { increment: 1 }
+        }
+      });
+    } else {
+      console.warn('[PaperDrafting] Two-pass finalize skipped: section record missing', {
+        sessionId,
+        sectionKey
+      });
+    }
+  }
 
   return {
     sectionKey,

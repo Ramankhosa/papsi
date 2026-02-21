@@ -19,6 +19,8 @@ import { authenticateUser } from '@/lib/auth-middleware';
 import { paperSectionService } from '@/lib/services/paper-section-service';
 import { blueprintService } from '@/lib/services/blueprint-service';
 
+const HIDE_CONTENT_STATUSES = new Set(['PREPARING', 'BASE_READY', 'POLISHING', 'REGENERATING']);
+
 /**
  * Strip internal-only fields from section payloads before returning to clients.
  * Pass 1 content is never exposed — only polished (Pass 2) content is public.
@@ -36,6 +38,15 @@ function sanitizeSection(section: any) {
     llmResponse: _lr,
     ...publicFields
   } = section;
+
+  if (HIDE_CONTENT_STATUSES.has(String(publicFields.status || ''))) {
+    return {
+      ...publicFields,
+      content: '',
+      wordCount: 0
+    };
+  }
+
   return publicFields;
 }
 
