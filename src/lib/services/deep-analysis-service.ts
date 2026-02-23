@@ -111,6 +111,8 @@ const RECOVERABLE_STALE_STATUSES: DeepAnalysisStatus[] = ['PREPARING', 'EXTRACTI
 const CANCELLATION_ERROR = 'Cancelled by user';
 const STALE_JOB_RECOVERY_MS = 5 * 60 * 1000;
 const STALE_JOB_WARNING = 'Job was auto-requeued after worker interruption';
+const MAPPING_POLL_INTERVAL_MS = 1_200;
+const MAPPING_FAST_LOOP_MS = 120;
 
 const LABEL_SET = new Set<string>(DEEP_ANALYSIS_LABELS);
 const ARCHETYPE_SET = new Set<string>(REFERENCE_ARCHETYPES);
@@ -253,6 +255,10 @@ async function runWithConcurrency<T>(items: T[], limit: number, worker: (item: T
   });
 
   await Promise.all(runners);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // Persist runner tracking across Next.js HMR reloads in dev mode
@@ -427,6 +433,19 @@ class DeepAnalysisService {
     }
   }
 
+  private async getSessionUserId(sessionId: string): Promise<string> {
+    const session = await prisma.draftingSession.findUnique({
+      where: { id: sessionId },
+      select: { userId: true },
+    });
+
+    if (!session?.userId) {
+      throw new Error('Drafting session not found');
+    }
+
+    return session.userId;
+  }
+
   async startBatch(
     sessionId: string,
     citationIds: string[],
@@ -437,6 +456,7 @@ class DeepAnalysisService {
     }
 
     await this.ensureNoActiveRun(sessionId);
+    const sessionUserId = await this.getSessionUserId(sessionId);
 
     const uniqueCitationIds = Array.from(new Set(citationIds.map(id => String(id || '').trim()).filter(Boolean)));
     const citations = await prisma.citation.findMany({
@@ -485,16 +505,16 @@ class DeepAnalysisService {
         year: citation.year,
         authors: citation.authors,
         libraryReferenceId: citation.libraryReferenceId,
-      });
+      }, { userId: sessionUserId });
       readinessMap.set(citation.id, readiness);
     });
 
-    for (const citation of citations) {
+    await runWithConcurrency(citations, 6, async (citation) => {
       const depthLabel = estimateDepthLabelFromCitation(citation);
       const archetype = estimateArchetypeFromCitation(citation);
 
       if (depthLabel === 'LIT_ONLY') {
-        continue;
+        return;
       }
 
       const readiness = readinessMap.get(citation.id);
@@ -512,7 +532,7 @@ class DeepAnalysisService {
             evidenceCardCount: 0,
           },
         }).catch(() => undefined);
-        continue;
+        return;
       }
 
       const textSource = readiness.parserCandidate || 'REGEX_FALLBACK';
@@ -549,18 +569,19 @@ class DeepAnalysisService {
         },
       });
 
-      await prisma.evidenceCard.deleteMany({
-        where: { jobId: job.id },
-      });
-
-      await prisma.citation.update({
-        where: { id: citation.id },
-        data: {
-          deepAnalysisStatus: 'PENDING',
-          deepAnalysisLabel: depthLabel,
-          evidenceCardCount: 0,
-        },
-      });
+      await Promise.all([
+        prisma.evidenceCard.deleteMany({
+          where: { jobId: job.id },
+        }),
+        prisma.citation.update({
+          where: { id: citation.id },
+          data: {
+            deepAnalysisStatus: 'PENDING',
+            deepAnalysisLabel: depthLabel,
+            evidenceCardCount: 0,
+          },
+        }),
+      ]);
 
       jobs.push({
         jobId: job.id,
@@ -569,7 +590,7 @@ class DeepAnalysisService {
         depthLabel,
         status: 'PENDING',
       });
-    }
+    });
 
     const concurrency = clampConcurrency(options.concurrency);
     const estimatedSeconds = Math.max(10, Math.ceil(jobs.length / Math.max(1, concurrency / 3)) * 25);
@@ -597,6 +618,7 @@ class DeepAnalysisService {
   }
 
   async getCandidates(sessionId: string): Promise<DeepAnalysisCandidatesResult> {
+    const sessionUserId = await this.getSessionUserId(sessionId);
     const citations = await prisma.citation.findMany({
       where: {
         sessionId,
@@ -637,7 +659,7 @@ class DeepAnalysisService {
         year: citation.year,
         authors: citation.authors,
         libraryReferenceId: citation.libraryReferenceId,
-      }).catch(() => ({
+      }, { userId: sessionUserId }).catch(() => ({
         ready: false,
         reason: 'Unable to verify text readiness',
         referenceId: null,
@@ -684,6 +706,7 @@ class DeepAnalysisService {
     jobIds: string[],
     options: { concurrency: number; tenantContext?: TenantContext | null }
   ): Promise<void> {
+    const sessionUserId = await this.getSessionUserId(sessionId);
     const jobs = await prisma.deepAnalysisJob.findMany({
       where: {
         id: { in: jobIds },
@@ -708,6 +731,19 @@ class DeepAnalysisService {
 
     const { blueprint, dimensions } = await this.getBlueprintContext(sessionId);
 
+    let extractionDone = false;
+    let mappingLoopPromise: Promise<void> | null = null;
+
+    if (blueprint) {
+      mappingLoopPromise = this.runIncrementalMappingLoop(
+        sessionId,
+        batchId,
+        blueprint,
+        options.tenantContext || null,
+        () => extractionDone
+      );
+    }
+
     // Phase 1: Extract evidence cards for all jobs concurrently (no mapping)
     console.log(`[DeepAnalysis] Batch ${batchId}: starting extraction for ${jobs.length} jobs (concurrency=${options.concurrency})`);
     await runWithConcurrency(jobs, options.concurrency, async (job) => {
@@ -715,15 +751,52 @@ class DeepAnalysisService {
         batchId,
         dimensions,
         blueprint,
+        sessionUserId,
         tenantContext: options.tenantContext || null,
       });
     });
+    extractionDone = true;
 
-    // Phase 2: Batch-map all extracted cards in 2-3 LLM calls instead of N
-    if (blueprint) {
-      await this.batchMapExtractedCards(sessionId, batchId, blueprint, options.tenantContext || null);
+    // Phase 2: ensure mapping loop drains all remaining jobs.
+    if (mappingLoopPromise) {
+      await mappingLoopPromise;
     } else {
       await this.finalizeJobsWithoutMapping(sessionId, batchId);
+    }
+  }
+
+  private async runIncrementalMappingLoop(
+    sessionId: string,
+    batchId: string,
+    blueprint: BlueprintWithSectionPlan,
+    tenantContext: TenantContext | null,
+    isExtractionDone: () => boolean
+  ): Promise<void> {
+    let consecutiveFailures = 0;
+
+    while (true) {
+      let processedInCycle = 0;
+      try {
+        processedInCycle = await this.batchMapExtractedCards(sessionId, batchId, blueprint, tenantContext);
+        consecutiveFailures = 0;
+      } catch (error) {
+        consecutiveFailures += 1;
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[DeepAnalysis] Batch ${batchId}: incremental mapping loop error (${consecutiveFailures}):`, message);
+
+        if (isExtractionDone() && consecutiveFailures >= 3) {
+          throw error;
+        }
+
+        await sleep(MAPPING_POLL_INTERVAL_MS);
+        continue;
+      }
+
+      if (isExtractionDone() && processedInCycle === 0) {
+        break;
+      }
+
+      await sleep(processedInCycle > 0 ? MAPPING_FAST_LOOP_MS : MAPPING_POLL_INTERVAL_MS);
     }
   }
 
@@ -732,13 +805,13 @@ class DeepAnalysisService {
     batchId: string,
     blueprint: BlueprintWithSectionPlan,
     tenantContext: TenantContext | null
-  ): Promise<void> {
+  ): Promise<number> {
     const mappingJobs = await prisma.deepAnalysisJob.findMany({
       where: { sessionId, batchId, status: 'MAPPING' },
       select: { id: true, citationId: true },
     });
 
-    if (mappingJobs.length === 0) return;
+    if (mappingJobs.length === 0) return 0;
 
     const jobIds = mappingJobs.map(j => j.id);
     const citationIds = Array.from(new Set(mappingJobs.map(j => j.citationId)));
@@ -772,7 +845,7 @@ class DeepAnalysisService {
 
     if (cards.length === 0) {
       await this.finalizeJobsWithoutMapping(sessionId, batchId);
-      return;
+      return mappingJobs.length;
     }
 
     console.log(`[DeepAnalysis] Batch ${batchId}: batch-mapping ${cards.length} cards from ${mappingJobs.length} jobs`);
@@ -854,6 +927,8 @@ class DeepAnalysisService {
         data: { deepAnalysisStatus: 'COMPLETED' },
       });
     });
+
+    return mappingJobs.length;
   }
 
   private async finalizeJobsWithoutMapping(
@@ -892,6 +967,7 @@ class DeepAnalysisService {
       batchId: string;
       dimensions: string[];
       blueprint: BlueprintWithSectionPlan | null;
+      sessionUserId: string;
       tenantContext?: TenantContext | null;
     }
   ): Promise<void> {
@@ -929,7 +1005,8 @@ class DeepAnalysisService {
           authors: job.citation.authors,
           libraryReferenceId: job.citation.libraryReferenceId,
         },
-        normalizeDepthLabel(job.deepAnalysisLabel)
+        normalizeDepthLabel(job.deepAnalysisLabel),
+        { userId: context.sessionUserId }
       );
 
       console.log(`[DeepAnalysis] Job ${jobId}: text ready (source=${prepared.preparedText.source}, tokens≈${prepared.preparedText.estimatedTokens}, sections=${prepared.preparedText.sections?.length ?? 0})`);
@@ -967,7 +1044,10 @@ class DeepAnalysisService {
 
       await this.throwIfJobCancelled(jobId);
 
-      const verifyAgainst = prepared.preparedText.rawFullText || prepared.preparedText.fullText;
+      const depthLabel = normalizeDepthLabel(job.deepAnalysisLabel);
+      const verifyAgainst = depthLabel === 'DEEP_ANCHOR'
+        ? (prepared.preparedText.rawFullText || prepared.preparedText.fullText)
+        : prepared.preparedText.fullText;
       const verifiedCards = quoteVerificationService.verifyAllCards(extracted.cards, verifyAgainst);
 
       const cardIdentityRows: ExtractedCardWithIdentity[] = verifiedCards.map((card, index) => ({
@@ -981,56 +1061,70 @@ class DeepAnalysisService {
 
       await this.throwIfJobCancelled(jobId);
 
-      // Persist cards and set status to MAPPING (awaiting batch mapping phase)
-      await prisma.$transaction(async tx => {
-        const currentJob = await tx.deepAnalysisJob.findUnique({
-          where: { id: jobId },
-          select: { status: true, error: true },
-        });
+      // Persist cards and set status to MAPPING (awaiting batch mapping phase).
+      // Use a non-interactive transaction with createMany to avoid interactive-tx timeout under load.
+      const currentJob = await prisma.deepAnalysisJob.findUnique({
+        where: { id: jobId },
+        select: { status: true, error: true },
+      });
 
-        if (!currentJob || (currentJob.status === 'FAILED' && String(currentJob.error || '').includes(CANCELLATION_ERROR))) {
-          return;
-        }
+      if (!currentJob) {
+        return;
+      }
 
-        await tx.evidenceCard.deleteMany({
+      if (currentJob.status === 'FAILED' && String(currentJob.error || '').includes(CANCELLATION_ERROR)) {
+        return;
+      }
+
+      if (currentJob.status !== 'EXTRACTING') {
+        return;
+      }
+
+      const warningParts = [...extracted.warnings];
+      const cardCreateData = cardIdentityRows.map(card => ({
+        jobId,
+        sessionId: job.sessionId,
+        citationId: job.citation.id,
+        citationKey: job.citation.citationKey,
+        referenceArchetype: card.referenceArchetype,
+        deepAnalysisLabel: card.deepAnalysisLabel,
+        sourceSection: card.sourceSection,
+        claim: card.claim,
+        claimType: card.claimType,
+        quantitativeDetail: card.quantitativeDetail,
+        conditions: card.conditions,
+        comparableMetrics: card.comparableMetrics
+          ? (card.comparableMetrics as Prisma.InputJsonValue)
+          : undefined,
+        doesNotSupport: card.doesNotSupport,
+        scopeCondition: card.scopeCondition,
+        studyDesign: card.studyDesign,
+        rigorIndicators: card.rigorIndicators,
+        sourceFragment: card.sourceFragment,
+        pageHint: card.pageHint,
+        quoteVerified: card.quoteVerified,
+        quoteVerificationMethod: card.quoteVerificationMethod || null,
+        quoteVerificationScore: card.quoteVerificationScore ?? null,
+        confidence: card.confidence,
+        extractedFrom: 'FULL_TEXT',
+      }));
+
+      const writes: Prisma.PrismaPromise<unknown>[] = [
+        prisma.evidenceCard.deleteMany({
           where: { jobId },
-        });
+        }),
+      ];
 
-        for (const card of cardIdentityRows) {
-          await tx.evidenceCard.create({
-            data: {
-              jobId,
-              sessionId: job.sessionId,
-              citationId: job.citation.id,
-              citationKey: job.citation.citationKey,
-              referenceArchetype: card.referenceArchetype,
-              deepAnalysisLabel: card.deepAnalysisLabel,
-              sourceSection: card.sourceSection,
-              claim: card.claim,
-              claimType: card.claimType,
-              quantitativeDetail: card.quantitativeDetail,
-              conditions: card.conditions,
-              comparableMetrics: card.comparableMetrics
-                ? (card.comparableMetrics as Prisma.InputJsonValue)
-                : undefined,
-              doesNotSupport: card.doesNotSupport,
-              scopeCondition: card.scopeCondition,
-              studyDesign: card.studyDesign,
-              rigorIndicators: card.rigorIndicators,
-              sourceFragment: card.sourceFragment,
-              pageHint: card.pageHint,
-              quoteVerified: card.quoteVerified,
-              quoteVerificationMethod: card.quoteVerificationMethod || null,
-              quoteVerificationScore: card.quoteVerificationScore ?? null,
-              confidence: card.confidence,
-              extractedFrom: 'FULL_TEXT',
-            },
-          });
-        }
+      if (cardCreateData.length > 0) {
+        writes.push(
+          prisma.evidenceCard.createMany({
+            data: cardCreateData,
+          })
+        );
+      }
 
-        const warningParts = [...extracted.warnings];
-
-        await tx.deepAnalysisJob.updateMany({
+      writes.push(
+        prisma.deepAnalysisJob.updateMany({
           where: {
             id: jobId,
             status: 'EXTRACTING',
@@ -1042,17 +1136,26 @@ class DeepAnalysisService {
             inputTokens: extracted.usage.inputTokens,
             outputTokens: extracted.usage.outputTokens,
           },
-        });
-
-        await tx.citation.update({
-          where: { id: job.citation.id },
+        }),
+        prisma.citation.updateMany({
+          where: {
+            id: job.citation.id,
+            deepAnalysisJobs: {
+              some: {
+                id: jobId,
+                status: 'MAPPING',
+              },
+            },
+          },
           data: {
             deepAnalysisStatus: 'MAPPING',
             deepAnalysisLabel: job.deepAnalysisLabel,
             evidenceCardCount: cardIdentityRows.length,
           },
-        });
-      });
+        })
+      );
+
+      await prisma.$transaction(writes);
 
       console.log(`[DeepAnalysis] Job ${jobId}: extraction complete, ${cardIdentityRows.length} cards persisted (awaiting batch mapping)`);
     } catch (error) {
@@ -1266,31 +1369,36 @@ class DeepAnalysisService {
 
     const batchId = crypto.randomUUID();
 
-    await prisma.$transaction(async tx => {
-      for (const job of failedJobs) {
-        await tx.deepAnalysisJob.update({
-          where: { id: job.id },
-          data: {
-            status: 'PENDING',
-            error: null,
-            warning: null,
-            startedAt: null,
-            completedAt: null,
-            batchId,
-          },
-        });
+    const failedJobIds = failedJobs.map(job => job.id);
+    const failedCitationIds = Array.from(new Set(failedJobs.map(job => job.citationId)));
 
-        await tx.evidenceCard.deleteMany({ where: { jobId: job.id } });
-
-        await tx.citation.update({
-          where: { id: job.citationId },
-          data: {
-            deepAnalysisStatus: 'PENDING',
-            evidenceCardCount: 0,
-          },
-        });
-      }
-    });
+    await prisma.$transaction([
+      prisma.deepAnalysisJob.updateMany({
+        where: {
+          id: { in: failedJobIds },
+          sessionId,
+          status: 'FAILED',
+        },
+        data: {
+          status: 'PENDING',
+          error: null,
+          warning: null,
+          startedAt: null,
+          completedAt: null,
+          batchId,
+        },
+      }),
+      prisma.evidenceCard.deleteMany({
+        where: { jobId: { in: failedJobIds } },
+      }),
+      prisma.citation.updateMany({
+        where: { id: { in: failedCitationIds } },
+        data: {
+          deepAnalysisStatus: 'PENDING',
+          evidenceCardCount: 0,
+        },
+      }),
+    ]);
 
     const concurrency = clampConcurrency(options.concurrency);
     this.triggerBatch(

@@ -24,15 +24,49 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
   });
 }
 
-async function resolveTenantContext(request: NextRequest, userId: string) {
+async function resolveTenantContext(
+  request: NextRequest,
+  userId: string,
+  tenantId?: string | null
+) {
   const authorization = request.headers.get('authorization');
-  if (!authorization) return null;
-  const tenantContext = await extractTenantContextFromRequest({ headers: { authorization } });
-  if (!tenantContext) return null;
-  return {
-    ...tenantContext,
-    userId: tenantContext.userId || userId,
-  };
+  if (authorization) {
+    const tenantContext = await extractTenantContextFromRequest({ headers: { authorization } });
+    if (tenantContext) {
+      return {
+        ...tenantContext,
+        userId: tenantContext.userId || userId,
+      };
+    }
+  }
+
+  if (!tenantId) return null;
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    include: {
+      tenantPlans: {
+        where: {
+          status: 'ACTIVE',
+          effectiveFrom: { lte: new Date() },
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        },
+        orderBy: { effectiveFrom: 'desc' },
+        take: 1,
+      },
+    },
+  });
+
+  if (tenant && tenant.status === 'ACTIVE' && tenant.tenantPlans[0]) {
+    return {
+      tenantId: tenant.id,
+      planId: tenant.tenantPlans[0].planId,
+      tenantStatus: tenant.status,
+      userId,
+    };
+  }
+
+  return null;
 }
 
 export async function GET(request: NextRequest, context: { params: { paperId: string } }) {
@@ -52,21 +86,33 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
       return NextResponse.json({ error: 'Paper session not found' }, { status: 404 });
     }
 
-    const tenantContext = await resolveTenantContext(request, user.id);
+    const tenantContext = await resolveTenantContext(request, user.id, session.tenantId);
     const result = await deepAnalysisService.getStatus(sessionId, { tenantContext });
 
-    // Auto-trigger background Pass 1 when evidence extraction completes
+    // Auto-trigger background Pass 1 when evidence extraction reaches a terminal state
+    const deepAnalysisTerminal =
+      result.totalJobs > 0 &&
+      result.inProgress === 0 &&
+      (result.status === 'COMPLETED' || result.status === 'PARTIAL');
+    const bgAutoTriggerEligible =
+      !session.bgGenStatus || ['IDLE', 'FAILED', 'PARTIAL'].includes(session.bgGenStatus);
+
     if (
-      result.status === 'COMPLETED' &&
+      deepAnalysisTerminal &&
       isFeatureEnabled('ENABLE_TWO_PASS_GENERATION') &&
-      (!session.bgGenStatus || session.bgGenStatus === 'IDLE')
+      bgAutoTriggerEligible
     ) {
       const blueprintReady = await blueprintService.isBlueprintReady(sessionId);
       if (blueprintReady.ready) {
-        paperSectionService.runParallelPass1(sessionId).catch(err => {
-          console.error('[DeepAnalysis] Auto-trigger Pass 1 failed:', err);
-        });
-        (result as any).backgroundGenerationTriggered = true;
+        if (!tenantContext) {
+          console.warn('[DeepAnalysis] Auto-trigger Pass 1 skipped: tenant context unavailable');
+          (result as any).backgroundGenerationTriggerSkipped = 'missing_tenant_context';
+        } else {
+          paperSectionService.runParallelPass1(sessionId, tenantContext).catch(err => {
+            console.error('[DeepAnalysis] Auto-trigger Pass 1 failed:', err);
+          });
+          (result as any).backgroundGenerationTriggered = true;
+        }
       }
     }
 

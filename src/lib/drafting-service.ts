@@ -533,6 +533,7 @@ export class DraftingService {
     const formatOverride = options?.strictWhitelist
       ? '- IMPORTANT OVERRIDE: Ignore any [CITATION_NEEDED] instruction from earlier prompt blocks.\n- Never output [CITATION_NEEDED: ...]. Use only [CITE:CitationKey] with keys from ALLOWED CITATION KEYS.\n'
       : '';
+    const citationTargetLine = this.getSectionCitationTarget(sectionKey);
 
     return `Available Citations for this section:
 ${citationList}${overflowNote}
@@ -546,7 +547,7 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
 - ${strictLine}
 - Ensure each major claim is supported by at least one citation unless it is a novel contribution
 - ${sectionGuidance}
-- Aim for 3-8 citations per section depending on section length and importance${gapText}`;
+- ${citationTargetLine}${gapText}`;
   }
 
   /**
@@ -555,11 +556,11 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
   private static getSectionCitationGuidance(sectionKey: string): string {
     switch (this.normalizeSectionKey(sectionKey)) {
       case 'introduction':
-        return "Cite 2-4 key papers that establish the problem context and show why this research is needed";
+        return "Cite core prior work that establishes the problem context, stakes, and unresolved gap";
       case 'literature_review':
-        return "Cite extensively (8-15 papers) to show comprehensive knowledge of the field and identify gaps";
+        return "Cite comprehensively across themes, methods, and findings to demonstrate full coverage of the field";
       case 'methodology':
-        return "Cite methods, tools, or frameworks you build upon or compare against";
+        return "Cite methods, tools, datasets, and protocols that your approach builds upon or compares against";
       case 'results':
         return "Cite baseline methods or datasets you compare against";
       case 'discussion':
@@ -568,6 +569,23 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
         return "Cite your own contributions and future work directions";
       default:
         return "Cite relevant work that supports your statements";
+    }
+  }
+
+  private static getSectionCitationTarget(sectionKey: string): string {
+    switch (this.normalizeSectionKey(sectionKey)) {
+      case 'literature_review':
+      case 'related_work':
+        return 'Aim for 12-25 distinct citations to ensure comprehensive synthesis';
+      case 'introduction':
+        return 'Aim for 6-12 citations to establish context and justify the research gap';
+      case 'methodology':
+        return 'Aim for 6-12 citations focused on methods, tools, and protocol choices';
+      case 'results':
+      case 'discussion':
+        return 'Aim for 4-10 citations depending on comparison and interpretation depth';
+      default:
+        return 'Aim for 3-8 citations depending on section length and importance';
     }
   }
 

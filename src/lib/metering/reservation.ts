@@ -5,7 +5,68 @@ import type { MeteringConfig, ReservationService, MeteringContext } from './type
 import { MeteringErrorUtils, MeteringError } from './errors'
 import { prisma } from '@/lib/prisma'
 
+const CONCURRENCY_CACHE_TTL_MS = 30_000
+const FEATURE_ID_CACHE_TTL_MS = 10 * 60 * 1000
+
 export function createReservationService(config: MeteringConfig): ReservationService {
+  const concurrencyLimitCache = new Map<string, { value: number; expiresAt: number }>()
+  const featureIdCache = new Map<string, { value: string; expiresAt: number }>()
+
+  const getCachedConcurrencyLimit = (cacheKey: string): number | null => {
+    const cached = concurrencyLimitCache.get(cacheKey)
+    if (!cached) return null
+    if (cached.expiresAt <= Date.now()) {
+      concurrencyLimitCache.delete(cacheKey)
+      return null
+    }
+    return cached.value
+  }
+
+  const setCachedConcurrencyLimit = (cacheKey: string, value: number): void => {
+    if (concurrencyLimitCache.size > 500) {
+      const firstKey = concurrencyLimitCache.keys().next().value
+      if (firstKey) concurrencyLimitCache.delete(firstKey)
+    }
+    concurrencyLimitCache.set(cacheKey, {
+      value,
+      expiresAt: Date.now() + CONCURRENCY_CACHE_TTL_MS
+    })
+  }
+
+  const getFeatureIdByCode = async (featureCode: string | undefined): Promise<string | null> => {
+    const cacheKey = String(featureCode || '').trim().toUpperCase()
+    if (!cacheKey) return null
+
+    const cached = featureIdCache.get(cacheKey)
+    if (cached) {
+      if (cached.expiresAt > Date.now()) {
+        return cached.value
+      }
+      featureIdCache.delete(cacheKey)
+    }
+
+    const feature = await prisma.feature.findUnique({
+      where: { code: featureCode as any },
+      select: { id: true }
+    })
+
+    if (!feature?.id) {
+      return null
+    }
+
+    if (featureIdCache.size > 500) {
+      const firstKey = featureIdCache.keys().next().value
+      if (firstKey) featureIdCache.delete(firstKey)
+    }
+
+    featureIdCache.set(cacheKey, {
+      value: feature.id,
+      expiresAt: Date.now() + FEATURE_ID_CACHE_TTL_MS
+    })
+
+    return feature.id
+  }
+
   return {
     async createReservation(context: MeteringContext, units: number): Promise<string> {
       try {
@@ -40,12 +101,14 @@ export function createReservationService(config: MeteringConfig): ReservationSer
           }
         }
 
-        // Look up feature ID from feature code
-        const feature = await prisma.feature.findUnique({
-          where: { code: context.featureCode }
-        })
+        // Look up feature ID from feature code (cached)
+        const featureCode = context.featureCode
+        if (!featureCode) {
+          throw new MeteringError('FEATURE_NOT_FOUND', 'Feature code is required for reservation')
+        }
+        const featureId = await getFeatureIdByCode(featureCode)
 
-        if (!feature) {
+        if (!featureId) {
           throw new MeteringError('FEATURE_NOT_FOUND', `Feature '${context.featureCode}' not found`)
         }
 
@@ -53,7 +116,7 @@ export function createReservationService(config: MeteringConfig): ReservationSer
         const reservation = await prisma.usageReservation.create({
           data: {
             tenantId: context.tenantId,
-            featureId: feature.id,
+            featureId,
             taskCode: context.taskCode,
             reservedUnits: units,
             status: 'ACTIVE',
@@ -101,6 +164,12 @@ export function createReservationService(config: MeteringConfig): ReservationSer
 
     async getConcurrencyLimit(tenantId: string, taskCode?: string): Promise<number> {
       try {
+        const cacheKey = `${tenantId}::${String(taskCode || '*')}`
+        const cachedLimit = getCachedConcurrencyLimit(cacheKey)
+        if (cachedLimit !== null) {
+          return cachedLimit
+        }
+
         // Get tenant's plan
         const tenantPlan = await prisma.tenantPlan.findFirst({
           where: {
@@ -116,6 +185,7 @@ export function createReservationService(config: MeteringConfig): ReservationSer
         })
 
         if (!tenantPlan?.plan) {
+          setCachedConcurrencyLimit(cacheKey, 1)
           return 1 // Default low limit
         }
 
@@ -123,7 +193,7 @@ export function createReservationService(config: MeteringConfig): ReservationSer
         const concurrencyRule = await prisma.policyRule.findFirst({
           where: {
             OR: [
-              { scope: 'plan', scopeId: tenantPlan.plan.code },
+              { scope: 'plan', scopeId: tenantPlan.plan.id },
               { scope: 'tenant', scopeId: tenantId }
             ],
             key: 'concurrency_limit',
@@ -132,7 +202,9 @@ export function createReservationService(config: MeteringConfig): ReservationSer
           orderBy: { scope: 'desc' } // tenant overrides plan
         })
 
-        return concurrencyRule?.value || 5 // Default concurrency limit (safe for LLM provider rate limits)
+        const limit = concurrencyRule?.value || 5 // Default concurrency limit (safe for LLM provider rate limits)
+        setCachedConcurrencyLimit(cacheKey, limit)
+        return limit
       } catch (error) {
         console.warn('Failed to get concurrency limit, using default:', error)
         return 5

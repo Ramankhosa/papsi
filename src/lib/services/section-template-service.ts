@@ -157,10 +157,7 @@ class SectionTemplateService {
     paperTypeCode: string
   ): Promise<string | null> {
     await this.loadFromDatabase();
-    const normalized = paperTypeCode.toUpperCase();
-
-    const overrideKey = `${normalized}:${sectionKey}`;
-    const dbOverride = this.dbTypeOverrides.get(overrideKey);
+    const dbOverride = this.findTypeOverride(paperTypeCode, sectionKey);
     if (dbOverride) {
       return dbOverride.instruction;
     }
@@ -410,43 +407,27 @@ class SectionTemplateService {
 
   /**
    * Resolve the prompt instruction for a paper type
-   * NEW APPROACH (Option B - Layered/Top-Up):
-   * Returns: BASE_PROMPT + PAPER_TYPE_ADDITIONS (not replacement)
-   * 
-   * The base prompt provides action-focused instructions.
-   * The paper type additions provide type-specific guidance layered on top.
+   * Final-section drafting behavior:
+   * - If a paper-type top-up exists, use ONLY that top-up instruction.
+   * - If no top-up exists, fall back to base section prompt.
    */
   private async resolvePromptForPaperType(template: SectionTemplate, paperTypeCode: string): Promise<string> {
     await this.loadFromDatabase();
     const normalized = paperTypeCode.toUpperCase();
+    const dbOverride = this.findTypeOverride(normalized, template.sectionKey);
 
-    let basePrompt = template.defaultPrompt;
-    let typeAdditions = '';
-
-    // Get base prompt from DB (if available)
-    const dbBase = this.dbSupersetSections.get(template.sectionKey);
-    if (dbBase) {
-      basePrompt = dbBase.instruction;
+    // Top-up only mode: use the paper-type prompt as the primary instruction.
+    if (dbOverride?.instruction?.trim()) {
+      return dbOverride.instruction;
     }
 
-    // Get type-specific ADDITIONS from DB (not replacement!)
-    const overrideKey = `${normalized}:${template.sectionKey}`;
-    const dbOverride = this.dbTypeOverrides.get(overrideKey);
-    if (dbOverride) {
-      typeAdditions = dbOverride.instruction;
+    // Fallback when no top-up exists for this paper type + section.
+    const dbBase = this.findSupersetSection(template.sectionKey);
+    if (dbBase?.instruction?.trim()) {
+      return dbBase.instruction;
     }
 
-    // Combine: BASE + TYPE_ADDITIONS (layered, not replaced)
-    if (typeAdditions && typeAdditions.trim()) {
-      return `${basePrompt}
-
-═══════════════════════════════════════════════════════════════════════════════
-PAPER TYPE SPECIFIC GUIDANCE (${normalized})
-═══════════════════════════════════════════════════════════════════════════════
-${typeAdditions}`;
-    }
-
-    return basePrompt;
+    return template.defaultPrompt;
   }
 
   /**
@@ -509,10 +490,7 @@ ${typeAdditions}`;
     paperTypeCode: string
   ): Promise<{ instruction: string; constraints: SectionConstraints; additions: string[] } | null> {
     await this.loadFromDatabase();
-    const normalized = paperTypeCode.toUpperCase();
-
-    const overrideKey = `${normalized}:${sectionKey}`;
-    const dbOverride = this.dbTypeOverrides.get(overrideKey);
+    const dbOverride = this.findTypeOverride(paperTypeCode, sectionKey);
     if (!dbOverride) return null;
 
     const additions = Array.isArray(dbOverride.additions)
@@ -531,10 +509,7 @@ ${typeAdditions}`;
    */
   async getPaperTypeAdditions(sectionKey: string, paperTypeCode: string): Promise<string | null> {
     await this.loadFromDatabase();
-    const normalized = paperTypeCode.toUpperCase();
-    
-    const overrideKey = `${normalized}:${sectionKey}`;
-    const dbOverride = this.dbTypeOverrides.get(overrideKey);
+    const dbOverride = this.findTypeOverride(paperTypeCode, sectionKey);
     if (dbOverride) {
       return dbOverride.instruction;
     }
@@ -712,13 +687,14 @@ ${typeAdditions}`;
     if (exact) return exact;
 
     const normalized = this.normalizeSectionKey(sectionKey);
-    for (const [key, section] of this.dbSupersetSections.entries()) {
-      if (this.normalizeSectionKey(key) === normalized) {
-        return section;
+    let found: PaperSupersetSection | undefined;
+    this.dbSupersetSections.forEach((section, key) => {
+      if (!found && this.normalizeSectionKey(key) === normalized) {
+        found = section;
       }
-    }
+    });
 
-    return undefined;
+    return found;
   }
 
   private findTypeOverride(
@@ -730,14 +706,16 @@ ${typeAdditions}`;
     if (exact) return exact;
 
     const normalizedSection = this.normalizeSectionKey(sectionKey);
-    for (const override of this.dbTypeOverrides.values()) {
-      if (override.paperTypeCode !== normalizedType) continue;
+    let found: PaperTypeSectionPrompt | undefined;
+    this.dbTypeOverrides.forEach((override) => {
+      if (found) return;
+      if (override.paperTypeCode !== normalizedType) return;
       if (this.normalizeSectionKey(override.sectionKey) === normalizedSection) {
-        return override;
+        found = override;
       }
-    }
+    });
 
-    return undefined;
+    return found;
   }
 
   /**

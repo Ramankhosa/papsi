@@ -29,8 +29,7 @@ function tokenize(text: string): string[] {
     .filter(Boolean);
 }
 
-function slidingWindowTokenOverlap(quoteTokens: string[], normalizedPaperText: string): { score: number; span: string } {
-  const paperTokens = tokenize(normalizedPaperText);
+function slidingWindowTokenOverlap(quoteTokens: string[], paperTokens: string[]): { score: number; span: string } {
   const windowSize = quoteTokens.length;
   if (windowSize === 0 || paperTokens.length < windowSize) {
     return { score: 0, span: '' };
@@ -126,9 +125,28 @@ function downgradeConfidence(confidence: EvidenceConfidenceLevel): EvidenceConfi
 }
 
 class QuoteVerificationService {
-  verifyQuote(sourceFragment: string, paperFullText: string): VerificationResult {
+  private preparePaperText(paperFullText: string): {
+    rawText: string;
+    normalizedText: string;
+    normalizedTokens: string[];
+  } {
+    const rawText = String(paperFullText || '');
+    const normalizedText = normalize(rawText);
+    const normalizedTokens = tokenize(normalizedText);
+
+    return {
+      rawText,
+      normalizedText,
+      normalizedTokens,
+    };
+  }
+
+  private verifyQuotePrepared(
+    sourceFragment: string,
+    preparedPaper: { rawText: string; normalizedText: string; normalizedTokens: string[] }
+  ): VerificationResult {
     const quote = String(sourceFragment || '').trim();
-    const fullText = String(paperFullText || '');
+    const fullText = preparedPaper.rawText;
 
     if (!quote || !fullText) {
       return { verified: false, method: 'FAILED', score: 0 };
@@ -139,14 +157,14 @@ class QuoteVerificationService {
     }
 
     const normQuote = normalize(quote);
-    const normText = normalize(fullText);
+    const normText = preparedPaper.normalizedText;
 
     if (normText.includes(normQuote)) {
       return { verified: true, method: 'NORMALIZED', score: 1 };
     }
 
     const quoteTokens = tokenize(normQuote);
-    const overlap = slidingWindowTokenOverlap(quoteTokens, normText);
+    const overlap = slidingWindowTokenOverlap(quoteTokens, preparedPaper.normalizedTokens);
     if (overlap.score >= 0.85) {
       return {
         verified: true,
@@ -194,6 +212,10 @@ class QuoteVerificationService {
     };
   }
 
+  verifyQuote(sourceFragment: string, paperFullText: string): VerificationResult {
+    return this.verifyQuotePrepared(sourceFragment, this.preparePaperText(paperFullText));
+  }
+
   applyVerificationToCard(card: ExtractedEvidenceCard, result: VerificationResult): VerifiedEvidenceCard {
     let confidence = card.confidence;
 
@@ -218,8 +240,9 @@ class QuoteVerificationService {
   }
 
   verifyAllCards(cards: ExtractedEvidenceCard[], paperText: string): VerifiedEvidenceCard[] {
+    const preparedPaper = this.preparePaperText(paperText);
     return cards.map(card => {
-      const verification = this.verifyQuote(card.sourceFragment, paperText);
+      const verification = this.verifyQuotePrepared(card.sourceFragment, preparedPaper);
       return this.applyVerificationToCard(card, verification);
     });
   }

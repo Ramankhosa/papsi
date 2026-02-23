@@ -5,8 +5,37 @@ import type { MeteringConfig, PolicyService, FeatureRequest, EnforcementDecision
 import { MeteringErrorUtils, MeteringError } from './errors'
 import { prisma } from '@/lib/prisma'
 import { getTrialUserInfo } from '@/lib/trial-plan-service'
+import { createMeteringService } from './metering'
+import { createReservationService } from './reservation'
+
+const POLICY_LIMITS_CACHE_TTL_MS = 30_000
 
 export function createPolicyService(config: MeteringConfig): PolicyService {
+  const meteringService = createMeteringService(config)
+  const reservationService = createReservationService(config)
+  const policyLimitsCache = new Map<string, { value: PolicyLimits; expiresAt: number }>()
+
+  const getPolicyLimitsCacheKey = (tenantId: string, taskCode?: any): string => {
+    return `${tenantId}::${String(taskCode || '*')}`
+  }
+
+  const getCachedPolicyLimits = (cacheKey: string): PolicyLimits | null => {
+    const cached = policyLimitsCache.get(cacheKey)
+    if (!cached) return null
+    if (cached.expiresAt <= Date.now()) {
+      policyLimitsCache.delete(cacheKey)
+      return null
+    }
+    return { ...cached.value }
+  }
+
+  const setCachedPolicyLimits = (cacheKey: string, value: PolicyLimits): void => {
+    policyLimitsCache.set(cacheKey, {
+      value: { ...value },
+      expiresAt: Date.now() + POLICY_LIMITS_CACHE_TTL_MS
+    })
+  }
+
   return {
     async evaluateAccess(request: FeatureRequest): Promise<EnforcementDecision> {
       try {
@@ -91,6 +120,8 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
           tenantAtiId: trialUserInfo.invite?.campaign?.trialAtiTokenId ? 'campaign-specific' : 'unknown'
         })
 
+        let quotaRemaining: any = { monthly: 999999, daily: 999999 }
+
         // 6. Check quota limits (skip for trial users)
         if (!isTrialUser) {
           const quotaCheck = await this.checkQuota(request)
@@ -103,11 +134,11 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
               remainingQuota: quotaCheck.remaining
             }
           }
+          quotaRemaining = quotaCheck.remaining
         }
 
         // 6. Get LLM access for tasks
         let modelClass = null
-        let allowedClasses = []
         if (request.taskCode) {
           const llmAccess = plan.planLLMAccess.find(
             access => access.taskCode === request.taskCode
@@ -115,7 +146,6 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
 
           if (llmAccess) {
             modelClass = llmAccess.defaultClass.code
-            allowedClasses = JSON.parse(llmAccess.allowedClasses || '[]')
           }
         }
 
@@ -135,7 +165,7 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
           maxFiles: policyLimits.diagramFilesPerReq,
           concurrencyLimit: policyLimits.concurrencyLimit,
           reservationId,
-          remainingQuota: isTrialUser ? { monthly: 999999, daily: 999999 } : await this.checkQuota(request).then(q => q.remaining)
+          remainingQuota: quotaRemaining
         }
 
       } catch (error) {
@@ -152,6 +182,12 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
 
     async getPolicyLimits(tenantId: string, taskCode?: any): Promise<PolicyLimits> {
       try {
+        const cacheKey = getPolicyLimitsCacheKey(tenantId, taskCode)
+        const cached = getCachedPolicyLimits(cacheKey)
+        if (cached) {
+          return cached
+        }
+
         // Get tenant's current active plan
         const tenantPlan = await prisma.tenantPlan.findFirst({
           where: {
@@ -167,14 +203,16 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
         })
 
         if (!tenantPlan?.plan) {
-          return config.defaultLimits
+          const fallback = { ...config.defaultLimits }
+          setCachedPolicyLimits(cacheKey, fallback)
+          return fallback
         }
 
         // Get plan policy rules
         const policyRules = await prisma.policyRule.findMany({
           where: {
             OR: [
-              { scope: 'plan', scopeId: tenantPlan.plan.code },
+              { scope: 'plan', scopeId: tenantPlan.plan.id },
               { scope: 'tenant', scopeId: tenantId }
             ],
             ...(taskCode && { taskCode })
@@ -207,27 +245,20 @@ export function createPolicyService(config: MeteringConfig): PolicyService {
           }
         })
 
+        setCachedPolicyLimits(cacheKey, limits)
         return limits
 
       } catch (error) {
         console.warn('Failed to get policy limits, using defaults:', error)
-        return config.defaultLimits
+        return { ...config.defaultLimits }
       }
     },
 
     async checkQuota(request: FeatureRequest): Promise<{ allowed: boolean, remaining: any, resetTime?: Date }> {
-      // Import and use the metering service
-      const { createMeteringService, defaultConfig } = await import('./index')
-      const meteringService = createMeteringService(defaultConfig)
-
       return await meteringService.checkQuota(request)
     },
 
     async createReservation(request: FeatureRequest, limits: PolicyLimits): Promise<string> {
-      // Import the reservation service
-      const { createReservationService, defaultConfig } = await import('./index')
-      const reservationService = createReservationService(defaultConfig)
-
       // Estimate units based on limits
       const estimatedUnits = limits.maxTokensOut || 1000
 

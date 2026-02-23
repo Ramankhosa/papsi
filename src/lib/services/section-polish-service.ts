@@ -11,7 +11,7 @@
  * (DraftingService.formatContent) converts them to styled citations.
  */
 
-import { llmGateway } from '../metering';
+import { llmGateway, type TenantContext } from '../metering';
 import { polishDraftMarkdown } from '../markdown-draft-formatter';
 import { sectionTemplateService } from './section-template-service';
 import crypto from 'crypto';
@@ -26,6 +26,7 @@ export interface PolishInput {
   baseContent: string;
   sessionId: string;
   paperTypeCode: string;
+  tenantContext?: TenantContext | null;
 }
 
 export interface DriftReport {
@@ -307,7 +308,7 @@ class SectionPolishService {
 
     try {
       const result = await llmGateway.executeLLMOperation(
-        { headers: {} },
+        input.tenantContext ? { tenantContext: input.tenantContext } : { headers: {} },
         {
           taskCode: 'LLM2_DRAFT',
           stageCode: 'PAPER_SECTION_GEN',

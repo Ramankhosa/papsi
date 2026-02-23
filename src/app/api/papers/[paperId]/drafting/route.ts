@@ -15,6 +15,8 @@ import { evidencePackService, type SectionEvidencePack } from '@/lib/services/ev
 import { formatBibliographyMarkdown, polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
 import { isFeatureEnabled } from '@/lib/feature-flags';
 import { sectionPolishService } from '@/lib/services/section-polish-service';
+import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
+import type { TenantContext } from '@/lib/metering';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -136,6 +138,51 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
       citationStyle: true
     }
   });
+}
+
+async function resolveTenantContext(
+  request: NextRequest,
+  userId: string,
+  tenantId?: string | null
+): Promise<TenantContext | null> {
+  const authorization = request.headers.get('authorization');
+  if (authorization) {
+    const tenantContext = await extractTenantContextFromRequest({ headers: { authorization } });
+    if (tenantContext) {
+      return {
+        ...tenantContext,
+        userId: tenantContext.userId || userId,
+      };
+    }
+  }
+
+  if (!tenantId) return null;
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    include: {
+      tenantPlans: {
+        where: {
+          status: 'ACTIVE',
+          effectiveFrom: { lte: new Date() },
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        },
+        orderBy: { effectiveFrom: 'desc' },
+        take: 1,
+      },
+    },
+  });
+
+  if (tenant && tenant.status === 'ACTIVE' && tenant.tenantPlans[0]) {
+    return {
+      tenantId: tenant.id,
+      planId: tenant.tenantPlans[0].planId,
+      tenantStatus: tenant.status,
+      userId,
+    };
+  }
+
+  return null;
 }
 
 async function getPaperDraft(sessionId: string) {
@@ -1627,7 +1674,8 @@ async function repairSectionCitations(
   sectionKey: string,
   content: string,
   allowedCitationKeys: string[],
-  dimensionEvidence?: EvidencePromptContext['dimensionEvidence']
+  dimensionEvidence?: EvidencePromptContext['dimensionEvidence'],
+  tenantContext?: TenantContext | null
 ): Promise<string> {
   if (!allowedCitationKeys.length) {
     return content;
@@ -1682,7 +1730,7 @@ ${content}
 Return ONLY the corrected section content, no markdown fences.`;
 
   const repaired = await llmGateway.executeLLMOperation(
-    { headers },
+    tenantContext ? { tenantContext } : { headers },
     {
       taskCode: 'LLM2_DRAFT',
       stageCode: 'PAPER_SECTION_IMPROVE',
@@ -1850,10 +1898,11 @@ async function generateSection(
     paperTypeCode: string;
     payload: z.infer<typeof generateSchema>;
     requestHeaders: Record<string, string>;
+    tenantContext?: TenantContext | null;
   },
   emitStatus?: GenerationStatusEmitter
 ): Promise<GenerateSectionResult> {
-  const { sessionId, session, user, paperTypeCode, payload, requestHeaders } = params;
+  const { sessionId, session, user, paperTypeCode, payload, requestHeaders, tenantContext } = params;
   const sectionKey = normalizeSectionKey(payload.sectionKey);
   const requestedMappedEvidence = payload.useMappedEvidence !== false;
   const sectionContextPolicy = await sectionTemplateService.getSectionContextPolicy(sectionKey, paperTypeCode);
@@ -2076,7 +2125,10 @@ async function generateSection(
       };
 
       await emitStatus?.('llm_generation', 'Generating evidence-grounded base draft');
-      const pass1Result = await llmGateway.executeLLMOperation({ headers: requestHeaders }, pass1Request);
+      const pass1Result = await llmGateway.executeLLMOperation(
+        tenantContext ? { tenantContext } : { headers: requestHeaders },
+        pass1Request
+      );
       if (!pass1Result.success || !pass1Result.response) {
         throw new Error(pass1Result.error?.message || 'Pass 1 generation failed');
       }
@@ -2127,6 +2179,7 @@ async function generateSection(
       baseContent: pass1Content!,
       sessionId,
       paperTypeCode,
+      tenantContext: tenantContext || null,
     });
 
     if (!polishResult.success || !polishResult.polishedContent) {
@@ -2164,7 +2217,10 @@ async function generateSection(
     };
 
     await emitStatus?.('llm_generation', 'Generating section draft');
-    const result = await llmGateway.executeLLMOperation({ headers: requestHeaders }, llmRequest);
+    const result = await llmGateway.executeLLMOperation(
+      tenantContext ? { tenantContext } : { headers: requestHeaders },
+      llmRequest
+    );
     if (!result.success || !result.response) {
       throw new Error(result.error?.message || 'Generation failed');
     }
@@ -2175,17 +2231,7 @@ async function generateSection(
   }
 
   const sectionContent = rawContent!;
-
-  if (useMappedEvidence && sectionContent.includes('[CITATION_NEEDED')) {
-    throw new DraftingRequestError(
-      'Generated section contains [CITATION_NEEDED] placeholders which are not allowed when Auto citations is ON',
-      422,
-      {
-        error: 'Citation format violation',
-        hint: 'The model used [CITATION_NEEDED] instead of [CITE:key] format'
-      }
-    );
-  }
+  const knownSessionKeys = new Set(citations.map(c => c.citationKey));
 
   await emitStatus?.(
     'citation_validation',
@@ -2194,9 +2240,24 @@ async function generateSection(
       : 'Validating citation keys (mapped whitelist disabled)'
   );
   let contentForPostProcess = polishDraftMarkdown(sectionContent);
+
+  // Normalize malformed placeholders into [CITE:*] so the existing tested
+  // pipeline handles them consistently:
+  // validate -> repair (LLM) -> revalidate -> deterministic strip fallback.
+  if (useMappedEvidence && /\[CITATION_NEEDED[^\]]*\]/i.test(contentForPostProcess)) {
+    console.warn('[PaperDrafting] Found [CITATION_NEEDED] placeholders; normalizing for standard validation pipeline', {
+      sectionKey
+    });
+    contentForPostProcess = contentForPostProcess.replace(
+      /\[CITATION_NEEDED[^\]]*\]/gi,
+      '[CITE:CITATION_NEEDED]'
+    );
+  }
+
   const initialValidation = DraftingService.validateCitationKeys(
     contentForPostProcess,
-    useMappedEvidence ? citationContext.allowedCitationKeys : undefined
+    useMappedEvidence ? citationContext.allowedCitationKeys : undefined,
+    knownSessionKeys
   );
 
   if (
@@ -2216,11 +2277,13 @@ async function generateSection(
       sectionKey,
       contentForPostProcess,
       citationContext.allowedCitationKeys,
-      evidencePromptContext?.dimensionEvidence
+      evidencePromptContext?.dimensionEvidence,
+      tenantContext
     );
     let postRepairValidation = DraftingService.validateCitationKeys(
       contentForPostProcess,
-      citationContext.allowedCitationKeys
+      citationContext.allowedCitationKeys,
+      knownSessionKeys
     );
 
     // P0 Fix: If LLM repair didn't remove all disallowed keys, retry once more
@@ -2236,11 +2299,13 @@ async function generateSection(
         sectionKey,
         contentForPostProcess,
         citationContext.allowedCitationKeys,
-        evidencePromptContext?.dimensionEvidence
+        evidencePromptContext?.dimensionEvidence,
+        tenantContext
       );
       postRepairValidation = DraftingService.validateCitationKeys(
         contentForPostProcess,
-        citationContext.allowedCitationKeys
+        citationContext.allowedCitationKeys,
+        knownSessionKeys
       );
     }
 
@@ -2279,7 +2344,8 @@ async function generateSection(
   // are false positives from technical terms -- they should NOT cause a hard failure.
   const finalValidation = DraftingService.validateCitationKeys(
     polishedContent,
-    useMappedEvidence ? citationContext.allowedCitationKeys : undefined
+    useMappedEvidence ? citationContext.allowedCitationKeys : undefined,
+    knownSessionKeys
   );
   const hasDisallowedInStrict = useMappedEvidence && finalValidation.disallowedKeys.length > 0;
   const hasUnknownInStrict = useMappedEvidence && postProcessed.unknownCitationKeys.length > 0;
@@ -2418,6 +2484,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     if (!session) {
       return NextResponse.json({ error: 'Paper session not found' }, { status: 404 });
     }
+    const tenantContext = await resolveTenantContext(request, user.id, session.tenantId);
 
     const body = await request.json();
     const actionData = actionSchema.parse(body);
@@ -2441,7 +2508,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
               user,
               paperTypeCode,
               payload,
-              requestHeaders: headers
+              requestHeaders: headers,
+              tenantContext,
             }
           );
           return NextResponse.json(generated);
@@ -2466,7 +2534,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
               user,
               paperTypeCode,
               payload,
-              requestHeaders: headers
+              requestHeaders: headers,
+              tenantContext,
             },
             sendStatus
           );

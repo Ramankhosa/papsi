@@ -101,7 +101,9 @@ class PaperAcquisitionService {
     const result = input.result || {};
     const doi = this.normalizeDoi(result.doi);
     const title = typeof result.title === 'string' ? result.title : undefined;
-    const pdfUrl = this.extractPdfUrl(result);
+    const directPdfUrl = this.extractDirectPdfUrl(result);
+    const pdfUrlCandidates = this.extractPdfUrlCandidates(result, doi);
+    const firstAttemptedUrl = pdfUrlCandidates[0] || undefined;
 
     try {
       const reference = await this.ensureReferenceForResult(userId, result);
@@ -114,7 +116,7 @@ class PaperAcquisitionService {
           success: false,
           outcome: 'REFERENCE_NOT_FOUND',
           message: 'Could not create or resolve reference record',
-          attemptedPdfUrl: pdfUrl || undefined,
+          attemptedPdfUrl: firstAttemptedUrl,
         };
       }
 
@@ -138,7 +140,7 @@ class PaperAcquisitionService {
             mimeType: (existingPrimary.document as any).mimeType,
           }),
           source: 'existing',
-          attemptedPdfUrl: pdfUrl || undefined,
+          attemptedPdfUrl: firstAttemptedUrl,
         };
       }
 
@@ -146,7 +148,7 @@ class PaperAcquisitionService {
         const existingDoc = await this.findExistingDocumentByDoi(doi);
         if (existingDoc) {
           await this.attachDocumentToReference(userId, reference.id, existingDoc.id);
-          await this.setReferencePdfUrl(reference.id, pdfUrl);
+          await this.setReferencePdfUrl(reference.id, directPdfUrl);
           return {
             searchRunId: input.searchRunId,
             paperId: input.paperId,
@@ -162,12 +164,12 @@ class PaperAcquisitionService {
               mimeType: existingDoc.mimeType,
             }),
             source: 'database',
-            attemptedPdfUrl: pdfUrl || undefined,
+            attemptedPdfUrl: firstAttemptedUrl,
           };
         }
       }
 
-      if (!pdfUrl) {
+      if (pdfUrlCandidates.length === 0) {
         return {
           searchRunId: input.searchRunId,
           paperId: input.paperId,
@@ -176,56 +178,76 @@ class PaperAcquisitionService {
           success: false,
           outcome: 'NO_PDF_URL',
           referenceId: reference.id,
-          message: 'No direct PDF URL available for this paper',
+          message: 'No candidate URL available to discover a PDF',
         };
       }
 
-      const importResult = await referenceDocumentService.importPdfFromUrl(
-        userId,
-        reference.id,
-        pdfUrl,
-        {
-          sourceIdentifier: doi || pdfUrl,
-          sourceType: doi ? 'DOI_FETCH' : 'URL_IMPORT',
-          originalFilenameHint: doi || title || input.paperId,
-        }
-      );
+      let sawNotPdf = false;
+      let sawDownloadFailure = false;
+      let lastError = '';
+      let lastAttemptedUrl = '';
 
-      if (!importResult.success || !importResult.document) {
-        const outcome: PaperAcquisitionOutcomeCode = importResult.errorCode === 'NOT_PDF'
+      for (const candidateUrl of pdfUrlCandidates) {
+        const importResult = await referenceDocumentService.importPdfFromUrl(
+          userId,
+          reference.id,
+          candidateUrl,
+          {
+            sourceIdentifier: doi || candidateUrl,
+            sourceType: doi ? 'DOI_FETCH' : 'URL_IMPORT',
+            originalFilenameHint: doi || title || input.paperId,
+          }
+        );
+
+        if (importResult.success && importResult.document) {
+          const resolvedPdfUrl = importResult.oaUrl || candidateUrl;
+          await this.setReferencePdfUrl(reference.id, resolvedPdfUrl);
+
+          return {
+            searchRunId: input.searchRunId,
+            paperId: input.paperId,
+            title,
+            doi: doi || undefined,
+            success: true,
+            outcome: 'DOWNLOADED',
+            referenceId: reference.id,
+            documentId: importResult.document.id,
+            pdfStatus: this.normalizePdfStatus(importResult.document.status),
+            documentSourceType: this.normalizeDocumentSourceType(importResult.document.sourceType, {
+              sourceIdentifier: (importResult.document as any).sourceIdentifier,
+              mimeType: (importResult.document as any).mimeType,
+            }),
+            source: 'pdf_url',
+            attemptedPdfUrl: candidateUrl,
+          };
+        }
+
+        lastAttemptedUrl = candidateUrl;
+        lastError = importResult.error || 'Failed to retrieve PDF from URL';
+        if (importResult.errorCode === 'NOT_PDF') {
+          sawNotPdf = true;
+        } else {
+          sawDownloadFailure = true;
+        }
+      }
+
+      const outcome: PaperAcquisitionOutcomeCode = sawDownloadFailure
+        ? 'DOWNLOAD_FAILED'
+        : sawNotPdf
           ? 'NOT_PDF'
           : 'DOWNLOAD_FAILED';
-        return {
-          searchRunId: input.searchRunId,
-          paperId: input.paperId,
-          title,
-          doi: doi || undefined,
-          success: false,
-          outcome,
-          referenceId: reference.id,
-          message: importResult.error || 'Failed to retrieve PDF from URL',
-          attemptedPdfUrl: pdfUrl,
-        };
-      }
-
-      await this.setReferencePdfUrl(reference.id, pdfUrl);
+      const summary = `Failed to retrieve PDF after trying ${pdfUrlCandidates.length} link(s).`;
 
       return {
         searchRunId: input.searchRunId,
         paperId: input.paperId,
         title,
         doi: doi || undefined,
-        success: true,
-        outcome: 'DOWNLOADED',
+        success: false,
+        outcome,
         referenceId: reference.id,
-        documentId: importResult.document.id,
-        pdfStatus: this.normalizePdfStatus(importResult.document.status),
-        documentSourceType: this.normalizeDocumentSourceType(importResult.document.sourceType, {
-          sourceIdentifier: (importResult.document as any).sourceIdentifier,
-          mimeType: (importResult.document as any).mimeType,
-        }),
-        source: 'pdf_url',
-        attemptedPdfUrl: pdfUrl,
+        message: lastError ? `${summary} Last error: ${lastError}` : summary,
+        attemptedPdfUrl: lastAttemptedUrl || firstAttemptedUrl,
       };
     } catch (error: any) {
       return {
@@ -236,7 +258,7 @@ class PaperAcquisitionService {
         success: false,
         outcome: 'INTERNAL_ERROR',
         message: error?.message || 'Unexpected acquisition error',
-        attemptedPdfUrl: pdfUrl || undefined,
+        attemptedPdfUrl: firstAttemptedUrl,
       };
     }
   }
@@ -565,28 +587,135 @@ class PaperAcquisitionService {
     return cleaned;
   }
 
-  private extractPdfUrl(result: SearchResult & Record<string, any>): string | null {
-    const direct = typeof result.pdfUrl === 'string' ? result.pdfUrl.trim() : '';
-    if (direct) return direct;
+  private extractDirectPdfUrl(result: SearchResult & Record<string, any>): string | null {
+    const candidates = this.extractDirectPdfUrlCandidates(result);
+    return candidates[0] || null;
+  }
+
+  private extractPdfUrlCandidates(
+    result: SearchResult & Record<string, any>,
+    doi: string | null
+  ): string[] {
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+
+    const pushCandidate = (value: unknown) => {
+      const normalized = this.normalizeCandidateUrl(value);
+      if (!normalized) return;
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      candidates.push(normalized);
+    };
+
+    const directCandidates = this.extractDirectPdfUrlCandidates(result);
+    for (const candidate of directCandidates) {
+      pushCandidate(candidate);
+    }
 
     const raw = result.rawData || {};
-    const rawCandidates = [
+    const landingCandidates: unknown[] = [
+      result.url,
+      raw?.url,
+      raw?.URL,
+      raw?.link,
+      raw?.landing_page_url,
+      raw?.html_url,
+      raw?.primary_location?.landing_page_url,
+      raw?.best_oa_location?.landing_page_url,
+      raw?.best_oa_location?.url,
+      raw?.openAccessPdf?.landingPageUrl,
+    ];
+
+    for (const candidate of landingCandidates) {
+      pushCandidate(candidate);
+    }
+
+    if (Array.isArray(raw?.resources)) {
+      for (const resource of raw.resources) {
+        pushCandidate(resource?.url);
+        pushCandidate(resource?.href);
+        pushCandidate(resource?.link);
+      }
+    }
+
+    if (Array.isArray(raw?.sourceFulltextUrls)) {
+      for (const value of raw.sourceFulltextUrls) {
+        pushCandidate(value);
+      }
+    }
+
+    if (doi) {
+      pushCandidate(`https://doi.org/${doi}`);
+    }
+
+    return candidates.slice(0, 12);
+  }
+
+  private extractDirectPdfUrlCandidates(result: SearchResult & Record<string, any>): string[] {
+    const raw = result.rawData || {};
+    const candidates: unknown[] = [
+      result.pdfUrl,
       raw?.pdfUrl,
       raw?.openAccessPdf?.url,
       raw?.primary_location?.pdf_url,
       raw?.best_oa_location?.pdf_url,
       raw?.downloadUrl,
-      Array.isArray(raw?.sourceFulltextUrls) ? raw.sourceFulltextUrls[0] : undefined,
-      Array.isArray(raw?.resources) ? raw.resources?.[0]?.link : undefined,
+      raw?.url_for_pdf,
+      raw?.fullTextPdfUrl,
     ];
 
-    for (const candidate of rawCandidates) {
-      if (typeof candidate === 'string' && candidate.trim()) {
-        return candidate.trim();
+    if (Array.isArray(raw?.sourceFulltextUrls)) {
+      candidates.push(...raw.sourceFulltextUrls);
+    }
+
+    if (Array.isArray(raw?.resources)) {
+      for (const resource of raw.resources) {
+        candidates.push(resource?.link, resource?.url, resource?.href);
       }
     }
 
-    return null;
+    if (Array.isArray(raw?.link)) {
+      for (const link of raw.link) {
+        const contentType = String(link?.['content-type'] || link?.content_type || '').toLowerCase();
+        if (contentType.includes('pdf')) {
+          candidates.push(link?.URL, link?.url);
+        }
+      }
+    }
+
+    const normalized: string[] = [];
+    const seen = new Set<string>();
+    for (const candidate of candidates) {
+      const value = this.normalizeCandidateUrl(candidate);
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      normalized.push(value);
+    }
+
+    return normalized;
+  }
+
+  private normalizeCandidateUrl(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    let candidate = value
+      .trim()
+      .replace(/&amp;/gi, '&');
+    if (!candidate) return null;
+
+    if (/^10\.\d{4,9}\/[^\s]+$/i.test(candidate)) {
+      candidate = `https://doi.org/${candidate}`;
+    } else if (/^(dx\.)?doi\.org\//i.test(candidate)) {
+      candidate = `https://${candidate}`;
+    }
+
+    if (!/^https?:\/\//i.test(candidate)) {
+      return null;
+    }
+
+    return candidate;
   }
 
   private async ensureReferenceForResult(
@@ -667,7 +796,7 @@ class PaperAcquisitionService {
         abstract: typeof result.abstract === 'string' ? result.abstract : undefined,
         sourceType: this.mapPublicationTypeToCitationSourceType(result.publicationType),
         importSource: this.mapSearchSourceToImportSource(result.source),
-        pdfUrl: this.extractPdfUrl(result) || undefined,
+        pdfUrl: this.extractDirectPdfUrl(result) || undefined,
       });
 
       return { id: created.id, pdfUrl: created.pdfUrl || null };

@@ -719,7 +719,13 @@ export default function SectionDraftingStage({
 
   // Background generation (two-pass pipeline)
   const [bgGenStatus, setBgGenStatus] = useState<string | null>(null);
-  const [bgGenProgress, setBgGenProgress] = useState<{ total: number; completed: number; failed: number } | null>(null);
+  const [bgGenProgress, setBgGenProgress] = useState<{
+    total: number;
+    completed: number;
+    failed: number;
+    sections?: Record<string, 'pending' | 'running' | 'done' | 'failed'>;
+  } | null>(null);
+  const [bgGenRetrying, setBgGenRetrying] = useState(false);
 
   // Regeneration
   const [regenOpen, setRegenOpen] = useState<Record<string, boolean>>({});
@@ -920,6 +926,48 @@ export default function SectionDraftingStage({
     } catch { /* non-critical */ }
   }, [authToken, sessionId]);
 
+  const handleRetryBgPreparation = useCallback(async (options?: { force?: boolean; retryFailedOnly?: boolean }) => {
+    if (!authToken || !sessionId || bgGenRetrying) return;
+    const force = options?.force === true;
+    const retryFailedOnly = options?.retryFailedOnly === true;
+    setBgGenRetrying(true);
+    try {
+      const res = await fetch(`/api/papers/${sessionId}/sections/prepare`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          ...(force ? { force: true } : {}),
+          ...(retryFailedOnly ? { retryFailedOnly: true } : {})
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to retry section preparation');
+      }
+
+      setBgGenStatus(data.status || 'RUNNING');
+      if (data.progress) {
+        setBgGenProgress(data.progress);
+      }
+      showMsg(
+        retryFailedOnly
+          ? 'Retrying failed sections only'
+          : force
+            ? 'Section preparation rerun started'
+            : 'Section preparation restarted',
+        'success'
+      );
+      await loadBgGenStatus();
+    } catch (err) {
+      showMsg(err instanceof Error ? err.message : 'Failed to retry section preparation', 'error');
+    } finally {
+      setBgGenRetrying(false);
+    }
+  }, [authToken, bgGenRetrying, loadBgGenStatus, sessionId, showMsg]);
+
   useEffect(() => { loadBgGenStatus(); }, [loadBgGenStatus]);
 
   useEffect(() => {
@@ -929,6 +977,28 @@ export default function SectionDraftingStage({
     }, 5000);
     return () => window.clearInterval(timer);
   }, [bgGenStatus, loadBgGenStatus]);
+
+  const bgGenLiveCounts = useMemo(() => {
+    if (!bgGenProgress) return null;
+    const sectionStates = bgGenProgress.sections ? Object.values(bgGenProgress.sections) : [];
+    if (sectionStates.length === 0) {
+      const running = bgGenStatus === 'RUNNING'
+        ? Math.max(0, bgGenProgress.total - bgGenProgress.completed - bgGenProgress.failed)
+        : 0;
+      return {
+        waiting: 0,
+        running,
+        done: bgGenProgress.completed,
+        failed: bgGenProgress.failed,
+      };
+    }
+    return {
+      waiting: sectionStates.filter(state => state === 'pending').length,
+      running: sectionStates.filter(state => state === 'running').length,
+      done: sectionStates.filter(state => state === 'done').length,
+      failed: sectionStates.filter(state => state === 'failed').length,
+    };
+  }, [bgGenProgress, bgGenStatus]);
 
   useEffect(() => {
     if (!isNumericOrderBibliography) return;
@@ -1981,7 +2051,7 @@ export default function SectionDraftingStage({
 
         {/* Background section preparation status (two-pass pipeline) */}
         {bgGenStatus === 'RUNNING' && (
-          <div className="mt-4 rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 flex items-center gap-3">
+          <div className="mt-4 max-w-[850px] mx-auto rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 flex items-center gap-3">
             <span className="relative flex h-3 w-3 shrink-0">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75" />
               <span className="relative inline-flex rounded-full h-3 w-3 bg-indigo-500" />
@@ -1990,17 +2060,17 @@ export default function SectionDraftingStage({
               <p className="text-sm font-medium text-indigo-800">
                 Assembling paper structure for final content generation...
               </p>
-              {bgGenProgress && bgGenProgress.total > 0 && (
+              {bgGenProgress && bgGenProgress.total > 0 && bgGenLiveCounts && (
                 <p className="text-xs text-indigo-600 mt-0.5">
-                  {bgGenProgress.completed} of {bgGenProgress.total} sections prepared
-                  {bgGenProgress.failed > 0 && ` (${bgGenProgress.failed} failed)`}
+                  {bgGenLiveCounts.waiting} waiting • {bgGenLiveCounts.running} in progress • {bgGenLiveCounts.done} done
+                  {bgGenLiveCounts.failed > 0 && ` • ${bgGenLiveCounts.failed} failed`}
                 </p>
               )}
             </div>
           </div>
         )}
-        {(bgGenStatus === 'COMPLETED' || bgGenStatus === 'PARTIAL') && bgGenProgress && bgGenProgress.completed > 0 && (
-          <div className={`mt-4 rounded-lg border px-4 py-3 flex items-center gap-3 ${
+        {(bgGenStatus === 'COMPLETED' || bgGenStatus === 'PARTIAL') && bgGenProgress && (
+          <div className={`mt-4 max-w-[850px] mx-auto rounded-lg border px-4 py-3 flex items-center gap-3 ${
             bgGenStatus === 'PARTIAL'
               ? 'border-amber-200 bg-amber-50'
               : 'border-emerald-200 bg-emerald-50'
@@ -2008,12 +2078,66 @@ export default function SectionDraftingStage({
             <span className={`inline-flex h-3 w-3 rounded-full shrink-0 ${
               bgGenStatus === 'PARTIAL' ? 'bg-amber-500' : 'bg-emerald-500'
             }`} />
-            <p className={`text-sm ${bgGenStatus === 'PARTIAL' ? 'text-amber-800' : 'text-emerald-800'}`}>
+            <div className="flex-1">
+              <p className={`text-sm ${bgGenStatus === 'PARTIAL' ? 'text-amber-800' : 'text-emerald-800'}`}>
               {bgGenStatus === 'PARTIAL'
                 ? `Paper structure partially ready — ${bgGenProgress.completed} of ${bgGenProgress.total} sections prepared (${bgGenProgress.failed} failed).`
                 : 'Paper structure ready — sections will generate faster with pre-built evidence drafts.'
               }
-            </p>
+              </p>
+            </div>
+            {(bgGenStatus === 'PARTIAL' || bgGenStatus === 'COMPLETED') && (
+              <button
+                onClick={() => handleRetryBgPreparation({ force: bgGenStatus === 'COMPLETED' })}
+                disabled={bgGenRetrying}
+                className={`px-3 py-1.5 text-xs rounded-lg border disabled:opacity-50 disabled:cursor-not-allowed ${
+                  bgGenStatus === 'COMPLETED'
+                    ? 'border-emerald-300 text-emerald-800 hover:bg-emerald-100'
+                    : 'border-amber-300 text-amber-800 hover:bg-amber-100'
+                }`}
+              >
+                {bgGenRetrying
+                  ? 'Preparing...'
+                  : bgGenStatus === 'COMPLETED'
+                    ? 'Rerun Section Prep'
+                    : 'Retry Section Prep'}
+              </button>
+            )}
+            {bgGenStatus === 'PARTIAL' && (bgGenLiveCounts?.failed || 0) > 0 && (
+              <button
+                onClick={() => handleRetryBgPreparation({ retryFailedOnly: true })}
+                disabled={bgGenRetrying}
+                className="px-3 py-1.5 text-xs rounded-lg border border-amber-400 text-amber-900 bg-amber-100 hover:bg-amber-200 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {bgGenRetrying ? 'Retrying...' : 'Retry Failed Only'}
+              </button>
+            )}
+          </div>
+        )}
+        {bgGenStatus === 'FAILED' && (
+          <div className="mt-4 max-w-[850px] mx-auto rounded-lg border border-red-200 bg-red-50 px-4 py-3 flex items-center gap-3">
+            <span className="inline-flex h-3 w-3 rounded-full shrink-0 bg-red-500" />
+            <div className="flex-1">
+              <p className="text-sm text-red-800">
+                Paper structure preparation failed. Retry generation to pre-build section drafts.
+              </p>
+            </div>
+            {(bgGenLiveCounts?.failed || 0) > 0 && (
+              <button
+                onClick={() => handleRetryBgPreparation({ retryFailedOnly: true })}
+                disabled={bgGenRetrying}
+                className="px-3 py-1.5 text-xs rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {bgGenRetrying ? 'Retrying...' : 'Retry Failed Only'}
+              </button>
+            )}
+            <button
+              onClick={handleRetryBgPreparation}
+              disabled={bgGenRetrying}
+              className="px-3 py-1.5 text-xs rounded-lg border border-red-300 text-red-800 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {bgGenRetrying ? 'Retrying...' : 'Retry Section Prep'}
+            </button>
           </div>
         )}
 

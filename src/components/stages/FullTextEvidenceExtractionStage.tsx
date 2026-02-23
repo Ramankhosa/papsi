@@ -107,7 +107,7 @@ interface CardsPayload {
   cards: EvidenceCardRow[];
 }
 
-type ActionState = 'starting' | 'stopping' | 'retrying' | 'remapping' | 'extracting' | null;
+type ActionState = 'starting' | 'stopping' | 'retrying' | 'remapping' | 'extracting' | 'preparing' | null;
 
 interface TextExtractionStatus {
   total: number;
@@ -156,7 +156,12 @@ export default function FullTextEvidenceExtractionStage({
 
   // Background section preparation state (two-pass pipeline)
   const [bgGenStatus, setBgGenStatus] = useState<string | null>(null);
-  const [bgGenProgress, setBgGenProgress] = useState<{ total: number; completed: number; failed: number } | null>(null);
+  const [bgGenProgress, setBgGenProgress] = useState<{
+    total: number;
+    completed: number;
+    failed: number;
+    sections?: Record<string, 'pending' | 'running' | 'done' | 'failed'>;
+  } | null>(null);
   const bgGenTriggeredRef = useRef(false);
   const [fullTextModalCandidate, setFullTextModalCandidate] = useState<CandidateRow | null>(null);
   const [fullTextModalContent, setFullTextModalContent] = useState<string>('');
@@ -325,7 +330,7 @@ export default function FullTextEvidenceExtractionStage({
 
   // Load bg gen status on mount to catch already-running background generation
   useEffect(() => {
-    if (authToken && statusPayload?.status === 'COMPLETED') {
+    if (authToken && (statusPayload?.status === 'COMPLETED' || statusPayload?.status === 'PARTIAL')) {
       void loadBgGenStatus().catch(() => undefined);
     }
   }, [authToken, statusPayload?.status, loadBgGenStatus]);
@@ -448,6 +453,33 @@ export default function FullTextEvidenceExtractionStage({
     } finally { setActionState(null); }
   }, [authHeaders, authToken, sessionId]);
 
+  const handlePrepareSections = useCallback(async (options?: { force?: boolean; retryFailedOnly?: boolean }) => {
+    if (!authToken) return;
+    const force = options?.force === true;
+    const retryFailedOnly = options?.retryFailedOnly === true;
+    setActionState('preparing');
+    setError(null);
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/sections/prepare`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({
+          ...(force ? { force: true } : {}),
+          ...(retryFailedOnly ? { retryFailedOnly: true } : {}),
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || 'Failed to start section preparation');
+      setBgGenStatus(payload?.status || 'RUNNING');
+      if (payload?.progress) setBgGenProgress(payload.progress);
+      await Promise.all([loadBgGenStatus(), loadSession()]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start section preparation');
+    } finally {
+      setActionState(null);
+    }
+  }, [authHeaders, authToken, loadBgGenStatus, loadSession, sessionId]);
+
   const handleViewExtractedText = useCallback(async (candidate: CandidateRow) => {
     if (!authToken) return;
     setFullTextModalCandidate(candidate);
@@ -487,6 +519,33 @@ export default function FullTextEvidenceExtractionStage({
   );
 
   const failedJobCount = statusPayload?.jobs?.filter(j => String(j.status || '').toUpperCase() === 'FAILED').length || 0;
+  const deepAnalysisDone = statusPayload?.status === 'COMPLETED' || statusPayload?.status === 'PARTIAL';
+  const canManuallyPrepareSections =
+    !!statusPayload &&
+    statusPayload.totalJobs > 0 &&
+    deepAnalysisDone &&
+    bgGenStatus !== 'RUNNING';
+  const bgGenLiveCounts = useMemo(() => {
+    if (!bgGenProgress) return null;
+    const sectionStates = bgGenProgress.sections ? Object.values(bgGenProgress.sections) : [];
+    if (sectionStates.length === 0) {
+      const running = bgGenStatus === 'RUNNING'
+        ? Math.max(0, bgGenProgress.total - bgGenProgress.completed - bgGenProgress.failed)
+        : 0;
+      return {
+        waiting: 0,
+        running,
+        done: bgGenProgress.completed,
+        failed: bgGenProgress.failed,
+      };
+    }
+    return {
+      waiting: sectionStates.filter(state => state === 'pending').length,
+      running: sectionStates.filter(state => state === 'running').length,
+      done: sectionStates.filter(state => state === 'done').length,
+      failed: sectionStates.filter(state => state === 'failed').length,
+    };
+  }, [bgGenProgress, bgGenStatus]);
 
   const progressPercent = useMemo(() => {
     if (!statusPayload || statusPayload.totalJobs === 0) return 0;
@@ -623,13 +682,15 @@ export default function FullTextEvidenceExtractionStage({
       </div>
 
       {/* ── Background Section Preparation Banner ── */}
-      {(bgGenStatus === 'RUNNING' || bgGenStatus === 'COMPLETED' || bgGenStatus === 'PARTIAL') && (
+      {(bgGenStatus === 'RUNNING' || bgGenStatus === 'COMPLETED' || bgGenStatus === 'PARTIAL' || bgGenStatus === 'FAILED') && (
         <div className={`rounded-lg border px-4 py-3 flex items-center gap-3 ${
           bgGenStatus === 'RUNNING'
             ? 'bg-indigo-50 border-indigo-200'
-            : bgGenStatus === 'PARTIAL'
-              ? 'bg-amber-50 border-amber-200'
-              : 'bg-emerald-50 border-emerald-200'
+            : bgGenStatus === 'COMPLETED'
+              ? 'bg-emerald-50 border-emerald-200'
+              : bgGenStatus === 'PARTIAL'
+                ? 'bg-amber-50 border-amber-200'
+                : 'bg-red-50 border-red-200'
         }`}>
           {bgGenStatus === 'RUNNING' && (
             <span className="relative flex h-3 w-3">
@@ -643,23 +704,31 @@ export default function FullTextEvidenceExtractionStage({
           {bgGenStatus === 'PARTIAL' && (
             <span className="inline-flex h-3 w-3 rounded-full bg-amber-500" />
           )}
+          {bgGenStatus === 'FAILED' && (
+            <span className="inline-flex h-3 w-3 rounded-full bg-red-500" />
+          )}
           <div className="flex-1">
             <p className={`text-sm font-medium ${
               bgGenStatus === 'RUNNING'
                 ? 'text-indigo-800'
-                : bgGenStatus === 'PARTIAL'
-                  ? 'text-amber-800'
-                  : 'text-emerald-800'
+                : bgGenStatus === 'COMPLETED'
+                  ? 'text-emerald-800'
+                  : bgGenStatus === 'PARTIAL'
+                    ? 'text-amber-800'
+                    : 'text-red-800'
             }`}>
               {bgGenStatus === 'RUNNING'
                 ? 'Assembling overall paper structure for final content generation...'
-                : bgGenStatus === 'PARTIAL'
-                  ? `Paper structure partially ready — ${bgGenProgress?.failed || 0} section(s) could not be prepared`
-                  : 'Paper structure ready — sections are prepared for final generation'}
+                : bgGenStatus === 'COMPLETED'
+                  ? 'Paper structure ready - sections are prepared for final generation'
+                  : bgGenStatus === 'PARTIAL'
+                    ? `Paper structure partially ready - ${bgGenProgress?.failed || 0} section(s) could not be prepared`
+                    : 'Paper structure preparation failed - retry before moving to drafting'}
             </p>
-            {bgGenStatus === 'RUNNING' && bgGenProgress && bgGenProgress.total > 0 && (
+            {bgGenStatus === 'RUNNING' && bgGenProgress && bgGenProgress.total > 0 && bgGenLiveCounts && (
               <p className="text-xs text-indigo-600 mt-0.5">
-                {bgGenProgress.completed} of {bgGenProgress.total} sections prepared
+                {bgGenLiveCounts.waiting} waiting • {bgGenLiveCounts.running} in progress • {bgGenLiveCounts.done} done
+                {bgGenLiveCounts.failed > 0 && ` • ${bgGenLiveCounts.failed} failed`}
               </p>
             )}
           </div>
@@ -718,6 +787,40 @@ export default function FullTextEvidenceExtractionStage({
             {failedJobCount > 0 && (
               <Button variant="outline" size="sm" onClick={handleRetryFailed} disabled={isMutating} className="text-amber-600 border-amber-200 hover:bg-amber-50 h-8 text-xs">
                 Retry ({failedJobCount})
+              </Button>
+            )}
+            {canManuallyPrepareSections && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handlePrepareSections({ force: bgGenStatus === 'COMPLETED' })}
+                disabled={isMutating}
+                className={`h-8 text-xs ${
+                  bgGenStatus === 'FAILED' || bgGenStatus === 'PARTIAL'
+                    ? 'text-amber-700 border-amber-300 hover:bg-amber-50'
+                    : bgGenStatus === 'COMPLETED'
+                      ? 'text-emerald-700 border-emerald-300 hover:bg-emerald-50'
+                    : 'text-indigo-700 border-indigo-300 hover:bg-indigo-50'
+                }`}
+              >
+                {actionState === 'preparing'
+                  ? 'Preparing...'
+                  : bgGenStatus === 'FAILED' || bgGenStatus === 'PARTIAL'
+                    ? 'Retry Section Prep'
+                    : bgGenStatus === 'COMPLETED'
+                      ? 'Rerun Section Prep'
+                    : 'Prepare Sections'}
+              </Button>
+            )}
+            {(bgGenStatus === 'PARTIAL' || bgGenStatus === 'FAILED') && (bgGenLiveCounts?.failed || 0) > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handlePrepareSections({ retryFailedOnly: true })}
+                disabled={isMutating}
+                className="h-8 text-xs text-amber-800 border-amber-400 bg-amber-100 hover:bg-amber-200"
+              >
+                {actionState === 'preparing' ? 'Retrying...' : 'Retry Failed Only'}
               </Button>
             )}
             {(statusPayload?.totalCardsExtracted ?? 0) > 0 && (
@@ -1171,3 +1274,4 @@ function EvidenceCardItem({
     </div>
   );
 }
+

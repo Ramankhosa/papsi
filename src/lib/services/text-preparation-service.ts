@@ -20,6 +20,10 @@ interface CitationIdentity {
   libraryReferenceId?: string | null;
 }
 
+interface SessionResolutionOptions {
+  userId?: string | null;
+}
+
 export interface PreparedCitationTextResult {
   preparedText: PreparedPaperText;
   referenceId: string | null;
@@ -52,6 +56,15 @@ interface MatchedReferenceDocument {
 
 const MAX_TOKENS = 25_000;
 const MAX_CHARS = MAX_TOKENS * 4;
+const RESOLUTION_CACHE_TTL_MS = 5 * 60 * 1000;
+const RESOLUTION_CACHE_MISS_TTL_MS = 45 * 1000;
+const MAX_RESOLUTION_CACHE_SIZE = 2_000;
+const DEPTH_TOKEN_BUDGET: Record<DeepAnalysisLabel, number> = {
+  DEEP_ANCHOR: 25_000,
+  DEEP_SUPPORT: 12_000,
+  DEEP_STRESS_TEST: 14_000,
+  LIT_ONLY: 8_000,
+};
 
 const normalize = (value: string) =>
   value
@@ -91,22 +104,94 @@ const clampByTokenBudget = (text: string, maxChars = MAX_CHARS): string => {
   return candidate.trim();
 };
 
+const maxCharsForDepth = (depthLabel: DeepAnalysisLabel, multiplier = 1): number => {
+  const budget = DEPTH_TOKEN_BUDGET[depthLabel] || MAX_TOKENS;
+  return Math.max(8_000, Math.floor(budget * 4 * multiplier));
+};
+
 class TextPreparationService {
+  private resolvedReferenceCache = new Map<string, {
+    value: MatchedReferenceDocument | null;
+    expiresAt: number;
+  }>();
+
+  private getResolutionCacheKey(userId: string, sessionId: string, citation: CitationIdentity): string {
+    const authorKey = normalize((citation.authors || [])[0] || '');
+    const titleKey = normalize(citation.title || '').slice(0, 180);
+    const doiKey = normalizeDoi(citation.doi);
+    const yearKey = Number.isFinite(Number(citation.year)) ? String(citation.year) : '';
+    return [
+      userId,
+      sessionId,
+      citation.id,
+      citation.libraryReferenceId || '',
+      doiKey,
+      titleKey,
+      yearKey,
+      authorKey,
+    ].join('|');
+  }
+
+  private getCachedResolvedReference(cacheKey: string): MatchedReferenceDocument | null | undefined {
+    const cached = this.resolvedReferenceCache.get(cacheKey);
+    if (!cached) return undefined;
+    if (cached.expiresAt <= Date.now()) {
+      this.resolvedReferenceCache.delete(cacheKey);
+      return undefined;
+    }
+    return cached.value;
+  }
+
+  private setCachedResolvedReference(cacheKey: string, value: MatchedReferenceDocument | null): void {
+    if (this.resolvedReferenceCache.size >= MAX_RESOLUTION_CACHE_SIZE) {
+      const now = Date.now();
+      Array.from(this.resolvedReferenceCache.entries()).forEach(([key, cached]) => {
+        if (cached.expiresAt <= now) {
+          this.resolvedReferenceCache.delete(key);
+        }
+      });
+      if (this.resolvedReferenceCache.size >= MAX_RESOLUTION_CACHE_SIZE) {
+        const firstKey = this.resolvedReferenceCache.keys().next().value;
+        if (firstKey) {
+          this.resolvedReferenceCache.delete(firstKey);
+        }
+      }
+    }
+
+    this.resolvedReferenceCache.set(cacheKey, {
+      value,
+      expiresAt: Date.now() + (value ? RESOLUTION_CACHE_TTL_MS : RESOLUTION_CACHE_MISS_TTL_MS),
+    });
+  }
+
+  private async resolveSessionUserId(
+    sessionId: string,
+    options?: SessionResolutionOptions
+  ): Promise<string | null> {
+    if (options?.userId) {
+      return options.userId;
+    }
+
+    const session = await prisma.draftingSession.findUnique({
+      where: { id: sessionId },
+      select: { userId: true },
+    });
+
+    return session?.userId || null;
+  }
+
   async prepareForCitation(
     sessionId: string,
     citation: CitationIdentity,
-    depthLabel: DeepAnalysisLabel
+    depthLabel: DeepAnalysisLabel,
+    options?: SessionResolutionOptions
   ): Promise<PreparedCitationTextResult> {
-    const session = await prisma.draftingSession.findUnique({
-      where: { id: sessionId },
-      select: { id: true, userId: true },
-    });
-
-    if (!session) {
+    const userId = await this.resolveSessionUserId(sessionId, options);
+    if (!userId) {
       throw new Error('Drafting session not found');
     }
 
-    const matched = await this.resolveReferenceDocument(session.userId, sessionId, citation);
+    const matched = await this.resolveReferenceDocument(userId, sessionId, citation);
     if (!matched?.document) {
       throw new Error(`No full-text document linked for citation ${citation.id}`);
     }
@@ -123,14 +208,11 @@ class TextPreparationService {
 
   async checkCitationReadiness(
     sessionId: string,
-    citation: CitationIdentity
+    citation: CitationIdentity,
+    options?: SessionResolutionOptions
   ): Promise<CitationTextReadinessResult> {
-    const session = await prisma.draftingSession.findUnique({
-      where: { id: sessionId },
-      select: { id: true, userId: true },
-    });
-
-    if (!session) {
+    const userId = await this.resolveSessionUserId(sessionId, options);
+    if (!userId) {
       return {
         ready: false,
         reason: 'Drafting session not found',
@@ -141,7 +223,7 @@ class TextPreparationService {
       };
     }
 
-    const matched = await this.resolveReferenceDocument(session.userId, sessionId, citation);
+    const matched = await this.resolveReferenceDocument(userId, sessionId, citation);
     if (!matched?.document) {
       return {
         ready: false,
@@ -214,6 +296,12 @@ class TextPreparationService {
     sessionId: string,
     citation: CitationIdentity
   ): Promise<MatchedReferenceDocument | null> {
+    const cacheKey = this.getResolutionCacheKey(userId, sessionId, citation);
+    const cached = this.getCachedResolvedReference(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
     const documentSelect = {
       id: true,
       status: true,
@@ -244,7 +332,7 @@ class TextPreparationService {
 
       const directDoc = directRef?.documents[0]?.document;
       if (directDoc) {
-        return {
+        const resolved = {
           referenceId: directRef.id,
           document: {
             id: directDoc.id,
@@ -257,6 +345,8 @@ class TextPreparationService {
             storagePath: directDoc.storagePath,
           },
         };
+        this.setCachedResolvedReference(cacheKey, resolved);
+        return resolved;
       }
     }
 
@@ -352,6 +442,7 @@ class TextPreparationService {
       if (!directRefId) {
         this.backfillLibraryReferenceId(citation.id, withText.item.referenceId).catch(() => {});
       }
+      this.setCachedResolvedReference(cacheKey, withText.item);
       return withText.item;
     }
 
@@ -359,6 +450,7 @@ class TextPreparationService {
     if (fallback && !directRefId) {
       this.backfillLibraryReferenceId(citation.id, fallback.referenceId).catch(() => {});
     }
+    this.setCachedResolvedReference(cacheKey, fallback);
     return fallback;
   }
 
@@ -409,11 +501,11 @@ class TextPreparationService {
       const selectedSections = this.selectSectionsByDepth(storedSections, depthLabel);
       const fullBody = this.joinSections(storedSections);
       const selectedText = this.joinSections(selectedSections.length > 0 ? selectedSections : storedSections);
-      const bounded = clampByTokenBudget(selectedText);
+      const bounded = clampByTokenBudget(selectedText, maxCharsForDepth(depthLabel));
 
       return {
         fullText: bounded,
-        rawFullText: clampByTokenBudget(fullBody, MAX_CHARS * 2),
+        rawFullText: clampByTokenBudget(fullBody, maxCharsForDepth(depthLabel, 1.6)),
         sections: selectedSections.length > 0 ? selectedSections : storedSections,
         source: 'PDFJS',
         estimatedTokens: estimateTokens(bounded),
@@ -436,11 +528,11 @@ class TextPreparationService {
       const selectedSections = this.selectSectionsByDepth(sections, depthLabel);
       const fullBody = this.joinSections(sections);
       const selectedText = this.joinSections(selectedSections.length > 0 ? selectedSections : sections);
-      const bounded = clampByTokenBudget(selectedText);
+      const bounded = clampByTokenBudget(selectedText, maxCharsForDepth(depthLabel));
 
       return {
         fullText: bounded,
-        rawFullText: clampByTokenBudget(fullBody, MAX_CHARS * 2),
+        rawFullText: clampByTokenBudget(fullBody, maxCharsForDepth(depthLabel, 1.6)),
         sections: selectedSections.length > 0 ? selectedSections : sections,
         source: 'PDFJS',
         estimatedTokens: estimateTokens(bounded),
@@ -452,14 +544,14 @@ class TextPreparationService {
       data: { parserUsed: document.parserUsed || 'REGEX_FALLBACK' },
     }).catch(() => undefined);
 
-    const bounded = clampByTokenBudget(cleaned);
+    const bounded = clampByTokenBudget(cleaned, maxCharsForDepth(depthLabel));
     const rawForVerification = normalizeExtractedText(
       stripTrailingSections(removeNullCharacters(String(rawText || '')).replace(/\r\n/g, '\n'))
     );
 
     return {
       fullText: bounded,
-      rawFullText: clampByTokenBudget(rawForVerification || cleaned, MAX_CHARS * 2),
+      rawFullText: clampByTokenBudget(rawForVerification || cleaned, maxCharsForDepth(depthLabel, 1.6)),
       source: 'REGEX_FALLBACK',
       estimatedTokens: estimateTokens(bounded),
     };

@@ -1052,6 +1052,168 @@ interface TypeOverride {
   constraints?: Record<string, any>
 }
 
+// Journal Article Overrides - optimized for archival depth, rigor, and calibrated claims
+const journalAbstractOverride = `JOURNAL ARTICLE MODIFICATIONS:
+
+1. Balanced Structure:
+   - Cover problem context, objective, method, principal findings, and conclusion.
+   - Keep a clear progression from motivation to evidence-backed takeaway.
+
+2. Evidence Discipline:
+   - Include key quantitative or qualitative outcomes only when directly supported.
+   - Do not overstate effect sizes, confidence, or generality.
+
+3. Claim Calibration:
+   - Prefer measured language aligned with evidence strength.
+   - Separate what was observed from what is inferred.
+
+4. Scope Clarity:
+   - State boundary conditions or domain limitations briefly.
+   - Avoid broad claims beyond evaluated settings.
+
+5. Length Target:
+   - Aim for the standard journal range (180-250 words).
+
+PRESERVE from base: claim discipline, blueprint alignment, no-citation rule, output format.`
+
+const journalIntroductionOverride = `JOURNAL ARTICLE MODIFICATIONS:
+
+1. Gap Construction:
+   - Build a precise problem gap using prior literature and concrete limitations.
+   - Explain why existing approaches are insufficient for this objective.
+
+2. Research Positioning:
+   - Clearly articulate research objective and contribution scope.
+   - Distinguish conceptual novelty from engineering novelty where relevant.
+
+3. Argument Development:
+   - Move from context to gap to proposed direction in a logical progression.
+   - Avoid conference-style compression that skips justification steps.
+
+4. Contribution Clarity:
+   - Present contribution points with bounded, testable wording.
+   - Avoid impact inflation and market-oriented phrasing.
+
+5. Length Target:
+   - Prefer a full journal-style introduction (800-1200 words).
+
+PRESERVE from base: section purpose, terminology consistency, blueprint constraints, output format.`
+
+const journalLiteratureReviewOverride = `JOURNAL ARTICLE MODIFICATIONS:
+
+1. Analytical Synthesis:
+   - Group prior work by themes, methods, or assumptions.
+   - Explain relationships and trade-offs, not just paper-by-paper summaries.
+
+2. Critical Positioning:
+   - Identify what is established, contested, and unresolved.
+   - Make the unresolved gap explicit and evidence-based.
+
+3. Comparison Quality:
+   - Use fair and technically specific comparisons.
+   - Avoid strawman framing or unsupported superiority claims.
+
+4. Citation Density:
+   - Maintain robust citation support across all major claims.
+   - Prioritize primary sources and seminal studies when possible.
+
+5. Length Target:
+   - Prefer a journal-depth review (1200-1800 words).
+
+PRESERVE from base: balanced tone, claim discipline, section purpose, output format.`
+
+const journalMethodologyOverride = `JOURNAL ARTICLE MODIFICATIONS:
+
+1. Reproducibility Focus:
+   - Provide enough procedural detail for replication or faithful adaptation.
+   - Specify data sources, inclusion criteria, preprocessing, and protocol steps.
+
+2. Validity and Reliability:
+   - Explicitly address internal/external validity or trustworthiness criteria.
+   - Clarify bias controls, assumptions, and threat mitigation.
+
+3. Evaluation Readiness:
+   - Define metrics and analysis plan before results are interpreted.
+   - Keep methods and evaluation design tightly aligned.
+
+4. Transparency:
+   - Document key implementation decisions and parameter choices that affect outcomes.
+   - Avoid hand-wavy descriptions such as "standard setup" without details.
+
+5. Length Target:
+   - Prefer full methodological detail (1200-1800 words).
+
+PRESERVE from base: scientific rigor, validity disclosure, terminology consistency, output format.`
+
+const journalResultsOverride = `JOURNAL ARTICLE MODIFICATIONS:
+
+1. Comprehensive Reporting:
+   - Present primary and secondary outcomes in a structured order.
+   - Include uncertainty, variance, or confidence indicators where relevant.
+
+2. Statistical Discipline:
+   - Report comparisons with proper context (baseline, sample, metric definition).
+   - Avoid selective reporting and unsupported cherry-picking.
+
+3. Separation of Concerns:
+   - Keep interpretation minimal in Results; reserve meaning-making for Discussion.
+   - Focus on what the data shows, not why it happened.
+
+4. Negative and Null Findings:
+   - Include relevant non-significant or adverse findings when they affect conclusions.
+   - Do not hide boundary-case performance.
+
+5. Length Target:
+   - Prefer substantive reporting depth (800-1200 words).
+
+PRESERVE from base: result-interpretation separation, metric precision, output format.`
+
+const journalDiscussionOverride = `JOURNAL ARTICLE MODIFICATIONS:
+
+1. Interpretation Depth:
+   - Explain how findings answer the research question and align with contribution claims.
+   - Distinguish strong inferences from tentative interpretation.
+
+2. Literature Integration:
+   - Compare findings with prior studies and explain agreement/disagreement causes.
+   - Situate contributions within the broader field without exaggeration.
+
+3. Limitation Analysis:
+   - Discuss limitations as methodological boundaries and validity constraints.
+   - State what conclusions are not warranted.
+
+4. Implications:
+   - Separate theoretical, methodological, and practical implications when relevant.
+   - Keep implications proportional to evidence strength.
+
+5. Length Target:
+   - Prefer a full journal discussion (1000-1500 words).
+
+PRESERVE from base: no-new-data discipline, claim calibration, terminology consistency, output format.`
+
+const journalConclusionOverride = `JOURNAL ARTICLE MODIFICATIONS:
+
+1. Synthesis:
+   - Provide a concise synthesis of what was established and why it matters.
+   - Reinforce contribution boundaries without introducing new evidence.
+
+2. Contribution Framing:
+   - Summarize validated contributions using calibrated language.
+   - Avoid advocacy-style claims or broad transformation rhetoric.
+
+3. Boundary Reinforcement:
+   - Re-state major limitations that define applicability.
+   - Keep future-work suggestions specific and derived from observed gaps.
+
+4. Tone:
+   - Maintain measured, publication-grade closure.
+   - Avoid speculative, promotional, or grant-style ending language.
+
+5. Length Target:
+   - Prefer a moderate journal conclusion (350-550 words).
+
+PRESERVE from base: no-new-claims rule, consistency with prior sections, output format.`
+
 // Conference Paper Overrides - optimized for page limits, reviewer heuristics, fast assessment
 const conferenceAbstractOverride = `CONFERENCE PAPER MODIFICATIONS:
 
@@ -1424,6 +1586,52 @@ PRESERVE from base: Claim discipline (no factual contradictions), terminology co
 
 // Define all paper type overrides
 const paperTypeOverrides: TypeOverride[] = [
+  // ============================================================================
+  // JOURNAL ARTICLE OVERRIDES
+  // ============================================================================
+  {
+    paperTypeCode: 'JOURNAL_ARTICLE',
+    sectionKey: 'abstract',
+    instruction: journalAbstractOverride,
+    constraints: { wordLimit: 250 }
+  },
+  {
+    paperTypeCode: 'JOURNAL_ARTICLE',
+    sectionKey: 'introduction',
+    instruction: journalIntroductionOverride,
+    constraints: { wordLimit: 1200 }
+  },
+  {
+    paperTypeCode: 'JOURNAL_ARTICLE',
+    sectionKey: 'literature_review',
+    instruction: journalLiteratureReviewOverride,
+    constraints: { wordLimit: 1800 }
+  },
+  {
+    paperTypeCode: 'JOURNAL_ARTICLE',
+    sectionKey: 'methodology',
+    instruction: journalMethodologyOverride,
+    constraints: { wordLimit: 1800 }
+  },
+  {
+    paperTypeCode: 'JOURNAL_ARTICLE',
+    sectionKey: 'results',
+    instruction: journalResultsOverride,
+    constraints: { wordLimit: 1200 }
+  },
+  {
+    paperTypeCode: 'JOURNAL_ARTICLE',
+    sectionKey: 'discussion',
+    instruction: journalDiscussionOverride,
+    constraints: { wordLimit: 1500 }
+  },
+  {
+    paperTypeCode: 'JOURNAL_ARTICLE',
+    sectionKey: 'conclusion',
+    instruction: journalConclusionOverride,
+    constraints: { wordLimit: 550 }
+  },
+
   // ============================================================================
   // CONFERENCE PAPER OVERRIDES
   // ============================================================================

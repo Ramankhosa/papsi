@@ -98,6 +98,37 @@ const normalizeAuthor = (value?: string | null) =>
     ? value.trim().toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
     : '';
 
+type EvidencePackSelectionLimits = {
+  perDimensionTopK: number;
+  maxAllowedCitationKeys: number;
+  minAllowedCitationKeys: number;
+};
+
+function getEvidencePackSelectionLimits(sectionKey: string): EvidencePackSelectionLimits {
+  const normalized = normalizeSectionKey(sectionKey);
+  if (normalized === 'literature_review' || normalized === 'related_work') {
+    return {
+      perDimensionTopK: 3,
+      maxAllowedCitationKeys: 70,
+      minAllowedCitationKeys: 25,
+    };
+  }
+
+  if (normalized === 'introduction' || normalized === 'methodology') {
+    return {
+      perDimensionTopK: 3,
+      maxAllowedCitationKeys: 40,
+      minAllowedCitationKeys: 12,
+    };
+  }
+
+  return {
+    perDimensionTopK: 3,
+    maxAllowedCitationKeys: 25,
+    minAllowedCitationKeys: 0,
+  };
+}
+
 function strongerConfidence(
   a: 'HIGH' | 'MEDIUM' | 'LOW',
   b: 'HIGH' | 'MEDIUM' | 'LOW'
@@ -626,6 +657,7 @@ class EvidencePackService {
 
     const perDimension = new Map<string, EvidenceCitation[]>();
     const sectionKeyNormalized = normalizeSectionKey(section.sectionKey);
+    const selectionLimits = getEvidencePackSelectionLimits(sectionKeyNormalized);
 
     // Deep evidence cards are primary evidence. They are linked by section/dimension via EvidenceCardMapping.
     const deepMappings = await this.loadDeepCardMappings(sessionId);
@@ -763,6 +795,14 @@ class EvidencePackService {
     const dimensionEvidence: DimensionEvidence[] = [];
     const gaps: string[] = [];
     const allowedScore = new Map<string, number>();
+    const candidateScore = new Map<string, number>();
+
+    const scoreCitation = (citation: EvidenceCitation): number =>
+      (citation.hasDeepAnalysis ? 1_000_000 : 0)
+      + (citation.evidenceCards?.length || 0) * 50_000
+      + CONFIDENCE_WEIGHT[citation.confidence] * 10_000
+      + citation.relevanceScore * 100
+      + (citation.year || 0);
 
     for (const dim of mustCover) {
       const normalized = normalizeDimension(dim);
@@ -781,7 +821,15 @@ class EvidencePackService {
           return a.citationKey.localeCompare(b.citationKey);
         });
 
-      const top = rows.slice(0, 3);
+      for (const citation of rows) {
+        const score = scoreCitation(citation);
+        const prev = candidateScore.get(citation.citationKey) || 0;
+        if (score > prev) {
+          candidateScore.set(citation.citationKey, score);
+        }
+      }
+
+      const top = rows.slice(0, selectionLimits.perDimensionTopK);
       if (!top.length) {
         gaps.push(dim);
       }
@@ -792,11 +840,7 @@ class EvidencePackService {
       });
 
       for (const citation of top) {
-        const score = (citation.hasDeepAnalysis ? 1_000_000 : 0)
-          + (citation.evidenceCards?.length || 0) * 50_000
-          + CONFIDENCE_WEIGHT[citation.confidence] * 10_000
-          + citation.relevanceScore * 100
-          + (citation.year || 0);
+        const score = scoreCitation(citation);
         const prev = allowedScore.get(citation.citationKey) || 0;
         if (score > prev) {
           allowedScore.set(citation.citationKey, score);
@@ -804,9 +848,25 @@ class EvidencePackService {
       }
     }
 
+    // For citation-dense sections (e.g., literature review), ensure the
+    // allowed-key pool is broad enough even when top per-dimension picks overlap.
+    if (
+      selectionLimits.minAllowedCitationKeys > 0 &&
+      allowedScore.size < selectionLimits.minAllowedCitationKeys
+    ) {
+      const rankedCandidates = Array.from(candidateScore.entries())
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      for (const [key, score] of rankedCandidates) {
+        if (allowedScore.size >= selectionLimits.minAllowedCitationKeys) break;
+        if (!allowedScore.has(key)) {
+          allowedScore.set(key, score);
+        }
+      }
+    }
+
     const allowedCitationKeys = Array.from(allowedScore.entries())
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .slice(0, 25)
+      .slice(0, selectionLimits.maxAllowedCitationKeys)
       .map(([key]) => key);
 
     return {

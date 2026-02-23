@@ -3,6 +3,7 @@ import path from 'path';
 import { prisma } from '../prisma';
 import type { PreparedPaperSection } from './deep-analysis-types';
 import { removeNullCharacters, sanitizeForPostgres, sanitizeTextForPostgres } from '../utils/postgres-sanitize';
+import { pdfMatchVerificationService } from './pdf-match-verification-service';
 
 // ─── Configuration ──────────────────────────────────────────────────────────
 
@@ -635,6 +636,7 @@ async function processDocument(documentId: string, attempt: number, source: stri
         errorCode: null,
       },
     });
+    await pdfMatchVerificationService.verifyDocumentLinks(documentId, 'post-proactive');
 
     const tokenEstimate = Math.ceil(fullText.length / 4);
     console.log(`[ProactiveParsing] OK ${documentId}: ${sections.length} sections, ${result.pages.length} pages, ~${tokenEstimate} tokens`);

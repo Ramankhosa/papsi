@@ -12,7 +12,7 @@
  */
 
 import { prisma } from '../prisma';
-import { llmGateway } from '../metering';
+import { llmGateway, type TenantContext } from '../metering';
 import { blueprintService, type BlueprintContext, type SectionPlanItem } from './blueprint-service';
 import { sectionTemplateService } from './section-template-service';
 import { getMethodologyConstraints } from '../prompts/methodology-constraints';
@@ -33,10 +33,42 @@ import {
   type FullDebugReport
 } from './paper-prompt-debug';
 import { sectionPolishService, type DriftReport } from './section-polish-service';
+import { evidencePackService, type SectionEvidencePack } from './evidence-pack-service';
 import { isFeatureEnabled } from '../feature-flags';
 import type { PaperSection, PaperSectionStatus } from '@prisma/client';
 import crypto from 'crypto';
 import { polishDraftMarkdown } from '../markdown-draft-formatter';
+
+const DEFAULT_BG_PASS1_CONCURRENCY = Number.parseInt(
+  process.env.BG_PASS1_CONCURRENCY || '10',
+  10
+);
+
+function clampBgPass1Concurrency(value?: number): number {
+  const parsed = Number.isFinite(Number(value)) ? Number(value) : DEFAULT_BG_PASS1_CONCURRENCY;
+  return Math.max(1, Math.min(20, parsed || DEFAULT_BG_PASS1_CONCURRENCY || 10));
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  if (items.length === 0) return;
+  const workerCount = Math.min(limit, items.length);
+  let cursor = 0;
+
+  const runners = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) return;
+      await worker(items[index], index);
+    }
+  });
+
+  await Promise.all(runners);
+}
 
 // ============================================================================
 // Types
@@ -61,6 +93,7 @@ export interface SectionGenerationInput {
   usePersonaStyle?: boolean; // If true, fetch and inject user's writing style samples
   personaSelection?: PaperPersonaSelection; // Optional persona selection (primary + secondary)
   regenerate?: boolean;      // If true, regenerate even if exists
+  tenantContext?: TenantContext | null; // Optional tenant context for metering-aware LLM calls
 }
 
 export interface UserSectionInstructionData {
@@ -122,6 +155,156 @@ const SECTION_DISPLAY_NAMES: Record<string, string> = {
   appendix: 'Appendix'
 };
 
+interface Pass1EvidencePromptContext {
+  useMappedEvidence: boolean;
+  allowedCitationKeys: string[];
+  dimensionEvidence: SectionEvidencePack['dimensionEvidence'];
+  gaps: string[];
+}
+
+function formatDimensionEvidence(
+  evidence: SectionEvidencePack['dimensionEvidence']
+): string {
+  if (!evidence || evidence.length === 0) {
+    return '(No dimension evidence available)';
+  }
+
+  const lines: string[] = [
+    'VERIFIED DIMENSION EVIDENCE:',
+    '- Use these mapped citations as primary support for this section.',
+    '- Do not invent findings outside the cards/metadata below.',
+    '- Prefer HIGH-confidence and quote-verified cards when available.',
+    '',
+  ];
+
+  for (const dim of evidence) {
+    lines.push(`Dimension: "${dim.dimension}"`);
+
+    if (!dim.citations.length) {
+      lines.push('  (no citations mapped)');
+      lines.push('');
+      continue;
+    }
+
+    for (const citation of dim.citations) {
+      const cards = Array.isArray(citation.evidenceCards) ? citation.evidenceCards : [];
+      const baseLine = `  [${citation.citationKey}] (${citation.year || 'n.d.'}, ${citation.confidence}) "${citation.title}"`;
+      lines.push(baseLine);
+      if (citation.remark) {
+        lines.push(`    Relevance: ${citation.remark}`);
+      }
+      if (citation.evidenceBoundary) {
+        lines.push(`    Boundary: ${citation.evidenceBoundary}`);
+      }
+
+      for (const card of cards.slice(0, 3)) {
+        lines.push(`    Claim: ${card.claim}`);
+        if (card.quantitativeDetail) {
+          lines.push(`    Detail: ${card.quantitativeDetail}`);
+        }
+        if (card.conditions) {
+          lines.push(`    Conditions: ${card.conditions}`);
+        }
+        if (card.doesNotSupport) {
+          lines.push(`    Does NOT support: ${card.doesNotSupport}`);
+        }
+        if (card.sourceFragment) {
+          lines.push(`    Quote: "${card.sourceFragment}"${card.pageHint ? ` (${card.pageHint})` : ''}`);
+        }
+      }
+    }
+
+    lines.push('');
+  }
+
+  return lines.join('\n').trim();
+}
+
+function formatRelevanceNotes(
+  evidence: SectionEvidencePack['dimensionEvidence']
+): string {
+  if (!evidence || evidence.length === 0) {
+    return '(No relevance notes available)';
+  }
+
+  const allCitations = new Map<string, {
+    title: string;
+    dimensions: Set<string>;
+    relevance?: string;
+    contribution?: string;
+    findings?: string;
+    method?: string | null;
+    limitations?: string | null;
+    boundary?: string | null;
+    claimTypes?: string[];
+    cardClaims?: string[];
+  }>();
+
+  for (const dim of evidence) {
+    for (const citation of dim.citations) {
+      if (!allCitations.has(citation.citationKey)) {
+        allCitations.set(citation.citationKey, {
+          title: citation.title,
+          dimensions: new Set<string>(),
+          relevance: citation.relevanceToResearch,
+          contribution: citation.keyContribution,
+          findings: citation.keyFindings,
+          method: citation.methodologicalApproach,
+          limitations: citation.limitationsOrGaps,
+          boundary: citation.evidenceBoundary,
+          claimTypes: citation.claimTypesSupported ? [...citation.claimTypesSupported] : [],
+          cardClaims: Array.isArray(citation.evidenceCards)
+            ? citation.evidenceCards
+                .map(card => String(card.claim || '').trim())
+                .filter(Boolean)
+                .slice(0, 3)
+            : []
+        });
+      }
+
+      const existing = allCitations.get(citation.citationKey)!;
+      existing.dimensions.add(dim.dimension);
+      if (!existing.relevance && citation.relevanceToResearch) existing.relevance = citation.relevanceToResearch;
+      if (!existing.contribution && citation.keyContribution) existing.contribution = citation.keyContribution;
+      if (!existing.findings && citation.keyFindings) existing.findings = citation.keyFindings;
+      if (!existing.method && citation.methodologicalApproach) existing.method = citation.methodologicalApproach;
+      if (!existing.limitations && citation.limitationsOrGaps) existing.limitations = citation.limitationsOrGaps;
+      if (!existing.boundary && citation.evidenceBoundary) existing.boundary = citation.evidenceBoundary;
+      if (citation.claimTypesSupported?.length) {
+        const merged = new Set([...(existing.claimTypes || []), ...citation.claimTypesSupported]);
+        existing.claimTypes = Array.from(merged);
+      }
+      if (Array.isArray(citation.evidenceCards) && citation.evidenceCards.length) {
+        const mergedClaims = [...(existing.cardClaims || [])];
+        for (const card of citation.evidenceCards) {
+          const claim = String(card.claim || '').trim();
+          if (!claim || mergedClaims.includes(claim)) continue;
+          mergedClaims.push(claim);
+          if (mergedClaims.length >= 4) break;
+        }
+        existing.cardClaims = mergedClaims;
+      }
+    }
+  }
+
+  return Array.from(allCitations.entries())
+    .map(([key, data]) => {
+      const parts = [
+        data.claimTypes?.length ? `claimTypes: ${data.claimTypes.join(', ')}` : '',
+        data.relevance ? `relevance: ${data.relevance}` : '',
+        data.contribution ? `contribution: ${data.contribution}` : '',
+        data.findings ? `findings: ${data.findings}` : '',
+        data.method ? `method: ${data.method}` : '',
+        data.limitations ? `gap: ${data.limitations}` : '',
+        data.boundary ? `boundary: ${data.boundary}` : '',
+        data.cardClaims?.length ? `cardClaims: ${data.cardClaims.join(' || ')}` : '',
+      ].filter(Boolean);
+      const base = `[${key}]: "${data.title}" - dimensions: ${Array.from(data.dimensions).join(', ')}`;
+      return parts.length > 0 ? `${base}; ${parts.join(' | ')}` : base;
+    })
+    .join('\n');
+}
+
 // ============================================================================
 // Paper Section Service Class
 // ============================================================================
@@ -139,7 +322,8 @@ class PaperSectionService {
       useStoredInstructions = true, 
       usePersonaStyle = false,
       personaSelection,
-      regenerate 
+      regenerate,
+      tenantContext,
     } = input;
 
     const twoPassEnabled = isFeatureEnabled('ENABLE_TWO_PASS_GENERATION');
@@ -161,7 +345,7 @@ class PaperSectionService {
 
       // Two-pass fast path: if Pass 1 is done (BASE_READY), skip to Pass 2
       if (twoPassEnabled && existingSection?.status === 'BASE_READY' && existingSection.baseContentInternal && !regenerate) {
-        return this.runPass2Only(existingSection);
+        return this.runPass2Only(existingSection, undefined, tenantContext || null);
       }
 
       const reuseStatuses = ['DRAFT', 'REVIEWED', 'APPROVED'];
@@ -267,8 +451,9 @@ class PaperSectionService {
       const llmStartTime = Date.now();
 
       // Call LLM (Pass 1 in two-pass mode, or the only pass in single-pass)
+      const llmRequestContext = tenantContext ? { tenantContext } : { headers: {} };
       const result = await llmGateway.executeLLMOperation(
-        { headers: {} },
+        llmRequestContext,
         {
           taskCode: 'LLM2_DRAFT',
           stageCode: 'PAPER_SECTION_GEN',
@@ -367,7 +552,7 @@ class PaperSectionService {
       const pass1Section = await this.upsertSection(sessionId, sectionKey, pass1Data, existingSection);
 
       // Immediately run Pass 2 polish (pass paperTypeCode to avoid re-lookup)
-      return this.runPass2Only(pass1Section, paperTypeCode);
+      return this.runPass2Only(pass1Section, paperTypeCode, tenantContext || null);
 
     } catch (error) {
       console.error('Section generation error:', error);
@@ -385,7 +570,11 @@ class PaperSectionService {
    * paperTypeCode is optional — if not provided, it is resolved from the
    * session so callers on the fast path (line 164) don't need to pre-load it.
    */
-  private async runPass2Only(section: PaperSection, paperTypeCode?: string): Promise<SectionGenerationResult> {
+  private async runPass2Only(
+    section: PaperSection,
+    paperTypeCode?: string,
+    tenantContext?: TenantContext | null
+  ): Promise<SectionGenerationResult> {
     const baseContent = section.baseContentInternal || section.content;
     if (!baseContent) {
       return { success: false, error: 'No base content available for polish pass' };
@@ -410,6 +599,7 @@ class PaperSectionService {
       baseContent,
       sessionId: section.sessionId,
       paperTypeCode,
+      tenantContext: tenantContext || null,
     });
 
     if (!polishResult.success || !polishResult.polishedContent) {
@@ -456,7 +646,12 @@ class PaperSectionService {
    * blueprint context but no cross-section memory (traded for speed).
    * Results are stored as BASE_READY for fast Pass 2 when the user arrives.
    */
-  async runParallelPass1(sessionId: string): Promise<BackgroundGenResult> {
+  async runParallelPass1(
+    sessionId: string,
+    tenantContext?: TenantContext | null,
+    options?: { forceRerun?: boolean; sectionKeys?: string[] }
+  ): Promise<BackgroundGenResult> {
+    const forceRerun = options?.forceRerun === true;
     const progress: BackgroundGenProgress = { total: 0, completed: 0, failed: 0, sections: {} };
 
     try {
@@ -465,9 +660,24 @@ class PaperSectionService {
         return { success: false, progress, error: blueprintReady.reason || 'Blueprint not ready' };
       }
 
-      const generationOrder = await this.getSectionGenerationOrder(sessionId);
-      if (generationOrder.length === 0) {
+      const fullGenerationOrder = await this.getSectionGenerationOrder(sessionId);
+      if (fullGenerationOrder.length === 0) {
         return { success: false, progress, error: 'No sections in blueprint' };
+      }
+
+      const requestedSectionKeys = Array.isArray(options?.sectionKeys)
+        ? options.sectionKeys.map(key => String(key || '').trim()).filter(Boolean)
+        : [];
+      const requestedSectionSet = requestedSectionKeys.length > 0
+        ? new Set(requestedSectionKeys)
+        : null;
+
+      const generationOrder = requestedSectionSet
+        ? fullGenerationOrder.filter(sectionKey => requestedSectionSet.has(sectionKey))
+        : fullGenerationOrder;
+
+      if (generationOrder.length === 0) {
+        return { success: false, progress, error: 'No matching sections selected for Pass 1 run' };
       }
 
       progress.total = generationOrder.length;
@@ -498,9 +708,11 @@ class PaperSectionService {
       const blueprint = await blueprintService.getBlueprint(sessionId);
       const methodologyType = (blueprint as any)?.methodologyType || null;
       const blueprintVersion = blueprint?.version || 1;
+      const bgPass1Concurrency = clampBgPass1Concurrency(DEFAULT_BG_PASS1_CONCURRENCY);
+      const llmRequestContext = tenantContext ? { tenantContext } : { headers: {} };
 
-      // Fire all Pass 1 calls in parallel
-      const promises = generationOrder.map(async (sectionKey) => {
+      // Fire Pass 1 calls in a bounded worker pool (default concurrency: 10)
+      await runWithConcurrency(generationOrder, bgPass1Concurrency, async (sectionKey) => {
         try {
           progress.sections[sectionKey] = 'running';
           await this.flushBgProgress(sessionId, progress);
@@ -509,11 +721,22 @@ class PaperSectionService {
             where: { sessionId_sectionKey: { sessionId, sectionKey } }
           });
 
-          // Skip sections that already have base content or have progressed past Pass 1
-          const protectedStatuses = ['DRAFT', 'REVIEWED', 'APPROVED', 'POLISHING', 'REGENERATING'] as const;
+          // Skip sections that are actively mutating. In force-rerun mode we still
+          // refresh Pass 1 base content for finalized sections (DRAFT/REVIEWED/APPROVED)
+          // without changing their visible content/status.
+          const activeMutationStatuses = ['POLISHING', 'REGENERATING'] as const;
+          const finalizedStatuses = ['DRAFT', 'REVIEWED', 'APPROVED'] as const;
+          const refreshBaseOnly = Boolean(
+            forceRerun &&
+            existing &&
+            finalizedStatuses.includes(existing.status as any)
+          );
           if (
-            (existing?.baseContentInternal && existing.status === 'BASE_READY' && !existing.isStale) ||
-            (existing && protectedStatuses.includes(existing.status as any))
+            (!forceRerun && existing && (
+              (existing.baseContentInternal && existing.status === 'BASE_READY' && !existing.isStale)
+              || finalizedStatuses.includes(existing.status as any)
+            ))
+            || (existing && activeMutationStatuses.includes(existing.status as any))
           ) {
             progress.sections[sectionKey] = 'done';
             progress.completed++;
@@ -538,20 +761,23 @@ class PaperSectionService {
             sectionKey
           );
 
-          // Mark section as PREPARING
-          await this.upsertSection(sessionId, sectionKey, {
-            sectionKey,
-            displayName: SECTION_DISPLAY_NAMES[sectionKey] || sectionKey,
-            content: '',
-            wordCount: 0,
-            generationMode: 'two_pass',
-            status: 'PREPARING' as PaperSectionStatus,
-            isStale: false,
-            generatedAt: new Date(),
-          }, existing);
+          // Mark section as PREPARING unless we are only refreshing Pass 1 base
+          // for an already visible/finalized section.
+          if (!refreshBaseOnly) {
+            await this.upsertSection(sessionId, sectionKey, {
+              sectionKey,
+              displayName: SECTION_DISPLAY_NAMES[sectionKey] || sectionKey,
+              content: '',
+              wordCount: 0,
+              generationMode: 'two_pass',
+              status: 'PREPARING' as PaperSectionStatus,
+              isStale: false,
+              generatedAt: new Date(),
+            }, existing);
+          }
 
           const result = await llmGateway.executeLLMOperation(
-            { headers: {} },
+            llmRequestContext,
             {
               taskCode: 'LLM2_DRAFT',
               stageCode: 'PAPER_SECTION_GEN',
@@ -570,19 +796,31 @@ class PaperSectionService {
 
           await prisma.paperSection.update({
             where: { sessionId_sectionKey: { sessionId, sectionKey } },
-            data: {
-              baseContentInternal: parsed.content,
-              baseMemory: parsed.memory as any,
-              memory: parsed.memory as any,
-              content: existing?.content || '',
-              wordCount: existing?.content ? this.countWords(existing.content) : 0,
-              blueprintVersion,
-              pass1PromptUsed: prompt,
-              pass1LlmResponse: result.response.output,
-              pass1TokensUsed: result.response.outputTokens,
-              pass1CompletedAt: new Date(),
-              status: 'BASE_READY' as PaperSectionStatus,
-            }
+            data: refreshBaseOnly
+              ? {
+                  baseContentInternal: parsed.content,
+                  baseMemory: parsed.memory as any,
+                  memory: parsed.memory as any,
+                  blueprintVersion,
+                  pass1PromptUsed: prompt,
+                  pass1LlmResponse: result.response.output,
+                  pass1TokensUsed: result.response.outputTokens,
+                  pass1CompletedAt: new Date(),
+                  isStale: false,
+                }
+              : {
+                  baseContentInternal: parsed.content,
+                  baseMemory: parsed.memory as any,
+                  memory: parsed.memory as any,
+                  content: existing?.content || '',
+                  wordCount: existing?.content ? this.countWords(existing.content) : 0,
+                  blueprintVersion,
+                  pass1PromptUsed: prompt,
+                  pass1LlmResponse: result.response.output,
+                  pass1TokensUsed: result.response.outputTokens,
+                  pass1CompletedAt: new Date(),
+                  status: 'BASE_READY' as PaperSectionStatus,
+                }
           });
 
           progress.sections[sectionKey] = 'done';
@@ -593,8 +831,6 @@ class PaperSectionService {
           progress.failed++;
         }
       });
-
-      await Promise.all(promises);
 
       const finalStatus = progress.failed === 0
         ? 'COMPLETED'
@@ -733,7 +969,8 @@ class PaperSectionService {
    */
   async reExtractMemory(
     sessionId: string,
-    sectionKey: string
+    sectionKey: string,
+    tenantContext?: TenantContext | null
   ): Promise<PaperSectionWithMemory | null> {
     const section = await prisma.paperSection.findUnique({
       where: { sessionId_sectionKey: { sessionId, sectionKey } }
@@ -747,7 +984,7 @@ class PaperSectionService {
     const prompt = this.buildMemoryExtractionPrompt(section.content, sectionKey);
 
     const result = await llmGateway.executeLLMOperation(
-      { headers: {} },
+      tenantContext ? { tenantContext } : { headers: {} },
       {
         taskCode: 'LLM2_DRAFT',
         stageCode: 'PAPER_MEMORY_EXTRACT',
@@ -1017,6 +1254,42 @@ class PaperSectionService {
     }));
   }
 
+  private async getPass1EvidencePromptContext(
+    sessionId?: string,
+    sectionKey?: string
+  ): Promise<Pass1EvidencePromptContext> {
+    if (!sessionId || !sectionKey) {
+      return {
+        useMappedEvidence: false,
+        allowedCitationKeys: [],
+        dimensionEvidence: [],
+        gaps: [],
+      };
+    }
+
+    try {
+      const evidencePack = await evidencePackService.getEvidencePack(sessionId, sectionKey);
+      const allowedCitationKeys = Array.from(
+        new Set((evidencePack.allowedCitationKeys || []).map(key => String(key || '').trim()).filter(Boolean))
+      );
+
+      return {
+        useMappedEvidence: evidencePack.hasBlueprint && evidencePack.dimensionEvidence.length > 0 && allowedCitationKeys.length > 0,
+        allowedCitationKeys,
+        dimensionEvidence: evidencePack.dimensionEvidence || [],
+        gaps: evidencePack.gaps || [],
+      };
+    } catch (error) {
+      console.warn(`[PaperSectionService] Failed to load evidence pack for ${sectionKey}:`, error);
+      return {
+        useMappedEvidence: false,
+        allowedCitationKeys: [],
+        dimensionEvidence: [],
+        gaps: [],
+      };
+    }
+  }
+
   /**
    * Build section prompt with debug information
    */
@@ -1059,6 +1332,54 @@ class PaperSectionService {
       debugComponents.basePrompt = basePrompt;
     }
 
+    // Inject evidence-pack placeholders and build fallback evidence blocks.
+    const hasCitationModePlaceholders = /\{\{AUTO_CITATION_MODE\}\}|\{\{ALLOWED_CITATION_KEYS\}\}/.test(basePrompt);
+    const hasEvidencePlaceholders = /\{\{DIMENSION_EVIDENCE_NOTES\}\}|\{\{RELEVANCE_NOTES\}\}|\{\{EVIDENCE_GAPS\}\}/.test(basePrompt);
+    const evidenceContext = await this.getPass1EvidencePromptContext(sessionId, currentSection.sectionKey);
+    const autoCitationMode = evidenceContext.useMappedEvidence ? 'ON' : 'OFF';
+    const allowedKeys = evidenceContext.allowedCitationKeys.length > 0
+      ? evidenceContext.allowedCitationKeys.join(', ')
+      : '(none)';
+    const dimensionEvidenceNotes = evidenceContext.dimensionEvidence.length > 0
+      ? formatDimensionEvidence(evidenceContext.dimensionEvidence)
+      : '(no evidence pack available)';
+    const relevanceNotes = evidenceContext.dimensionEvidence.length > 0
+      ? formatRelevanceNotes(evidenceContext.dimensionEvidence)
+      : '(no relevance notes available)';
+    const evidenceGaps = evidenceContext.gaps.length > 0
+      ? evidenceContext.gaps.join('; ')
+      : '(none detected)';
+
+    basePrompt = basePrompt.replace(/\{\{AUTO_CITATION_MODE\}\}/g, autoCitationMode);
+    basePrompt = basePrompt.replace(/\{\{ALLOWED_CITATION_KEYS\}\}/g, allowedKeys);
+    basePrompt = basePrompt.replace(/\{\{DIMENSION_EVIDENCE_NOTES\}\}/g, dimensionEvidenceNotes);
+    basePrompt = basePrompt.replace(/\{\{RELEVANCE_NOTES\}\}/g, relevanceNotes);
+    basePrompt = basePrompt.replace(/\{\{EVIDENCE_GAPS\}\}/g, evidenceGaps);
+
+    const citationModeFallbackBlock = !hasCitationModePlaceholders
+      ? `AUTO_CITATION_MODE: ${autoCitationMode}
+ALLOWED_CITATION_KEYS: ${allowedKeys}
+
+Citation Rules:
+- Use inline citations in [CITE:key] format only.
+- Never output [CITATION_NEEDED] placeholders.
+- Do not invent keys; use only ALLOWED_CITATION_KEYS when mode is ON.
+- If mode is OFF and no valid key applies, write the claim without citation.`
+      : '';
+
+    const evidenceFallbackBlock = evidenceContext.useMappedEvidence
+      && evidenceContext.dimensionEvidence.length > 0
+      && !hasEvidencePlaceholders
+      ? `DIMENSION EVIDENCE NOTES:
+${dimensionEvidenceNotes}
+
+RELEVANCE NOTES:
+${relevanceNotes}
+
+EVIDENCE GAPS:
+${evidenceGaps}`
+      : '';
+
     // Get methodology-specific constraints to inject
     const methodologyBlock = getMethodologyConstraints(methodologyType, currentSection.sectionKey);
     if (methodologyBlock) {
@@ -1088,7 +1409,7 @@ ${pm.memory.forwardReferences.length > 0 ? `- Promises: ${pm.memory.forwardRefer
     }
 
     // Build blueprint context for debug
-    debugComponents.blueprintContext = `Thesis: ${thesisStatement}\nObjective: ${centralObjective}\nContributions: ${keyContributions.join('; ')}\nSection Purpose: ${currentSection.purpose}`;
+    debugComponents.blueprintContext = `Thesis: ${thesisStatement}\nObjective: ${centralObjective}\nContributions: ${keyContributions.join('; ')}\nSection Purpose: ${currentSection.purpose}\nEvidence: mode=${autoCitationMode}, allowedKeys=${evidenceContext.allowedCitationKeys.length}, dimensions=${evidenceContext.dimensionEvidence.length}, gaps=${evidenceContext.gaps.length}`;
 
     // Track writing style and user instructions for debug
     if (writingStyleBlock) {
@@ -1138,6 +1459,15 @@ ${currentSection.mustAvoid.map(c => `✗ ${c}`).join('\n')}
 
 ${currentSection.wordBudget ? `Word Budget: ~${currentSection.wordBudget} words` : ''}
 
+${citationModeFallbackBlock ? `
+[PRIORITY 2.5 - CITATION MODE] SECTION CITATION CONTROL
+${citationModeFallbackBlock}
+` : ''}
+
+${evidenceFallbackBlock ? `
+[PRIORITY 2.6 - EVIDENCE PACK] DIMENSION MAPPINGS, RELEVANCE, AND GAPS
+${evidenceFallbackBlock}
+` : ''}
 ${previousSectionsSummary ? `
 ═══════════════════════════════════════════════════════════════════════════════
 [PRIORITY 3 - CONTINUITY] PREVIOUS SECTIONS MEMORY

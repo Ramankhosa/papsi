@@ -7,6 +7,7 @@
 import { prisma } from '../prisma';
 import { pdfParserService } from './pdf-parser-service';
 import { proactiveParsingService } from './proactive-parsing-service';
+import { pdfMatchVerificationService } from './pdf-match-verification-service';
 import type { ExtractedPdfMetadata } from './pdf-parser-service';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -17,6 +18,21 @@ import * as net from 'net';
 const DEFAULT_MAX_FILE_SIZE_MB = parseInt(process.env.MAX_REFERENCE_PDF_SIZE_MB || '50', 10);
 const DEFAULT_UPLOADS_PATH = process.env.REFERENCE_UPLOADS_PATH || 'uploads/references';
 const UNPAYWALL_EMAIL = process.env.UNPAYWALL_EMAIL || '';
+const MAX_PDF_DISCOVERY_DEPTH = Math.max(2, parseInt(process.env.PDF_DISCOVERY_MAX_DEPTH || '4', 10) || 4);
+const MAX_HTML_PDF_CANDIDATES = Math.max(5, parseInt(process.env.PDF_DISCOVERY_MAX_CANDIDATES || '24', 10) || 24);
+const DOMAIN_FETCH_MIN_INTERVAL_MS = Math.max(100, parseInt(process.env.PDF_FETCH_DOMAIN_MIN_INTERVAL_MS || '1200', 10) || 1200);
+const DOMAIN_FETCH_COOLDOWN_BASE_MS = Math.max(1000, parseInt(process.env.PDF_FETCH_DOMAIN_COOLDOWN_BASE_MS || '15000', 10) || 15000);
+const DOMAIN_FETCH_COOLDOWN_MAX_MS = Math.max(DOMAIN_FETCH_COOLDOWN_BASE_MS, parseInt(process.env.PDF_FETCH_DOMAIN_COOLDOWN_MAX_MS || '300000', 10) || 300000);
+const DOMAIN_FETCH_RATE_LIMIT_RETRIES = Math.max(0, parseInt(process.env.PDF_FETCH_RATE_LIMIT_RETRIES || '2', 10) || 2);
+
+interface DomainFetchState {
+    tail: Promise<void>;
+    nextAllowedAt: number;
+    cooldownUntil: number;
+    penaltyLevel: number;
+}
+
+const DOMAIN_FETCH_STATE = new Map<string, DomainFetchState>();
 
 export interface UploadDocumentResult {
     success: boolean;
@@ -784,6 +800,7 @@ class ReferenceDocumentService {
         setImmediate(async () => {
             try {
                 await pdfParserService.processDocument(documentId);
+                await pdfMatchVerificationService.verifyDocumentLinks(documentId, 'post-pdf-parser');
                 proactiveParsingService.triggerForDocument(documentId, 'pdf-upload');
 
                 const links = await prisma.referenceDocumentLink.findMany({
@@ -910,7 +927,7 @@ class ReferenceDocumentService {
         | { success: true; buffer: Buffer; resolvedUrl: string }
         | { success: false; errorCode: 'NOT_PDF' | 'DOWNLOAD_FAILED'; error: string }
     > {
-        if (depth > 2) {
+        if (depth > MAX_PDF_DISCOVERY_DEPTH) {
             return {
                 success: false,
                 errorCode: 'NOT_PDF',
@@ -1035,14 +1052,19 @@ class ReferenceDocumentService {
     }
 
     private extractPdfCandidateUrlsFromHtml(html: string, baseUrl: string): string[] {
-        const candidates: string[] = [];
+        const primaryCandidates: string[] = [];
+        const secondaryCandidates: string[] = [];
         const seen = new Set<string>();
 
-        const addCandidate = (raw: string) => {
+        const addCandidate = (raw: string, priority: 'primary' | 'secondary' = 'secondary') => {
             if (!raw || typeof raw !== 'string') return;
 
             const decoded = raw
                 .trim()
+                .replace(/\\u0026/gi, '&')
+                .replace(/\\u003d/gi, '=')
+                .replace(/\\u002f/gi, '/')
+                .replace(/\\\//g, '/')
                 .replace(/&amp;/gi, '&')
                 .replace(/&quot;/gi, '"')
                 .replace(/&#39;/gi, "'");
@@ -1058,7 +1080,11 @@ class ReferenceDocumentService {
             const safe = this.validateExternalPdfUrl(absoluteUrl);
             if (!safe || seen.has(safe)) return;
             seen.add(safe);
-            candidates.push(safe);
+            if (priority === 'primary') {
+                primaryCandidates.push(safe);
+            } else {
+                secondaryCandidates.push(safe);
+            }
         };
 
         const signals = ['.pdf', '/pdf/', 'pdf=', 'downloadpdf', 'stamppdf/getpdf.jsp'];
@@ -1066,34 +1092,274 @@ class ReferenceDocumentService {
             const normalized = value.toLowerCase();
             return signals.some(signal => normalized.includes(signal));
         };
+        const hasPdfActionSignal = (value: string): boolean => {
+            const normalized = value
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .toLowerCase();
+            if (!normalized) return false;
+            return (
+                normalized.includes(' pdf') ||
+                normalized.startsWith('pdf') ||
+                normalized.includes('view pdf') ||
+                normalized.includes('download pdf') ||
+                normalized.includes('full text') ||
+                normalized.includes('full-text') ||
+                normalized.includes('full article') ||
+                normalized.includes('download article')
+            );
+        };
+        const readAttr = (attrs: string, attrName: string): string => {
+            const match = attrs.match(new RegExp(`${attrName}\\s*=\\s*["']([^"']+)["']`, 'i'));
+            return match?.[1] || '';
+        };
+        const extractUrlsFromInlineScript = (value: string): string[] => {
+            if (!value) return [];
+            const urls: string[] = [];
+            const regex = /['"]((?:https?:\/\/|\/)[^'"]+)['"]/gi;
+            for (const match of Array.from(value.matchAll(regex))) {
+                if (typeof match[1] === 'string' && match[1].trim()) {
+                    urls.push(match[1].trim());
+                }
+            }
+            return urls;
+        };
 
         const metaRegex = /<meta[^>]+(?:name|property)\s*=\s*["']citation_pdf_url["'][^>]*content\s*=\s*["']([^"']+)["'][^>]*>/gi;
-        for (const match of html.matchAll(metaRegex)) {
-            addCandidate(match[1] || '');
+        for (const match of Array.from(html.matchAll(metaRegex))) {
+            addCandidate(match[1] || '', 'primary');
+        }
+
+        const linkPdfRegex = /<link[^>]+type\s*=\s*["']application\/pdf["'][^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi;
+        for (const match of Array.from(html.matchAll(linkPdfRegex))) {
+            addCandidate(match[1] || '', 'primary');
         }
 
         const attrRegex = /<(?:iframe|embed|object|a)[^>]+(?:src|href|data)\s*=\s*["']([^"']+)["'][^>]*>/gi;
-        for (const match of html.matchAll(attrRegex)) {
+        for (const match of Array.from(html.matchAll(attrRegex))) {
             const value = match[1] || '';
             if (looksLikePdfTarget(value)) {
-                addCandidate(value);
+                addCandidate(value, 'primary');
+            }
+        }
+
+        const anchorRegex = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
+        for (const match of Array.from(html.matchAll(anchorRegex))) {
+            const attrs = match[1] || '';
+            const innerText = (match[2] || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+            const href = readAttr(attrs, 'href');
+            const title = readAttr(attrs, 'title');
+            const ariaLabel = readAttr(attrs, 'aria-label');
+            const label = `${innerText} ${title} ${ariaLabel}`.trim();
+            const looksLikePdfLabel = hasPdfActionSignal(label);
+            const looksLikePdfHref = looksLikePdfTarget(href);
+
+            if (href && (looksLikePdfLabel || looksLikePdfHref)) {
+                addCandidate(href, looksLikePdfHref ? 'primary' : 'secondary');
+            }
+
+            if (looksLikePdfLabel) {
+                const onclick = readAttr(attrs, 'onclick');
+                for (const url of extractUrlsFromInlineScript(onclick)) {
+                    addCandidate(url, 'secondary');
+                }
+            }
+        }
+
+        const buttonRegex = /<button\b([^>]*)>([\s\S]*?)<\/button>/gi;
+        for (const match of Array.from(html.matchAll(buttonRegex))) {
+            const attrs = match[1] || '';
+            const innerText = (match[2] || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+            const title = readAttr(attrs, 'title');
+            const ariaLabel = readAttr(attrs, 'aria-label');
+            const label = `${innerText} ${title} ${ariaLabel}`.trim();
+            if (!hasPdfActionSignal(label)) {
+                continue;
+            }
+
+            const dataHref = readAttr(attrs, 'data-href');
+            const dataUrl = readAttr(attrs, 'data-url');
+            const formAction = readAttr(attrs, 'formaction');
+            const onclick = readAttr(attrs, 'onclick');
+
+            if (dataHref) addCandidate(dataHref, looksLikePdfTarget(dataHref) ? 'primary' : 'secondary');
+            if (dataUrl) addCandidate(dataUrl, looksLikePdfTarget(dataUrl) ? 'primary' : 'secondary');
+            if (formAction) addCandidate(formAction, looksLikePdfTarget(formAction) ? 'primary' : 'secondary');
+            for (const url of extractUrlsFromInlineScript(onclick)) {
+                addCandidate(url, looksLikePdfTarget(url) ? 'primary' : 'secondary');
+            }
+        }
+
+        const jsonKeyRegex = /"(?:citation_pdf_url|pdfUrl|pdf_url|url_for_pdf|downloadUrl|fullTextPdfUrl|contentUrl|pdfLink)"\s*:\s*"([^"]+)"/gi;
+        for (const match of Array.from(html.matchAll(jsonKeyRegex))) {
+            addCandidate(match[1] || '', 'primary');
+        }
+
+        const jsonUrlRegex = /"url"\s*:\s*"([^"]+)"/gi;
+        for (const match of Array.from(html.matchAll(jsonUrlRegex))) {
+            const value = match[1] || '';
+            if (looksLikePdfTarget(value)) {
+                addCandidate(value, 'primary');
             }
         }
 
         const absoluteRegex = /https?:\/\/[^\s"'<>]+/gi;
-        for (const match of html.matchAll(absoluteRegex)) {
+        for (const match of Array.from(html.matchAll(absoluteRegex))) {
             const value = match[0] || '';
             if (looksLikePdfTarget(value)) {
-                addCandidate(value);
+                addCandidate(value, 'primary');
             }
         }
 
         const ieeeStampRegex = /(?:\/?stampPDF\/getPDF\.jsp\?[^\s"'<>]+)/gi;
-        for (const match of html.matchAll(ieeeStampRegex)) {
-            addCandidate(match[0] || '');
+        for (const match of Array.from(html.matchAll(ieeeStampRegex))) {
+            addCandidate(match[0] || '', 'primary');
         }
 
-        return candidates;
+        const merged = [...primaryCandidates, ...secondaryCandidates];
+        if (merged.length > MAX_HTML_PDF_CANDIDATES) {
+            return merged.slice(0, MAX_HTML_PDF_CANDIDATES);
+        }
+
+        return merged;
+    }
+
+    private sleep(ms: number): Promise<void> {
+        if (!Number.isFinite(ms) || ms <= 0) {
+            return Promise.resolve();
+        }
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    private getDomainKey(urlValue: string): string | null {
+        try {
+            const parsed = new URL(urlValue);
+            return parsed.hostname.trim().toLowerCase() || null;
+        } catch {
+            return null;
+        }
+    }
+
+    private getOrCreateDomainFetchState(domainKey: string): DomainFetchState {
+        const existing = DOMAIN_FETCH_STATE.get(domainKey);
+        if (existing) {
+            return existing;
+        }
+        const created: DomainFetchState = {
+            tail: Promise.resolve(),
+            nextAllowedAt: 0,
+            cooldownUntil: 0,
+            penaltyLevel: 0,
+        };
+        DOMAIN_FETCH_STATE.set(domainKey, created);
+        return created;
+    }
+
+    private async withDomainThrottle<T>(
+        urlValue: string,
+        task: () => Promise<T>
+    ): Promise<T> {
+        const domainKey = this.getDomainKey(urlValue);
+        if (!domainKey) {
+            return task();
+        }
+
+        const state = this.getOrCreateDomainFetchState(domainKey);
+        const previousTail = state.tail;
+        let resolveCurrent: (() => void) | undefined;
+        state.tail = new Promise<void>(resolve => {
+            resolveCurrent = () => resolve();
+        });
+
+        await previousTail;
+        try {
+            const now = Date.now();
+            const waitMs = Math.max(
+                0,
+                state.nextAllowedAt - now,
+                state.cooldownUntil - now
+            );
+            if (waitMs > 0) {
+                await this.sleep(waitMs);
+            }
+
+            state.nextAllowedAt = Date.now() + DOMAIN_FETCH_MIN_INTERVAL_MS;
+            return await task();
+        } finally {
+            if (resolveCurrent) {
+                resolveCurrent();
+            }
+        }
+    }
+
+    private parseRetryAfterMs(retryAfterHeader: string | null): number | null {
+        if (!retryAfterHeader) return null;
+        const value = retryAfterHeader.trim();
+        if (!value) return null;
+
+        if (/^\d+$/.test(value)) {
+            const seconds = parseInt(value, 10);
+            if (!Number.isFinite(seconds) || seconds < 0) return null;
+            return Math.min(seconds * 1000, DOMAIN_FETCH_COOLDOWN_MAX_MS);
+        }
+
+        const target = new Date(value).getTime();
+        if (!Number.isFinite(target)) return null;
+        const delta = target - Date.now();
+        if (delta <= 0) return null;
+        return Math.min(delta, DOMAIN_FETCH_COOLDOWN_MAX_MS);
+    }
+
+    private isRateLimitedOrBlockedStatus(status: number): boolean {
+        return status === 403 || status === 429 || status === 503;
+    }
+
+    private noteDomainRateLimited(
+        urlValue: string,
+        status: number,
+        retryAfterMs: number | null
+    ): number {
+        const domainKey = this.getDomainKey(urlValue);
+        if (!domainKey) {
+            return Math.max(1000, retryAfterMs || DOMAIN_FETCH_COOLDOWN_BASE_MS);
+        }
+
+        const state = this.getOrCreateDomainFetchState(domainKey);
+        state.penaltyLevel = Math.min(state.penaltyLevel + 1, 8);
+
+        const computedBackoff = Math.min(
+            DOMAIN_FETCH_COOLDOWN_BASE_MS * Math.pow(2, state.penaltyLevel - 1),
+            DOMAIN_FETCH_COOLDOWN_MAX_MS
+        );
+        const cooldownMs = Math.max(retryAfterMs || 0, computedBackoff);
+        state.cooldownUntil = Math.max(state.cooldownUntil, Date.now() + cooldownMs);
+
+        console.warn(
+            `[RefDocService] Domain throttle raised for ${domainKey} after HTTP ${status}. Cooldown=${Math.ceil(cooldownMs / 1000)}s, penalty=${state.penaltyLevel}`
+        );
+        return cooldownMs;
+    }
+
+    private noteDomainSuccess(urlValue: string): void {
+        const domainKey = this.getDomainKey(urlValue);
+        if (!domainKey) return;
+
+        const state = this.getOrCreateDomainFetchState(domainKey);
+        state.penaltyLevel = Math.max(0, state.penaltyLevel - 1);
+        if (state.penaltyLevel === 0 && state.cooldownUntil < Date.now()) {
+            state.cooldownUntil = 0;
+        }
+    }
+
+    private noteDomainTransportError(urlValue: string): void {
+        const domainKey = this.getDomainKey(urlValue);
+        if (!domainKey) return;
+
+        const state = this.getOrCreateDomainFetchState(domainKey);
+        state.penaltyLevel = Math.min(state.penaltyLevel + 1, 8);
+        const cooldownMs = Math.min(DOMAIN_FETCH_COOLDOWN_BASE_MS, DOMAIN_FETCH_COOLDOWN_MAX_MS);
+        state.cooldownUntil = Math.max(state.cooldownUntil, Date.now() + Math.floor(cooldownMs / 2));
     }
 
     private async fetchWithCookieRedirects(
@@ -1105,6 +1371,7 @@ class ReferenceDocumentService {
     > {
         const cookieJar = new Map<string, string>();
         let currentUrl = initialUrl;
+        let rateLimitRetryCount = 0;
 
         for (let i = 0; i <= maxRedirects; i++) {
             const headers = this.buildPdfFetchHeaders();
@@ -1115,11 +1382,14 @@ class ReferenceDocumentService {
 
             let response: Response;
             try {
-                response = await fetch(currentUrl, {
-                    headers,
-                    redirect: 'manual',
+                response = await this.withDomainThrottle(currentUrl, async () => {
+                    return fetch(currentUrl, {
+                        headers,
+                        redirect: 'manual',
+                    });
                 });
             } catch (error: any) {
+                this.noteDomainTransportError(currentUrl);
                 return {
                     success: false,
                     error: error?.message || `Failed to fetch URL ${currentUrl}`,
@@ -1127,6 +1397,27 @@ class ReferenceDocumentService {
             }
 
             this.captureResponseCookies(response.headers, cookieJar);
+
+            if (this.isRateLimitedOrBlockedStatus(response.status)) {
+                const retryAfterMs = this.parseRetryAfterMs(response.headers.get('retry-after'));
+                const cooldownMs = this.noteDomainRateLimited(currentUrl, response.status, retryAfterMs);
+
+                if (rateLimitRetryCount < DOMAIN_FETCH_RATE_LIMIT_RETRIES) {
+                    rateLimitRetryCount += 1;
+                    const waitMs = Math.max(1000, retryAfterMs || Math.min(cooldownMs, DOMAIN_FETCH_COOLDOWN_MAX_MS));
+                    await this.sleep(waitMs);
+                    continue;
+                }
+
+                const domain = this.getDomainKey(currentUrl) || 'unknown-host';
+                return {
+                    success: false,
+                    error: `Domain ${domain} is rate-limiting or blocking requests (HTTP ${response.status})`,
+                };
+            }
+
+            this.noteDomainSuccess(currentUrl);
+            rateLimitRetryCount = 0;
 
             if (!this.isRedirectStatus(response.status)) {
                 return {

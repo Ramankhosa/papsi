@@ -18,6 +18,7 @@ import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { paperSectionService } from '@/lib/services/paper-section-service';
 import { blueprintService } from '@/lib/services/blueprint-service';
+import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 
 const HIDE_CONTENT_STATUSES = new Set(['PREPARING', 'BASE_READY', 'POLISHING', 'REGENERATING']);
 
@@ -106,6 +107,51 @@ async function getSessionForUser(sessionId: string, user: { id: string; roles?: 
       paperBlueprint: true
     }
   });
+}
+
+async function resolveTenantContext(
+  request: NextRequest,
+  userId: string,
+  tenantId?: string | null
+) {
+  const authorization = request.headers.get('authorization');
+  if (authorization) {
+    const tenantContext = await extractTenantContextFromRequest({ headers: { authorization } });
+    if (tenantContext) {
+      return {
+        ...tenantContext,
+        userId: tenantContext.userId || userId,
+      };
+    }
+  }
+
+  if (!tenantId) return null;
+
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: tenantId },
+    include: {
+      tenantPlans: {
+        where: {
+          status: 'ACTIVE',
+          effectiveFrom: { lte: new Date() },
+          OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+        },
+        orderBy: { effectiveFrom: 'desc' },
+        take: 1,
+      },
+    },
+  });
+
+  if (tenant && tenant.status === 'ACTIVE' && tenant.tenantPlans[0]) {
+    return {
+      tenantId: tenant.id,
+      planId: tenant.tenantPlans[0].planId,
+      tenantStatus: tenant.status,
+      userId,
+    };
+  }
+
+  return null;
 }
 
 // ============================================================================
@@ -205,7 +251,7 @@ export async function POST(
         { status: 404 }
       );
     }
-
+    const tenantContext = await resolveTenantContext(request, user.id, session.tenantId);
     const body = await request.json();
 
     // Handle generateAll action
@@ -259,7 +305,8 @@ export async function POST(
           sessionId,
           sectionKey,
           userInstructions: data.userInstructions?.[sectionKey],
-          regenerate: staleKeys.has(sectionKey)
+          regenerate: staleKeys.has(sectionKey),
+          tenantContext,
         });
 
         results.push({
@@ -307,7 +354,8 @@ export async function POST(
       sessionId,
       sectionKey: data.sectionKey,
       userInstructions: data.userInstructions,
-      regenerate: data.regenerate
+      regenerate: data.regenerate,
+      tenantContext,
     });
 
     if (!result.success) {
@@ -456,6 +504,7 @@ export async function PATCH(
         { status: 404 }
       );
     }
+    const tenantContext = await resolveTenantContext(request, user.id, session.tenantId);
 
     const body = await request.json();
 
@@ -491,7 +540,7 @@ export async function PATCH(
     if (body.action === 'reExtractMemory') {
       const data = reExtractMemorySchema.parse(body);
       
-      const section = await paperSectionService.reExtractMemory(sessionId, data.sectionKey);
+      const section = await paperSectionService.reExtractMemory(sessionId, data.sectionKey, tenantContext);
       
       if (!section) {
         return NextResponse.json(
