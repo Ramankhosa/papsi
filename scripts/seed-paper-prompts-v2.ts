@@ -47,9 +47,55 @@ The "content" field should contain well-structured text with subsections and bul
 // BASE SECTION PROMPTS (Action-Focused, No Decision Logic)
 // ============================================================================
 
+const BASE_DEFENSIBILITY_BLOCK = `[BASE DRAFT REQUIREMENTS - DEFENSIBILITY FIRST]
+
+1. Do not introduce new claims beyond blueprint and mapped evidence.
+2. Every major claim must:
+   - be supported by mapped evidence, OR
+   - be explicitly marked as motivation, assumption, or future direction.
+3. Preserve scope conditions and boundary notes from the evidence pack.
+4. If a limitation, trade-off, or competing explanation exists in the evidence pack, include it explicitly.
+5. Distinguish clearly between:
+   - Findings from cited work
+   - Your study's findings
+   - Hypothesized implications
+6. Avoid rhetorical intensifiers (e.g., transformative, groundbreaking).
+7. Write in a structurally clear but neutral academic tone.`
+
+const INTRODUCTION_BASE_ADDITIONS = `INTRODUCTION DEFENSIBILITY ADDITIONS:
+- Explicitly state the priorWorkLimitation from noveltyFraming.
+- Clearly define the identifiableGap.
+- Frame resolutionClaim without exaggeration.
+- If noveltyType = TRANSLATIONAL, describe contribution as validation/adaptation.`
+
+const LITERATURE_REVIEW_BASE_ADDITIONS = `LITERATURE REVIEW DEFENSIBILITY ADDITIONS:
+- Organize by analytical themes, not individual papers.
+- For each theme, state whether evidence REINFORCES, CONTRADICTS, QUALIFIES, EXTENDS, or creates TENSION.
+- Include at least one explicit boundary condition when supported by evidence.
+- Avoid summarizing papers sequentially.`
+
+const METHODOLOGY_BASE_ADDITIONS = `METHODOLOGY DEFENSIBILITY ADDITIONS:
+- State chosenApproach explicitly.
+- Justify whyNotAlternatives concretely.
+- List keyAssumptions clearly.
+- State knownConstraints before presenting results.`
+
+const RESULTS_BASE_ADDITIONS = `RESULTS DEFENSIBILITY ADDITIONS:
+- Report findings strictly as observed.
+- Include scopeCondition.
+- Include limitations where tradeOff is present.
+- Avoid interpretive extension beyond reported evidence.`
+
+const DISCUSSION_BASE_ADDITIONS = `DISCUSSION DEFENSIBILITY ADDITIONS:
+- Revisit priorWorkLimitation and explain whether results resolve it.
+- Explicitly acknowledge remaining constraints.
+- Mention alternative interpretations if supported by evidence.`
+
 const abstractBase = `${SYSTEM_ROLE}
 
 SECTION: Abstract
+
+${BASE_DEFENSIBILITY_BLOCK}
 
 TASK:
 Write a structured journal abstract that accurately reflects the paper.
@@ -101,17 +147,20 @@ const introductionBase = `${SYSTEM_ROLE}
 
 SECTION: Introduction
 
+${BASE_DEFENSIBILITY_BLOCK}
+
 TASK:
 Write the Introduction section of a journal article.
 
 The Introduction MUST:
 1. Establish the *specific* problem context (not a broad field history).
 2. Explain why the problem is non-trivial under real constraints.
-3. Identify a precise research gap grounded in limitations of existing approaches.
+3. Identify a precise research gap grounded in a concrete limitation, unresolved trade-off, conflicting findings, or boundary condition in prior work.
 4. State the research question(s) and/or hypothesis explicitly.
 5. State the thesis in alignment with the provided blueprint.
 6. Clearly enumerate the paper's key contributions (concrete, testable).
 7. Provide a short roadmap of the remaining sections.
+8. Use bullet points sparingly in the Introduction; prioritize argumentative flow over enumeration.
 
 The Introduction must SET UP the paper.
 It must NOT:
@@ -130,7 +179,9 @@ SCIENTIFIC RULES:
 2. Any known limitation must be acknowledged or scoped.
 3. If uncertainty exists, state it explicitly.
 4. Make it obvious what the paper DOES and DOES NOT do.
-5. Assume the reader is an expert reviewer.
+5. Anticipate one plausible reviewer objection and address it pre-emptively (e.g., scope limitation, data constraint, or methodological choice).
+
+${INTRODUCTION_BASE_ADDITIONS}
 
 CONTEXT (use if available):
 Title: {{TITLE}}
@@ -144,6 +195,8 @@ Abstract draft: {{ABSTRACT_DRAFT}}`
 const literatureReviewBase = `${SYSTEM_ROLE}
 
 SECTION: Literature Review
+
+${BASE_DEFENSIBILITY_BLOCK}
 
 TASK:
 Write the Literature Review section that positions the present work within existing research.
@@ -174,6 +227,8 @@ SYNTHESIS RULES:
 4. Gaps must be framed as structural limitations, methodological trade-offs, or missing evaluation dimensions — not "lack of attention".
 5. The final paragraph must logically justify THIS paper's approach.
 
+${LITERATURE_REVIEW_BASE_ADDITIONS}
+
 CONTEXT (use if available):
 Title: {{TITLE}}
 Research question: {{RESEARCH_QUESTION}}
@@ -183,6 +238,8 @@ Previous sections: {{PREVIOUS_SECTIONS}}`
 const methodologyBase = `${SYSTEM_ROLE}
 
 SECTION: Methodology
+
+${BASE_DEFENSIBILITY_BLOCK}
 
 TASK:
 Write the Methodology section that explains exactly HOW the study was conducted.
@@ -212,6 +269,8 @@ SCIENTIFIC RIGOR RULES:
 2. If a choice weakens generalizability, state it explicitly.
 3. If procedures cannot be fully replicated, state what can be audited.
 
+${METHODOLOGY_BASE_ADDITIONS}
+
 CONTEXT (use if available):
 Title: {{TITLE}}
 Research question: {{RESEARCH_QUESTION}}
@@ -223,6 +282,8 @@ Previous sections: {{PREVIOUS_SECTIONS}}`
 const resultsBase = `${SYSTEM_ROLE}
 
 SECTION: Results
+
+${BASE_DEFENSIBILITY_BLOCK}
 
 TASK:
 Write the Results section that reports the outcomes of the methodology exactly as conducted.
@@ -249,6 +310,8 @@ SCIENTIFIC INTEGRITY:
 2. If data quality issues exist, report them factually.
 3. Do not hide inconsistencies; report them neutrally.
 
+${RESULTS_BASE_ADDITIONS}
+
 CONTEXT (use if available):
 Title: {{TITLE}}
 Research question: {{RESEARCH_QUESTION}}
@@ -259,6 +322,8 @@ Previous sections: {{PREVIOUS_SECTIONS}}`
 const discussionBase = `${SYSTEM_ROLE}
 
 SECTION: Discussion
+
+${BASE_DEFENSIBILITY_BLOCK}
 
 TASK:
 Write the Discussion section that interprets the reported results.
@@ -291,6 +356,8 @@ DISCUSSION DISCIPLINE:
 2. Limitations must be concrete, paired with impact and mitigation.
 3. Avoid "spin" — reviewers penalize it heavily.
 
+${DISCUSSION_BASE_ADDITIONS}
+
 CONTEXT (use if available):
 Title: {{TITLE}}
 Research question: {{RESEARCH_QUESTION}}
@@ -301,6 +368,8 @@ Previous sections: {{PREVIOUS_SECTIONS}}`
 const conclusionBase = `${SYSTEM_ROLE}
 
 SECTION: Conclusion
+
+${BASE_DEFENSIBILITY_BLOCK}
 
 TASK:
 Write the Conclusion section that closes the paper responsibly.
@@ -1052,8 +1121,40 @@ interface TypeOverride {
   constraints?: Record<string, any>
 }
 
+const JOURNAL_REFINEMENT_MODE_BLOCK = `[JOURNAL REFINEMENT MODE]
+
+You are refining an already evidence-grounded draft.
+
+You MUST:
+- Preserve all claims, scope conditions, and boundary notes.
+- Preserve hedging language.
+- Preserve translational framing if specified.
+- Do NOT add new citations.
+- Do NOT delete existing citation placeholders.
+- Do NOT introduce stronger claims than supported.
+- Strengthen analytical transitions.
+- Clarify tension and synthesis where present.
+- Improve logical flow and paragraph cohesion.`
+
+const JOURNAL_ARGUMENT_QUALITY_BLOCK = `ARGUMENT QUALITY ENHANCER:
+- Where themes are discussed, ensure explicit comparative language (e.g., whereas, in contrast, under conditions, however).
+- Convert sequential summaries into thematic synthesis.
+- Ensure at least one analytical pivot per section where warranted.`
+
+const JOURNAL_TONE_DISCIPLINE_BLOCK = `TONE DISCIPLINE:
+- Replace vague generalizations with precise qualifiers.
+- Remove repetitive sentence openings.
+- Vary sentence length while preserving clarity.
+- Maintain formal academic restraint appropriate for peer-reviewed journals.`
+
 // Journal Article Overrides - optimized for archival depth, rigor, and calibrated claims
 const journalAbstractOverride = `JOURNAL ARTICLE MODIFICATIONS:
+
+${JOURNAL_REFINEMENT_MODE_BLOCK}
+
+${JOURNAL_ARGUMENT_QUALITY_BLOCK}
+
+${JOURNAL_TONE_DISCIPLINE_BLOCK}
 
 1. Balanced Structure:
    - Cover problem context, objective, method, principal findings, and conclusion.
@@ -1078,6 +1179,12 @@ PRESERVE from base: claim discipline, blueprint alignment, no-citation rule, out
 
 const journalIntroductionOverride = `JOURNAL ARTICLE MODIFICATIONS:
 
+${JOURNAL_REFINEMENT_MODE_BLOCK}
+
+${JOURNAL_ARGUMENT_QUALITY_BLOCK}
+
+${JOURNAL_TONE_DISCIPLINE_BLOCK}
+
 1. Gap Construction:
    - Build a precise problem gap using prior literature and concrete limitations.
    - Explain why existing approaches are insufficient for this objective.
@@ -1100,6 +1207,12 @@ const journalIntroductionOverride = `JOURNAL ARTICLE MODIFICATIONS:
 PRESERVE from base: section purpose, terminology consistency, blueprint constraints, output format.`
 
 const journalLiteratureReviewOverride = `JOURNAL ARTICLE MODIFICATIONS:
+
+${JOURNAL_REFINEMENT_MODE_BLOCK}
+
+${JOURNAL_ARGUMENT_QUALITY_BLOCK}
+
+${JOURNAL_TONE_DISCIPLINE_BLOCK}
 
 1. Analytical Synthesis:
    - Group prior work by themes, methods, or assumptions.
@@ -1124,6 +1237,12 @@ PRESERVE from base: balanced tone, claim discipline, section purpose, output for
 
 const journalMethodologyOverride = `JOURNAL ARTICLE MODIFICATIONS:
 
+${JOURNAL_REFINEMENT_MODE_BLOCK}
+
+${JOURNAL_ARGUMENT_QUALITY_BLOCK}
+
+${JOURNAL_TONE_DISCIPLINE_BLOCK}
+
 1. Reproducibility Focus:
    - Provide enough procedural detail for replication or faithful adaptation.
    - Specify data sources, inclusion criteria, preprocessing, and protocol steps.
@@ -1146,6 +1265,12 @@ const journalMethodologyOverride = `JOURNAL ARTICLE MODIFICATIONS:
 PRESERVE from base: scientific rigor, validity disclosure, terminology consistency, output format.`
 
 const journalResultsOverride = `JOURNAL ARTICLE MODIFICATIONS:
+
+${JOURNAL_REFINEMENT_MODE_BLOCK}
+
+${JOURNAL_ARGUMENT_QUALITY_BLOCK}
+
+${JOURNAL_TONE_DISCIPLINE_BLOCK}
 
 1. Comprehensive Reporting:
    - Present primary and secondary outcomes in a structured order.
@@ -1170,6 +1295,12 @@ PRESERVE from base: result-interpretation separation, metric precision, output f
 
 const journalDiscussionOverride = `JOURNAL ARTICLE MODIFICATIONS:
 
+${JOURNAL_REFINEMENT_MODE_BLOCK}
+
+${JOURNAL_ARGUMENT_QUALITY_BLOCK}
+
+${JOURNAL_TONE_DISCIPLINE_BLOCK}
+
 1. Interpretation Depth:
    - Explain how findings answer the research question and align with contribution claims.
    - Distinguish strong inferences from tentative interpretation.
@@ -1192,6 +1323,12 @@ const journalDiscussionOverride = `JOURNAL ARTICLE MODIFICATIONS:
 PRESERVE from base: no-new-data discipline, claim calibration, terminology consistency, output format.`
 
 const journalConclusionOverride = `JOURNAL ARTICLE MODIFICATIONS:
+
+${JOURNAL_REFINEMENT_MODE_BLOCK}
+
+${JOURNAL_ARGUMENT_QUALITY_BLOCK}
+
+${JOURNAL_TONE_DISCIPLINE_BLOCK}
 
 1. Synthesis:
    - Provide a concise synthesis of what was established and why it matters.
@@ -1707,6 +1844,68 @@ const paperTypeOverrides: TypeOverride[] = [
   }
 ]
 
+const DB_PRIORITY_JOURNAL_SECTION_KEYS = new Set([
+  'abstract',
+  'introduction',
+  'literature_review',
+  'methodology',
+  'results',
+  'discussion',
+  'conclusion'
+])
+
+async function applyDatabasePromptOverrides() {
+  console.log('🔄 Syncing prompts from database (DB takes priority for base + JOURNAL)...\n')
+
+  const baseSectionKeys = supersetSections.map(section => section.sectionKey)
+  const dbBaseSections = await prisma.paperSupersetSection.findMany({
+    where: {
+      sectionKey: { in: baseSectionKeys }
+    },
+    select: {
+      sectionKey: true,
+      instruction: true
+    }
+  })
+
+  const dbBaseByKey = new Map(dbBaseSections.map(row => [row.sectionKey, row.instruction]))
+  let baseApplied = 0
+  for (const section of supersetSections) {
+    const dbInstruction = dbBaseByKey.get(section.sectionKey)
+    if (typeof dbInstruction === 'string' && dbInstruction.trim().length > 0) {
+      section.instruction = dbInstruction
+      baseApplied++
+    }
+  }
+
+  const dbJournalOverrides = await prisma.paperTypeSectionPrompt.findMany({
+    where: {
+      paperTypeCode: 'JOURNAL_ARTICLE',
+      sectionKey: { in: Array.from(DB_PRIORITY_JOURNAL_SECTION_KEYS) },
+      status: 'ACTIVE'
+    },
+    select: {
+      sectionKey: true,
+      instruction: true
+    }
+  })
+
+  const dbJournalBySection = new Map(dbJournalOverrides.map(row => [row.sectionKey, row.instruction]))
+  let journalApplied = 0
+  for (const override of paperTypeOverrides) {
+    if (override.paperTypeCode !== 'JOURNAL_ARTICLE') continue
+    const dbInstruction = dbJournalBySection.get(override.sectionKey)
+    if (typeof dbInstruction === 'string' && dbInstruction.trim().length > 0) {
+      override.instruction = dbInstruction
+      journalApplied++
+    }
+  }
+
+  console.log(`  ✓ Base prompts overridden from DB: ${baseApplied}/${supersetSections.length}`)
+  console.log(`  ✓ JOURNAL overrides overridden from DB: ${journalApplied}/${Array.from(DB_PRIORITY_JOURNAL_SECTION_KEYS).length}`)
+  console.log('  ✓ Seed file defaults are used only when DB prompt is missing.\n')
+}
+
 // ============================================================================
 // SEEDING FUNCTIONS
 // ============================================================================
@@ -1841,6 +2040,9 @@ async function main() {
   console.log('═'.repeat(70) + '\n')
 
   try {
+    // 0. Ensure DB is the source of truth for existing base + JOURNAL prompts
+    await applyDatabasePromptOverrides()
+
     // 1. Seed base section prompts
     await seedSupersetSections()
     

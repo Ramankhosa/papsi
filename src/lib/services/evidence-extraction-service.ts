@@ -5,6 +5,7 @@ import {
   extractionCardSchema,
   EVIDENCE_CLAIM_TYPES,
   EVIDENCE_CONFIDENCE_LEVELS,
+  NOT_EXTRACTED_FROM_SOURCE,
   type ExtractedEvidenceCard,
   type PreparedPaperText,
   type DeepAnalysisLabel,
@@ -28,11 +29,29 @@ CRITICAL RULES:
    - MEDIUM: evidence present but partial detail or narrower scope
    - LOW: weak, indirect, or uncertain evidence
 5. Output valid JSON only. No markdown, no explanations.
+6. SCOPE TRANSPARENCY:
+   Every FINDING card must include scopeCondition.
+   If not stated in the paper, write: "Not extracted from source."
+7. BOUNDARY NOTES:
+   For quantitative claims, include boundaryNote.
+   If not explicitly stated, write: "Not extracted from source."
+8. TRADE-OFFS:
+   For METHOD and FINDING cards, extract trade-offs ONLY if explicitly stated.
+   If not found in the source text, write: "Not extracted from source."
+9. COMPETING EXPLANATIONS:
+   Extract only if authors explicitly mention alternative explanations.
+   Otherwise write: "Not extracted from source."
+
+IMPORTANT:
+- "Not extracted from source" means absence of extracted evidence.
+- It does NOT mean the trade-off or boundary does not exist.
+- boundaryNote, tradeOff, and competingExplanation must be grounded in sourceFragment or adjacent text.
+- Do NOT infer trade-offs unless explicitly stated.
 
 OUTPUT FORMAT:
 Return a JSON array of objects with fields:
 claim, claimType, quantitativeDetail, conditions, comparableMetrics,
-doesNotSupport, scopeCondition, studyDesign, rigorIndicators,
+doesNotSupport, scopeCondition, boundaryNote, tradeOff, competingExplanation, studyDesign, rigorIndicators,
 sourceFragment, pageHint, confidence, sourceSection.`;
 
 const ARCHETYPE_INSTRUCTIONS: Record<ReferenceArchetype, string> = {
@@ -91,7 +110,7 @@ function buildExtractionPrompt(
     DEPTH_INSTRUCTIONS[depthLabel],
     `Output format: JSON array of cards with fields:
 claim, claimType, quantitativeDetail, conditions, comparableMetrics,
-doesNotSupport, scopeCondition, studyDesign, rigorIndicators,
+doesNotSupport, scopeCondition, boundaryNote, tradeOff, competingExplanation, studyDesign, rigorIndicators,
 sourceFragment, pageHint, confidence, sourceSection`,
   ].join('\n\n');
 
@@ -157,6 +176,20 @@ function hasNonEmptyText(value: string | null | undefined): boolean {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function normalizeExtractedField(value: string | null | undefined): string | null {
+  if (!hasNonEmptyText(value)) {
+    return null;
+  }
+  const trimmed = String(value).trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.toLowerCase() === NOT_EXTRACTED_FROM_SOURCE.toLowerCase()) {
+    return NOT_EXTRACTED_FROM_SOURCE;
+  }
+  return trimmed;
+}
+
 function downgradeConfidence(confidence: ExtractedEvidenceCard['confidence']): ExtractedEvidenceCard['confidence'] {
   if (confidence === 'HIGH') return 'MEDIUM';
   if (confidence === 'MEDIUM') return 'LOW';
@@ -176,6 +209,36 @@ function enforceCardRules(card: ExtractedEvidenceCard, index: number, warnings: 
     warnings.push(`Card ${index}: quantitativeDetail present without comparableMetrics, confidence downgraded`);
     next.confidence = downgradeConfidence(next.confidence);
   }
+
+  // Scope transparency for findings.
+  const normalizedScopeCondition = normalizeExtractedField(next.scopeCondition);
+  if (next.claimType === 'FINDING' && !normalizedScopeCondition) {
+    warnings.push(`Card ${index}: scopeCondition missing for FINDING, default applied`);
+  }
+  next.scopeCondition = normalizedScopeCondition || (next.claimType === 'FINDING'
+    ? NOT_EXTRACTED_FROM_SOURCE
+    : next.scopeCondition);
+
+  // Boundary notes must exist for quantitative claims.
+  const normalizedBoundaryNote = normalizeExtractedField(next.boundaryNote);
+  if (hasNonEmptyText(next.quantitativeDetail) && !normalizedBoundaryNote) {
+    warnings.push(`Card ${index}: boundaryNote missing for quantitative claim, default applied`);
+  }
+  next.boundaryNote = normalizedBoundaryNote || NOT_EXTRACTED_FROM_SOURCE;
+
+  // Trade-offs are only extracted when explicit; default when absent.
+  const normalizedTradeOff = normalizeExtractedField(next.tradeOff);
+  if ((next.claimType === 'FINDING' || next.claimType === 'METHOD') && !normalizedTradeOff) {
+    warnings.push(`Card ${index}: tradeOff not explicit for ${next.claimType}, default applied`);
+  }
+  next.tradeOff = normalizedTradeOff || NOT_EXTRACTED_FROM_SOURCE;
+
+  // Competing explanations must be explicit in source text.
+  const normalizedCompetingExplanation = normalizeExtractedField(next.competingExplanation);
+  if (!normalizedCompetingExplanation) {
+    warnings.push(`Card ${index}: competingExplanation missing, default applied`);
+  }
+  next.competingExplanation = normalizedCompetingExplanation || NOT_EXTRACTED_FROM_SOURCE;
 
   return next;
 }
@@ -289,6 +352,18 @@ function normalizeCardBeforeParse(raw: unknown): unknown {
     result.scopeCondition = coerceToStringOrNull(result.scope_condition);
     delete result.scope_condition;
   }
+  if (result.boundary_note !== undefined && result.boundaryNote === undefined) {
+    result.boundaryNote = coerceToStringOrNull(result.boundary_note);
+    delete result.boundary_note;
+  }
+  if (result.trade_off !== undefined && result.tradeOff === undefined) {
+    result.tradeOff = coerceToStringOrNull(result.trade_off);
+    delete result.trade_off;
+  }
+  if (result.competing_explanation !== undefined && result.competingExplanation === undefined) {
+    result.competingExplanation = coerceToStringOrNull(result.competing_explanation);
+    delete result.competing_explanation;
+  }
   if (result.study_design !== undefined && result.studyDesign === undefined) {
     result.studyDesign = coerceToStringOrNull(result.study_design);
     delete result.study_design;
@@ -309,6 +384,7 @@ function normalizeCardBeforeParse(raw: unknown): unknown {
   // Coerce camelCase fields that LLMs may return as arrays instead of strings
   const stringFields = [
     'rigorIndicators', 'studyDesign', 'scopeCondition', 'doesNotSupport',
+    'boundaryNote', 'tradeOff', 'competingExplanation',
     'quantitativeDetail', 'conditions', 'pageHint',
   ] as const;
   for (const field of stringFields) {

@@ -92,6 +92,11 @@ interface CitationUsage {
   comparison: boolean;        // Use as baseline/comparison
 }
 
+interface PositionalRelation {
+  relation: PositionalRelationLabel;
+  rationale: string;
+}
+
 const CLAIM_TYPE_VALUES = [
   'BACKGROUND',
   'GAP',
@@ -102,6 +107,16 @@ const CLAIM_TYPE_VALUES = [
 ] as const;
 type ClaimType = (typeof CLAIM_TYPE_VALUES)[number];
 const CLAIM_TYPE_SET = new Set<string>(CLAIM_TYPE_VALUES);
+
+const POSITIONAL_RELATION_VALUES = [
+  'REINFORCES',
+  'CONTRADICTS',
+  'EXTENDS',
+  'QUALIFIES',
+  'TENSION'
+] as const;
+type PositionalRelationLabel = (typeof POSITIONAL_RELATION_VALUES)[number];
+const POSITIONAL_RELATION_SET = new Set<string>(POSITIONAL_RELATION_VALUES);
 
 const DEEP_ANALYSIS_RECOMMENDATION_VALUES = [
   'DEEP_ANCHOR',
@@ -140,6 +155,7 @@ interface CitationMeta {
   limitationsOrGaps: string | null;       // What they didn't address
   claimTypesSupported: ClaimType[]; // Structured claim categories this paper can support
   evidenceBoundary: string | null;  // What should NOT be claimed from this paper
+  positionalRelation: PositionalRelation;
   usage: CitationUsage;
   referenceArchetype: ReferenceArchetype | null;
   archetypeSignal: string | null;
@@ -268,6 +284,18 @@ function toCitationMetaSnapshot(
     evidenceBoundary: typeof meta.evidenceBoundary === 'string'
       ? meta.evidenceBoundary.slice(0, 400)
       : (meta.evidenceBoundary ?? null),
+    positionalRelation: (() => {
+      if (!meta.positionalRelation || typeof meta.positionalRelation !== 'object') {
+        return undefined;
+      }
+      const relation = POSITIONAL_RELATION_SET.has(String(meta.positionalRelation.relation || '').trim().toUpperCase())
+        ? String(meta.positionalRelation.relation).trim().toUpperCase() as PositionalRelationLabel
+        : undefined;
+      const rationale = typeof meta.positionalRelation.rationale === 'string'
+        ? meta.positionalRelation.rationale.slice(0, 300)
+        : undefined;
+      return relation || rationale ? { relation, rationale } : undefined;
+    })(),
     usage: meta.usage ? {
       introduction: Boolean(meta.usage.introduction),
       literatureReview: Boolean(meta.usage.literatureReview),
@@ -713,10 +741,64 @@ function normalizeReferenceArchetype(value: unknown): ReferenceArchetype | null 
   return 'SYSTEM_ALGO_EVALUATION'; // safe default
 }
 
+function normalizePositionalRelationLabel(value: unknown): PositionalRelationLabel | null {
+  if (typeof value !== 'string') return null;
+  const upper = value.trim().toUpperCase().replace(/[\s-]+/g, '_');
+  if (POSITIONAL_RELATION_SET.has(upper)) {
+    return upper as PositionalRelationLabel;
+  }
+  if (/\b(CONTRADICT|CONFLICT|OPPOS|DISAGREE)\b/.test(upper)) {
+    return 'CONTRADICTS';
+  }
+  if (/\b(TENSION|TRADE_OFF|TRADEOFF|COMPETING)\b/.test(upper)) {
+    return 'TENSION';
+  }
+  if (/\b(QUALIF|BOUNDARY|LIMIT|SCOPE|CONDITION)\b/.test(upper)) {
+    return 'QUALIFIES';
+  }
+  if (/\b(EXTEND|ADAPT|TRANSFER|GENERALI[ZS])\b/.test(upper)) {
+    return 'EXTENDS';
+  }
+  if (/\b(REINFORCE|SUPPORT|ALIGN)\b/.test(upper)) {
+    return 'REINFORCES';
+  }
+  return null;
+}
+
+function inferPositionalRelation(
+  reasoning: string,
+  limitationsOrGaps: string | null | undefined,
+  evidenceBoundary: string | null | undefined
+): PositionalRelation {
+  const limitationText = typeof limitationsOrGaps === 'string' ? limitationsOrGaps.trim() : '';
+  const boundaryText = typeof evidenceBoundary === 'string' ? evidenceBoundary.trim() : '';
+  const combined = `${reasoning || ''} ${limitationText} ${boundaryText}`.toLowerCase();
+
+  let relation: PositionalRelationLabel = 'REINFORCES';
+  if (/\b(contradict|conflict|oppose|disagree|inconsistent)\b/.test(combined)) {
+    relation = 'CONTRADICTS';
+  } else if (/\b(tension|trade[\s-]?off|competing|mixed findings|compromise)\b/.test(combined)) {
+    relation = 'TENSION';
+  } else if (/\b(boundary|scope|limit|limitation|condition|only when|under)\b/.test(combined)) {
+    relation = 'QUALIFIES';
+  } else if (/\b(extend|adapt|different population|different setting|different domain|different scale)\b/.test(combined)) {
+    relation = 'EXTENDS';
+  }
+
+  const rationaleSource = limitationText || boundaryText || reasoning || 'Relation inferred from available abstract evidence.';
+  return {
+    relation,
+    rationale: rationaleSource.slice(0, 300),
+  };
+}
+
 function hasStressSignalStrong(
   citationMeta: CitationMeta | undefined,
   reasoning: string
 ): boolean {
+  if (citationMeta?.positionalRelation?.relation === 'CONTRADICTS' || citationMeta?.positionalRelation?.relation === 'TENSION') {
+    return true;
+  }
   if (Array.isArray(citationMeta?.claimTypesSupported) && citationMeta.claimTypesSupported.includes('LIMITATION')) {
     return true;
   }
@@ -1028,11 +1110,20 @@ For each paper, determine:
    - Literature Review: Needs detailed analysis/comparison?
    - Methodology: Reference their method/approach?
    - Comparison: Use as baseline/competing approach?
-9. DEEP ANALYSIS RECOMMENDATION (WORTHINESS ONLY):
+9. POSITIONAL RELATION to the research question:
+   Assign exactly one: REINFORCES | CONTRADICTS | EXTENDS | QUALIFIES | TENSION
+   - REINFORCES: Directly supports thesis or framework
+   - CONTRADICTS: Conflicting findings or opposing methodology
+   - EXTENDS: Related but different domain/population/scale
+   - QUALIFIES: Introduces scope limits or boundary conditions
+   - TENSION: Reveals unresolved trade-off or competing interpretations
+   Write 1 sentence explaining why.
+   Do NOT default to REINFORCES if the paper includes boundary conditions, scope limits, or trade-offs relevant to the research question.
+10. DEEP ANALYSIS RECOMMENDATION (WORTHINESS ONLY):
    - Assign exactly one: DEEP_ANCHOR, DEEP_SUPPORT, DEEP_STRESS_TEST, LIT_ONLY
    - Use only title/abstract/mapping signals for this decision
    - Do NOT use PDF/Open Access status for this decision
-10. REFERENCE ARCHETYPE (classify the paper's own research type):
+11. REFERENCE ARCHETYPE (classify the paper's own research type):
    - SYSTEM_ALGO_EVALUATION: proposes/evaluates a model, algorithm, pipeline, or system with quantitative metrics
    - CONTROLLED_EXPERIMENTAL_STUDY: tests a hypothesis with intervention/control design, statistical tests, effect sizes
    - EMPIRICAL_OBSERVATIONAL_STUDY: analyzes existing data (cohort, registry, EHR, retrospective) without intervention
@@ -1071,6 +1162,10 @@ For each paper, determine:
         "limitationsOrGaps": "<what they didn't address, or null>",
         "claimTypesSupported": ["<BACKGROUND|GAP|METHOD|LIMITATION|DATASET|IMPLEMENTATION_CONSTRAINT>"],
         "evidenceBoundary": "<one sentence boundary on what this paper does NOT support, or null>",
+        "positionalRelation": {
+          "relation": "<REINFORCES|CONTRADICTS|EXTENDS|QUALIFIES|TENSION>",
+          "rationale": "<one sentence explaining the positional relation>"
+        },
         "usage": {
           "introduction": <true/false>,
           "literatureReview": <true/false>,
@@ -1100,6 +1195,10 @@ For each paper, determine:
         "limitationsOrGaps": "<what they didn't address, or null>",
         "claimTypesSupported": ["<BACKGROUND|GAP|METHOD|LIMITATION|DATASET|IMPLEMENTATION_CONSTRAINT>"],
         "evidenceBoundary": "<one sentence boundary on what this paper does NOT support, or null>",
+        "positionalRelation": {
+          "relation": "<REINFORCES|CONTRADICTS|EXTENDS|QUALIFIES|TENSION>",
+          "rationale": "<one sentence explaining the positional relation>"
+        },
         "usage": {
           "introduction": <true/false>,
           "literatureReview": <true/false>,
@@ -1242,6 +1341,35 @@ function parseAndValidateLLMResponse(
     const evidenceBoundary = typeof rawMeta.evidenceBoundary === 'string'
       ? rawMeta.evidenceBoundary.trim().slice(0, 400)
       : null;
+    const rawPositionalRelation = rawMeta.positionalRelation && typeof rawMeta.positionalRelation === 'object'
+      ? rawMeta.positionalRelation as Record<string, unknown>
+      : {};
+    const parsedPositionalRelation = normalizePositionalRelationLabel(
+      rawPositionalRelation.relation
+      ?? rawPositionalRelation.label
+      ?? suggestion.positionalRelation?.relation
+      ?? suggestion.positionalRelation?.label
+      ?? suggestion.positionalRelation
+    );
+    const parsedPositionalRationaleRaw = typeof (rawPositionalRelation.rationale ?? rawPositionalRelation.reason) === 'string'
+      ? String(rawPositionalRelation.rationale ?? rawPositionalRelation.reason).trim()
+      : (typeof suggestion.positionalRelation?.rationale === 'string'
+        ? suggestion.positionalRelation.rationale.trim()
+        : typeof suggestion.positionalRelation?.reason === 'string'
+          ? suggestion.positionalRelation.reason.trim()
+          : '');
+    const inferredPositional = inferPositionalRelation(
+      String(suggestion.reasoning || ''),
+      typeof rawMeta.limitationsOrGaps === 'string' ? rawMeta.limitationsOrGaps : null,
+      evidenceBoundary
+    );
+    let finalPositionalRelation = parsedPositionalRelation || inferredPositional.relation;
+    // Guardrail: do not keep REINFORCES when extracted text suggests boundaries/tension.
+    if (finalPositionalRelation === 'REINFORCES' && inferredPositional.relation !== 'REINFORCES') {
+      finalPositionalRelation = inferredPositional.relation;
+    }
+    const finalPositionalRationale = (parsedPositionalRationaleRaw || inferredPositional.rationale || 'Relation inferred from available abstract evidence.')
+      .slice(0, 300);
     
     const citationMeta: CitationMeta = {
       keyContribution: String(rawMeta.keyContribution || 'Not specified').slice(0, 400),
@@ -1255,6 +1383,10 @@ function parseAndValidateLLMResponse(
         : null,
       claimTypesSupported,
       evidenceBoundary: evidenceBoundary || null,
+      positionalRelation: {
+        relation: finalPositionalRelation,
+        rationale: finalPositionalRationale
+      },
       usage: {
         introduction: Boolean(usage.introduction),
         literatureReview: Boolean(usage.literatureReview !== false), // Default true for relevant papers
@@ -1657,6 +1789,9 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     // Previous suggestions for successful papers are preserved and merged into the
     // final result.  Pass forceReanalyze=true to bypass this and re-analyze everything.
     const existingAnalysis = (searchRun.aiAnalysis as any) || {};
+    const existingRemoved = Array.isArray(existingAnalysis.removedResultIds)
+      ? existingAnalysis.removedResultIds
+      : [];
     const existingSuggestions: any[] = Array.isArray(existingAnalysis.suggestions) ? existingAnalysis.suggestions : [];
     const normalizedExistingSuggestions = existingSuggestions
       .map(suggestion => normalizeSuggestionForOutput(suggestion, blueprint))
@@ -1696,9 +1831,6 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         .sort((a: any, b: any) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
       const shortlistSummary = buildAdvisoryShortlistSummary(normalizedCarryOver, maxSuggestions);
       logDeepAnalysisDistribution(normalizedCarryOver);
-      const existingRemoved = Array.isArray(existingAnalysis.removedResultIds)
-        ? existingAnalysis.removedResultIds
-        : [];
       const blueprintCoverage = blueprint?.sectionPlan
         ? calculateBlueprintCoverage(blueprint, normalizedCarryOver)
         : undefined;
@@ -1733,7 +1865,13 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             failedPapers: 0,
             failedPaperIds: [],
             skippedNoAbstractIds,
-            skippedNoAbstractCount: skippedNoAbstractIds.length
+            skippedNoAbstractCount: skippedNoAbstractIds.length,
+            status: 'COMPLETED',
+            processedBatches: 0,
+            totalBatches: 0,
+            carriedOverPapers: normalizedCarryOver.length,
+            queuedPapers: 0,
+            progressUpdatedAt: new Date().toISOString()
           }
         }
       });
@@ -1750,6 +1888,103 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     );
 
     const totalBatches = batches.length;
+    const carriedSuggestionMap = new Map<string, any>();
+    for (const suggestion of carriedOverSuggestions) {
+      const normalized = normalizeSuggestionForOutput(suggestion, blueprint);
+      const paperId = String(normalized?.paperId || '');
+      if (!paperId) continue;
+      carriedSuggestionMap.set(paperId, normalized);
+    }
+
+    const progressiveSuggestionMap = new Map<string, any>();
+    const progressiveFailedPaperIds = new Set<string>();
+    let processedBatchCount = 0;
+    let expectedBatchCount = totalBatches;
+    let progressPersistChain: Promise<void> = Promise.resolve();
+
+    const buildRunningSuggestionsSnapshot = () => {
+      const mergedByPaperId = new Map<string, any>();
+      for (const [paperId, suggestion] of Array.from(carriedSuggestionMap.entries())) {
+        mergedByPaperId.set(paperId, suggestion);
+      }
+      for (const [paperId, suggestion] of Array.from(progressiveSuggestionMap.entries())) {
+        mergedByPaperId.set(paperId, suggestion);
+      }
+      return Array.from(mergedByPaperId.values()).sort(
+        (a: any, b: any) => (b?.relevanceScore || 0) - (a?.relevanceScore || 0)
+      );
+    };
+
+    const buildRunningAnalysisMeta = () => ({
+      totalPapers: papersToAnalyze.length,
+      reviewedPapers: Math.min(
+        papersToAnalyze.length,
+        carriedSuggestionMap.size + progressiveSuggestionMap.size
+      ),
+      failedPapers: progressiveFailedPaperIds.size,
+      failedPaperIds: Array.from(progressiveFailedPaperIds),
+      skippedNoAbstractIds,
+      skippedNoAbstractCount: skippedNoAbstractIds.length,
+      status: 'RUNNING',
+      processedBatches: processedBatchCount,
+      totalBatches: expectedBatchCount,
+      carriedOverPapers: carriedSuggestionMap.size,
+      queuedPapers: papersNeedingAnalysis.length,
+      progressUpdatedAt: new Date().toISOString()
+    });
+
+    const queueRunningProgressUpdate = () => {
+      const suggestionsSnapshot = buildRunningSuggestionsSnapshot();
+      const analysisMeta = buildRunningAnalysisMeta();
+      progressPersistChain = progressPersistChain
+        .then(async () => {
+          await prisma.literatureSearchRun.update({
+            where: { id: searchRunId },
+            data: {
+              aiAnalysis: {
+                ...existingAnalysis,
+                suggestions: suggestionsSnapshot,
+                summary: 'AI analysis in progress.',
+                removedResultIds: existingRemoved,
+                analysisMeta
+              } as any
+            }
+          });
+        })
+        .catch((progressError) => {
+          console.error('[LiteratureRelevance] Failed to persist running progress:', progressError);
+        });
+      return progressPersistChain;
+    };
+
+    const applyBatchProgress = (result: {
+      suggestions: PaperRelevanceAnalysis[];
+      failedPaperIds: string[];
+    }) => {
+      const suggestions = Array.isArray(result.suggestions) ? result.suggestions : [];
+      for (const suggestion of suggestions) {
+        const normalized = normalizeSuggestionForOutput(suggestion, blueprint);
+        const paperId = String(normalized?.paperId || '');
+        if (!paperId) continue;
+        progressiveSuggestionMap.set(paperId, normalized);
+        progressiveFailedPaperIds.delete(paperId);
+      }
+
+      const failedIds = Array.isArray(result.failedPaperIds) ? result.failedPaperIds : [];
+      for (const failedPaperIdRaw of failedIds) {
+        const failedPaperId = String(failedPaperIdRaw || '');
+        if (!failedPaperId) continue;
+        if (progressiveSuggestionMap.has(failedPaperId) || carriedSuggestionMap.has(failedPaperId)) {
+          continue;
+        }
+        progressiveFailedPaperIds.add(failedPaperId);
+      }
+
+      processedBatchCount += 1;
+      void queueRunningProgressUpdate();
+    };
+
+    await queueRunningProgressUpdate();
 
     // Get auth headers for LLM gateway
     const authHeader = request.headers.get('authorization') || '';
@@ -1934,7 +2169,9 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     };
 
     const batchResults = await runBatchesInParallel(batches, parallelBatchLimit, async (batch, batchIndex) => {
-      return processBatchWithRetry(batch, batchIndex);
+      const result = await processBatchWithRetry(batch, batchIndex);
+      applyBatchProgress(result);
+      return result;
     });
 
     let parseError = batchResults.some(r => r.parseError);
@@ -1953,8 +2190,12 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         for (let i = 0; i < retryPapers.length; i += retryBatchSize) {
           retryBatches.push(retryPapers.slice(i, i + retryBatchSize));
         }
+        expectedBatchCount = totalBatches + retryBatches.length;
+        await queueRunningProgressUpdate();
         const retryResults = await runBatchesInParallel(retryBatches, parallelBatchLimit, async (batch, idx) => {
-          return processBatchWithRetry(batch, totalBatches + idx);
+          const result = await processBatchWithRetry(batch, totalBatches + idx);
+          applyBatchProgress(result);
+          return result;
         });
         const retrySuggestions = retryResults.flatMap(r => r.suggestions || []);
         const retryStillFailed = Array.from(new Set(retryResults.flatMap(r => r.failedPaperIds || [])));
@@ -1971,6 +2212,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         console.log(`[LiteratureRelevance] Retry complete: ${retrySuggestions.length} recovered, ${retryStillFailed.length} still failed`);
       }
     }
+
+    await progressPersistChain;
 
     // Merge new suggestions with carried-over suggestions from the previous run.
     // New suggestions take priority (in case a previously-failed paper now succeeded).
@@ -1990,16 +2233,59 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     const sortedSuggestions = mergedSuggestions
       .sort((a: any, b: any) => (b.relevanceScore || 0) - (a.relevanceScore || 0));
     logDeepAnalysisDistribution(sortedSuggestions);
-    const summary = totalBatches > 1
-      ? `AI analysis completed across ${totalBatches} batches.`
+    const completedBatchCount = Math.max(processedBatchCount, expectedBatchCount);
+    const summary = completedBatchCount > 1
+      ? `AI analysis completed across ${completedBatchCount} batches.`
       : (batchResults[0]?.summary || 'AI analysis completed.');
     const blueprintCoverage = blueprint?.sectionPlan
       ? calculateBlueprintCoverage(blueprint, sortedSuggestions)
       : undefined;
     const shortlistSummary = buildAdvisoryShortlistSummary(sortedSuggestions, maxSuggestions);
+    const modelUsed = batchResults.find(r => r.modelClass && r.modelClass !== 'unknown')?.modelClass || 'unknown';
+    const finalAnalysisMeta = {
+      totalPapers,
+      reviewedPapers,
+      failedPapers: failedPaperIds.length,
+      failedPaperIds,
+      skippedNoAbstractIds,
+      skippedNoAbstractCount: skippedNoAbstractIds.length,
+      status: 'COMPLETED',
+      processedBatches: completedBatchCount,
+      totalBatches: expectedBatchCount,
+      carriedOverPapers: carriedSuggestionMap.size,
+      queuedPapers: papersNeedingAnalysis.length,
+      progressUpdatedAt: new Date().toISOString()
+    };
 
     // If all batches failed, return partial success with empty analysis
     if (sortedSuggestions.length === 0 && parseError) {
+      await prisma.literatureSearchRun.update({
+        where: { id: searchRunId },
+        data: {
+          aiAnalysis: {
+            suggestions: [],
+            summary: 'AI analysis completed but results could not be parsed. You can still manually review papers.',
+            blueprintCoverage: blueprint ? {
+              totalDimensions: blueprint.sectionPlan.reduce((acc, s) => acc + (s.mustCover?.length || 0), 0),
+              coveredDimensions: 0,
+              gaps: blueprint.sectionPlan.flatMap(s => (s.mustCover || []).map(d => ({
+                sectionKey: s.sectionKey,
+                sectionTitle: s.purpose,
+                dimension: d
+              }))),
+              sectionCoverage: {}
+            } : undefined,
+            parseError: true,
+            removedResultIds: existingRemoved,
+            analysisMeta: finalAnalysisMeta
+          } as any,
+          aiAnalyzedAt: new Date(),
+          aiModelUsed: modelUsed,
+          aiTokensUsed: totalOutputTokens,
+          researchQuestion,
+        }
+      });
+
       return NextResponse.json({
         success: true,
         searchRunId,
@@ -2020,22 +2306,10 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           papersAnalyzed: papersToAnalyze.length,
           blueprintIncluded: !!blueprint,
           parseError: true,
-          analysisMeta: {
-            totalPapers,
-            reviewedPapers,
-            failedPapers: failedPaperIds.length,
-            failedPaperIds,
-            skippedNoAbstractIds,
-            skippedNoAbstractCount: skippedNoAbstractIds.length
-          }
+          analysisMeta: finalAnalysisMeta
         }
       });
     }
-
-    const modelUsed = batchResults.find(r => r.modelClass && r.modelClass !== 'unknown')?.modelClass || 'unknown';
-    const existingRemoved = Array.isArray((searchRun.aiAnalysis as any)?.removedResultIds)
-      ? (searchRun.aiAnalysis as any).removedResultIds
-      : [];
 
     // Update search run with AI analysis
     await prisma.literatureSearchRun.update({
@@ -2048,14 +2322,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           shortlistSummary,
           parseError: parseError || undefined,
           removedResultIds: existingRemoved,
-          analysisMeta: {
-            totalPapers,
-            reviewedPapers,
-            failedPapers: failedPaperIds.length,
-            failedPaperIds,
-            skippedNoAbstractIds,
-            skippedNoAbstractCount: skippedNoAbstractIds.length
-          }
+          analysisMeta: finalAnalysisMeta
         } as any,
         aiAnalyzedAt: new Date(),
         aiModelUsed: modelUsed,
@@ -2226,14 +2493,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         papersAnalyzed: papersToAnalyze.length,
         blueprintIncluded: !!blueprint,
         parseError: parseError || undefined,
-        analysisMeta: {
-          totalPapers,
-          reviewedPapers,
-          failedPapers: failedPaperIds.length,
-          failedPaperIds,
-          skippedNoAbstractIds,
-          skippedNoAbstractCount: skippedNoAbstractIds.length
-        }
+        analysisMeta: finalAnalysisMeta
       }
     });
 
@@ -2318,6 +2578,7 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
 
     const { searchParams } = new URL(request.url);
     const searchRunId = searchParams.get('searchRunId');
+    const progressOnly = searchParams.get('progressOnly') === 'true';
 
     if (searchRunId) {
       // Get specific search run
@@ -2327,6 +2588,17 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
       
       if (!searchRun) {
         return NextResponse.json({ error: 'Search run not found' }, { status: 404 });
+      }
+
+      if (progressOnly) {
+        return NextResponse.json({
+          searchRun: {
+            id: searchRun.id,
+            aiAnalysis: {
+              analysisMeta: (searchRun.aiAnalysis as any)?.analysisMeta || null
+            }
+          }
+        });
       }
 
       const hydratedResults = await hydrateSearchRunResultsWithReferenceState(user.id, searchRun.results);

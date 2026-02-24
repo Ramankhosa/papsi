@@ -242,6 +242,18 @@ STRICT RULES — VIOLATIONS CAUSE AUTOMATIC REJECTION
    • Ensure consistent academic register throughout.
    • Strengthen topic sentences and paragraph cohesion.
    • Smooth transitions between subsections.
+
+5. HEDGING AND SCOPE GUARD
+   • Downgrade "demonstrates/proves" to "suggests/indicates" for single-study findings.
+   • Preserve scope conditions and boundary notes.
+   • Do not generalize beyond stated scope.
+   • If noveltyType = TRANSLATIONAL, replace innovation verbs with validation/adaptation verbs where necessary.
+
+6. RHYTHM PRESERVATION
+   • Preserve contrast paragraphs.
+   • Avoid flattening argumentative tension.
+   • If 3+ paragraphs share structure, vary one.
+   • Maintain varied sentence lengths.
 ${publicationTypeBlock}
 ═══════════════════════════════════════════════════════════════════════════════
 DRAFT TO POLISH

@@ -39,6 +39,8 @@ export const EVIDENCE_MAPPING_USE_AS = ['SUPPORT', 'CONTRAST', 'CONTEXT', 'DEFIN
 
 export type EvidenceMappingUseAs = (typeof EVIDENCE_MAPPING_USE_AS)[number];
 
+export const NOT_EXTRACTED_FROM_SOURCE = 'Not extracted from source.' as const;
+
 export interface PreparedPaperSection {
   heading: string;
   text: string;
@@ -60,6 +62,9 @@ export interface ExtractedEvidenceCard {
   comparableMetrics: Record<string, string | number | boolean | null> | null;
   doesNotSupport: string | null;
   scopeCondition: string | null;
+  boundaryNote?: string | null;
+  tradeOff?: string | null;
+  competingExplanation?: string | null;
   studyDesign: string | null;
   rigorIndicators: string | null;
   sourceFragment: string;
@@ -101,6 +106,9 @@ export const extractionCardSchema = z.object({
   ]).nullable().default(null),
   doesNotSupport: z.string().nullable().default(null),
   scopeCondition: z.string().nullable().default(null),
+  boundaryNote: z.string().default(NOT_EXTRACTED_FROM_SOURCE),
+  tradeOff: z.string().default(NOT_EXTRACTED_FROM_SOURCE),
+  competingExplanation: z.string().default(NOT_EXTRACTED_FROM_SOURCE),
   studyDesign: z.string().nullable().default(null),
   rigorIndicators: z.string().nullable().default(null),
   sourceFragment: z.string().min(20).max(1200),
@@ -131,8 +139,10 @@ export const DEFAULT_CARD_TARGETS: Record<Exclude<DeepAnalysisLabel, 'LIT_ONLY'>
   DEEP_STRESS_TEST: { min: 4, max: 8 },
 };
 
+export const MAX_DEEP_ANALYSIS_CONCURRENCY = 50;
+
 export const DEFAULT_EXTRACTION_CONCURRENCY = Number.parseInt(
-  process.env.DEEP_ANALYSIS_CONCURRENCY || '10',
+  process.env.DEEP_ANALYSIS_CONCURRENCY || String(MAX_DEEP_ANALYSIS_CONCURRENCY),
   10
 );
 

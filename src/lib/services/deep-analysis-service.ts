@@ -6,6 +6,7 @@ import {
   BATCH_MAPPING_CHUNK_SIZE,
   DEEP_ANALYSIS_LABELS,
   DEFAULT_EXTRACTION_CONCURRENCY,
+  MAX_DEEP_ANALYSIS_CONCURRENCY,
   MAX_CARD_PAGE_SIZE,
   REFERENCE_ARCHETYPES,
   type DeepAnalysisLabel,
@@ -225,7 +226,7 @@ function rankConfidence(value: EvidenceConfidenceLevel): number {
 
 function clampConcurrency(value?: number): number {
   const parsed = Number.isFinite(Number(value)) ? Number(value) : DEFAULT_EXTRACTION_CONCURRENCY;
-  return Math.max(1, Math.min(30, parsed || DEFAULT_EXTRACTION_CONCURRENCY || 10));
+  return Math.max(1, Math.min(MAX_DEEP_ANALYSIS_CONCURRENCY, parsed || DEFAULT_EXTRACTION_CONCURRENCY || MAX_DEEP_ANALYSIS_CONCURRENCY));
 }
 
 function nowIso(value?: Date | null): string | null {

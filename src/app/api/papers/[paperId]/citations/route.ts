@@ -55,13 +55,22 @@ const citationMetaSchema = z.object({
   methodologicalApproach: z.string().nullable().optional(),
   relevanceToResearch: z.string().optional(),
   limitationsOrGaps: z.string().nullable().optional(),
+  claimTypesSupported: z.array(z.string()).optional(),
+  evidenceBoundary: z.string().nullable().optional(),
+  positionalRelation: z.object({
+    relation: z.string().optional(),
+    rationale: z.string().optional()
+  }).optional(),
+  referenceArchetype: z.string().nullable().optional(),
+  archetypeSignal: z.string().nullable().optional(),
   usage: z.object({
     introduction: z.boolean().optional(),
     literatureReview: z.boolean().optional(),
     methodology: z.boolean().optional(),
     comparison: z.boolean().optional()
   }).optional(),
-  relevanceScore: z.number().optional()
+  relevanceScore: z.number().optional(),
+  analyzedAt: z.string().optional()
 }).optional().nullable();
 
 const createCitationSchema = z.object({
@@ -427,6 +436,13 @@ function toCitationMetaSnapshot(raw: any, fallbackRelevanceScore?: number): Cita
   if (!raw || typeof raw !== 'object') {
     return undefined;
   }
+  const positionalRelationSet = new Set([
+    'REINFORCES',
+    'CONTRADICTS',
+    'EXTENDS',
+    'QUALIFIES',
+    'TENSION'
+  ]);
   const result: CitationMetaSnapshot = {};
   if (typeof raw.keyContribution === 'string' && raw.keyContribution.trim()) {
     result.keyContribution = raw.keyContribution.trim().slice(0, 400);
@@ -456,6 +472,22 @@ function toCitationMetaSnapshot(raw: any, fallbackRelevanceScore?: number): Cita
       methodology: Boolean(raw.usage.methodology),
       comparison: Boolean(raw.usage.comparison)
     };
+  }
+  if (raw.positionalRelation && typeof raw.positionalRelation === 'object') {
+    const relationCandidate = typeof raw.positionalRelation.relation === 'string'
+      ? raw.positionalRelation.relation.trim().toUpperCase()
+      : '';
+    const rationaleCandidate = typeof raw.positionalRelation.rationale === 'string'
+      ? raw.positionalRelation.rationale.trim().slice(0, 300)
+      : '';
+    if (positionalRelationSet.has(relationCandidate) || rationaleCandidate) {
+      result.positionalRelation = {
+        relation: positionalRelationSet.has(relationCandidate)
+          ? relationCandidate as NonNullable<CitationMetaSnapshot['positionalRelation']>['relation']
+          : undefined,
+        rationale: rationaleCandidate || undefined
+      };
+    }
   }
   const relevanceScore = Number(raw.relevanceScore ?? fallbackRelevanceScore);
   if (Number.isFinite(relevanceScore)) {

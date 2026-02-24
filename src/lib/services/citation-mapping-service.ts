@@ -56,6 +56,10 @@ export interface CitationMetaSnapshot {
   analyzedAt?: string;
   referenceArchetype?: string | null;
   archetypeSignal?: string | null;
+  positionalRelation?: {
+    relation?: 'REINFORCES' | 'CONTRADICTS' | 'EXTENDS' | 'QUALIFIES' | 'TENSION';
+    rationale?: string;
+  };
 }
 
 /**
@@ -112,6 +116,8 @@ interface CitationForMapping {
   year: number | null;
   venue: string | null;
   authors: string[];
+  positionalRelation?: 'REINFORCES' | 'CONTRADICTS' | 'EXTENDS' | 'QUALIFIES' | 'TENSION' | null;
+  positionalRelationRationale?: string | null;
 }
 
 // ============================================================================
@@ -136,6 +142,14 @@ const CLAIM_TYPE_VALUES = [
   'IMPLEMENTATION_CONSTRAINT'
 ] as const;
 const CLAIM_TYPE_SET = new Set<string>(CLAIM_TYPE_VALUES);
+const POSITIONAL_RELATION_VALUES = [
+  'REINFORCES',
+  'CONTRADICTS',
+  'EXTENDS',
+  'QUALIFIES',
+  'TENSION'
+] as const;
+const POSITIONAL_RELATION_SET = new Set<string>(POSITIONAL_RELATION_VALUES);
 
 // ============================================================================
 // Section Filtering for Literature Mapping
@@ -460,6 +474,8 @@ PAPER ${i + 1} [ID: ${p.id}] [KEY: ${p.citationKey}]:
 - Title: ${p.title}
 - Year: ${p.year || 'Unknown'}
 - Venue: ${p.venue || 'Unknown'}
+- Positional Relation: ${p.positionalRelation || 'Not specified'}
+${p.positionalRelationRationale ? `- Positional Rationale: ${p.positionalRelationRationale}` : ''}
 - Abstract: ${p.abstract || 'No abstract available'}
 `).join('\n');
 
@@ -489,6 +505,12 @@ ${sectionContext}
 PAPERS TO MAP
 ═══════════════════════════════════════════════════════════════
 ${paperContext}
+
+Note: A paper may include a Positional Relation (REINFORCES, CONTRADICTS, EXTENDS, QUALIFIES, TENSION).
+- If CONTRADICTS or TENSION, your remark MUST explicitly describe the disagreement.
+- If QUALIFIES, your remark MUST specify the boundary or limitation.
+- Do NOT invent contrast.
+- If all available evidence genuinely supports the dimension without qualification, it is valid to map all as SUPPORT.
 
 ═══════════════════════════════════════════════════════════════
 MAPPING TASK (for EACH paper)
@@ -797,6 +819,34 @@ Return ONLY the JSON array, no additional text or explanation.`;
     if (typeof meta.analyzedAt === 'string' && meta.analyzedAt.trim()) {
       cleaned.analyzedAt = meta.analyzedAt;
     }
+    if (typeof meta.referenceArchetype === 'string') {
+      const value = meta.referenceArchetype.trim();
+      cleaned.referenceArchetype = value ? value.slice(0, 80) : null;
+    } else if (meta.referenceArchetype === null) {
+      cleaned.referenceArchetype = null;
+    }
+    if (typeof meta.archetypeSignal === 'string') {
+      const value = meta.archetypeSignal.trim();
+      cleaned.archetypeSignal = value ? value.slice(0, 300) : null;
+    } else if (meta.archetypeSignal === null) {
+      cleaned.archetypeSignal = null;
+    }
+    if (meta.positionalRelation && typeof meta.positionalRelation === 'object') {
+      const relation = typeof meta.positionalRelation.relation === 'string'
+        ? meta.positionalRelation.relation.trim().toUpperCase()
+        : '';
+      const rationale = typeof meta.positionalRelation.rationale === 'string'
+        ? meta.positionalRelation.rationale.trim()
+        : '';
+      if (POSITIONAL_RELATION_SET.has(relation) || rationale) {
+        cleaned.positionalRelation = {
+          relation: POSITIONAL_RELATION_SET.has(relation)
+            ? relation as NonNullable<CitationMetaSnapshot['positionalRelation']>['relation']
+            : undefined,
+          rationale: rationale ? rationale.slice(0, 300) : undefined
+        };
+      }
+    }
 
     return Object.keys(cleaned).length > 0 ? cleaned : undefined;
   }
@@ -884,22 +934,41 @@ Return ONLY the JSON array, no additional text or explanation.`;
         year: true,
         venue: true,
         authors: true,
-        notes: true  // notes sometimes contains abstract
+        notes: true,  // notes sometimes contains abstract
+        aiMeta: true
       },
       orderBy: { createdAt: 'asc' }
     });
 
     // Filter and prepare citations
     return citations
-      .map(c => ({
-        id: c.id,
-        citationKey: c.citationKey,
-        title: c.title,
-        abstract: c.abstract || c.notes || null, // Use notes as fallback for abstract
-        year: c.year,
-        venue: c.venue,
-        authors: c.authors
-      }))
+      .map(c => {
+        const aiMeta = (c.aiMeta as Record<string, any> | null) || {};
+        const rawPositionalRelation = aiMeta.positionalRelation && typeof aiMeta.positionalRelation === 'object'
+          ? aiMeta.positionalRelation
+          : null;
+        const relationCandidate = typeof rawPositionalRelation?.relation === 'string'
+          ? rawPositionalRelation.relation.trim().toUpperCase()
+          : '';
+        const positionalRelation = POSITIONAL_RELATION_SET.has(relationCandidate)
+          ? relationCandidate as CitationForMapping['positionalRelation']
+          : null;
+        const positionalRelationRationale = typeof rawPositionalRelation?.rationale === 'string'
+          ? rawPositionalRelation.rationale.trim().slice(0, 300)
+          : null;
+
+        return {
+          id: c.id,
+          citationKey: c.citationKey,
+          title: c.title,
+          abstract: c.abstract || c.notes || null, // Use notes as fallback for abstract
+          year: c.year,
+          venue: c.venue,
+          authors: c.authors,
+          positionalRelation,
+          positionalRelationRationale
+        };
+      })
       .filter(c => {
         // Include papers with at least some content to analyze
         const hasContent = c.title.length > 10 || 

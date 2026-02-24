@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { featureFlags, isFeatureEnabled } from '@/lib/feature-flags';
 import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 import { deepAnalysisService } from '@/lib/services/deep-analysis-service';
+import { MAX_DEEP_ANALYSIS_CONCURRENCY } from '@/lib/services/deep-analysis-types';
 import { paperSectionService } from '@/lib/services/paper-section-service';
 import { blueprintService } from '@/lib/services/blueprint-service';
 
@@ -87,7 +88,10 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
     }
 
     const tenantContext = await resolveTenantContext(request, user.id, session.tenantId);
-    const result = await deepAnalysisService.getStatus(sessionId, { tenantContext });
+    const result = await deepAnalysisService.getStatus(sessionId, {
+      tenantContext,
+      concurrency: MAX_DEEP_ANALYSIS_CONCURRENCY
+    });
 
     // Auto-trigger background Pass 1 when evidence extraction reaches a terminal state
     const deepAnalysisTerminal =

@@ -236,6 +236,7 @@ function formatRelevanceNotes(
     method?: string | null;
     limitations?: string | null;
     boundary?: string | null;
+    positionalRelation?: string | null;
     claimTypes?: string[];
     cardClaims?: string[];
   }>();
@@ -252,6 +253,11 @@ function formatRelevanceNotes(
           method: citation.methodologicalApproach,
           limitations: citation.limitationsOrGaps,
           boundary: citation.evidenceBoundary,
+          positionalRelation: citation.positionalRelation?.relation
+            ? citation.positionalRelation.rationale
+              ? `${citation.positionalRelation.relation}: ${citation.positionalRelation.rationale}`
+              : citation.positionalRelation.relation
+            : null,
           claimTypes: citation.claimTypesSupported ? [...citation.claimTypesSupported] : [],
           cardClaims: Array.isArray(citation.evidenceCards)
             ? citation.evidenceCards
@@ -270,6 +276,11 @@ function formatRelevanceNotes(
       if (!existing.method && citation.methodologicalApproach) existing.method = citation.methodologicalApproach;
       if (!existing.limitations && citation.limitationsOrGaps) existing.limitations = citation.limitationsOrGaps;
       if (!existing.boundary && citation.evidenceBoundary) existing.boundary = citation.evidenceBoundary;
+      if (!existing.positionalRelation && citation.positionalRelation?.relation) {
+        existing.positionalRelation = citation.positionalRelation.rationale
+          ? `${citation.positionalRelation.relation}: ${citation.positionalRelation.rationale}`
+          : citation.positionalRelation.relation;
+      }
       if (citation.claimTypesSupported?.length) {
         const merged = new Set([...(existing.claimTypes || []), ...citation.claimTypesSupported]);
         existing.claimTypes = Array.from(merged);
@@ -297,6 +308,7 @@ function formatRelevanceNotes(
         data.method ? `method: ${data.method}` : '',
         data.limitations ? `gap: ${data.limitations}` : '',
         data.boundary ? `boundary: ${data.boundary}` : '',
+        data.positionalRelation ? `position: ${data.positionalRelation}` : '',
         data.cardClaims?.length ? `cardClaims: ${data.cardClaims.join(' || ')}` : '',
       ].filter(Boolean);
       const base = `[${key}]: "${data.title}" - dimensions: ${Array.from(data.dimensions).join(', ')}`;
@@ -1508,6 +1520,39 @@ ${userInstructions}
 ` : ''}
 
 ═══════════════════════════════════════════════════════════════════════════════
+INTELLECTUAL RIGOR BLOCK v3
+NOVELTY FRAMING
+- Frame contributions as resolving a specific limitation, tension, or contested assumption.
+- Avoid contextual-only novelty unless explicitly classified as TRANSLATIONAL.
+- State clearly what prior work could not achieve.
+
+If noveltyType = TRANSLATIONAL:
+- Frame as validation, feasibility, adaptation, or contextual testing.
+- Do NOT claim methodological invention.
+
+ANALYTICAL LITERATURE
+- Organize by analytical themes, not paper-by-paper summaries.
+- For each theme, include at least one explicit comparison or contrast when supported by evidence.
+- Use positional relation labels to clarify whether cited work reinforces, contradicts, extends, or qualifies your argument.
+- Surface boundary conditions when relevant.
+
+SCOPE DISCIPLINE
+- Do not generalize beyond stated scope.
+- Use hedging for single-study findings.
+- Distinguish clearly between cited findings and your own findings.
+- Treat "Not extracted from source" as absence of extracted evidence, not evidence of absence.
+
+METHODOLOGY DEFENSE
+- Justify chosen approach relative to at least one named alternative.
+- State assumptions explicitly.
+- Acknowledge constraints before presenting results.
+
+ARGUMENT RHYTHM
+- Vary paragraph structures.
+- Include genuine analytical tension when supported by evidence.
+- Do not force tension.
+- Avoid uniform paragraph openings.
+- Mix short analytical sentences with longer evidence-based sentences.
 COHERENCE RULES (Always Apply)
 ═══════════════════════════════════════════════════════════════════════════════
 1. Support the thesis statement in all assertions
@@ -1515,6 +1560,9 @@ COHERENCE RULES (Always Apply)
 3. Do NOT contradict claims made in previous sections
 4. Do NOT include content listed in "MUST AVOID"
 5. Reference previous sections naturally where appropriate
+6. Explicitly discuss evidence mapped as CONTRAST
+7. Clearly distinguish YOUR claims from CITED claims
+8. Strong claims must include supporting evidence or acknowledge need for further investigation
 
 ═══════════════════════════════════════════════════════════════════════════════
 CONTENT STRUCTURE (Use proper academic formatting)
@@ -1734,4 +1782,3 @@ export const paperSectionService = new PaperSectionService();
 
 // Export class for testing
 export { PaperSectionService };
-

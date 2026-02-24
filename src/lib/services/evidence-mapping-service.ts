@@ -4,6 +4,7 @@ import type { BlueprintWithSectionPlan } from './blueprint-service';
 import {
   BATCH_MAPPING_CHUNK_SIZE,
   mappingResponseSchema,
+  NOT_EXTRACTED_FROM_SOURCE,
   type ExtractedCardWithIdentity,
   type EvidenceMappingUseAs,
   type EvidenceConfidenceLevel,
@@ -25,7 +26,7 @@ export interface CardDimensionMapping {
 const MAPPING_SYSTEM_PROMPT = `You are mapping extracted evidence cards to sections and dimensions of an academic paper.
 
 INPUT:
-1. Evidence cards (with cardId, claim, claimType, quantitativeDetail, citationKey, archetype)
+1. Evidence cards (with cardId, claim, claimType, quantitativeDetail, citationKey, archetype, and optional tradeOff/competingExplanation)
 2. Blueprint sections with mustCover dimensions
 
 TASK:
@@ -42,7 +43,15 @@ RULES:
    - CONTRAST: challenges or differs from expected approach/result
    - CONTEXT: background framing evidence
    - DEFINITION: formal definition or framework card
-5. Output JSON only.
+5. CONTRAST PREFERENCE:
+   If tradeOff or competingExplanation contain substantive content (not default string),
+   consider useAs = CONTRAST.
+6. DIVERSITY GUIDANCE:
+   For dimensions with 3+ cards:
+   - Include CONTRAST or CONTEXT if genuine qualifying evidence exists.
+   - Do NOT manufacture contrast.
+   - If all evidence genuinely supports the claim, map all as SUPPORT.
+7. Output JSON only.
 
 OUTPUT FORMAT:
 [
@@ -59,19 +68,38 @@ OUTPUT FORMAT:
   }
 ]`;
 
+function hasSubstantiveExtractionField(value: string | null | undefined): boolean {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  const trimmed = value.trim();
+  return Boolean(trimmed) && trimmed.toLowerCase() !== NOT_EXTRACTED_FROM_SOURCE.toLowerCase();
+}
+
 function buildMappingPrompt(
   cards: ExtractedCardWithIdentity[],
   blueprint: BlueprintWithSectionPlan
 ): MappingPrompt {
-  const cardSummaries = cards.map((card, inputIndex) => ({
-    inputIndex,
-    cardId: card.cardId,
-    claim: card.claim,
-    claimType: card.claimType,
-    quantitativeDetail: card.quantitativeDetail,
-    citationKey: card.citationKey,
-    archetype: card.referenceArchetype,
-  }));
+  const cardSummaries = cards.map((card, inputIndex) => {
+    const summary: Record<string, unknown> = {
+      inputIndex,
+      cardId: card.cardId,
+      claim: card.claim,
+      claimType: card.claimType,
+      quantitativeDetail: card.quantitativeDetail,
+      citationKey: card.citationKey,
+      archetype: card.referenceArchetype,
+    };
+
+    if (hasSubstantiveExtractionField(card.tradeOff)) {
+      summary.tradeOff = card.tradeOff;
+    }
+    if (hasSubstantiveExtractionField(card.competingExplanation)) {
+      summary.competingExplanation = card.competingExplanation;
+    }
+
+    return summary;
+  });
 
   const blueprintStructure = blueprint.sectionPlan.map(section => ({
     sectionKey: section.sectionKey,
@@ -126,6 +154,9 @@ function normalizeCardId(value: string): string {
 }
 
 function inferUseAs(card: ExtractedCardWithIdentity): EvidenceMappingUseAs {
+  if (hasSubstantiveExtractionField(card.tradeOff) || hasSubstantiveExtractionField(card.competingExplanation)) {
+    return 'CONTRAST';
+  }
   if (card.claimType === 'DEFINITION' || card.claimType === 'FRAMEWORK') {
     return 'DEFINITION';
   }

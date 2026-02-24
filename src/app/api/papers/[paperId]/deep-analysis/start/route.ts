@@ -5,13 +5,14 @@ import { prisma } from '@/lib/prisma';
 import { featureFlags } from '@/lib/feature-flags';
 import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 import { deepAnalysisService } from '@/lib/services/deep-analysis-service';
+import { MAX_DEEP_ANALYSIS_CONCURRENCY } from '@/lib/services/deep-analysis-types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const startSchema = z.object({
   citationIds: z.array(z.string().min(1)).min(1).max(50),
-  concurrency: z.number().int().min(1).max(30).optional(),
+  concurrency: z.number().int().min(1).max(MAX_DEEP_ANALYSIS_CONCURRENCY).optional().default(MAX_DEEP_ANALYSIS_CONCURRENCY),
 });
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {

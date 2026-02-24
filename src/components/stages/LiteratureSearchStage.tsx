@@ -1497,23 +1497,86 @@ export default function LiteratureSearchStage({
         inProcess: totalTarget,
         retry: 0
       });
-      
-      const response = await fetch(`/api/papers/${sessionId}/literature/select-relevant`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`
-        },
-        body: JSON.stringify({
-          searchRunId,
-          maxSuggestions: 15, // Increased to capture more papers for blueprint coverage
-          includeBlueprint: true // Include blueprint dimension mapping
-        })
-      });
+      let stopProgressPolling = false;
+      let progressPollingInFlight = false;
+      let progressPollingTimer: ReturnType<typeof setInterval> | null = null;
 
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'AI analysis failed');
+      const pollAiProgress = async () => {
+        if (stopProgressPolling || progressPollingInFlight) return;
+        progressPollingInFlight = true;
+        try {
+          const progressResponse = await fetch(
+            `/api/papers/${sessionId}/literature/select-relevant?searchRunId=${searchRunId}&progressOnly=true`,
+            {
+              headers: { Authorization: `Bearer ${authToken}` },
+              cache: 'no-store'
+            }
+          );
+          if (!progressResponse.ok) return;
+          const progressData = await progressResponse.json();
+          const meta = progressData.searchRun?.aiAnalysis?.analysisMeta;
+          if (!meta || typeof meta !== 'object') return;
+
+          const skippedCount = typeof meta.skippedNoAbstractCount === 'number'
+            ? Math.max(0, meta.skippedNoAbstractCount)
+            : 0;
+          const totalFromMeta = typeof meta.totalPapers === 'number'
+            ? Math.max(0, meta.totalPapers) + skippedCount
+            : totalTarget;
+          const reviewedFromMeta = typeof meta.reviewedPapers === 'number'
+            ? Math.max(0, meta.reviewedPapers)
+            : 0;
+          const failedFromMeta = typeof meta.failedPapers === 'number'
+            ? Math.max(0, meta.failedPapers)
+            : 0;
+
+          setAiReviewStatus(prev => {
+            const total = prev ? Math.max(prev.total, totalFromMeta) : totalFromMeta;
+            const reviewed = prev ? Math.max(prev.reviewed, reviewedFromMeta) : reviewedFromMeta;
+            const retry = prev ? Math.max(prev.retry, failedFromMeta) : failedFromMeta;
+            return {
+              total,
+              reviewed,
+              retry,
+              inProcess: Math.max(0, total - reviewed - retry)
+            };
+          });
+        } catch {
+          // Ignore transient polling failures; final POST response remains source of truth.
+        } finally {
+          progressPollingInFlight = false;
+        }
+      };
+
+      await pollAiProgress();
+      progressPollingTimer = setInterval(() => {
+        void pollAiProgress();
+      }, 1200);
+
+      let data: any;
+      try {
+        const response = await fetch(`/api/papers/${sessionId}/literature/select-relevant`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            searchRunId,
+            maxSuggestions: 15, // Increased to capture more papers for blueprint coverage
+            includeBlueprint: true // Include blueprint dimension mapping
+          })
+        });
+
+        data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'AI analysis failed');
+        }
+      } finally {
+        stopProgressPolling = true;
+        if (progressPollingTimer) {
+          clearInterval(progressPollingTimer);
+        }
       }
 
       // Fetch the search run's results to ensure we have the correct papers for matching
@@ -5332,6 +5395,9 @@ export default function LiteratureSearchStage({
                         {aiReviewStatus && (
                           <span className="text-[11px] text-gray-500">
                             {aiReviewStatus.reviewed}/{aiReviewStatus.total} reviewed
+                            {aiReviewStatus.inProcess > 0 && (
+                              <span className="text-sky-600 ml-1">- {aiReviewStatus.inProcess} in process</span>
+                            )}
                             {aiReviewStatus.retry > 0 && (
                               <span className="text-amber-600 ml-1">· {aiReviewStatus.retry} retry</span>
                             )}

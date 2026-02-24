@@ -126,6 +126,8 @@ interface TextExtractionStatus {
   }>;
 }
 
+const DEEP_ANALYSIS_CONCURRENCY = 50;
+
 export default function FullTextEvidenceExtractionStage({
   sessionId,
   authToken,
@@ -193,7 +195,10 @@ export default function FullTextEvidenceExtractionStage({
 
   const loadCandidates = useCallback(async () => {
     if (!authToken) return;
-    const response = await fetch(`/api/papers/${sessionId}/deep-analysis/candidates`, { headers: authHeaders });
+    const response = await fetch(`/api/papers/${sessionId}/deep-analysis/candidates`, {
+      headers: authHeaders,
+      cache: 'no-store'
+    });
     const payload: CandidatePayload = await response.json();
     if (!response.ok) throw new Error((payload as any)?.error || 'Failed to load candidates');
     setReadyCandidates(Array.isArray(payload.ready) ? payload.ready : []);
@@ -202,7 +207,10 @@ export default function FullTextEvidenceExtractionStage({
 
   const loadStatus = useCallback(async () => {
     if (!authToken) return;
-    const response = await fetch(`/api/papers/${sessionId}/deep-analysis/status`, { headers: authHeaders });
+    const response = await fetch(`/api/papers/${sessionId}/deep-analysis/status`, {
+      headers: authHeaders,
+      cache: 'no-store'
+    });
     const payload: DeepAnalysisStatusPayload = await response.json();
     if (!response.ok) throw new Error((payload as any)?.error || 'Failed to load status');
     setStatusPayload(payload);
@@ -305,12 +313,12 @@ export default function FullTextEvidenceExtractionStage({
     }
     const timer = window.setInterval(() => {
       const tick = ++pollTickRef.current;
-      if (tick % 3 === 0) {
+      if (tick % 5 === 0) {
         void Promise.all([loadStatus(), loadCoverage(), loadCards()]).catch(() => undefined);
       } else {
         void loadStatus().catch(() => undefined);
       }
-    }, 5000);
+    }, 1200);
     return () => window.clearInterval(timer);
   }, [loadCards, loadCoverage, loadStatus, statusPayload?.status]);
 
@@ -374,7 +382,10 @@ export default function FullTextEvidenceExtractionStage({
       const response = await fetch(`/api/papers/${sessionId}/deep-analysis/start`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
-        body: JSON.stringify({ citationIds: Array.from(selectedIds) })
+        body: JSON.stringify({
+          citationIds: Array.from(selectedIds),
+          concurrency: DEEP_ANALYSIS_CONCURRENCY
+        })
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error || 'Failed to start deep analysis');
@@ -410,7 +421,10 @@ export default function FullTextEvidenceExtractionStage({
       const response = await fetch(`/api/papers/${sessionId}/deep-analysis/retry`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
-        body: JSON.stringify({ jobIds: failed.map(j => j.jobId) })
+        body: JSON.stringify({
+          jobIds: failed.map(j => j.jobId),
+          concurrency: DEEP_ANALYSIS_CONCURRENCY
+        })
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload?.error || 'Failed to retry');
@@ -608,7 +622,9 @@ export default function FullTextEvidenceExtractionStage({
     const s = String(status || '').toUpperCase();
     if (s === 'COMPLETED') return <Badge className="bg-emerald-500/10 text-emerald-700 border-emerald-200 text-[10px]">Completed</Badge>;
     if (s === 'FAILED') return <Badge className="bg-red-500/10 text-red-700 border-red-200 text-[10px]">Failed</Badge>;
-    if (['EXTRACTING', 'MAPPING', 'PREPARING'].includes(s)) return <Badge className="bg-blue-500/10 text-blue-700 border-blue-200 text-[10px] animate-pulse">Processing</Badge>;
+    if (s === 'PREPARING') return <Badge className="bg-indigo-500/10 text-indigo-700 border-indigo-200 text-[10px] animate-pulse">Preparing</Badge>;
+    if (s === 'EXTRACTING') return <Badge className="bg-blue-500/10 text-blue-700 border-blue-200 text-[10px] animate-pulse">Extracting</Badge>;
+    if (s === 'MAPPING') return <Badge className="bg-cyan-500/10 text-cyan-700 border-cyan-200 text-[10px] animate-pulse">Mapping</Badge>;
     if (s === 'PENDING') return <Badge className="bg-slate-500/10 text-slate-600 border-slate-200 text-[10px]">Queued</Badge>;
     return null;
   };

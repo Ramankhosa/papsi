@@ -23,6 +23,14 @@ export interface CitationAIMeta {
   methodologicalApproach?: string | null;
   relevanceToResearch?: string;
   limitationsOrGaps?: string | null;
+  claimTypesSupported?: string[];
+  evidenceBoundary?: string | null;
+  positionalRelation?: {
+    relation?: string;
+    rationale?: string;
+  };
+  referenceArchetype?: string | null;
+  archetypeSignal?: string | null;
   usage?: {
     introduction?: boolean;
     literatureReview?: boolean;
@@ -107,20 +115,7 @@ export interface CitationWithUsage extends Citation {
 
 export interface BulkSearchResultImportInput {
   searchResult: SearchResult;
-  citationMeta?: {
-    keyContribution?: string;
-    keyFindings?: string;
-    methodologicalApproach?: string | null;
-    relevanceToResearch?: string;
-    limitationsOrGaps?: string | null;
-    usage?: {
-      introduction?: boolean;
-      literatureReview?: boolean;
-      methodology?: boolean;
-      comparison?: boolean;
-    };
-    relevanceScore?: number;
-  };
+  citationMeta?: CitationAIMeta;
   clientRef?: string;
 }
 
@@ -150,6 +145,35 @@ export interface QualityCheckResult {
   incompleteCitations: Citation[];
   suggestions: string[];
 }
+
+const AI_META_CLAIM_TYPE_VALUES = [
+  'BACKGROUND',
+  'GAP',
+  'METHOD',
+  'LIMITATION',
+  'DATASET',
+  'IMPLEMENTATION_CONSTRAINT'
+] as const;
+const AI_META_CLAIM_TYPE_SET = new Set<string>(AI_META_CLAIM_TYPE_VALUES);
+
+const AI_META_POSITIONAL_RELATION_VALUES = [
+  'REINFORCES',
+  'CONTRADICTS',
+  'EXTENDS',
+  'QUALIFIES',
+  'TENSION'
+] as const;
+const AI_META_POSITIONAL_RELATION_SET = new Set<string>(AI_META_POSITIONAL_RELATION_VALUES);
+
+const AI_META_REFERENCE_ARCHETYPE_VALUES = [
+  'SYSTEM_ALGO_EVALUATION',
+  'CONTROLLED_EXPERIMENTAL_STUDY',
+  'EMPIRICAL_OBSERVATIONAL_STUDY',
+  'MIXED_METHODS_APPLIED_STUDY',
+  'SYNTHESIS_REVIEW',
+  'POSITION_CONCEPTUAL'
+] as const;
+const AI_META_REFERENCE_ARCHETYPE_SET = new Set<string>(AI_META_REFERENCE_ARCHETYPE_VALUES);
 
 class CitationService {
   /**
@@ -252,20 +276,7 @@ class CitationService {
   async importFromSearchResult(
     sessionId: string, 
     searchResult: SearchResult,
-    citationMeta?: {
-      keyContribution?: string;
-      keyFindings?: string;
-      methodologicalApproach?: string | null;
-      relevanceToResearch?: string;
-      limitationsOrGaps?: string | null;
-      usage?: {
-        introduction?: boolean;
-        literatureReview?: boolean;
-        methodology?: boolean;
-        comparison?: boolean;
-      };
-      relevanceScore?: number;
-    }
+    citationMeta?: CitationAIMeta
   ): Promise<Citation> {
     // Check for duplicates
     const existingCitation = await this.findDuplicate(sessionId, searchResult);
@@ -319,16 +330,7 @@ class CitationService {
       paperIdentityKey,
       libraryReferenceId: this.normalizeLooseString(searchResult.libraryReferenceId) || undefined,
       // Store AI-generated citation metadata for section generation
-      aiMeta: citationMeta ? {
-        keyContribution: citationMeta.keyContribution,
-        keyFindings: citationMeta.keyFindings,
-        methodologicalApproach: citationMeta.methodologicalApproach,
-        relevanceToResearch: citationMeta.relevanceToResearch,
-        limitationsOrGaps: citationMeta.limitationsOrGaps,
-        usage: citationMeta.usage || {},
-        relevanceScore: citationMeta.relevanceScore,
-        analyzedAt: new Date().toISOString()
-      } : undefined
+      aiMeta: this.buildAIMetaPayload(citationMeta)
     });
   }
 
@@ -641,18 +643,7 @@ class CitationService {
       citationData.citationKey = citationStyleService.generateCitationKey(citationData, existingCitationKeys);
       existingCitationKeys.push(citationData.citationKey);
 
-      const aiMeta = item.citationMeta
-        ? {
-            keyContribution: item.citationMeta.keyContribution,
-            keyFindings: item.citationMeta.keyFindings,
-            methodologicalApproach: item.citationMeta.methodologicalApproach,
-            relevanceToResearch: item.citationMeta.relevanceToResearch,
-            limitationsOrGaps: item.citationMeta.limitationsOrGaps,
-            usage: item.citationMeta.usage || {},
-            relevanceScore: item.citationMeta.relevanceScore,
-            analyzedAt: nowIso
-          }
-        : undefined;
+      const aiMeta = this.buildAIMetaPayload(item.citationMeta, nowIso);
 
       const titleFingerprint = this.buildTitleFingerprint(normalizedTitle);
       const firstAuthorNormalized = this.normalizeAuthor(normalizedAuthors[0]);
@@ -1152,6 +1143,7 @@ class CitationService {
       year: input.year,
       firstAuthor: input.authors?.[0]
     });
+    const sanitizedAIMeta = this.buildAIMetaPayload(input.aiMeta);
 
     const citationData: CitationData = {
       id: `citation_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
@@ -1220,9 +1212,122 @@ class CitationService {
         paperIdentityKey,
         notes: input.notes,
         tags: input.tags || [],
-        aiMeta: input.aiMeta || undefined as any
+        aiMeta: sanitizedAIMeta as Prisma.InputJsonValue | undefined
       }
     });
+  }
+
+  private buildAIMetaPayload(
+    citationMeta?: CitationAIMeta,
+    analyzedAtOverride?: string
+  ): CitationAIMeta | undefined {
+    if (!citationMeta || typeof citationMeta !== 'object') {
+      return undefined;
+    }
+
+    const clamp = (value: unknown, maxLength: number): string | undefined => {
+      if (typeof value !== 'string') return undefined;
+      const trimmed = value.trim();
+      return trimmed ? trimmed.slice(0, maxLength) : undefined;
+    };
+
+    const payload: CitationAIMeta = {};
+
+    const keyContribution = clamp(citationMeta.keyContribution, 400);
+    if (keyContribution) payload.keyContribution = keyContribution;
+
+    const keyFindings = clamp(citationMeta.keyFindings, 400);
+    if (keyFindings) payload.keyFindings = keyFindings;
+
+    const methodologicalApproach = clamp(citationMeta.methodologicalApproach, 400);
+    if (methodologicalApproach) {
+      payload.methodologicalApproach = methodologicalApproach;
+    } else if (citationMeta.methodologicalApproach === null) {
+      payload.methodologicalApproach = null;
+    }
+
+    const relevanceToResearch = clamp(citationMeta.relevanceToResearch, 500);
+    if (relevanceToResearch) payload.relevanceToResearch = relevanceToResearch;
+
+    const limitationsOrGaps = clamp(citationMeta.limitationsOrGaps, 500);
+    if (limitationsOrGaps) {
+      payload.limitationsOrGaps = limitationsOrGaps;
+    } else if (citationMeta.limitationsOrGaps === null) {
+      payload.limitationsOrGaps = null;
+    }
+
+    const claimTypesSupported = Array.isArray(citationMeta.claimTypesSupported)
+      ? Array.from(
+          new Set(
+            citationMeta.claimTypesSupported
+              .map((value: unknown) => String(value).trim().toUpperCase())
+              .filter((value: string) => AI_META_CLAIM_TYPE_SET.has(value))
+          )
+        ).slice(0, 3) as CitationAIMeta['claimTypesSupported']
+      : undefined;
+    if (claimTypesSupported && claimTypesSupported.length > 0) {
+      payload.claimTypesSupported = claimTypesSupported;
+    }
+
+    const evidenceBoundary = clamp(citationMeta.evidenceBoundary, 400);
+    if (evidenceBoundary) {
+      payload.evidenceBoundary = evidenceBoundary;
+    } else if (citationMeta.evidenceBoundary === null) {
+      payload.evidenceBoundary = null;
+    }
+
+    if (citationMeta.positionalRelation && typeof citationMeta.positionalRelation === 'object') {
+      const relationCandidate = typeof citationMeta.positionalRelation.relation === 'string'
+        ? citationMeta.positionalRelation.relation.trim().toUpperCase()
+        : '';
+      const rationale = clamp(citationMeta.positionalRelation.rationale, 300);
+      if (AI_META_POSITIONAL_RELATION_SET.has(relationCandidate) || rationale) {
+        payload.positionalRelation = {
+          relation: AI_META_POSITIONAL_RELATION_SET.has(relationCandidate)
+            ? relationCandidate as NonNullable<CitationAIMeta['positionalRelation']>['relation']
+            : undefined,
+          rationale
+        };
+      }
+    }
+
+    if (citationMeta.referenceArchetype === null) {
+      payload.referenceArchetype = null;
+    } else if (typeof citationMeta.referenceArchetype === 'string') {
+      const normalizedArchetype = citationMeta.referenceArchetype.trim().toUpperCase();
+      if (AI_META_REFERENCE_ARCHETYPE_SET.has(normalizedArchetype)) {
+        payload.referenceArchetype = normalizedArchetype as NonNullable<CitationAIMeta['referenceArchetype']>;
+      }
+    }
+
+    const archetypeSignal = clamp(citationMeta.archetypeSignal, 300);
+    if (archetypeSignal) {
+      payload.archetypeSignal = archetypeSignal;
+    } else if (citationMeta.archetypeSignal === null) {
+      payload.archetypeSignal = null;
+    }
+
+    if (citationMeta.usage && typeof citationMeta.usage === 'object') {
+      payload.usage = {
+        introduction: Boolean(citationMeta.usage.introduction),
+        literatureReview: Boolean(citationMeta.usage.literatureReview),
+        methodology: Boolean(citationMeta.usage.methodology),
+        comparison: Boolean(citationMeta.usage.comparison)
+      };
+    }
+
+    const relevanceScore = Number(citationMeta.relevanceScore);
+    if (Number.isFinite(relevanceScore)) {
+      payload.relevanceScore = Math.max(0, Math.min(100, relevanceScore));
+    }
+
+    const hasMetadata = Object.keys(payload).length > 0;
+    if (!hasMetadata) {
+      return undefined;
+    }
+
+    payload.analyzedAt = analyzedAtOverride || clamp(citationMeta.analyzedAt, 80) || new Date().toISOString();
+    return payload;
   }
 
   private async findDuplicate(sessionId: string, citationData: Partial<CreateCitationInput | SearchResult>): Promise<Citation | null> {

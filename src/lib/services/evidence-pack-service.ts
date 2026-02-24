@@ -48,6 +48,10 @@ export interface EvidenceCitation {
     'IMPLEMENTATION_CONSTRAINT'
   >;
   evidenceBoundary?: string | null;
+  positionalRelation?: {
+    relation?: 'REINFORCES' | 'CONTRADICTS' | 'EXTENDS' | 'QUALIFIES' | 'TENSION';
+    rationale?: string;
+  } | null;
   hasDeepAnalysis?: boolean;
   evidenceCards?: EvidenceCardSnippet[];
 }
@@ -80,6 +84,14 @@ const CLAIM_TYPE_VALUES = [
   'IMPLEMENTATION_CONSTRAINT'
 ] as const;
 const CLAIM_TYPE_SET = new Set<string>(CLAIM_TYPE_VALUES);
+const POSITIONAL_RELATION_VALUES = [
+  'REINFORCES',
+  'CONTRADICTS',
+  'EXTENDS',
+  'QUALIFIES',
+  'TENSION'
+] as const;
+const POSITIONAL_RELATION_SET = new Set<string>(POSITIONAL_RELATION_VALUES);
 
 const normalizeDimension = (value: string) => value.trim().replace(/\s+/g, ' ').toLowerCase();
 const normalizeSectionKey = (value: string) => value.trim().toLowerCase().replace(/[\s-]+/g, '_');
@@ -170,6 +182,7 @@ function mergeEvidenceCitationEntry(existing: EvidenceCitation, incoming: Eviden
       ? existing.claimTypesSupported
       : incoming.claimTypesSupported,
     evidenceBoundary: existing.evidenceBoundary || incoming.evidenceBoundary || null,
+    positionalRelation: existing.positionalRelation || incoming.positionalRelation || null,
     hasDeepAnalysis: Boolean(existing.hasDeepAnalysis || incoming.hasDeepAnalysis),
     referenceArchetype: existing.referenceArchetype || incoming.referenceArchetype || null,
     deepAnalysisLabel: existing.deepAnalysisLabel || incoming.deepAnalysisLabel || null,
@@ -219,6 +232,10 @@ function extractCitationMeta(aiMeta: unknown): {
     'IMPLEMENTATION_CONSTRAINT'
   >;
   evidenceBoundary?: string | null;
+  positionalRelation?: {
+    relation?: 'REINFORCES' | 'CONTRADICTS' | 'EXTENDS' | 'QUALIFIES' | 'TENSION';
+    rationale?: string;
+  } | null;
   relevanceScore: number;
 } {
   const meta = (aiMeta || {}) as Record<string, unknown>;
@@ -239,6 +256,13 @@ function extractCitationMeta(aiMeta: unknown): {
         'IMPLEMENTATION_CONSTRAINT'
       >
     : undefined;
+  const rawPositionalRelation = meta.positionalRelation && typeof meta.positionalRelation === 'object'
+    ? meta.positionalRelation as Record<string, unknown>
+    : null;
+  const relation = typeof rawPositionalRelation?.relation === 'string'
+    ? rawPositionalRelation.relation.trim().toUpperCase()
+    : '';
+  const rationale = clampText(rawPositionalRelation?.rationale, 300);
   return {
     keyContribution: clampText(meta.keyContribution, 400),
     keyFindings: clampText(meta.keyFindings, 400),
@@ -247,6 +271,14 @@ function extractCitationMeta(aiMeta: unknown): {
     limitationsOrGaps: clampText(meta.limitationsOrGaps, 500) ?? null,
     claimTypesSupported,
     evidenceBoundary: clampText(meta.evidenceBoundary, 400) ?? null,
+    positionalRelation: POSITIONAL_RELATION_SET.has(relation) || rationale
+      ? {
+          relation: POSITIONAL_RELATION_SET.has(relation)
+            ? relation as 'REINFORCES' | 'CONTRADICTS' | 'EXTENDS' | 'QUALIFIES' | 'TENSION'
+            : undefined,
+          rationale: rationale || undefined
+        }
+      : null,
     relevanceScore: Number.isFinite(relevanceScore) ? relevanceScore : 0
   };
 }
@@ -409,6 +441,17 @@ function resolveSuggestionCitation(suggestion: SuggestionForBackfill, lookup: Ci
 
 function toSnapshotFromSuggestion(suggestion: SuggestionForBackfill): CitationMetaSnapshot | undefined {
   const meta = suggestion.citationMeta || {};
+  const rawPositionalRelation = meta.positionalRelation && typeof meta.positionalRelation === 'object'
+    ? meta.positionalRelation as Record<string, unknown>
+    : null;
+  const positionalRelation = rawPositionalRelation
+    ? {
+        relation: POSITIONAL_RELATION_SET.has(String(rawPositionalRelation.relation || '').trim().toUpperCase())
+          ? String(rawPositionalRelation.relation).trim().toUpperCase() as NonNullable<CitationMetaSnapshot['positionalRelation']>['relation']
+          : undefined,
+        rationale: clampText(rawPositionalRelation.rationale, 300)
+      }
+    : undefined;
   const snapshot: CitationMetaSnapshot = {
     keyContribution: clampText(meta.keyContribution, 400),
     keyFindings: clampText(meta.keyFindings, 400),
@@ -425,6 +468,9 @@ function toSnapshotFromSuggestion(suggestion: SuggestionForBackfill): CitationMe
         ).slice(0, 3) as CitationMetaSnapshot['claimTypesSupported']
       : undefined,
     evidenceBoundary: clampText(meta.evidenceBoundary, 400) ?? null,
+    positionalRelation: positionalRelation?.relation || positionalRelation?.rationale
+      ? positionalRelation
+      : undefined,
     usage: meta.usage && typeof meta.usage === 'object'
       ? {
           introduction: Boolean((meta.usage as Record<string, unknown>).introduction),
@@ -734,6 +780,7 @@ class EvidencePackService {
         limitationsOrGaps: citationMeta.limitationsOrGaps,
         claimTypesSupported: citationMeta.claimTypesSupported,
         evidenceBoundary: citationMeta.evidenceBoundary,
+        positionalRelation: citationMeta.positionalRelation || null,
         hasDeepAnalysis: true,
         evidenceCards: [cardSnippet],
       };
@@ -786,6 +833,7 @@ class EvidencePackService {
         limitationsOrGaps: citationMeta.limitationsOrGaps,
         claimTypesSupported: citationMeta.claimTypesSupported,
         evidenceBoundary: citationMeta.evidenceBoundary,
+        positionalRelation: citationMeta.positionalRelation || null,
         hasDeepAnalysis: false,
       };
 
