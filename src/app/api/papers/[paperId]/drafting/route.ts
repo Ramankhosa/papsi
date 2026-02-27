@@ -76,21 +76,25 @@ const generateDimensionSchema = z.object({
   dimensionKey: z.string().min(1).optional(),
   feedback: z.string().max(2000).optional(),
   forceRegenerate: z.boolean().optional(),
-  temperature: z.number().min(0).max(1).optional()
+  temperature: z.number().min(0).max(1).optional(),
+  useMappedEvidence: z.boolean().optional()
 });
 
 const acceptDimensionSchema = z.object({
   sectionKey: z.string().min(1),
   dimensionKey: z.string().min(1),
   content: z.string().optional(),
-  prefetchNext: z.boolean().optional()
+  prefetchNext: z.boolean().optional(),
+  useMappedEvidence: z.boolean().optional(),
+  allowCitationBypass: z.boolean().optional()
 });
 
 const rejectDimensionSchema = z.object({
   sectionKey: z.string().min(1),
   dimensionKey: z.string().min(1),
   feedback: z.string().max(2000).optional(),
-  temperature: z.number().min(0).max(1).optional()
+  temperature: z.number().min(0).max(1).optional(),
+  useMappedEvidence: z.boolean().optional()
 });
 
 const getDimensionFlowSchema = z.object({
@@ -1608,6 +1612,19 @@ function summarizeAcceptedBlocks(blocks: DimensionAcceptedBlock[]): string {
     .join('\n');
 }
 
+function buildDimensionPriorContext(stitchedContent: string, maxChars: number = 9000): string {
+  const normalized = String(stitchedContent || '').trim();
+  if (!normalized) return '(none accepted yet)';
+  if (normalized.length <= maxChars) return normalized;
+
+  const headChars = Math.max(1200, Math.floor(maxChars * 0.33));
+  const tailChars = Math.max(2500, maxChars - headChars);
+  const head = normalized.slice(0, headChars).trim();
+  const tail = normalized.slice(-tailChars).trim();
+
+  return `${head}\n\n[... earlier accepted content omitted for length ...]\n\n${tail}`;
+}
+
 function buildAcceptedContextHash(blocks: DimensionAcceptedBlock[]): string {
   const stable = blocks
     .map((block) => `${block.dimensionKey}::${block.version}::${computeContentFingerprint(block.content)}`)
@@ -2386,31 +2403,30 @@ async function generateSection(
     console.warn('[PaperDrafting] WARNING: No allowed citation keys - evidence pack may be empty');
   }
 
-  const extractSectionContent = (rawOutput: string): string => {
+  const extractSectionOutput = (
+    rawOutput: string
+  ): { content: string; memory: Record<string, unknown> | null } => {
     let extracted = rawOutput;
-    try {
-      if (rawOutput.startsWith('{') || rawOutput.includes('"content"')) {
-        let jsonText = rawOutput;
-        const fenceMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (fenceMatch) {
-          jsonText = fenceMatch[1].trim();
-        }
+    let extractedMemory: Record<string, unknown> | null = null;
 
-        const start = jsonText.indexOf('{');
-        const end = jsonText.lastIndexOf('}');
-        if (start !== -1 && end !== -1 && end > start) {
-          jsonText = jsonText.slice(start, end + 1);
-          const parsed = JSON.parse(jsonText);
-          if (parsed.content && typeof parsed.content === 'string') {
-            extracted = parsed.content;
-            console.log(`[PaperDrafting] Extracted content from JSON (${parsed.content.length} chars), discarded memory`);
-          }
+    try {
+      const parsed = extractJsonObjectFromOutput(rawOutput);
+      if (parsed) {
+        if (typeof parsed.content === 'string' && parsed.content.trim()) {
+          extracted = parsed.content;
         }
+        if (parsed.memory && typeof parsed.memory === 'object' && !Array.isArray(parsed.memory)) {
+          extractedMemory = parsed.memory as Record<string, unknown>;
+        }
+        console.log(
+          `[PaperDrafting] Extracted JSON section payload (${extracted.length} chars${extractedMemory ? ', memory preserved' : ''})`
+        );
       }
     } catch (parseErr) {
       console.warn('[PaperDrafting] Could not parse JSON output, using raw:', parseErr);
     }
-    return extracted;
+
+    return { content: extracted, memory: extractedMemory };
   };
 
   let rawContent: string | null = null;
@@ -2481,7 +2497,8 @@ async function generateSection(
 
       llmTokensUsed = pass1Result.response.outputTokens;
       const pass1RawOutput = (pass1Result.response.output || '').trim();
-      pass1Content = extractSectionContent(pass1RawOutput);
+      const pass1ParsedOutput = extractSectionOutput(pass1RawOutput);
+      pass1Content = pass1ParsedOutput.content;
 
       if (!pass1Content?.trim()) {
         throw new Error('Pass 1 generation returned empty content');
@@ -2491,8 +2508,10 @@ async function generateSection(
         displayName: sectionRecord?.displayName || formatSectionLabel(sectionKey),
         content: sectionRecord?.content || '',
         wordCount: sectionRecord?.wordCount || 0,
+        memory: pass1ParsedOutput.memory as any,
         generationMode: 'two_pass',
         baseContentInternal: pass1Content,
+        baseMemory: pass1ParsedOutput.memory as any,
         pass1PromptUsed: prompt,
         pass1LlmResponse: pass1RawOutput,
         pass1TokensUsed: pass1Result.response.outputTokens,
@@ -2519,7 +2538,7 @@ async function generateSection(
     }
 
     await emitStatus?.('llm_generation', 'Polishing evidence draft for publication');
-    const polishResult = await sectionPolishService.polishWithRetry({
+    const runPolish = () => sectionPolishService.polishWithRetry({
       sectionKey,
       displayName: sectionRecord?.displayName || formatSectionLabel(sectionKey),
       baseContent: pass1Content!,
@@ -2527,12 +2546,48 @@ async function generateSection(
       paperTypeCode,
       tenantContext: tenantContext || null,
     });
+    let polishResult = await runPolish();
 
     if (!polishResult.success || !polishResult.polishedContent) {
+      console.warn('[PaperDrafting] Pass 2 polish failed on first attempt; retrying once.', {
+        sectionKey,
+        error: polishResult.error
+      });
+      await sleep(800);
+      polishResult = await runPolish();
+    }
+
+    if (!polishResult.success || !polishResult.polishedContent) {
+      if (sectionRecord?.id) {
+        try {
+          sectionRecord = await prisma.paperSection.update({
+            where: { id: sectionRecord.id },
+            data: {
+              status: 'BASE_READY',
+              validationReport: polishResult.driftReport as any,
+              version: { increment: 1 }
+            }
+          });
+        } catch (persistError) {
+          console.warn('[PaperDrafting] Failed to persist BASE_READY fallback after polish failure', {
+            sectionKey,
+            error: persistError instanceof Error ? persistError.message : String(persistError)
+          });
+        }
+      }
+
       throw new DraftingRequestError(
         polishResult.error || 'Pass 2 polish failed',
         422,
-        { error: polishResult.error || 'Pass 2 polish failed' }
+        {
+          error: polishResult.error || 'Pass 2 polish failed',
+          hint: 'Base draft is saved. Retry generation to run polish again.',
+          retryable: true,
+          retryAction: 'generate_section',
+          sectionStatus: 'BASE_READY',
+          hasBaseContent: Boolean(pass1Content && pass1Content.trim()),
+          polishValidation: polishResult.driftReport || null
+        }
       );
     }
 
@@ -2573,7 +2628,7 @@ async function generateSection(
 
     llmTokensUsed = result.response.outputTokens;
     const rawOutput = (result.response.output || '').trim();
-    rawContent = extractSectionContent(rawOutput);
+    rawContent = extractSectionOutput(rawOutput).content;
   }
 
   const sectionContent = rawContent!;
@@ -3200,15 +3255,21 @@ function extractDimensionContentFromOutput(rawOutput: string): string {
   return rawOutput.trim();
 }
 
-function buildDimensionFlowResponse(flow: DimensionFlowState) {
+function buildDimensionFlowResponse(
+  flow: DimensionFlowState,
+  stitchedContentOverride?: string
+) {
   const { stitchedContent, orderedBlocks } = stitchAcceptedBlocks(flow);
+  const effectiveStitchedContent = typeof stitchedContentOverride === 'string'
+    ? stitchedContentOverride
+    : stitchedContent;
   const nextDimension = findNextDimensionPlanEntry(flow);
   const acceptedSet = new Set(flow.acceptedBlocks.map((block) => normalizeDimensionKey(block.dimensionKey)));
   const pendingKey = normalizeDimensionKey(flow.pendingProposal?.dimensionKey || '');
 
   return {
     flow,
-    stitchedContent,
+    stitchedContent: effectiveStitchedContent,
     orderedBlocks,
     nextDimension,
     completed: !nextDimension,
@@ -3251,7 +3312,7 @@ async function generateDimensionProposal(params: {
 }> {
   const { stitchedContent } = stitchAcceptedBlocks(params.flow);
   const acceptedSummary = summarizeAcceptedBlocks(params.flow.acceptedBlocks);
-  const priorContext = stitchedContent.trim().slice(-9000) || '(none accepted yet)';
+  const priorContext = buildDimensionPriorContext(stitchedContent, 9000);
   const requiredKeys = params.targetDimension.mustUseCitationKeys.join(', ') || '(none)';
   const avoidClaims = params.targetDimension.avoidClaims.join('; ') || '(none)';
   const feedback = params.feedback?.trim() ? `\nREWRITE FEEDBACK:\n${params.feedback.trim()}` : '';
@@ -3508,7 +3569,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           sessionId,
           session,
           paperTypeCode,
-          sectionKey
+          sectionKey,
+          useMappedEvidence: payload.useMappedEvidence
         });
 
         const requestedDimensionKey = payload.dimensionKey
@@ -3663,7 +3725,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           sessionId,
           session,
           paperTypeCode,
-          sectionKey
+          sectionKey,
+          useMappedEvidence: payload.useMappedEvidence
         });
         const evaluation = evaluateDimensionCitationValidation({
           content: candidateContent,
@@ -3674,7 +3737,9 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         const hasStrictDisallowed = bundle.useMappedEvidence && evaluation.citationValidation.disallowedKeys.length > 0;
         const hasStrictUnknown = bundle.useMappedEvidence && evaluation.citationValidation.unknownKeys.length > 0;
         const hasMissingRequired = evaluation.citationValidation.missingRequiredKeys.length > 0;
-        if (hasStrictDisallowed || hasStrictUnknown || hasMissingRequired) {
+        const hasCitationValidationIssues = hasStrictDisallowed || hasStrictUnknown || hasMissingRequired;
+        const allowCitationBypass = payload.allowCitationBypass === true;
+        if (hasCitationValidationIssues && !allowCitationBypass) {
           return NextResponse.json(
             {
               error: 'Dimension content failed citation validation',
@@ -3682,6 +3747,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             },
             { status: 422 }
           );
+        }
+        if (hasCitationValidationIssues && allowCitationBypass) {
+          console.warn('[PaperDrafting] Accepting dimension with citation validation bypass', {
+            sectionKey,
+            dimensionKey,
+            disallowed: evaluation.citationValidation.disallowedKeys,
+            unknown: evaluation.citationValidation.unknownKeys,
+            missingRequired: evaluation.citationValidation.missingRequiredKeys
+          });
         }
 
         const existingBlock = flow.acceptedBlocks.find(
@@ -3717,12 +3791,58 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         flow.updatedAt = nowIso;
 
         const stitched = stitchAcceptedBlocks(flow);
+        const flowCompleted = !findNextDimensionPlanEntry(flow);
+        let sectionContentForPersist = stitched.stitchedContent;
+        let polishSummary: { attempted: boolean; applied: boolean; error?: string } | null = null;
+        let polishMetadata: { promptUsed?: string; tokensUsed?: number; completedAt: Date } | null = null;
+
+        if (flowCompleted && sectionContentForPersist.trim()) {
+          polishSummary = { attempted: true, applied: false };
+          const polishResult = await sectionPolishService.polishWithRetry({
+            sectionKey,
+            displayName: sectionRecord.displayName || formatSectionLabel(sectionKey),
+            baseContent: sectionContentForPersist,
+            sessionId,
+            paperTypeCode,
+            tenantContext: tenantContext || null,
+          });
+
+          if (polishResult.success && polishResult.polishedContent) {
+            sectionContentForPersist = polishResult.polishedContent;
+            polishSummary.applied = true;
+            polishMetadata = {
+              promptUsed: polishResult.promptUsed,
+              tokensUsed: polishResult.tokensUsed ?? undefined,
+              completedAt: new Date()
+            };
+          } else {
+            polishSummary.error = polishResult.error || 'Final section polish failed';
+            console.warn('[PaperDrafting] Final stitched section polish failed; using unpolished stitched content', {
+              sectionKey,
+              error: polishSummary.error
+            });
+          }
+        }
+
         let persistedSection = await persistDimensionFlowState({
           sectionId: sectionRecord.id,
           existingValidationReport: sectionRecord.validationReport,
           flow,
-          stitchedContent: stitched.stitchedContent
+          stitchedContent: sectionContentForPersist
         });
+
+        if (polishMetadata) {
+          persistedSection = await prisma.paperSection.update({
+            where: { id: sectionRecord.id },
+            data: {
+              pass2PromptUsed: polishMetadata.promptUsed,
+              pass2TokensUsed: polishMetadata.tokensUsed,
+              pass2CompletedAt: polishMetadata.completedAt,
+              status: 'DRAFT',
+              version: { increment: 1 }
+            }
+          });
+        }
 
         const researchTopic = await prisma.researchTopic.findUnique({
           where: { sessionId }
@@ -3731,7 +3851,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         const updatedDraft = await updateDraftContent(
           draft.id,
           sectionKey,
-          stitched.stitchedContent,
+          sectionContentForPersist,
           paperTypeCode
         );
         if (updatedDraft) {
@@ -3748,7 +3868,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         const usageSync = await syncSectionDraftCitationUsage({
           sessionId,
           sectionKey,
-          sectionContent: stitched.stitchedContent,
+          sectionContent: sectionContentForPersist,
           citations: bundle.citations
         });
 
@@ -3773,18 +3893,23 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
               sectionId: sectionRecord.id,
               existingValidationReport: persistedSection.validationReport,
               flow,
-              stitchedContent: stitched.stitchedContent
+              stitchedContent: sectionContentForPersist
             });
             prefetchedProposal = prefetched.proposal;
           }
         }
 
+        const flowResponse = buildDimensionFlowResponse(flow);
         return NextResponse.json({
           sectionKey,
           acceptedBlock,
           citationsUsed: usageSync.citationKeys,
           prefetchedProposal,
-          ...buildDimensionFlowResponse(flow)
+          citationBypassApplied: hasCitationValidationIssues && allowCitationBypass,
+          citationValidation: evaluation.citationValidation,
+          ...flowResponse,
+          stitchedContent: sectionContentForPersist,
+          ...(polishSummary ? { polish: polishSummary } : {})
         });
       }
 
@@ -3818,7 +3943,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           sessionId,
           session,
           paperTypeCode,
-          sectionKey
+          sectionKey,
+          useMappedEvidence: payload.useMappedEvidence
         });
         const rewritten = await generateDimensionProposal({
           sessionId,
@@ -3888,7 +4014,10 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         return NextResponse.json({
           sectionKey,
           started: true,
-          ...buildDimensionFlowResponse(flow)
+          ...buildDimensionFlowResponse(
+            flow,
+            typeof sectionRecord.content === 'string' ? sectionRecord.content : undefined
+          )
         });
       }
 

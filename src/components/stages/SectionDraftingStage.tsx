@@ -1528,9 +1528,11 @@ export default function SectionDraftingStage({
     }));
 
     try {
+      const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
       const payload: Record<string, unknown> = {
         action: 'generate_dimension',
-        sectionKey
+        sectionKey,
+        useMappedEvidence
       };
       if (options?.dimensionKey) payload.dimensionKey = options.dimensionKey;
       if (options?.feedback) payload.feedback = options.feedback;
@@ -1558,7 +1560,7 @@ export default function SectionDraftingStage({
         loading: false
       }));
     }
-  }, [applyDimensionResponse, requestDraftingAction, setDimensionState, showMsg]);
+  }, [applyDimensionResponse, isMappedEvidenceEnabled, requestDraftingAction, setDimensionState, showMsg]);
 
   const startDimensionFlow = useCallback(async (sectionKey: string) => {
     const instruction = userInstructions[sectionKey];
@@ -1581,6 +1583,8 @@ export default function SectionDraftingStage({
         useMappedEvidence
       });
       applyDimensionResponse(sectionKey, data);
+      // Let the dimension-plan UI commit before kicking off the first LLM draft.
+      await new Promise(resolve => setTimeout(resolve, 100));
       showMsg('Dimension plan ready. Drafting first dimension...', 'success');
       await generateDimensionDraft(sectionKey, { silent: true });
     } catch (error) {
@@ -1599,7 +1603,11 @@ export default function SectionDraftingStage({
     }
   }, [applyDimensionResponse, generateDimensionDraft, isMappedEvidenceEnabled, requestDraftingAction, setDimensionState, showMsg, userInstructions]);
 
-  const acceptDimensionDraft = useCallback(async (sectionKey: string, continueToNext: boolean) => {
+  const acceptDimensionDraft = useCallback(async (
+    sectionKey: string,
+    continueToNext: boolean,
+    options?: { allowCitationBypass?: boolean }
+  ) => {
     const state = getDimensionState(sectionKey);
     if (!state.activeDimensionKey || !state.proposalText.trim()) {
       showMsg('Generate dimension content first', 'warning');
@@ -1614,12 +1622,15 @@ export default function SectionDraftingStage({
     }));
 
     try {
+      const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
       const data = await requestDraftingAction({
         action: 'accept_dimension',
         sectionKey,
         dimensionKey: state.activeDimensionKey,
         content: state.proposalText,
-        prefetchNext: continueToNext
+        prefetchNext: continueToNext,
+        useMappedEvidence,
+        allowCitationBypass: options?.allowCitationBypass === true
       });
       const normalized = applyDimensionResponse(sectionKey, data);
       clearCitationValidationForSection(sectionKey);
@@ -1631,7 +1642,11 @@ export default function SectionDraftingStage({
           silent: true
         });
       } else {
-        showMsg('Dimension accepted', 'success');
+        if (options?.allowCitationBypass) {
+          showMsg('Dimension accepted with citation warnings', 'warning');
+        } else {
+          showMsg('Dimension accepted', 'success');
+        }
       }
     } catch (error) {
       const payload = (error as any)?.payload;
@@ -1655,6 +1670,7 @@ export default function SectionDraftingStage({
     clearCitationValidationForSection,
     generateDimensionDraft,
     getDimensionState,
+    isMappedEvidenceEnabled,
     refreshSession,
     requestDraftingAction,
     setDimensionState,
@@ -1676,11 +1692,13 @@ export default function SectionDraftingStage({
     }));
 
     try {
+      const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
       const data = await requestDraftingAction({
         action: 'reject_dimension',
         sectionKey,
         dimensionKey: state.activeDimensionKey,
-        feedback: state.feedback || undefined
+        feedback: state.feedback || undefined,
+        useMappedEvidence
       });
       applyDimensionResponse(sectionKey, data);
       showMsg('Rewrote dimension draft', 'success');
@@ -1698,7 +1716,7 @@ export default function SectionDraftingStage({
         rejecting: false
       }));
     }
-  }, [applyDimensionResponse, getDimensionState, requestDraftingAction, setDimensionState, showMsg]);
+  }, [applyDimensionResponse, getDimensionState, isMappedEvidenceEnabled, requestDraftingAction, setDimensionState, showMsg]);
 
   const toggleDimensionPanelForSection = useCallback((sectionKey: string) => {
     const normalized = normalizeSectionKey(sectionKey);
@@ -3263,6 +3281,17 @@ export default function SectionDraftingStage({
                                               }
                                               Accept
                                             </button>
+                                            {hasDimensionWarnings && (
+                                              <button
+                                                type="button"
+                                                onClick={() => acceptDimensionDraft(keyName, false, { allowCitationBypass: true })}
+                                                disabled={dimensionBusy || sectionLoading[keyName] || !dimensionState.proposalText.trim()}
+                                                className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                              >
+                                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                                Accept Anyway
+                                              </button>
+                                            )}
                                             <button
                                               type="button"
                                               onClick={() => acceptDimensionDraft(keyName, true)}
