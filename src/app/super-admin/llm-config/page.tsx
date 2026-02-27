@@ -69,16 +69,10 @@ const PROVIDER_COLORS: Record<string, string> = {
   groq: 'bg-pink-100 text-pink-800 border-pink-200'
 }
 
-// Paper-only mode: Only show paper drafting stages
-// Patent features are disabled but kept in DB for potential future use
+// Show only actively used drafting features in admin LLM control.
 const FEATURE_LABELS: Record<string, string> = {
-  PAPER_DRAFTING: 'Paper Drafting',  // Primary feature for this app
-  // Hidden/disabled patent features (uncomment to enable):
-  // PATENT_DRAFTING: 'Patent Drafting',
-  // PRIOR_ART_SEARCH: 'Novelty Search',
-  // DIAGRAM_GENERATION: 'Diagram Generation',
-  // IDEA_BANK: 'Idea Bank',
-  // IDEATION: 'Ideation Engine'
+  PAPER_DRAFTING: 'Paper Drafting',
+  PATENT_DRAFTING: 'Patent Drafting'
 }
 
 // Stages that DO NOT use LLMs (excluded from LLM control)
@@ -179,6 +173,16 @@ interface StageHelpInfo {
 // Human-friendly help text for super-admin LLM controls.
 // Covers all paper drafting stage codes and deep-analysis linked operations.
 const STAGE_CONTROL_HELP: Record<string, StageHelpInfo> = {
+  DRAFT_REFERENCE_DRAFT_PASS1: {
+    summary: 'Reference draft generation pass 1.',
+    responsibility: 'Builds the country-neutral master reference draft before any jurisdiction top-up is applied.',
+    tip: 'Use a high-reasoning model here (default seeded to Claude Opus 4.5 alias).'
+  },
+  DRAFT_ANNEXURE_DESCRIPTION: {
+    summary: 'Reference draft generation pass 2 and detailed-description support.',
+    responsibility: 'Adapts pass 1 reference content to jurisdiction-specific requirements using top-up instructions and also backs detailed-description generation flows.',
+    tip: 'Tune for instruction-following and reliability with structured section output.'
+  },
   PAPER_TOPIC_EXTRACT_FROM_FILE: {
     summary: 'Paper idea normalization from uploaded files.',
     responsibility: 'Extracts and structures topic details from PDF/DOCX/text into normalized drafting fields.',
@@ -562,8 +566,8 @@ export default function LLMConfigPage() {
   }
 
   // Filter stages by feature and exclude stages that don't use LLMs
-  const filteredStages = stages.filter(s => 
-    s.featureCode === selectedFeature && !NON_LLM_STAGES.includes(s.code)
+  const filteredStages = stages.filter(s =>
+    s.isActive && s.featureCode === selectedFeature && !NON_LLM_STAGES.includes(s.code)
   )
 
   if (loading) {

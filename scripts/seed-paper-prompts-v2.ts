@@ -41,7 +41,15 @@ CONTENT ORGANIZATION:
 
 OUTPUT:
 Return ONLY valid JSON as specified at the end.
-The "content" field should contain well-structured text with subsections and bullets.`
+The "content" field should contain well-structured text with subsections and bullets.
+
+EVIDENCE UTILIZATION:
+- You will receive ALLOWED_CITATION_KEYS and DIMENSION EVIDENCE NOTES.
+- You MUST cite every key in ALLOWED_CITATION_KEYS at least once using [CITE:key] format.
+- Each citation key may appear at most 2 times per section.
+- When evidence cards provide direct quotes or specific findings, use them - do not paraphrase into vague summaries.
+- When positionalRelation = CONTRADICTS or TENSION, explicitly state the disagreement.
+- When positionalRelation = REINFORCES, frame as corroborating evidence.`
 
 // ============================================================================
 // BASE SECTION PROMPTS (Action-Focused, No Decision Logic)
@@ -66,13 +74,18 @@ const INTRODUCTION_BASE_ADDITIONS = `INTRODUCTION DEFENSIBILITY ADDITIONS:
 - Explicitly state the priorWorkLimitation from noveltyFraming.
 - Clearly define the identifiableGap.
 - Frame resolutionClaim without exaggeration.
-- If noveltyType = TRANSLATIONAL, describe contribution as validation/adaptation.`
+- If noveltyType = TRANSLATIONAL, describe contribution as validation/adaptation.
+- When citing papers in the gap construction, use NARRATIVE citation style: "Author [CITE:key] demonstrated that... however, this approach assumes..."
+- The gap must be grounded in cited evidence, not asserted.`
 
 const LITERATURE_REVIEW_BASE_ADDITIONS = `LITERATURE REVIEW DEFENSIBILITY ADDITIONS:
 - Organize by analytical themes, not individual papers.
 - For each theme, state whether evidence REINFORCES, CONTRADICTS, QUALIFIES, EXTENDS, or creates TENSION.
 - Include at least one explicit boundary condition when supported by evidence.
-- Avoid summarizing papers sequentially.`
+- Avoid summarizing papers sequentially.
+- For each dimension in DIMENSION EVIDENCE NOTES, cite ALL listed papers - do not cherry-pick only the first one.
+- When EVIDENCE GAPS are listed, dedicate at least one sentence to each gap.
+- End each thematic subsection with a mini-synthesis sentence that states the net finding across the cited papers.`
 
 const METHODOLOGY_BASE_ADDITIONS = `METHODOLOGY DEFENSIBILITY ADDITIONS:
 - State chosenApproach explicitly.
@@ -155,7 +168,10 @@ Write the Introduction section of a journal article.
 The Introduction MUST:
 1. Establish the *specific* problem context (not a broad field history).
 2. Explain why the problem is non-trivial under real constraints.
-3. Identify a precise research gap grounded in a concrete limitation, unresolved trade-off, conflicting findings, or boundary condition in prior work.
+3. Build the research gap through a three-step argument:
+   a. State what prior work has established (citing 2-3 foundational papers).
+   b. Identify the specific limitation, unresolved trade-off, or boundary condition that remains (citing the paper(s) that expose it).
+   c. Explain why this gap matters for the field - what is lost by not resolving it.
 4. State the research question(s) and/or hypothesis explicitly.
 5. State the thesis in alignment with the provided blueprint.
 6. Clearly enumerate the paper's key contributions (concrete, testable).
@@ -227,6 +243,14 @@ SYNTHESIS RULES:
 4. Gaps must be framed as structural limitations, methodological trade-offs, or missing evaluation dimensions — not "lack of attention".
 5. The final paragraph must logically justify THIS paper's approach.
 
+CITATION DISTRIBUTION:
+- Distribute citations across ALL subsections - do not front-load.
+- Every analytical theme must cite at least 2 papers.
+- When 3+ papers support the same claim, group as [CITE:a]; [CITE:b]; [CITE:c] in one sentence rather than separate sentences per paper.
+- When a paper CONTRADICTS the theme's consensus, cite it explicitly with contrastive language: "However, [CITE:key] found that..."
+- Use NARRATIVE style ("Author [CITE:key] argued...") for seminal or central papers.
+- Use PARENTHETICAL style ("...(see [CITE:key]; [CITE:key2])") for supporting evidence.
+
 ${LITERATURE_REVIEW_BASE_ADDITIONS}
 
 CONTEXT (use if available):
@@ -252,6 +276,11 @@ The Methodology MUST:
 5. Define variables, constructs, or analytic units precisely.
 6. Describe analysis techniques and evaluation criteria.
 7. Explicitly state assumptions, constraints, and validity measures.
+8. For each major methodological decision, provide:
+   a. The chosen approach.
+   b. At least one considered alternative.
+   c. WHY the chosen approach is preferred (citing methodological literature where applicable).
+   d. Any trade-off accepted by this choice.
 
 The Methodology must NOT:
 - Interpret results or discuss findings.
@@ -335,7 +364,11 @@ The Discussion MUST:
    - supported conclusions,
    - plausible interpretations,
    - speculative possibilities.
-4. Compare findings with prior work at a conceptual level.
+4. For each major finding, perform structured comparison:
+   a. Name the prior result being compared to (cite it).
+   b. State whether your finding ALIGNS, EXTENDS, QUALIFIES, or CONTRADICTS it.
+   c. Explain WHY the difference exists (methodology, context, sample, scope).
+   d. State the implication of this agreement/disagreement for the field.
 5. Explicitly discuss limitations, boundary conditions, and threats to validity.
 6. Explain implications for theory, practice, or future research (scoped).
 
@@ -654,7 +687,7 @@ OUTPUT FORMAT (STRICT — JSON ONLY)
       "Technical terms/concepts FIRST defined in THIS section only"
     ],
     "mainClaims": [
-      "TYPE: claim text (TYPE = BACKGROUND/GAP/THESIS/METHOD/RESULT/LIMITATION/INTERPRETATION/CONCLUSION)"
+      "TYPE: Specific claim text with scope qualifier (TYPE = BACKGROUND/GAP/THESIS/METHOD/RESULT/LIMITATION/INTERPRETATION/CONCLUSION). Each claim MUST be a testable or verifiable statement, not a topic description."
     ],
     "forwardReferences": [
       "Promises to address something in later sections (empty for Conclusion)"
@@ -717,7 +750,7 @@ const supersetSections: SectionDef[] = [
     instruction: introductionBase + outputFormat,
     constraints: {
       wordLimit: 1200,
-      citationRequirements: { minimum: 5, recommended: 12 },
+      citationRequirements: { minimum: 8, recommended: 15 },
       tenseRequirements: ['present for established facts', 'present/future for this work'],
       styleRequirements: ['avoid vague adjectives', 'use consistent terminology', 'scope limitations']
     },
@@ -734,7 +767,7 @@ const supersetSections: SectionDef[] = [
     instruction: literatureReviewBase + outputFormat,
     constraints: {
       wordLimit: 2500,
-      citationRequirements: { minimum: 15, recommended: 30 },
+      citationRequirements: { minimum: 20, recommended: 40 },
       tenseRequirements: ['past for completed work', 'present for consensus'],
       styleRequirements: ['group by idea not author', 'contrastive language', 'avoid evaluative adjectives']
     },
@@ -751,7 +784,7 @@ const supersetSections: SectionDef[] = [
     instruction: methodologyBase + outputFormat,
     constraints: {
       wordLimit: 2000,
-      citationRequirements: { minimum: 5, recommended: 10 },
+      citationRequirements: { minimum: 8, recommended: 15 },
       tenseRequirements: ['past for procedures', 'present for standards'],
       styleRequirements: ['precise quantities', 'avoid vague terms', 'justify choices']
     },
@@ -785,14 +818,14 @@ const supersetSections: SectionDef[] = [
     instruction: discussionBase + outputFormat,
     constraints: {
       wordLimit: 2000,
-      citationRequirements: { minimum: 8, recommended: 15 },
+      citationRequirements: { minimum: 12, recommended: 20 },
       tenseRequirements: ['present for interpretations', 'past for results reference'],
       styleRequirements: ['use hedging', 'avoid absolute language', 'trace to results']
     },
     isRequired: true,
     requiresBlueprint: true,
     requiresPreviousSections: true,
-    requiresCitations: false
+    requiresCitations: true
   },
   {
     sectionKey: 'conclusion',
@@ -861,7 +894,7 @@ ${outputFormat}`,
     isRequired: false,
     requiresBlueprint: true,
     requiresPreviousSections: true,
-    requiresCitations: false
+    requiresCitations: true
   },
   {
     sectionKey: 'related_work',
@@ -910,7 +943,7 @@ ${outputFormat}`,
     isRequired: false,
     requiresBlueprint: true,
     requiresPreviousSections: true,
-    requiresCitations: false
+    requiresCitations: true
   },
   {
     sectionKey: 'implementation',
@@ -1106,7 +1139,7 @@ ${outputFormat}`,
     isRequired: false,
     requiresBlueprint: true,
     requiresPreviousSections: true,
-    requiresCitations: false
+    requiresCitations: true
   }
 ]
 
@@ -1131,6 +1164,9 @@ You MUST:
 - Preserve translational framing if specified.
 - Do NOT add new citations.
 - Do NOT delete existing citation placeholders.
+- After polishing, verify that every [CITE:key] from the input draft appears in your output - count them.
+- If you feel a citation is awkwardly placed, reposition it within the same paragraph rather than removing it.
+- When combining sentences, ensure all citations from both sentences are preserved in the merged sentence.
 - Do NOT introduce stronger claims than supported.
 - Strengthen analytical transitions.
 - Clarify tension and synthesis where present.
@@ -1139,7 +1175,11 @@ You MUST:
 const JOURNAL_ARGUMENT_QUALITY_BLOCK = `ARGUMENT QUALITY ENHANCER:
 - Where themes are discussed, ensure explicit comparative language (e.g., whereas, in contrast, under conditions, however).
 - Convert sequential summaries into thematic synthesis.
-- Ensure at least one analytical pivot per section where warranted.`
+- Ensure at least one analytical pivot per section where warranted.
+- Every paragraph must have exactly ONE main point (topic sentence first).
+- Paragraphs should be 4-8 sentences. Split longer paragraphs.
+- End each paragraph with either (a) a synthesis statement, (b) a transition to the next point, or (c) an implication.
+- Avoid "wall of citations" paragraphs - interleave evidence with analysis.`
 
 const JOURNAL_TONE_DISCIPLINE_BLOCK = `TONE DISCIPLINE:
 - Replace vague generalizations with precise qualifiers.
@@ -1201,7 +1241,16 @@ ${JOURNAL_TONE_DISCIPLINE_BLOCK}
    - Present contribution points with bounded, testable wording.
    - Avoid impact inflation and market-oriented phrasing.
 
-5. Length Target:
+5. Opening Hook:
+   - Open with a concrete, specific problem statement - not a field history.
+   - First sentence should make the reader understand what is at stake.
+   - Avoid "In recent years..." or "With the rapid development of..." openings.
+
+6. Reviewer Anticipation:
+   - Pre-emptively address one likely reviewer objection in the final paragraph before contributions.
+   - Frame it as a scope acknowledgment: "While this work does not address X, it focuses specifically on Y because..."
+
+7. Length Target:
    - Prefer a full journal-style introduction (800-1200 words).
 
 PRESERVE from base: section purpose, terminology consistency, blueprint constraints, output format.`
@@ -1230,7 +1279,15 @@ ${JOURNAL_TONE_DISCIPLINE_BLOCK}
    - Maintain robust citation support across all major claims.
    - Prioritize primary sources and seminal studies when possible.
 
-5. Length Target:
+5. Citation Weaving Technique:
+   - For foundational papers: use Author-led narrative style - "Smith et al. [CITE:Smith2023] established that..."
+   - For supporting evidence: use claim-led parenthetical - "...this pattern has been observed across domains (see [CITE:a]; [CITE:b]; [CITE:c])."
+   - For contradicting evidence: use contrastive framing - "However, [CITE:key] found that..., which suggests..."
+   - For methodological citations: brief parenthetical - "Using the framework proposed by [CITE:key],..."
+   - Minimum: every paragraph must contain at least one citation.
+   - Maximum: no single citation should appear more than twice in the review.
+
+6. Length Target:
    - Prefer a journal-depth review (1200-1800 words).
 
 PRESERVE from base: balanced tone, claim discipline, section purpose, output format.`
@@ -1259,7 +1316,14 @@ ${JOURNAL_TONE_DISCIPLINE_BLOCK}
    - Document key implementation decisions and parameter choices that affect outcomes.
    - Avoid hand-wavy descriptions such as "standard setup" without details.
 
-5. Length Target:
+5. Assumption Transparency:
+   - List all non-trivial assumptions explicitly (e.g., data distribution, independence, generalizability of sample).
+   - For each assumption, state:
+     a. Why it is reasonable in this context.
+     b. What would change if the assumption is violated.
+   - Cite methodological precedent where available.
+
+6. Length Target:
    - Prefer full methodological detail (1200-1800 words).
 
 PRESERVE from base: scientific rigor, validity disclosure, terminology consistency, output format.`
@@ -1317,7 +1381,14 @@ ${JOURNAL_TONE_DISCIPLINE_BLOCK}
    - Separate theoretical, methodological, and practical implications when relevant.
    - Keep implications proportional to evidence strength.
 
-5. Length Target:
+5. Interpretive Signaling:
+   - For strong findings: "The results demonstrate that..." or "These findings confirm..."
+   - For moderate findings: "The evidence suggests that..." or "These results are consistent with..."
+   - For tentative findings: "One possible interpretation is..." or "While preliminary, these observations indicate..."
+   - For contradictory findings: "Contrary to expectations, ..." followed by at least two plausible explanations.
+   - Every interpretive claim must trace to a specific result reported in the Results section.
+
+6. Length Target:
    - Prefer a full journal discussion (1000-1500 words).
 
 PRESERVE from base: no-new-data discipline, claim calibration, terminology consistency, output format.`
@@ -1853,6 +1924,7 @@ const DB_PRIORITY_JOURNAL_SECTION_KEYS = new Set([
   'discussion',
   'conclusion'
 ])
+const USE_DB_PROMPT_PRIORITY = process.env.USE_DB_PROMPT_PRIORITY === '1'
 
 async function applyDatabasePromptOverrides() {
   console.log('🔄 Syncing prompts from database (DB takes priority for base + JOURNAL)...\n')
@@ -2040,8 +2112,13 @@ async function main() {
   console.log('═'.repeat(70) + '\n')
 
   try {
-    // 0. Ensure DB is the source of truth for existing base + JOURNAL prompts
-    await applyDatabasePromptOverrides()
+    // 0. By default seed file prompts are source of truth and overwrite DB on upsert.
+    if (USE_DB_PROMPT_PRIORITY) {
+      console.log('⚠️ USE_DB_PROMPT_PRIORITY=1 detected - DB prompts will override seed data for base + JOURNAL.\n')
+      await applyDatabasePromptOverrides()
+    } else {
+      console.log('📝 Using seed script prompts as source of truth (DB will be overwritten on upsert).\n')
+    }
 
     // 1. Seed base section prompts
     await seedSupersetSections()

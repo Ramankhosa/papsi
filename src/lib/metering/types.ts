@@ -44,10 +44,19 @@ export interface ImageContent {
   description?: string // optional description of the image
 }
 
+// File content for document-capable multimodal models
+export interface FileContent {
+  mimeType?: string // e.g., "application/pdf"
+  data?: string // base64 encoded file data
+  url?: string // public URL for provider-side fetch
+  filename?: string
+}
+
 // Multimodal content types
 export type ContentPart =
   | { type: 'text'; text: string }
   | { type: 'image'; image: ImageContent }
+  | { type: 'file'; file: FileContent }
 
 export interface MultimodalContent {
   parts: ContentPart[]

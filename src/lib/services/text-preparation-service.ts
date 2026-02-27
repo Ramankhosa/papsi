@@ -29,6 +29,11 @@ export interface PreparedCitationTextResult {
   referenceId: string | null;
   documentId: string | null;
   parserUsed: 'PDFJS' | 'GROBID' | 'REGEX_FALLBACK';
+  pdfAttachment: {
+    filePath: string;
+    filename: string;
+    mimeType: string;
+  } | null;
 }
 
 export interface CitationTextReadinessResult {
@@ -42,6 +47,7 @@ export interface CitationTextReadinessResult {
 
 interface MatchedReferenceDocument {
   referenceId: string;
+  referencePdfUrl: string | null;
   document: {
     id: string;
     status: string;
@@ -50,7 +56,9 @@ interface MatchedReferenceDocument {
     parserUsed: string | null;
     mimeType: string;
     sourceType: string;
+    sourceIdentifier: string | null;
     storagePath: string;
+    originalFilename: string | null;
   };
 }
 
@@ -197,12 +205,27 @@ class TextPreparationService {
     }
 
     const preparedText = await this.prepareFromDocument(matched.document, depthLabel);
+    const resolvedStoragePath = this.resolveStoragePath(matched.document.storagePath);
+    const mimeType = String(matched.document.mimeType || '').trim() || 'application/pdf';
+    const hasPdfAttachment = Boolean(
+      resolvedStoragePath
+      && fs.existsSync(resolvedStoragePath)
+      && (mimeType.toLowerCase().includes('pdf') || /\.pdf$/i.test(resolvedStoragePath))
+    );
+    const pdfAttachment = hasPdfAttachment
+      ? {
+        filePath: resolvedStoragePath!,
+        filename: matched.document.originalFilename || path.basename(resolvedStoragePath!),
+        mimeType,
+      }
+      : null;
 
     return {
       preparedText,
       referenceId: matched.referenceId,
       documentId: matched.document.id,
       parserUsed: preparedText.source,
+      pdfAttachment,
     };
   }
 
@@ -310,7 +333,9 @@ class TextPreparationService {
       parserUsed: true,
       mimeType: true,
       sourceType: true,
+      sourceIdentifier: true,
       storagePath: true,
+      originalFilename: true,
     } as const;
 
     // ── Fast path: direct lookup via libraryReferenceId ──
@@ -334,6 +359,7 @@ class TextPreparationService {
       if (directDoc) {
         const resolved = {
           referenceId: directRef.id,
+          referencePdfUrl: directRef.pdfUrl || null,
           document: {
             id: directDoc.id,
             status: directDoc.status,
@@ -342,7 +368,9 @@ class TextPreparationService {
             parserUsed: directDoc.parserUsed,
             mimeType: directDoc.mimeType,
             sourceType: directDoc.sourceType,
+            sourceIdentifier: directDoc.sourceIdentifier,
             storagePath: directDoc.storagePath,
+            originalFilename: directDoc.originalFilename,
           },
         };
         this.setCachedResolvedReference(cacheKey, resolved);
@@ -417,6 +445,7 @@ class TextPreparationService {
         score,
         item: {
           referenceId: reference.id,
+          referencePdfUrl: reference.pdfUrl || null,
           document: {
             id: primary.id,
             status: primary.status,
@@ -425,7 +454,9 @@ class TextPreparationService {
             parserUsed: primary.parserUsed,
             mimeType: primary.mimeType,
             sourceType: primary.sourceType,
+            sourceIdentifier: primary.sourceIdentifier,
             storagePath: primary.storagePath,
+            originalFilename: primary.originalFilename,
           },
         },
       });

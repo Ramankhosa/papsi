@@ -1170,6 +1170,7 @@ export default function LiteratureSearchStage({
 
         if (allResults.length > 0) {
           setResults(allResults);
+          setExpandedAbstracts(new Set(allResults.filter(result => !!result.abstract).map(result => result.id)));
           setSearchRunIds(allRunIds);
           setSearchRunId(mostRecentRunId);
           setQuery(latestQuery);
@@ -1314,6 +1315,7 @@ export default function LiteratureSearchStage({
   // Clear all accumulated results AND all associated AI analysis data
   const clearAllResults = () => {
     setResults([]);
+    setExpandedAbstracts(new Set());
     setSearchRunIds([]);
     setSearchRunId(null);
     setAiSuggestions(new Map());
@@ -1415,6 +1417,16 @@ export default function LiteratureSearchStage({
         deletedResultIds
       );
       setResults(accumulatedResults);
+      const existingResultIds = new Set(results.map(result => result.id));
+      setExpandedAbstracts(prev => {
+        const next = new Set(prev);
+        for (const result of accumulatedResults) {
+          if (result.abstract && !existingResultIds.has(result.id)) {
+            next.add(result.id);
+          }
+        }
+        return next;
+      });
       
       // Track search run ID for this batch
       if (data.searchRunId) {

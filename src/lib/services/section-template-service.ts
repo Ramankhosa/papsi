@@ -408,26 +408,25 @@ class SectionTemplateService {
   /**
    * Resolve the prompt instruction for a paper type
    * Final-section drafting behavior:
-   * - If a paper-type top-up exists, use ONLY that top-up instruction.
-   * - If no top-up exists, fall back to base section prompt.
+   * - Start from the base section prompt.
+   * - If a paper-type top-up exists, append it as an additive layer.
    */
   private async resolvePromptForPaperType(template: SectionTemplate, paperTypeCode: string): Promise<string> {
     await this.loadFromDatabase();
     const normalized = paperTypeCode.toUpperCase();
     const dbOverride = this.findTypeOverride(normalized, template.sectionKey);
-
-    // Top-up only mode: use the paper-type prompt as the primary instruction.
-    if (dbOverride?.instruction?.trim()) {
-      return dbOverride.instruction;
-    }
-
-    // Fallback when no top-up exists for this paper type + section.
     const dbBase = this.findSupersetSection(template.sectionKey);
-    if (dbBase?.instruction?.trim()) {
-      return dbBase.instruction;
+    const baseInstruction = dbBase?.instruction?.trim()
+      ? dbBase.instruction
+      : template.defaultPrompt;
+
+    // Top-up layering mode: base prompt remains authoritative; override adds
+    // paper-type-specific modifications on top.
+    if (dbOverride?.instruction?.trim()) {
+      return `${baseInstruction}\n\n[PAPER TYPE TOP-UP: ${normalized}]\n${dbOverride.instruction}`;
     }
 
-    return template.defaultPrompt;
+    return baseInstruction;
   }
 
   /**

@@ -281,7 +281,7 @@ async function main() {
       'PAPER_TOPIC_GENERATE_HYPOTHESIS': { model: advancedModel, maxTokensIn: 32000, maxTokensOut: 8192 },
       'PAPER_TOPIC_DRAFT_ABSTRACT': { model: advancedModel, maxTokensIn: 32000, maxTokensOut: 8192 },
       'PAPER_TOPIC_ENHANCE_ALL': { model: advancedModel, maxTokensIn: 32000, maxTokensOut: 16384 },
-      'PAPER_LITERATURE_SUMMARIZE': { model: advancedModel, maxTokensIn: 64000, maxTokensOut: 16384 },
+      'PAPER_LITERATURE_SUMMARIZE': { model: gemini25Flash, maxTokensIn: 120000, maxTokensOut: 12000 },
       'PAPER_LITERATURE_GAP': { model: advancedModel, maxTokensIn: 64000, maxTokensOut: 16384 },
       'LITERATURE_RELEVANCE': { model: gemini25Flash, maxTokensIn: 32000, maxTokensOut: 8192 }, // Gemini 2.5 Flash excels at classification
       'PAPER_SECTION_GEN': { model: advancedModel, maxTokensIn: 64000, maxTokensOut: 16384 }, // Section gen with memory needs high limits

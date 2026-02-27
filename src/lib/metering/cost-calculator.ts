@@ -202,6 +202,8 @@ export function getProviderFromModel(modelCode: string): string {
   if (lowerCode.includes('claude')) return 'Anthropic'
   if (lowerCode.includes('gemini') || lowerCode.includes('gemini-')) return 'Google'
   if (lowerCode.includes('deepseek')) return 'DeepSeek'
+  if (lowerCode.startsWith('glm')) return 'Zhipu'
+  if (lowerCode.startsWith('qwen')) return 'Qwen'
   if (lowerCode.includes('llama') || lowerCode.includes('mixtral') || lowerCode.includes('gemma') || lowerCode.startsWith('groq-')) return 'Groq'
   
   return 'Unknown'

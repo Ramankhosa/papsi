@@ -1,6 +1,7 @@
 import { prisma } from '../prisma';
 import { blueprintService } from './blueprint-service';
 import { citationMappingService, type CitationMetaSnapshot, type PaperBlueprintMapping } from './citation-mapping-service';
+import { citationCoverageDistributor, type AssignedCitation } from './citation-coverage-distributor';
 
 export interface EvidenceCardSnippet {
   cardId: string;
@@ -67,6 +68,7 @@ export interface SectionEvidencePack {
   allowedCitationKeys: string[];
   dimensionEvidence: DimensionEvidence[];
   gaps: string[];
+  coverageAssignments: AssignedCitation[];
 }
 
 const CONFIDENCE_WEIGHT: Record<'HIGH' | 'MEDIUM' | 'LOW', number> = {
@@ -674,6 +676,12 @@ class EvidencePackService {
     const requestedSectionKey = sectionKey;
     const normalizedRequestedSectionKey = normalizeSectionKey(requestedSectionKey);
     const blueprint = await blueprintService.getBlueprint(sessionId);
+    const coveragePlan = await citationCoverageDistributor.buildCoveragePlan(sessionId);
+
+    const resolveCoverageAssignments = (resolvedSectionKey: string): AssignedCitation[] => {
+      const normalized = normalizeSectionKey(resolvedSectionKey);
+      return coveragePlan.bySection.get(normalized) || [];
+    };
 
     if (!blueprint) {
       return {
@@ -681,7 +689,8 @@ class EvidencePackService {
         hasBlueprint: false,
         allowedCitationKeys: [],
         dimensionEvidence: [],
-        gaps: []
+        gaps: [],
+        coverageAssignments: resolveCoverageAssignments(requestedSectionKey)
       };
     }
 
@@ -697,7 +706,8 @@ class EvidencePackService {
         hasBlueprint: true,
         allowedCitationKeys: [],
         dimensionEvidence: [],
-        gaps: []
+        gaps: [],
+        coverageAssignments: resolveCoverageAssignments(resolvedSectionKey)
       };
     }
 
@@ -922,7 +932,8 @@ class EvidencePackService {
       hasBlueprint: true,
       allowedCitationKeys,
       dimensionEvidence,
-      gaps
+      gaps,
+      coverageAssignments: resolveCoverageAssignments(resolvedSectionKey)
     };
   }
 }

@@ -25,6 +25,11 @@ const actionSchema = z.object({
   action: z.enum([
     'generate_section',
     'regenerate_section',
+    'start_dimension_flow',
+    'generate_dimension',
+    'accept_dimension',
+    'reject_dimension',
+    'get_dimension_flow',
     'save_section',
     'insert_citation',
     'check_citations',
@@ -47,6 +52,8 @@ const generateSchema = z.object({
   temperature: z.number().min(0).max(1).optional(),
   maxOutputTokens: z.number().int().positive().optional(), // Deprecated: output tokens now controlled via super admin LLM config
   useMappedEvidence: z.boolean().optional(),
+  generationMode: z.enum(['two_pass', 'topup_final']).optional(),
+  autoCitationRepair: z.boolean().optional(),
   // Persona style support (borrowed from patent drafting)
   usePersonaStyle: z.boolean().optional(),
   personaSelection: z.object({
@@ -55,6 +62,39 @@ const generateSchema = z.object({
     secondaryPersonaIds: z.array(z.string()).optional(),
     secondaryPersonaNames: z.array(z.string()).optional()
   }).optional()
+});
+
+const startDimensionFlowSchema = z.object({
+  sectionKey: z.string().min(1),
+  instructions: z.string().max(5000).optional(),
+  useMappedEvidence: z.boolean().optional(),
+  temperature: z.number().min(0).max(1).optional()
+});
+
+const generateDimensionSchema = z.object({
+  sectionKey: z.string().min(1),
+  dimensionKey: z.string().min(1).optional(),
+  feedback: z.string().max(2000).optional(),
+  forceRegenerate: z.boolean().optional(),
+  temperature: z.number().min(0).max(1).optional()
+});
+
+const acceptDimensionSchema = z.object({
+  sectionKey: z.string().min(1),
+  dimensionKey: z.string().min(1),
+  content: z.string().optional(),
+  prefetchNext: z.boolean().optional()
+});
+
+const rejectDimensionSchema = z.object({
+  sectionKey: z.string().min(1),
+  dimensionKey: z.string().min(1),
+  feedback: z.string().max(2000).optional(),
+  temperature: z.number().min(0).max(1).optional()
+});
+
+const getDimensionFlowSchema = z.object({
+  sectionKey: z.string().min(1)
 });
 
 const saveSchema = z.object({
@@ -588,13 +628,13 @@ async function loadHumanizationRecords(
       error: row.errorMessage || null,
       citationValidation: latestValidation
         ? {
-            checkedAt: latestValidation.checkedAt.toISOString(),
-            draftCitationKeys: latestValidation.draftCitationKeys,
-            humanizedCitationKeys: latestValidation.humanizedCitationKeys,
-            missingCitationKeys: latestValidation.missingCitationKeys,
-            extraCitationKeys: latestValidation.extraCitationKeys,
-            valid: latestValidation.isValid
-          }
+          checkedAt: latestValidation.checkedAt.toISOString(),
+          draftCitationKeys: latestValidation.draftCitationKeys,
+          humanizedCitationKeys: latestValidation.humanizedCitationKeys,
+          missingCitationKeys: latestValidation.missingCitationKeys,
+          extraCitationKeys: latestValidation.extraCitationKeys,
+          valid: latestValidation.isValid
+        }
         : undefined
     };
   }
@@ -821,15 +861,15 @@ function readCitationTrackingState(validationReport: unknown): CitationTrackingS
           : [],
         renumbered: Array.isArray(rawChanges.renumbered)
           ? rawChanges.renumbered
-              .map((entry) => {
-                const row = asPlainObject(entry);
-                const citationKey = String(row.citationKey || '').trim();
-                const from = Number(row.from);
-                const to = Number(row.to);
-                if (!citationKey || !Number.isFinite(from) || !Number.isFinite(to)) return null;
-                return { citationKey, from, to };
-              })
-              .filter((entry): entry is CitationSequenceRenumbered => Boolean(entry))
+            .map((entry) => {
+              const row = asPlainObject(entry);
+              const citationKey = String(row.citationKey || '').trim();
+              const from = Number(row.from);
+              const to = Number(row.to);
+              if (!citationKey || !Number.isFinite(from) || !Number.isFinite(to)) return null;
+              return { citationKey, from, to };
+            })
+            .filter((entry): entry is CitationSequenceRenumbered => Boolean(entry))
           : []
       };
       const version = Number(snapshot.version);
@@ -1358,6 +1398,259 @@ interface EvidencePromptContext {
   allowedCitationKeys: string[];
   dimensionEvidence: SectionEvidencePack['dimensionEvidence'];
   gaps: string[];
+  coverageAssignments: SectionEvidencePack['coverageAssignments'];
+}
+
+interface DimensionPlanEntry {
+  dimensionKey: string;
+  dimensionLabel: string;
+  objective: string;
+  mustUseCitationKeys: string[];
+  avoidClaims: string[];
+  bridgeHint: string;
+}
+
+interface DimensionAcceptedBlock {
+  dimensionKey: string;
+  dimensionLabel: string;
+  content: string;
+  citationKeys: string[];
+  source: 'llm' | 'user';
+  version: number;
+  updatedAt: string;
+}
+
+interface DimensionDraftProposal {
+  dimensionKey: string;
+  content: string;
+  contextHash: string;
+  citationValidation: {
+    allowedCitationKeys: string[];
+    disallowedKeys: string[];
+    unknownKeys: string[];
+    missingRequiredKeys: string[];
+  };
+  createdAt: string;
+}
+
+interface DimensionFlowState {
+  version: number;
+  sectionKey: string;
+  createdAt: string;
+  updatedAt: string;
+  plan: DimensionPlanEntry[];
+  acceptedBlocks: DimensionAcceptedBlock[];
+  pendingProposal?: DimensionDraftProposal;
+  bufferedProposals?: Record<string, DimensionDraftProposal>;
+  lastAcceptedContextHash?: string;
+}
+
+const DIMENSION_FLOW_VERSION = 1;
+const MAX_DIMENSION_SUMMARY_ITEMS = 8;
+
+function normalizeDimensionKey(value: string): string {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\s_-]/g, '')
+    .replace(/[\s-]+/g, '_');
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function extractJsonObjectFromOutput(raw: string): Record<string, unknown> | null {
+  const text = String(raw || '').trim();
+  if (!text) return null;
+
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced?.[1]?.trim() || text;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+
+  const jsonSlice = candidate.slice(start, end + 1);
+  try {
+    const parsed = JSON.parse(jsonSlice);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function mergeDimensionFlowIntoValidationReport(
+  existing: unknown,
+  flow: DimensionFlowState
+): Record<string, unknown> {
+  const base = asRecord(existing);
+  return {
+    ...base,
+    dimensionFlow: flow
+  };
+}
+
+function parseDimensionFlowState(value: unknown): DimensionFlowState | null {
+  const report = asRecord(value);
+  const flow = asRecord(report.dimensionFlow);
+  if (!flow.version || Number(flow.version) !== DIMENSION_FLOW_VERSION) return null;
+
+  const sectionKey = String(flow.sectionKey || '').trim();
+  if (!sectionKey) return null;
+
+  const planRaw = Array.isArray(flow.plan) ? flow.plan : [];
+  const acceptedRaw = Array.isArray(flow.acceptedBlocks) ? flow.acceptedBlocks : [];
+  const bufferedRaw = asRecord(flow.bufferedProposals);
+  const pendingRaw = asRecord(flow.pendingProposal);
+
+  const plan: DimensionPlanEntry[] = planRaw
+    .map((entry) => asRecord(entry))
+    .map((entry) => {
+      const dimensionLabel = String(entry.dimensionLabel || '').trim();
+      const inferredLabel = dimensionLabel || String(entry.dimensionKey || '').trim();
+      const dimensionKey = normalizeDimensionKey(String(entry.dimensionKey || inferredLabel));
+      return {
+        dimensionKey,
+        dimensionLabel: inferredLabel || dimensionKey,
+        objective: String(entry.objective || '').trim(),
+        mustUseCitationKeys: Array.isArray(entry.mustUseCitationKeys)
+          ? entry.mustUseCitationKeys.map((key) => String(key || '').trim()).filter(Boolean)
+          : [],
+        avoidClaims: Array.isArray(entry.avoidClaims)
+          ? entry.avoidClaims.map((text) => String(text || '').trim()).filter(Boolean)
+          : [],
+        bridgeHint: String(entry.bridgeHint || '').trim()
+      };
+    })
+    .filter((entry) => entry.dimensionKey.length > 0);
+
+  const acceptedBlocks: DimensionAcceptedBlock[] = acceptedRaw
+    .map((entry) => asRecord(entry))
+    .map((entry) => ({
+      dimensionKey: normalizeDimensionKey(String(entry.dimensionKey || '')),
+      dimensionLabel: String(entry.dimensionLabel || entry.dimensionKey || '').trim(),
+      content: String(entry.content || ''),
+      citationKeys: Array.isArray(entry.citationKeys)
+        ? entry.citationKeys.map((key) => String(key || '').trim()).filter(Boolean)
+        : [],
+      source: entry.source === 'user' ? ('user' as const) : ('llm' as const),
+      version: Number(entry.version) > 0 ? Number(entry.version) : 1,
+      updatedAt: String(entry.updatedAt || new Date().toISOString())
+    }))
+    .filter((entry) => entry.dimensionKey.length > 0);
+
+  const parseProposal = (entry: Record<string, unknown>): DimensionDraftProposal | undefined => {
+    const dimensionKey = normalizeDimensionKey(String(entry.dimensionKey || ''));
+    const content = String(entry.content || '').trim();
+    if (!dimensionKey || !content) return undefined;
+
+    const validation = asRecord(entry.citationValidation);
+    return {
+      dimensionKey,
+      content,
+      contextHash: String(entry.contextHash || ''),
+      citationValidation: {
+        allowedCitationKeys: Array.isArray(validation.allowedCitationKeys)
+          ? validation.allowedCitationKeys.map((key) => String(key || '').trim()).filter(Boolean)
+          : [],
+        disallowedKeys: Array.isArray(validation.disallowedKeys)
+          ? validation.disallowedKeys.map((key) => String(key || '').trim()).filter(Boolean)
+          : [],
+        unknownKeys: Array.isArray(validation.unknownKeys)
+          ? validation.unknownKeys.map((key) => String(key || '').trim()).filter(Boolean)
+          : [],
+        missingRequiredKeys: Array.isArray(validation.missingRequiredKeys)
+          ? validation.missingRequiredKeys.map((key) => String(key || '').trim()).filter(Boolean)
+          : []
+      },
+      createdAt: String(entry.createdAt || new Date().toISOString())
+    };
+  };
+
+  const pendingProposal = parseProposal(pendingRaw);
+  const bufferedProposals: Record<string, DimensionDraftProposal> = {};
+  for (const [key, value] of Object.entries(bufferedRaw)) {
+    const proposal = parseProposal(asRecord(value));
+    if (!proposal) continue;
+    bufferedProposals[normalizeDimensionKey(key)] = proposal;
+  }
+
+  return {
+    version: DIMENSION_FLOW_VERSION,
+    sectionKey,
+    createdAt: String(flow.createdAt || new Date().toISOString()),
+    updatedAt: String(flow.updatedAt || new Date().toISOString()),
+    plan,
+    acceptedBlocks,
+    pendingProposal,
+    bufferedProposals,
+    lastAcceptedContextHash: String(flow.lastAcceptedContextHash || '')
+  };
+}
+
+function summarizeAcceptedBlocks(blocks: DimensionAcceptedBlock[]): string {
+  if (!blocks.length) return '(none accepted yet)';
+  return blocks
+    .slice(0, MAX_DIMENSION_SUMMARY_ITEMS)
+    .map((block, index) => {
+      const normalized = polishDraftMarkdown(block.content || '');
+      const snippet = normalized
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 220);
+      return `${index + 1}. ${block.dimensionLabel}: ${snippet}`;
+    })
+    .join('\n');
+}
+
+function buildAcceptedContextHash(blocks: DimensionAcceptedBlock[]): string {
+  const stable = blocks
+    .map((block) => `${block.dimensionKey}::${block.version}::${computeContentFingerprint(block.content)}`)
+    .join('|');
+  return computeContentFingerprint(stable);
+}
+
+function stitchAcceptedBlocks(
+  flow: DimensionFlowState
+): { stitchedContent: string; orderedBlocks: DimensionAcceptedBlock[] } {
+  const acceptedByDimension = new Map(
+    flow.acceptedBlocks.map((block) => [normalizeDimensionKey(block.dimensionKey), block])
+  );
+  const orderedBlocks: DimensionAcceptedBlock[] = [];
+
+  for (const planItem of flow.plan) {
+    const block = acceptedByDimension.get(normalizeDimensionKey(planItem.dimensionKey));
+    if (block) orderedBlocks.push(block);
+  }
+
+  for (const block of flow.acceptedBlocks) {
+    if (orderedBlocks.find((entry) => entry.dimensionKey === block.dimensionKey)) continue;
+    orderedBlocks.push(block);
+  }
+
+  const stitchedContent = orderedBlocks
+    .map((block) => String(block.content || '').trim())
+    .filter(Boolean)
+    .join('\n\n');
+
+  return { stitchedContent, orderedBlocks };
+}
+
+interface SectionPromptRuntimeBundle {
+  sectionKey: string;
+  paperTypeCode: string;
+  prompt: string;
+  researchTopic: any;
+  citations: SessionCitation[];
+  useMappedEvidence: boolean;
+  citationContext: Awaited<ReturnType<typeof DraftingService.buildCitationContext>>;
+  blueprintPromptContext?: BlueprintPromptContext;
+  evidencePromptContext: EvidencePromptContext;
 }
 
 function formatDimensionEvidence(evidence: EvidencePromptContext['dimensionEvidence']): string {
@@ -1469,9 +1762,9 @@ function formatRelevanceNotes(evidence: EvidencePromptContext['dimensionEvidence
           depth: c.deepAnalysisLabel || null,
           cardClaims: Array.isArray(c.evidenceCards)
             ? c.evidenceCards
-                .map(card => String(card.claim || '').trim())
-                .filter(Boolean)
-                .slice(0, 3)
+              .map(card => String(card.claim || '').trim())
+              .filter(Boolean)
+              .slice(0, 3)
             : []
         });
       }
@@ -1524,6 +1817,26 @@ function formatRelevanceNotes(evidence: EvidencePromptContext['dimensionEvidence
     .join('\n');
 }
 
+function formatCoverageAssignments(assignments: EvidencePromptContext['coverageAssignments']): string {
+  if (!assignments || assignments.length === 0) return '(No coverage assignments)';
+
+  const lines: string[] = [
+    '[PRIORITY 2.7 - CITATION COVERAGE] MANDATORY CITATIONS FOR THIS SECTION',
+    'These citations are assigned for full-paper citation coverage.',
+    'You MUST cite each one at least once using [CITE:key].',
+    'Each citation may appear at most 2 times in this section.',
+    ''
+  ];
+
+  for (const assignment of assignments) {
+    const reason = assignment.claimType || 'GENERAL';
+    const findings = assignment.keyFindings ? ` | Key finding: ${assignment.keyFindings}` : '';
+    lines.push(`- key: ${assignment.citationKey} | "${assignment.title}" | Use for: ${reason}${findings}`);
+  }
+
+  return lines.join('\n');
+}
+
 async function buildPrompt(
   sectionKey: string,
   paperTypeCode: string,
@@ -1537,6 +1850,7 @@ async function buildPrompt(
   let basePrompt = await sectionTemplateService.getPromptForSection(sectionKey, paperTypeCode, context);
   const hasCitationModePlaceholders = /\{\{AUTO_CITATION_MODE\}\}|\{\{ALLOWED_CITATION_KEYS\}\}/.test(basePrompt);
   const hasEvidencePlaceholders = /\{\{DIMENSION_EVIDENCE_NOTES\}\}|\{\{RELEVANCE_NOTES\}\}|\{\{EVIDENCE_GAPS\}\}/.test(basePrompt);
+  const hasCoveragePlaceholders = /\{\{CITATION_COVERAGE_ASSIGNMENTS\}\}/.test(basePrompt);
   const topic = context?.researchTopic;
   const sectionTitle = sectionKey
     .replace(/[_-]+/g, ' ')
@@ -1566,14 +1880,14 @@ async function buildPrompt(
   // CITATION MODE PLACEHOLDERS
   // ============================================================================
   const autoCitationMode = evidenceContext?.useMappedEvidence ? 'ON' : 'OFF';
-  const allowedKeys = evidenceContext?.allowedCitationKeys?.length 
+  const allowedKeys = evidenceContext?.allowedCitationKeys?.length
     ? evidenceContext.allowedCitationKeys.join(', ')
     : '(none)';
 
   basePrompt = basePrompt.replace(/\{\{SECTION_KEY\}\}/g, sectionKey);
   basePrompt = basePrompt.replace(/\{\{SECTION_NAME\}\}/g, sectionTitle);
   basePrompt = basePrompt.replace(/\{\{SECTION_TITLE\}\}/g, sectionTitle);
-  
+
   basePrompt = basePrompt.replace(/\{\{AUTO_CITATION_MODE\}\}/g, autoCitationMode);
   basePrompt = basePrompt.replace(/\{\{ALLOWED_CITATION_KEYS\}\}/g, allowedKeys);
 
@@ -1618,10 +1932,17 @@ async function buildPrompt(
   const evidenceGaps = evidenceContext?.gaps?.length
     ? evidenceContext.gaps.join(', ')
     : '(none detected)';
+  const coverageAssignments = Array.isArray(evidenceContext?.coverageAssignments)
+    ? evidenceContext.coverageAssignments
+    : [];
+  const coverageNotes = coverageAssignments.length > 0
+    ? formatCoverageAssignments(coverageAssignments)
+    : '(no mandatory coverage citations for this section)';
 
   basePrompt = basePrompt.replace(/\{\{DIMENSION_EVIDENCE_NOTES\}\}/g, dimensionEvidenceNotes);
   basePrompt = basePrompt.replace(/\{\{RELEVANCE_NOTES\}\}/g, relevanceNotes);
   basePrompt = basePrompt.replace(/\{\{EVIDENCE_GAPS\}\}/g, evidenceGaps);
+  basePrompt = basePrompt.replace(/\{\{CITATION_COVERAGE_ASSIGNMENTS\}\}/g, coverageNotes);
 
   // ============================================================================
   // FALLBACK: Append blocks if prompt doesn't use placeholders
@@ -1629,7 +1950,7 @@ async function buildPrompt(
   const hasPlaceholdersForCitations = hasCitationModePlaceholders
     || basePrompt.includes('CITATION MODE')
     || basePrompt.includes('AUTO_CITATION_MODE');
-  
+
   const topicBlock = topic && !basePrompt.includes('RESEARCH TOPIC CONTEXT')
     ? `\n\nRESEARCH TOPIC CONTEXT:\nTitle: ${topic.title}\nResearch Question: ${topic.researchQuestion}\nMethodology: ${methodology}\nContribution: ${contribution}\nKeywords: ${(topic.keywords || []).join(', ')}`
     : '';
@@ -1638,8 +1959,8 @@ async function buildPrompt(
     : '';
 
   // Only append citation instructions if the prompt doesn't have its own citation mode section
-  const citationsBlock = citationInstructions && !hasPlaceholdersForCitations 
-    ? `\n\n${citationInstructions}` 
+  const citationsBlock = citationInstructions && !hasPlaceholdersForCitations
+    ? `\n\n${citationInstructions}`
     : '';
 
   // Always inject evidence block when mapped evidence is enabled, even if prompt templates
@@ -1647,13 +1968,18 @@ async function buildPrompt(
   const evidenceBlock = evidenceContext?.useMappedEvidence
     && evidenceContext.dimensionEvidence.length > 0
     && !hasEvidencePlaceholders
-      ? `\n\n${dimensionEvidenceNotes}\n\n[EVIDENCE GAPS]\n${evidenceGaps}`
-      : '';
-  
+    ? `\n\n${dimensionEvidenceNotes}\n\n[EVIDENCE GAPS]\n${evidenceGaps}`
+    : '';
+  const coverageBlock = evidenceContext?.useMappedEvidence
+    && coverageAssignments.length > 0
+    && !hasCoveragePlaceholders
+    ? `\n\n${coverageNotes}`
+    : '';
+
   const userBlock = userInstructions ? `\n\nUSER INSTRUCTIONS:\n${userInstructions}` : '';
   const styleBlock = writingSampleBlock ? `\n\n${writingSampleBlock}` : '';
 
-  return `${basePrompt}${topicBlock}${archetypeBlock}${evidenceBlock}${citationsBlock}${styleBlock}${userBlock}
+  return `${basePrompt}${topicBlock}${archetypeBlock}${evidenceBlock}${coverageBlock}${citationsBlock}${styleBlock}${userBlock}
 
 OUTPUT FORMAT (MANDATORY):
 - Return ONLY clean Markdown text. No JSON, no code fences, no explanations.
@@ -1957,13 +2283,17 @@ async function generateSection(
       // Keep prompt-level whitelist in sync with runtime validation whitelist.
       allowedCitationKeys: citationContext.allowedCitationKeys,
       dimensionEvidence: evidencePack?.dimensionEvidence || [],
-      gaps: citationContext.evidenceGaps
+      gaps: citationContext.evidenceGaps,
+      coverageAssignments: evidencePack?.coverageAssignments || []
     };
 
     if (
       evidencePack?.hasBlueprint
-      && (evidencePack.allowedCitationKeys?.length || 0) === 0
-      && (evidencePack.dimensionEvidence?.length || 0) > 0
+      && citationContext.allowedCitationKeys.length === 0
+      && (
+        (evidencePack.dimensionEvidence?.length || 0) > 0
+        || (evidencePack.coverageAssignments?.length || 0) > 0
+      )
     ) {
       throw new DraftingRequestError(
         'No mapped evidence is available for this section',
@@ -1983,7 +2313,8 @@ async function generateSection(
       useMappedEvidence: false,
       allowedCitationKeys: [],
       dimensionEvidence: [],
-      gaps: []
+      gaps: [],
+      coverageAssignments: []
     };
   }
 
@@ -2006,11 +2337,11 @@ async function generateSection(
   }
 
   await emitStatus?.('build_prompt', 'Building section prompt from super-admin publication rules');
-  
+
   // DEBUG: Log evidence and blueprint context for troubleshooting citation injection
   console.log(`[PaperDrafting] Section: ${sectionKey}, useMappedEvidence: ${useMappedEvidence}`);
   console.log(`[PaperDrafting] Blueprint exists: ${!!blueprintPromptContext}, mustCover count: ${blueprintPromptContext?.mustCover?.length || 0}`);
-  console.log(`[PaperDrafting] Evidence pack - allowedKeys: ${evidencePromptContext?.allowedCitationKeys?.length || 0}, dimensions: ${evidencePromptContext?.dimensionEvidence?.length || 0}, gaps: ${evidencePromptContext?.gaps?.length || 0}`);
+  console.log(`[PaperDrafting] Evidence pack - allowedKeys: ${evidencePromptContext?.allowedCitationKeys?.length || 0}, dimensions: ${evidencePromptContext?.dimensionEvidence?.length || 0}, coverageAssignments: ${evidencePromptContext?.coverageAssignments?.length || 0}, gaps: ${evidencePromptContext?.gaps?.length || 0}`);
   if (evidencePromptContext?.allowedCitationKeys?.length) {
     console.log(`[PaperDrafting] Allowed citation keys: ${evidencePromptContext.allowedCitationKeys.join(', ')}`);
   }
@@ -2019,7 +2350,7 @@ async function generateSection(
       console.log(`[PaperDrafting] Dimension "${dim.dimension}": ${dim.citations.length} citations`);
     }
   }
-  
+
   const prompt = await buildPrompt(
     sectionKey,
     paperTypeCode,
@@ -2044,7 +2375,7 @@ async function generateSection(
     blueprintPromptContext,
     evidencePromptContext
   );
-  
+
   // DEBUG: Log a snippet of the final prompt to verify placeholder injection
   const promptSnippet = prompt.substring(0, 500);
   console.log(`[PaperDrafting] Prompt snippet (first 500 chars):\n${promptSnippet}`);
@@ -2089,17 +2420,32 @@ async function generateSection(
   let pass2TokensUsed: number | undefined;
   let pass2ValidationReport: unknown;
   let pass2CompletedAt: Date | undefined;
+  const requestedGenerationMode =
+    payload.generationMode === 'two_pass'
+      ? 'two_pass'
+      : 'topup_final';
   const twoPassEnabled = isFeatureEnabled('ENABLE_TWO_PASS_GENERATION');
+  const useTwoPassPipeline = twoPassEnabled && requestedGenerationMode === 'two_pass';
+  const autoCitationRepair = payload.autoCitationRepair === true;
 
-  if (twoPassEnabled) {
+  if (useTwoPassPipeline) {
     sectionRecord = await prisma.paperSection.findUnique({
       where: { sessionId_sectionKey: { sessionId, sectionKey } }
     });
 
     let pass1Content: string | null = null;
+    const hasFinalContent = Boolean(String(sectionRecord?.content || '').trim());
 
-    // Fast path: reuse pre-generated Pass 1 draft if available
-    if (sectionRecord?.baseContentInternal && sectionRecord.status === 'BASE_READY') {
+    // Fast path: reuse pre-generated Pass 1 draft if available.
+    // Also reuse when section has base content but no usable final content
+    // (e.g. dimension flow created/cleared visible content while retaining base draft).
+    if (
+      sectionRecord?.baseContentInternal
+      && (
+        sectionRecord.status === 'BASE_READY'
+        || !hasFinalContent
+      )
+    ) {
       pass1Content = sectionRecord.baseContentInternal;
       llmTokensUsed = sectionRecord.pass1TokensUsed ?? undefined;
     }
@@ -2265,34 +2611,19 @@ async function generateSection(
     initialValidation.disallowedKeys.length > 0 &&
     citationContext.allowedCitationKeys.length > 0
   ) {
-    console.warn('[PaperDrafting] Initial citation validation found disallowed keys; attempting repair', {
-      sectionKey,
-      disallowedCount: initialValidation.disallowedKeys.length,
-      disallowedSample: initialValidation.disallowedKeys.slice(0, 10)
-    });
-    // Pass dimension evidence so the repair LLM can make semantically correct substitutions
-    contentForPostProcess = await repairSectionCitations(
-      requestHeaders,
-      sessionId,
-      sectionKey,
-      contentForPostProcess,
-      citationContext.allowedCitationKeys,
-      evidencePromptContext?.dimensionEvidence,
-      tenantContext
-    );
-    let postRepairValidation = DraftingService.validateCitationKeys(
-      contentForPostProcess,
-      citationContext.allowedCitationKeys,
-      knownSessionKeys
-    );
-
-    // P0 Fix: If LLM repair didn't remove all disallowed keys, retry once more
-    if (postRepairValidation.disallowedKeys.length > 0) {
-      console.warn('[PaperDrafting] First repair pass still has disallowed keys; retrying', {
+    if (!autoCitationRepair) {
+      console.warn('[PaperDrafting] Disallowed citation keys detected; auto repair disabled', {
         sectionKey,
-        disallowedCount: postRepairValidation.disallowedKeys.length,
-        disallowedSample: postRepairValidation.disallowedKeys.slice(0, 5)
+        disallowedCount: initialValidation.disallowedKeys.length,
+        disallowedSample: initialValidation.disallowedKeys.slice(0, 10)
       });
+    } else {
+      console.warn('[PaperDrafting] Initial citation validation found disallowed keys; attempting repair', {
+        sectionKey,
+        disallowedCount: initialValidation.disallowedKeys.length,
+        disallowedSample: initialValidation.disallowedKeys.slice(0, 10)
+      });
+      // Pass dimension evidence so the repair LLM can make semantically correct substitutions
       contentForPostProcess = await repairSectionCitations(
         requestHeaders,
         sessionId,
@@ -2302,26 +2633,47 @@ async function generateSection(
         evidencePromptContext?.dimensionEvidence,
         tenantContext
       );
-      postRepairValidation = DraftingService.validateCitationKeys(
+      let postRepairValidation = DraftingService.validateCitationKeys(
         contentForPostProcess,
         citationContext.allowedCitationKeys,
         knownSessionKeys
       );
-    }
 
-    // P0 Fix: Deterministic strip fallback -- if LLM repair still fails,
-    // programmatically remove remaining disallowed citation placeholders
-    // rather than throwing a hard 422 error.
-    if (postRepairValidation.disallowedKeys.length > 0) {
-      console.warn('[PaperDrafting] Citation repair exhausted; stripping remaining disallowed keys deterministically', {
-        sectionKey,
-        strippedCount: postRepairValidation.disallowedKeys.length,
-        strippedKeys: postRepairValidation.disallowedKeys
-      });
-      contentForPostProcess = DraftingService.stripDisallowedCitations(
-        contentForPostProcess,
-        citationContext.allowedCitationKeys
-      );
+      // Retry once when repair is enabled.
+      if (postRepairValidation.disallowedKeys.length > 0) {
+        console.warn('[PaperDrafting] First repair pass still has disallowed keys; retrying', {
+          sectionKey,
+          disallowedCount: postRepairValidation.disallowedKeys.length,
+          disallowedSample: postRepairValidation.disallowedKeys.slice(0, 5)
+        });
+        contentForPostProcess = await repairSectionCitations(
+          requestHeaders,
+          sessionId,
+          sectionKey,
+          contentForPostProcess,
+          citationContext.allowedCitationKeys,
+          evidencePromptContext?.dimensionEvidence,
+          tenantContext
+        );
+        postRepairValidation = DraftingService.validateCitationKeys(
+          contentForPostProcess,
+          citationContext.allowedCitationKeys,
+          knownSessionKeys
+        );
+      }
+
+      // Keep deterministic strip only when auto repair is explicitly enabled.
+      if (postRepairValidation.disallowedKeys.length > 0) {
+        console.warn('[PaperDrafting] Citation repair exhausted; stripping remaining disallowed keys deterministically', {
+          sectionKey,
+          strippedCount: postRepairValidation.disallowedKeys.length,
+          strippedKeys: postRepairValidation.disallowedKeys
+        });
+        contentForPostProcess = DraftingService.stripDisallowedCitations(
+          contentForPostProcess,
+          citationContext.allowedCitationKeys
+        );
+      }
     }
   }
 
@@ -2414,7 +2766,7 @@ async function generateSection(
   const ambiguousCount = usageSync.ambiguousCount;
   const unattributedKeys = usageSync.unattributedKeys;
 
-  if (twoPassEnabled) {
+  if (useTwoPassPipeline) {
     const resolvedSectionRecord = sectionRecord ?? await prisma.paperSection.findUnique({
       where: { sessionId_sectionKey: { sessionId, sectionKey } },
       select: { id: true }
@@ -2472,6 +2824,517 @@ async function generateSection(
   };
 }
 
+async function buildSectionPromptRuntimeBundle(params: {
+  sessionId: string;
+  session: any;
+  paperTypeCode: string;
+  sectionKey: string;
+  instructions?: string;
+  useMappedEvidence?: boolean;
+}): Promise<SectionPromptRuntimeBundle> {
+  const { sessionId, session, paperTypeCode, sectionKey } = params;
+  const normalizedSectionKey = normalizeSectionKey(sectionKey);
+  const requestedMappedEvidence = params.useMappedEvidence !== false;
+  const sectionContextPolicy = await sectionTemplateService.getSectionContextPolicy(normalizedSectionKey, paperTypeCode);
+  const useMappedEvidence = sectionContextPolicy.requiresCitations ? requestedMappedEvidence : false;
+
+  const researchTopic = await prisma.researchTopic.findUnique({
+    where: { sessionId }
+  });
+  const citations = await citationService.getCitationsForSession(sessionId);
+  const evidencePack = useMappedEvidence
+    ? await evidencePackService.getEvidencePack(sessionId, normalizedSectionKey)
+    : null;
+  const citationContext = await DraftingService.buildCitationContext(sessionId, normalizedSectionKey, {
+    useMappedEvidence,
+    preloadedEvidencePack: evidencePack
+  });
+
+  const draft = await getPaperDraft(sessionId);
+  const extraSections = normalizeExtraSections(draft?.extraSections);
+
+  let blueprintPromptContext: BlueprintPromptContext | undefined;
+  const blueprint = await blueprintService.getBlueprint(sessionId);
+  if (blueprint) {
+    const currentSectionPlan = blueprint.sectionPlan.find(
+      (entry) => normalizeSectionKey(entry.sectionKey) === normalizedSectionKey
+    );
+    blueprintPromptContext = {
+      thesisStatement: blueprint.thesisStatement,
+      centralObjective: blueprint.centralObjective,
+      keyContributions: blueprint.keyContributions,
+      sectionPlan: blueprint.sectionPlan.map((entry) => ({ sectionKey: entry.sectionKey, purpose: entry.purpose })),
+      mustCover: currentSectionPlan?.mustCover || []
+    };
+  }
+
+  let evidencePromptContext: EvidencePromptContext;
+  if (useMappedEvidence) {
+    evidencePromptContext = {
+      useMappedEvidence: true,
+      allowedCitationKeys: citationContext.allowedCitationKeys,
+      dimensionEvidence: evidencePack?.dimensionEvidence || [],
+      gaps: citationContext.evidenceGaps,
+      coverageAssignments: evidencePack?.coverageAssignments || []
+    };
+
+    if (
+      evidencePack?.hasBlueprint
+      && citationContext.allowedCitationKeys.length === 0
+      && (
+        (evidencePack.dimensionEvidence?.length || 0) > 0
+        || (evidencePack.coverageAssignments?.length || 0) > 0
+      )
+    ) {
+      throw new DraftingRequestError(
+        'No mapped evidence is available for this section',
+        409,
+        {
+          error: 'No mapped evidence is available for this section',
+          hint: 'Run AI Relevance & Blueprint Mapping (or re-import citations) so citations can be mapped to this section.',
+          evidence: {
+            sectionKey: normalizedSectionKey,
+            gaps: evidencePack?.gaps || []
+          }
+        }
+      );
+    }
+  } else {
+    evidencePromptContext = {
+      useMappedEvidence: false,
+      allowedCitationKeys: [],
+      dimensionEvidence: [],
+      gaps: [],
+      coverageAssignments: []
+    };
+  }
+
+  const prompt = await buildPrompt(
+    normalizedSectionKey,
+    paperTypeCode,
+    {
+      researchTopic,
+      archetype: {
+        archetypeId: session.archetypeId,
+        archetypeConfidence: session.archetypeConfidence,
+        contributionMode: session.contributionMode,
+        evaluationScope: session.evaluationScope,
+        evidenceModality: session.evidenceModality,
+        archetypeRationale: session.archetypeRationale,
+        archetypeEvidenceStale: session.archetypeEvidenceStale
+      },
+      citationCount: citations.length,
+      availableCitations: citations,
+      previousSections: extraSections
+    },
+    useMappedEvidence ? citationContext.citationInstructions : '',
+    params.instructions,
+    '',
+    blueprintPromptContext,
+    evidencePromptContext
+  );
+
+  return {
+    sectionKey: normalizedSectionKey,
+    paperTypeCode,
+    prompt,
+    researchTopic,
+    citations,
+    useMappedEvidence,
+    citationContext,
+    blueprintPromptContext,
+    evidencePromptContext
+  };
+}
+
+/**
+ * Build dimension plan deterministically from the frozen blueprint mustCover
+ * dimensions. Blueprint dimensions are the single source of truth — the same
+ * dimensions are used for paper relevance mapping, citation mapping, and
+ * evidence card mapping.  No LLM call is needed.
+ *
+ * Priority:
+ *  1. dimensionEvidence (mustCover dims enriched with evidence-mapped citations)
+ *  2. raw mustCover (when no evidence cards have been mapped yet)
+ *
+ * Returns null when the blueprint has no mustCover for this section — callers
+ * should surface a clear error rather than inventing dimensions.
+ */
+function buildBlueprintDimensionPlan(
+  bundle: SectionPromptRuntimeBundle
+): DimensionPlanEntry[] | null {
+  // --- Priority 1: evidence-mapped blueprint dimensions ----------------------
+  const dimensionEvidence = bundle.evidencePromptContext.dimensionEvidence || [];
+  const fromEvidence: DimensionPlanEntry[] = dimensionEvidence
+    .map((entry) => {
+      const dimensionLabel = String(entry.dimension || '').trim();
+      const dimensionKey = normalizeDimensionKey(dimensionLabel);
+      if (!dimensionKey) return null;
+      const mustUseCitationKeys = Array.from(new Set(
+        entry.citations
+          .map((citation) => String(citation.citationKey || '').trim())
+          .filter(Boolean)
+      )).slice(0, 5);
+      return {
+        dimensionKey,
+        dimensionLabel,
+        objective: `Cover the "${dimensionLabel}" aspect with evidence-grounded analysis.`,
+        mustUseCitationKeys,
+        avoidClaims: [] as string[],
+        bridgeHint: 'Bridge naturally to the next dimension while avoiding repetition.'
+      } satisfies DimensionPlanEntry;
+    })
+    .filter((entry): entry is DimensionPlanEntry => Boolean(entry));
+
+  if (fromEvidence.length > 0) return fromEvidence;
+
+  // --- Priority 2: raw blueprint mustCover (no evidence mapped yet) ----------
+  const fromMustCover = (bundle.blueprintPromptContext?.mustCover || [])
+    .map((dimensionLabel) => String(dimensionLabel || '').trim())
+    .filter(Boolean)
+    .map((dimensionLabel) => ({
+      dimensionKey: normalizeDimensionKey(dimensionLabel),
+      dimensionLabel,
+      objective: `Address the blueprint dimension "${dimensionLabel}" clearly and defensibly.`,
+      mustUseCitationKeys: [],
+      avoidClaims: [] as string[],
+      bridgeHint: 'Transition cleanly to the next required dimension.'
+    } satisfies DimensionPlanEntry))
+    .filter((entry) => entry.dimensionKey.length > 0);
+
+  if (fromMustCover.length > 0) return fromMustCover;
+
+  // No blueprint dimensions available for this section.
+  return null;
+}
+
+// parseDimensionPlan removed — blueprint mustCover dimensions are now the
+// single source of truth.  See buildBlueprintDimensionPlan().
+
+function collectCanonicalCitationKeys(
+  content: string,
+  knownSessionKeys: Set<string>,
+  canonicalLookup: Map<string, string>
+): string[] {
+  const extracted = DraftingService.extractCitationKeys(content, knownSessionKeys)
+    .map((key) => String(key || '').trim())
+    .filter(Boolean);
+  return Array.from(new Set(
+    extracted.map((key) => canonicalLookup.get(key.toLowerCase()) || key)
+  ));
+}
+
+function findNextDimensionPlanEntry(flow: DimensionFlowState): DimensionPlanEntry | null {
+  const accepted = new Set(flow.acceptedBlocks.map((block) => normalizeDimensionKey(block.dimensionKey)));
+  return flow.plan.find((entry) => !accepted.has(normalizeDimensionKey(entry.dimensionKey))) || null;
+}
+
+async function getOrCreateDimensionSectionRecord(
+  sessionId: string,
+  sectionKey: string
+) {
+  const normalizedSectionKey = normalizeSectionKey(sectionKey);
+  const existing = await prisma.paperSection.findUnique({
+    where: {
+      sessionId_sectionKey: {
+        sessionId,
+        sectionKey: normalizedSectionKey
+      }
+    }
+  });
+  if (existing) return existing;
+
+  return prisma.paperSection.create({
+    data: {
+      sessionId,
+      sectionKey: normalizedSectionKey,
+      displayName: formatSectionLabel(normalizedSectionKey),
+      content: '',
+      wordCount: 0,
+      generationMode: 'dimension_flow',
+      status: 'DRAFT',
+      isStale: false,
+      generatedAt: new Date()
+    } as any
+  });
+}
+
+async function persistDimensionFlowState(params: {
+  sectionId: string;
+  existingValidationReport: unknown;
+  flow: DimensionFlowState;
+  stitchedContent?: string;
+}) {
+  const now = new Date();
+  const validationReport = mergeDimensionFlowIntoValidationReport(params.existingValidationReport, params.flow);
+  const content = params.stitchedContent ?? undefined;
+  return prisma.paperSection.update({
+    where: { id: params.sectionId },
+    data: {
+      generationMode: 'dimension_flow',
+      validationReport: validationReport as any,
+      ...(typeof content === 'string'
+        ? {
+          content,
+          wordCount: computeWordCount(content),
+          updatedAt: now
+        }
+        : {})
+    }
+  });
+}
+
+async function executeDraftSectionPrompt(params: {
+  sessionId: string;
+  sectionKey: string;
+  prompt: string;
+  headers: Record<string, string>;
+  tenantContext?: TenantContext | null;
+  purpose: string;
+  temperature?: number;
+  stageCode?: string;
+}) {
+  const result = await llmGateway.executeLLMOperation(
+    params.tenantContext
+      ? { tenantContext: params.tenantContext }
+      : { headers: params.headers },
+    {
+      taskCode: 'LLM2_DRAFT',
+      stageCode: params.stageCode || 'PAPER_SECTION_DRAFT',
+      prompt: params.prompt,
+      parameters: {
+        temperature: params.temperature
+      },
+      idempotencyKey: crypto.randomUUID(),
+      metadata: {
+        sessionId: params.sessionId,
+        paperId: params.sessionId,
+        sectionKey: params.sectionKey,
+        action: `${params.purpose}_${params.sectionKey}`,
+        module: 'publication_ideation',
+        purpose: params.purpose
+      }
+    }
+  );
+
+  if (!result.success || !result.response) {
+    throw new DraftingRequestError(
+      result.error?.message || 'Draft generation failed',
+      502,
+      { error: result.error?.message || 'Draft generation failed' }
+    );
+  }
+
+  return {
+    output: String(result.response.output || '').trim(),
+    outputTokens: result.response.outputTokens
+  };
+}
+
+function resolveRequiredCitationKeys(
+  keys: string[],
+  canonicalLookup: Map<string, string>
+): string[] {
+  return Array.from(new Set(
+    keys
+      .map((key) => String(key || '').trim())
+      .filter(Boolean)
+      .map((key) => canonicalLookup.get(key.toLowerCase()) || key)
+  ));
+}
+
+function evaluateDimensionCitationValidation(params: {
+  content: string;
+  bundle: SectionPromptRuntimeBundle;
+  requiredCitationKeys: string[];
+}): {
+  polishedContent: string;
+  citationKeys: string[];
+  citationValidation: DimensionDraftProposal['citationValidation'];
+} {
+  const polishedContent = polishDraftMarkdown(params.content || '');
+  const knownSessionKeys = new Set(params.bundle.citations.map((citation) => citation.citationKey));
+  const canonicalLookup = buildCanonicalCitationLookup(params.bundle.citations);
+  const allowedCitationKeys = params.bundle.useMappedEvidence
+    ? params.bundle.citationContext.allowedCitationKeys
+    : [];
+  const validation = DraftingService.validateCitationKeys(
+    polishedContent,
+    params.bundle.useMappedEvidence ? allowedCitationKeys : undefined,
+    knownSessionKeys
+  );
+  const extractedKeys = DraftingService.extractCitationKeys(polishedContent, knownSessionKeys)
+    .map((key) => String(key || '').trim())
+    .filter(Boolean);
+  const unknownKeys = Array.from(new Set(
+    extractedKeys.filter((key) => !canonicalLookup.has(key.toLowerCase()))
+  ));
+  const citationKeys = collectCanonicalCitationKeys(polishedContent, knownSessionKeys, canonicalLookup);
+  const requiredCitationKeys = resolveRequiredCitationKeys(params.requiredCitationKeys, canonicalLookup);
+  const usedCitationSet = new Set(citationKeys.map((key) => key.toLowerCase()));
+  const missingRequiredKeys = requiredCitationKeys.filter((key) => !usedCitationSet.has(key.toLowerCase()));
+
+  return {
+    polishedContent,
+    citationKeys,
+    citationValidation: {
+      allowedCitationKeys,
+      disallowedKeys: validation.disallowedKeys,
+      unknownKeys,
+      missingRequiredKeys
+    }
+  };
+}
+
+function extractDimensionContentFromOutput(rawOutput: string): string {
+  const parsed = extractJsonObjectFromOutput(rawOutput);
+  if (parsed && typeof parsed.content === 'string' && parsed.content.trim()) {
+    return parsed.content.trim();
+  }
+
+  const fenced = rawOutput.match(/```(?:markdown|md|text)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]?.trim()) {
+    return fenced[1].trim();
+  }
+
+  return rawOutput.trim();
+}
+
+function buildDimensionFlowResponse(flow: DimensionFlowState) {
+  const { stitchedContent, orderedBlocks } = stitchAcceptedBlocks(flow);
+  const nextDimension = findNextDimensionPlanEntry(flow);
+  const acceptedSet = new Set(flow.acceptedBlocks.map((block) => normalizeDimensionKey(block.dimensionKey)));
+  const pendingKey = normalizeDimensionKey(flow.pendingProposal?.dimensionKey || '');
+
+  return {
+    flow,
+    stitchedContent,
+    orderedBlocks,
+    nextDimension,
+    completed: !nextDimension,
+    plan: flow.plan.map((entry) => {
+      const key = normalizeDimensionKey(entry.dimensionKey);
+      let status: 'accepted' | 'pending' | 'todo' = 'todo';
+      if (acceptedSet.has(key)) status = 'accepted';
+      else if (pendingKey && pendingKey === key) status = 'pending';
+      return {
+        ...entry,
+        status
+      };
+    }),
+    progress: {
+      total: flow.plan.length,
+      accepted: acceptedSet.size,
+      remaining: Math.max(flow.plan.length - acceptedSet.size, 0)
+    }
+  };
+}
+
+// buildDimensionPlannerPrompt removed — dimension planning no longer uses an
+// LLM call.  Blueprint mustCover dimensions are the single source of truth.
+// See buildBlueprintDimensionPlan().
+
+async function generateDimensionProposal(params: {
+  sessionId: string;
+  sectionKey: string;
+  bundle: SectionPromptRuntimeBundle;
+  flow: DimensionFlowState;
+  targetDimension: DimensionPlanEntry;
+  headers: Record<string, string>;
+  tenantContext?: TenantContext | null;
+  feedback?: string;
+  temperature?: number;
+}): Promise<{
+  proposal: DimensionDraftProposal;
+  citationKeys: string[];
+  outputTokens?: number;
+}> {
+  const { stitchedContent } = stitchAcceptedBlocks(params.flow);
+  const acceptedSummary = summarizeAcceptedBlocks(params.flow.acceptedBlocks);
+  const priorContext = stitchedContent.trim().slice(-9000) || '(none accepted yet)';
+  const requiredKeys = params.targetDimension.mustUseCitationKeys.join(', ') || '(none)';
+  const avoidClaims = params.targetDimension.avoidClaims.join('; ') || '(none)';
+  const feedback = params.feedback?.trim() ? `\nREWRITE FEEDBACK:\n${params.feedback.trim()}` : '';
+  const coverageKeys = params.bundle.evidencePromptContext.coverageAssignments
+    .map((assignment) => assignment.citationKey)
+    .filter(Boolean)
+    .join(', ') || '(none)';
+
+  const prompt = `You are drafting ONE dimension for a paper section.
+
+SECTION KEY: ${params.sectionKey}
+SECTION LABEL: ${formatSectionLabel(params.sectionKey)}
+TARGET DIMENSION KEY: ${params.targetDimension.dimensionKey}
+TARGET DIMENSION LABEL: ${params.targetDimension.dimensionLabel}
+TARGET OBJECTIVE: ${params.targetDimension.objective}
+REQUIRED CITATION KEYS FOR THIS DIMENSION: ${requiredKeys}
+MANDATORY SECTION COVERAGE KEYS (global): ${coverageKeys}
+AVOID THESE CLAIMS: ${avoidClaims}
+BRIDGE HINT: ${params.targetDimension.bridgeHint || '(none)'}
+
+ALREADY ACCEPTED DIMENSIONS (locked):
+${acceptedSummary}
+
+ACCEPTED SECTION CONTENT SO FAR (for continuity; do not rewrite it):
+${priorContext}
+
+MASTER SECTION GUIDANCE:
+${params.bundle.prompt}
+${feedback}
+
+Write ONLY the content block for this target dimension.
+Rules:
+- Do not repeat prior accepted content.
+- Keep continuity with the previous accepted dimension.
+- Use [CITE:key] placeholders exactly.
+- If this dimension has REQUIRED CITATION KEYS, include each at least once.
+- Keep output focused on this dimension only.
+
+Return ONLY JSON:
+{
+  "dimensionKey": "${params.targetDimension.dimensionKey}",
+  "dimensionLabel": "${params.targetDimension.dimensionLabel}",
+  "content": "markdown content for this dimension"
+}`;
+
+  const generated = await executeDraftSectionPrompt({
+    sessionId: params.sessionId,
+    sectionKey: params.sectionKey,
+    prompt,
+    headers: params.headers,
+    tenantContext: params.tenantContext,
+    purpose: 'paper_dimension_generation',
+    temperature: params.temperature
+  });
+
+  const content = extractDimensionContentFromOutput(generated.output);
+  if (!content.trim()) {
+    throw new DraftingRequestError(
+      'Dimension generation returned empty content',
+      422,
+      { error: 'Dimension generation returned empty content' }
+    );
+  }
+
+  const evaluation = evaluateDimensionCitationValidation({
+    content,
+    bundle: params.bundle,
+    requiredCitationKeys: params.targetDimension.mustUseCitationKeys
+  });
+
+  return {
+    proposal: {
+      dimensionKey: params.targetDimension.dimensionKey,
+      content: evaluation.polishedContent,
+      contextHash: buildAcceptedContextHash(params.flow.acceptedBlocks),
+      citationValidation: evaluation.citationValidation,
+      createdAt: new Date().toISOString()
+    },
+    citationKeys: evaluation.citationKeys,
+    outputTokens: generated.outputTokens
+  };
+}
+
 export async function POST(request: NextRequest, context: { params: { paperId: string } }) {
   try {
     const { user, error } = await authenticateUser(request);
@@ -2492,12 +3355,12 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     const paperTypeCode = session.paperType?.code
       || process.env.DEFAULT_PAPER_TYPE
       || 'JOURNAL_ARTICLE';
+    const requestHeaders = Object.fromEntries(request.headers.entries());
 
     switch (actionData.action) {
       case 'generate_section':
       case 'regenerate_section': {
         const payload = generateSchema.parse(body);
-        const headers = Object.fromEntries(request.headers.entries());
         const wantsStream = Boolean(body.stream);
 
         if (!wantsStream) {
@@ -2508,7 +3371,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
               user,
               paperTypeCode,
               payload,
-              requestHeaders: headers,
+              requestHeaders,
               tenantContext,
             }
           );
@@ -2534,7 +3397,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
               user,
               paperTypeCode,
               payload,
-              requestHeaders: headers,
+              requestHeaders,
               tenantContext,
             },
             sendStatus
@@ -2569,10 +3432,504 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         });
       }
 
+      case 'start_dimension_flow': {
+        const payload = startDimensionFlowSchema.parse(body);
+        const sectionKey = normalizeSectionKey(payload.sectionKey);
+        const bundle = await buildSectionPromptRuntimeBundle({
+          sessionId,
+          session,
+          paperTypeCode,
+          sectionKey,
+          instructions: payload.instructions,
+          useMappedEvidence: payload.useMappedEvidence
+        });
+        const sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
+
+        // Dimension plan is built deterministically from the frozen blueprint
+        // mustCover dimensions — no LLM call needed.  These are the same
+        // dimensions used for paper relevance mapping, citation mapping, and
+        // evidence card mapping.
+        const plan = buildBlueprintDimensionPlan(bundle);
+        if (!plan || plan.length === 0) {
+          return NextResponse.json(
+            {
+              error: 'No blueprint dimensions found for this section',
+              hint: 'Ensure the blueprint has mustCover dimensions defined for this section before starting dimension flow.',
+              sectionKey
+            },
+            { status: 422 }
+          );
+        }
+
+        const nowIso = new Date().toISOString();
+
+        const flow: DimensionFlowState = {
+          version: DIMENSION_FLOW_VERSION,
+          sectionKey,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+          plan,
+          acceptedBlocks: [],
+          bufferedProposals: {},
+          lastAcceptedContextHash: ''
+        };
+
+        await persistDimensionFlowState({
+          sectionId: sectionRecord.id,
+          existingValidationReport: sectionRecord.validationReport,
+          flow,
+          stitchedContent: ''
+        });
+
+        return NextResponse.json({
+          sectionKey,
+          plannerUsedFallback: false,
+          plannerTokensUsed: 0,
+          ...buildDimensionFlowResponse(flow)
+        });
+      }
+
+      case 'generate_dimension': {
+        const payload = generateDimensionSchema.parse(body);
+        const sectionKey = normalizeSectionKey(payload.sectionKey);
+        const sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
+        const flow = parseDimensionFlowState(sectionRecord.validationReport);
+        if (!flow) {
+          return NextResponse.json(
+            {
+              error: 'Dimension flow not initialized for this section',
+              hint: 'Call start_dimension_flow first.'
+            },
+            { status: 409 }
+          );
+        }
+
+        const bundle = await buildSectionPromptRuntimeBundle({
+          sessionId,
+          session,
+          paperTypeCode,
+          sectionKey
+        });
+
+        const requestedDimensionKey = payload.dimensionKey
+          ? normalizeDimensionKey(payload.dimensionKey)
+          : '';
+
+        const acceptedContextHash = buildAcceptedContextHash(flow.acceptedBlocks);
+        let targetDimension = requestedDimensionKey
+          ? flow.plan.find((entry) => normalizeDimensionKey(entry.dimensionKey) === requestedDimensionKey) || null
+          : null;
+        if (!targetDimension) {
+          const pendingKey = normalizeDimensionKey(flow.pendingProposal?.dimensionKey || '');
+          if (pendingKey) {
+            targetDimension = flow.plan.find((entry) => normalizeDimensionKey(entry.dimensionKey) === pendingKey) || null;
+          }
+        }
+        if (!targetDimension) {
+          targetDimension = findNextDimensionPlanEntry(flow);
+        }
+        if (!targetDimension) {
+          return NextResponse.json({
+            sectionKey,
+            message: 'All dimensions are already accepted.',
+            ...buildDimensionFlowResponse(flow)
+          });
+        }
+
+        const targetKey = normalizeDimensionKey(targetDimension.dimensionKey);
+        const cachedPending = flow.pendingProposal
+          && normalizeDimensionKey(flow.pendingProposal.dimensionKey) === targetKey
+          && flow.pendingProposal.contextHash === acceptedContextHash
+          && !payload.feedback
+          && !payload.forceRegenerate
+          ? flow.pendingProposal
+          : null;
+        if (cachedPending) {
+          return NextResponse.json({
+            sectionKey,
+            dimension: targetDimension,
+            proposal: cachedPending,
+            cached: true,
+            ...buildDimensionFlowResponse(flow)
+          });
+        }
+
+        const buffered = flow.bufferedProposals?.[targetKey];
+        if (
+          buffered
+          && buffered.contextHash === acceptedContextHash
+          && !payload.feedback
+          && !payload.forceRegenerate
+        ) {
+          flow.pendingProposal = buffered;
+          if (flow.bufferedProposals) {
+            delete flow.bufferedProposals[targetKey];
+          }
+          flow.updatedAt = new Date().toISOString();
+          await persistDimensionFlowState({
+            sectionId: sectionRecord.id,
+            existingValidationReport: sectionRecord.validationReport,
+            flow
+          });
+          return NextResponse.json({
+            sectionKey,
+            dimension: targetDimension,
+            proposal: buffered,
+            cached: true,
+            ...buildDimensionFlowResponse(flow)
+          });
+        }
+
+        const generated = await generateDimensionProposal({
+          sessionId,
+          sectionKey,
+          bundle,
+          flow,
+          targetDimension,
+          headers: requestHeaders,
+          tenantContext,
+          feedback: payload.feedback,
+          temperature: payload.temperature
+        });
+
+        flow.pendingProposal = generated.proposal;
+        if (flow.bufferedProposals) {
+          delete flow.bufferedProposals[targetKey];
+        }
+        flow.updatedAt = new Date().toISOString();
+
+        await persistDimensionFlowState({
+          sectionId: sectionRecord.id,
+          existingValidationReport: sectionRecord.validationReport,
+          flow
+        });
+
+        return NextResponse.json({
+          sectionKey,
+          dimension: targetDimension,
+          proposal: generated.proposal,
+          citationKeys: generated.citationKeys,
+          tokensUsed: generated.outputTokens,
+          ...buildDimensionFlowResponse(flow)
+        });
+      }
+
+      case 'accept_dimension': {
+        const payload = acceptDimensionSchema.parse(body);
+        const sectionKey = normalizeSectionKey(payload.sectionKey);
+        const dimensionKey = normalizeDimensionKey(payload.dimensionKey);
+        const sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
+        const flow = parseDimensionFlowState(sectionRecord.validationReport);
+        if (!flow) {
+          return NextResponse.json(
+            {
+              error: 'Dimension flow not initialized for this section',
+              hint: 'Call start_dimension_flow first.'
+            },
+            { status: 409 }
+          );
+        }
+
+        const targetDimension = flow.plan.find(
+          (entry) => normalizeDimensionKey(entry.dimensionKey) === dimensionKey
+        );
+        if (!targetDimension) {
+          return NextResponse.json(
+            { error: 'Dimension not found in this section plan' },
+            { status: 404 }
+          );
+        }
+
+        const pendingForDimension = flow.pendingProposal
+          && normalizeDimensionKey(flow.pendingProposal.dimensionKey) === dimensionKey
+          ? flow.pendingProposal
+          : undefined;
+        const bufferedForDimension = flow.bufferedProposals?.[dimensionKey];
+        const candidateContent = payload.content
+          || pendingForDimension?.content
+          || bufferedForDimension?.content
+          || '';
+        if (!candidateContent.trim()) {
+          return NextResponse.json(
+            {
+              error: 'No generated content found for this dimension',
+              hint: 'Call generate_dimension first or provide content.'
+            },
+            { status: 400 }
+          );
+        }
+
+        const bundle = await buildSectionPromptRuntimeBundle({
+          sessionId,
+          session,
+          paperTypeCode,
+          sectionKey
+        });
+        const evaluation = evaluateDimensionCitationValidation({
+          content: candidateContent,
+          bundle,
+          requiredCitationKeys: targetDimension.mustUseCitationKeys
+        });
+
+        const hasStrictDisallowed = bundle.useMappedEvidence && evaluation.citationValidation.disallowedKeys.length > 0;
+        const hasStrictUnknown = bundle.useMappedEvidence && evaluation.citationValidation.unknownKeys.length > 0;
+        const hasMissingRequired = evaluation.citationValidation.missingRequiredKeys.length > 0;
+        if (hasStrictDisallowed || hasStrictUnknown || hasMissingRequired) {
+          return NextResponse.json(
+            {
+              error: 'Dimension content failed citation validation',
+              citationValidation: evaluation.citationValidation
+            },
+            { status: 422 }
+          );
+        }
+
+        const existingBlock = flow.acceptedBlocks.find(
+          (block) => normalizeDimensionKey(block.dimensionKey) === dimensionKey
+        );
+        const nowIso = new Date().toISOString();
+        const acceptedBlock: DimensionAcceptedBlock = {
+          dimensionKey: targetDimension.dimensionKey,
+          dimensionLabel: targetDimension.dimensionLabel,
+          content: evaluation.polishedContent,
+          citationKeys: evaluation.citationKeys,
+          source: payload.content ? 'user' : 'llm',
+          version: (existingBlock?.version || 0) + 1,
+          updatedAt: nowIso
+        };
+
+        flow.acceptedBlocks = [
+          ...flow.acceptedBlocks.filter(
+            (block) => normalizeDimensionKey(block.dimensionKey) !== dimensionKey
+          ),
+          acceptedBlock
+        ];
+        if (
+          flow.pendingProposal
+          && normalizeDimensionKey(flow.pendingProposal.dimensionKey) === dimensionKey
+        ) {
+          flow.pendingProposal = undefined;
+        }
+        if (flow.bufferedProposals) {
+          delete flow.bufferedProposals[dimensionKey];
+        }
+        flow.lastAcceptedContextHash = buildAcceptedContextHash(flow.acceptedBlocks);
+        flow.updatedAt = nowIso;
+
+        const stitched = stitchAcceptedBlocks(flow);
+        let persistedSection = await persistDimensionFlowState({
+          sectionId: sectionRecord.id,
+          existingValidationReport: sectionRecord.validationReport,
+          flow,
+          stitchedContent: stitched.stitchedContent
+        });
+
+        const researchTopic = await prisma.researchTopic.findUnique({
+          where: { sessionId }
+        });
+        const draft = await getOrCreatePaperDraft(sessionId, researchTopic?.title || 'Untitled Paper');
+        const updatedDraft = await updateDraftContent(
+          draft.id,
+          sectionKey,
+          stitched.stitchedContent,
+          paperTypeCode
+        );
+        if (updatedDraft) {
+          const sections = normalizeExtraSections(updatedDraft.extraSections);
+          const totalWordCount = Object.values(sections).reduce((acc, value) => acc + computeWordCount(value), 0);
+          await prisma.draftingSession.update({
+            where: { id: sessionId },
+            data: {
+              currentWordCount: totalWordCount
+            }
+          });
+        }
+
+        const usageSync = await syncSectionDraftCitationUsage({
+          sessionId,
+          sectionKey,
+          sectionContent: stitched.stitchedContent,
+          citations: bundle.citations
+        });
+
+        let prefetchedProposal: DimensionDraftProposal | null = null;
+        if (payload.prefetchNext) {
+          const nextDimension = findNextDimensionPlanEntry(flow);
+          if (nextDimension) {
+            const prefetched = await generateDimensionProposal({
+              sessionId,
+              sectionKey,
+              bundle,
+              flow,
+              targetDimension: nextDimension,
+              headers: requestHeaders,
+              tenantContext,
+              temperature: 0.2
+            });
+            if (!flow.bufferedProposals) flow.bufferedProposals = {};
+            flow.bufferedProposals[normalizeDimensionKey(nextDimension.dimensionKey)] = prefetched.proposal;
+            flow.updatedAt = new Date().toISOString();
+            persistedSection = await persistDimensionFlowState({
+              sectionId: sectionRecord.id,
+              existingValidationReport: persistedSection.validationReport,
+              flow,
+              stitchedContent: stitched.stitchedContent
+            });
+            prefetchedProposal = prefetched.proposal;
+          }
+        }
+
+        return NextResponse.json({
+          sectionKey,
+          acceptedBlock,
+          citationsUsed: usageSync.citationKeys,
+          prefetchedProposal,
+          ...buildDimensionFlowResponse(flow)
+        });
+      }
+
+      case 'reject_dimension': {
+        const payload = rejectDimensionSchema.parse(body);
+        const sectionKey = normalizeSectionKey(payload.sectionKey);
+        const dimensionKey = normalizeDimensionKey(payload.dimensionKey);
+        const sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
+        const flow = parseDimensionFlowState(sectionRecord.validationReport);
+        if (!flow) {
+          return NextResponse.json(
+            {
+              error: 'Dimension flow not initialized for this section',
+              hint: 'Call start_dimension_flow first.'
+            },
+            { status: 409 }
+          );
+        }
+
+        const targetDimension = flow.plan.find(
+          (entry) => normalizeDimensionKey(entry.dimensionKey) === dimensionKey
+        );
+        if (!targetDimension) {
+          return NextResponse.json(
+            { error: 'Dimension not found in this section plan' },
+            { status: 404 }
+          );
+        }
+
+        const bundle = await buildSectionPromptRuntimeBundle({
+          sessionId,
+          session,
+          paperTypeCode,
+          sectionKey
+        });
+        const rewritten = await generateDimensionProposal({
+          sessionId,
+          sectionKey,
+          bundle,
+          flow,
+          targetDimension,
+          headers: requestHeaders,
+          tenantContext,
+          feedback: payload.feedback,
+          temperature: payload.temperature
+        });
+
+        flow.pendingProposal = rewritten.proposal;
+        if (flow.bufferedProposals) {
+          delete flow.bufferedProposals[dimensionKey];
+        }
+        flow.updatedAt = new Date().toISOString();
+
+        await persistDimensionFlowState({
+          sectionId: sectionRecord.id,
+          existingValidationReport: sectionRecord.validationReport,
+          flow
+        });
+
+        return NextResponse.json({
+          sectionKey,
+          dimension: targetDimension,
+          proposal: rewritten.proposal,
+          citationKeys: rewritten.citationKeys,
+          tokensUsed: rewritten.outputTokens,
+          ...buildDimensionFlowResponse(flow)
+        });
+      }
+
+      case 'get_dimension_flow': {
+        const payload = getDimensionFlowSchema.parse(body);
+        const sectionKey = normalizeSectionKey(payload.sectionKey);
+        const sectionRecord = await prisma.paperSection.findUnique({
+          where: {
+            sessionId_sectionKey: {
+              sessionId,
+              sectionKey
+            }
+          }
+        });
+
+        if (!sectionRecord) {
+          return NextResponse.json({
+            sectionKey,
+            started: false,
+            flow: null,
+            stitchedContent: ''
+          });
+        }
+
+        const flow = parseDimensionFlowState(sectionRecord.validationReport);
+        if (!flow) {
+          return NextResponse.json({
+            sectionKey,
+            started: false,
+            flow: null,
+            stitchedContent: sectionRecord.content || ''
+          });
+        }
+
+        return NextResponse.json({
+          sectionKey,
+          started: true,
+          ...buildDimensionFlowResponse(flow)
+        });
+      }
+
       case 'save_section': {
         const payload = saveSchema.parse(body);
         const sectionKey = normalizeSectionKey(payload.sectionKey);
         const content = polishDraftMarkdown(payload.content || '');
+        const citations = await citationService.getCitationsForSession(sessionId);
+        const knownSessionKeys = new Set(citations.map(c => c.citationKey));
+
+        const sectionContextPolicy = await sectionTemplateService.getSectionContextPolicy(sectionKey, paperTypeCode);
+        if (sectionContextPolicy.requiresCitations) {
+          const citationContext = await DraftingService.buildCitationContext(sessionId, sectionKey, {
+            useMappedEvidence: true
+          });
+          const validation = DraftingService.validateCitationKeys(
+            content,
+            citationContext.allowedCitationKeys,
+            knownSessionKeys
+          );
+          const canonicalLookup = buildCanonicalCitationLookup(citations);
+          const unknownKeys = Array.from(new Set(
+            DraftingService.extractCitationKeys(content, knownSessionKeys)
+              .map(key => String(key || '').trim())
+              .filter(key => key.length > 0 && !canonicalLookup.has(key.toLowerCase()))
+          ));
+
+          if (validation.disallowedKeys.length > 0 || unknownKeys.length > 0) {
+            return NextResponse.json(
+              {
+                error: 'Section contains invalid citation keys',
+                citationValidation: {
+                  allowedCitationKeys: citationContext.allowedCitationKeys,
+                  disallowedKeys: validation.disallowedKeys,
+                  unknownKeys
+                }
+              },
+              { status: 422 }
+            );
+          }
+        }
 
         const researchTopic = await prisma.researchTopic.findUnique({
           where: { sessionId }
@@ -2597,7 +3954,6 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           });
         }
 
-        const citations = await citationService.getCitationsForSession(sessionId);
         const usageSync = await syncSectionDraftCitationUsage({
           sessionId,
           sectionKey,
@@ -2957,9 +4313,9 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           : payload.sectionKey
             ? [normalizeSectionKey(payload.sectionKey)]
             : orderedSectionKeys.filter((key) => {
-                const row = rowBySection.get(normalizeSectionKey(key));
-                return Boolean(row?.humanizedContent && row.humanizedContent.trim());
-              });
+              const row = rowBySection.get(normalizeSectionKey(key));
+              return Boolean(row?.humanizedContent && row.humanizedContent.trim());
+            });
 
         const now = new Date();
         const results: Array<{
@@ -3074,8 +4430,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
         const requestedKeys = payload.citationKeys
           ? payload.citationKeys
-              .map(key => canonicalLookup.get(key.trim().toLowerCase()))
-              .filter((key): key is string => Boolean(key))
+            .map(key => canonicalLookup.get(key.trim().toLowerCase()))
+            .filter((key): key is string => Boolean(key))
           : [];
 
         const selectedCitationKeys = Array.from(new Set(
@@ -3236,7 +4592,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       case 'run_ai_review': {
         const payload = aiReviewSchema.parse(body);
         const draft = payload.draft;
-        
+
         // Build review prompt
         const sectionContents = Object.entries(draft)
           .filter(([_, content]) => content && content.trim())
@@ -3319,9 +4675,9 @@ Return ONLY valid JSON, no other text.`;
         const result = await llmGateway.executeLLMOperation({ headers }, llmRequest);
 
         if (!result.success || !result.response) {
-          return NextResponse.json({ 
-            success: false, 
-            error: result.error?.message || 'AI Review failed' 
+          return NextResponse.json({
+            success: false,
+            error: result.error?.message || 'AI Review failed'
           }, { status: 500 });
         }
 
@@ -3331,7 +4687,7 @@ Return ONLY valid JSON, no other text.`;
           const jsonMatch = output.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || [null, output];
           const jsonStr = jsonMatch[1] || output;
           const parsed = JSON.parse(jsonStr.trim());
-          
+
           return NextResponse.json({
             success: true,
             issues: parsed.issues || [],
@@ -3419,9 +4775,9 @@ Return ONLY the revised section content in polished Markdown:
         const result = await llmGateway.executeLLMOperation({ headers }, llmRequest);
 
         if (!result.success || !result.response) {
-          return NextResponse.json({ 
-            success: false, 
-            error: result.error?.message || 'AI Fix failed' 
+          return NextResponse.json({
+            success: false,
+            error: result.error?.message || 'AI Fix failed'
           }, { status: 500 });
         }
 

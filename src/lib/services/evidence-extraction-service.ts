@@ -1,4 +1,4 @@
-import crypto from 'crypto';
+import fs from 'fs';
 import { z } from 'zod';
 import { llmGateway, type TenantContext } from '../metering';
 import {
@@ -16,6 +16,15 @@ import {
 const SINGLE_CALL_TOKEN_LIMIT = 25_000;
 const LLM_MAX_RETRIES = 1;
 const LLM_RETRY_DELAY_MS = 2_000;
+const ENABLE_NATIVE_PDF_INPUT = process.env.DEEP_ANALYSIS_USE_NATIVE_PDF === 'true';
+const DEFAULT_NATIVE_PDF_MAX_BYTES = 12 * 1024 * 1024;
+const NATIVE_PDF_MAX_BYTES = (() => {
+  const parsed = Number.parseInt(String(process.env.DEEP_ANALYSIS_NATIVE_PDF_MAX_BYTES || ''), 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return DEFAULT_NATIVE_PDF_MAX_BYTES;
+})();
 
 const SYSTEM_PROMPT_BASE = `You are a research evidence extractor.
 Read the paper text and return structured evidence cards for academic drafting.
@@ -121,6 +130,36 @@ sourceFragment, pageHint, confidence, sourceSection`,
   const user = [
     '=== PAPER TEXT ===',
     preparedText.fullText,
+    dimensionContext,
+  ].filter(Boolean).join('\n\n');
+
+  return { system, user };
+}
+
+function buildNativePdfPrompt(
+  archetype: ReferenceArchetype,
+  depthLabel: Exclude<DeepAnalysisLabel, 'LIT_ONLY'>,
+  blueprintDimensions: string[]
+): ExtractionPrompt {
+  const system = [
+    SYSTEM_PROMPT_BASE.replace('Read the paper text', 'Read the attached paper PDF'),
+    ARCHETYPE_INSTRUCTIONS[archetype],
+    DEPTH_INSTRUCTIONS[depthLabel],
+    'The full paper is attached as a PDF file in the same message.',
+    'Do not request extra files. Use only evidence from the attached PDF.',
+    `Output format: JSON array of cards with fields:
+claim, claimType, quantitativeDetail, conditions, comparableMetrics,
+doesNotSupport, scopeCondition, boundaryNote, tradeOff, competingExplanation, studyDesign, rigorIndicators,
+sourceFragment, pageHint, confidence, sourceSection`,
+  ].join('\n\n');
+
+  const dimensionContext = blueprintDimensions.length > 0
+    ? `Blueprint context dimensions (for relevance only):\n${blueprintDimensions.map(d => `- ${d}`).join('\n')}`
+    : '';
+
+  const user = [
+    'Extract evidence cards directly from the attached PDF.',
+    'Return only a JSON array.',
     dimensionContext,
   ].filter(Boolean).join('\n\n');
 
@@ -587,6 +626,11 @@ export interface ExtractEvidenceCardsInput {
   referenceArchetype?: string | null;
   deepAnalysisLabel?: string | null;
   preparedText: PreparedPaperText;
+  pdfAttachment?: {
+    filePath: string;
+    filename: string;
+    mimeType: string;
+  } | null;
   blueprintDimensions: string[];
   tenantContext?: TenantContext | null;
 }
@@ -601,6 +645,151 @@ export interface ExtractEvidenceCardsResult {
 }
 
 class EvidenceExtractionService {
+  private canTryNativePdf(input: ExtractEvidenceCardsInput): boolean {
+    if (!ENABLE_NATIVE_PDF_INPUT) return false;
+    const filePath = String(input.pdfAttachment?.filePath || '').trim();
+    return Boolean(filePath && fs.existsSync(filePath));
+  }
+
+  private resolveNativePdfPayload(
+    input: ExtractEvidenceCardsInput,
+    prompt: ExtractionPrompt
+  ): {
+    content: {
+      parts: Array<
+        | { type: 'text'; text: string }
+        | { type: 'file'; file: { data: string; mimeType?: string; filename?: string } }
+      >;
+    } | null;
+    warning: string | null;
+  } | null {
+    if (!ENABLE_NATIVE_PDF_INPUT) {
+      return null;
+    }
+
+    const attachment = input.pdfAttachment;
+    const filePath = String(attachment?.filePath || '').trim();
+    if (!filePath) {
+      return null;
+    }
+
+    if (!fs.existsSync(filePath)) {
+      return {
+        content: null,
+        warning: `Native PDF mode skipped: file not found (${filePath})`,
+      };
+    }
+
+    try {
+      const stats = fs.statSync(filePath);
+      if (stats.size <= 0) {
+        return {
+          content: null,
+          warning: 'Native PDF mode skipped: empty PDF file',
+        };
+      }
+      if (stats.size > NATIVE_PDF_MAX_BYTES) {
+        return {
+          content: null,
+          warning: `Native PDF mode skipped: PDF size ${stats.size} bytes exceeds limit ${NATIVE_PDF_MAX_BYTES} bytes`,
+        };
+      }
+
+      const fileBuffer = fs.readFileSync(filePath);
+      const base64Data = fileBuffer.toString('base64');
+      if (!base64Data) {
+        return {
+          content: null,
+          warning: 'Native PDF mode skipped: failed to encode PDF payload',
+        };
+      }
+
+      return {
+        content: {
+          parts: [
+            { type: 'text', text: `${prompt.system}\n\n${prompt.user}` },
+            {
+              type: 'file',
+              file: {
+                data: base64Data,
+                mimeType: String(attachment?.mimeType || 'application/pdf').trim() || 'application/pdf',
+                filename: attachment?.filename || 'document.pdf',
+              },
+            },
+          ],
+        },
+        warning: null,
+      };
+    } catch (error) {
+      return {
+        content: null,
+        warning: `Native PDF mode skipped: failed to read PDF (${error instanceof Error ? error.message : String(error)})`,
+      };
+    }
+  }
+
+  private async runExtractionRequest(
+    input: ExtractEvidenceCardsInput,
+    preparedText: PreparedPaperText,
+    depthLabel: Exclude<DeepAnalysisLabel, 'LIT_ONLY'>,
+    archetype: ReferenceArchetype,
+    attempt: number,
+    mode: 'text' | 'native_pdf',
+    prompt?: ExtractionPrompt,
+    content?: {
+      parts: Array<
+        | { type: 'text'; text: string }
+        | { type: 'file'; file: { data: string; mimeType?: string; filename?: string } }
+      >;
+    }
+  ): Promise<ExtractEvidenceCardsResult> {
+    const response = await llmGateway.executeLLMOperation(
+      input.tenantContext ? { tenantContext: input.tenantContext } : { headers: {} },
+      {
+        taskCode: 'LLM2_DRAFT',
+        stageCode: 'PAPER_LITERATURE_SUMMARIZE',
+        ...(mode === 'text'
+          ? { prompt: `${prompt?.system || ''}\n\n${prompt?.user || ''}` }
+          : { content }),
+        parameters: {
+          purpose: 'full_text_evidence_extraction',
+          extractionMode: mode,
+          temperature: 0,
+        },
+        idempotencyKey: `evidence_extract_${input.citationId}_${depthLabel}_${archetype}_${preparedText.source}_${mode}_a${attempt}`,
+        metadata: {
+          citationId: input.citationId,
+          citationKey: input.citationKey,
+          archetype,
+          depthLabel,
+          source: preparedText.source,
+          inputMode: mode,
+          attempt,
+        },
+      }
+    );
+
+    if (!response.success || !response.response) {
+      throw new Error(response.error?.message || 'Evidence extraction LLM call failed');
+    }
+
+    const rawOutput = response.response.output;
+    console.log(
+      `[EvidenceExtraction] (${mode}) LLM returned ${rawOutput?.length ?? 0} chars for ${input.citationKey}. First 200: ${String(rawOutput || '').slice(0, 200)}`
+    );
+
+    const parsed = parseExtractionResponse(rawOutput, depthLabel);
+
+    return {
+      cards: parsed.cards,
+      warnings: [...parsed.warnings],
+      usage: {
+        inputTokens: Number((response.response.metadata as any)?.inputTokens || preparedText.estimatedTokens || 0),
+        outputTokens: Number(response.response.outputTokens || 0),
+      },
+    };
+  }
+
   private async extractSingle(
     input: ExtractEvidenceCardsInput,
     preparedText: PreparedPaperText,
@@ -613,6 +802,12 @@ class EvidenceExtractionService {
       preparedText,
       input.blueprintDimensions
     );
+    const nativePdfPrompt = buildNativePdfPrompt(
+      archetype,
+      depthLabel,
+      input.blueprintDimensions
+    );
+    const nativePdfPayload = this.resolveNativePdfPayload(input, nativePdfPrompt);
 
     let lastError: Error | null = null;
 
@@ -623,53 +818,54 @@ class EvidenceExtractionService {
       }
 
       try {
-        const response = await llmGateway.executeLLMOperation(
-          input.tenantContext ? { tenantContext: input.tenantContext } : { headers: {} },
-          {
-            taskCode: 'LLM2_DRAFT',
-            stageCode: 'PAPER_LITERATURE_SUMMARIZE',
-            prompt: `${prompt.system}\n\n${prompt.user}`,
-            parameters: {
-              purpose: 'full_text_evidence_extraction',
-              temperature: 0,
-            },
-            idempotencyKey: `evidence_extract_${input.citationId}_${depthLabel}_${archetype}_${preparedText.source}_a${attempt}`,
-            metadata: {
-              citationId: input.citationId,
-              citationKey: input.citationKey,
-              archetype,
+        const warnings: string[] = [];
+        if (nativePdfPayload?.warning) {
+          warnings.push(nativePdfPayload.warning);
+        }
+
+        if (nativePdfPayload?.content && nativePdfPayload.content.parts.length > 0) {
+          try {
+            const nativeResult = await this.runExtractionRequest(
+              input,
+              preparedText,
               depthLabel,
-              source: preparedText.source,
+              archetype,
               attempt,
-            },
+              'native_pdf',
+              undefined,
+              nativePdfPayload.content
+            );
+            if (attempt > 0) {
+              nativeResult.warnings.push(`Succeeded on retry attempt ${attempt}`);
+            }
+            nativeResult.warnings = [...warnings, ...nativeResult.warnings];
+            return nativeResult;
+          } catch (nativeError) {
+            const nativeMessage = nativeError instanceof Error ? nativeError.message : String(nativeError);
+            const fallbackWarning = `Native PDF mode failed; fell back to parsed text (${nativeMessage.slice(0, 180)})`;
+            warnings.push(fallbackWarning);
+            console.warn(`[EvidenceExtraction] ${fallbackWarning}`);
           }
+        }
+
+        const textResult = await this.runExtractionRequest(
+          input,
+          preparedText,
+          depthLabel,
+          archetype,
+          attempt,
+          'text',
+          prompt
         );
 
-        if (!response.success || !response.response) {
-          const err = new Error(response.error?.message || 'Evidence extraction LLM call failed');
-          console.error(`[EvidenceExtraction] LLM call failed for ${input.citationKey} (attempt ${attempt}):`, response.error?.message);
-          if (attempt < LLM_MAX_RETRIES) {
-            lastError = err;
-            continue;
-          }
-          throw err;
-        }
-
-        const rawOutput = response.response.output;
-        console.log(`[EvidenceExtraction] LLM returned ${rawOutput?.length ?? 0} chars for ${input.citationKey}. First 200: ${String(rawOutput || '').slice(0, 200)}`);
-
-        const parsed = parseExtractionResponse(rawOutput, depthLabel);
-        const warnings = [...parsed.warnings];
+        const mergedWarnings = [...warnings, ...textResult.warnings];
         if (attempt > 0) {
-          warnings.push(`Succeeded on retry attempt ${attempt}`);
+          mergedWarnings.push(`Succeeded on retry attempt ${attempt}`);
         }
+
         return {
-          cards: parsed.cards,
-          warnings,
-          usage: {
-            inputTokens: Number((response.response.metadata as any)?.inputTokens || preparedText.estimatedTokens || 0),
-            outputTokens: Number(response.response.outputTokens || 0),
-          },
+          ...textResult,
+          warnings: mergedWarnings,
         };
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -688,8 +884,9 @@ class EvidenceExtractionService {
     const depthLabel = normalizeDepth(input.deepAnalysisLabel);
     const archetype = normalizeArchetype(input.referenceArchetype);
     const targets = DEFAULT_CARD_TARGETS[depthLabel];
+    const hasNativePdfCandidate = this.canTryNativePdf(input);
 
-    if (input.preparedText.estimatedTokens <= SINGLE_CALL_TOKEN_LIMIT) {
+    if (hasNativePdfCandidate || input.preparedText.estimatedTokens <= SINGLE_CALL_TOKEN_LIMIT) {
       const single = await this.extractSingle(input, input.preparedText, depthLabel, archetype);
       const deduped = deduplicateCards(single.cards).slice(0, targets.max);
       return {

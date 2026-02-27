@@ -9,6 +9,7 @@ export class GeminiProvider implements LLMProvider {
   supportedModels = [
     // Gemini 2.x Series (Text + Image Output)
     'gemini-2.5-pro',
+    'gemini-2.5-flash',
     'gemini-2.0-flash',
     'gemini-2.0-flash-001',
     'gemini-2.0-flash-exp',           // Experimental - best image output quality
@@ -137,7 +138,7 @@ export class GeminiProvider implements LLMProvider {
         }
       })
 
-      // Handle multimodal content (text + images)
+      // Handle multimodal content (text + images + files)
       let contentToGenerate: any;
       if (request.content) {
         // Build multimodal content for Gemini
@@ -152,6 +153,23 @@ export class GeminiProvider implements LLMProvider {
                 data: part.image.data
               }
             })
+          } else if (part.type === 'file') {
+            const mimeType = part.file?.mimeType || 'application/pdf'
+            if (part.file?.data) {
+              parts.push({
+                inlineData: {
+                  mimeType,
+                  data: part.file.data
+                }
+              })
+            } else if (part.file?.url) {
+              parts.push({
+                fileData: {
+                  mimeType,
+                  fileUri: part.file.url
+                }
+              })
+            }
           }
         }
         contentToGenerate = parts
@@ -246,6 +264,7 @@ export class GeminiProvider implements LLMProvider {
       'gemini-2.0-flash-lite': { input: 1048576, output: 8192 },
       'gemini-2.0-flash-lite-001': { input: 1048576, output: 8192 },
       'gemini-2.5-flash-lite': { input: 1048576, output: 8192 },
+      'gemini-2.5-flash': { input: 1048576, output: 8192 },
       // Flash models (including experimental with image output)
       'gemini-2.0-flash': { input: 1048576, output: 8192 },
       'gemini-2.0-flash-001': { input: 1048576, output: 8192 },
@@ -276,6 +295,7 @@ export class GeminiProvider implements LLMProvider {
       'gemini-2.0-flash-lite': { input: 0.00000008, output: 0.0000003 },    // $0.08/$0.30 per M
       'gemini-2.0-flash-lite-001': { input: 0.00000008, output: 0.0000003 },
       'gemini-2.5-flash-lite': { input: 0.00000035, output: 0.0000007 },    // $0.35/$0.70 per M
+      'gemini-2.5-flash': { input: 0.00000015, output: 0.0000006 },         // $0.15/$0.60 per M
       // Flash models (including experimental with image output)
       'gemini-2.0-flash': { input: 0.0000001, output: 0.0000004 },          // $0.10/$0.40 per M
       'gemini-2.0-flash-001': { input: 0.0000001, output: 0.0000004 },
@@ -321,6 +341,23 @@ export class GeminiProvider implements LLMProvider {
               data: part.image.data
             }
           })
+        } else if (part.type === 'file') {
+          const mimeType = part.file?.mimeType || 'application/pdf'
+          if (part.file?.data) {
+            parts.push({
+              inlineData: {
+                mimeType,
+                data: part.file.data
+              }
+            })
+          } else if (part.file?.url) {
+            parts.push({
+              fileData: {
+                mimeType,
+                fileUri: part.file.url
+              }
+            })
+          }
         }
       }
     } else {

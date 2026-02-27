@@ -37,15 +37,27 @@ const VISION_CAPABLE_MODELS = new Set([
   'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-5', 'gpt-5.1', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano',
   'gpt-5.1-thinking', 'gpt-5.2-thinking',
   // Anthropic
+  'claude-opus-4.5',
+  'claude-opus-4-5',
+  'claude-opus-4.6',
   'claude-3.5-sonnet', 'claude-3.5-haiku', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku',
   'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229',
   'claude-3-sonnet-20240229', 'claude-3-haiku-20240307',
   // Google Gemini
   'gemini-2.5-pro',
+  'gemini-2.5-flash',
   'gemini-2.0-flash', 'gemini-2.0-flash-001',
   'gemini-1.5-pro', 'gemini-1.5-pro-002',
   'gemini-1.5-flash', 'gemini-1.5-flash-002',
   'gemini-3.0-nano-banana', 'gemini-3-pro-preview', 'gemini-3-pro-preview-thinking', 'gemini-3-pro-image-preview'
+])
+
+/**
+ * Models that support direct file/document inputs in this router.
+ */
+const FILE_CAPABLE_MODELS = new Set([
+  'gemini-2.5-flash',
+  'gemini-2.5-pro'
 ])
 
 /**
@@ -69,8 +81,12 @@ const MODEL_CONTEXT_LIMITS: Record<string, { maxInput: number; maxOutput: number
   'claude-3.5-haiku': { maxInput: 200000, maxOutput: 8192 },
   'claude-3-5-haiku-20241022': { maxInput: 200000, maxOutput: 8192 },
   'claude-3-opus': { maxInput: 200000, maxOutput: 4096 },
+  'claude-opus-4.5': { maxInput: 1000000, maxOutput: 128000 },
+  'claude-opus-4-5': { maxInput: 1000000, maxOutput: 128000 },
+  'claude-opus-4.6': { maxInput: 1000000, maxOutput: 128000 },
   // Gemini
   'gemini-2.5-pro': { maxInput: 2097152, maxOutput: 65536 },
+  'gemini-2.5-flash': { maxInput: 1000000, maxOutput: 8192 },
   'gemini-2.0-flash': { maxInput: 1000000, maxOutput: 8192 },
   'gemini-2.0-flash-001': { maxInput: 1000000, maxOutput: 8192 },
   'gemini-2.0-flash-lite': { maxInput: 1000000, maxOutput: 8192 },
@@ -86,7 +102,11 @@ const MODEL_CONTEXT_LIMITS: Record<string, { maxInput: number; maxOutput: number
   'groq-llama-3.3-70b': { maxInput: 128000, maxOutput: 8192 },
   'mixtral-8x7b-32768': { maxInput: 32768, maxOutput: 8192 },
   // DeepSeek
-  'deepseek-chat': { maxInput: 128000, maxOutput: 8192 }
+  'deepseek-chat': { maxInput: 128000, maxOutput: 8192 },
+  // Zhipu
+  'glm-5': { maxInput: 200000, maxOutput: 65536 },
+  // Qwen
+  'qwen2.5-72b-instruct': { maxInput: 131072, maxOutput: 8192 }
 }
 
 // All supported provider configurations
@@ -155,6 +175,20 @@ export class LLMProviderRouter {
         apiKey: process.env.GROQ_API_KEY,
         model: 'llama-3.3-70b-versatile',
         baseURL: 'https://api.groq.com/openai/v1'
+      },
+
+      // Zhipu GLM provider
+      zhipu: {
+        apiKey: process.env.ZHIPU_API_KEY,
+        model: 'glm-5',
+        baseURL: process.env.ZHIPU_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4'
+      },
+
+      // Qwen provider (DashScope-compatible)
+      qwen: {
+        apiKey: process.env.QWEN_API_KEY,
+        model: 'qwen2.5-72b-instruct',
+        baseURL: process.env.QWEN_BASE_URL || 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
       }
     }
 
@@ -354,13 +388,15 @@ export class LLMProviderRouter {
     if (fallbackModelCodes && fallbackModelCodes.length > 0) {
       const errors: Error[] = []
       const requiresVision = this.requestRequiresVision(request)
+      const requiresFile = this.requestRequiresFile(request)
       const estimatedInputTokens = request.inputTokens || 0
       
       for (const fallbackModel of fallbackModelCodes) {
         // Validate fallback model capabilities BEFORE attempting
         const validationResult = this.validateFallbackModel(
           fallbackModel, 
-          requiresVision, 
+          requiresVision,
+          requiresFile,
           estimatedInputTokens
         )
         
@@ -403,11 +439,19 @@ export class LLMProviderRouter {
   }
 
   /**
+   * Check if request contains file inputs.
+   */
+  private requestRequiresFile(request: LLMRequest): boolean {
+    return !!(request.content?.parts?.some(part => part.type === 'file'))
+  }
+
+  /**
    * Validate that a fallback model supports the request requirements
    */
   private validateFallbackModel(
     modelCode: string,
     requiresVision: boolean,
+    requiresFile: boolean,
     estimatedInputTokens: number
   ): { valid: boolean; reason?: string } {
     // Check vision capability
@@ -415,6 +459,13 @@ export class LLMProviderRouter {
       return { 
         valid: false, 
         reason: `Model does not support vision/image inputs` 
+      }
+    }
+
+    if (requiresFile && !FILE_CAPABLE_MODELS.has(modelCode)) {
+      return {
+        valid: false,
+        reason: `Model does not support file/document inputs`
       }
     }
     
@@ -531,8 +582,11 @@ export class LLMProviderRouter {
       }
     }
 
-    // Special handling for multimodal requests (text + images)
-    const isMultimodal = request.content && request.content.parts.some(part => part.type === 'image')
+    // Special handling for multimodal requests (images or files)
+    const hasFileInput = Boolean(request.content && request.content.parts.some(part => part.type === 'file'))
+    const isMultimodal = Boolean(
+      request.content && request.content.parts.some(part => part.type === 'image' || part.type === 'file')
+    )
 
     // Special handling for relevance analysis (PRIOR_ART_SEARCH) - use Flash-Lite
     const isRelevanceAnalysis = request.taskCode === 'LLM5_NOVELTY_ASSESS' && !isMultimodal
@@ -542,12 +596,20 @@ export class LLMProviderRouter {
 
     let activePriorities: ProviderPriority[]
 
-    if (isMultimodal) {
+    if (hasFileInput) {
+      // Raw document inputs: prioritize Gemini native document-capable models.
+      activePriorities = [
+        { provider: 'gemini', priority: 1, fallback: true },
+        { provider: 'openai', priority: 2, fallback: true },
+        { provider: 'anthropic', priority: 3, fallback: true },
+      ]
+    } else if (isMultimodal) {
       // For multimodal: prioritize vision-capable models
       activePriorities = [
         { provider: 'gemini', priority: 1, fallback: true },
         { provider: 'openai', priority: 2, fallback: true },
-        { provider: 'anthropic', priority: 3, fallback: true }
+        { provider: 'anthropic', priority: 3, fallback: true },
+        { provider: 'zhipu', priority: 4, fallback: true }
       ]
     } else if (isDiagramGeneration) {
       // For diagram generation: GPT-4o primary (better PlantUML code)
@@ -562,7 +624,9 @@ export class LLMProviderRouter {
         { provider: 'gemini-flash-lite', priority: 1, fallback: true },
         { provider: 'groq', priority: 2, fallback: true },
         { provider: 'deepseek', priority: 3, fallback: true },
-        { provider: 'openai', priority: 4, fallback: true }
+        { provider: 'openai', priority: 4, fallback: true },
+        { provider: 'qwen', priority: 5, fallback: true },
+        { provider: 'zhipu', priority: 6, fallback: true }
       ]
     } else {
       // Default priority order
@@ -571,7 +635,9 @@ export class LLMProviderRouter {
         { provider: 'openai', priority: 2, fallback: true },
         { provider: 'anthropic', priority: 3, fallback: true },
         { provider: 'deepseek', priority: 4, fallback: true },
-        { provider: 'groq', priority: 5, fallback: true }
+        { provider: 'groq', priority: 5, fallback: true },
+        { provider: 'qwen', priority: 6, fallback: true },
+        { provider: 'zhipu', priority: 7, fallback: true }
       ]
     }
 
@@ -679,7 +745,9 @@ export class LLMProviderRouter {
       'gemini': process.env.GOOGLE_AI_API_KEY || process.env.GOOGLE_API_KEY,
       'gemini-flash-lite': process.env.GOOGLE_AI_API_KEY || process.env.GOOGLE_API_KEY,
       'deepseek': process.env.DEEPSEEK_API_KEY,
-      'groq': process.env.GROQ_API_KEY
+      'groq': process.env.GROQ_API_KEY,
+      'zhipu': process.env.ZHIPU_API_KEY,
+      'qwen': process.env.QWEN_API_KEY
     }
     
     const key = keyMap[providerName]

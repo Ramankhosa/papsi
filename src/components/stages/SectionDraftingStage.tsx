@@ -10,11 +10,15 @@ import {
   Copy,
   Check,
   RefreshCw,
-  Plus,
   Image as ImageIcon,
   X,
   Eye,
   ExternalLink,
+  Sparkles,
+  ArrowRight,
+  CheckCircle2,
+  XCircle,
+  Play,
 } from 'lucide-react';
 import CitationPickerModal from '@/components/paper/CitationPickerModal';
 
@@ -68,6 +72,190 @@ interface UserInstruction {
   updatedAt?: string;
 }
 
+type SectionCitationValidation = {
+  disallowedKeys: string[];
+  unknownKeys: string[];
+};
+
+type DimensionPlanStatus = 'accepted' | 'pending' | 'todo';
+
+interface DimensionPlanItem {
+  dimensionKey: string;
+  dimensionLabel: string;
+  objective: string;
+  mustUseCitationKeys: string[];
+  avoidClaims: string[];
+  bridgeHint: string;
+  status: DimensionPlanStatus;
+}
+
+interface DimensionCitationValidation {
+  allowedCitationKeys: string[];
+  disallowedKeys: string[];
+  unknownKeys: string[];
+  missingRequiredKeys: string[];
+}
+
+interface DimensionProposal {
+  dimensionKey: string;
+  content: string;
+  contextHash: string;
+  citationValidation: DimensionCitationValidation;
+  createdAt: string;
+}
+
+interface DimensionProgress {
+  total: number;
+  accepted: number;
+  remaining: number;
+}
+
+interface DimensionDraftUIState {
+  initialized: boolean;
+  started: boolean;
+  loading: boolean;
+  accepting: boolean;
+  rejecting: boolean;
+  error: string | null;
+  stitchedContent: string;
+  plan: DimensionPlanItem[];
+  progress: DimensionProgress;
+  completed: boolean;
+  nextDimensionKey: string | null;
+  nextDimensionLabel: string | null;
+  activeDimensionKey: string | null;
+  activeDimensionLabel: string | null;
+  proposalText: string;
+  proposalValidation: DimensionCitationValidation | null;
+  feedback: string;
+  showReject: boolean;
+  streamCursor: number;
+  isStreaming: boolean;
+}
+
+const EMPTY_DIMENSION_PROGRESS: DimensionProgress = {
+  total: 0,
+  accepted: 0,
+  remaining: 0
+};
+
+function createInitialDimensionUIState(): DimensionDraftUIState {
+  return {
+    initialized: false,
+    started: false,
+    loading: false,
+    accepting: false,
+    rejecting: false,
+    error: null,
+    stitchedContent: '',
+    plan: [],
+    progress: { ...EMPTY_DIMENSION_PROGRESS },
+    completed: false,
+    nextDimensionKey: null,
+    nextDimensionLabel: null,
+    activeDimensionKey: null,
+    activeDimensionLabel: null,
+    proposalText: '',
+    proposalValidation: null,
+    feedback: '',
+    showReject: false,
+    streamCursor: 0,
+    isStreaming: false
+  };
+}
+
+function normalizeDimensionPlanItem(raw: any): DimensionPlanItem {
+  return {
+    dimensionKey: String(raw?.dimensionKey || '').trim(),
+    dimensionLabel: String(raw?.dimensionLabel || raw?.dimensionKey || '').trim(),
+    objective: String(raw?.objective || '').trim(),
+    mustUseCitationKeys: Array.isArray(raw?.mustUseCitationKeys)
+      ? raw.mustUseCitationKeys.map((key: unknown) => String(key || '').trim()).filter(Boolean)
+      : [],
+    avoidClaims: Array.isArray(raw?.avoidClaims)
+      ? raw.avoidClaims.map((text: unknown) => String(text || '').trim()).filter(Boolean)
+      : [],
+    bridgeHint: String(raw?.bridgeHint || '').trim(),
+    status: raw?.status === 'accepted' || raw?.status === 'pending'
+      ? raw.status
+      : 'todo'
+  };
+}
+
+function toDimensionValidation(raw: any): DimensionCitationValidation | null {
+  if (!raw || typeof raw !== 'object') return null;
+  return {
+    allowedCitationKeys: Array.isArray(raw.allowedCitationKeys)
+      ? raw.allowedCitationKeys.map((key: unknown) => String(key || '').trim()).filter(Boolean)
+      : [],
+    disallowedKeys: Array.isArray(raw.disallowedKeys)
+      ? raw.disallowedKeys.map((key: unknown) => String(key || '').trim()).filter(Boolean)
+      : [],
+    unknownKeys: Array.isArray(raw.unknownKeys)
+      ? raw.unknownKeys.map((key: unknown) => String(key || '').trim()).filter(Boolean)
+      : [],
+    missingRequiredKeys: Array.isArray(raw.missingRequiredKeys)
+      ? raw.missingRequiredKeys.map((key: unknown) => String(key || '').trim()).filter(Boolean)
+      : []
+  };
+}
+
+function normalizeDimensionResponse(data: any): {
+  started: boolean;
+  stitchedContent: string;
+  completed: boolean;
+  plan: DimensionPlanItem[];
+  progress: DimensionProgress;
+  nextDimensionKey: string | null;
+  nextDimensionLabel: string | null;
+  proposal: DimensionProposal | null;
+} {
+  const plan = Array.isArray(data?.plan)
+    ? data.plan.map((item: any) => normalizeDimensionPlanItem(item)).filter((item: DimensionPlanItem) => item.dimensionKey.length > 0)
+    : [];
+  const progress = (data?.progress && typeof data.progress === 'object')
+    ? {
+        total: Number(data.progress.total || 0),
+        accepted: Number(data.progress.accepted || 0),
+        remaining: Number(data.progress.remaining || 0)
+      }
+    : {
+        total: plan.length,
+        accepted: plan.filter((item: DimensionPlanItem) => item.status === 'accepted').length,
+        remaining: plan.filter((item: DimensionPlanItem) => item.status !== 'accepted').length
+      };
+  const nextDimension = data?.nextDimension && typeof data.nextDimension === 'object'
+    ? data.nextDimension
+    : null;
+  const rawProposal = data?.proposal
+    || data?.flow?.pendingProposal
+    || null;
+  const proposal = rawProposal && typeof rawProposal === 'object'
+    ? {
+        dimensionKey: String(rawProposal.dimensionKey || '').trim(),
+        content: String(rawProposal.content || ''),
+        contextHash: String(rawProposal.contextHash || ''),
+        citationValidation: toDimensionValidation(rawProposal.citationValidation) || {
+          allowedCitationKeys: [],
+          disallowedKeys: [],
+          unknownKeys: [],
+          missingRequiredKeys: []
+        },
+        createdAt: String(rawProposal.createdAt || '')
+      }
+    : null;
+
+  return {
+    started: Boolean(data?.started ?? data?.flow),
+    stitchedContent: String(data?.stitchedContent || ''),
+    completed: Boolean(data?.completed),
+    plan,
+    progress,
+    nextDimensionKey: nextDimension ? String(nextDimension.dimensionKey || '').trim() || null : null,
+    nextDimensionLabel: nextDimension ? String(nextDimension.dimensionLabel || nextDimension.dimensionKey || '').trim() || null : null,
+    proposal: proposal && proposal.dimensionKey ? proposal : null
+  };
+}
 
 
 // AI Review Issue Type
@@ -726,6 +914,9 @@ export default function SectionDraftingStage({
     sections?: Record<string, 'pending' | 'running' | 'done' | 'failed'>;
   } | null>(null);
   const [bgGenRetrying, setBgGenRetrying] = useState(false);
+  const [sectionCitationValidation, setSectionCitationValidation] = useState<Record<string, SectionCitationValidation>>({});
+  const [dimensionPanelOpen, setDimensionPanelOpen] = useState<Record<string, boolean>>({});
+  const [dimensionBySection, setDimensionBySection] = useState<Record<string, DimensionDraftUIState>>({});
 
   // Regeneration
   const [regenOpen, setRegenOpen] = useState<Record<string, boolean>>({});
@@ -748,6 +939,25 @@ export default function SectionDraftingStage({
     setTimeout(() => setMessage(null), 4000);
   };
 
+  const getDimensionState = useCallback((sectionKey: string): DimensionDraftUIState => {
+    const normalized = normalizeSectionKey(sectionKey);
+    return dimensionBySection[normalized] || createInitialDimensionUIState();
+  }, [dimensionBySection]);
+
+  const setDimensionState = useCallback((
+    sectionKey: string,
+    updater: (prev: DimensionDraftUIState) => DimensionDraftUIState
+  ) => {
+    const normalized = normalizeSectionKey(sectionKey);
+    setDimensionBySection(prev => {
+      const current = prev[normalized] || createInitialDimensionUIState();
+      return {
+        ...prev,
+        [normalized]: updater(current)
+      };
+    });
+  }, []);
+
   const isCitationEligibleForSection = useCallback(
     (sectionKey: string) => citationEligibleBySection[normalizeSectionKey(sectionKey)] === true,
     [citationEligibleBySection]
@@ -761,6 +971,41 @@ export default function SectionDraftingStage({
     },
     [mappedEvidenceBySection, citationEligibleBySection]
   );
+
+  const clearCitationValidationForSection = useCallback((sectionKey: string) => {
+    const normalized = normalizeSectionKey(sectionKey);
+    setSectionCitationValidation(prev => {
+      if (!prev[normalized]) return prev;
+      const next = { ...prev };
+      delete next[normalized];
+      return next;
+    });
+  }, []);
+
+  const setCitationValidationForSection = useCallback((sectionKey: string, payload: any) => {
+    const normalized = normalizeSectionKey(sectionKey);
+    const disallowedKeys = Array.isArray(payload?.citationValidation?.disallowedKeys)
+      ? payload.citationValidation.disallowedKeys
+          .map((key: unknown) => String(key || '').trim())
+          .filter(Boolean)
+      : [];
+    const unknownKeys = Array.isArray(payload?.citationValidation?.unknownKeys)
+      ? payload.citationValidation.unknownKeys
+          .map((key: unknown) => String(key || '').trim())
+          .filter(Boolean)
+      : [];
+
+    if (disallowedKeys.length === 0 && unknownKeys.length === 0) {
+      clearCitationValidationForSection(sectionKey);
+      return { disallowedKeys, unknownKeys };
+    }
+
+    setSectionCitationValidation(prev => ({
+      ...prev,
+      [normalized]: { disallowedKeys, unknownKeys }
+    }));
+    return { disallowedKeys, unknownKeys };
+  }, [clearCitationValidationForSection]);
 
   // Helper: Extract figure references from content
   const getReferencedFigures = useCallback((sectionContent: string) => {
@@ -908,6 +1153,11 @@ export default function SectionDraftingStage({
       console.error('Load figures error:', err);
     }
   }, [sessionId, authToken]);
+
+  useEffect(() => {
+    setDimensionPanelOpen({});
+    setDimensionBySection({});
+  }, [sessionId]);
 
   useEffect(() => { loadSession(); loadCitations(); loadFigures(); }, [loadSession, loadCitations, loadFigures]);
 
@@ -1090,15 +1340,19 @@ export default function SectionDraftingStage({
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify({ action: 'save_section', sectionKey, content: sectionContent })
       });
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
+        clearCitationValidationForSection(sectionKey);
         setPendingChanges(prev => { const next = new Set(prev); next.delete(sectionKey); return next; });
+      } else if (res.status === 422) {
+        setCitationValidationForSection(sectionKey, data);
       }
     } catch (err) {
       console.error('Save error:', err);
     } finally {
       setSaving(prev => ({ ...prev, [sectionKey]: false }));
     }
-  }, [sessionId, authToken]);
+  }, [sessionId, authToken, clearCitationValidationForSection, setCitationValidationForSection]);
 
   const handleContentChange = useCallback((sectionKey: string, newContent: string) => {
     setContent(prev => ({ ...prev, [sectionKey]: newContent }));
@@ -1131,6 +1385,391 @@ export default function SectionDraftingStage({
       saveSection(sectionKey, content[sectionKey] || '');
     }
   }, [pendingChanges, content, saveSection]);
+
+  // ============================================================================
+  // Dimension Flow Drafting
+  // ============================================================================
+
+  const requestDraftingAction = useCallback(async (payload: Record<string, unknown>) => {
+    const res = await fetch(`/api/papers/${sessionId}/drafting`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authToken}`
+      },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(String(data?.error || 'Request failed'));
+      (err as any).status = res.status;
+      (err as any).payload = data;
+      throw err;
+    }
+    return data;
+  }, [sessionId, authToken]);
+
+  const applyDimensionResponse = useCallback((sectionKey: string, data: any) => {
+    const normalized = normalizeDimensionResponse(data);
+    const normalizedKey = normalizeSectionKey(sectionKey);
+
+    if (normalized.started && typeof normalized.stitchedContent === 'string') {
+      setContent(prev => (
+        prev[sectionKey] === normalized.stitchedContent
+          ? prev
+          : { ...prev, [sectionKey]: normalized.stitchedContent }
+      ));
+      setPendingChanges(prev => {
+        if (!prev.has(sectionKey)) return prev;
+        const next = new Set(prev);
+        next.delete(sectionKey);
+        return next;
+      });
+    }
+
+    setDimensionBySection(prev => {
+      const current = prev[normalizedKey] || createInitialDimensionUIState();
+      const incomingProposal = normalized.proposal;
+      const proposalChanged = Boolean(
+        incomingProposal
+        && (
+          incomingProposal.dimensionKey !== current.activeDimensionKey
+          || incomingProposal.content !== current.proposalText
+        )
+      );
+
+      const next: DimensionDraftUIState = {
+        ...current,
+        initialized: true,
+        started: normalized.started,
+        error: null,
+        stitchedContent: normalized.stitchedContent,
+        plan: normalized.plan,
+        progress: normalized.progress,
+        completed: normalized.completed,
+        nextDimensionKey: normalized.nextDimensionKey,
+        nextDimensionLabel: normalized.nextDimensionLabel
+      };
+
+      if (incomingProposal) {
+        next.activeDimensionKey = incomingProposal.dimensionKey;
+        const planLabel = normalized.plan.find(item => item.dimensionKey === incomingProposal.dimensionKey)?.dimensionLabel || null;
+        next.activeDimensionLabel = planLabel || incomingProposal.dimensionKey;
+        next.proposalText = incomingProposal.content;
+        next.proposalValidation = incomingProposal.citationValidation;
+        next.showReject = false;
+        next.feedback = '';
+        next.streamCursor = proposalChanged ? 0 : Math.min(current.streamCursor, incomingProposal.content.length);
+        next.isStreaming = proposalChanged && incomingProposal.content.length > 0;
+      } else if (normalized.completed) {
+        next.activeDimensionKey = null;
+        next.activeDimensionLabel = null;
+        next.proposalText = '';
+        next.proposalValidation = null;
+        next.feedback = '';
+        next.showReject = false;
+        next.streamCursor = 0;
+        next.isStreaming = false;
+      }
+
+      return {
+        ...prev,
+        [normalizedKey]: next
+      };
+    });
+
+    return normalized;
+  }, []);
+
+  const loadDimensionFlow = useCallback(async (sectionKey: string) => {
+    setDimensionState(sectionKey, prev => ({
+      ...prev,
+      loading: true,
+      error: null
+    }));
+    try {
+      const data = await requestDraftingAction({
+        action: 'get_dimension_flow',
+        sectionKey
+      });
+      applyDimensionResponse(sectionKey, data);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load dimension flow';
+      setDimensionState(sectionKey, prev => ({
+        ...prev,
+        initialized: true,
+        loading: false,
+        error: message
+      }));
+      showMsg(message, 'error');
+      return;
+    }
+    setDimensionState(sectionKey, prev => ({
+      ...prev,
+      loading: false
+    }));
+  }, [applyDimensionResponse, requestDraftingAction, setDimensionState]);
+
+  const generateDimensionDraft = useCallback(async (
+    sectionKey: string,
+    options?: {
+      dimensionKey?: string;
+      feedback?: string;
+      forceRegenerate?: boolean;
+      silent?: boolean;
+    }
+  ) => {
+    setSectionLoading(prev => ({ ...prev, [sectionKey]: true }));
+    setDimensionState(sectionKey, prev => ({
+      ...prev,
+      loading: true,
+      error: null,
+      rejecting: false
+    }));
+
+    try {
+      const payload: Record<string, unknown> = {
+        action: 'generate_dimension',
+        sectionKey
+      };
+      if (options?.dimensionKey) payload.dimensionKey = options.dimensionKey;
+      if (options?.feedback) payload.feedback = options.feedback;
+      if (options?.forceRegenerate) payload.forceRegenerate = true;
+
+      const data = await requestDraftingAction(payload);
+      const normalized = applyDimensionResponse(sectionKey, data);
+      if (!options?.silent && normalized.proposal) {
+        const label = normalized.plan.find(item => item.dimensionKey === normalized.proposal?.dimensionKey)?.dimensionLabel
+          || normalized.proposal.dimensionKey
+          || 'dimension';
+        showMsg(`Drafted ${label}`, 'success');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to generate dimension';
+      setDimensionState(sectionKey, prev => ({
+        ...prev,
+        error: message
+      }));
+      if (!options?.silent) showMsg(message, 'error');
+    } finally {
+      setSectionLoading(prev => ({ ...prev, [sectionKey]: false }));
+      setDimensionState(sectionKey, prev => ({
+        ...prev,
+        loading: false
+      }));
+    }
+  }, [applyDimensionResponse, requestDraftingAction, setDimensionState, showMsg]);
+
+  const startDimensionFlow = useCallback(async (sectionKey: string) => {
+    const instruction = userInstructions[sectionKey];
+    const instructions = instruction?.isActive !== false ? instruction?.instruction || '' : '';
+    const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
+
+    setSectionLoading(prev => ({ ...prev, [sectionKey]: true }));
+    setDimensionState(sectionKey, prev => ({
+      ...prev,
+      loading: true,
+      error: null
+    }));
+    setDimensionPanelOpen(prev => ({ ...prev, [normalizeSectionKey(sectionKey)]: true }));
+
+    try {
+      const data = await requestDraftingAction({
+        action: 'start_dimension_flow',
+        sectionKey,
+        instructions,
+        useMappedEvidence
+      });
+      applyDimensionResponse(sectionKey, data);
+      showMsg('Dimension plan ready. Drafting first dimension...', 'success');
+      await generateDimensionDraft(sectionKey, { silent: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to start dimension flow';
+      setDimensionState(sectionKey, prev => ({
+        ...prev,
+        error: message
+      }));
+      showMsg(message, 'error');
+    } finally {
+      setSectionLoading(prev => ({ ...prev, [sectionKey]: false }));
+      setDimensionState(sectionKey, prev => ({
+        ...prev,
+        loading: false
+      }));
+    }
+  }, [applyDimensionResponse, generateDimensionDraft, isMappedEvidenceEnabled, requestDraftingAction, setDimensionState, showMsg, userInstructions]);
+
+  const acceptDimensionDraft = useCallback(async (sectionKey: string, continueToNext: boolean) => {
+    const state = getDimensionState(sectionKey);
+    if (!state.activeDimensionKey || !state.proposalText.trim()) {
+      showMsg('Generate dimension content first', 'warning');
+      return;
+    }
+
+    setSectionLoading(prev => ({ ...prev, [sectionKey]: true }));
+    setDimensionState(sectionKey, prev => ({
+      ...prev,
+      accepting: true,
+      error: null
+    }));
+
+    try {
+      const data = await requestDraftingAction({
+        action: 'accept_dimension',
+        sectionKey,
+        dimensionKey: state.activeDimensionKey,
+        content: state.proposalText,
+        prefetchNext: continueToNext
+      });
+      const normalized = applyDimensionResponse(sectionKey, data);
+      clearCitationValidationForSection(sectionKey);
+      await refreshSession();
+
+      if (continueToNext && !normalized.completed) {
+        await generateDimensionDraft(sectionKey, {
+          dimensionKey: normalized.nextDimensionKey || undefined,
+          silent: true
+        });
+      } else {
+        showMsg('Dimension accepted', 'success');
+      }
+    } catch (error) {
+      const payload = (error as any)?.payload;
+      const validation = toDimensionValidation(payload?.citationValidation);
+      const message = error instanceof Error ? error.message : 'Failed to accept dimension';
+      setDimensionState(sectionKey, prev => ({
+        ...prev,
+        error: message,
+        proposalValidation: validation || prev.proposalValidation
+      }));
+      showMsg(message, 'error');
+    } finally {
+      setSectionLoading(prev => ({ ...prev, [sectionKey]: false }));
+      setDimensionState(sectionKey, prev => ({
+        ...prev,
+        accepting: false
+      }));
+    }
+  }, [
+    applyDimensionResponse,
+    clearCitationValidationForSection,
+    generateDimensionDraft,
+    getDimensionState,
+    refreshSession,
+    requestDraftingAction,
+    setDimensionState,
+    showMsg
+  ]);
+
+  const rejectDimensionDraft = useCallback(async (sectionKey: string) => {
+    const state = getDimensionState(sectionKey);
+    if (!state.activeDimensionKey) {
+      showMsg('No pending dimension to rewrite', 'warning');
+      return;
+    }
+
+    setSectionLoading(prev => ({ ...prev, [sectionKey]: true }));
+    setDimensionState(sectionKey, prev => ({
+      ...prev,
+      rejecting: true,
+      error: null
+    }));
+
+    try {
+      const data = await requestDraftingAction({
+        action: 'reject_dimension',
+        sectionKey,
+        dimensionKey: state.activeDimensionKey,
+        feedback: state.feedback || undefined
+      });
+      applyDimensionResponse(sectionKey, data);
+      showMsg('Rewrote dimension draft', 'success');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to rewrite dimension';
+      setDimensionState(sectionKey, prev => ({
+        ...prev,
+        error: message
+      }));
+      showMsg(message, 'error');
+    } finally {
+      setSectionLoading(prev => ({ ...prev, [sectionKey]: false }));
+      setDimensionState(sectionKey, prev => ({
+        ...prev,
+        rejecting: false
+      }));
+    }
+  }, [applyDimensionResponse, getDimensionState, requestDraftingAction, setDimensionState, showMsg]);
+
+  const toggleDimensionPanelForSection = useCallback((sectionKey: string) => {
+    const normalized = normalizeSectionKey(sectionKey);
+    const shouldOpen = !dimensionPanelOpen[normalized];
+    setDimensionPanelOpen(prev => ({
+      ...prev,
+      [normalized]: shouldOpen
+    }));
+    if (!shouldOpen) return;
+    const current = dimensionBySection[normalized];
+    if (!current?.initialized) {
+      void loadDimensionFlow(sectionKey);
+    }
+  }, [dimensionBySection, dimensionPanelOpen, loadDimensionFlow]);
+
+  const beginStructuredDraft = useCallback(async (sectionKey: string) => {
+    const normalized = normalizeSectionKey(sectionKey);
+    setDimensionPanelOpen(prev => ({ ...prev, [normalized]: true }));
+    const state = getDimensionState(sectionKey);
+    if (state.started) {
+      if (state.completed) {
+        showMsg('All dimensions are already accepted for this section', 'warning');
+        return;
+      }
+      await generateDimensionDraft(sectionKey, {
+        dimensionKey: state.nextDimensionKey || undefined
+      });
+      return;
+    }
+    await startDimensionFlow(sectionKey);
+  }, [generateDimensionDraft, getDimensionState, showMsg, startDimensionFlow]);
+
+  const handleDefaultDraftForKeys = useCallback(async (keys: string[]) => {
+    const target = keys.find((key) => normalizeSectionKey(key) !== 'references') || keys[0];
+    if (!target) return;
+    await beginStructuredDraft(target);
+  }, [beginStructuredDraft]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setDimensionBySection(prev => {
+        let changed = false;
+        const next: Record<string, DimensionDraftUIState> = { ...prev };
+        for (const [sectionKey, state] of Object.entries(prev)) {
+          if (!state.isStreaming) continue;
+          const total = state.proposalText.length;
+          if (total === 0) {
+            next[sectionKey] = { ...state, isStreaming: false, streamCursor: 0 };
+            changed = true;
+            continue;
+          }
+          if (state.streamCursor >= total) {
+            next[sectionKey] = { ...state, isStreaming: false, streamCursor: total };
+            changed = true;
+            continue;
+          }
+          const step = Math.max(8, Math.ceil(total / 90));
+          const streamCursor = Math.min(total, state.streamCursor + step);
+          next[sectionKey] = {
+            ...state,
+            streamCursor,
+            isStreaming: streamCursor < total
+          };
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
+    }, 24);
+
+    return () => window.clearInterval(timer);
+  }, []);
 
   // ============================================================================
   // Floating Panel Handlers
@@ -1328,18 +1967,15 @@ export default function SectionDraftingStage({
           sectionKey,
           instructions,
           useMappedEvidence,
+          generationMode: 'two_pass',
+          autoCitationRepair: false,
           usePersonaStyle,
           personaSelection
         })
       });
       const data = await res.json();
       if (!res.ok) {
-        const disallowed = Array.isArray(data?.citationValidation?.disallowedKeys)
-          ? data.citationValidation.disallowedKeys as string[]
-          : [];
-        const unknown = Array.isArray(data?.citationValidation?.unknownKeys)
-          ? data.citationValidation.unknownKeys as string[]
-          : [];
+        const { disallowedKeys: disallowed, unknownKeys: unknown } = setCitationValidationForSection(sectionKey, data);
         const detailParts: string[] = [];
         if (disallowed.length > 0) {
           detailParts.push(`disallowed: ${disallowed.slice(0, 5).join(', ')}`);
@@ -1351,12 +1987,15 @@ export default function SectionDraftingStage({
         const hint = typeof data?.hint === 'string' ? ` ${data.hint}` : '';
         return { success: false, error: `${data.error || 'Generation failed'}${details}${hint}` };
       }
-      if (data.content) return { success: true, content: data.content };
+      if (data.content) {
+        clearCitationValidationForSection(sectionKey);
+        return { success: true, content: data.content };
+      }
       return { success: false, error: 'No content returned' };
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
-  }, [sessionId, authToken, userInstructions, usePersonaStyle, personaSelection, isMappedEvidenceEnabled]);
+  }, [sessionId, authToken, userInstructions, usePersonaStyle, personaSelection, isMappedEvidenceEnabled, setCitationValidationForSection, clearCitationValidationForSection]);
 
   const handleGenerate = useCallback(async (keys: string[]) => {
     if (loading) return;
@@ -1379,6 +2018,20 @@ export default function SectionDraftingStage({
         }
       }
       setContent(prev => ({ ...prev, ...generatedContent }));
+      setDimensionPanelOpen(prev => {
+        const next = { ...prev };
+        for (const sectionKey of sections) {
+          delete next[normalizeSectionKey(sectionKey)];
+        }
+        return next;
+      });
+      setDimensionBySection(prev => {
+        const next = { ...prev };
+        for (const sectionKey of sections) {
+          delete next[normalizeSectionKey(sectionKey)];
+        }
+        return next;
+      });
       showMsg(`Generated ${sections.length} section(s)`, 'success');
       await refreshSession();
     } catch (error) {
@@ -1440,29 +2093,37 @@ export default function SectionDraftingStage({
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify({
-          action: 'generate_section',
+          action: 'regenerate_section',
           sectionKey,
           instructions: remarks,
           useMappedEvidence,
+          generationMode: 'two_pass',
+          autoCitationRepair: false,
           usePersonaStyle,
           personaSelection
         })
       });
       const data = await res.json();
       if (res.ok && data.content) {
+        clearCitationValidationForSection(sectionKey);
         setContent(prev => ({ ...prev, [sectionKey]: data.content }));
+        setDimensionPanelOpen(prev => {
+          const next = { ...prev };
+          delete next[normalizeSectionKey(sectionKey)];
+          return next;
+        });
+        setDimensionBySection(prev => {
+          const next = { ...prev };
+          delete next[normalizeSectionKey(sectionKey)];
+          return next;
+        });
         // REMOVED: Auto-switch to preview - stay in edit mode
         setRegenOpen(prev => ({ ...prev, [sectionKey]: false }));
         setRegenRemarks(prev => ({ ...prev, [sectionKey]: '' }));
         showMsg('Section regenerated', 'success');
         await refreshSession();
       } else {
-        const disallowed = Array.isArray(data?.citationValidation?.disallowedKeys)
-          ? data.citationValidation.disallowedKeys as string[]
-          : [];
-        const unknown = Array.isArray(data?.citationValidation?.unknownKeys)
-          ? data.citationValidation.unknownKeys as string[]
-          : [];
+        const { disallowedKeys: disallowed, unknownKeys: unknown } = setCitationValidationForSection(sectionKey, data);
         const detailParts: string[] = [];
         if (disallowed.length > 0) {
           detailParts.push(`disallowed: ${disallowed.slice(0, 5).join(', ')}`);
@@ -1479,7 +2140,7 @@ export default function SectionDraftingStage({
     } finally {
       setSectionLoading(prev => ({ ...prev, [sectionKey]: false }));
     }
-  }, [sessionId, authToken, regenRemarks, usePersonaStyle, personaSelection, refreshSession, isMappedEvidenceEnabled]);
+  }, [sessionId, authToken, regenRemarks, usePersonaStyle, personaSelection, refreshSession, isMappedEvidenceEnabled, setCitationValidationForSection, clearCitationValidationForSection]);
 
   // ============================================================================
   // Citations & Bibliography
@@ -2132,7 +2793,7 @@ export default function SectionDraftingStage({
               </button>
             )}
             <button
-              onClick={handleRetryBgPreparation}
+              onClick={() => handleRetryBgPreparation()}
               disabled={bgGenRetrying}
               className="px-3 py-1.5 text-xs rounded-lg border border-red-300 text-red-800 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -2158,22 +2819,52 @@ export default function SectionDraftingStage({
             const hasContent = section.keys.some(k => content[k]);
             const isSavingSection = section.keys.some(k => saving[k]);
             const hasPending = section.keys.some(k => pendingChanges.has(k));
+            const hasDimensionPanelVisible = section.keys.some(
+              k => dimensionPanelOpen[normalizeSectionKey(k)] === true
+            );
             const primarySectionKey = section.keys[0] || '';
             const citationEligibleKeys = section.keys.filter(k => isCitationEligibleForSection(k));
             const showCitationToggle = citationEligibleKeys.length > 0;
             const mappedEvidenceEnabled = showCitationToggle
               ? citationEligibleKeys.every(k => isMappedEvidenceEnabled(k))
               : false;
+            const sectionCitationIssue = (() => {
+              const disallowedSet = new Set<string>();
+              const unknownSet = new Set<string>();
+              for (const key of section.keys) {
+                const issue = sectionCitationValidation[normalizeSectionKey(key)];
+                if (!issue) continue;
+                for (const disallowed of issue.disallowedKeys || []) disallowedSet.add(disallowed);
+                for (const unknown of issue.unknownKeys || []) unknownSet.add(unknown);
+              }
+              const disallowedKeys = Array.from(disallowedSet);
+              const unknownKeys = Array.from(unknownSet);
+              if (disallowedKeys.length === 0 && unknownKeys.length === 0) return null;
+              return { disallowedKeys, unknownKeys };
+            })();
 
             return (
               <div key={section.keys.join('|') || idx} className="group relative hover:bg-gray-50/30 transition-colors -mx-4 px-4 py-2 rounded-lg">
                 {/* Section Header */}
                 <div className="flex items-baseline justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-lg font-bold text-gray-900 uppercase tracking-wide">
-                      {section.label || section.keys.map(k => displayName[k] || k).join(' / ')}
-                    </h3>
-                    {/* Instruction controls */}
+                <div className="flex items-center gap-2">
+                  <h3 className="text-lg font-bold text-gray-900 uppercase tracking-wide">
+                    {section.label || section.keys.map(k => displayName[k] || k).join(' / ')}
+                  </h3>
+                  {sectionCitationIssue && (
+                    <span className="text-[11px] px-2 py-1 rounded-full border border-red-200 bg-red-50 text-red-700">
+                      Remove invalid citation: {
+                        [...sectionCitationIssue.disallowedKeys, ...sectionCitationIssue.unknownKeys]
+                          .slice(0, 4)
+                          .join(', ')
+                      }{
+                        (sectionCitationIssue.disallowedKeys.length + sectionCitationIssue.unknownKeys.length) > 4
+                          ? '...'
+                          : ''
+                      }
+                    </span>
+                  )}
+                  {/* Instruction controls */}
                     {(() => {
                       const key = section.keys[0];
                       const instr = userInstructions[key];
@@ -2235,15 +2926,54 @@ export default function SectionDraftingStage({
 
                 {/* Content Area - Always Editable */}
                 <div className="text-gray-800 text-justify">
-                  {!hasContent && !isWorking ? (
-                    <div onClick={() => autoMode && !autoModeRunning ? handleAutoGenerateAll() : handleGenerate(section.keys)}
-                      className={`border-2 border-dashed border-gray-100 rounded-lg p-8 text-center hover:border-indigo-100 hover:bg-indigo-50/30 cursor-pointer ${autoModeRunning ? 'opacity-50' : ''}`}>
+                  {!hasContent && !isWorking && !hasDimensionPanelVisible ? (
+                    <div
+                      className={`border-2 border-dashed border-gray-100 rounded-lg p-8 text-center hover:border-indigo-100 hover:bg-indigo-50/30 ${autoModeRunning ? 'opacity-50' : ''}`}
+                    >
                       <div className="text-gray-400 font-medium mb-1">{autoMode ? 'Auto-generate sections' : 'Section not generated'}</div>
-                      <div className="text-xs text-gray-300">Click to draft with AI</div>
+                      <div className="text-xs text-gray-300">Choose one-shot draft or structured dimension flow.</div>
+                      <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                        <button
+                          onClick={() => autoMode && !autoModeRunning ? handleAutoGenerateAll() : handleGenerate(section.keys)}
+                          disabled={autoModeRunning || loading}
+                          className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          One-shot Draft
+                        </button>
+                        <button
+                          onClick={() => {
+                            void handleDefaultDraftForKeys(section.keys);
+                          }}
+                          disabled={autoModeRunning || loading}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <span className="inline-flex items-center gap-1">
+                            <Sparkles className="h-3.5 w-3.5" />
+                            Structured Draft
+                          </span>
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <div>
-                      {section.keys.map(keyName => (
+                      {section.keys.map(keyName => {
+                        const normalizedKey = normalizeSectionKey(keyName);
+                        const dimensionState = getDimensionState(keyName);
+                        const isDimensionPanelOpen = dimensionPanelOpen[normalizedKey] === true;
+                        const dimensionBusy = dimensionState.loading || dimensionState.accepting || dimensionState.rejecting;
+                        const hasDimensionWarnings = Boolean(
+                          dimensionState.proposalValidation
+                          && (
+                            dimensionState.proposalValidation.disallowedKeys.length > 0
+                            || dimensionState.proposalValidation.unknownKeys.length > 0
+                            || dimensionState.proposalValidation.missingRequiredKeys.length > 0
+                          )
+                        );
+                        const dimensionStreamingText = dimensionState.isStreaming
+                          ? dimensionState.proposalText.slice(0, dimensionState.streamCursor)
+                          : dimensionState.proposalText;
+
+                        return (
                         <div key={keyName} className="mb-6 last:mb-0">
                           {section.keys.length > 1 && (
                             <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 mt-4">{displayName[keyName] || keyName}</h4>
@@ -2268,13 +2998,289 @@ export default function SectionDraftingStage({
                               className="p-1.5 rounded text-gray-400 hover:text-indigo-600 hover:bg-indigo-50" title="Regenerate" disabled={sectionLoading[keyName]}>
                               <RefreshCw className="w-4 h-4" />
                             </button>
+                            <button
+                              onClick={() => toggleDimensionPanelForSection(keyName)}
+                              className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border transition-colors ${
+                                isDimensionPanelOpen
+                                  ? 'border-violet-300 bg-violet-50 text-violet-700'
+                                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                              }`}
+                              title="Structured dimension drafting"
+                            >
+                              <Sparkles className="w-3 h-3" />
+                              Structured
+                            </button>
                             {!content[keyName] && (
-                              <button onClick={() => handleGenerate([keyName])} disabled={loading || autoModeRunning}
-                                className="px-2 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50">Generate</button>
+                              <button
+                                onClick={() => {
+                                  void handleGenerate([keyName]);
+                                }}
+                                disabled={loading || autoModeRunning}
+                                className="inline-flex items-center gap-1 rounded bg-indigo-600 px-2 py-1 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                              >
+                                One-shot
+                              </button>
                             )}
                           </div>
 
                           {/* Selection Indicator - Simple inline badge, no layout shift */}
+
+                          {isDimensionPanelOpen && (
+                            <div className="mb-4 rounded-2xl border border-indigo-100 bg-gradient-to-br from-white via-indigo-50/50 to-cyan-50/40 p-4 shadow-sm">
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div>
+                                  <div className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-medium text-indigo-700">
+                                    <Sparkles className="h-3.5 w-3.5" />
+                                    Structured Draft
+                                  </div>
+                                  <h5 className="mt-2 text-sm font-semibold text-slate-900">
+                                    {displayName[keyName] || formatSectionLabel(keyName)}
+                                  </h5>
+                                  <p className="text-xs text-slate-500">
+                                    Draft one evidence-grounded dimension at a time, then merge it into the full section.
+                                  </p>
+                                </div>
+                                {dimensionState.started && (
+                                  <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                                    <div className="font-medium text-slate-800">
+                                      {dimensionState.progress.accepted}/{dimensionState.progress.total} accepted
+                                    </div>
+                                    <div className="mt-1 h-1.5 w-28 overflow-hidden rounded-full bg-slate-100">
+                                      <div
+                                        className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all"
+                                        style={{
+                                          width: `${dimensionState.progress.total > 0
+                                            ? Math.min(100, Math.round((dimensionState.progress.accepted / dimensionState.progress.total) * 100))
+                                            : 0}%`
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+
+                              {dimensionState.error && (
+                                <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                                  {dimensionState.error}
+                                </div>
+                              )}
+
+                              {!dimensionState.started ? (
+                                <div className="mt-4 flex flex-wrap items-center gap-2">
+                                  <button
+                                    onClick={() => startDimensionFlow(keyName)}
+                                    disabled={dimensionBusy || sectionLoading[keyName]}
+                                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    {dimensionBusy || sectionLoading[keyName]
+                                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                      : <Play className="h-3.5 w-3.5" />
+                                    }
+                                    Start Structured Draft
+                                  </button>
+                                  <button
+                                    onClick={() => loadDimensionFlow(keyName)}
+                                    disabled={dimensionBusy || sectionLoading[keyName]}
+                                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    Refresh
+                                  </button>
+                                </div>
+                              ) : (
+                                <>
+                                  {dimensionState.plan.length > 0 && (
+                                    <div className="mt-4 flex flex-wrap gap-2">
+                                      {dimensionState.plan.map((item) => (
+                                        <button
+                                          key={item.dimensionKey}
+                                          type="button"
+                                          onClick={() => generateDimensionDraft(keyName, { dimensionKey: item.dimensionKey })}
+                                          disabled={dimensionBusy || sectionLoading[keyName]}
+                                          className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                            item.status === 'accepted'
+                                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                                              : item.status === 'pending'
+                                                ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                                                : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200 hover:bg-indigo-50/40'
+                                          }`}
+                                        >
+                                          {item.dimensionLabel}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+
+                                  {dimensionState.completed ? (
+                                    <div className="mt-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                                      <CheckCircle2 className="h-4 w-4" />
+                                      All dimensions are accepted for this section.
+                                    </div>
+                                  ) : (
+                                    <>
+                                      {!dimensionState.activeDimensionKey && (
+                                        <div className="mt-4">
+                                          <button
+                                            onClick={() => generateDimensionDraft(keyName)}
+                                            disabled={dimensionBusy || sectionLoading[keyName]}
+                                            className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                          >
+                                            {dimensionBusy || sectionLoading[keyName]
+                                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                              : <Sparkles className="h-3.5 w-3.5" />
+                                            }
+                                            Generate Next Dimension
+                                          </button>
+                                        </div>
+                                      )}
+
+                                      {dimensionState.activeDimensionKey && (
+                                        <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
+                                              {dimensionState.activeDimensionLabel || dimensionState.activeDimensionKey}
+                                            </span>
+                                            {dimensionState.isStreaming && (
+                                              <span className="inline-flex items-center gap-1 text-[11px] text-indigo-600">
+                                                <Loader2 className="h-3 w-3 animate-spin" />
+                                                Writing...
+                                              </span>
+                                            )}
+                                            {dimensionState.isStreaming && (
+                                              <button
+                                                type="button"
+                                                onClick={() => {
+                                                  setDimensionState(keyName, prev => ({
+                                                    ...prev,
+                                                    isStreaming: false,
+                                                    streamCursor: prev.proposalText.length
+                                                  }));
+                                                }}
+                                                className="text-[11px] font-medium text-slate-500 hover:text-slate-700"
+                                              >
+                                                Skip animation
+                                              </button>
+                                            )}
+                                          </div>
+
+                                          <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+                                            <div className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
+                                              {dimensionStreamingText || (dimensionBusy ? 'Generating dimension content...' : 'No proposal yet.')}
+                                            </div>
+                                          </div>
+
+                                          {!dimensionState.isStreaming && (
+                                            <textarea
+                                              className="mt-3 min-h-[120px] w-full rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-800 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+                                              value={dimensionState.proposalText}
+                                              onChange={(e) => {
+                                                const value = e.target.value;
+                                                setDimensionState(keyName, prev => ({
+                                                  ...prev,
+                                                  proposalText: value
+                                                }));
+                                              }}
+                                              placeholder="Edit this dimension before accepting..."
+                                            />
+                                          )}
+
+                                          {hasDimensionWarnings && dimensionState.proposalValidation && (
+                                            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                                              {dimensionState.proposalValidation.disallowedKeys.length > 0 && (
+                                                <p>
+                                                  Disallowed: {dimensionState.proposalValidation.disallowedKeys.slice(0, 6).join(', ')}
+                                                </p>
+                                              )}
+                                              {dimensionState.proposalValidation.unknownKeys.length > 0 && (
+                                                <p>
+                                                  Unknown: {dimensionState.proposalValidation.unknownKeys.slice(0, 6).join(', ')}
+                                                </p>
+                                              )}
+                                              {dimensionState.proposalValidation.missingRequiredKeys.length > 0 && (
+                                                <p>
+                                                  Missing required: {dimensionState.proposalValidation.missingRequiredKeys.slice(0, 6).join(', ')}
+                                                </p>
+                                              )}
+                                            </div>
+                                          )}
+
+                                          {dimensionState.showReject && (
+                                            <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3">
+                                              <label className="text-xs font-semibold text-rose-700">Rewrite feedback</label>
+                                              <textarea
+                                                className="mt-2 min-h-[80px] w-full rounded-md border border-rose-200 bg-white p-2 text-sm text-slate-700 focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-100"
+                                                value={dimensionState.feedback}
+                                                onChange={(e) => {
+                                                  const value = e.target.value;
+                                                  setDimensionState(keyName, prev => ({
+                                                    ...prev,
+                                                    feedback: value
+                                                  }));
+                                                }}
+                                                placeholder="Tell AI what to improve, remove, or strengthen..."
+                                              />
+                                              <div className="mt-2 flex justify-end gap-2">
+                                                <button
+                                                  type="button"
+                                                  onClick={() => setDimensionState(keyName, prev => ({ ...prev, showReject: false }))}
+                                                  className="rounded-md border border-rose-200 bg-white px-2.5 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50"
+                                                >
+                                                  Cancel
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  onClick={() => rejectDimensionDraft(keyName)}
+                                                  disabled={dimensionBusy || sectionLoading[keyName]}
+                                                  className="inline-flex items-center gap-1 rounded-md bg-rose-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                                >
+                                                  {dimensionState.rejecting
+                                                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                    : <RefreshCw className="h-3.5 w-3.5" />
+                                                  }
+                                                  Rewrite
+                                                </button>
+                                              </div>
+                                            </div>
+                                          )}
+
+                                          <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+                                            <button
+                                              type="button"
+                                              onClick={() => setDimensionState(keyName, prev => ({ ...prev, showReject: !prev.showReject }))}
+                                              className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2.5 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50"
+                                            >
+                                              <XCircle className="h-3.5 w-3.5" />
+                                              Reject
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => acceptDimensionDraft(keyName, false)}
+                                              disabled={dimensionBusy || sectionLoading[keyName] || !dimensionState.proposalText.trim()}
+                                              className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                            >
+                                              {dimensionState.accepting
+                                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                                : <CheckCircle2 className="h-3.5 w-3.5" />
+                                              }
+                                              Accept
+                                            </button>
+                                            <button
+                                              type="button"
+                                              onClick={() => acceptDimensionDraft(keyName, true)}
+                                              disabled={dimensionBusy || sectionLoading[keyName] || !dimensionState.proposalText.trim()}
+                                              className="inline-flex items-center gap-1 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                            >
+                                              <ArrowRight className="h-3.5 w-3.5" />
+                                              Accept & Continue
+                                            </button>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          )}
 
                           {/* Content Area - Always in edit mode for stability */}
                           <div className="relative">
@@ -2397,7 +3403,8 @@ export default function SectionDraftingStage({
                             </div>
                           )}
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>

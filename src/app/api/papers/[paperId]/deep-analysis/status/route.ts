@@ -5,8 +5,6 @@ import { featureFlags, isFeatureEnabled } from '@/lib/feature-flags';
 import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 import { deepAnalysisService } from '@/lib/services/deep-analysis-service';
 import { MAX_DEEP_ANALYSIS_CONCURRENCY } from '@/lib/services/deep-analysis-types';
-import { paperSectionService } from '@/lib/services/paper-section-service';
-import { blueprintService } from '@/lib/services/blueprint-service';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -93,32 +91,16 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
       concurrency: MAX_DEEP_ANALYSIS_CONCURRENCY
     });
 
-    // Auto-trigger background Pass 1 when evidence extraction reaches a terminal state
+    // Manual-only flow: Pass 1 section preparation is triggered explicitly by user action.
+    // This endpoint only reports deep-analysis status.
     const deepAnalysisTerminal =
       result.totalJobs > 0 &&
       result.inProgress === 0 &&
       (result.status === 'COMPLETED' || result.status === 'PARTIAL');
-    const bgAutoTriggerEligible =
-      !session.bgGenStatus || ['IDLE', 'FAILED', 'PARTIAL'].includes(session.bgGenStatus);
-
-    if (
+    const manualPreparationAvailable =
       deepAnalysisTerminal &&
-      isFeatureEnabled('ENABLE_TWO_PASS_GENERATION') &&
-      bgAutoTriggerEligible
-    ) {
-      const blueprintReady = await blueprintService.isBlueprintReady(sessionId);
-      if (blueprintReady.ready) {
-        if (!tenantContext) {
-          console.warn('[DeepAnalysis] Auto-trigger Pass 1 skipped: tenant context unavailable');
-          (result as any).backgroundGenerationTriggerSkipped = 'missing_tenant_context';
-        } else {
-          paperSectionService.runParallelPass1(sessionId, tenantContext).catch(err => {
-            console.error('[DeepAnalysis] Auto-trigger Pass 1 failed:', err);
-          });
-          (result as any).backgroundGenerationTriggered = true;
-        }
-      }
-    }
+      isFeatureEnabled('ENABLE_TWO_PASS_GENERATION');
+    (result as any).backgroundGenerationManualRequired = manualPreparationAvailable;
 
     return NextResponse.json(result);
   } catch (error: any) {

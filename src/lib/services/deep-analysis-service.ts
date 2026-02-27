@@ -1034,6 +1034,7 @@ class DeepAnalysisService {
         referenceArchetype: job.referenceArchetype,
         deepAnalysisLabel: job.deepAnalysisLabel,
         preparedText: prepared.preparedText,
+        pdfAttachment: prepared.pdfAttachment,
         blueprintDimensions: context.dimensions,
         tenantContext: context.tenantContext || null,
       });

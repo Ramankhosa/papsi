@@ -293,6 +293,7 @@ export class LLMGateway {
   private estimateInputTokens(llmRequest: LLMRequest): number {
     let textTokens = 0
     let imageTokens = 0
+    let fileTokens = 0
 
     // Estimate text tokens
     if (llmRequest.prompt) {
@@ -321,11 +322,24 @@ export class LLMGateway {
             // Small image - low detail
             imageTokens += 300
           }
+        } else if (part.type === 'file') {
+          // Approximate file processing tokens without over-penalizing base64 transport overhead.
+          const fileData = part.file?.data || ''
+          if (fileData) {
+            const fileBytes = Math.ceil((fileData.length * 3) / 4)
+            const estimated = Math.ceil(fileBytes / 450) // ~2.2KB/token equivalent processing budget
+            fileTokens += Math.max(2000, Math.min(50000, estimated))
+          } else if (part.file?.url) {
+            // URL-based document ingestion still has substantial parse cost; keep conservative estimate.
+            fileTokens += 8000
+          } else {
+            fileTokens += 2000
+          }
         }
       }
     }
 
-    return textTokens + imageTokens
+    return textTokens + imageTokens + fileTokens
   }
 
   /**
@@ -357,6 +371,13 @@ export class LLMGateway {
   }
 
   /**
+   * Check if the request includes raw file inputs.
+   */
+  private requiresFileInput(llmRequest: LLMRequest): boolean {
+    return !!(llmRequest.content?.parts?.some(part => part.type === 'file'))
+  }
+
+  /**
    * Models that support vision/multimodal input
    */
   private readonly VISION_CAPABLE_MODELS = new Set([
@@ -364,15 +385,27 @@ export class LLMGateway {
     'gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo', 'gpt-5', 'gpt-5.1', 'gpt-5.2', 'gpt-5-mini', 'gpt-5-nano',
     'gpt-5.1-thinking', 'gpt-5.2-thinking',
     // Anthropic
+    'claude-opus-4.5',
+    'claude-opus-4-5',
+    'claude-opus-4.6',
     'claude-3.5-sonnet', 'claude-3.5-haiku', 'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku',
     'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229',
     // Google Gemini
     'gemini-2.5-pro',
+    'gemini-2.5-flash',
     'gemini-2.0-flash', 'gemini-2.0-flash-001',
     'gemini-2.0-flash-lite', 'gemini-2.0-flash-lite-001',
     'gemini-1.5-pro', 'gemini-1.5-pro-002',
     'gemini-1.5-flash', 'gemini-1.5-flash-002',
-    'gemini-3.0-nano-banana', 'gemini-3-pro-preview', 'gemini-3-pro-preview-thinking', 'gemini-3-pro-image-preview'
+    'gemini-3.0-nano-banana', 'gemini-3-pro-preview', 'gemini-3-pro-preview-thinking', 'gemini-3-pro-image-preview',
+  ])
+
+  /**
+   * Models that support direct document/file input in this gateway.
+   */
+  private readonly FILE_CAPABLE_MODELS = new Set([
+    'gemini-2.5-flash',
+    'gemini-2.5-pro'
   ])
 
   /**
@@ -385,6 +418,15 @@ export class LLMGateway {
         return {
           valid: false,
           error: `Model ${modelCode} does not support vision/image inputs. Vision-capable models: GPT-4o, Claude 3.x, Gemini`
+        }
+      }
+    }
+
+    if (this.requiresFileInput(llmRequest)) {
+      if (!this.FILE_CAPABLE_MODELS.has(modelCode)) {
+        return {
+          valid: false,
+          error: `Model ${modelCode} does not support direct file inputs in this gateway`
         }
       }
     }
@@ -425,6 +467,10 @@ export class LLMGateway {
       'claude-sonnet-4-20250514': { maxInput: 200000, maxOutput: 16384 },
       'claude-opus-4': { maxInput: 200000, maxOutput: 16384 },
       'claude-opus-4-20250514': { maxInput: 200000, maxOutput: 16384 },
+      'claude-opus-4.5': { maxInput: 1000000, maxOutput: 128000 },
+      'claude-opus-4-5': { maxInput: 1000000, maxOutput: 128000 },
+      'claude-opus-4.6': { maxInput: 1000000, maxOutput: 128000 },
+      'claude-opus-4-6': { maxInput: 1000000, maxOutput: 128000 },
       // Anthropic - Claude 3.7 models
       'claude-3-7-sonnet': { maxInput: 200000, maxOutput: 16384 },
       'claude-3-7-sonnet-20250219': { maxInput: 200000, maxOutput: 16384 },
@@ -443,6 +489,7 @@ export class LLMGateway {
       
       // Gemini
       'gemini-2.5-pro': { maxInput: 2097152, maxOutput: 65536 },
+      'gemini-2.5-flash': { maxInput: 1000000, maxOutput: 8192 },
       'gemini-2.0-flash': { maxInput: 1000000, maxOutput: 8192 },
       'gemini-2.0-flash-001': { maxInput: 1000000, maxOutput: 8192 },
       'gemini-2.0-flash-lite': { maxInput: 1000000, maxOutput: 8192 },
@@ -459,6 +506,12 @@ export class LLMGateway {
       // DeepSeek
       'deepseek-chat': { maxInput: 128000, maxOutput: 8192 },
       'deepseek-reasoner': { maxInput: 128000, maxOutput: 8192 },
+
+      // Zhipu
+      'glm-5': { maxInput: 200000, maxOutput: 65536 },
+
+      // Qwen
+      'qwen2.5-72b-instruct': { maxInput: 131072, maxOutput: 8192 },
       
       // Groq - Friendly names (prefixed)
       'groq-llama-3.3-70b': { maxInput: 128000, maxOutput: 8192 },
@@ -487,6 +540,8 @@ export class LLMGateway {
     if (lowerCode.startsWith('o1')) return { maxInput: 128000, maxOutput: 65536 }
     if (lowerCode.startsWith('claude')) return { maxInput: 200000, maxOutput: 8192 }
     if (lowerCode.startsWith('gemini')) return { maxInput: 1000000, maxOutput: 65536 }
+    if (lowerCode.startsWith('glm')) return { maxInput: 200000, maxOutput: 65536 }
+    if (lowerCode.startsWith('qwen')) return { maxInput: 131072, maxOutput: 8192 }
     if (lowerCode.startsWith('llama') || lowerCode.startsWith('groq-llama')) return { maxInput: 128000, maxOutput: 8192 }
     if (lowerCode.startsWith('mixtral') || lowerCode.startsWith('groq-mixtral')) return { maxInput: 32768, maxOutput: 8192 }
     if (lowerCode.startsWith('deepseek')) return { maxInput: 128000, maxOutput: 8192 }

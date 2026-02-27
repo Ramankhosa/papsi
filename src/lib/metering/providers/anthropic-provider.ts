@@ -12,6 +12,8 @@ export class AnthropicProvider implements LLMProvider {
     // Claude 4 models (latest)
     'claude-sonnet-4',
     'claude-opus-4',
+    'claude-opus-4.5',
+    'claude-opus-4.6',
     // Claude 3.7 models
     'claude-3-7-sonnet',
     // Claude 3.5 models
@@ -65,6 +67,10 @@ export class AnthropicProvider implements LLMProvider {
       'claude-4-sonnet': 'claude-sonnet-4-20250514',
       'claude-opus-4': 'claude-opus-4-20250514',
       'claude-4-opus': 'claude-opus-4-20250514',
+      'claude-opus-4.5': 'claude-opus-4-6', // Alias to latest supported Opus variant
+      'claude-opus-4-5': 'claude-opus-4-6',
+      'claude-opus-4.6': 'claude-opus-4-6',
+      'claude-opus-4-6': 'claude-opus-4-6',
       // Claude 3.7 Sonnet
       'claude-3-7-sonnet': 'claude-3-7-sonnet-20250219',
       'claude-3.7-sonnet': 'claude-3-7-sonnet-20250219',
@@ -165,6 +171,10 @@ export class AnthropicProvider implements LLMProvider {
       // Claude 4 models
       'claude-sonnet-4': { input: 200000, output: 16384 },
       'claude-opus-4': { input: 200000, output: 16384 },
+      'claude-opus-4.5': { input: 1000000, output: 128000 },
+      'claude-opus-4-5': { input: 1000000, output: 128000 },
+      'claude-opus-4.6': { input: 1000000, output: 128000 },
+      'claude-opus-4-6': { input: 1000000, output: 128000 },
       // Claude 3.7 models
       'claude-3-7-sonnet': { input: 200000, output: 16384 },
       // Claude 3.5 models
@@ -184,6 +194,10 @@ export class AnthropicProvider implements LLMProvider {
       // Claude 4 models
       'claude-sonnet-4': { input: 0.000003, output: 0.000015 },
       'claude-opus-4': { input: 0.000015, output: 0.000075 },
+      'claude-opus-4.5': { input: 0.000005, output: 0.000025 },
+      'claude-opus-4-5': { input: 0.000005, output: 0.000025 },
+      'claude-opus-4.6': { input: 0.000005, output: 0.000025 },
+      'claude-opus-4-6': { input: 0.000005, output: 0.000025 },
       // Claude 3.7 models
       'claude-3-7-sonnet': { input: 0.000003, output: 0.000015 },
       // Claude 3.5 models

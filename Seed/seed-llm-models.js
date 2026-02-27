@@ -6,7 +6,7 @@
  * ============================================================================
  *
  * Seeds the database with:
- * 1. All available LLM models (Google, OpenAI, Anthropic, DeepSeek, Groq)
+ * 1. All available LLM models (Google, OpenAI, Anthropic, DeepSeek, Groq, Zhipu, Qwen)
  * 2. All workflow stages (Patent Drafting, Novelty Search, etc.)
  * 3. PRODUCTION TOKEN LIMITS for all plans (same limits, different models per tier)
  *
@@ -460,6 +460,30 @@ async function main() {
       isDefault: false
     },
     {
+      code: 'claude-opus-4.5',
+      displayName: 'Claude Opus 4.5',
+      provider: 'anthropic',
+      contextWindow: 1000000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 500,    // $5.00 (aligned with Opus 4.6 alias pricing)
+      outputCostPer1M: 2500,  // $25.00
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'claude-opus-4.6',
+      displayName: 'Claude Opus 4.6',
+      provider: 'anthropic',
+      contextWindow: 1000000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 500,    // $5.00
+      outputCostPer1M: 2500,  // $25.00
+      isActive: true,
+      isDefault: false
+    },
+    {
       code: 'claude-3-sonnet',
       displayName: 'Claude 3 Sonnet',
       provider: 'anthropic',
@@ -596,6 +620,46 @@ async function main() {
       outputCostPer1M: 27,
       isActive: true,
       isDefault: false
+    },
+
+    // === ZHIPU MODELS (GLM) ===
+    {
+      code: 'glm-5',
+      displayName: 'GLM-5',
+      provider: 'zhipu',
+      contextWindow: 200000,
+      supportsVision: false,
+      supportsStreaming: true,
+      inputCostPer1M: 100,    // $1.00
+      outputCostPer1M: 320,   // $3.20
+      isActive: true,
+      isDefault: false
+    },
+    {
+      code: 'glm-4.5v',
+      displayName: 'GLM-4.5V',
+      provider: 'zhipu',
+      contextWindow: 128000,
+      supportsVision: true,
+      supportsStreaming: true,
+      inputCostPer1M: 60,     // $0.60
+      outputCostPer1M: 180,   // $1.80
+      isActive: true,
+      isDefault: false
+    },
+
+    // === QWEN MODELS ===
+    {
+      code: 'qwen2.5-72b-instruct',
+      displayName: 'Qwen 2.5 72B Instruct',
+      provider: 'qwen',
+      contextWindow: 131072,
+      supportsVision: false,
+      supportsStreaming: true,
+      inputCostPer1M: 140,    // $1.40
+      outputCostPer1M: 560,   // $5.60
+      isActive: true,
+      isDefault: false
     }
   ];
 
@@ -645,14 +709,15 @@ async function main() {
     { code: 'DRAFT_ANNEXURE_TECHNICAL_SOLUTION', displayName: 'Technical Solution', featureCode: 'PATENT_DRAFTING', sortOrder: 15, description: 'Draft technical solution (superset: technicalSolution)' },
     { code: 'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS', displayName: 'Advantageous Effects', featureCode: 'PATENT_DRAFTING', sortOrder: 16, description: 'Draft advantageous effects (superset: advantageousEffects)' },
     { code: 'DRAFT_ANNEXURE_DRAWINGS', displayName: 'Brief Description of Drawings', featureCode: 'PATENT_DRAFTING', sortOrder: 17, description: 'Draft brief description of drawings (superset: briefDescriptionOfDrawings)' },
-    { code: 'DRAFT_ANNEXURE_DESCRIPTION', displayName: 'Detailed Description', featureCode: 'PATENT_DRAFTING', sortOrder: 18, description: 'Draft detailed description (superset: detailedDescription)' },
-    { code: 'DRAFT_ANNEXURE_BEST_MODE', displayName: 'Best Mode', featureCode: 'PATENT_DRAFTING', sortOrder: 19, description: 'Draft best mode description (superset: bestMethod)' },
-    { code: 'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY', displayName: 'Industrial Applicability', featureCode: 'PATENT_DRAFTING', sortOrder: 20, description: 'Draft industrial applicability (superset: industrialApplicability)' },
-    { code: 'DRAFT_ANNEXURE_CLAIMS', displayName: 'Claims Drafting', featureCode: 'PATENT_DRAFTING', sortOrder: 21, description: 'Draft final patent claims (superset: claims)' },
-    { code: 'DRAFT_ANNEXURE_ABSTRACT', displayName: 'Abstract Drafting', featureCode: 'PATENT_DRAFTING', sortOrder: 22, description: 'Draft patent abstract (superset: abstract)' },
-    { code: 'DRAFT_ANNEXURE_NUMERALS', displayName: 'List of Reference Numerals', featureCode: 'PATENT_DRAFTING', sortOrder: 23, description: 'Draft list of reference numerals (superset: listOfNumerals)' },
-    { code: 'DRAFT_ANNEXURE_CROSS_REFERENCE', displayName: 'Cross-Reference to Related Applications', featureCode: 'PATENT_DRAFTING', sortOrder: 24, description: 'Draft cross-reference section (superset: crossReference)' },
-    { code: 'DRAFT_REVIEW', displayName: 'AI Review & Fix', featureCode: 'PATENT_DRAFTING', sortOrder: 25, description: 'AI-powered patent review' },
+    { code: 'DRAFT_REFERENCE_DRAFT_PASS1', displayName: 'Reference Draft Pass 1', featureCode: 'PATENT_DRAFTING', sortOrder: 18, description: 'Generate country-neutral reference draft before jurisdiction adaptation' },
+    { code: 'DRAFT_ANNEXURE_DESCRIPTION', displayName: 'Reference Draft Pass 2 / Detailed Description', featureCode: 'PATENT_DRAFTING', sortOrder: 19, description: 'Apply jurisdiction-specific top-up/translation and support detailed description generation' },
+    { code: 'DRAFT_ANNEXURE_BEST_MODE', displayName: 'Best Mode', featureCode: 'PATENT_DRAFTING', sortOrder: 20, description: 'Draft best mode description (superset: bestMethod)' },
+    { code: 'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY', displayName: 'Industrial Applicability', featureCode: 'PATENT_DRAFTING', sortOrder: 21, description: 'Draft industrial applicability (superset: industrialApplicability)' },
+    { code: 'DRAFT_ANNEXURE_CLAIMS', displayName: 'Claims Drafting', featureCode: 'PATENT_DRAFTING', sortOrder: 22, description: 'Draft final patent claims (superset: claims)' },
+    { code: 'DRAFT_ANNEXURE_ABSTRACT', displayName: 'Abstract Drafting', featureCode: 'PATENT_DRAFTING', sortOrder: 23, description: 'Draft patent abstract (superset: abstract)' },
+    { code: 'DRAFT_ANNEXURE_NUMERALS', displayName: 'List of Reference Numerals', featureCode: 'PATENT_DRAFTING', sortOrder: 24, description: 'Draft list of reference numerals (superset: listOfNumerals)' },
+    { code: 'DRAFT_ANNEXURE_CROSS_REFERENCE', displayName: 'Cross-Reference to Related Applications', featureCode: 'PATENT_DRAFTING', sortOrder: 25, description: 'Draft cross-reference section (superset: crossReference)' },
+    { code: 'DRAFT_REVIEW', displayName: 'AI Review & Fix', featureCode: 'PATENT_DRAFTING', sortOrder: 26, description: 'AI-powered patent review' },
 
     // === NOVELTY SEARCH STAGES ===
     { code: 'NOVELTY_QUERY_GENERATION', displayName: 'Query Generation', featureCode: 'PRIOR_ART_SEARCH', sortOrder: 1, description: 'Generate search queries from idea' },
@@ -749,6 +814,7 @@ async function main() {
     'DRAFT_ANNEXURE_TECHNICAL_SOLUTION':  { maxTokensIn: 30000,  maxTokensOut: 10000 },
     'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS':{ maxTokensIn: 30000,  maxTokensOut: 10000 },
     'DRAFT_ANNEXURE_DRAWINGS':            { maxTokensIn: 30000,  maxTokensOut: 10000 },
+    'DRAFT_REFERENCE_DRAFT_PASS1':        { maxTokensIn: 60000,  maxTokensOut: 16000 },
     'DRAFT_ANNEXURE_DESCRIPTION':         { maxTokensIn: 60000,  maxTokensOut: 16000 },  // Largest section
     'DRAFT_ANNEXURE_BEST_MODE':           { maxTokensIn: 30000,  maxTokensOut: 10000 },
     'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': { maxTokensIn: 20000, maxTokensOut: 8000 },
@@ -810,6 +876,7 @@ async function main() {
       'DRAFT_ANNEXURE_TECHNICAL_SOLUTION':  'gemini-2.5-flash-lite',
       'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS':'gemini-2.5-flash-lite',
       'DRAFT_ANNEXURE_DRAWINGS':            'gemini-2.5-flash-lite',
+      'DRAFT_REFERENCE_DRAFT_PASS1':        'claude-opus-4.5',
       'DRAFT_ANNEXURE_DESCRIPTION':         'gemini-2.5-pro',         // Major: use Pro
       'DRAFT_ANNEXURE_BEST_MODE':           'gemini-2.5-flash-lite',
       'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': 'gemini-2.5-flash-lite',
@@ -866,6 +933,7 @@ async function main() {
       'DRAFT_ANNEXURE_TECHNICAL_SOLUTION':  'gpt-5-mini',
       'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS':'gemini-2.5-pro',
       'DRAFT_ANNEXURE_DRAWINGS':            'gemini-2.5-pro',
+      'DRAFT_REFERENCE_DRAFT_PASS1':        'claude-opus-4.5',
       'DRAFT_ANNEXURE_DESCRIPTION':         'gpt-5',
       'DRAFT_ANNEXURE_BEST_MODE':           'gpt-5-mini',
       'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': 'gemini-2.5-pro',
@@ -922,6 +990,7 @@ async function main() {
       'DRAFT_ANNEXURE_TECHNICAL_SOLUTION':  'gpt-5',
       'DRAFT_ANNEXURE_ADVANTAGEOUS_EFFECTS':'gpt-5-mini',
       'DRAFT_ANNEXURE_DRAWINGS':            'gpt-5-mini',
+      'DRAFT_REFERENCE_DRAFT_PASS1':        'claude-opus-4.5',
       'DRAFT_ANNEXURE_DESCRIPTION':         'gpt-5',
       'DRAFT_ANNEXURE_BEST_MODE':           'gpt-5-mini',
       'DRAFT_ANNEXURE_INDUSTRIAL_APPLICABILITY': 'gpt-5-mini',

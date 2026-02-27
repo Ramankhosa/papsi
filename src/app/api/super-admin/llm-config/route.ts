@@ -62,6 +62,7 @@ export async function GET(request: NextRequest) {
     // Fetch stages
     if (section === 'all' || section === 'stages') {
       result.stages = await prisma.workflowStage.findMany({
+        where: { isActive: true },
         orderBy: [{ featureCode: 'asc' }, { sortOrder: 'asc' }]
       })
     }
@@ -129,7 +130,9 @@ function checkProviderApiKey(provider: string): boolean {
     openai: 'OPENAI_API_KEY',
     anthropic: 'ANTHROPIC_API_KEY',
     deepseek: 'DEEPSEEK_API_KEY',
-    groq: 'GROQ_API_KEY'
+    groq: 'GROQ_API_KEY',
+    zhipu: 'ZHIPU_API_KEY',
+    qwen: 'QWEN_API_KEY'
   }
   const envVar = envMap[provider]
   return envVar ? !!process.env[envVar] : false
@@ -184,7 +187,7 @@ export async function POST(request: NextRequest) {
 // ============================================================================
 
 // Valid providers that have implementations
-const VALID_PROVIDERS = ['google', 'openai', 'anthropic', 'deepseek', 'groq']
+const VALID_PROVIDERS = ['google', 'openai', 'anthropic', 'deepseek', 'groq', 'zhipu', 'qwen']
 
 async function createModel(body: any) {
   const { code, displayName, provider, contextWindow, supportsVision, supportsStreaming, inputCostPer1M, outputCostPer1M } = body

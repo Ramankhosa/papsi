@@ -22,6 +22,9 @@ import {
 } from '@/lib/section-injection-config'
 import crypto from 'crypto'
 
+const REFERENCE_DRAFT_PASS1_STAGE_CODE = 'DRAFT_REFERENCE_DRAFT_PASS1'
+const REFERENCE_DRAFT_PASS2_STAGE_CODE = 'DRAFT_ANNEXURE_DESCRIPTION'
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -1777,7 +1780,7 @@ OUTPUT FORMAT
 
     const result = await llmGateway.executeLLMOperation({ headers: requestHeaders || {} }, {
       taskCode: 'LLM2_DRAFT',
-      stageCode: 'DRAFT_ANNEXURE_DESCRIPTION', // Use admin-configured model/limits for reference draft
+      stageCode: REFERENCE_DRAFT_PASS1_STAGE_CODE, // Pass 1 model config for reference draft generation
       prompt,
       parameters: { tenantId, purpose: 'reference_draft' },
       idempotencyKey: crypto.randomUUID(),
@@ -2749,7 +2752,7 @@ Return ONLY the JSON object, no markdown code fences or explanations.`
 
     const llmRequest: LLMRequest & { stageCode?: string } = {
       taskCode: 'LLM2_DRAFT',
-      stageCode: 'DRAFT_ANNEXURE_DESCRIPTION', // Use admin-configured model/limits for batch translation
+      stageCode: REFERENCE_DRAFT_PASS2_STAGE_CODE, // Pass 2 model config for top-up translation
       prompt,
       parameters: { tenantId, purpose: 'translate_sections_batch', temperature: 0 },
       idempotencyKey: crypto.randomUUID(),
@@ -2880,13 +2883,9 @@ IMPORTANT RULES:
 
 OUTPUT: Return ONLY the translated section content, no headers or formatting markers.`
 
-    // Get the stage code for model resolution based on the superset key
-    // Translation uses the same model as the original section generation
-    const stageCode = getSectionStageCode(supersetKey)
-
     const llmRequest: LLMRequest & { stageCode?: string } = {
       taskCode: 'LLM2_DRAFT',
-      stageCode, // Pass stage code for section-specific model resolution
+      stageCode: REFERENCE_DRAFT_PASS2_STAGE_CODE, // Pass 2 model config for top-up translation
       prompt,
       parameters: { tenantId, purpose: 'translate_section', temperature: 0 },
       idempotencyKey: crypto.randomUUID(),
@@ -2896,7 +2895,7 @@ OUTPUT: Return ONLY the translated section content, no headers or formatting mar
         targetLanguage,
         sectionKey: countryKey,
         supersetKey,
-        stageCode // Include for debugging
+        stageCode: REFERENCE_DRAFT_PASS2_STAGE_CODE // Include for debugging
       }
     }
 

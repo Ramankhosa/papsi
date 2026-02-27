@@ -29,6 +29,8 @@ export type ProviderType =
   | 'deepseek' 
   | 'groq' 
   | 'grok'
+  | 'zhipu'
+  | 'qwen'
 
 // Provider factory function - supports all providers
 export function createLLMProvider(type: ProviderType, config: ProviderConfig): LLMProvider {
@@ -52,6 +54,12 @@ export function createLLMProvider(type: ProviderType, config: ProviderConfig): L
     case 'grok':
       const { GrokProvider } = require('./grok-provider')
       return new GrokProvider(config)
+    case 'zhipu':
+      const { ZhipuProvider } = require('./zhipu-provider')
+      return new ZhipuProvider(config)
+    case 'qwen':
+      const { QwenProvider } = require('./qwen-provider')
+      return new QwenProvider(config)
     default:
       throw new Error(`Unsupported provider type: ${type}`)
   }
@@ -65,6 +73,7 @@ export function getProviderFromModelCode(modelCode: string): ProviderType {
   const providerMap: Record<string, ProviderType> = {
     // Google - Gemini 2.x Models (Text + Image Output)
     'gemini-2.5-pro': 'gemini',
+    'gemini-2.5-flash': 'gemini',
     'gemini-2.0-flash': 'gemini',
     'gemini-2.0-flash-001': 'gemini',
     'gemini-2.0-flash-exp': 'gemini',              // Experimental - best image output
@@ -106,6 +115,10 @@ export function getProviderFromModelCode(modelCode: string): ProviderType {
     'o1-preview': 'openai',
     
     // Anthropic - Friendly names
+    'claude-opus-4.5': 'anthropic',
+    'claude-opus-4-5': 'anthropic',
+    'claude-opus-4.6': 'anthropic',
+    'claude-opus-4-6': 'anthropic',
     'claude-3.5-sonnet': 'anthropic',
     'claude-3.5-haiku': 'anthropic',
     'claude-3-opus': 'anthropic',
@@ -137,7 +150,15 @@ export function getProviderFromModelCode(modelCode: string): ProviderType {
     
     // Grok (xAI)
     'grok-beta': 'grok',
-    'grok-2': 'grok'
+    'grok-2': 'grok',
+
+    // Zhipu (GLM)
+    'glm-5': 'zhipu',
+    'glm-4.5v': 'zhipu',
+
+    // Qwen (DashScope-compatible)
+    'qwen2.5-72b-instruct': 'qwen',
+    'qwen-2.5-72b-instruct': 'qwen'
   }
   
   // First try exact match
@@ -165,10 +186,16 @@ export function getProviderFromModelCode(modelCode: string): ProviderType {
   if (lowerCode.startsWith('grok')) {
     return 'grok'
   }
+  if (lowerCode.startsWith('glm')) {
+    return 'zhipu'
+  }
+  if (lowerCode.startsWith('qwen')) {
+    return 'qwen'
+  }
   
   // FAIL-FAST: Throw error for truly unknown models instead of silently defaulting
   // This catches typos and misconfigured models in admin panel immediately
-  const knownPrefixes = ['gemini', 'gpt', 'o1', 'o3', 'claude', 'deepseek', 'llama', 'mixtral', 'gemma', 'groq', 'grok']
+  const knownPrefixes = ['gemini', 'gpt', 'o1', 'o3', 'claude', 'deepseek', 'llama', 'mixtral', 'gemma', 'groq', 'grok', 'glm', 'qwen']
   throw new Error(
     `Unknown model code: "${modelCode}". ` +
     `Model must start with one of: ${knownPrefixes.join(', ')}. ` +

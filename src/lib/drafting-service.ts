@@ -392,9 +392,16 @@ export class DraftingService {
     let evidenceGaps: string[] = [];
     let usedEvidencePack = false;
 
-    // If a blueprint section has mapped evidence, enforce mapped keys strictly.
-    if (evidencePack?.hasBlueprint && evidencePack.dimensionEvidence.length > 0) {
-      allowedCitationKeys = evidencePack.allowedCitationKeys;
+    const hasCoverageAssignments = Array.isArray(evidencePack?.coverageAssignments)
+      && evidencePack.coverageAssignments.length > 0;
+
+    // If a blueprint section has mapped evidence (deep/fallback) OR explicit
+    // coverage assignments, enforce mapped keys strictly.
+    if (evidencePack?.hasBlueprint && (evidencePack.dimensionEvidence.length > 0 || hasCoverageAssignments)) {
+      const coverageKeys = (evidencePack.coverageAssignments || [])
+        .map(assignment => String(assignment.citationKey || '').trim())
+        .filter(Boolean);
+      allowedCitationKeys = Array.from(new Set([...(evidencePack.allowedCitationKeys || []), ...coverageKeys]));
       evidenceGaps = evidencePack.gaps;
       usedEvidencePack = true;
       const allowedSet = new Set(allowedCitationKeys);

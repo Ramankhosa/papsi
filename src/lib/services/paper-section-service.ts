@@ -34,6 +34,7 @@ import {
 } from './paper-prompt-debug';
 import { sectionPolishService, type DriftReport } from './section-polish-service';
 import { evidencePackService, type SectionEvidencePack } from './evidence-pack-service';
+import type { AssignedCitation } from './citation-coverage-distributor';
 import { isFeatureEnabled } from '../feature-flags';
 import type { PaperSection, PaperSectionStatus } from '@prisma/client';
 import crypto from 'crypto';
@@ -160,6 +161,7 @@ interface Pass1EvidencePromptContext {
   allowedCitationKeys: string[];
   dimensionEvidence: SectionEvidencePack['dimensionEvidence'];
   gaps: string[];
+  coverageAssignments: AssignedCitation[];
 }
 
 function formatDimensionEvidence(
@@ -317,6 +319,27 @@ function formatRelevanceNotes(
     .join('\n');
 }
 
+function formatCoverageAssignments(assignments: AssignedCitation[]): string {
+  if (!assignments || assignments.length === 0) {
+    return '(No coverage assignments)';
+  }
+
+  const lines: string[] = [
+    'These citations were assigned to this section to ensure full paper coverage.',
+    'You MUST use each one at least once using [CITE:key] format.',
+    'Each citation may appear at most 2 times in this section.',
+    ''
+  ];
+
+  for (const assignment of assignments) {
+    const reason = assignment.claimType || 'GENERAL';
+    const findings = assignment.keyFindings ? ` | Key finding: ${assignment.keyFindings}` : '';
+    lines.push(`- key: ${assignment.citationKey} | "${assignment.title}" | Use for: ${reason}${findings}`);
+  }
+
+  return lines.join('\n');
+}
+
 // ============================================================================
 // Paper Section Service Class
 // ============================================================================
@@ -355,8 +378,16 @@ class PaperSectionService {
         where: { sessionId_sectionKey: { sessionId, sectionKey } }
       });
 
-      // Two-pass fast path: if Pass 1 is done (BASE_READY), skip to Pass 2
-      if (twoPassEnabled && existingSection?.status === 'BASE_READY' && existingSection.baseContentInternal && !regenerate) {
+      // Two-pass fast path: if Pass 1 is done (BASE_READY), skip to Pass 2.
+      // Also skip directly to Pass 2 when base draft exists but visible content
+      // is empty (e.g. another flow reset content while retaining Pass 1 base).
+      const hasVisibleContent = Boolean(String(existingSection?.content || '').trim());
+      if (
+        twoPassEnabled
+        && existingSection?.baseContentInternal
+        && !regenerate
+        && (existingSection.status === 'BASE_READY' || !hasVisibleContent)
+      ) {
         return this.runPass2Only(existingSection, undefined, tenantContext || null);
       }
 
@@ -1276,20 +1307,30 @@ class PaperSectionService {
         allowedCitationKeys: [],
         dimensionEvidence: [],
         gaps: [],
+        coverageAssignments: [],
       };
     }
 
     try {
       const evidencePack = await evidencePackService.getEvidencePack(sessionId, sectionKey);
+      const coverageKeys = (evidencePack.coverageAssignments || [])
+        .map(assignment => String(assignment.citationKey || '').trim())
+        .filter(Boolean);
       const allowedCitationKeys = Array.from(
-        new Set((evidencePack.allowedCitationKeys || []).map(key => String(key || '').trim()).filter(Boolean))
+        new Set([
+          ...(evidencePack.allowedCitationKeys || []).map(key => String(key || '').trim()).filter(Boolean),
+          ...coverageKeys
+        ])
       );
 
       return {
-        useMappedEvidence: evidencePack.hasBlueprint && evidencePack.dimensionEvidence.length > 0 && allowedCitationKeys.length > 0,
+        useMappedEvidence: evidencePack.hasBlueprint
+          && (evidencePack.dimensionEvidence.length > 0 || (evidencePack.coverageAssignments?.length || 0) > 0)
+          && allowedCitationKeys.length > 0,
         allowedCitationKeys,
         dimensionEvidence: evidencePack.dimensionEvidence || [],
         gaps: evidencePack.gaps || [],
+        coverageAssignments: evidencePack.coverageAssignments || [],
       };
     } catch (error) {
       console.warn(`[PaperSectionService] Failed to load evidence pack for ${sectionKey}:`, error);
@@ -1298,6 +1339,7 @@ class PaperSectionService {
         allowedCitationKeys: [],
         dimensionEvidence: [],
         gaps: [],
+        coverageAssignments: [],
       };
     }
   }
@@ -1347,6 +1389,7 @@ class PaperSectionService {
     // Inject evidence-pack placeholders and build fallback evidence blocks.
     const hasCitationModePlaceholders = /\{\{AUTO_CITATION_MODE\}\}|\{\{ALLOWED_CITATION_KEYS\}\}/.test(basePrompt);
     const hasEvidencePlaceholders = /\{\{DIMENSION_EVIDENCE_NOTES\}\}|\{\{RELEVANCE_NOTES\}\}|\{\{EVIDENCE_GAPS\}\}/.test(basePrompt);
+    const hasCoveragePlaceholders = /\{\{CITATION_COVERAGE_ASSIGNMENTS\}\}/.test(basePrompt);
     const evidenceContext = await this.getPass1EvidencePromptContext(sessionId, currentSection.sectionKey);
     const autoCitationMode = evidenceContext.useMappedEvidence ? 'ON' : 'OFF';
     const allowedKeys = evidenceContext.allowedCitationKeys.length > 0
@@ -1361,12 +1404,16 @@ class PaperSectionService {
     const evidenceGaps = evidenceContext.gaps.length > 0
       ? evidenceContext.gaps.join('; ')
       : '(none detected)';
+    const coverageNotes = evidenceContext.coverageAssignments.length > 0
+      ? formatCoverageAssignments(evidenceContext.coverageAssignments)
+      : '(no mandatory coverage citations for this section)';
 
     basePrompt = basePrompt.replace(/\{\{AUTO_CITATION_MODE\}\}/g, autoCitationMode);
     basePrompt = basePrompt.replace(/\{\{ALLOWED_CITATION_KEYS\}\}/g, allowedKeys);
     basePrompt = basePrompt.replace(/\{\{DIMENSION_EVIDENCE_NOTES\}\}/g, dimensionEvidenceNotes);
     basePrompt = basePrompt.replace(/\{\{RELEVANCE_NOTES\}\}/g, relevanceNotes);
     basePrompt = basePrompt.replace(/\{\{EVIDENCE_GAPS\}\}/g, evidenceGaps);
+    basePrompt = basePrompt.replace(/\{\{CITATION_COVERAGE_ASSIGNMENTS\}\}/g, coverageNotes);
 
     const citationModeFallbackBlock = !hasCitationModePlaceholders
       ? `AUTO_CITATION_MODE: ${autoCitationMode}
@@ -1390,6 +1437,11 @@ ${relevanceNotes}
 
 EVIDENCE GAPS:
 ${evidenceGaps}`
+      : '';
+    const coverageFallbackBlock = evidenceContext.useMappedEvidence
+      && evidenceContext.coverageAssignments.length > 0
+      && !hasCoveragePlaceholders
+      ? coverageNotes
       : '';
 
     // Get methodology-specific constraints to inject
@@ -1421,7 +1473,7 @@ ${pm.memory.forwardReferences.length > 0 ? `- Promises: ${pm.memory.forwardRefer
     }
 
     // Build blueprint context for debug
-    debugComponents.blueprintContext = `Thesis: ${thesisStatement}\nObjective: ${centralObjective}\nContributions: ${keyContributions.join('; ')}\nSection Purpose: ${currentSection.purpose}\nEvidence: mode=${autoCitationMode}, allowedKeys=${evidenceContext.allowedCitationKeys.length}, dimensions=${evidenceContext.dimensionEvidence.length}, gaps=${evidenceContext.gaps.length}`;
+    debugComponents.blueprintContext = `Thesis: ${thesisStatement}\nObjective: ${centralObjective}\nContributions: ${keyContributions.join('; ')}\nSection Purpose: ${currentSection.purpose}\nEvidence: mode=${autoCitationMode}, allowedKeys=${evidenceContext.allowedCitationKeys.length}, dimensions=${evidenceContext.dimensionEvidence.length}, coverageAssignments=${evidenceContext.coverageAssignments.length}, gaps=${evidenceContext.gaps.length}`;
 
     // Track writing style and user instructions for debug
     if (writingStyleBlock) {
@@ -1479,6 +1531,10 @@ ${citationModeFallbackBlock}
 ${evidenceFallbackBlock ? `
 [PRIORITY 2.6 - EVIDENCE PACK] DIMENSION MAPPINGS, RELEVANCE, AND GAPS
 ${evidenceFallbackBlock}
+` : ''}
+${coverageFallbackBlock ? `
+[PRIORITY 2.7 - CITATION COVERAGE] MANDATORY CITATIONS FOR THIS SECTION
+${coverageFallbackBlock}
 ` : ''}
 ${previousSectionsSummary ? `
 ═══════════════════════════════════════════════════════════════════════════════
@@ -1782,3 +1838,4 @@ export const paperSectionService = new PaperSectionService();
 
 // Export class for testing
 export { PaperSectionService };
+
