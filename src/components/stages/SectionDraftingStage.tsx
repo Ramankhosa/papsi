@@ -5,20 +5,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Loader2, 
   AlertCircle,
-  BookOpen,
   Settings2,
-  Copy,
-  Check,
   RefreshCw,
   Image as ImageIcon,
   X,
   Eye,
   ExternalLink,
   Sparkles,
-  ArrowRight,
-  CheckCircle2,
-  XCircle,
-  Play,
 } from 'lucide-react';
 import CitationPickerModal from '@/components/paper/CitationPickerModal';
 
@@ -37,6 +30,9 @@ import PaperInstructionsModal from './PaperInstructionsModal';
 import PaperSectionInstructionPopover from './PaperSectionInstructionPopover';
 import FloatingWritingPanel from '@/components/paper/FloatingWritingPanel';
 import { polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
+import InlineDimensionProposal from '@/components/paper/InlineDimensionProposal';
+import DimensionPlanPills from '@/components/paper/DimensionPlanPills';
+import SectionFloatingToolbar from '@/components/paper/SectionFloatingToolbar';
 
 // ============================================================================
 // Types
@@ -96,12 +92,46 @@ interface DimensionCitationValidation {
   missingRequiredKeys: string[];
 }
 
+type DimensionRole = 'introduction' | 'body' | 'conclusion' | 'intro_conclusion';
+
+interface DimensionPass1Memory {
+  keyPoints: string[];
+  termsIntroduced: string[];
+  mainClaims: string[];
+  forwardReferences: string[];
+}
+
+interface DimensionPass1SourceReview {
+  source: 'pass1_section_draft';
+  contentFingerprint: string;
+  wordCount: number;
+  preview: string;
+  generatedAt?: string;
+  reused: boolean;
+  memory?: DimensionPass1Memory | null;
+}
+
+interface DimensionProposalReviewTrace {
+  pass1Fingerprint: string;
+  pass1WordCount: number;
+  role: DimensionRole;
+  bridgeHint: string;
+  requiredCitationKeys: string[];
+  previousDimensionLabel?: string | null;
+  nextDimensionLabel?: string | null;
+  acceptedBlockCount: number;
+  acceptedContextHash: string;
+  acceptedSummary: string;
+  acceptedContextPreview: string;
+}
+
 interface DimensionProposal {
   dimensionKey: string;
   content: string;
   contextHash: string;
   citationValidation: DimensionCitationValidation;
   createdAt: string;
+  reviewTrace: DimensionProposalReviewTrace | null;
 }
 
 interface DimensionProgress {
@@ -127,8 +157,11 @@ interface DimensionDraftUIState {
   activeDimensionLabel: string | null;
   proposalText: string;
   proposalValidation: DimensionCitationValidation | null;
+  proposalReviewTrace: DimensionProposalReviewTrace | null;
+  pass1Source: DimensionPass1SourceReview | null;
   feedback: string;
   showReject: boolean;
+  editMode: boolean;
   streamCursor: number;
   isStreaming: boolean;
 }
@@ -157,8 +190,11 @@ function createInitialDimensionUIState(): DimensionDraftUIState {
     activeDimensionLabel: null,
     proposalText: '',
     proposalValidation: null,
+    proposalReviewTrace: null,
+    pass1Source: null,
     feedback: '',
     showReject: false,
+    editMode: false,
     streamCursor: 0,
     isStreaming: false
   };
@@ -200,9 +236,82 @@ function toDimensionValidation(raw: any): DimensionCitationValidation | null {
   };
 }
 
+function toDimensionPass1Memory(raw: any): DimensionPass1Memory | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const keyPoints = Array.isArray(raw.keyPoints)
+    ? raw.keyPoints.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+    : [];
+  const termsIntroduced = Array.isArray(raw.termsIntroduced)
+    ? raw.termsIntroduced.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+    : [];
+  const mainClaims = Array.isArray(raw.mainClaims)
+    ? raw.mainClaims.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+    : [];
+  const forwardReferences = Array.isArray(raw.forwardReferences)
+    ? raw.forwardReferences.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+    : [];
+
+  if (
+    keyPoints.length === 0
+    && termsIntroduced.length === 0
+    && mainClaims.length === 0
+    && forwardReferences.length === 0
+  ) {
+    return null;
+  }
+
+  return {
+    keyPoints,
+    termsIntroduced,
+    mainClaims,
+    forwardReferences
+  };
+}
+
+function toDimensionPass1Source(raw: any): DimensionPass1SourceReview | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const contentFingerprint = String(raw.contentFingerprint || '').trim();
+  if (!contentFingerprint) return null;
+  return {
+    source: 'pass1_section_draft',
+    contentFingerprint,
+    wordCount: Number(raw.wordCount || 0),
+    preview: String(raw.preview || ''),
+    generatedAt: String(raw.generatedAt || '').trim() || undefined,
+    reused: Boolean(raw.reused),
+    memory: toDimensionPass1Memory(raw.memory)
+  };
+}
+
+function toDimensionProposalReviewTrace(raw: any): DimensionProposalReviewTrace | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const role = String(raw.role || '').trim();
+  if (!role || !String(raw.pass1Fingerprint || '').trim()) return null;
+  if (role !== 'introduction' && role !== 'body' && role !== 'conclusion' && role !== 'intro_conclusion') {
+    return null;
+  }
+
+  return {
+    pass1Fingerprint: String(raw.pass1Fingerprint || '').trim(),
+    pass1WordCount: Number(raw.pass1WordCount || 0),
+    role: role as DimensionRole,
+    bridgeHint: String(raw.bridgeHint || '').trim(),
+    requiredCitationKeys: Array.isArray(raw.requiredCitationKeys)
+      ? raw.requiredCitationKeys.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+      : [],
+    previousDimensionLabel: String(raw.previousDimensionLabel || '').trim() || null,
+    nextDimensionLabel: String(raw.nextDimensionLabel || '').trim() || null,
+    acceptedBlockCount: Number(raw.acceptedBlockCount || 0),
+    acceptedContextHash: String(raw.acceptedContextHash || '').trim(),
+    acceptedSummary: String(raw.acceptedSummary || ''),
+    acceptedContextPreview: String(raw.acceptedContextPreview || '')
+  };
+}
+
 function normalizeDimensionResponse(data: any): {
   started: boolean;
   stitchedContent: string;
+  pass1Source: DimensionPass1SourceReview | null;
   completed: boolean;
   plan: DimensionPlanItem[];
   progress: DimensionProgress;
@@ -227,6 +336,7 @@ function normalizeDimensionResponse(data: any): {
   const nextDimension = data?.nextDimension && typeof data.nextDimension === 'object'
     ? data.nextDimension
     : null;
+  const pass1Source = toDimensionPass1Source(data?.pass1Source || data?.flow?.pass1Source || null);
   const rawProposal = data?.proposal
     || data?.flow?.pendingProposal
     || null;
@@ -241,13 +351,15 @@ function normalizeDimensionResponse(data: any): {
           unknownKeys: [],
           missingRequiredKeys: []
         },
-        createdAt: String(rawProposal.createdAt || '')
+        createdAt: String(rawProposal.createdAt || ''),
+        reviewTrace: toDimensionProposalReviewTrace(rawProposal.reviewTrace)
       }
     : null;
 
   return {
     started: Boolean(data?.started ?? data?.flow),
     stitchedContent: String(data?.stitchedContent || ''),
+    pass1Source,
     completed: Boolean(data?.completed),
     plan,
     progress,
@@ -703,6 +815,12 @@ function normalizeSectionKey(sectionKey: string): string {
   return sectionKey.trim().toLowerCase().replace(/[\s-]+/g, '_');
 }
 
+const SINGLE_PASS_SECTION_KEYS = new Set(['abstract', 'conclusion']);
+
+function supportsDimensionFlow(sectionKey: string): boolean {
+  return !SINGLE_PASS_SECTION_KEYS.has(normalizeSectionKey(sectionKey));
+}
+
 const LEGACY_CITATION_SPAN_REGEX = /<span\b[^>]*data-cite-key=(?:"([^"]+)"|'([^']+)')[^>]*>[\s\S]*?<\/span>/gi;
 
 function normalizeCitationMarkupForExtraction(content: string): string {
@@ -841,7 +959,6 @@ export default function SectionDraftingStage({
   const [personaSelection, setPersonaSelection] = useState<PersonaSelection | undefined>(undefined);
 
   // UI State
-  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [showActivity, setShowActivity] = useState(true);
   const [debugSteps, setDebugSteps] = useState<any[]>([]);
   const [showHelpPanel, setShowHelpPanel] = useState(false);
@@ -914,6 +1031,8 @@ export default function SectionDraftingStage({
     sections?: Record<string, 'pending' | 'running' | 'done' | 'failed'>;
   } | null>(null);
   const [bgGenRetrying, setBgGenRetrying] = useState(false);
+  const [bgSectionSelectorOpen, setBgSectionSelectorOpen] = useState(false);
+  const [bgSelectedSectionKeys, setBgSelectedSectionKeys] = useState<string[]>([]);
   const [sectionCitationValidation, setSectionCitationValidation] = useState<Record<string, SectionCitationValidation>>({});
   const [dimensionPanelOpen, setDimensionPanelOpen] = useState<Record<string, boolean>>({});
   const [dimensionBySection, setDimensionBySection] = useState<Record<string, DimensionDraftUIState>>({});
@@ -1157,6 +1276,8 @@ export default function SectionDraftingStage({
   useEffect(() => {
     setDimensionPanelOpen({});
     setDimensionBySection({});
+    setBgSectionSelectorOpen(false);
+    setBgSelectedSectionKeys([]);
   }, [sessionId]);
 
   useEffect(() => { loadSession(); loadCitations(); loadFigures(); }, [loadSession, loadCitations, loadFigures]);
@@ -1176,10 +1297,13 @@ export default function SectionDraftingStage({
     } catch { /* non-critical */ }
   }, [authToken, sessionId]);
 
-  const handleRetryBgPreparation = useCallback(async (options?: { force?: boolean; retryFailedOnly?: boolean }) => {
+  const handleRetryBgPreparation = useCallback(async (options?: { force?: boolean; retryFailedOnly?: boolean; sectionKeys?: string[] }) => {
     if (!authToken || !sessionId || bgGenRetrying) return;
     const force = options?.force === true;
     const retryFailedOnly = options?.retryFailedOnly === true;
+    const sectionKeys = Array.isArray(options?.sectionKeys)
+      ? Array.from(new Set(options.sectionKeys.map((key) => normalizeSectionKey(String(key || ''))).filter(Boolean)))
+      : [];
     setBgGenRetrying(true);
     try {
       const res = await fetch(`/api/papers/${sessionId}/sections/prepare`, {
@@ -1190,7 +1314,8 @@ export default function SectionDraftingStage({
         },
         body: JSON.stringify({
           ...(force ? { force: true } : {}),
-          ...(retryFailedOnly ? { retryFailedOnly: true } : {})
+          ...(retryFailedOnly ? { retryFailedOnly: true } : {}),
+          ...(sectionKeys.length > 0 ? { sectionKeys } : {})
         })
       });
       const data = await res.json();
@@ -1202,12 +1327,17 @@ export default function SectionDraftingStage({
       if (data.progress) {
         setBgGenProgress(data.progress);
       }
+      if (sectionKeys.length > 0) {
+        setBgSectionSelectorOpen(false);
+      }
       showMsg(
-        retryFailedOnly
-          ? 'Retrying failed sections only'
-          : force
-            ? 'Section preparation rerun started'
-            : 'Section preparation restarted',
+        sectionKeys.length > 0
+          ? `Pass 1 started for ${sectionKeys.length} selected section(s)`
+          : retryFailedOnly
+            ? 'Retrying failed sections only'
+            : force
+              ? 'Section preparation rerun started'
+              : 'Section preparation restarted',
         'success'
       );
       await loadBgGenStatus();
@@ -1249,6 +1379,57 @@ export default function SectionDraftingStage({
       failed: sectionStates.filter(state => state === 'failed').length,
     };
   }, [bgGenProgress, bgGenStatus]);
+
+  const bgSelectableSections = useMemo(() => {
+    const source = sectionConfigs || fallbackSections;
+    const seen = new Set<string>();
+    const sectionsForSelection: Array<{ key: string; label: string }> = [];
+    for (const section of source) {
+      for (const rawKey of section.keys || []) {
+        const key = normalizeSectionKey(String(rawKey || ''));
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        sectionsForSelection.push({
+          key,
+          label: displayName[key] || formatSectionLabel(key)
+        });
+      }
+    }
+    return sectionsForSelection;
+  }, [sectionConfigs]);
+
+  useEffect(() => {
+    if (bgSelectableSections.length === 0) {
+      setBgSelectedSectionKeys([]);
+      return;
+    }
+
+    const validKeys = new Set(bgSelectableSections.map(section => section.key));
+    setBgSelectedSectionKeys(prev => {
+      const filtered = prev.filter(key => validKeys.has(key));
+      return filtered.length > 0
+        ? filtered
+        : bgSelectableSections.map(section => section.key);
+    });
+  }, [bgSelectableSections]);
+
+  const bgSelectedSectionSet = useMemo(() => new Set(bgSelectedSectionKeys), [bgSelectedSectionKeys]);
+
+  const toggleBgSectionSelection = useCallback((sectionKey: string) => {
+    setBgSelectedSectionKeys(prev => (
+      prev.includes(sectionKey)
+        ? prev.filter(key => key !== sectionKey)
+        : [...prev, sectionKey]
+    ));
+  }, []);
+
+  const selectAllBgSections = useCallback(() => {
+    setBgSelectedSectionKeys(bgSelectableSections.map(section => section.key));
+  }, [bgSelectableSections]);
+
+  const clearBgSectionSelection = useCallback(() => {
+    setBgSelectedSectionKeys([]);
+  }, []);
 
   useEffect(() => {
     if (!isNumericOrderBibliography) return;
@@ -1444,6 +1625,7 @@ export default function SectionDraftingStage({
         started: normalized.started,
         error: null,
         stitchedContent: normalized.stitchedContent,
+        pass1Source: normalized.pass1Source || current.pass1Source,
         plan: normalized.plan,
         progress: normalized.progress,
         completed: normalized.completed,
@@ -1457,8 +1639,10 @@ export default function SectionDraftingStage({
         next.activeDimensionLabel = planLabel || incomingProposal.dimensionKey;
         next.proposalText = incomingProposal.content;
         next.proposalValidation = incomingProposal.citationValidation;
+        next.proposalReviewTrace = incomingProposal.reviewTrace;
         next.showReject = false;
         next.feedback = '';
+        next.editMode = proposalChanged ? false : current.editMode;
         next.streamCursor = proposalChanged ? 0 : Math.min(current.streamCursor, incomingProposal.content.length);
         next.isStreaming = proposalChanged && incomingProposal.content.length > 0;
       } else if (normalized.completed) {
@@ -1466,8 +1650,10 @@ export default function SectionDraftingStage({
         next.activeDimensionLabel = null;
         next.proposalText = '';
         next.proposalValidation = null;
+        next.proposalReviewTrace = null;
         next.feedback = '';
         next.showReject = false;
+        next.editMode = false;
         next.streamCursor = 0;
         next.isStreaming = false;
       }
@@ -1480,35 +1666,6 @@ export default function SectionDraftingStage({
 
     return normalized;
   }, []);
-
-  const loadDimensionFlow = useCallback(async (sectionKey: string) => {
-    setDimensionState(sectionKey, prev => ({
-      ...prev,
-      loading: true,
-      error: null
-    }));
-    try {
-      const data = await requestDraftingAction({
-        action: 'get_dimension_flow',
-        sectionKey
-      });
-      applyDimensionResponse(sectionKey, data);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to load dimension flow';
-      setDimensionState(sectionKey, prev => ({
-        ...prev,
-        initialized: true,
-        loading: false,
-        error: message
-      }));
-      showMsg(message, 'error');
-      return;
-    }
-    setDimensionState(sectionKey, prev => ({
-      ...prev,
-      loading: false
-    }));
-  }, [applyDimensionResponse, requestDraftingAction, setDimensionState]);
 
   const generateDimensionDraft = useCallback(async (
     sectionKey: string,
@@ -1524,7 +1681,9 @@ export default function SectionDraftingStage({
       ...prev,
       loading: true,
       error: null,
-      rejecting: false
+      rejecting: false,
+      showReject: false,
+      editMode: false
     }));
 
     try {
@@ -1618,7 +1777,8 @@ export default function SectionDraftingStage({
     setDimensionState(sectionKey, prev => ({
       ...prev,
       accepting: true,
-      error: null
+      error: null,
+      showReject: false
     }));
 
     try {
@@ -1718,21 +1878,11 @@ export default function SectionDraftingStage({
     }
   }, [applyDimensionResponse, getDimensionState, isMappedEvidenceEnabled, requestDraftingAction, setDimensionState, showMsg]);
 
-  const toggleDimensionPanelForSection = useCallback((sectionKey: string) => {
-    const normalized = normalizeSectionKey(sectionKey);
-    const shouldOpen = !dimensionPanelOpen[normalized];
-    setDimensionPanelOpen(prev => ({
-      ...prev,
-      [normalized]: shouldOpen
-    }));
-    if (!shouldOpen) return;
-    const current = dimensionBySection[normalized];
-    if (!current?.initialized) {
-      void loadDimensionFlow(sectionKey);
-    }
-  }, [dimensionBySection, dimensionPanelOpen, loadDimensionFlow]);
-
   const beginStructuredDraft = useCallback(async (sectionKey: string) => {
+    if (!supportsDimensionFlow(sectionKey)) {
+      showMsg('Abstract and conclusion are generated as single-pass sections', 'warning');
+      return;
+    }
     const normalized = normalizeSectionKey(sectionKey);
     setDimensionPanelOpen(prev => ({ ...prev, [normalized]: true }));
     const state = getDimensionState(sectionKey);
@@ -1748,12 +1898,6 @@ export default function SectionDraftingStage({
     }
     await startDimensionFlow(sectionKey);
   }, [generateDimensionDraft, getDimensionState, showMsg, startDimensionFlow]);
-
-  const handleDefaultDraftForKeys = useCallback(async (keys: string[]) => {
-    const target = keys.find((key) => normalizeSectionKey(key) !== 'references') || keys[0];
-    if (!target) return;
-    await beginStructuredDraft(target);
-  }, [beginStructuredDraft]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -2561,13 +2705,6 @@ export default function SectionDraftingStage({
     saveSection(sectionKey, fixedContent);
   }, [saveSection]);
 
-  // Copy section
-  const copySection = (key: string) => {
-    navigator.clipboard.writeText(content[key] || '');
-    setCopiedKey(key);
-    setTimeout(() => setCopiedKey(null), 2000);
-  };
-
   // Total word count
   const totalWordCount = useMemo(() => Object.values(content).reduce((acc, c) => acc + computeWordCount(c), 0), [content]);
 
@@ -2749,77 +2886,190 @@ export default function SectionDraftingStage({
           </div>
         )}
         {(bgGenStatus === 'COMPLETED' || bgGenStatus === 'PARTIAL') && bgGenProgress && (
-          <div className={`mt-4 max-w-[850px] mx-auto rounded-lg border px-4 py-3 flex items-center gap-3 ${
+          <div className={`mt-4 max-w-[850px] mx-auto rounded-lg border px-4 py-3 ${
             bgGenStatus === 'PARTIAL'
               ? 'border-amber-200 bg-amber-50'
               : 'border-emerald-200 bg-emerald-50'
           }`}>
-            <span className={`inline-flex h-3 w-3 rounded-full shrink-0 ${
-              bgGenStatus === 'PARTIAL' ? 'bg-amber-500' : 'bg-emerald-500'
-            }`} />
-            <div className="flex-1">
-              <p className={`text-sm ${bgGenStatus === 'PARTIAL' ? 'text-amber-800' : 'text-emerald-800'}`}>
-              {bgGenStatus === 'PARTIAL'
-                ? `Paper structure partially ready — ${bgGenProgress.completed} of ${bgGenProgress.total} sections prepared (${bgGenProgress.failed} failed).`
-                : 'Paper structure ready — sections will generate faster with pre-built evidence drafts.'
-              }
-              </p>
-            </div>
-            {(bgGenStatus === 'PARTIAL' || bgGenStatus === 'COMPLETED') && (
+            <div className="flex items-center gap-3">
+              <span className={`inline-flex h-3 w-3 rounded-full shrink-0 ${
+                bgGenStatus === 'PARTIAL' ? 'bg-amber-500' : 'bg-emerald-500'
+              }`} />
+              <div className="flex-1">
+                <p className={`text-sm ${bgGenStatus === 'PARTIAL' ? 'text-amber-800' : 'text-emerald-800'}`}>
+                {bgGenStatus === 'PARTIAL'
+                  ? `Paper structure partially ready — ${bgGenProgress.completed} of ${bgGenProgress.total} sections prepared (${bgGenProgress.failed} failed).`
+                  : 'Paper structure ready — sections will generate faster with pre-built evidence drafts.'
+                }
+                </p>
+              </div>
+              {(bgGenStatus === 'PARTIAL' || bgGenStatus === 'COMPLETED') && (
+                <button
+                  onClick={() => handleRetryBgPreparation({ force: bgGenStatus === 'COMPLETED' })}
+                  disabled={bgGenRetrying}
+                  className={`px-3 py-1.5 text-xs rounded-lg border disabled:opacity-50 disabled:cursor-not-allowed ${
+                    bgGenStatus === 'COMPLETED'
+                      ? 'border-emerald-300 text-emerald-800 hover:bg-emerald-100'
+                      : 'border-amber-300 text-amber-800 hover:bg-amber-100'
+                  }`}
+                >
+                  {bgGenRetrying
+                    ? 'Preparing...'
+                    : bgGenStatus === 'COMPLETED'
+                      ? 'Rerun Section Prep'
+                      : 'Retry Section Prep'}
+                </button>
+              )}
+              {bgGenStatus === 'PARTIAL' && (bgGenLiveCounts?.failed || 0) > 0 && (
+                <button
+                  onClick={() => handleRetryBgPreparation({ retryFailedOnly: true })}
+                  disabled={bgGenRetrying}
+                  className="px-3 py-1.5 text-xs rounded-lg border border-amber-400 text-amber-900 bg-amber-100 hover:bg-amber-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {bgGenRetrying ? 'Retrying...' : 'Retry Failed Only'}
+                </button>
+              )}
               <button
-                onClick={() => handleRetryBgPreparation({ force: bgGenStatus === 'COMPLETED' })}
-                disabled={bgGenRetrying}
-                className={`px-3 py-1.5 text-xs rounded-lg border disabled:opacity-50 disabled:cursor-not-allowed ${
-                  bgGenStatus === 'COMPLETED'
-                    ? 'border-emerald-300 text-emerald-800 hover:bg-emerald-100'
-                    : 'border-amber-300 text-amber-800 hover:bg-amber-100'
+                onClick={() => setBgSectionSelectorOpen(prev => !prev)}
+                className={`px-3 py-1.5 text-xs rounded-lg border ${
+                  bgGenStatus === 'PARTIAL'
+                    ? 'border-amber-300 text-amber-800 hover:bg-amber-100'
+                    : 'border-emerald-300 text-emerald-800 hover:bg-emerald-100'
                 }`}
               >
-                {bgGenRetrying
-                  ? 'Preparing...'
-                  : bgGenStatus === 'COMPLETED'
-                    ? 'Rerun Section Prep'
-                    : 'Retry Section Prep'}
+                {bgSectionSelectorOpen ? 'Hide Sections' : 'Select Sections'}
               </button>
-            )}
-            {bgGenStatus === 'PARTIAL' && (bgGenLiveCounts?.failed || 0) > 0 && (
-              <button
-                onClick={() => handleRetryBgPreparation({ retryFailedOnly: true })}
-                disabled={bgGenRetrying}
-                className="px-3 py-1.5 text-xs rounded-lg border border-amber-400 text-amber-900 bg-amber-100 hover:bg-amber-200 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {bgGenRetrying ? 'Retrying...' : 'Retry Failed Only'}
-              </button>
+            </div>
+
+            {bgSectionSelectorOpen && (
+              <div className="mt-3 border-t border-white/60 pt-3">
+                <p className={`text-xs font-medium ${bgGenStatus === 'PARTIAL' ? 'text-amber-800' : 'text-emerald-800'}`}>
+                  Run Pass 1 only for selected sections
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {bgSelectableSections.map(section => (
+                    <label
+                      key={section.key}
+                      className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={bgSelectedSectionSet.has(section.key)}
+                        onChange={() => toggleBgSectionSelection(section.key)}
+                        className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>{section.label}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={selectAllBgSections}
+                    className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                  >
+                    Select All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearBgSectionSelection}
+                    className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRetryBgPreparation({ force: true, sectionKeys: bgSelectedSectionKeys })}
+                    disabled={bgGenRetrying || bgSelectedSectionKeys.length === 0}
+                    className="px-3 py-1 text-xs rounded-md border border-indigo-300 bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {bgGenRetrying ? 'Preparing...' : 'Run Pass 1 for Selected'}
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         )}
         {bgGenStatus === 'FAILED' && (
-          <div className="mt-4 max-w-[850px] mx-auto rounded-lg border border-red-200 bg-red-50 px-4 py-3 flex items-center gap-3">
-            <span className="inline-flex h-3 w-3 rounded-full shrink-0 bg-red-500" />
-            <div className="flex-1">
-              <p className="text-sm text-red-800">
-                Paper structure preparation failed. Retry generation to pre-build section drafts.
-              </p>
-            </div>
-            {(bgGenLiveCounts?.failed || 0) > 0 && (
+          <div className="mt-4 max-w-[850px] mx-auto rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+            <div className="flex items-center gap-3">
+              <span className="inline-flex h-3 w-3 rounded-full shrink-0 bg-red-500" />
+              <div className="flex-1">
+                <p className="text-sm text-red-800">
+                  Paper structure preparation failed. Retry generation to pre-build section drafts.
+                </p>
+              </div>
+              {(bgGenLiveCounts?.failed || 0) > 0 && (
+                <button
+                  onClick={() => handleRetryBgPreparation({ retryFailedOnly: true })}
+                  disabled={bgGenRetrying}
+                  className="px-3 py-1.5 text-xs rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {bgGenRetrying ? 'Retrying...' : 'Retry Failed Only'}
+                </button>
+              )}
               <button
-                onClick={() => handleRetryBgPreparation({ retryFailedOnly: true })}
+                onClick={() => handleRetryBgPreparation()}
                 disabled={bgGenRetrying}
-                className="px-3 py-1.5 text-xs rounded-lg border border-amber-300 text-amber-800 hover:bg-amber-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="px-3 py-1.5 text-xs rounded-lg border border-red-300 text-red-800 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {bgGenRetrying ? 'Retrying...' : 'Retry Failed Only'}
+                {bgGenRetrying ? 'Retrying...' : 'Retry Section Prep'}
               </button>
+              <button
+                onClick={() => setBgSectionSelectorOpen(prev => !prev)}
+                className="px-3 py-1.5 text-xs rounded-lg border border-red-300 text-red-800 hover:bg-red-100"
+              >
+                {bgSectionSelectorOpen ? 'Hide Sections' : 'Select Sections'}
+              </button>
+            </div>
+
+            {bgSectionSelectorOpen && (
+              <div className="mt-3 border-t border-red-200 pt-3">
+                <p className="text-xs font-medium text-red-800">Run Pass 1 only for selected sections</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {bgSelectableSections.map(section => (
+                    <label
+                      key={section.key}
+                      className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={bgSelectedSectionSet.has(section.key)}
+                        onChange={() => toggleBgSectionSelection(section.key)}
+                        className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>{section.label}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={selectAllBgSections}
+                    className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                  >
+                    Select All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearBgSectionSelection}
+                    className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRetryBgPreparation({ force: true, sectionKeys: bgSelectedSectionKeys })}
+                    disabled={bgGenRetrying || bgSelectedSectionKeys.length === 0}
+                    className="px-3 py-1 text-xs rounded-md border border-indigo-300 bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {bgGenRetrying ? 'Preparing...' : 'Run Pass 1 for Selected'}
+                  </button>
+                </div>
+              </div>
             )}
-            <button
-              onClick={() => handleRetryBgPreparation()}
-              disabled={bgGenRetrying}
-              className="px-3 py-1.5 text-xs rounded-lg border border-red-300 text-red-800 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {bgGenRetrying ? 'Retrying...' : 'Retry Section Prep'}
-            </button>
           </div>
         )}
-
       {/* Paper Document */}
       <div className="max-w-[850px] mx-auto bg-white shadow-[0_4px_24px_rgba(0,0,0,0.06)] min-h-[1100px] px-[60px] py-[60px] relative border border-gray-100">
         {showActivity && (currentKeys || autoModeRunning) && (
@@ -2829,23 +3079,18 @@ export default function SectionDraftingStage({
         </div>
         )}
 
-        <div className="space-y-10">
+        <div className="space-y-2">
           {sections.map((section, idx) => {
             const isGenerating = loading && currentKeys?.some(k => section.keys.includes(k));
             const isRegenerating = section.keys.some(k => sectionLoading[k]);
             const isWorking = isGenerating || isRegenerating;
-            const hasContent = section.keys.some(k => content[k]);
             const isSavingSection = section.keys.some(k => saving[k]);
             const hasPending = section.keys.some(k => pendingChanges.has(k));
-            const hasDimensionPanelVisible = section.keys.some(
-              k => dimensionPanelOpen[normalizeSectionKey(k)] === true
-            );
             const primarySectionKey = section.keys[0] || '';
-            const citationEligibleKeys = section.keys.filter(k => isCitationEligibleForSection(k));
-            const showCitationToggle = citationEligibleKeys.length > 0;
-            const mappedEvidenceEnabled = showCitationToggle
-              ? citationEligibleKeys.every(k => isMappedEvidenceEnabled(k))
-              : false;
+            const primaryDimensionState = primarySectionKey ? getDimensionState(primarySectionKey) : createInitialDimensionUIState();
+            const primarySupportsDimensionFlow = primarySectionKey ? supportsDimensionFlow(primarySectionKey) : false;
+            const sectionWordCount = section.keys.reduce((acc, key) => acc + computeWordCount(content[key] || ''), 0);
+
             const sectionCitationIssue = (() => {
               const disallowedSet = new Set<string>();
               const unknownSet = new Set<string>();
@@ -2862,585 +3107,372 @@ export default function SectionDraftingStage({
             })();
 
             return (
-              <div key={section.keys.join('|') || idx} className="group relative hover:bg-gray-50/30 transition-colors -mx-4 px-4 py-2 rounded-lg">
-                {/* Section Header */}
-                <div className="flex items-baseline justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-lg font-bold text-gray-900 uppercase tracking-wide">
-                    {section.label || section.keys.map(k => displayName[k] || k).join(' / ')}
-                  </h3>
-                  {sectionCitationIssue && (
-                    <span className="text-[11px] px-2 py-1 rounded-full border border-red-200 bg-red-50 text-red-700">
-                      Remove invalid citation: {
-                        [...sectionCitationIssue.disallowedKeys, ...sectionCitationIssue.unknownKeys]
-                          .slice(0, 4)
-                          .join(', ')
-                      }{
-                        (sectionCitationIssue.disallowedKeys.length + sectionCitationIssue.unknownKeys.length) > 4
-                          ? '...'
-                          : ''
-                      }
-                    </span>
-                  )}
-                  {/* Instruction controls */}
-                    {(() => {
-                      const key = section.keys[0];
-                      const instr = userInstructions[key];
-                      const hasInstr = !!instr?.instruction;
-                      const isActive = instr?.isActive !== false;
-                      return (
-                        <div className="relative flex items-center gap-1">
-                          {hasInstr && (
-                            <span className={`text-[10px] px-2 py-1 rounded-full ${isActive ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : 'bg-amber-100 text-amber-700 border border-amber-200'}`}>
-                              {isActive ? 'INSTR ON' : 'INSTR OFF'}
-                            </span>
-                          )}
-                          <button onClick={() => setInstructionPopoverKey(instructionPopoverKey === key ? null : key)}
-                            className={`p-1.5 rounded-lg transition-colors ${hasInstr ? (isActive ? 'text-violet-600 bg-violet-50 hover:bg-violet-100' : 'text-gray-400 bg-gray-100') : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
-                            title={hasInstr ? 'Edit instruction' : 'Add instruction'}>
-                            <svg className="w-4 h-4" fill={hasInstr ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-                            </svg>
-                          </button>
-                          {instructionPopoverKey === key && (
-                            <PaperSectionInstructionPopover sectionKey={key} sectionLabel={section.label || displayName[key] || key}
-                              sessionId={session?.id || ''} paperTypeCode={paperTypeCode} existingInstruction={instr || null}
-                              onSave={handleSaveInstruction} onClose={() => setInstructionPopoverKey(null)} />
-                          )}
-                        </div>
-                      );
-                    })()}
-                    {primarySectionKey && showCitationToggle && (
-                      <label
-                        className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full border border-slate-200 bg-slate-50 text-[10px] font-medium text-slate-700"
-                        title="When enabled, AI uses mapped dimension evidence and citation whitelist for this section."
-                      >
-                        <input
-                          type="checkbox"
-                          className="h-3 w-3 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                          checked={mappedEvidenceEnabled}
-                          onChange={(e) => {
-                            const checked = e.target.checked;
-                            setMappedEvidenceBySection(prev => {
-                              const next = { ...prev };
-                              for (const key of citationEligibleKeys) {
-                                next[normalizeSectionKey(key)] = checked;
-                              }
-                              return next;
-                            });
-                          }}
-                        />
-                        Auto citations
-                      </label>
-                    )}
-                    {/* Save indicator */}
-                    {isSavingSection && <span className="text-xs text-amber-500 animate-pulse">Saving...</span>}
-                    {hasPending && !isSavingSection && <span className="text-xs text-gray-400">Unsaved</span>}
-                  </div>
-                  {section.wordLimit && (
-                    <span className="text-xs text-gray-400">{section.keys.reduce((acc, k) => acc + computeWordCount(content[k] || ''), 0)} / {section.wordLimit}</span>
-                  )}
-      </div>
-
-                {/* Content Area - Always Editable */}
-                <div className="text-gray-800 text-justify">
-                  {!hasContent && !isWorking && !hasDimensionPanelVisible ? (
-                    <div
-                      className={`border-2 border-dashed border-gray-100 rounded-lg p-8 text-center hover:border-indigo-100 hover:bg-indigo-50/30 ${autoModeRunning ? 'opacity-50' : ''}`}
+              <div key={section.keys.join('|') || idx} className="relative py-2">
+                <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <h3
+                      className="mb-1 text-slate-800"
+                      style={{
+                        fontFamily: '"Times New Roman", "Noto Serif", Georgia, serif',
+                        fontSize: '16px',
+                        fontWeight: 700,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.5px'
+                      }}
                     >
-                      <div className="text-gray-400 font-medium mb-1">{autoMode ? 'Auto-generate sections' : 'Section not generated'}</div>
-                      <div className="text-xs text-gray-300">Choose one-shot draft or structured dimension flow.</div>
-                      <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-                        <button
-                          onClick={() => autoMode && !autoModeRunning ? handleAutoGenerateAll() : handleGenerate(section.keys)}
-                          disabled={autoModeRunning || loading}
-                          className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          One-shot Draft
-                        </button>
-                        <button
-                          onClick={() => {
-                            void handleDefaultDraftForKeys(section.keys);
-                          }}
-                          disabled={autoModeRunning || loading}
-                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          <span className="inline-flex items-center gap-1">
-                            <Sparkles className="h-3.5 w-3.5" />
-                            Structured Draft
-                          </span>
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div>
-                      {section.keys.map(keyName => {
-                        const normalizedKey = normalizeSectionKey(keyName);
-                        const dimensionState = getDimensionState(keyName);
-                        const isDimensionPanelOpen = dimensionPanelOpen[normalizedKey] === true;
-                        const dimensionBusy = dimensionState.loading || dimensionState.accepting || dimensionState.rejecting;
-                        const hasDimensionWarnings = Boolean(
-                          dimensionState.proposalValidation
-                          && (
-                            dimensionState.proposalValidation.disallowedKeys.length > 0
-                            || dimensionState.proposalValidation.unknownKeys.length > 0
-                            || dimensionState.proposalValidation.missingRequiredKeys.length > 0
-                          )
-                        );
-                        const dimensionStreamingText = dimensionState.isStreaming
-                          ? dimensionState.proposalText.slice(0, dimensionState.streamCursor)
-                          : dimensionState.proposalText;
+                      {section.label || section.keys.map(k => displayName[k] || k).join(' / ')}
+                    </h3>
 
-                        return (
-                        <div key={keyName} className="mb-6 last:mb-0">
-                          {section.keys.length > 1 && (
-                            <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 mt-4">{displayName[keyName] || keyName}</h4>
-                          )}
-                          
-                          {/* Section Toolbar */}
-                          <div className="flex items-center justify-end gap-1 mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            {/* REMOVED: Edit/Preview Toggle - always in edit mode for stability */}
-                            <button onClick={() => {
-                                setFocusedSection(keyName);
-                                insertCitationTargetRef.current = keyName;
-                                setInsertCitationTarget(keyName);
-                                setPickerOpen(true);
-                              }}
-                              className="p-1.5 rounded text-gray-400 hover:text-purple-600 hover:bg-purple-50" title="Insert citation">
-                              <BookOpen className="w-4 h-4" />
-                            </button>
-                            <button onClick={() => copySection(keyName)} className="p-1.5 rounded text-gray-400 hover:text-gray-700 hover:bg-gray-100" title="Copy">
-                              {copiedKey === keyName ? <Check className="w-4 h-4 text-green-600" /> : <Copy className="w-4 h-4" />}
-                            </button>
-                            <button onClick={() => !sectionLoading[keyName] && setRegenOpen(prev => ({ ...prev, [keyName]: !prev[keyName] }))}
-                              className="p-1.5 rounded text-gray-400 hover:text-indigo-600 hover:bg-indigo-50" title="Regenerate" disabled={sectionLoading[keyName]}>
-                              <RefreshCw className="w-4 h-4" />
-                            </button>
-                            <button
-                              onClick={() => toggleDimensionPanelForSection(keyName)}
-                              className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded border transition-colors ${
-                                isDimensionPanelOpen
-                                  ? 'border-violet-300 bg-violet-50 text-violet-700'
-                                  : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
-                              }`}
-                              title="Structured dimension drafting"
-                            >
-                              <Sparkles className="w-3 h-3" />
-                              Structured
-                            </button>
-                            {!content[keyName] && (
+                    {primarySupportsDimensionFlow && primaryDimensionState.started && primaryDimensionState.plan.length > 0 && (
+                      <DimensionPlanPills
+                        plan={primaryDimensionState.plan}
+                        activeDimensionKey={primaryDimensionState.activeDimensionKey || primaryDimensionState.nextDimensionKey}
+                        acceptedCount={primaryDimensionState.progress.accepted}
+                        totalCount={primaryDimensionState.progress.total}
+                        disabled={isWorking || autoModeRunning}
+                        onSelect={(dimensionKey) => {
+                          setDimensionPanelOpen(prev => ({ ...prev, [normalizeSectionKey(primarySectionKey)]: true }));
+                          void generateDimensionDraft(primarySectionKey, { dimensionKey });
+                        }}
+                      />
+                    )}
+
+                    {sectionCitationIssue && (
+                      <p className="mt-1 text-[11px] text-rose-600">
+                        Remove invalid citation: {[
+                          ...sectionCitationIssue.disallowedKeys,
+                          ...sectionCitationIssue.unknownKeys
+                        ].slice(0, 6).join(', ')}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 text-xs text-slate-400">
+                    {isSavingSection && <span className="animate-pulse text-amber-500">Saving...</span>}
+                    {hasPending && !isSavingSection && <span>Unsaved</span>}
+                    {section.wordLimit && (
+                      <span>{sectionWordCount} / {section.wordLimit}</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-4 text-gray-800 text-justify">
+                  {section.keys.map(keyName => {
+                    const normalizedKey = normalizeSectionKey(keyName);
+                    const sectionSupportsDimensionFlow = supportsDimensionFlow(keyName);
+                    const dimensionState = getDimensionState(keyName);
+                    const dimensionBusy = dimensionState.loading || dimensionState.accepting || dimensionState.rejecting;
+                    const showInlineDimension = sectionSupportsDimensionFlow && Boolean(
+                      dimensionPanelOpen[normalizedKey]
+                      || dimensionState.started
+                      || dimensionState.activeDimensionKey
+                      || (dimensionState.loading && dimensionState.proposalText)
+                    );
+                    const hasDraftContent = Boolean(String(content[keyName] || '').trim());
+                    const autoCitationAvailable = isCitationEligibleForSection(keyName);
+                    const autoCitationEnabled = autoCitationAvailable ? isMappedEvidenceEnabled(keyName) : false;
+                    const instruction = userInstructions[keyName];
+                    const instructionActive = Boolean(instruction?.instruction) && instruction?.isActive !== false;
+
+                    return (
+                      <div key={keyName} className="section-wrapper group/section relative">
+                        {section.keys.length > 1 && (
+                          <h4 className="mb-1 mt-2 text-[12px] font-semibold uppercase tracking-[0.3px] text-slate-500">
+                            {displayName[keyName] || keyName}
+                          </h4>
+                        )}
+
+                        <SectionFloatingToolbar
+                          onGenerate={() => {
+                            if (!sectionSupportsDimensionFlow) {
+                              void handleGenerate([keyName]);
+                              return;
+                            }
+                            setDimensionPanelOpen(prev => ({ ...prev, [normalizedKey]: true }));
+                            if (dimensionState.started && !dimensionState.completed) {
+                              void generateDimensionDraft(keyName, {
+                                dimensionKey: dimensionState.nextDimensionKey || undefined
+                              });
+                              return;
+                            }
+                            if (!dimensionState.started && !hasDraftContent) {
+                              void beginStructuredDraft(keyName);
+                              return;
+                            }
+                            void handleGenerate([keyName]);
+                          }}
+                          onRegenerate={() => {
+                            if (sectionLoading[keyName]) return;
+                            setRegenOpen(prev => ({ ...prev, [keyName]: !prev[keyName] }));
+                          }}
+                          onInstructions={() => {
+                            setInstructionPopoverKey(prev => (prev === keyName ? null : keyName));
+                          }}
+                          onToggleAutoCitations={
+                            autoCitationAvailable
+                              ? () => {
+                                setMappedEvidenceBySection(prev => ({
+                                  ...prev,
+                                  [normalizedKey]: !autoCitationEnabled
+                                }));
+                              }
+                              : undefined
+                          }
+                          autoCitationsAvailable={autoCitationAvailable}
+                          autoCitationsEnabled={autoCitationEnabled}
+                          generating={dimensionState.loading || sectionLoading[keyName]}
+                          regenerating={sectionLoading[keyName]}
+                          instructionActive={instructionActive}
+                          disabled={isWorking || autoModeRunning || loading}
+                        />
+
+                        {instructionPopoverKey === keyName && (
+                          <div className="relative z-20 mb-2">
+                            <PaperSectionInstructionPopover
+                              sectionKey={keyName}
+                              sectionLabel={displayName[keyName] || formatSectionLabel(keyName)}
+                              sessionId={session?.id || ''}
+                              paperTypeCode={paperTypeCode}
+                              existingInstruction={instruction || null}
+                              onSave={handleSaveInstruction}
+                              onClose={() => setInstructionPopoverKey(null)}
+                            />
+                          </div>
+                        )}
+
+                        <div className="relative">
+                          <PaperMarkdownEditor
+                            ref={(editor) => { editorRefs.current[keyName] = editor; }}
+                            value={content[keyName] || ''}
+                            onChange={(markdown) => handleContentChange(keyName, markdown)}
+                            citationDisplayMeta={citationDisplayMeta}
+                            figureDisplayMeta={figureDisplayMeta}
+                            onBlur={() => {
+                              handleBlur(keyName);
+                            }}
+                            onFocus={() => setFocusedSection(keyName)}
+                            onSelectionChange={(selection) => {
+                              if (!selection || !selection.text) {
+                                if (focusedSection === keyName) setSelectedText(null);
+                                return;
+                              }
+                              setFocusedSection(keyName);
+                              setSelectedText({
+                                text: selection.text,
+                                start: selection.start,
+                                end: selection.end
+                              });
+                              const editor = editorRefs.current[keyName];
+                              if (editor) {
+                                editor.saveSelection();
+                              }
+                            }}
+                            placeholder={isWorking ? 'Generating...' : 'Write polished section content with headings, bullets, and academic structure.'}
+                            disabled={isWorking}
+                            className="min-h-[190px]"
+                          />
+                        </div>
+
+                        {!isWorking && !dimensionState.started && (!hasDraftContent || sectionSupportsDimensionFlow) && (
+                          <div className="mt-1 flex items-center gap-2 text-xs">
+                            {!hasDraftContent && (
                               <button
+                                type="button"
+                                onClick={() => void handleGenerate([keyName])}
+                                disabled={loading || autoModeRunning}
+                                className="rounded-md border border-slate-200 bg-white px-2 py-1 font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                Draft
+                              </button>
+                            )}
+                            {sectionSupportsDimensionFlow && (
+                              <button
+                                type="button"
                                 onClick={() => {
-                                  void handleGenerate([keyName]);
+                                  setDimensionPanelOpen(prev => ({ ...prev, [normalizedKey]: true }));
+                                  void beginStructuredDraft(keyName);
                                 }}
                                 disabled={loading || autoModeRunning}
-                                className="inline-flex items-center gap-1 rounded bg-indigo-600 px-2 py-1 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                                className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 font-medium text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
                               >
-                                One-shot
+                                <Sparkles className="h-3.5 w-3.5" />
+                                {hasDraftContent ? 'Structured from Pass 1' : 'Structured'}
                               </button>
                             )}
                           </div>
+                        )}
 
-                          {/* Selection Indicator - Simple inline badge, no layout shift */}
-
-                          {isDimensionPanelOpen && (
-                            <div className="mb-4 rounded-2xl border border-indigo-100 bg-gradient-to-br from-white via-indigo-50/50 to-cyan-50/40 p-4 shadow-sm">
-                              <div className="flex flex-wrap items-start justify-between gap-3">
-                                <div>
-                                  <div className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-[11px] font-medium text-indigo-700">
-                                    <Sparkles className="h-3.5 w-3.5" />
-                                    Structured Draft
-                                  </div>
-                                  <h5 className="mt-2 text-sm font-semibold text-slate-900">
-                                    {displayName[keyName] || formatSectionLabel(keyName)}
-                                  </h5>
-                                  <p className="text-xs text-slate-500">
-                                    Draft one evidence-grounded dimension at a time, then merge it into the full section.
-                                  </p>
-                                </div>
-                                {dimensionState.started && (
-                                  <div className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
-                                    <div className="font-medium text-slate-800">
-                                      {dimensionState.progress.accepted}/{dimensionState.progress.total} accepted
-                                    </div>
-                                    <div className="mt-1 h-1.5 w-28 overflow-hidden rounded-full bg-slate-100">
-                                      <div
-                                        className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-teal-500 transition-all"
-                                        style={{
-                                          width: `${dimensionState.progress.total > 0
-                                            ? Math.min(100, Math.round((dimensionState.progress.accepted / dimensionState.progress.total) * 100))
-                                            : 0}%`
-                                        }}
-                                      />
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-
-                              {dimensionState.error && (
-                                <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                                  {dimensionState.error}
-                                </div>
-                              )}
-
-                              {!dimensionState.started ? (
-                                <div className="mt-4 flex flex-wrap items-center gap-2">
-                                  <button
-                                    onClick={() => startDimensionFlow(keyName)}
-                                    disabled={dimensionBusy || sectionLoading[keyName]}
-                                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    {dimensionBusy || sectionLoading[keyName]
-                                      ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                      : <Play className="h-3.5 w-3.5" />
-                                    }
-                                    Start Structured Draft
-                                  </button>
-                                  <button
-                                    onClick={() => loadDimensionFlow(keyName)}
-                                    disabled={dimensionBusy || sectionLoading[keyName]}
-                                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                  >
-                                    Refresh
-                                  </button>
-                                </div>
-                              ) : (
-                                <>
-                                  {dimensionState.plan.length > 0 && (
-                                    <div className="mt-4 flex flex-wrap gap-2">
-                                      {dimensionState.plan.map((item) => (
-                                        <button
-                                          key={item.dimensionKey}
-                                          type="button"
-                                          onClick={() => generateDimensionDraft(keyName, { dimensionKey: item.dimensionKey })}
-                                          disabled={dimensionBusy || sectionLoading[keyName]}
-                                          className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                                            item.status === 'accepted'
-                                              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                                              : item.status === 'pending'
-                                                ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
-                                                : 'border-slate-200 bg-white text-slate-600 hover:border-indigo-200 hover:bg-indigo-50/40'
-                                          }`}
-                                        >
-                                          {item.dimensionLabel}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  )}
-
-                                  {dimensionState.completed ? (
-                                    <div className="mt-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-                                      <CheckCircle2 className="h-4 w-4" />
-                                      All dimensions are accepted for this section.
-                                    </div>
-                                  ) : (
-                                    <>
-                                      {!dimensionState.activeDimensionKey && (
-                                        <div className="mt-4">
-                                          <button
-                                            onClick={() => generateDimensionDraft(keyName)}
-                                            disabled={dimensionBusy || sectionLoading[keyName]}
-                                            className="inline-flex items-center gap-2 rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
-                                          >
-                                            {dimensionBusy || sectionLoading[keyName]
-                                              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                              : <Sparkles className="h-3.5 w-3.5" />
-                                            }
-                                            Generate Next Dimension
-                                          </button>
-                                        </div>
-                                      )}
-
-                                      {dimensionState.activeDimensionKey && (
-                                        <div className="mt-4 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
-                                          <div className="flex flex-wrap items-center gap-2">
-                                            <span className="rounded-full border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-700">
-                                              {dimensionState.activeDimensionLabel || dimensionState.activeDimensionKey}
-                                            </span>
-                                            {dimensionState.isStreaming && (
-                                              <span className="inline-flex items-center gap-1 text-[11px] text-indigo-600">
-                                                <Loader2 className="h-3 w-3 animate-spin" />
-                                                Writing...
-                                              </span>
-                                            )}
-                                            {dimensionState.isStreaming && (
-                                              <button
-                                                type="button"
-                                                onClick={() => {
-                                                  setDimensionState(keyName, prev => ({
-                                                    ...prev,
-                                                    isStreaming: false,
-                                                    streamCursor: prev.proposalText.length
-                                                  }));
-                                                }}
-                                                className="text-[11px] font-medium text-slate-500 hover:text-slate-700"
-                                              >
-                                                Skip animation
-                                              </button>
-                                            )}
-                                          </div>
-
-                                          <div className="mt-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
-                                            <div className="whitespace-pre-wrap text-sm leading-6 text-slate-700">
-                                              {dimensionStreamingText || (dimensionBusy ? 'Generating dimension content...' : 'No proposal yet.')}
-                                            </div>
-                                          </div>
-
-                                          {!dimensionState.isStreaming && (
-                                            <textarea
-                                              className="mt-3 min-h-[120px] w-full rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-800 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
-                                              value={dimensionState.proposalText}
-                                              onChange={(e) => {
-                                                const value = e.target.value;
-                                                setDimensionState(keyName, prev => ({
-                                                  ...prev,
-                                                  proposalText: value
-                                                }));
-                                              }}
-                                              placeholder="Edit this dimension before accepting..."
-                                            />
-                                          )}
-
-                                          {hasDimensionWarnings && dimensionState.proposalValidation && (
-                                            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                                              {dimensionState.proposalValidation.disallowedKeys.length > 0 && (
-                                                <p>
-                                                  Disallowed: {dimensionState.proposalValidation.disallowedKeys.slice(0, 6).join(', ')}
-                                                </p>
-                                              )}
-                                              {dimensionState.proposalValidation.unknownKeys.length > 0 && (
-                                                <p>
-                                                  Unknown: {dimensionState.proposalValidation.unknownKeys.slice(0, 6).join(', ')}
-                                                </p>
-                                              )}
-                                              {dimensionState.proposalValidation.missingRequiredKeys.length > 0 && (
-                                                <p>
-                                                  Missing required: {dimensionState.proposalValidation.missingRequiredKeys.slice(0, 6).join(', ')}
-                                                </p>
-                                              )}
-                                            </div>
-                                          )}
-
-                                          {dimensionState.showReject && (
-                                            <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 p-3">
-                                              <label className="text-xs font-semibold text-rose-700">Rewrite feedback</label>
-                                              <textarea
-                                                className="mt-2 min-h-[80px] w-full rounded-md border border-rose-200 bg-white p-2 text-sm text-slate-700 focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-100"
-                                                value={dimensionState.feedback}
-                                                onChange={(e) => {
-                                                  const value = e.target.value;
-                                                  setDimensionState(keyName, prev => ({
-                                                    ...prev,
-                                                    feedback: value
-                                                  }));
-                                                }}
-                                                placeholder="Tell AI what to improve, remove, or strengthen..."
-                                              />
-                                              <div className="mt-2 flex justify-end gap-2">
-                                                <button
-                                                  type="button"
-                                                  onClick={() => setDimensionState(keyName, prev => ({ ...prev, showReject: false }))}
-                                                  className="rounded-md border border-rose-200 bg-white px-2.5 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50"
-                                                >
-                                                  Cancel
-                                                </button>
-                                                <button
-                                                  type="button"
-                                                  onClick={() => rejectDimensionDraft(keyName)}
-                                                  disabled={dimensionBusy || sectionLoading[keyName]}
-                                                  className="inline-flex items-center gap-1 rounded-md bg-rose-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
-                                                >
-                                                  {dimensionState.rejecting
-                                                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                                    : <RefreshCw className="h-3.5 w-3.5" />
-                                                  }
-                                                  Rewrite
-                                                </button>
-                                              </div>
-                                            </div>
-                                          )}
-
-                                          <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-                                            <button
-                                              type="button"
-                                              onClick={() => setDimensionState(keyName, prev => ({ ...prev, showReject: !prev.showReject }))}
-                                              className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2.5 py-1 text-xs font-medium text-rose-700 hover:bg-rose-50"
-                                            >
-                                              <XCircle className="h-3.5 w-3.5" />
-                                              Reject
-                                            </button>
-                                            <button
-                                              type="button"
-                                              onClick={() => acceptDimensionDraft(keyName, false)}
-                                              disabled={dimensionBusy || sectionLoading[keyName] || !dimensionState.proposalText.trim()}
-                                              className="inline-flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                            >
-                                              {dimensionState.accepting
-                                                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                                : <CheckCircle2 className="h-3.5 w-3.5" />
-                                              }
-                                              Accept
-                                            </button>
-                                            {hasDimensionWarnings && (
-                                              <button
-                                                type="button"
-                                                onClick={() => acceptDimensionDraft(keyName, false, { allowCitationBypass: true })}
-                                                disabled={dimensionBusy || sectionLoading[keyName] || !dimensionState.proposalText.trim()}
-                                                className="inline-flex items-center gap-1 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
-                                              >
-                                                <CheckCircle2 className="h-3.5 w-3.5" />
-                                                Accept Anyway
-                                              </button>
-                                            )}
-                                            <button
-                                              type="button"
-                                              onClick={() => acceptDimensionDraft(keyName, true)}
-                                              disabled={dimensionBusy || sectionLoading[keyName] || !dimensionState.proposalText.trim()}
-                                              className="inline-flex items-center gap-1 rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-                                            >
-                                              <ArrowRight className="h-3.5 w-3.5" />
-                                              Accept & Continue
-                                            </button>
-                                          </div>
-                                        </div>
-                                      )}
-                                    </>
-                                  )}
-                                </>
-                              )}
-                            </div>
-                          )}
-
-                          {/* Content Area - Always in edit mode for stability */}
-                          <div className="relative">
-                            <PaperMarkdownEditor
-                              ref={(editor) => { editorRefs.current[keyName] = editor; }}
-                              value={content[keyName] || ''}
-                              onChange={(markdown) => handleContentChange(keyName, markdown)}
-                              citationDisplayMeta={citationDisplayMeta}
-                              figureDisplayMeta={figureDisplayMeta}
-                              onBlur={() => {
-                                handleBlur(keyName);
-                                // NOTE: Do NOT clear selectedText on blur.
-                                // When the user clicks a FloatingWritingPanel button, the editor
-                                // blurs first. Clearing selectedText here would disable the
-                                // action buttons before the click handler fires.
-                                // Selection is properly cleared by onSelectionChange when the
-                                // user collapses the selection inside the editor.
-                              }}
-                              onFocus={() => setFocusedSection(keyName)}
-                              onSelectionChange={(selection) => {
-                                if (!selection || !selection.text) {
-                                  if (focusedSection === keyName) setSelectedText(null);
-                                  return;
-                                }
-                                setFocusedSection(keyName);
-                                setSelectedText({
-                                  text: selection.text,
-                                  start: selection.start,
-                                  end: selection.end
-                                });
-                                // Save selection in editor ref so it persists across blur
-                                const editor = editorRefs.current[keyName];
-                                if (editor) {
-                                  editor.saveSelection();
-                                }
-                              }}
-                              placeholder={isWorking ? 'Generating...' : 'Write polished section content with headings, bullets, and academic structure.'}
-                              disabled={isWorking}
-                              className="min-h-[190px]"
-                            />
+                        {showInlineDimension && dimensionState.error && (
+                          <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs text-rose-700">
+                            {dimensionState.error}
                           </div>
+                        )}
 
-                          {/* Referenced Figures Bar - Shows clickable thumbnails */}
-                          {(() => {
-                            const referencedFigs = getReferencedFigures(content[keyName] || '');
-                            if (referencedFigs.length === 0) return null;
-                            
-                            return (
-                              <div className="mt-3 p-2 bg-gradient-to-r from-violet-50 to-indigo-50 rounded-lg border border-violet-100">
-                                <div className="flex items-center gap-2 mb-2">
-                                  <ImageIcon className="w-3.5 h-3.5 text-violet-600" />
-                                  <span className="text-xs font-medium text-violet-700">
-                                    Referenced Figures ({referencedFigs.length})
-                                  </span>
-                                  <span className="text-[10px] text-violet-500">• Click to preview</span>
-                                </div>
-                                <div className="flex flex-wrap gap-2">
-                                  {referencedFigs.map(fig => (
-                                    <button
-                                      key={fig.id}
-                                      onClick={() => setPreviewFigure({
-                                        id: fig.id,
-                                        figureNo: fig.figureNo,
-                                        title: fig.title,
-                                        imagePath: fig.imagePath,
-                                        description: fig.description
-                                      })}
-                                      className="group relative flex items-center gap-2 px-2 py-1.5 bg-white rounded-lg border border-violet-200 hover:border-violet-400 hover:shadow-md transition-all"
-                                    >
-                                      {/* Thumbnail */}
-                                      <div className="w-10 h-10 rounded overflow-hidden bg-slate-100 flex-shrink-0">
-                                        {fig.imagePath ? (
-                                          <img 
-                                            src={fig.imagePath} 
-                                            alt={fig.title}
-                                            className="w-full h-full object-cover"
-                                          />
-                                        ) : (
-                                          <div className="w-full h-full flex items-center justify-center">
-                                            <ImageIcon className="w-4 h-4 text-slate-300" />
-                                          </div>
-                                        )}
-                                      </div>
-                                      {/* Label */}
-                                      <div className="text-left">
-                                        <p className="text-xs font-medium text-slate-700">Figure {fig.figureNo}</p>
-                                        <p className="text-[10px] text-slate-500 max-w-[120px] truncate">{fig.title}</p>
-                                      </div>
-                                      {/* Hover Icon */}
-                                      <Eye className="w-3.5 h-3.5 text-violet-500 opacity-0 group-hover:opacity-100 transition-opacity" />
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                            );
-                          })()}
+                        {showInlineDimension && !dimensionState.activeDimensionKey && dimensionState.started && !dimensionState.completed && (
+                          <div className="mt-2">
+                            <button
+                              type="button"
+                              onClick={() => void generateDimensionDraft(keyName, { dimensionKey: dimensionState.nextDimensionKey || undefined })}
+                              disabled={dimensionBusy || sectionLoading[keyName]}
+                              className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {dimensionBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                              Generate next dimension
+                            </button>
+                          </div>
+                        )}
 
-                          {/* Regeneration Dialog */}
-                          {regenOpen[keyName] && (
-                            <div className="mt-4 p-4 border border-indigo-100 rounded-lg bg-indigo-50/50 shadow-sm">
-                              <div className="flex items-center gap-2 mb-2">
-                                <RefreshCw className="w-4 h-4 text-indigo-600" />
-                                <label className="text-xs font-semibold text-indigo-900">Refinement Instructions</label>
+                        {showInlineDimension && dimensionState.activeDimensionKey && (
+                          <InlineDimensionProposal
+                            dimensionLabel={dimensionState.activeDimensionLabel || dimensionState.activeDimensionKey}
+                            proposalText={dimensionState.proposalText}
+                            isStreaming={dimensionState.isStreaming}
+                            streamCursor={dimensionState.streamCursor}
+                            isLoading={dimensionState.loading}
+                            isAccepting={dimensionState.accepting}
+                            isRewriting={dimensionState.rejecting}
+                            isEditing={dimensionState.editMode}
+                            showRewriteInput={dimensionState.showReject}
+                            feedback={dimensionState.feedback}
+                            validation={dimensionState.proposalValidation}
+                            reviewTrace={dimensionState.proposalReviewTrace}
+                            pass1Source={dimensionState.pass1Source}
+                            onAccept={() => acceptDimensionDraft(keyName, true)}
+                            onAcceptBypass={() => acceptDimensionDraft(keyName, true, { allowCitationBypass: true })}
+                            onToggleRewrite={() => {
+                              setDimensionState(keyName, prev => ({
+                                ...prev,
+                                showReject: !prev.showReject
+                              }));
+                            }}
+                            onToggleEdit={() => {
+                              setDimensionState(keyName, prev => ({
+                                ...prev,
+                                editMode: !prev.editMode
+                              }));
+                            }}
+                            onProposalChange={(value) => {
+                              setDimensionState(keyName, prev => ({
+                                ...prev,
+                                proposalText: value
+                              }));
+                            }}
+                            onFeedbackChange={(value) => {
+                              setDimensionState(keyName, prev => ({
+                                ...prev,
+                                feedback: value
+                              }));
+                            }}
+                            onRewrite={() => rejectDimensionDraft(keyName)}
+                            onSkipAnimation={() => {
+                              setDimensionState(keyName, prev => ({
+                                ...prev,
+                                isStreaming: false,
+                                streamCursor: prev.proposalText.length
+                              }));
+                            }}
+                          />
+                        )}
+
+                        {showInlineDimension && dimensionState.completed && (
+                          <motion.div
+                            initial={{ opacity: 0, y: 4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700"
+                          >
+                            Structured draft complete for this section.
+                          </motion.div>
+                        )}
+
+                        {(() => {
+                          const referencedFigs = getReferencedFigures(content[keyName] || '');
+                          if (referencedFigs.length === 0) return null;
+
+                          return (
+                            <div className="mt-3 rounded-lg border border-violet-100 bg-gradient-to-r from-violet-50 to-indigo-50 p-2">
+                              <div className="mb-2 flex items-center gap-2">
+                                <ImageIcon className="h-3.5 w-3.5 text-violet-600" />
+                                <span className="text-xs font-medium text-violet-700">
+                                  Referenced Figures ({referencedFigs.length})
+                                </span>
+                                <span className="text-[10px] text-violet-500">click to preview</span>
                               </div>
-                              <textarea
-                                className="w-full border-indigo-200 rounded-md p-3 text-sm focus:border-indigo-500 focus:ring-indigo-500 bg-white"
-                                value={regenRemarks[keyName] || ''}
-                                onChange={(e) => setRegenRemarks(prev => ({ ...prev, [keyName]: e.target.value }))}
-                                placeholder="E.g., 'Make it more concise', 'Add more citations'..."
-                                rows={3}
-                              />
-                              <div className="flex justify-end gap-2 mt-3">
-                                <button onClick={() => setRegenOpen(prev => ({ ...prev, [keyName]: false }))} className="px-3 py-1.5 text-xs text-gray-600 hover:bg-white rounded border border-transparent hover:border-gray-200">Cancel</button>
-                                <button onClick={() => handleRegenerateSection(keyName)} disabled={sectionLoading[keyName]}
-                                  className="px-4 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded shadow-sm disabled:opacity-50 flex items-center gap-2">
-                                  {sectionLoading[keyName] && <Loader2 className="w-3 h-3 animate-spin" />}
-                                  {sectionLoading[keyName] ? 'Regenerating...' : 'Regenerate'}
-                                </button>
+                              <div className="flex flex-wrap gap-2">
+                                {referencedFigs.map(fig => (
+                                  <button
+                                    key={fig.id}
+                                    onClick={() => setPreviewFigure({
+                                      id: fig.id,
+                                      figureNo: fig.figureNo,
+                                      title: fig.title,
+                                      imagePath: fig.imagePath,
+                                      description: fig.description
+                                    })}
+                                    className="group relative flex items-center gap-2 rounded-lg border border-violet-200 bg-white px-2 py-1.5 transition-all hover:border-violet-400 hover:shadow-md"
+                                  >
+                                    <div className="h-10 w-10 flex-shrink-0 overflow-hidden rounded bg-slate-100">
+                                      {fig.imagePath ? (
+                                        <img
+                                          src={fig.imagePath}
+                                          alt={fig.title}
+                                          className="h-full w-full object-cover"
+                                        />
+                                      ) : (
+                                        <div className="flex h-full w-full items-center justify-center">
+                                          <ImageIcon className="h-4 w-4 text-slate-300" />
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div className="text-left">
+                                      <p className="text-xs font-medium text-slate-700">Figure {fig.figureNo}</p>
+                                      <p className="max-w-[120px] truncate text-[10px] text-slate-500">{fig.title}</p>
+                                    </div>
+                                    <Eye className="h-3.5 w-3.5 text-violet-500 opacity-0 transition-opacity group-hover:opacity-100" />
+                                  </button>
+                                ))}
                               </div>
                             </div>
-                          )}
-                        </div>
-                        );
-                      })}
-                    </div>
-                  )}
+                          );
+                        })()}
+
+                        {regenOpen[keyName] && (
+                          <div className="mt-4 rounded-lg border border-indigo-100 bg-indigo-50/50 p-4 shadow-sm">
+                            <div className="mb-2 flex items-center gap-2">
+                              <RefreshCw className="h-4 w-4 text-indigo-600" />
+                              <label className="text-xs font-semibold text-indigo-900">Refinement Instructions</label>
+                            </div>
+                            <textarea
+                              className="w-full rounded-md border-indigo-200 bg-white p-3 text-sm focus:border-indigo-500 focus:ring-indigo-500"
+                              value={regenRemarks[keyName] || ''}
+                              onChange={(e) => setRegenRemarks(prev => ({ ...prev, [keyName]: e.target.value }))}
+                              placeholder="E.g., 'Make it more concise', 'Add more citations'..."
+                              rows={3}
+                            />
+                            <div className="mt-3 flex justify-end gap-2">
+                              <button
+                                onClick={() => setRegenOpen(prev => ({ ...prev, [keyName]: false }))}
+                                className="rounded border border-transparent px-3 py-1.5 text-xs text-gray-600 hover:border-gray-200 hover:bg-white"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={() => handleRegenerateSection(keyName)}
+                                disabled={sectionLoading[keyName]}
+                                className="flex items-center gap-2 rounded bg-indigo-600 px-4 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+                              >
+                                {sectionLoading[keyName] && <Loader2 className="h-3 w-3 animate-spin" />}
+                                {sectionLoading[keyName] ? 'Regenerating...' : 'Regenerate'}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             );
           })}
-
           {/* AI Review Panel */}
           {Object.keys(content).some(k => content[k]) && (
             <div className="mt-16 border-t pt-8">
@@ -3594,3 +3626,4 @@ export default function SectionDraftingStage({
     </div>
   );
 }
+

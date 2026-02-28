@@ -6,6 +6,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyJWT, type JWTPayload } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import {
+  buildCitationKeyLookup,
+  citationKeyIdentity,
+  normalizeCitationKey,
+  resolveCitationKeyFromLookup,
+  splitCitationKeyList
+} from '@/lib/utils/citation-key-normalization';
 
 // ============================================================================
 // Types
@@ -25,12 +32,18 @@ interface CitationItem {
   abstract?: string | null;
 }
 
+function normalizeCitationSearchTerm(input: string): string {
+  const value = String(input || '').trim();
+  if (!value) return '';
+  return value
+    .replace(/^\[\s*CITE\s*:/i, '')
+    .replace(/^\[/, '')
+    .replace(/\]$/, '')
+    .trim();
+}
+
 function splitCitationKeys(rawKeys: string): string[] {
-  if (!rawKeys) return [];
-  return rawKeys
-    .split(/[;,]/)
-    .map((key) => key.trim())
-    .filter(Boolean);
+  return splitCitationKeyList(rawKeys);
 }
 
 function normalizeCitationMarkupForExtraction(content: string): string {
@@ -82,17 +95,19 @@ function normalizeExtraSections(value: unknown): Record<string, string> {
 async function buildUsageCountByCitationKey(sessionId: string, citationKeys: string[]): Promise<Record<string, number>> {
   if (citationKeys.length === 0) return {};
 
-  const canonicalLookup = new Map<string, string>();
-  for (const key of citationKeys) {
-    const normalized = String(key || '').trim().toLowerCase();
-    if (normalized && !canonicalLookup.has(normalized)) {
-      canonicalLookup.set(normalized, key);
-    }
-  }
+  const canonicalLookup = buildCitationKeyLookup(citationKeys);
 
   const usageCountByKey: Record<string, number> = {};
-  canonicalLookup.forEach((_value, normalized) => {
-    usageCountByKey[normalized] = 0;
+  for (const rawKey of citationKeys) {
+    const canonical = resolveCitationKeyFromLookup(rawKey, canonicalLookup) || normalizeCitationKey(rawKey);
+    if (!canonical) continue;
+    usageCountByKey[citationKeyIdentity(canonical)] = 0;
+  }
+  canonicalLookup.forEach((canonical) => {
+    if (canonical) {
+      const identity = citationKeyIdentity(canonical);
+      usageCountByKey[identity] = usageCountByKey[identity] || 0;
+    }
   });
 
   const latestPaperDraft = await prisma.annexureDraft.findFirst({
@@ -125,9 +140,10 @@ async function buildUsageCountByCitationKey(sessionId: string, citationKeys: str
     while ((match = markerRegex.exec(content)) !== null) {
       const keys = splitCitationKeys(String(match[1] || ''));
       for (const rawKey of keys) {
-        const normalized = rawKey.toLowerCase();
-        if (!canonicalLookup.has(normalized)) continue;
-        usageCountByKey[normalized] = (usageCountByKey[normalized] || 0) + 1;
+        const canonical = resolveCitationKeyFromLookup(rawKey, canonicalLookup);
+        if (!canonical) continue;
+        const identity = citationKeyIdentity(canonical);
+        usageCountByKey[identity] = (usageCountByKey[identity] || 0) + 1;
       }
     }
 
@@ -137,9 +153,10 @@ async function buildUsageCountByCitationKey(sessionId: string, citationKeys: str
       if (!token || /^CITE:/i.test(token) || /^Figure\s+\d+/i.test(token)) continue;
       const keys = splitCitationKeys(token);
       for (const rawKey of keys) {
-        const normalized = rawKey.toLowerCase();
-        if (!canonicalLookup.has(normalized)) continue;
-        usageCountByKey[normalized] = (usageCountByKey[normalized] || 0) + 1;
+        const canonical = resolveCitationKeyFromLookup(rawKey, canonicalLookup);
+        if (!canonical) continue;
+        const identity = citationKeyIdentity(canonical);
+        usageCountByKey[identity] = (usageCountByKey[identity] || 0) + 1;
       }
     }
   }
@@ -173,7 +190,8 @@ export async function GET(
 
     // Get search query if provided
     const url = new URL(request.url);
-    const searchQuery = url.searchParams.get('q') || '';
+    const rawSearchQuery = url.searchParams.get('q') || '';
+    const searchQuery = normalizeCitationSearchTerm(rawSearchQuery);
     const sourceFilter = url.searchParams.get('source') || 'all'; // 'all', 'paper', 'library'
     // Library limit - paper citations are never truncated (user's working set)
     const libraryLimit = parseInt(url.searchParams.get('limit') || '50', 10);
@@ -184,6 +202,7 @@ export async function GET(
           OR: [
             { title: { contains: searchQuery, mode: 'insensitive' as const } },
             { venue: { contains: searchQuery, mode: 'insensitive' as const } },
+            { citationKey: { contains: searchQuery, mode: 'insensitive' as const } },
           ],
         }
       : {};
@@ -220,7 +239,7 @@ export async function GET(
       });
 
       for (const c of paperCitations) {
-        const usageCount = usageCountByCitationKey[String(c.citationKey || '').toLowerCase()] || 0;
+        const usageCount = usageCountByCitationKey[citationKeyIdentity(String(c.citationKey || ''))] || 0;
         results.push({
           id: c.id,
           title: c.title,

@@ -17,6 +17,12 @@ import { isFeatureEnabled } from '@/lib/feature-flags';
 import { sectionPolishService } from '@/lib/services/section-polish-service';
 import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 import type { TenantContext } from '@/lib/metering';
+import {
+  buildCitationKeyLookup,
+  citationKeyIdentity,
+  resolveCitationKeyFromLookup,
+  splitCitationKeyList
+} from '@/lib/utils/citation-key-normalization';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -190,17 +196,26 @@ async function resolveTenantContext(
   tenantId?: string | null
 ): Promise<TenantContext | null> {
   const authorization = request.headers.get('authorization');
+  let authContext: TenantContext | null = null;
+
   if (authorization) {
-    const tenantContext = await extractTenantContextFromRequest({ headers: { authorization } });
-    if (tenantContext) {
+    authContext = await extractTenantContextFromRequest({ headers: { authorization } });
+    if (authContext && (!tenantId || authContext.tenantId === tenantId)) {
       return {
-        ...tenantContext,
-        userId: tenantContext.userId || userId,
+        ...authContext,
+        userId: authContext.userId || userId,
       };
     }
   }
 
-  if (!tenantId) return null;
+  if (!tenantId) {
+    return authContext
+      ? {
+          ...authContext,
+          userId: authContext.userId || userId,
+        }
+      : null;
+  }
 
   const tenant = await prisma.tenant.findUnique({
     where: { id: tenantId },
@@ -218,6 +233,11 @@ async function resolveTenantContext(
   });
 
   if (tenant && tenant.status === 'ACTIVE' && tenant.tenantPlans[0]) {
+    if (authContext && authContext.tenantId !== tenantId) {
+      console.warn(
+        `[Drafting] Tenant mismatch between JWT (${authContext.tenantId}) and session (${tenantId}); using session tenant context`
+      );
+    }
     return {
       tenantId: tenant.id,
       planId: tenant.tenantPlans[0].planId,
@@ -284,6 +304,18 @@ function computeWordCount(content: string): number {
 }
 
 const normalizeSectionKey = (value: string) => value.trim().toLowerCase().replace(/[\s-]+/g, '_');
+const SINGLE_PASS_SECTION_KEYS = new Set(['abstract', 'conclusion']);
+
+function isSinglePassSection(sectionKey: string): boolean {
+  return SINGLE_PASS_SECTION_KEYS.has(normalizeSectionKey(sectionKey));
+}
+
+function buildSinglePassSectionError(sectionKey: string) {
+  return {
+    error: `Structured dimension flow is disabled for "${sectionKey}"`,
+    hint: 'Use generate_section or regenerate_section. Abstract and conclusion are generated in a single pass.'
+  };
+}
 
 function formatSectionLabel(sectionKey: string): string {
   return normalizeSectionKey(sectionKey)
@@ -409,11 +441,7 @@ const LEGACY_CITATION_SPAN_REGEX = /<span\b[^>]*data-cite-key=(?:"([^"]+)"|'([^'
 type SessionCitation = Awaited<ReturnType<typeof citationService.getCitationsForSession>>[number];
 
 function splitCitationKeys(rawKeys: string): string[] {
-  if (!rawKeys) return [];
-  return rawKeys
-    .split(/[;,]/)
-    .map(key => key.trim())
-    .filter(Boolean);
+  return splitCitationKeyList(rawKeys);
 }
 
 function normalizeCitationMarkupForExtraction(content: string): string {
@@ -439,13 +467,7 @@ function normalizeCitationMarkupForExtraction(content: string): string {
 }
 
 function buildCanonicalCitationLookup(citations: Array<{ citationKey: string }>): Map<string, string> {
-  const lookup = new Map<string, string>();
-  for (const citation of citations) {
-    const key = String(citation.citationKey || '').trim();
-    if (!key) continue;
-    lookup.set(key.toLowerCase(), key);
-  }
-  return lookup;
+  return buildCitationKeyLookup(citations.map(citation => citation.citationKey));
 }
 
 function mergeSectionOrder(
@@ -474,10 +496,11 @@ function mergeCitationOrder(primaryOrder: string[], secondaryOrder: string[]): s
   const merged: string[] = [];
 
   const append = (key: string) => {
-    const normalized = String(key || '').trim().toLowerCase();
-    if (!normalized || seen.has(normalized)) return;
+    const canonical = String(key || '').trim();
+    const normalized = citationKeyIdentity(canonical);
+    if (!canonical || !normalized || seen.has(normalized)) return;
     seen.add(normalized);
-    merged.push(key);
+    merged.push(canonical);
   };
 
   for (const key of primaryOrder) append(key);
@@ -1025,7 +1048,7 @@ function extractSectionCitationKeys(
   while ((match = CITE_MARKER_REGEX.exec(normalizedContent)) !== null) {
     const keys = splitCitationKeys(match[1] || '');
     for (const rawKey of keys) {
-      const canonical = canonicalLookup.get(rawKey.toLowerCase());
+      const canonical = resolveCitationKeyFromLookup(rawKey, canonicalLookup);
       if (!canonical || seen.has(canonical)) continue;
       seen.add(canonical);
       ordered.push(canonical);
@@ -1040,7 +1063,7 @@ function extractSectionCitationKeys(
     if (!token || /^CITE:/i.test(token) || /^Figure\s+\d+/i.test(token)) continue;
     const keys = splitCitationKeys(token);
     for (const rawKey of keys) {
-      const canonical = canonicalLookup.get(rawKey.toLowerCase());
+      const canonical = resolveCitationKeyFromLookup(rawKey, canonicalLookup);
       if (!canonical || seen.has(canonical)) continue;
       seen.add(canonical);
       ordered.push(canonical);
@@ -1067,8 +1090,8 @@ function buildHumanizedCitationValidation(
       for (const rawKey of keys) {
         const fallback = rawKey.trim();
         if (!fallback) continue;
-        const canonical = canonicalLookup.get(fallback.toLowerCase()) || fallback;
-        const identity = canonical.toLowerCase();
+        const canonical = resolveCitationKeyFromLookup(fallback, canonicalLookup) || fallback;
+        const identity = citationKeyIdentity(canonical);
         if (seen.has(identity)) continue;
         seen.add(identity);
         ordered.push(canonical);
@@ -1084,8 +1107,8 @@ function buildHumanizedCitationValidation(
       for (const rawKey of keys) {
         const fallback = rawKey.trim();
         if (!fallback) continue;
-        const canonical = canonicalLookup.get(fallback.toLowerCase()) || fallback;
-        const identity = canonical.toLowerCase();
+        const canonical = resolveCitationKeyFromLookup(fallback, canonicalLookup) || fallback;
+        const identity = citationKeyIdentity(canonical);
         if (seen.has(identity)) continue;
         seen.add(identity);
         ordered.push(canonical);
@@ -1395,6 +1418,7 @@ interface BlueprintPromptContext {
   keyContributions?: string[];
   sectionPlan?: Array<{ sectionKey: string; purpose?: string }>;
   mustCover?: string[];
+  wordBudget?: number;
 }
 
 interface EvidencePromptContext {
@@ -1412,6 +1436,10 @@ interface DimensionPlanEntry {
   mustUseCitationKeys: string[];
   avoidClaims: string[];
   bridgeHint: string;
+  role?: DimensionRole;
+  targetWords?: number;
+  minWords?: number;
+  maxWords?: number;
 }
 
 interface DimensionAcceptedBlock {
@@ -1422,6 +1450,37 @@ interface DimensionAcceptedBlock {
   source: 'llm' | 'user';
   version: number;
   updatedAt: string;
+}
+
+interface Pass1MemorySnapshot {
+  keyPoints: string[];
+  termsIntroduced: string[];
+  mainClaims: string[];
+  forwardReferences: string[];
+}
+
+interface DimensionPass1SourceTrace {
+  source: 'pass1_section_draft';
+  contentFingerprint: string;
+  wordCount: number;
+  preview: string;
+  generatedAt?: string;
+  reused: boolean;
+  memory?: Pass1MemorySnapshot | null;
+}
+
+interface DimensionProposalReviewTrace {
+  pass1Fingerprint: string;
+  pass1WordCount: number;
+  role: DimensionRole;
+  bridgeHint: string;
+  requiredCitationKeys: string[];
+  previousDimensionLabel?: string | null;
+  nextDimensionLabel?: string | null;
+  acceptedBlockCount: number;
+  acceptedContextHash: string;
+  acceptedSummary: string;
+  acceptedContextPreview: string;
 }
 
 interface DimensionDraftProposal {
@@ -1435,6 +1494,7 @@ interface DimensionDraftProposal {
     missingRequiredKeys: string[];
   };
   createdAt: string;
+  reviewTrace?: DimensionProposalReviewTrace;
 }
 
 interface DimensionFlowState {
@@ -1442,8 +1502,10 @@ interface DimensionFlowState {
   sectionKey: string;
   createdAt: string;
   updatedAt: string;
+  sectionWordBudget?: number;
   plan: DimensionPlanEntry[];
   acceptedBlocks: DimensionAcceptedBlock[];
+  pass1Source?: DimensionPass1SourceTrace;
   pendingProposal?: DimensionDraftProposal;
   bufferedProposals?: Record<string, DimensionDraftProposal>;
   lastAcceptedContextHash?: string;
@@ -1451,6 +1513,23 @@ interface DimensionFlowState {
 
 const DIMENSION_FLOW_VERSION = 1;
 const MAX_DIMENSION_SUMMARY_ITEMS = 8;
+type DimensionRole = 'introduction' | 'body' | 'conclusion' | 'intro_conclusion';
+
+interface DimensionBudgetSnapshot {
+  sectionWordBudget?: number;
+  usedWords: number;
+  remainingWords?: number;
+}
+
+interface DimensionDraftBudget {
+  role: DimensionRole;
+  sectionWordBudget?: number;
+  targetWords?: number;
+  minWords?: number;
+  maxWords?: number;
+  usedWordsExcludingTarget: number;
+  remainingWordsForTarget?: number;
+}
 
 function normalizeDimensionKey(value: string): string {
   return String(value || '')
@@ -1458,6 +1537,264 @@ function normalizeDimensionKey(value: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9\s_-]/g, '')
     .replace(/[\s-]+/g, '_');
+}
+
+function normalizePositiveWordBudget(value: unknown): number | undefined {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return undefined;
+  const rounded = Math.floor(parsed);
+  if (rounded <= 0) return undefined;
+  return rounded;
+}
+
+function normalizeStringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+}
+
+function normalizePass1MemorySnapshot(value: unknown): Pass1MemorySnapshot | null {
+  const record = asRecord(value);
+  const keyPoints = normalizeStringList(record.keyPoints);
+  const termsIntroduced = normalizeStringList(record.termsIntroduced);
+  const mainClaims = normalizeStringList(record.mainClaims);
+  const forwardReferences = normalizeStringList(record.forwardReferences);
+
+  if (
+    keyPoints.length === 0
+    && termsIntroduced.length === 0
+    && mainClaims.length === 0
+    && forwardReferences.length === 0
+  ) {
+    return null;
+  }
+
+  return {
+    keyPoints,
+    termsIntroduced,
+    mainClaims,
+    forwardReferences
+  };
+}
+
+function resolveDimensionRole(index: number, total: number): DimensionRole {
+  if (total <= 1) return 'intro_conclusion';
+  if (index === 0) return 'introduction';
+  if (index === total - 1) return 'conclusion';
+  return 'body';
+}
+
+function clampWordAllocation(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function applyDimensionPlanMetadata(
+  basePlan: DimensionPlanEntry[],
+  sectionWordBudget?: number
+): DimensionPlanEntry[] {
+  if (!Array.isArray(basePlan) || basePlan.length === 0) return [];
+  const total = basePlan.length;
+  const roles = basePlan.map((_, index) => resolveDimensionRole(index, total));
+  const budget = normalizePositiveWordBudget(sectionWordBudget);
+
+  if (!budget) {
+    return basePlan.map((entry, index) => ({
+      ...entry,
+      role: roles[index]
+    }));
+  }
+
+  const weights = roles.map((role) => {
+    if (role === 'intro_conclusion') return 1.3;
+    if (role === 'introduction') return 1.15;
+    if (role === 'conclusion') return 1.1;
+    return 1.0;
+  });
+  const baseMin = clampWordAllocation(Math.floor(budget / Math.max(total * 2, 1)), 30, 120);
+  let mins = roles.map((role) => {
+    if (role === 'intro_conclusion') return Math.max(70, baseMin + 25);
+    if (role === 'introduction' || role === 'conclusion') return Math.max(45, baseMin + 10);
+    return Math.max(35, baseMin);
+  });
+
+  let minSum = mins.reduce((sum, value) => sum + value, 0);
+  if (minSum > budget) {
+    const scale = budget / minSum;
+    mins = mins.map((value) => Math.max(20, Math.floor(value * scale)));
+    minSum = mins.reduce((sum, value) => sum + value, 0);
+    while (minSum > budget) {
+      const index = mins.findIndex((value) => value > 20);
+      if (index === -1) break;
+      mins[index] -= 1;
+      minSum -= 1;
+    }
+  }
+
+  const extraPool = Math.max(budget - minSum, 0);
+  const totalWeight = weights.reduce((sum, value) => sum + value, 0) || 1;
+  const extras = weights.map((weight) => Math.floor(extraPool * (weight / totalWeight)));
+  let assignedExtra = extras.reduce((sum, value) => sum + value, 0);
+  let remainder = extraPool - assignedExtra;
+  const priority = weights
+    .map((weight, index) => ({ weight, index }))
+    .sort((a, b) => b.weight - a.weight)
+    .map((item) => item.index);
+  let cursor = 0;
+  while (remainder > 0 && priority.length > 0) {
+    const index = priority[cursor % priority.length];
+    extras[index] += 1;
+    assignedExtra += 1;
+    remainder -= 1;
+    cursor += 1;
+  }
+
+  const targets = mins.map((minWords, index) => minWords + extras[index]);
+  const maxes = targets.map((target, index) => {
+    const role = roles[index];
+    const slack = role === 'intro_conclusion'
+      ? Math.max(25, Math.round(target * 0.15))
+      : (role === 'introduction' || role === 'conclusion')
+        ? Math.max(20, Math.round(target * 0.12))
+        : Math.max(15, Math.round(target * 0.1));
+    return Math.min(budget, target + slack);
+  });
+
+  return basePlan.map((entry, index) => ({
+    ...entry,
+    role: roles[index],
+    targetWords: targets[index],
+    minWords: Math.min(mins[index], targets[index]),
+    maxWords: Math.max(targets[index], maxes[index])
+  }));
+}
+
+function computeAcceptedWordCount(flow: DimensionFlowState, excludeDimensionKey?: string): number {
+  const excluded = normalizeDimensionKey(excludeDimensionKey || '');
+  return flow.acceptedBlocks.reduce((sum, block) => {
+    const key = normalizeDimensionKey(block.dimensionKey);
+    if (excluded && key === excluded) return sum;
+    return sum + computeWordCount(block.content || '');
+  }, 0);
+}
+
+function resolveDimensionDraftBudget(
+  flow: DimensionFlowState,
+  dimensionKey: string
+): DimensionDraftBudget {
+  const normalizedTargetKey = normalizeDimensionKey(dimensionKey);
+  const plan = applyDimensionPlanMetadata(flow.plan, flow.sectionWordBudget);
+  const targetIndex = plan.findIndex(
+    (entry) => normalizeDimensionKey(entry.dimensionKey) === normalizedTargetKey
+  );
+  const role = targetIndex >= 0
+    ? (plan[targetIndex].role || resolveDimensionRole(targetIndex, plan.length))
+    : 'body';
+  const sectionWordBudget = normalizePositiveWordBudget(flow.sectionWordBudget);
+  const targetPlan = targetIndex >= 0 ? plan[targetIndex] : undefined;
+  const usedWordsExcludingTarget = computeAcceptedWordCount(flow, normalizedTargetKey);
+  const remainingWordsForTarget = sectionWordBudget !== undefined
+    ? Math.max(sectionWordBudget - usedWordsExcludingTarget, 0)
+    : undefined;
+
+  const plannedTarget = normalizePositiveWordBudget(targetPlan?.targetWords);
+  const plannedMin = normalizePositiveWordBudget(targetPlan?.minWords);
+  const plannedMax = normalizePositiveWordBudget(targetPlan?.maxWords);
+
+  let targetWords = plannedTarget;
+  let minWords = plannedMin;
+  let maxWords = plannedMax;
+
+  if (remainingWordsForTarget !== undefined) {
+    maxWords = maxWords !== undefined
+      ? Math.min(maxWords, remainingWordsForTarget)
+      : remainingWordsForTarget;
+    if (targetWords !== undefined) {
+      targetWords = Math.min(targetWords, maxWords);
+    } else if (maxWords > 0) {
+      targetWords = Math.max(1, Math.min(maxWords, Math.max(40, Math.floor(maxWords * 0.7))));
+    }
+    if (minWords !== undefined) {
+      minWords = Math.min(minWords, maxWords);
+    } else if (targetWords !== undefined) {
+      minWords = Math.max(1, Math.min(Math.floor(targetWords * 0.65), maxWords));
+    }
+  }
+
+  return {
+    role,
+    sectionWordBudget,
+    targetWords,
+    minWords,
+    maxWords,
+    usedWordsExcludingTarget,
+    remainingWordsForTarget
+  };
+}
+
+function buildDimensionBudgetSnapshot(
+  flow: DimensionFlowState,
+  stitchedContent: string
+): DimensionBudgetSnapshot {
+  const sectionWordBudget = normalizePositiveWordBudget(flow.sectionWordBudget);
+  const usedWords = computeWordCount(stitchedContent || '');
+  if (!sectionWordBudget) {
+    return { usedWords };
+  }
+  return {
+    sectionWordBudget,
+    usedWords,
+    remainingWords: Math.max(sectionWordBudget - usedWords, 0)
+  };
+}
+
+function truncateContentToWordLimit(content: string, maxWords: number): {
+  content: string;
+  originalWords: number;
+  finalWords: number;
+  trimmed: boolean;
+} {
+  const normalized = String(content || '').trim();
+  const limit = Math.max(Math.floor(maxWords || 0), 0);
+  const originalWords = computeWordCount(normalized);
+  if (!normalized || limit <= 0) {
+    return {
+      content: '',
+      originalWords,
+      finalWords: 0,
+      trimmed: originalWords > 0
+    };
+  }
+  if (originalWords <= limit) {
+    return {
+      content: normalized,
+      originalWords,
+      finalWords: originalWords,
+      trimmed: false
+    };
+  }
+
+  const words = normalized.split(/\s+/).filter(Boolean);
+  const clipped = words.slice(0, limit).join(' ').trim();
+  const finalWords = computeWordCount(clipped);
+  return {
+    content: clipped,
+    originalWords,
+    finalWords,
+    trimmed: true
+  };
+}
+
+function buildDimensionRoleDirective(role: DimensionRole): string {
+  switch (role) {
+    case 'introduction':
+      return 'Open the section: orient the reader to this section scope, establish context, and set up the upcoming analysis.';
+    case 'conclusion':
+      return 'Close the section: synthesize the section-level takeaway and end cleanly without introducing new major subtopics.';
+    case 'intro_conclusion':
+      return 'Because this is the only dimension, both introduce and conclude the section in a compact arc.';
+    default:
+      return 'Develop the core body analysis for this dimension while maintaining continuity with the surrounding dimensions.';
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -1488,6 +1825,32 @@ function extractJsonObjectFromOutput(raw: string): Record<string, unknown> | nul
   return null;
 }
 
+function extractSectionOutput(
+  rawOutput: string
+): { content: string; memory: Record<string, unknown> | null } {
+  let extracted = rawOutput;
+  let extractedMemory: Record<string, unknown> | null = null;
+
+  try {
+    const parsed = extractJsonObjectFromOutput(rawOutput);
+    if (parsed) {
+      if (typeof parsed.content === 'string' && parsed.content.trim()) {
+        extracted = parsed.content;
+      }
+      if (parsed.memory && typeof parsed.memory === 'object' && !Array.isArray(parsed.memory)) {
+        extractedMemory = parsed.memory as Record<string, unknown>;
+      }
+      console.log(
+        `[PaperDrafting] Extracted JSON section payload (${extracted.length} chars${extractedMemory ? ', memory preserved' : ''})`
+      );
+    }
+  } catch (parseErr) {
+    console.warn('[PaperDrafting] Could not parse JSON output, using raw:', parseErr);
+  }
+
+  return { content: extracted, memory: extractedMemory };
+}
+
 function mergeDimensionFlowIntoValidationReport(
   existing: unknown,
   flow: DimensionFlowState
@@ -1506,6 +1869,7 @@ function parseDimensionFlowState(value: unknown): DimensionFlowState | null {
 
   const sectionKey = String(flow.sectionKey || '').trim();
   if (!sectionKey) return null;
+  const sectionWordBudget = normalizePositiveWordBudget(flow.sectionWordBudget);
 
   const planRaw = Array.isArray(flow.plan) ? flow.plan : [];
   const acceptedRaw = Array.isArray(flow.acceptedBlocks) ? flow.acceptedBlocks : [];
@@ -1518,6 +1882,15 @@ function parseDimensionFlowState(value: unknown): DimensionFlowState | null {
       const dimensionLabel = String(entry.dimensionLabel || '').trim();
       const inferredLabel = dimensionLabel || String(entry.dimensionKey || '').trim();
       const dimensionKey = normalizeDimensionKey(String(entry.dimensionKey || inferredLabel));
+      const roleCandidate = String(entry.role || '').trim();
+      const role: DimensionRole | undefined = (
+        roleCandidate === 'introduction'
+        || roleCandidate === 'body'
+        || roleCandidate === 'conclusion'
+        || roleCandidate === 'intro_conclusion'
+      )
+        ? roleCandidate
+        : undefined;
       return {
         dimensionKey,
         dimensionLabel: inferredLabel || dimensionKey,
@@ -1528,7 +1901,11 @@ function parseDimensionFlowState(value: unknown): DimensionFlowState | null {
         avoidClaims: Array.isArray(entry.avoidClaims)
           ? entry.avoidClaims.map((text) => String(text || '').trim()).filter(Boolean)
           : [],
-        bridgeHint: String(entry.bridgeHint || '').trim()
+        bridgeHint: String(entry.bridgeHint || '').trim(),
+        role,
+        targetWords: normalizePositiveWordBudget(entry.targetWords),
+        minWords: normalizePositiveWordBudget(entry.minWords),
+        maxWords: normalizePositiveWordBudget(entry.maxWords)
       };
     })
     .filter((entry) => entry.dimensionKey.length > 0);
@@ -1548,12 +1925,51 @@ function parseDimensionFlowState(value: unknown): DimensionFlowState | null {
     }))
     .filter((entry) => entry.dimensionKey.length > 0);
 
+  const pass1SourceRaw = asRecord(flow.pass1Source);
+  const pass1Source = String(pass1SourceRaw.source || '').trim() === 'pass1_section_draft'
+    && String(pass1SourceRaw.contentFingerprint || '').trim()
+    ? {
+        source: 'pass1_section_draft' as const,
+        contentFingerprint: String(pass1SourceRaw.contentFingerprint || '').trim(),
+        wordCount: Number(pass1SourceRaw.wordCount) > 0 ? Number(pass1SourceRaw.wordCount) : 0,
+        preview: String(pass1SourceRaw.preview || '').trim(),
+        generatedAt: String(pass1SourceRaw.generatedAt || '').trim() || undefined,
+        reused: Boolean(pass1SourceRaw.reused),
+        memory: normalizePass1MemorySnapshot(pass1SourceRaw.memory)
+      }
+    : undefined;
+
   const parseProposal = (entry: Record<string, unknown>): DimensionDraftProposal | undefined => {
     const dimensionKey = normalizeDimensionKey(String(entry.dimensionKey || ''));
     const content = String(entry.content || '').trim();
     if (!dimensionKey || !content) return undefined;
 
     const validation = asRecord(entry.citationValidation);
+    const reviewTraceRaw = asRecord(entry.reviewTrace);
+    const roleCandidate = String(reviewTraceRaw.role || '').trim();
+    const reviewTrace: DimensionProposalReviewTrace | undefined = (
+      String(reviewTraceRaw.pass1Fingerprint || '').trim()
+      && (
+        roleCandidate === 'introduction'
+        || roleCandidate === 'body'
+        || roleCandidate === 'conclusion'
+        || roleCandidate === 'intro_conclusion'
+      )
+    )
+      ? {
+          pass1Fingerprint: String(reviewTraceRaw.pass1Fingerprint || '').trim(),
+          pass1WordCount: Number(reviewTraceRaw.pass1WordCount) > 0 ? Number(reviewTraceRaw.pass1WordCount) : 0,
+          role: roleCandidate as DimensionRole,
+          bridgeHint: String(reviewTraceRaw.bridgeHint || '').trim(),
+          requiredCitationKeys: normalizeStringList(reviewTraceRaw.requiredCitationKeys),
+          previousDimensionLabel: String(reviewTraceRaw.previousDimensionLabel || '').trim() || null,
+          nextDimensionLabel: String(reviewTraceRaw.nextDimensionLabel || '').trim() || null,
+          acceptedBlockCount: Number(reviewTraceRaw.acceptedBlockCount) > 0 ? Number(reviewTraceRaw.acceptedBlockCount) : 0,
+          acceptedContextHash: String(reviewTraceRaw.acceptedContextHash || '').trim(),
+          acceptedSummary: String(reviewTraceRaw.acceptedSummary || '').trim(),
+          acceptedContextPreview: String(reviewTraceRaw.acceptedContextPreview || '').trim(),
+        }
+      : undefined;
     return {
       dimensionKey,
       content,
@@ -1572,7 +1988,8 @@ function parseDimensionFlowState(value: unknown): DimensionFlowState | null {
           ? validation.missingRequiredKeys.map((key) => String(key || '').trim()).filter(Boolean)
           : []
       },
-      createdAt: String(entry.createdAt || new Date().toISOString())
+      createdAt: String(entry.createdAt || new Date().toISOString()),
+      reviewTrace,
     };
   };
 
@@ -1589,8 +2006,10 @@ function parseDimensionFlowState(value: unknown): DimensionFlowState | null {
     sectionKey,
     createdAt: String(flow.createdAt || new Date().toISOString()),
     updatedAt: String(flow.updatedAt || new Date().toISOString()),
-    plan,
+    sectionWordBudget,
+    plan: applyDimensionPlanMetadata(plan, sectionWordBudget),
     acceptedBlocks,
+    pass1Source,
     pendingProposal,
     bufferedProposals,
     lastAcceptedContextHash: String(flow.lastAcceptedContextHash || '')
@@ -1623,6 +2042,52 @@ function buildDimensionPriorContext(stitchedContent: string, maxChars: number = 
   const tail = normalized.slice(-tailChars).trim();
 
   return `${head}\n\n[... earlier accepted content omitted for length ...]\n\n${tail}`;
+}
+
+function buildPass1SourceTrace(params: {
+  content: string;
+  memory?: unknown;
+  generatedAt?: string | Date | null;
+  reused: boolean;
+}): DimensionPass1SourceTrace | undefined {
+  const content = String(params.content || '').trim();
+  if (!content) return undefined;
+
+  const generatedAt = params.generatedAt instanceof Date
+    ? params.generatedAt.toISOString()
+    : String(params.generatedAt || '').trim() || undefined;
+
+  return {
+    source: 'pass1_section_draft',
+    contentFingerprint: computeContentFingerprint(content),
+    wordCount: computeWordCount(content),
+    preview: buildDimensionPriorContext(content, 4200),
+    generatedAt,
+    reused: params.reused,
+    memory: normalizePass1MemorySnapshot(params.memory),
+  };
+}
+
+function formatPass1MemoryForPrompt(memory?: Pass1MemorySnapshot | null): string {
+  if (!memory) {
+    return '(No pass 1 memory available)';
+  }
+
+  const parts: string[] = [];
+  if (memory.keyPoints.length > 0) {
+    parts.push(`Key points: ${memory.keyPoints.join('; ')}`);
+  }
+  if (memory.termsIntroduced.length > 0) {
+    parts.push(`Terms introduced: ${memory.termsIntroduced.join(', ')}`);
+  }
+  if (memory.mainClaims.length > 0) {
+    parts.push(`Main claims: ${memory.mainClaims.join('; ')}`);
+  }
+  if (memory.forwardReferences.length > 0) {
+    parts.push(`Forward references: ${memory.forwardReferences.join('; ')}`);
+  }
+
+  return parts.length > 0 ? parts.join('\n') : '(No pass 1 memory available)';
 }
 
 function buildAcceptedContextHash(blocks: DimensionAcceptedBlock[]): string {
@@ -1666,6 +2131,7 @@ interface SectionPromptRuntimeBundle {
   citations: SessionCitation[];
   useMappedEvidence: boolean;
   citationContext: Awaited<ReturnType<typeof DraftingService.buildCitationContext>>;
+  sectionWordBudget?: number;
   blueprintPromptContext?: BlueprintPromptContext;
   evidencePromptContext: EvidencePromptContext;
 }
@@ -2117,7 +2583,11 @@ async function resolveCitationAttribution(
   const filteredRows = rows.filter(
     r => normalizeSectionKey(r.sectionKey) === normalizeSectionKey(sectionKey)
   );
-  const unique = Array.from(new Set(filteredRows.map(r => r.dimension).filter((d): d is string => Boolean(d))));
+  const unique: string[] = Array.from(new Set(
+    filteredRows
+      .map((r) => String(r.dimension || '').trim())
+      .filter((d): d is string => Boolean(d))
+  ));
   if (unique.length === 1) {
     return { dimension: unique[0], ambiguous: false };
   }
@@ -2402,32 +2872,6 @@ async function generateSection(
   if (prompt.includes('ALLOWED_CITATION_KEYS: (none)')) {
     console.warn('[PaperDrafting] WARNING: No allowed citation keys - evidence pack may be empty');
   }
-
-  const extractSectionOutput = (
-    rawOutput: string
-  ): { content: string; memory: Record<string, unknown> | null } => {
-    let extracted = rawOutput;
-    let extractedMemory: Record<string, unknown> | null = null;
-
-    try {
-      const parsed = extractJsonObjectFromOutput(rawOutput);
-      if (parsed) {
-        if (typeof parsed.content === 'string' && parsed.content.trim()) {
-          extracted = parsed.content;
-        }
-        if (parsed.memory && typeof parsed.memory === 'object' && !Array.isArray(parsed.memory)) {
-          extractedMemory = parsed.memory as Record<string, unknown>;
-        }
-        console.log(
-          `[PaperDrafting] Extracted JSON section payload (${extracted.length} chars${extractedMemory ? ', memory preserved' : ''})`
-        );
-      }
-    } catch (parseErr) {
-      console.warn('[PaperDrafting] Could not parse JSON output, using raw:', parseErr);
-    }
-
-    return { content: extracted, memory: extractedMemory };
-  };
 
   let rawContent: string | null = null;
   let llmTokensUsed: number | undefined;
@@ -2879,6 +3323,44 @@ async function generateSection(
   };
 }
 
+async function resolveSectionWordBudget(params: {
+  sectionKey: string;
+  paperTypeCode: string;
+  blueprintWordBudget?: number;
+}): Promise<number | undefined> {
+  const normalizedSectionKey = normalizeSectionKey(params.sectionKey);
+  const fromBlueprint = normalizePositiveWordBudget(params.blueprintWordBudget);
+  if (fromBlueprint) return fromBlueprint;
+
+  try {
+    const template = await sectionTemplateService.getSectionTemplate(
+      normalizedSectionKey,
+      params.paperTypeCode
+    );
+    const fromTemplate = normalizePositiveWordBudget(template?.constraints?.wordLimit);
+    if (fromTemplate) return fromTemplate;
+  } catch {
+    // ignore and fall back
+  }
+
+  try {
+    const paperType = await paperTypeService.getPaperType(params.paperTypeCode);
+    const defaults = (paperType as any)?.defaultWordLimits as Record<string, unknown> | undefined;
+    if (!defaults) return undefined;
+
+    const direct = normalizePositiveWordBudget(defaults[normalizedSectionKey]);
+    if (direct) return direct;
+
+    const alias = normalizedSectionKey.replace(/_/g, '');
+    const aliasBudget = normalizePositiveWordBudget(defaults[alias]);
+    if (aliasBudget) return aliasBudget;
+  } catch {
+    // ignore
+  }
+
+  return undefined;
+}
+
 async function buildSectionPromptRuntimeBundle(params: {
   sessionId: string;
   session: any;
@@ -2909,19 +3391,28 @@ async function buildSectionPromptRuntimeBundle(params: {
   const extraSections = normalizeExtraSections(draft?.extraSections);
 
   let blueprintPromptContext: BlueprintPromptContext | undefined;
+  let blueprintWordBudget: number | undefined;
   const blueprint = await blueprintService.getBlueprint(sessionId);
   if (blueprint) {
     const currentSectionPlan = blueprint.sectionPlan.find(
       (entry) => normalizeSectionKey(entry.sectionKey) === normalizedSectionKey
     );
+    blueprintWordBudget = normalizePositiveWordBudget(currentSectionPlan?.wordBudget);
     blueprintPromptContext = {
       thesisStatement: blueprint.thesisStatement,
       centralObjective: blueprint.centralObjective,
       keyContributions: blueprint.keyContributions,
       sectionPlan: blueprint.sectionPlan.map((entry) => ({ sectionKey: entry.sectionKey, purpose: entry.purpose })),
-      mustCover: currentSectionPlan?.mustCover || []
+      mustCover: currentSectionPlan?.mustCover || [],
+      wordBudget: blueprintWordBudget
     };
   }
+
+  const sectionWordBudget = await resolveSectionWordBudget({
+    sectionKey: normalizedSectionKey,
+    paperTypeCode,
+    blueprintWordBudget
+  });
 
   let evidencePromptContext: EvidencePromptContext;
   if (useMappedEvidence) {
@@ -2997,6 +3488,7 @@ async function buildSectionPromptRuntimeBundle(params: {
     citations,
     useMappedEvidence,
     citationContext,
+    sectionWordBudget,
     blueprintPromptContext,
     evidencePromptContext
   };
@@ -3004,63 +3496,53 @@ async function buildSectionPromptRuntimeBundle(params: {
 
 /**
  * Build dimension plan deterministically from the frozen blueprint mustCover
- * dimensions. Blueprint dimensions are the single source of truth — the same
- * dimensions are used for paper relevance mapping, citation mapping, and
- * evidence card mapping.  No LLM call is needed.
+ * dimensions ONLY (same labels + same order). No new dimensions are created
+ * in drafting flow. Evidence mappings are used only to attach citation keys.
  *
- * Priority:
- *  1. dimensionEvidence (mustCover dims enriched with evidence-mapped citations)
- *  2. raw mustCover (when no evidence cards have been mapped yet)
- *
- * Returns null when the blueprint has no mustCover for this section — callers
- * should surface a clear error rather than inventing dimensions.
+ * Returns null when the blueprint has no mustCover for this section.
  */
 function buildBlueprintDimensionPlan(
   bundle: SectionPromptRuntimeBundle
 ): DimensionPlanEntry[] | null {
-  // --- Priority 1: evidence-mapped blueprint dimensions ----------------------
-  const dimensionEvidence = bundle.evidencePromptContext.dimensionEvidence || [];
-  const fromEvidence: DimensionPlanEntry[] = dimensionEvidence
-    .map((entry) => {
-      const dimensionLabel = String(entry.dimension || '').trim();
+  const mustCover = (bundle.blueprintPromptContext?.mustCover || [])
+    .map((dimensionLabel) => String(dimensionLabel || '').trim())
+    .filter(Boolean);
+
+  if (mustCover.length === 0) return null;
+
+  const evidenceByDimension = new Map<string, string[]>();
+  for (const entry of bundle.evidencePromptContext.dimensionEvidence || []) {
+    const dimensionKey = normalizeDimensionKey(String(entry.dimension || '').trim());
+    if (!dimensionKey) continue;
+    const keys: string[] = Array.from(new Set(
+      (entry.citations || [])
+        .map((citation) => String(citation.citationKey || '').trim())
+        .filter((key): key is string => Boolean(key))
+    )).slice(0, 5);
+    evidenceByDimension.set(dimensionKey, keys);
+  }
+
+  const plan: DimensionPlanEntry[] = mustCover
+    .map((dimensionLabel) => {
       const dimensionKey = normalizeDimensionKey(dimensionLabel);
       if (!dimensionKey) return null;
-      const mustUseCitationKeys = Array.from(new Set(
-        entry.citations
-          .map((citation) => String(citation.citationKey || '').trim())
-          .filter(Boolean)
-      )).slice(0, 5);
+      const mustUseCitationKeys = evidenceByDimension.get(dimensionKey) || [];
       return {
-        dimensionKey,
-        dimensionLabel,
-        objective: `Cover the "${dimensionLabel}" aspect with evidence-grounded analysis.`,
-        mustUseCitationKeys,
-        avoidClaims: [] as string[],
-        bridgeHint: 'Bridge naturally to the next dimension while avoiding repetition.'
-      } satisfies DimensionPlanEntry;
-    })
-    .filter((entry): entry is DimensionPlanEntry => Boolean(entry));
-
-  if (fromEvidence.length > 0) return fromEvidence;
-
-  // --- Priority 2: raw blueprint mustCover (no evidence mapped yet) ----------
-  const fromMustCover = (bundle.blueprintPromptContext?.mustCover || [])
-    .map((dimensionLabel) => String(dimensionLabel || '').trim())
-    .filter(Boolean)
-    .map((dimensionLabel) => ({
       dimensionKey: normalizeDimensionKey(dimensionLabel),
       dimensionLabel,
-      objective: `Address the blueprint dimension "${dimensionLabel}" clearly and defensibly.`,
-      mustUseCitationKeys: [],
+      objective: mustUseCitationKeys.length > 0
+        ? `Cover the frozen blueprint dimension "${dimensionLabel}" with evidence-grounded analysis.`
+        : `Address the frozen blueprint dimension "${dimensionLabel}" clearly and defensibly.`,
+      mustUseCitationKeys,
       avoidClaims: [] as string[],
       bridgeHint: 'Transition cleanly to the next required dimension.'
-    } satisfies DimensionPlanEntry))
+      } satisfies DimensionPlanEntry;
+    })
+    .filter((entry): entry is DimensionPlanEntry => Boolean(entry))
     .filter((entry) => entry.dimensionKey.length > 0);
 
-  if (fromMustCover.length > 0) return fromMustCover;
-
-  // No blueprint dimensions available for this section.
-  return null;
+  if (plan.length === 0) return null;
+  return applyDimensionPlanMetadata(plan, bundle.sectionWordBudget);
 }
 
 // parseDimensionPlan removed — blueprint mustCover dimensions are now the
@@ -3075,7 +3557,7 @@ function collectCanonicalCitationKeys(
     .map((key) => String(key || '').trim())
     .filter(Boolean);
   return Array.from(new Set(
-    extracted.map((key) => canonicalLookup.get(key.toLowerCase()) || key)
+    extracted.map((key) => resolveCitationKeyFromLookup(key, canonicalLookup) || key)
   ));
 }
 
@@ -3194,7 +3676,7 @@ function resolveRequiredCitationKeys(
     keys
       .map((key) => String(key || '').trim())
       .filter(Boolean)
-      .map((key) => canonicalLookup.get(key.toLowerCase()) || key)
+      .map((key) => resolveCitationKeyFromLookup(key, canonicalLookup) || key)
   ));
 }
 
@@ -3218,16 +3700,16 @@ function evaluateDimensionCitationValidation(params: {
     params.bundle.useMappedEvidence ? allowedCitationKeys : undefined,
     knownSessionKeys
   );
-  const extractedKeys = DraftingService.extractCitationKeys(polishedContent, knownSessionKeys)
+  const extractedKeys: string[] = DraftingService.extractCitationKeys(polishedContent, knownSessionKeys)
     .map((key) => String(key || '').trim())
-    .filter(Boolean);
-  const unknownKeys = Array.from(new Set(
-    extractedKeys.filter((key) => !canonicalLookup.has(key.toLowerCase()))
+    .filter((key): key is string => Boolean(key));
+  const unknownKeys: string[] = Array.from(new Set(
+    extractedKeys.filter((key) => !resolveCitationKeyFromLookup(key, canonicalLookup))
   ));
   const citationKeys = collectCanonicalCitationKeys(polishedContent, knownSessionKeys, canonicalLookup);
   const requiredCitationKeys = resolveRequiredCitationKeys(params.requiredCitationKeys, canonicalLookup);
-  const usedCitationSet = new Set(citationKeys.map((key) => key.toLowerCase()));
-  const missingRequiredKeys = requiredCitationKeys.filter((key) => !usedCitationSet.has(key.toLowerCase()));
+  const usedCitationSet = new Set(citationKeys.map((key) => citationKeyIdentity(key)));
+  const missingRequiredKeys = requiredCitationKeys.filter((key) => !usedCitationSet.has(citationKeyIdentity(key)));
 
   return {
     polishedContent,
@@ -3263,6 +3745,7 @@ function buildDimensionFlowResponse(
   const effectiveStitchedContent = typeof stitchedContentOverride === 'string'
     ? stitchedContentOverride
     : stitchedContent;
+  const budget = buildDimensionBudgetSnapshot(flow, effectiveStitchedContent);
   const nextDimension = findNextDimensionPlanEntry(flow);
   const acceptedSet = new Set(flow.acceptedBlocks.map((block) => normalizeDimensionKey(block.dimensionKey)));
   const pendingKey = normalizeDimensionKey(flow.pendingProposal?.dimensionKey || '');
@@ -3270,6 +3753,7 @@ function buildDimensionFlowResponse(
   return {
     flow,
     stitchedContent: effectiveStitchedContent,
+    pass1Source: flow.pass1Source || null,
     orderedBlocks,
     nextDimension,
     completed: !nextDimension,
@@ -3283,6 +3767,7 @@ function buildDimensionFlowResponse(
         status
       };
     }),
+    budget,
     progress: {
       total: flow.plan.length,
       accepted: acceptedSet.size,
@@ -3301,6 +3786,8 @@ async function generateDimensionProposal(params: {
   bundle: SectionPromptRuntimeBundle;
   flow: DimensionFlowState;
   targetDimension: DimensionPlanEntry;
+  pass1Content: string;
+  pass1Memory?: unknown;
   headers: Record<string, string>;
   tenantContext?: TenantContext | null;
   feedback?: string;
@@ -3310,16 +3797,78 @@ async function generateDimensionProposal(params: {
   citationKeys: string[];
   outputTokens?: number;
 }> {
+  const budget = resolveDimensionDraftBudget(params.flow, params.targetDimension.dimensionKey);
+  if (budget.maxWords !== undefined && budget.maxWords <= 0) {
+    throw new DraftingRequestError(
+      'Section word budget is exhausted before this dimension',
+      422,
+      {
+        error: 'Section word budget is exhausted before this dimension',
+        hint: 'Shorten earlier accepted dimensions or increase section word budget.'
+      }
+    );
+  }
+
   const { stitchedContent } = stitchAcceptedBlocks(params.flow);
   const acceptedSummary = summarizeAcceptedBlocks(params.flow.acceptedBlocks);
   const priorContext = buildDimensionPriorContext(stitchedContent, 9000);
+  const pass1Content = String(params.pass1Content || '').trim();
+  const pass1Memory = normalizePass1MemorySnapshot(params.pass1Memory);
+  const pass1Source = params.flow.pass1Source || buildPass1SourceTrace({
+    content: pass1Content,
+    memory: pass1Memory,
+    reused: true
+  });
+  const pass1SourcePreview = pass1Source?.preview || buildDimensionPriorContext(pass1Content, 6000);
   const requiredKeys = params.targetDimension.mustUseCitationKeys.join(', ') || '(none)';
   const avoidClaims = params.targetDimension.avoidClaims.join('; ') || '(none)';
   const feedback = params.feedback?.trim() ? `\nREWRITE FEEDBACK:\n${params.feedback.trim()}` : '';
+  const roleDirective = buildDimensionRoleDirective(budget.role);
+  const targetIndex = params.flow.plan.findIndex(
+    (entry) => normalizeDimensionKey(entry.dimensionKey) === normalizeDimensionKey(params.targetDimension.dimensionKey)
+  );
+  const previousDimensionLabel = targetIndex > 0
+    ? params.flow.plan[targetIndex - 1]?.dimensionLabel || null
+    : null;
+  const nextDimensionLabel = targetIndex >= 0 && targetIndex < params.flow.plan.length - 1
+    ? params.flow.plan[targetIndex + 1]?.dimensionLabel || null
+    : null;
   const coverageKeys = params.bundle.evidencePromptContext.coverageAssignments
     .map((assignment) => assignment.citationKey)
     .filter(Boolean)
     .join(', ') || '(none)';
+  const roleLabel = budget.role.replace(/_/g, ' ').toUpperCase();
+  const budgetLines = [
+    `DIMENSION ROLE: ${roleLabel}`,
+    budget.sectionWordBudget
+      ? `SECTION WORD BUDGET: ${budget.sectionWordBudget} words`
+      : 'SECTION WORD BUDGET: (not configured)',
+    budget.sectionWordBudget
+      ? `WORDS ALREADY LOCKED (other accepted dimensions): ${budget.usedWordsExcludingTarget}`
+      : '',
+    budget.remainingWordsForTarget !== undefined
+      ? `WORDS REMAINING AVAILABLE FOR THIS DIMENSION: ${budget.remainingWordsForTarget}`
+      : '',
+    budget.targetWords !== undefined
+      ? `TARGET WORDS FOR THIS DIMENSION: ~${budget.targetWords}`
+      : '',
+    budget.minWords !== undefined
+      ? `MIN WORDS FOR THIS DIMENSION: ${budget.minWords}`
+      : '',
+    budget.maxWords !== undefined
+      ? `HARD MAX WORDS FOR THIS DIMENSION: ${budget.maxWords}`
+      : ''
+  ].filter(Boolean).join('\n');
+  const lengthRule = budget.maxWords !== undefined
+    ? `- Hard cap: ${budget.maxWords} words for this dimension block.`
+    : '- Keep the block concise and tightly scoped to this dimension.';
+  const targetRule = budget.targetWords !== undefined
+    ? `- Aim for about ${budget.targetWords} words.`
+    : '';
+  const minRule = budget.minWords !== undefined
+    ? `- Keep at least ${budget.minWords} words unless evidence is genuinely sparse.`
+    : '';
+  const canonicalLookup = buildCanonicalCitationLookup(params.bundle.citations);
 
   const prompt = `You are drafting ONE dimension for a paper section.
 
@@ -3332,6 +3881,14 @@ REQUIRED CITATION KEYS FOR THIS DIMENSION: ${requiredKeys}
 MANDATORY SECTION COVERAGE KEYS (global): ${coverageKeys}
 AVOID THESE CLAIMS: ${avoidClaims}
 BRIDGE HINT: ${params.targetDimension.bridgeHint || '(none)'}
+${budgetLines}
+ROLE DIRECTIVE: ${roleDirective}
+
+PASS 1 SECTION SOURCE (use this as the source of truth for section-level content):
+${pass1SourcePreview || '(No pass 1 source available)'}
+
+PASS 1 MEMORY SUMMARY:
+${formatPass1MemoryForPrompt(pass1Memory)}
 
 ALREADY ACCEPTED DIMENSIONS (locked):
 ${acceptedSummary}
@@ -3345,11 +3902,19 @@ ${feedback}
 
 Write ONLY the content block for this target dimension.
 Rules:
+- Use the PASS 1 SECTION SOURCE above as the source of truth for this section.
+- Extract and adapt only the parts of the pass 1 draft that belong to this target dimension.
 - Do not repeat prior accepted content.
 - Keep continuity with the previous accepted dimension.
+- If this role is introduction, open the section naturally before narrowing into the target dimension.
+- If this role is conclusion, close the section cleanly and synthesize the section-level takeaway without adding new major claims.
+- If there is a next dimension, leave a natural bridge toward "${nextDimensionLabel || 'the next required dimension'}".
 - Use [CITE:key] placeholders exactly.
 - If this dimension has REQUIRED CITATION KEYS, include each at least once.
 - Keep output focused on this dimension only.
+${targetRule}
+${minRule}
+${lengthRule}
 
 Return ONLY JSON:
 {
@@ -3368,12 +3933,23 @@ Return ONLY JSON:
     temperature: params.temperature
   });
 
-  const content = extractDimensionContentFromOutput(generated.output);
-  if (!content.trim()) {
+  const extractedContent = extractDimensionContentFromOutput(generated.output);
+  if (!extractedContent.trim()) {
     throw new DraftingRequestError(
       'Dimension generation returned empty content',
       422,
       { error: 'Dimension generation returned empty content' }
+    );
+  }
+  const trimmed = budget.maxWords !== undefined
+    ? truncateContentToWordLimit(extractedContent, budget.maxWords)
+    : null;
+  const content = trimmed ? trimmed.content : extractedContent;
+  if (!content.trim()) {
+    throw new DraftingRequestError(
+      'Dimension generation exceeded budget and was fully trimmed',
+      422,
+      { error: 'Dimension generation exceeded budget and was fully trimmed' }
     );
   }
 
@@ -3389,7 +3965,20 @@ Return ONLY JSON:
       content: evaluation.polishedContent,
       contextHash: buildAcceptedContextHash(params.flow.acceptedBlocks),
       citationValidation: evaluation.citationValidation,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      reviewTrace: {
+        pass1Fingerprint: pass1Source?.contentFingerprint || '',
+        pass1WordCount: pass1Source?.wordCount || computeWordCount(pass1Content),
+        role: budget.role,
+        bridgeHint: params.targetDimension.bridgeHint || '',
+        requiredCitationKeys: resolveRequiredCitationKeys(params.targetDimension.mustUseCitationKeys, canonicalLookup),
+        previousDimensionLabel,
+        nextDimensionLabel,
+        acceptedBlockCount: params.flow.acceptedBlocks.length,
+        acceptedContextHash: buildAcceptedContextHash(params.flow.acceptedBlocks),
+        acceptedSummary,
+        acceptedContextPreview: priorContext
+      }
     },
     citationKeys: evaluation.citationKeys,
     outputTokens: generated.outputTokens
@@ -3496,6 +4085,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       case 'start_dimension_flow': {
         const payload = startDimensionFlowSchema.parse(body);
         const sectionKey = normalizeSectionKey(payload.sectionKey);
+        if (isSinglePassSection(sectionKey)) {
+          return NextResponse.json(
+            {
+              sectionKey,
+              ...buildSinglePassSectionError(sectionKey)
+            },
+            { status: 422 }
+          );
+        }
         const bundle = await buildSectionPromptRuntimeBundle({
           sessionId,
           session,
@@ -3504,7 +4102,59 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           instructions: payload.instructions,
           useMappedEvidence: payload.useMappedEvidence
         });
-        const sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
+        let sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
+
+        let pass1Content = String(sectionRecord.baseContentInternal || '').trim();
+        let pass1Memory = sectionRecord.baseMemory;
+        let reusedPass1 = Boolean(pass1Content);
+        if (!pass1Content) {
+          const generatedPass1 = await executeDraftSectionPrompt({
+            sessionId,
+            sectionKey,
+            prompt: bundle.prompt,
+            headers: requestHeaders,
+            tenantContext,
+            purpose: 'paper_section_pass1_dimension_flow',
+            temperature: payload.temperature,
+            stageCode: 'PAPER_SECTION_DRAFT'
+          });
+          const parsedPass1 = extractSectionOutput(generatedPass1.output);
+          pass1Content = String(parsedPass1.content || '').trim();
+          if (!pass1Content) {
+            throw new DraftingRequestError(
+              'Pass 1 generation returned empty content',
+              422,
+              { error: 'Pass 1 generation returned empty content' }
+            );
+          }
+
+          pass1Memory = parsedPass1.memory;
+          reusedPass1 = false;
+          sectionRecord = await prisma.paperSection.update({
+            where: { id: sectionRecord.id },
+            data: {
+              displayName: sectionRecord.displayName || formatSectionLabel(sectionKey),
+              baseContentInternal: pass1Content,
+              baseMemory: parsedPass1.memory as any,
+              memory: parsedPass1.memory as any,
+              pass1PromptUsed: bundle.prompt,
+              pass1LlmResponse: generatedPass1.output,
+              pass1TokensUsed: generatedPass1.outputTokens,
+              pass1CompletedAt: new Date(),
+              status: 'BASE_READY',
+              isStale: false,
+              generatedAt: new Date(),
+              version: { increment: 1 }
+            }
+          });
+        }
+
+        const pass1Source = buildPass1SourceTrace({
+          content: pass1Content,
+          memory: pass1Memory || sectionRecord.baseMemory,
+          generatedAt: sectionRecord.pass1CompletedAt,
+          reused: reusedPass1
+        });
 
         // Dimension plan is built deterministically from the frozen blueprint
         // mustCover dimensions — no LLM call needed.  These are the same
@@ -3529,8 +4179,10 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           sectionKey,
           createdAt: nowIso,
           updatedAt: nowIso,
+          sectionWordBudget: bundle.sectionWordBudget,
           plan,
           acceptedBlocks: [],
+          pass1Source,
           bufferedProposals: {},
           lastAcceptedContextHash: ''
         };
@@ -3553,6 +4205,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       case 'generate_dimension': {
         const payload = generateDimensionSchema.parse(body);
         const sectionKey = normalizeSectionKey(payload.sectionKey);
+        if (isSinglePassSection(sectionKey)) {
+          return NextResponse.json(
+            {
+              sectionKey,
+              ...buildSinglePassSectionError(sectionKey)
+            },
+            { status: 422 }
+          );
+        }
         const sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
         const flow = parseDimensionFlowState(sectionRecord.validationReport);
         if (!flow) {
@@ -3565,6 +4226,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           );
         }
 
+        if (!flow.pass1Source && typeof sectionRecord.baseContentInternal === 'string' && sectionRecord.baseContentInternal.trim()) {
+          flow.pass1Source = buildPass1SourceTrace({
+            content: sectionRecord.baseContentInternal,
+            memory: sectionRecord.baseMemory,
+            generatedAt: sectionRecord.pass1CompletedAt,
+            reused: true
+          });
+        }
+
         const bundle = await buildSectionPromptRuntimeBundle({
           sessionId,
           session,
@@ -3572,6 +4242,13 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           sectionKey,
           useMappedEvidence: payload.useMappedEvidence
         });
+
+        const resolvedFlowBudget = normalizePositiveWordBudget(flow.sectionWordBudget)
+          || normalizePositiveWordBudget(bundle.sectionWordBudget);
+        if (resolvedFlowBudget) {
+          flow.sectionWordBudget = resolvedFlowBudget;
+          flow.plan = applyDimensionPlanMetadata(flow.plan, resolvedFlowBudget);
+        }
 
         const requestedDimensionKey = payload.dimensionKey
           ? normalizeDimensionKey(payload.dimensionKey)
@@ -3648,6 +4325,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           bundle,
           flow,
           targetDimension,
+          pass1Content: String(sectionRecord.baseContentInternal || ''),
+          pass1Memory: sectionRecord.baseMemory,
           headers: requestHeaders,
           tenantContext,
           feedback: payload.feedback,
@@ -3679,6 +4358,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       case 'accept_dimension': {
         const payload = acceptDimensionSchema.parse(body);
         const sectionKey = normalizeSectionKey(payload.sectionKey);
+        if (isSinglePassSection(sectionKey)) {
+          return NextResponse.json(
+            {
+              sectionKey,
+              ...buildSinglePassSectionError(sectionKey)
+            },
+            { status: 422 }
+          );
+        }
         const dimensionKey = normalizeDimensionKey(payload.dimensionKey);
         const sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
         const flow = parseDimensionFlowState(sectionRecord.validationReport);
@@ -3728,8 +4416,52 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           sectionKey,
           useMappedEvidence: payload.useMappedEvidence
         });
+        const resolvedFlowBudget = normalizePositiveWordBudget(flow.sectionWordBudget)
+          || normalizePositiveWordBudget(bundle.sectionWordBudget);
+        if (resolvedFlowBudget) {
+          flow.sectionWordBudget = resolvedFlowBudget;
+          flow.plan = applyDimensionPlanMetadata(flow.plan, resolvedFlowBudget);
+        }
+
+        const dimensionBudget = resolveDimensionDraftBudget(flow, targetDimension.dimensionKey);
+        if (dimensionBudget.maxWords !== undefined && dimensionBudget.maxWords <= 0) {
+          return NextResponse.json(
+            {
+              error: 'Section word budget is exhausted before this dimension',
+              sectionKey,
+              dimensionKey,
+              budget: {
+                sectionWordBudget: dimensionBudget.sectionWordBudget,
+                usedWords: dimensionBudget.usedWordsExcludingTarget,
+                remainingWords: dimensionBudget.remainingWordsForTarget || 0
+              },
+              hint: 'Shorten previously accepted dimensions or raise the section word budget.'
+            },
+            { status: 422 }
+          );
+        }
+
+        const trimmedCandidate = dimensionBudget.maxWords !== undefined
+          ? truncateContentToWordLimit(candidateContent, dimensionBudget.maxWords)
+          : null;
+        const candidateTrimmedToBudget = Boolean(trimmedCandidate?.trimmed);
+        const candidateForEvaluation = trimmedCandidate ? trimmedCandidate.content : candidateContent;
+        if (!candidateForEvaluation.trim()) {
+          return NextResponse.json(
+            {
+              error: 'No content remains after applying section word budget',
+              sectionKey,
+              dimensionKey,
+              budget: {
+                sectionWordBudget: dimensionBudget.sectionWordBudget,
+                maxWords: dimensionBudget.maxWords || 0
+              }
+            },
+            { status: 422 }
+          );
+        }
         const evaluation = evaluateDimensionCitationValidation({
-          content: candidateContent,
+          content: candidateForEvaluation,
           bundle,
           requiredCitationKeys: targetDimension.mustUseCitationKeys
         });
@@ -3793,7 +4525,16 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         const stitched = stitchAcceptedBlocks(flow);
         const flowCompleted = !findNextDimensionPlanEntry(flow);
         let sectionContentForPersist = stitched.stitchedContent;
-        let polishSummary: { attempted: boolean; applied: boolean; error?: string } | null = null;
+        let polishSummary: {
+          attempted: boolean;
+          applied: boolean;
+          error?: string;
+          trimmedToBudget?: {
+            maxWords: number;
+            originalWords: number;
+            finalWords: number;
+          };
+        } | null = null;
         let polishMetadata: { promptUsed?: string; tokensUsed?: number; completedAt: Date } | null = null;
 
         if (flowCompleted && sectionContentForPersist.trim()) {
@@ -3822,6 +4563,22 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
               error: polishSummary.error
             });
           }
+        }
+
+        const finalSectionBudget = normalizePositiveWordBudget(flow.sectionWordBudget);
+        const finalSectionTrim = finalSectionBudget !== undefined
+          ? truncateContentToWordLimit(sectionContentForPersist, finalSectionBudget)
+          : null;
+        if (finalSectionTrim?.trimmed) {
+          sectionContentForPersist = finalSectionTrim.content;
+          if (!polishSummary) {
+            polishSummary = { attempted: false, applied: false };
+          }
+          polishSummary.trimmedToBudget = {
+            maxWords: finalSectionBudget!,
+            originalWords: finalSectionTrim.originalWords,
+            finalWords: finalSectionTrim.finalWords
+          };
         }
 
         let persistedSection = await persistDimensionFlowState({
@@ -3882,6 +4639,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
               bundle,
               flow,
               targetDimension: nextDimension,
+              pass1Content: String(sectionRecord.baseContentInternal || ''),
+              pass1Memory: sectionRecord.baseMemory,
               headers: requestHeaders,
               tenantContext,
               temperature: 0.2
@@ -3909,6 +4668,24 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           citationValidation: evaluation.citationValidation,
           ...flowResponse,
           stitchedContent: sectionContentForPersist,
+          lengthControl: {
+            candidateTrimmedToBudget,
+            ...(trimmedCandidate?.trimmed
+              ? {
+                candidateWordCountBeforeTrim: trimmedCandidate.originalWords,
+                candidateWordCountAfterTrim: trimmedCandidate.finalWords,
+                candidateMaxWords: dimensionBudget.maxWords
+              }
+              : {}),
+            ...(finalSectionTrim?.trimmed
+              ? {
+                sectionTrimmedToBudget: true,
+                sectionWordCountBeforeTrim: finalSectionTrim.originalWords,
+                sectionWordCountAfterTrim: finalSectionTrim.finalWords,
+                sectionMaxWords: finalSectionBudget
+              }
+              : {})
+          },
           ...(polishSummary ? { polish: polishSummary } : {})
         });
       }
@@ -3916,6 +4693,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       case 'reject_dimension': {
         const payload = rejectDimensionSchema.parse(body);
         const sectionKey = normalizeSectionKey(payload.sectionKey);
+        if (isSinglePassSection(sectionKey)) {
+          return NextResponse.json(
+            {
+              sectionKey,
+              ...buildSinglePassSectionError(sectionKey)
+            },
+            { status: 422 }
+          );
+        }
         const dimensionKey = normalizeDimensionKey(payload.dimensionKey);
         const sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
         const flow = parseDimensionFlowState(sectionRecord.validationReport);
@@ -3946,12 +4732,20 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           sectionKey,
           useMappedEvidence: payload.useMappedEvidence
         });
+        const resolvedFlowBudget = normalizePositiveWordBudget(flow.sectionWordBudget)
+          || normalizePositiveWordBudget(bundle.sectionWordBudget);
+        if (resolvedFlowBudget) {
+          flow.sectionWordBudget = resolvedFlowBudget;
+          flow.plan = applyDimensionPlanMetadata(flow.plan, resolvedFlowBudget);
+        }
         const rewritten = await generateDimensionProposal({
           sessionId,
           sectionKey,
           bundle,
           flow,
           targetDimension,
+          pass1Content: String(sectionRecord.baseContentInternal || ''),
+          pass1Memory: sectionRecord.baseMemory,
           headers: requestHeaders,
           tenantContext,
           feedback: payload.feedback,
@@ -3983,6 +4777,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       case 'get_dimension_flow': {
         const payload = getDimensionFlowSchema.parse(body);
         const sectionKey = normalizeSectionKey(payload.sectionKey);
+        if (isSinglePassSection(sectionKey)) {
+          return NextResponse.json({
+            sectionKey,
+            started: false,
+            flow: null,
+            stitchedContent: '',
+            ...buildSinglePassSectionError(sectionKey)
+          });
+        }
         const sectionRecord = await prisma.paperSection.findUnique({
           where: {
             sessionId_sectionKey: {
@@ -4008,6 +4811,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             started: false,
             flow: null,
             stitchedContent: sectionRecord.content || ''
+          });
+        }
+
+        if (!flow.pass1Source && typeof sectionRecord.baseContentInternal === 'string' && sectionRecord.baseContentInternal.trim()) {
+          flow.pass1Source = buildPass1SourceTrace({
+            content: sectionRecord.baseContentInternal,
+            memory: sectionRecord.baseMemory,
+            generatedAt: sectionRecord.pass1CompletedAt,
+            reused: true
           });
         }
 
@@ -4042,7 +4854,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           const unknownKeys = Array.from(new Set(
             DraftingService.extractCitationKeys(content, knownSessionKeys)
               .map(key => String(key || '').trim())
-              .filter(key => key.length > 0 && !canonicalLookup.has(key.toLowerCase()))
+              .filter(key => key.length > 0 && !resolveCitationKeyFromLookup(key, canonicalLookup))
           ));
 
           if (validation.disallowedKeys.length > 0 || unknownKeys.length > 0) {
@@ -4160,12 +4972,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         const payload = checkCitationsSchema.parse(body);
         const keys = extractCitationKeys(payload.content);
         const citations = await citationService.getCitationsForSession(sessionId);
-        const knownKeys = new Set(citations.map(c => c.citationKey));
-        const missing = keys.filter(key => !knownKeys.has(key));
+        const canonicalLookup = buildCanonicalCitationLookup(citations);
+        const found = keys
+          .map((key) => resolveCitationKeyFromLookup(key, canonicalLookup))
+          .filter((key): key is string => Boolean(key));
+        const missing = keys.filter((key) => !resolveCitationKeyFromLookup(key, canonicalLookup));
 
         return NextResponse.json({
           total: keys.length,
-          found: keys.filter(key => knownKeys.has(key)),
+          found,
           missing
         });
       }
@@ -4559,7 +5374,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
         const requestedKeys = payload.citationKeys
           ? payload.citationKeys
-            .map(key => canonicalLookup.get(key.trim().toLowerCase()))
+            .map(key => resolveCitationKeyFromLookup(key.trim(), canonicalLookup))
             .filter((key): key is string => Boolean(key))
           : [];
 

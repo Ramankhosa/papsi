@@ -1,4 +1,11 @@
 import { prisma } from '../prisma';
+import {
+  buildCitationKeyLookup,
+  citationKeyIdentity,
+  normalizeCitationKey,
+  resolveCitationKeyFromLookup,
+  splitCitationKeyList
+} from '@/lib/utils/citation-key-normalization';
 
 export interface CoverageValidationResult {
   neverCited: string[];
@@ -10,14 +17,6 @@ export interface CoverageValidationResult {
 
 function normalizeSectionKey(value: string): string {
   return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
-}
-
-function normalizeCitationKey(value: string): string {
-  return String(value || '')
-    .trim()
-    .replace(/^['"`\s]+|['"`\s]+$/g, '')
-    .replace(/[.,;:]+$/g, '')
-    .trim();
 }
 
 function normalizeExtraSections(value: unknown): Record<string, string> {
@@ -50,11 +49,7 @@ function normalizeExtraSections(value: unknown): Record<string, string> {
 }
 
 function splitCitationKeys(raw: string): string[] {
-  const unified = String(raw || '').replace(/\s+(?:and|&)\s+/gi, ',');
-  return unified
-    .split(/[,;|/]/g)
-    .map(part => normalizeCitationKey(part))
-    .filter(Boolean);
+  return splitCitationKeyList(raw);
 }
 
 function countCitationMentionsInSection(
@@ -69,7 +64,7 @@ function countCitationMentionsInSection(
   while ((match = markerRegex.exec(content)) !== null) {
     const keys = splitCitationKeys(match[1] || '');
     for (const key of keys) {
-      const canonical = canonicalLookup.get(key.toLowerCase()) || key;
+      const canonical = resolveCitationKeyFromLookup(key, canonicalLookup) || key;
       counts.set(canonical, (counts.get(canonical) || 0) + 1);
     }
   }
@@ -123,23 +118,19 @@ class CitationCoverageValidator {
       };
     }
 
-    const canonicalLookup = new Map<string, string>();
-    for (const citation of citations) {
-      const key = normalizeCitationKey(citation.citationKey);
-      if (!key) continue;
-      canonicalLookup.set(key.toLowerCase(), key);
-    }
+    const canonicalLookup = buildCitationKeyLookup(citations.map(citation => citation.citationKey));
 
-    const citedSet = new Set<string>();
+    const citedIdentitySet = new Set<string>();
     for (const row of usageRows) {
-      const canonical = normalizeCitationKey(row.citation.citationKey);
+      const canonical = resolveCitationKeyFromLookup(row.citation.citationKey, canonicalLookup)
+        || normalizeCitationKey(row.citation.citationKey);
       if (!canonical) continue;
-      citedSet.add(canonical);
+      citedIdentitySet.add(citationKeyIdentity(canonical));
     }
 
     const neverCited = citations
-      .map(citation => normalizeCitationKey(citation.citationKey))
-      .filter(key => key && !citedSet.has(key))
+      .map(citation => resolveCitationKeyFromLookup(citation.citationKey, canonicalLookup) || normalizeCitationKey(citation.citationKey))
+      .filter(key => key && !citedIdentitySet.has(citationKeyIdentity(key)))
       .sort((a, b) => a.localeCompare(b));
 
     const overUsedInSection: Array<{ citationKey: string; sectionKey: string; count: number }> = [];

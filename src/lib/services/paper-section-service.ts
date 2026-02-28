@@ -499,10 +499,10 @@ class PaperSectionService {
         llmRequestContext,
         {
           taskCode: 'LLM2_DRAFT',
-          stageCode: 'PAPER_SECTION_GEN',
+          stageCode: twoPassEnabled ? 'PAPER_SECTION_DRAFT' : 'PAPER_SECTION_GEN',
           prompt,
           parameters: {
-            purpose: 'paper_section_generation',
+            purpose: twoPassEnabled ? 'paper_section_pass1' : 'paper_section_generation',
             temperature: 0.5,
           },
           idempotencyKey: crypto.randomUUID(),
@@ -823,7 +823,7 @@ class PaperSectionService {
             llmRequestContext,
             {
               taskCode: 'LLM2_DRAFT',
-              stageCode: 'PAPER_SECTION_GEN',
+              stageCode: 'PAPER_SECTION_DRAFT',
               prompt,
               parameters: { purpose: 'paper_section_pass1_bg', temperature: 0.5 },
               idempotencyKey: crypto.randomUUID(),

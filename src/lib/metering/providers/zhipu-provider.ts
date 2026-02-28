@@ -101,7 +101,13 @@ export class ZhipuProvider implements LLMProvider {
       }
 
       const modelLimits = this.getTokenLimits(actualModel)
-      const maxTokens = limits.maxTokensOut || modelLimits.output
+      const requestedMaxTokens = limits.maxTokensOut || modelLimits.output
+      const maxTokens = Math.max(1, Math.min(requestedMaxTokens, modelLimits.output))
+      if (requestedMaxTokens > modelLimits.output) {
+        console.warn(
+          `[ZhipuProvider] Clamping max_tokens from ${requestedMaxTokens} to ${maxTokens} for model ${actualModel}`
+        )
+      }
 
       const response = await this.client.chat.completions.create({
         model: actualModel,

@@ -10,7 +10,7 @@
  * - Set fallback models and token limits
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAuth } from '@/lib/auth-context'
 import { unstable_noStore as noStore } from 'next/cache'
 
@@ -168,6 +168,44 @@ interface StageHelpInfo {
   summary: string
   responsibility: string
   tip: string
+}
+
+interface QuickAccessStage {
+  code: string
+  passLabel: string
+  title: string
+  description: string
+}
+
+const QUICK_ACCESS_BY_FEATURE: Record<string, QuickAccessStage[]> = {
+  PAPER_DRAFTING: [
+    {
+      code: 'PAPER_SECTION_DRAFT',
+      passLabel: 'Pass 1',
+      title: 'Base Content Generation',
+      description: 'Initial evidence-grounded section draft generation.'
+    },
+    {
+      code: 'PAPER_SECTION_GEN',
+      passLabel: 'Pass 2',
+      title: 'Polish and Finalization',
+      description: 'Section polish and publication-ready refinement.'
+    }
+  ],
+  PATENT_DRAFTING: [
+    {
+      code: 'DRAFT_REFERENCE_DRAFT_PASS1',
+      passLabel: 'Pass 1',
+      title: 'Reference Draft Base',
+      description: 'Country-neutral reference draft generation.'
+    },
+    {
+      code: 'DRAFT_ANNEXURE_DESCRIPTION',
+      passLabel: 'Pass 2',
+      title: 'Jurisdiction Top-Up',
+      description: 'Pass 2 adaptation/polish for jurisdiction specifics.'
+    }
+  ]
 }
 
 // Human-friendly help text for super-admin LLM controls.
@@ -386,6 +424,7 @@ export default function LLMConfigPage() {
   // Selection states
   const [selectedPlan, setSelectedPlan] = useState<string>('')
   const [selectedFeature, setSelectedFeature] = useState<string>('PAPER_DRAFTING')
+  const stageRowRefs = useRef<Record<string, HTMLDivElement | null>>({})
 
   // Edit states
   const [editingConfig, setEditingConfig] = useState<{
@@ -418,8 +457,8 @@ export default function LLMConfigPage() {
       setStageConfigs(data.stageConfigs || [])
       setProviders(data.providers || [])
 
-      if (data.plans?.length > 0 && !selectedPlan) {
-        setSelectedPlan(data.plans[0].id)
+      if (data.plans?.length > 0) {
+        setSelectedPlan(current => current || data.plans[0].id)
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data')
@@ -563,6 +602,23 @@ export default function LLMConfigPage() {
 
   const getConfigForStage = (stageId: string): StageConfig | undefined => {
     return stageConfigs.find(c => c.stage.id === stageId && c.plan.id === selectedPlan)
+  }
+
+  const beginStageEdit = (stage: WorkflowStage) => {
+    const config = getConfigForStage(stage.id)
+    setEditingConfig({
+      stageId: stage.id,
+      modelId: config?.model.id || '',
+      fallbacks: config?.fallbackModelIds ? JSON.parse(config.fallbackModelIds) : [],
+      maxTokensIn: config?.maxTokensIn || undefined,
+      maxTokensOut: config?.maxTokensOut || undefined
+    })
+  }
+
+  const jumpToStageRow = (stageCode: string) => {
+    const target = stageRowRefs.current[stageCode]
+    if (!target) return
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' })
   }
 
   // Filter stages by feature and exclude stages that don't use LLMs
@@ -902,6 +958,71 @@ export default function LLMConfigPage() {
               </div>
             </div>
 
+            {/* Pass 1 / Pass 2 Quick Access */}
+            {(() => {
+              const quickAccess = QUICK_ACCESS_BY_FEATURE[selectedFeature] || []
+              if (quickAccess.length === 0) return null
+
+              const quickRows = quickAccess
+                .map(item => {
+                  const stage = filteredStages.find(s => s.code === item.code)
+                  if (!stage) return null
+                  const config = getConfigForStage(stage.id)
+                  return { item, stage, config }
+                })
+                .filter(Boolean) as Array<{ item: QuickAccessStage; stage: WorkflowStage; config?: StageConfig }>
+
+              if (quickRows.length === 0) return null
+
+              return (
+                <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                  <div className="p-4 border-b border-slate-700">
+                    <h2 className="text-lg font-semibold">Pass 1 / Pass 2 Quick Access</h2>
+                    <p className="text-sm text-slate-400">
+                      Jump directly to pass-stage model controls without searching the full list.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4">
+                    {quickRows.map(({ item, stage, config }) => (
+                      <div key={stage.code} className="rounded-lg border border-slate-600 bg-slate-700/40 p-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="px-2 py-1 rounded text-xs font-semibold bg-cyan-900/40 text-cyan-200 border border-cyan-700/40">
+                            {item.passLabel}
+                          </span>
+                          <span className="text-xs text-slate-400">{stage.code}</span>
+                        </div>
+                        <div className="mt-2 font-medium text-white">{item.title}</div>
+                        <div className="text-sm text-slate-300 mt-1">{item.description}</div>
+                        <div className="mt-3 text-sm">
+                          {config ? (
+                            <span className="text-slate-200">
+                              Model: <span className="font-medium">{config.model.displayName}</span>
+                            </span>
+                          ) : (
+                            <span className="text-amber-300">Model not configured</span>
+                          )}
+                        </div>
+                        <div className="mt-3 flex items-center gap-2">
+                          <button
+                            onClick={() => jumpToStageRow(stage.code)}
+                            className="px-3 py-1 bg-slate-600 hover:bg-slate-500 rounded text-sm transition"
+                          >
+                            Jump
+                          </button>
+                          <button
+                            onClick={() => beginStageEdit(stage)}
+                            className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 rounded text-sm transition"
+                          >
+                            {config ? 'Edit' : 'Configure'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
+
             {/* Stage Configurations */}
             <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
               <div className="p-4 border-b border-slate-700">
@@ -917,7 +1038,11 @@ export default function LLMConfigPage() {
                   const stageHelp = getStageHelpInfo(stage)
 
                   return (
-                    <div key={stage.id} className="p-4 hover:bg-slate-700/30">
+                    <div
+                      key={stage.id}
+                      ref={(el) => { stageRowRefs.current[stage.code] = el }}
+                      className="p-4 hover:bg-slate-700/30"
+                    >
                       <div className="flex items-center justify-between">
                         <div className="flex-1">
                           <div className="font-medium">{stage.displayName}</div>
@@ -1095,13 +1220,7 @@ export default function LLMConfigPage() {
                               <span className="text-slate-500 italic">Not configured</span>
                             )}
                             <button
-                                              onClick={() => setEditingConfig({
-                                                stageId: stage.id,
-                                                modelId: config?.model.id || '',
-                                                fallbacks: config?.fallbackModelIds ? JSON.parse(config.fallbackModelIds) : [],
-                                                maxTokensIn: config?.maxTokensIn || undefined,
-                                                maxTokensOut: config?.maxTokensOut || undefined
-                                              })}
+                                              onClick={() => beginStageEdit(stage)}
                                               className="px-3 py-1 bg-slate-600 hover:bg-slate-500 rounded text-sm transition"
                                             >
                                               {config ? 'Edit' : 'Configure'}

@@ -32,6 +32,13 @@ import { citationService, type CitationWithUsage } from './services/citation-ser
 import { citationStyleService, type CitationData } from './services/citation-style-service';
 import { paperTypeService } from './services/paper-type-service';
 import { evidencePackService, type SectionEvidencePack } from './services/evidence-pack-service';
+import {
+  buildCitationKeyLookup as buildCitationKeyLookupUtil,
+  normalizeCitationKey as normalizeCitationKeyUtil,
+  resolveCitationKeyFromLookup,
+  splitCitationKeyList as splitCitationKeyListUtil,
+  looksLikeCitationKey as looksLikeCitationKeyUtil
+} from '@/lib/utils/citation-key-normalization';
 
 // NOTE: Legacy SUPERSET_PROMPTS removed - all prompts now come from database
 // Base prompts are stored in SupersetSection table
@@ -600,42 +607,26 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
    * Post-process section content to replace citation placeholders
    */
   private static normalizeCitationKey(rawKey: string): string {
-    return rawKey
-      .trim()
-      .replace(/^['"`\s]+|['"`\s]+$/g, '')
-      .replace(/[.,;:]+$/g, '')
-      .trim();
+    return normalizeCitationKeyUtil(rawKey);
   }
 
   private static splitCitationKeyList(rawKeys: string): string[] {
-    if (!rawKeys) return [];
-    const unified = rawKeys.replace(/\s+(?:and|&)\s+/gi, ',');
-    return unified
-      .split(/[,;|/]/g)
-      .map(part => this.normalizeCitationKey(part))
-      .filter(Boolean);
+    return splitCitationKeyListUtil(rawKeys);
   }
 
   private static buildCitationKeyLookup(keys: string[]): Map<string, string> {
-    const lookup = new Map<string, string>();
-    for (const key of keys) {
-      const normalized = this.normalizeCitationKey(key).toLowerCase();
-      if (!normalized) continue;
-      if (!lookup.has(normalized)) {
-        lookup.set(normalized, key);
-      }
-    }
-    return lookup;
+    return buildCitationKeyLookupUtil(keys);
+  }
+
+  private static resolveCitationKeyLookup(
+    lookup: Map<string, string>,
+    rawKey: string
+  ): string | undefined {
+    return resolveCitationKeyFromLookup(rawKey, lookup);
   }
 
   private static looksLikeCitationKey(rawKey: string): boolean {
-    const normalized = this.normalizeCitationKey(rawKey);
-    if (!normalized) return false;
-    if (/^\d+(?:[-–]\d+)?$/.test(normalized)) return false;
-    if (/^(?:fig(?:ure)?|table|sec(?:tion)?|eq(?:uation)?|appendix)[A-Za-z0-9._:-]*$/i.test(normalized)) {
-      return false;
-    }
-    return /^[A-Za-z][A-Za-z0-9._:-]{1,127}$/.test(normalized);
+    return looksLikeCitationKeyUtil(rawKey);
   }
 
   private static extractCitationPlaceholders(content: string): Array<{
@@ -692,7 +683,7 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
 
     // Build a normalized lookup from known session keys for fast matching
     const knownLookup = knownSessionKeys
-      ? new Set(Array.from(knownSessionKeys).map(k => this.normalizeCitationKey(k).toLowerCase()))
+      ? this.buildCitationKeyLookup(Array.from(knownSessionKeys))
       : null;
 
     const bracketPattern = /\[([^\]\r\n]+)\]/g;
@@ -708,9 +699,7 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
       // an actual citation key in the session. This eliminates false positives
       // from model names, acronyms, and other technical terms.
       if (knownLookup) {
-        parsedKeys = parsedKeys.filter(key =>
-          knownLookup.has(this.normalizeCitationKey(key).toLowerCase())
-        );
+        parsedKeys = parsedKeys.filter(key => Boolean(this.resolveCitationKeyLookup(knownLookup, key)));
         if (parsedKeys.length === 0) continue;
       }
 
@@ -795,12 +784,12 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
     const allowedLookup = this.buildCitationKeyLookup(allowedCitationKeys);
     const disallowed = new Set<string>();
     for (const key of rawKeys) {
-      if (!allowedLookup.has(this.normalizeCitationKey(key).toLowerCase())) {
+      if (!this.resolveCitationKeyLookup(allowedLookup, key)) {
         disallowed.add(key);
       }
     }
     const disallowedKeys = Array.from(disallowed);
-    const keys = rawKeys.map(k => allowedLookup.get(this.normalizeCitationKey(k).toLowerCase()) || k);
+    const keys = rawKeys.map(k => this.resolveCitationKeyLookup(allowedLookup, k) || k);
     return { keys, disallowedKeys };
   }
 
@@ -827,8 +816,7 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
       // Keep only the keys that are allowed; drop the rest
       const keptParts: string[] = [];
       for (const key of marker.parsedKeys) {
-        const normalized = this.normalizeCitationKey(key).toLowerCase();
-        const canonical = allowedLookup.get(normalized);
+        const canonical = this.resolveCitationKeyLookup(allowedLookup, key);
         if (canonical) {
           keptParts.push(`[CITE:${canonical}]`);
         }
@@ -896,10 +884,11 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
 
       for (const parsedKey of parsedKeys) {
         const normalized = this.normalizeCitationKey(parsedKey);
-        const normalizedLower = normalized.toLowerCase();
-        if (!normalizedLower) continue;
+        if (!normalized) continue;
 
-        const allowedKey = allowedLookup?.get(normalizedLower);
+        const allowedKey = allowedLookup
+          ? this.resolveCitationKeyLookup(allowedLookup, normalized)
+          : undefined;
         if (allowedLookup && !allowedKey) {
           disallowedCitationKeys.add(normalized);
           warnings.push(`Citation key not allowed for this section: ${normalized}`);
@@ -912,7 +901,9 @@ ${formatOverride}- ALLOWED CITATION KEYS: ${whitelistText}
           continue;
         }
 
-        const canonicalKey = allowedKey || citationLookup.get(normalizedLower) || normalized;
+        const canonicalKey = allowedKey
+          || this.resolveCitationKeyLookup(citationLookup, normalized)
+          || normalized;
         const citation = citationMap.get(canonicalKey);
         if (!citation) {
           unknownCitationKeys.add(canonicalKey);
@@ -4569,3 +4560,4 @@ OUTPUT FORMAT:
     return { valid: !report.hasIssues, report }
   }
 }
+

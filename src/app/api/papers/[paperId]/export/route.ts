@@ -7,6 +7,12 @@ import { citationStyleService, type CitationData } from '@/lib/services/citation
 import { buildPaperDocxBuffer } from '@/lib/export/paper-docx-export';
 import { buildLatexExport } from '@/lib/export/latex-export';
 import { exportCitationsToBibtex } from '@/lib/export/bibtex-export';
+import {
+  buildCitationKeyLookup,
+  citationKeyIdentity,
+  resolveCitationKeyFromLookup,
+  splitCitationKeyList
+} from '@/lib/utils/citation-key-normalization';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,21 +69,11 @@ const NUMERIC_ORDER_STYLES = new Set(['IEEE', 'VANCOUVER']);
 const CITE_MARKER_REGEX = /\[CITE:([^\]]+)\]/gi;
 
 function splitCitationKeys(rawKeys: string): string[] {
-  if (!rawKeys) return [];
-  return rawKeys
-    .split(/[;,]/)
-    .map(key => key.trim())
-    .filter(Boolean);
+  return splitCitationKeyList(rawKeys);
 }
 
 function buildCanonicalCitationLookup(citations: Array<{ citationKey: string }>): Map<string, string> {
-  const lookup = new Map<string, string>();
-  for (const citation of citations) {
-    const key = String(citation.citationKey || '').trim();
-    if (!key) continue;
-    lookup.set(key.toLowerCase(), key);
-  }
-  return lookup;
+  return buildCitationKeyLookup(citations.map(citation => citation.citationKey));
 }
 
 function extractOrderedCitationKeysFromSections(
@@ -96,7 +92,7 @@ function extractOrderedCitationKeysFromSections(
     while ((match = CITE_MARKER_REGEX.exec(content)) !== null) {
       const keys = splitCitationKeys(match[1] || '');
       for (const key of keys) {
-        const canonical = canonicalLookup.get(key.toLowerCase());
+        const canonical = resolveCitationKeyFromLookup(key, canonicalLookup);
         if (!canonical || seen.has(canonical)) continue;
         seen.add(canonical);
         ordered.push(canonical);
@@ -111,10 +107,11 @@ function mergeCitationOrder(primaryOrder: string[], fallbackOrder: string[]): st
   const seen = new Set<string>();
   const merged: string[] = [];
   const append = (key: string) => {
-    const normalized = String(key || '').trim().toLowerCase();
-    if (!normalized || seen.has(normalized)) return;
+    const canonical = String(key || '').trim();
+    const normalized = citationKeyIdentity(canonical);
+    if (!canonical || !normalized || seen.has(normalized)) return;
     seen.add(normalized);
-    merged.push(key);
+    merged.push(canonical);
   };
   for (const key of primaryOrder) append(key);
   for (const key of fallbackOrder) append(key);
@@ -310,7 +307,7 @@ export async function GET(request: NextRequest, context: { params: { paperId: st
       ? Array.from(new Set(
           plainSections
             .flatMap(section => DraftingService.extractCitationKeys(section.content))
-            .map(key => canonicalLookup.get(String(key || '').trim().toLowerCase()) || String(key || '').trim())
+            .map(key => resolveCitationKeyFromLookup(String(key || '').trim(), canonicalLookup) || String(key || '').trim())
             .filter(Boolean)
         ))
       : [];

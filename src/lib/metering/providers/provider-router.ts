@@ -160,7 +160,9 @@ export class LLMProviderRouter {
       anthropic: {
         apiKey: process.env.ANTHROPIC_API_KEY,
         model: 'claude-3-5-sonnet-20241022',
-        baseURL: 'https://api.anthropic.com/v1'
+        baseURL: 'https://api.anthropic.com/v1',
+        timeout: parsePositiveIntEnv(process.env.ANTHROPIC_TIMEOUT_MS, 30 * 60 * 1000),
+        maxRetries: parsePositiveIntEnv(process.env.ANTHROPIC_MAX_RETRIES, 2)
       },
       
       // DeepSeek provider (cost-effective)

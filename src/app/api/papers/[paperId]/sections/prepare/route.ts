@@ -27,6 +27,14 @@ function parseBooleanFlag(value: unknown): boolean {
   return false;
 }
 
+function parseSectionKeys(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const normalized = value
+    .map((entry) => String(entry || '').trim())
+    .filter(Boolean);
+  return Array.from(new Set(normalized));
+}
+
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
   const where = user.roles?.includes('SUPER_ADMIN')
     ? { id: sessionId }
@@ -147,9 +155,12 @@ export async function POST(
     const retryFailedOnlyFromQuery = request.nextUrl.searchParams.get('retryFailedOnly');
     const forceRerun = parseBooleanFlag(forceFromQuery) || parseBooleanFlag(requestBody?.force);
     const retryFailedOnly = parseBooleanFlag(retryFailedOnlyFromQuery) || parseBooleanFlag(requestBody?.retryFailedOnly);
+    const selectedSectionKeys = parseSectionKeys(requestBody?.sectionKeys);
 
     let sectionKeys: string[] | undefined;
-    if (retryFailedOnly) {
+    if (selectedSectionKeys.length > 0) {
+      sectionKeys = selectedSectionKeys;
+    } else if (retryFailedOnly) {
       const bgStatus = await paperSectionService.getBackgroundGenStatus(sessionId);
       const sectionStateMap = bgStatus.progress?.sections || {};
       sectionKeys = Object.entries(sectionStateMap)
@@ -190,11 +201,13 @@ export async function POST(
 
     return NextResponse.json({
       success: true,
-      message: retryFailedOnly
-        ? `Retrying ${sectionKeys?.length || 0} failed section(s)`
-        : forceRerun
-          ? 'Background section preparation rerun started'
-          : 'Background section preparation started',
+      message: sectionKeys?.length
+        ? `Background section preparation started for ${sectionKeys.length} selected section(s)`
+        : retryFailedOnly
+          ? `Retrying ${sectionKeys?.length || 0} failed section(s)`
+          : forceRerun
+            ? 'Background section preparation rerun started'
+            : 'Background section preparation started',
       status: 'RUNNING',
       forced: forceRerun,
       retryFailedOnly,

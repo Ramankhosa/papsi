@@ -42,12 +42,33 @@ export class AnthropicProvider implements LLMProvider {
 
       try {
         const Anthropic = require('@anthropic-ai/sdk')
-        this.client = new Anthropic({ apiKey: config.apiKey })
+        this.client = new Anthropic({
+          apiKey: config.apiKey,
+          baseURL: config.baseURL,
+          timeout: this.getTimeoutMs(),
+          maxRetries: this.getMaxRetries()
+        })
         console.log('Anthropic client initialized successfully')
       } catch (error) {
         console.warn('Anthropic SDK not available:', error)
       }
     }
+  }
+
+  private getTimeoutMs(): number {
+    const configuredTimeout = this.config.timeout
+    if (typeof configuredTimeout === 'number' && Number.isFinite(configuredTimeout) && configuredTimeout > 0) {
+      return configuredTimeout
+    }
+    return 30 * 60 * 1000
+  }
+
+  private getMaxRetries(): number {
+    const configuredRetries = this.config.maxRetries
+    if (typeof configuredRetries === 'number' && Number.isFinite(configuredRetries) && configuredRetries >= 0) {
+      return Math.floor(configuredRetries)
+    }
+    return 2
   }
 
   async execute(request: LLMRequest, limits: EnforcementDecision): Promise<LLMResponse> {
@@ -128,7 +149,9 @@ export class AnthropicProvider implements LLMProvider {
       // Allow admin to override with higher limits for newer models
       const defaultMax = 8192
       const maxTokens = limits.maxTokensOut || defaultMax
+      const timeoutMs = this.getTimeoutMs()
       console.log(`[AnthropicProvider] Token limits: admin=${limits.maxTokensOut || 'not set'}, using=${maxTokens}`)
+      console.log(`[AnthropicProvider] Request timeout=${timeoutMs}ms, maxRetries=${this.getMaxRetries()}`)
 
       const response = await this.client.messages.create({
         model: actualModel,

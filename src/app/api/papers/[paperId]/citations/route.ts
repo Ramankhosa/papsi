@@ -6,6 +6,12 @@ import { citationService } from '@/lib/services/citation-service';
 import { citationStyleService, type CitationData } from '@/lib/services/citation-style-service';
 import { citationMappingService, type CitationMetaSnapshot, type PaperBlueprintMapping } from '@/lib/services/citation-mapping-service';
 import { paperLibraryService } from '@/lib/services/paper-library-service';
+import {
+  buildCitationKeyLookup,
+  citationKeyIdentity,
+  resolveCitationKeyFromLookup,
+  splitCitationKeyList
+} from '@/lib/utils/citation-key-normalization';
 
 export const runtime = 'nodejs';
 
@@ -142,11 +148,7 @@ type CitationStyleMeta = {
 };
 
 function splitCitationKeys(rawKeys: string): string[] {
-  if (!rawKeys) return [];
-  return rawKeys
-    .split(/[;,]/)
-    .map((key) => key.trim())
-    .filter(Boolean);
+  return splitCitationKeyList(rawKeys);
 }
 
 function normalizeCitationMarkupForExtraction(content: string): string {
@@ -198,13 +200,7 @@ function normalizeExtraSections(value: unknown): Record<string, string> {
 }
 
 function buildCanonicalCitationLookup(citations: Array<{ citationKey: string }>): Map<string, string> {
-  const lookup = new Map<string, string>();
-  for (const citation of citations) {
-    const key = String(citation.citationKey || '').trim();
-    if (!key) continue;
-    lookup.set(key.toLowerCase(), key);
-  }
-  return lookup;
+  return buildCitationKeyLookup(citations.map(citation => citation.citationKey));
 }
 
 function mergeSectionOrder(preferredOrder: string[], extraSections: Record<string, string>): string[] {
@@ -247,7 +243,7 @@ function extractOrderedCitationKeysFromSections(
     while ((match = CITE_MARKER_REGEX.exec(content)) !== null) {
       const keys = splitCitationKeys(match[1] || '');
       for (const key of keys) {
-        const canonical = canonicalLookup.get(key.toLowerCase());
+        const canonical = resolveCitationKeyFromLookup(key, canonicalLookup);
         if (!canonical || seen.has(canonical)) continue;
         seen.add(canonical);
         ordered.push(canonical);
@@ -261,7 +257,7 @@ function extractOrderedCitationKeysFromSections(
       if (!token || /^CITE:/i.test(token) || /^Figure\s+\d+/i.test(token)) continue;
       const keys = splitCitationKeys(token);
       for (const key of keys) {
-        const canonical = canonicalLookup.get(key.toLowerCase());
+        const canonical = resolveCitationKeyFromLookup(key, canonicalLookup);
         if (!canonical || seen.has(canonical)) continue;
         seen.add(canonical);
         ordered.push(canonical);
@@ -278,8 +274,8 @@ function mergeCitationOrder(primaryOrder: string[], fallbackOrder: string[]): st
 
   const append = (citationKey: string) => {
     const key = String(citationKey || '').trim();
-    const normalized = key.toLowerCase();
-    if (!key || seen.has(normalized)) return;
+    const normalized = citationKeyIdentity(key);
+    if (!key || !normalized || seen.has(normalized)) return;
     seen.add(normalized);
     merged.push(key);
   };
