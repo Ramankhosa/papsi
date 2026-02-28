@@ -1462,6 +1462,17 @@ interface Pass1DimensionBrief {
   bridgeToNext?: string;
 }
 
+interface PersistedPass1Artifact {
+  version: number;
+  content: string;
+  memory?: Pass1MemorySnapshot | null;
+  contentFingerprint: string;
+  wordCount: number;
+  generatedAt?: string;
+  promptUsed?: string;
+  tokensUsed?: number;
+}
+
 interface Pass1MemorySnapshot {
   keyPoints: string[];
   termsIntroduced: string[];
@@ -1640,6 +1651,91 @@ function normalizePass1MemorySnapshot(value: unknown): Pass1MemorySnapshot | nul
     closingStrategy,
     sectionOutline,
     dimensionBriefs
+  };
+}
+
+function readPersistedPass1Artifact(value: unknown): PersistedPass1Artifact | null {
+  const record = asRecord(value);
+  const version = Number(record.version);
+  const content = String(record.content || '').trim();
+  if (!content || !Number.isFinite(version) || version <= 0) {
+    return null;
+  }
+
+  return {
+    version,
+    content,
+    memory: normalizePass1MemorySnapshot(record.memory),
+    contentFingerprint: String(record.contentFingerprint || '').trim() || computeContentFingerprint(content),
+    wordCount: Number(record.wordCount) > 0 ? Number(record.wordCount) : computeWordCount(content),
+    generatedAt: String(record.generatedAt || '').trim() || undefined,
+    promptUsed: String(record.promptUsed || '').trim() || undefined,
+    tokensUsed: Number(record.tokensUsed) > 0 ? Number(record.tokensUsed) : undefined,
+  };
+}
+
+function buildPersistedPass1Artifact(params: {
+  content: string;
+  memory?: unknown;
+  generatedAt?: string | Date | null;
+  promptUsed?: string;
+  tokensUsed?: number | null;
+}): PersistedPass1Artifact | null {
+  const content = String(params.content || '').trim();
+  if (!content) return null;
+  const generatedAt = params.generatedAt instanceof Date
+    ? params.generatedAt.toISOString()
+    : String(params.generatedAt || '').trim() || undefined;
+
+  return {
+    version: 1,
+    content,
+    memory: normalizePass1MemorySnapshot(params.memory),
+    contentFingerprint: computeContentFingerprint(content),
+    wordCount: computeWordCount(content),
+    generatedAt,
+    promptUsed: String(params.promptUsed || '').trim() || undefined,
+    tokensUsed: Number(params.tokensUsed) > 0 ? Number(params.tokensUsed) : undefined
+  };
+}
+
+function readStoredPass1Data(sectionRecord: {
+  baseContentInternal?: unknown;
+  baseMemory?: unknown;
+  pass1Artifact?: unknown;
+  pass1CompletedAt?: unknown;
+  pass1PromptUsed?: unknown;
+  pass1TokensUsed?: unknown;
+} | null | undefined): {
+  content: string;
+  memory: unknown;
+  artifact: PersistedPass1Artifact | null;
+  generatedAt?: string | Date | null;
+  promptUsed?: string;
+  tokensUsed?: number;
+} {
+  const artifact = readPersistedPass1Artifact(sectionRecord?.pass1Artifact);
+  const baseContent = String(sectionRecord?.baseContentInternal || '').trim();
+  const content = artifact?.content || baseContent || '';
+  const memory = artifact?.memory ?? sectionRecord?.baseMemory ?? null;
+  const storedPass1CompletedAt = sectionRecord?.pass1CompletedAt instanceof Date
+    ? sectionRecord.pass1CompletedAt
+    : String(sectionRecord?.pass1CompletedAt || '').trim() || undefined;
+  const generatedAt = artifact?.generatedAt || storedPass1CompletedAt;
+  const promptUsed = artifact?.promptUsed || String(sectionRecord?.pass1PromptUsed || '').trim();
+  const tokensUsed = artifact?.tokensUsed ?? (
+    Number(sectionRecord?.pass1TokensUsed) > 0
+      ? Number(sectionRecord?.pass1TokensUsed)
+      : undefined
+  );
+
+  return {
+    content,
+    memory,
+    artifact,
+    generatedAt,
+    promptUsed: promptUsed || undefined,
+    tokensUsed
   };
 }
 
@@ -1917,20 +2013,29 @@ function extractSectionOutput(
   return { content: polishDraftMarkdown(extracted), memory: extractedMemory };
 }
 
-function mergeDimensionFlowIntoValidationReport(
-  existing: unknown,
-  flow: DimensionFlowState
-): Record<string, unknown> {
-  const base = asRecord(existing);
-  return {
-    ...base,
-    dimensionFlow: flow
-  };
+function stripDimensionFlowFromValidationReport(existing: unknown): Record<string, unknown> | null {
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    return null;
+  }
+
+  const base = existing as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(base, 'dimensionFlow')) {
+    return null;
+  }
+
+  const next = { ...base };
+  delete next.dimensionFlow;
+  return next;
 }
 
 function parseDimensionFlowState(value: unknown): DimensionFlowState | null {
-  const report = asRecord(value);
-  const flow = asRecord(report.dimensionFlow);
+  const raw = asRecord(value);
+  const flow = (
+    Number(raw.version) === DIMENSION_FLOW_VERSION
+    && String(raw.sectionKey || '').trim()
+  )
+    ? raw
+    : asRecord(raw.dimensionFlow);
   if (!flow.version || Number(flow.version) !== DIMENSION_FLOW_VERSION) return null;
 
   const sectionKey = String(flow.sectionKey || '').trim();
@@ -3063,6 +3168,7 @@ async function generateSection(
       where: { sessionId_sectionKey: { sessionId, sectionKey } }
     });
 
+    const storedPass1 = readStoredPass1Data(sectionRecord);
     let pass1Content: string | null = null;
     const hasFinalContent = Boolean(String(sectionRecord?.content || '').trim());
 
@@ -3070,14 +3176,14 @@ async function generateSection(
     // Also reuse when section has base content but no usable final content
     // (e.g. dimension flow created/cleared visible content while retaining base draft).
     if (
-      sectionRecord?.baseContentInternal
+      storedPass1.content
       && (
         sectionRecord.status === 'BASE_READY'
         || !hasFinalContent
       )
     ) {
-      pass1Content = sectionRecord.baseContentInternal;
-      llmTokensUsed = sectionRecord.pass1TokensUsed ?? undefined;
+      pass1Content = storedPass1.content;
+      llmTokensUsed = storedPass1.tokensUsed;
     }
 
     // No pre-generated base content: run inline Pass 1 and persist as BASE_READY
@@ -3113,6 +3219,14 @@ async function generateSection(
       const pass1RawOutput = (pass1Result.response.output || '').trim();
       const pass1ParsedOutput = extractSectionOutput(pass1RawOutput);
       pass1Content = pass1ParsedOutput.content;
+      const pass1CompletedAt = new Date();
+      const pass1Artifact = buildPersistedPass1Artifact({
+        content: pass1Content,
+        memory: pass1ParsedOutput.memory,
+        generatedAt: pass1CompletedAt,
+        promptUsed: pass1Prompt,
+        tokensUsed: pass1Result.response.outputTokens
+      });
 
       if (!pass1Content?.trim()) {
         throw new Error('Pass 1 generation returned empty content');
@@ -3126,13 +3240,14 @@ async function generateSection(
         generationMode: 'two_pass',
         baseContentInternal: pass1Content,
         baseMemory: pass1ParsedOutput.memory as any,
+        pass1Artifact: pass1Artifact as any,
         pass1PromptUsed: pass1Prompt,
         pass1LlmResponse: pass1RawOutput,
         pass1TokensUsed: pass1Result.response.outputTokens,
-        pass1CompletedAt: new Date(),
+        pass1CompletedAt,
         status: 'BASE_READY' as const,
         isStale: false,
-        generatedAt: new Date()
+        generatedAt: pass1CompletedAt
       };
 
       if (sectionRecord) {
@@ -3801,13 +3916,16 @@ async function persistDimensionFlowState(params: {
   stitchedContent?: string;
 }) {
   const now = new Date();
-  const validationReport = mergeDimensionFlowIntoValidationReport(params.existingValidationReport, params.flow);
   const content = params.stitchedContent ?? undefined;
+  const cleanedValidationReport = stripDimensionFlowFromValidationReport(params.existingValidationReport);
   return prisma.paperSection.update({
     where: { id: params.sectionId },
     data: {
       generationMode: 'dimension_flow',
-      validationReport: validationReport as any,
+      dimensionFlowState: params.flow as any,
+      ...(cleanedValidationReport !== null
+        ? { validationReport: cleanedValidationReport as any }
+        : {}),
       ...(typeof content === 'string'
         ? {
           content,
@@ -4335,9 +4453,9 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           useMappedEvidence: payload.useMappedEvidence
         });
         let sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
-
-        let pass1Content = String(sectionRecord.baseContentInternal || '').trim();
-        let pass1Memory = sectionRecord.baseMemory;
+        let storedPass1 = readStoredPass1Data(sectionRecord);
+        let pass1Content = storedPass1.content;
+        let pass1Memory = storedPass1.memory;
         let reusedPass1 = Boolean(pass1Content);
         if (!pass1Content) {
           const generatedPass1 = await executeDraftSectionPrompt({
@@ -4362,29 +4480,41 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
           pass1Memory = parsedPass1.memory;
           reusedPass1 = false;
+          const pass1CompletedAt = new Date();
+          const pass1Artifact = buildPersistedPass1Artifact({
+            content: pass1Content,
+            memory: parsedPass1.memory,
+            generatedAt: pass1CompletedAt,
+            promptUsed: bundle.pass1Prompt,
+            tokensUsed: generatedPass1.outputTokens
+          });
           sectionRecord = await prisma.paperSection.update({
             where: { id: sectionRecord.id },
             data: {
               displayName: sectionRecord.displayName || formatSectionLabel(sectionKey),
               baseContentInternal: pass1Content,
               baseMemory: parsedPass1.memory as any,
+              pass1Artifact: pass1Artifact as any,
               memory: parsedPass1.memory as any,
               pass1PromptUsed: bundle.pass1Prompt,
               pass1LlmResponse: generatedPass1.output,
               pass1TokensUsed: generatedPass1.outputTokens,
-              pass1CompletedAt: new Date(),
+              pass1CompletedAt,
               status: 'BASE_READY',
               isStale: false,
-              generatedAt: new Date(),
+              generatedAt: pass1CompletedAt,
               version: { increment: 1 }
             }
           });
+          storedPass1 = readStoredPass1Data(sectionRecord);
+          pass1Content = storedPass1.content;
+          pass1Memory = storedPass1.memory;
         }
 
         const pass1Source = buildPass1SourceTrace({
           content: pass1Content,
-          memory: pass1Memory || sectionRecord.baseMemory,
-          generatedAt: sectionRecord.pass1CompletedAt,
+          memory: pass1Memory,
+          generatedAt: storedPass1.generatedAt,
           reused: reusedPass1
         });
 
@@ -4447,7 +4577,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           );
         }
         const sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
-        const flow = parseDimensionFlowState(sectionRecord.validationReport);
+        const flow = parseDimensionFlowState(sectionRecord.dimensionFlowState ?? sectionRecord.validationReport);
         if (!flow) {
           return NextResponse.json(
             {
@@ -4458,11 +4588,12 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           );
         }
 
-        if (!flow.pass1Source && typeof sectionRecord.baseContentInternal === 'string' && sectionRecord.baseContentInternal.trim()) {
+        const storedPass1 = readStoredPass1Data(sectionRecord);
+        if (!flow.pass1Source && storedPass1.content) {
           flow.pass1Source = buildPass1SourceTrace({
-            content: sectionRecord.baseContentInternal,
-            memory: sectionRecord.baseMemory,
-            generatedAt: sectionRecord.pass1CompletedAt,
+            content: storedPass1.content,
+            memory: storedPass1.memory,
+            generatedAt: storedPass1.generatedAt,
             reused: true
           });
         }
@@ -4557,8 +4688,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           bundle,
           flow,
           targetDimension,
-          pass1Content: String(sectionRecord.baseContentInternal || ''),
-          pass1Memory: sectionRecord.baseMemory,
+          pass1Content: storedPass1.content,
+          pass1Memory: storedPass1.memory,
           headers: requestHeaders,
           tenantContext,
           feedback: payload.feedback,
@@ -4601,7 +4732,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         }
         const dimensionKey = normalizeDimensionKey(payload.dimensionKey);
         const sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
-        const flow = parseDimensionFlowState(sectionRecord.validationReport);
+        const flow = parseDimensionFlowState(sectionRecord.dimensionFlowState ?? sectionRecord.validationReport);
         if (!flow) {
           return NextResponse.json(
             {
@@ -4865,14 +4996,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         if (payload.prefetchNext) {
           const nextDimension = findNextDimensionPlanEntry(flow);
           if (nextDimension) {
+            const storedPass1 = readStoredPass1Data(sectionRecord);
             const prefetched = await generateDimensionProposal({
               sessionId,
               sectionKey,
               bundle,
               flow,
               targetDimension: nextDimension,
-              pass1Content: String(sectionRecord.baseContentInternal || ''),
-              pass1Memory: sectionRecord.baseMemory,
+              pass1Content: storedPass1.content,
+              pass1Memory: storedPass1.memory,
               headers: requestHeaders,
               tenantContext,
               temperature: 0.2
@@ -4936,7 +5068,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         }
         const dimensionKey = normalizeDimensionKey(payload.dimensionKey);
         const sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
-        const flow = parseDimensionFlowState(sectionRecord.validationReport);
+        const flow = parseDimensionFlowState(sectionRecord.dimensionFlowState ?? sectionRecord.validationReport);
         if (!flow) {
           return NextResponse.json(
             {
@@ -4970,14 +5102,15 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           flow.sectionWordBudget = resolvedFlowBudget;
           flow.plan = applyDimensionPlanMetadata(flow.plan, resolvedFlowBudget);
         }
+        const storedPass1 = readStoredPass1Data(sectionRecord);
         const rewritten = await generateDimensionProposal({
           sessionId,
           sectionKey,
           bundle,
           flow,
           targetDimension,
-          pass1Content: String(sectionRecord.baseContentInternal || ''),
-          pass1Memory: sectionRecord.baseMemory,
+          pass1Content: storedPass1.content,
+          pass1Memory: storedPass1.memory,
           headers: requestHeaders,
           tenantContext,
           feedback: payload.feedback,
@@ -5036,7 +5169,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           });
         }
 
-        const flow = parseDimensionFlowState(sectionRecord.validationReport);
+        const flow = parseDimensionFlowState(sectionRecord.dimensionFlowState ?? sectionRecord.validationReport);
         if (!flow) {
           return NextResponse.json({
             sectionKey,
@@ -5046,11 +5179,12 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           });
         }
 
-        if (!flow.pass1Source && typeof sectionRecord.baseContentInternal === 'string' && sectionRecord.baseContentInternal.trim()) {
+        const storedPass1 = readStoredPass1Data(sectionRecord);
+        if (!flow.pass1Source && storedPass1.content) {
           flow.pass1Source = buildPass1SourceTrace({
-            content: sectionRecord.baseContentInternal,
-            memory: sectionRecord.baseMemory,
-            generatedAt: sectionRecord.pass1CompletedAt,
+            content: storedPass1.content,
+            memory: storedPass1.memory,
+            generatedAt: storedPass1.generatedAt,
             reused: true
           });
         }

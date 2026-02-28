@@ -145,6 +145,60 @@ export interface BackgroundGenResult {
   error?: string;
 }
 
+interface StoredPass1Artifact {
+  version: number;
+  content: string;
+  memory?: SectionMemory | null;
+  contentFingerprint: string;
+  wordCount: number;
+  generatedAt?: string;
+  promptUsed?: string;
+  tokensUsed?: number;
+}
+
+function computeStoredPass1Fingerprint(content: string): string {
+  const normalized = String(content || '').replace(/\s+/g, ' ').trim();
+  return crypto.createHash('sha1').update(normalized).digest('hex').slice(0, 12);
+}
+
+function countStoredPass1Words(text: string): number {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  return normalized ? normalized.split(' ').length : 0;
+}
+
+function buildStoredPass1Artifact(params: {
+  content: string;
+  memory?: SectionMemory | null;
+  generatedAt?: Date | string | null;
+  promptUsed?: string;
+  tokensUsed?: number | null;
+}): StoredPass1Artifact | null {
+  const content = String(params.content || '').trim();
+  if (!content) return null;
+  const generatedAt = params.generatedAt instanceof Date
+    ? params.generatedAt.toISOString()
+    : String(params.generatedAt || '').trim() || undefined;
+
+  return {
+    version: 1,
+    content,
+    memory: params.memory || null,
+    contentFingerprint: computeStoredPass1Fingerprint(content),
+    wordCount: countStoredPass1Words(content),
+    generatedAt,
+    promptUsed: String(params.promptUsed || '').trim() || undefined,
+    tokensUsed: Number(params.tokensUsed) > 0 ? Number(params.tokensUsed) : undefined
+  };
+}
+
+function readStoredPass1Content(section: Pick<PaperSection, 'baseContentInternal' | 'pass1Artifact'> | null | undefined): string {
+  const artifact = section?.pass1Artifact && typeof section.pass1Artifact === 'object' && !Array.isArray(section.pass1Artifact)
+    ? section.pass1Artifact as Record<string, unknown>
+    : null;
+  const artifactContent = artifact ? String(artifact.content || '').trim() : '';
+  return artifactContent || String(section?.baseContentInternal || '').trim();
+}
+
 // ============================================================================
 // Section Names Map
 // ============================================================================
@@ -397,9 +451,10 @@ class PaperSectionService {
       // Also skip directly to Pass 2 when base draft exists but visible content
       // is empty (e.g. another flow reset content while retaining Pass 1 base).
       const hasVisibleContent = Boolean(String(existingSection?.content || '').trim());
+      const storedPass1Content = readStoredPass1Content(existingSection);
       if (
         twoPassEnabled
-        && existingSection?.baseContentInternal
+        && storedPass1Content
         && !regenerate
         && (existingSection.status === 'BASE_READY' || !hasVisibleContent)
       ) {
@@ -588,6 +643,14 @@ class PaperSectionService {
       }
 
       // ── Two-pass path: persist Pass 1, then run Pass 2 ──
+      const pass1CompletedAt = new Date();
+      const pass1Artifact = buildStoredPass1Artifact({
+        content: parsed.content,
+        memory: parsed.memory,
+        generatedAt: pass1CompletedAt,
+        promptUsed: prompt,
+        tokensUsed: result.response.outputTokens
+      });
       const pass1Data = {
         sectionKey,
         displayName: SECTION_DISPLAY_NAMES[sectionKey] || sectionKey,
@@ -596,15 +659,16 @@ class PaperSectionService {
         memory: parsed.memory as any,
         baseContentInternal: parsed.content,
         baseMemory: parsed.memory as any,
+        pass1Artifact: pass1Artifact as any,
         blueprintVersion,
         pass1PromptUsed: prompt,
         pass1LlmResponse: result.response.output,
         pass1TokensUsed: result.response.outputTokens,
-        pass1CompletedAt: new Date(),
+        pass1CompletedAt,
         generationMode: 'two_pass',
         status: 'BASE_READY' as PaperSectionStatus,
         isStale: false,
-        generatedAt: new Date()
+        generatedAt: pass1CompletedAt
       };
 
       const pass1Section = await this.upsertSection(sessionId, sectionKey, pass1Data, existingSection);
@@ -633,7 +697,7 @@ class PaperSectionService {
     paperTypeCode?: string,
     tenantContext?: TenantContext | null
   ): Promise<SectionGenerationResult> {
-    const baseContent = section.baseContentInternal || section.content;
+    const baseContent = readStoredPass1Content(section) || section.content;
     if (!baseContent) {
       return { success: false, error: 'No base content available for polish pass' };
     }
@@ -791,7 +855,7 @@ class PaperSectionService {
           );
           if (
             (!forceRerun && existing && (
-              (existing.baseContentInternal && existing.status === 'BASE_READY' && !existing.isStale)
+              (readStoredPass1Content(existing) && existing.status === 'BASE_READY' && !existing.isStale)
               || finalizedStatuses.includes(existing.status as any)
             ))
             || (existing && activeMutationStatuses.includes(existing.status as any))
@@ -851,6 +915,14 @@ class PaperSectionService {
           }
 
           const parsed = this.parseSectionResponse(result.response.output);
+          const pass1CompletedAt = new Date();
+          const pass1Artifact = buildStoredPass1Artifact({
+            content: parsed.content,
+            memory: parsed.memory,
+            generatedAt: pass1CompletedAt,
+            promptUsed: prompt,
+            tokensUsed: result.response.outputTokens
+          });
 
           await prisma.paperSection.update({
             where: { sessionId_sectionKey: { sessionId, sectionKey } },
@@ -858,17 +930,19 @@ class PaperSectionService {
               ? {
                   baseContentInternal: parsed.content,
                   baseMemory: parsed.memory as any,
+                  pass1Artifact: pass1Artifact as any,
                   memory: parsed.memory as any,
                   blueprintVersion,
                   pass1PromptUsed: prompt,
                   pass1LlmResponse: result.response.output,
                   pass1TokensUsed: result.response.outputTokens,
-                  pass1CompletedAt: new Date(),
+                  pass1CompletedAt,
                   isStale: false,
                 }
               : {
                   baseContentInternal: parsed.content,
                   baseMemory: parsed.memory as any,
+                  pass1Artifact: pass1Artifact as any,
                   memory: parsed.memory as any,
                   content: existing?.content || '',
                   wordCount: existing?.content ? this.countWords(existing.content) : 0,
@@ -876,8 +950,9 @@ class PaperSectionService {
                   pass1PromptUsed: prompt,
                   pass1LlmResponse: result.response.output,
                   pass1TokensUsed: result.response.outputTokens,
-                  pass1CompletedAt: new Date(),
+                  pass1CompletedAt,
                   status: 'BASE_READY' as PaperSectionStatus,
+                  generatedAt: pass1CompletedAt,
                 }
           });
 

@@ -3972,6 +3972,7 @@ model PaperSection {
   generationMode       String  @default("single_pass") @map("generation_mode") // "single_pass" | "two_pass"
   baseContentInternal  String? @db.Text @map("base_content_internal") // Pass 1 evidence-grounded draft (internal only)
   baseMemory           Json?   @map("base_memory") // Memory extracted from Pass 1
+  pass1Artifact        Json?   @map("pass1_artifact") // Structured Pass 1 artifact for downstream drafting
   pass1PromptUsed      String? @db.Text @map("pass1_prompt_used")
   pass1LlmResponse     String? @db.Text @map("pass1_llm_response")
   pass1TokensUsed      Int?    @map("pass1_tokens_used")
@@ -3979,6 +3980,7 @@ model PaperSection {
   pass2PromptUsed      String? @db.Text @map("pass2_prompt_used")
   pass2TokensUsed      Int?    @map("pass2_tokens_used")
   pass2CompletedAt     DateTime? @map("pass2_completed_at")
+  dimensionFlowState   Json?   @map("dimension_flow_state") // Structured drafting workflow state
   validationReport     Json?   @map("validation_report") // Drift guard results
 
   // Generation metadata (backward-compat: stores Pass 2 data in two-pass, or single-pass data)
