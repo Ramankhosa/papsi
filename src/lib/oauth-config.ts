@@ -58,7 +58,19 @@ function parseOrigin(rawUrl: string): string {
  */
 export function getAppOrigin(requestOrigin?: string): string {
   const configured = process.env.NEXTAUTH_URL || process.env.NEXT_PUBLIC_APP_URL
-  const raw = configured || requestOrigin || 'http://localhost:3000'
+  const requestParsed = requestOrigin ? parseOrigin(requestOrigin) : undefined
+
+  // In local development, favor the actual request origin to avoid stale localhost
+  // values (for example, when switching from :3000 to :3001).
+  if (requestParsed && configured) {
+    const configuredParsed = parseOrigin(configured)
+    const isLocalConfigured = /localhost|127\.0\.0\.1/i.test(configuredParsed)
+    if (isLocalConfigured) {
+      return requestParsed
+    }
+  }
+
+  const raw = configured || requestParsed || 'http://localhost:3001'
   return parseOrigin(raw)
 }
 
