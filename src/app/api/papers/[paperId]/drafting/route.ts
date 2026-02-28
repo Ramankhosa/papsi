@@ -1452,11 +1452,26 @@ interface DimensionAcceptedBlock {
   updatedAt: string;
 }
 
+interface Pass1DimensionBrief {
+  dimensionKey: string;
+  dimensionLabel: string;
+  roleHint?: DimensionRole;
+  sourceSummary: string;
+  claimFocus: string[];
+  mustUseCitationKeys: string[];
+  bridgeToNext?: string;
+}
+
 interface Pass1MemorySnapshot {
   keyPoints: string[];
   termsIntroduced: string[];
   mainClaims: string[];
   forwardReferences: string[];
+  sectionIntent?: string;
+  openingStrategy?: string;
+  closingStrategy?: string;
+  sectionOutline?: string[];
+  dimensionBriefs?: Pass1DimensionBrief[];
 }
 
 interface DimensionPass1SourceTrace {
@@ -1481,6 +1496,8 @@ interface DimensionProposalReviewTrace {
   acceptedContextHash: string;
   acceptedSummary: string;
   acceptedContextPreview: string;
+  pass1DimensionSummary?: string;
+  targetEvidenceSummary?: string;
 }
 
 interface DimensionDraftProposal {
@@ -1553,18 +1570,62 @@ function normalizeStringList(value: unknown): string[] {
     : [];
 }
 
+function normalizeDimensionRoleValue(value: unknown): DimensionRole | undefined {
+  const normalized = String(value || '').trim();
+  return normalized === 'introduction'
+    || normalized === 'body'
+    || normalized === 'conclusion'
+    || normalized === 'intro_conclusion'
+    ? normalized
+    : undefined;
+}
+
+function normalizePass1DimensionBriefs(value: unknown): Pass1DimensionBrief[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((entry) => {
+      const record = asRecord(entry);
+      const dimensionLabel = String(record.dimensionLabel || '').trim();
+      const dimensionKey = normalizeDimensionKey(String(record.dimensionKey || dimensionLabel));
+      const sourceSummary = String(record.sourceSummary || '').trim();
+      if (!dimensionKey || !dimensionLabel || !sourceSummary) return null;
+
+      return {
+        dimensionKey,
+        dimensionLabel,
+        roleHint: normalizeDimensionRoleValue(record.roleHint),
+        sourceSummary,
+        claimFocus: normalizeStringList(record.claimFocus),
+        mustUseCitationKeys: normalizeStringList(record.mustUseCitationKeys),
+        bridgeToNext: String(record.bridgeToNext || '').trim() || undefined
+      } satisfies Pass1DimensionBrief;
+    })
+    .filter(Boolean) as Pass1DimensionBrief[];
+}
+
 function normalizePass1MemorySnapshot(value: unknown): Pass1MemorySnapshot | null {
   const record = asRecord(value);
   const keyPoints = normalizeStringList(record.keyPoints);
   const termsIntroduced = normalizeStringList(record.termsIntroduced);
   const mainClaims = normalizeStringList(record.mainClaims);
   const forwardReferences = normalizeStringList(record.forwardReferences);
+  const sectionIntent = String(record.sectionIntent || '').trim() || undefined;
+  const openingStrategy = String(record.openingStrategy || '').trim() || undefined;
+  const closingStrategy = String(record.closingStrategy || '').trim() || undefined;
+  const sectionOutline = normalizeStringList(record.sectionOutline);
+  const dimensionBriefs = normalizePass1DimensionBriefs(record.dimensionBriefs);
 
   if (
     keyPoints.length === 0
     && termsIntroduced.length === 0
     && mainClaims.length === 0
     && forwardReferences.length === 0
+    && !sectionIntent
+    && !openingStrategy
+    && !closingStrategy
+    && sectionOutline.length === 0
+    && dimensionBriefs.length === 0
   ) {
     return null;
   }
@@ -1573,7 +1634,12 @@ function normalizePass1MemorySnapshot(value: unknown): Pass1MemorySnapshot | nul
     keyPoints,
     termsIntroduced,
     mainClaims,
-    forwardReferences
+    forwardReferences,
+    sectionIntent,
+    openingStrategy,
+    closingStrategy,
+    sectionOutline,
+    dimensionBriefs
   };
 }
 
@@ -1848,7 +1914,7 @@ function extractSectionOutput(
     console.warn('[PaperDrafting] Could not parse JSON output, using raw:', parseErr);
   }
 
-  return { content: extracted, memory: extractedMemory };
+  return { content: polishDraftMarkdown(extracted), memory: extractedMemory };
 }
 
 function mergeDimensionFlowIntoValidationReport(
@@ -1968,6 +2034,8 @@ function parseDimensionFlowState(value: unknown): DimensionFlowState | null {
           acceptedContextHash: String(reviewTraceRaw.acceptedContextHash || '').trim(),
           acceptedSummary: String(reviewTraceRaw.acceptedSummary || '').trim(),
           acceptedContextPreview: String(reviewTraceRaw.acceptedContextPreview || '').trim(),
+          pass1DimensionSummary: String(reviewTraceRaw.pass1DimensionSummary || '').trim() || undefined,
+          targetEvidenceSummary: String(reviewTraceRaw.targetEvidenceSummary || '').trim() || undefined,
         }
       : undefined;
     return {
@@ -2086,8 +2154,106 @@ function formatPass1MemoryForPrompt(memory?: Pass1MemorySnapshot | null): string
   if (memory.forwardReferences.length > 0) {
     parts.push(`Forward references: ${memory.forwardReferences.join('; ')}`);
   }
+  if (memory.sectionIntent) {
+    parts.push(`Section intent: ${memory.sectionIntent}`);
+  }
+  if (memory.openingStrategy) {
+    parts.push(`Opening strategy: ${memory.openingStrategy}`);
+  }
+  if (memory.closingStrategy) {
+    parts.push(`Closing strategy: ${memory.closingStrategy}`);
+  }
+  if (memory.sectionOutline && memory.sectionOutline.length > 0) {
+    parts.push(`Section outline: ${memory.sectionOutline.join(' | ')}`);
+  }
+  if (memory.dimensionBriefs && memory.dimensionBriefs.length > 0) {
+    parts.push(`Dimension briefs available: ${memory.dimensionBriefs.map((brief) => brief.dimensionLabel).join('; ')}`);
+  }
 
   return parts.length > 0 ? parts.join('\n') : '(No pass 1 memory available)';
+}
+
+function findPass1DimensionBrief(
+  memory: Pass1MemorySnapshot | null | undefined,
+  dimensionKey: string,
+  dimensionLabel?: string
+): Pass1DimensionBrief | null {
+  if (!memory?.dimensionBriefs?.length) return null;
+  const normalizedKey = normalizeDimensionKey(dimensionKey);
+  const normalizedLabel = normalizeDimensionKey(dimensionLabel || '');
+
+  return memory.dimensionBriefs.find((brief) => {
+    const briefKey = normalizeDimensionKey(brief.dimensionKey);
+    const briefLabel = normalizeDimensionKey(brief.dimensionLabel);
+    return briefKey === normalizedKey || (normalizedLabel && briefLabel === normalizedLabel);
+  }) || null;
+}
+
+function formatPass1DimensionBriefForPrompt(
+  brief: Pass1DimensionBrief | null | undefined
+): string {
+  if (!brief) {
+    return '(No dimension-specific pass 1 brief available)';
+  }
+
+  const lines = [
+    `Dimension label: ${brief.dimensionLabel}`,
+    brief.roleHint ? `Role hint from pass 1: ${brief.roleHint}` : '',
+    `Source summary: ${brief.sourceSummary}`,
+    brief.claimFocus.length > 0 ? `Claim focus: ${brief.claimFocus.join('; ')}` : '',
+    brief.mustUseCitationKeys.length > 0 ? `Pass 1 citation anchors: ${brief.mustUseCitationKeys.join(', ')}` : '',
+    brief.bridgeToNext ? `Bridge to next: ${brief.bridgeToNext}` : ''
+  ].filter(Boolean);
+
+  return lines.join('\n');
+}
+
+function summarizeTargetDimensionEvidence(
+  evidenceContext: EvidencePromptContext,
+  dimensionKey: string,
+  dimensionLabel?: string
+): string {
+  const normalizedKey = normalizeDimensionKey(dimensionKey);
+  const normalizedLabel = normalizeDimensionKey(dimensionLabel || '');
+  const target = (evidenceContext.dimensionEvidence || []).find((entry) => {
+    const entryKey = normalizeDimensionKey(entry.dimension);
+    return entryKey === normalizedKey || (normalizedLabel && entryKey === normalizedLabel);
+  });
+
+  if (!target) {
+    return '(No target-dimension evidence pack available)';
+  }
+
+  return formatDimensionEvidence([target]);
+}
+
+function summarizeTargetDimensionEvidenceCompact(
+  evidenceContext: EvidencePromptContext,
+  dimensionKey: string,
+  dimensionLabel?: string
+): string {
+  const normalizedKey = normalizeDimensionKey(dimensionKey);
+  const normalizedLabel = normalizeDimensionKey(dimensionLabel || '');
+  const target = (evidenceContext.dimensionEvidence || []).find((entry) => {
+    const entryKey = normalizeDimensionKey(entry.dimension);
+    return entryKey === normalizedKey || (normalizedLabel && entryKey === normalizedLabel);
+  });
+
+  if (!target) {
+    return '';
+  }
+
+  const rows = target.citations.slice(0, 3).map((citation) => {
+    const card = Array.isArray(citation.evidenceCards) ? citation.evidenceCards[0] : null;
+    if (card) {
+      const detail = card.quantitativeDetail ? ` | ${card.quantitativeDetail}` : '';
+      const boundary = card.doesNotSupport ? ` | doesNotSupport=${card.doesNotSupport}` : '';
+      return `[${citation.citationKey}] ${card.claim}${detail}${boundary}`;
+    }
+    return `[${citation.citationKey}] ${citation.remark || citation.keyFindings || citation.title}`;
+  });
+
+  return rows.join(' || ');
 }
 
 function buildAcceptedContextHash(blocks: DimensionAcceptedBlock[]): string {
@@ -2127,6 +2293,7 @@ interface SectionPromptRuntimeBundle {
   sectionKey: string;
   paperTypeCode: string;
   prompt: string;
+  pass1Prompt: string;
   researchTopic: any;
   citations: SessionCitation[];
   useMappedEvidence: boolean;
@@ -2320,6 +2487,87 @@ function formatCoverageAssignments(assignments: EvidencePromptContext['coverageA
   return lines.join('\n');
 }
 
+type SectionPromptOutputMode = 'markdown' | 'pass1_json';
+
+function buildPass1ArtifactOutputInstructions(
+  blueprintContext?: BlueprintPromptContext,
+  evidenceContext?: EvidencePromptContext
+): string {
+  const mustCover = Array.isArray(blueprintContext?.mustCover)
+    ? blueprintContext!.mustCover.map((label) => String(label || '').trim()).filter(Boolean)
+    : [];
+  const roleGuide = mustCover.length > 0
+    ? mustCover
+      .map((dimensionLabel, index) => {
+        const role = resolveDimensionRole(index, mustCover.length);
+        return `- ${normalizeDimensionKey(dimensionLabel)} | ${dimensionLabel} | role=${role}`;
+      })
+      .join('\n')
+    : '- (no blueprint dimensions available for this section)';
+  const evidenceByDimension = new Map<string, string[]>();
+  for (const entry of evidenceContext?.dimensionEvidence || []) {
+    const dimensionKey = normalizeDimensionKey(entry.dimension);
+    if (!dimensionKey) continue;
+    const citationKeys: string[] = Array.from(new Set<string>(
+      (entry.citations || [])
+        .map((citation) => String(citation.citationKey || '').trim())
+        .filter((key): key is string => Boolean(key))
+    )).slice(0, 5);
+    evidenceByDimension.set(dimensionKey, citationKeys);
+  }
+  const citationGuide = mustCover.length > 0
+    ? mustCover
+      .map((dimensionLabel) => {
+        const dimensionKey = normalizeDimensionKey(dimensionLabel);
+        const citationKeys = evidenceByDimension.get(dimensionKey) || [];
+        return `- ${dimensionKey}: ${citationKeys.join(', ') || '(none mapped)'}`;
+      })
+      .join('\n')
+    : '- (no dimension-level citation guidance available)';
+
+  return `OUTPUT FORMAT (MANDATORY):
+Return ONLY raw JSON. No markdown code fences. Start with { and end with }.
+{
+  "content": "<complete markdown section draft>",
+  "memory": {
+    "keyPoints": ["3-5 concrete points covered by this section"],
+    "termsIntroduced": ["term introduced for the first time here"],
+    "mainClaims": ["TYPE: claim"],
+    "forwardReferences": ["promise or bridge to a later section"],
+    "sectionIntent": "Single sentence describing what this section must accomplish for the paper.",
+    "openingStrategy": "How the section should open and orient the reader.",
+    "closingStrategy": "How the section should close or bridge onward.",
+    "sectionOutline": ["planned subsection 1", "planned subsection 2"],
+    "dimensionBriefs": [
+      {
+        "dimensionKey": "normalized_dimension_key",
+        "dimensionLabel": "Exact blueprint dimension label",
+        "roleHint": "introduction|body|conclusion|intro_conclusion",
+        "sourceSummary": "2-4 sentences summarizing only the part of the section draft that belongs to this dimension.",
+        "claimFocus": ["specific claim or analytical angle"],
+        "mustUseCitationKeys": ["citationKey1", "citationKey2"],
+        "bridgeToNext": "Short note on how this dimension should connect to the next one."
+      }
+    ]
+  }
+}
+
+PASS 1 MEMORY RULES:
+- "content" must be the full section draft in markdown, with headings, paragraphs, bullets, and [CITE:key] anchors when needed.
+- "dimensionBriefs" must follow the blueprint dimension order exactly when blueprint dimensions exist.
+- Each dimensionBrief must summarize only its own slice of the section draft.
+- "mustUseCitationKeys" should reflect mapped evidence for that dimension when available.
+- "openingStrategy" should help the first dimension introduce the section.
+- "closingStrategy" should help the last dimension conclude the section.
+- If no blueprint dimensions exist, return "dimensionBriefs": [].
+
+BLUEPRINT DIMENSION ORDER / ROLE HINTS:
+${roleGuide}
+
+MAPPED CITATION HINTS BY DIMENSION:
+${citationGuide}`;
+}
+
 async function buildPrompt(
   sectionKey: string,
   paperTypeCode: string,
@@ -2328,7 +2576,8 @@ async function buildPrompt(
   userInstructions?: string,
   writingSampleBlock?: string,
   blueprintContext?: BlueprintPromptContext,
-  evidenceContext?: EvidencePromptContext
+  evidenceContext?: EvidencePromptContext,
+  outputMode: SectionPromptOutputMode = 'markdown'
 ): Promise<string> {
   let basePrompt = await sectionTemplateService.getPromptForSection(sectionKey, paperTypeCode, context);
   const hasCitationModePlaceholders = /\{\{AUTO_CITATION_MODE\}\}|\{\{ALLOWED_CITATION_KEYS\}\}/.test(basePrompt);
@@ -2461,16 +2710,19 @@ async function buildPrompt(
 
   const userBlock = userInstructions ? `\n\nUSER INSTRUCTIONS:\n${userInstructions}` : '';
   const styleBlock = writingSampleBlock ? `\n\n${writingSampleBlock}` : '';
-
-  return `${basePrompt}${topicBlock}${archetypeBlock}${evidenceBlock}${coverageBlock}${citationsBlock}${styleBlock}${userBlock}
-
-OUTPUT FORMAT (MANDATORY):
+  const outputInstructions = outputMode === 'pass1_json'
+    ? buildPass1ArtifactOutputInstructions(blueprintContext, evidenceContext)
+    : `OUTPUT FORMAT (MANDATORY):
 - Return ONLY clean Markdown text. No JSON, no code fences, no explanations.
 - Use headings with ## for major subsections and ### for nested subsections when needed.
 - Use "-" for bullet lists and "1." for numbered lists; use two-space indentation for nested list levels.
 - Keep paragraph spacing clean (blank line between paragraphs and after headings).
 - Preserve citation placeholders exactly in [CITE:key] format.
 - Do not use HTML tags.`;
+
+  return `${basePrompt}${topicBlock}${archetypeBlock}${evidenceBlock}${coverageBlock}${citationsBlock}${styleBlock}${userBlock}
+
+${outputInstructions}`;
 }
 
 function extractCitationKeys(content: string): string[] {
@@ -2719,91 +2971,15 @@ async function generateSection(
   const sectionKey = normalizeSectionKey(payload.sectionKey);
   const requestedMappedEvidence = payload.useMappedEvidence !== false;
   const sectionContextPolicy = await sectionTemplateService.getSectionContextPolicy(sectionKey, paperTypeCode);
-  const useMappedEvidence = sectionContextPolicy.requiresCitations
-    ? requestedMappedEvidence
-    : false;
 
   await emitStatus?.(
     'load_context',
-    useMappedEvidence
+    requestedMappedEvidence
       ? 'Loading topic, citations, blueprint, and mapped evidence'
       : sectionContextPolicy.requiresCitations
         ? 'Loading topic and citations (mapped evidence disabled)'
         : 'Loading topic and citations (auto citations disabled for this section by policy)'
   );
-  const researchTopic = await prisma.researchTopic.findUnique({
-    where: { sessionId }
-  });
-
-  const citations = await citationService.getCitationsForSession(sessionId);
-  const evidencePack = useMappedEvidence
-    ? await evidencePackService.getEvidencePack(sessionId, sectionKey)
-    : null;
-  const citationContext = await DraftingService.buildCitationContext(sessionId, sectionKey, {
-    useMappedEvidence,
-    preloadedEvidencePack: evidencePack
-  });
-  const draft = await getOrCreatePaperDraft(sessionId, researchTopic?.title || 'Untitled Paper');
-  const extraSections = normalizeExtraSections(draft.extraSections);
-
-  // Load blueprint for prompt template injection
-  let blueprintPromptContext: BlueprintPromptContext | undefined;
-  const blueprint = await blueprintService.getBlueprint(sessionId);
-  if (blueprint) {
-    const currentSectionPlan = blueprint.sectionPlan.find(
-      s => normalizeSectionKey(s.sectionKey) === normalizeSectionKey(sectionKey)
-    );
-    blueprintPromptContext = {
-      thesisStatement: blueprint.thesisStatement,
-      centralObjective: blueprint.centralObjective,
-      keyContributions: blueprint.keyContributions,
-      sectionPlan: blueprint.sectionPlan.map(s => ({ sectionKey: s.sectionKey, purpose: s.purpose })),
-      mustCover: currentSectionPlan?.mustCover || []
-    };
-  }
-
-  // Load full evidence pack for prompt template injection
-  let evidencePromptContext: EvidencePromptContext | undefined;
-  if (useMappedEvidence) {
-    evidencePromptContext = {
-      useMappedEvidence: true,
-      // Keep prompt-level whitelist in sync with runtime validation whitelist.
-      allowedCitationKeys: citationContext.allowedCitationKeys,
-      dimensionEvidence: evidencePack?.dimensionEvidence || [],
-      gaps: citationContext.evidenceGaps,
-      coverageAssignments: evidencePack?.coverageAssignments || []
-    };
-
-    if (
-      evidencePack?.hasBlueprint
-      && citationContext.allowedCitationKeys.length === 0
-      && (
-        (evidencePack.dimensionEvidence?.length || 0) > 0
-        || (evidencePack.coverageAssignments?.length || 0) > 0
-      )
-    ) {
-      throw new DraftingRequestError(
-        'No mapped evidence is available for this section',
-        409,
-        {
-          error: 'No mapped evidence is available for this section',
-          hint: 'Run AI Relevance & Blueprint Mapping (or re-import citations) so citations can be mapped to this section.',
-          evidence: {
-            sectionKey,
-            gaps: evidencePack.gaps
-          }
-        }
-      );
-    }
-  } else {
-    evidencePromptContext = {
-      useMappedEvidence: false,
-      allowedCitationKeys: [],
-      dimensionEvidence: [],
-      gaps: [],
-      coverageAssignments: []
-    };
-  }
 
   await emitStatus?.('persona_style', 'Loading writing style guidance');
   let writingSampleBlock = '';
@@ -2825,6 +3001,25 @@ async function generateSection(
 
   await emitStatus?.('build_prompt', 'Building section prompt from super-admin publication rules');
 
+  const bundle = await buildSectionPromptRuntimeBundle({
+    sessionId,
+    session,
+    paperTypeCode,
+    sectionKey,
+    instructions: payload.instructions,
+    useMappedEvidence: payload.useMappedEvidence,
+    writingSampleBlock
+  });
+  const researchTopic = bundle.researchTopic;
+  const citations = bundle.citations;
+  const useMappedEvidence = bundle.useMappedEvidence;
+  const citationContext = bundle.citationContext;
+  const evidencePromptContext = bundle.evidencePromptContext;
+  const blueprintPromptContext = bundle.blueprintPromptContext;
+  const prompt = bundle.prompt;
+  const pass1Prompt = bundle.pass1Prompt;
+  const draft = await getOrCreatePaperDraft(sessionId, researchTopic?.title || 'Untitled Paper');
+
   // DEBUG: Log evidence and blueprint context for troubleshooting citation injection
   console.log(`[PaperDrafting] Section: ${sectionKey}, useMappedEvidence: ${useMappedEvidence}`);
   console.log(`[PaperDrafting] Blueprint exists: ${!!blueprintPromptContext}, mustCover count: ${blueprintPromptContext?.mustCover?.length || 0}`);
@@ -2837,31 +3032,6 @@ async function generateSection(
       console.log(`[PaperDrafting] Dimension "${dim.dimension}": ${dim.citations.length} citations`);
     }
   }
-
-  const prompt = await buildPrompt(
-    sectionKey,
-    paperTypeCode,
-    {
-      researchTopic,
-      archetype: {
-        archetypeId: session.archetypeId,
-        archetypeConfidence: session.archetypeConfidence,
-        contributionMode: session.contributionMode,
-        evaluationScope: session.evaluationScope,
-        evidenceModality: session.evidenceModality,
-        archetypeRationale: session.archetypeRationale,
-        archetypeEvidenceStale: session.archetypeEvidenceStale
-      },
-      citationCount: citations.length,
-      availableCitations: citations,
-      previousSections: extraSections
-    },
-    useMappedEvidence ? citationContext.citationInstructions : '',
-    payload.instructions,
-    writingSampleBlock,
-    blueprintPromptContext,
-    evidencePromptContext
-  );
 
   // DEBUG: Log a snippet of the final prompt to verify placeholder injection
   const promptSnippet = prompt.substring(0, 500);
@@ -2915,7 +3085,7 @@ async function generateSection(
       const pass1Request = {
         taskCode: 'LLM2_DRAFT' as const,
         stageCode: 'PAPER_SECTION_DRAFT',
-        prompt,
+        prompt: pass1Prompt,
         parameters: {
           temperature: payload.temperature,
         },
@@ -2956,7 +3126,7 @@ async function generateSection(
         generationMode: 'two_pass',
         baseContentInternal: pass1Content,
         baseMemory: pass1ParsedOutput.memory as any,
-        pass1PromptUsed: prompt,
+        pass1PromptUsed: pass1Prompt,
         pass1LlmResponse: pass1RawOutput,
         pass1TokensUsed: pass1Result.response.outputTokens,
         pass1CompletedAt: new Date(),
@@ -3368,6 +3538,7 @@ async function buildSectionPromptRuntimeBundle(params: {
   sectionKey: string;
   instructions?: string;
   useMappedEvidence?: boolean;
+  writingSampleBlock?: string;
 }): Promise<SectionPromptRuntimeBundle> {
   const { sessionId, session, paperTypeCode, sectionKey } = params;
   const normalizedSectionKey = normalizeSectionKey(sectionKey);
@@ -3475,15 +3646,42 @@ async function buildSectionPromptRuntimeBundle(params: {
     },
     useMappedEvidence ? citationContext.citationInstructions : '',
     params.instructions,
-    '',
+    params.writingSampleBlock,
     blueprintPromptContext,
-    evidencePromptContext
+    evidencePromptContext,
+    'markdown'
+  );
+  const pass1Prompt = await buildPrompt(
+    normalizedSectionKey,
+    paperTypeCode,
+    {
+      researchTopic,
+      archetype: {
+        archetypeId: session.archetypeId,
+        archetypeConfidence: session.archetypeConfidence,
+        contributionMode: session.contributionMode,
+        evaluationScope: session.evaluationScope,
+        evidenceModality: session.evidenceModality,
+        archetypeRationale: session.archetypeRationale,
+        archetypeEvidenceStale: session.archetypeEvidenceStale
+      },
+      citationCount: citations.length,
+      availableCitations: citations,
+      previousSections: extraSections
+    },
+    useMappedEvidence ? citationContext.citationInstructions : '',
+    params.instructions,
+    params.writingSampleBlock,
+    blueprintPromptContext,
+    evidencePromptContext,
+    'pass1_json'
   );
 
   return {
     sectionKey: normalizedSectionKey,
     paperTypeCode,
     prompt,
+    pass1Prompt,
     researchTopic,
     citations,
     useMappedEvidence,
@@ -3514,7 +3712,7 @@ function buildBlueprintDimensionPlan(
   for (const entry of bundle.evidencePromptContext.dimensionEvidence || []) {
     const dimensionKey = normalizeDimensionKey(String(entry.dimension || '').trim());
     if (!dimensionKey) continue;
-    const keys: string[] = Array.from(new Set(
+    const keys: string[] = Array.from(new Set<string>(
       (entry.citations || [])
         .map((citation) => String(citation.citationKey || '').trim())
         .filter((key): key is string => Boolean(key))
@@ -3820,6 +4018,11 @@ async function generateDimensionProposal(params: {
     reused: true
   });
   const pass1SourcePreview = pass1Source?.preview || buildDimensionPriorContext(pass1Content, 6000);
+  const targetPass1Brief = findPass1DimensionBrief(
+    pass1Memory,
+    params.targetDimension.dimensionKey,
+    params.targetDimension.dimensionLabel
+  );
   const requiredKeys = params.targetDimension.mustUseCitationKeys.join(', ') || '(none)';
   const avoidClaims = params.targetDimension.avoidClaims.join('; ') || '(none)';
   const feedback = params.feedback?.trim() ? `\nREWRITE FEEDBACK:\n${params.feedback.trim()}` : '';
@@ -3869,6 +4072,22 @@ async function generateDimensionProposal(params: {
     ? `- Keep at least ${budget.minWords} words unless evidence is genuinely sparse.`
     : '';
   const canonicalLookup = buildCanonicalCitationLookup(params.bundle.citations);
+  const targetEvidenceNotes = summarizeTargetDimensionEvidence(
+    params.bundle.evidencePromptContext,
+    params.targetDimension.dimensionKey,
+    params.targetDimension.dimensionLabel
+  );
+  const targetEvidenceSummary = summarizeTargetDimensionEvidenceCompact(
+    params.bundle.evidencePromptContext,
+    params.targetDimension.dimensionKey,
+    params.targetDimension.dimensionLabel
+  );
+  const roleSpecificPass1Guidance = [
+    budget.role === 'introduction' || budget.role === 'intro_conclusion'
+      ? `Pass 1 opening guidance: ${pass1Memory?.openingStrategy || '(none)'}` : '',
+    budget.role === 'conclusion' || budget.role === 'intro_conclusion'
+      ? `Pass 1 closing guidance: ${pass1Memory?.closingStrategy || '(none)'}` : ''
+  ].filter(Boolean).join('\n');
 
   const prompt = `You are drafting ONE dimension for a paper section.
 
@@ -3890,6 +4109,15 @@ ${pass1SourcePreview || '(No pass 1 source available)'}
 PASS 1 MEMORY SUMMARY:
 ${formatPass1MemoryForPrompt(pass1Memory)}
 
+PASS 1 TARGET-DIMENSION BRIEF:
+${formatPass1DimensionBriefForPrompt(targetPass1Brief)}
+
+TARGET DIMENSION EVIDENCE PACK:
+${targetEvidenceNotes}
+
+ROLE-SPECIFIC PASS 1 GUIDANCE:
+${roleSpecificPass1Guidance || '(No extra opening/closing guidance)'}
+
 ALREADY ACCEPTED DIMENSIONS (locked):
 ${acceptedSummary}
 
@@ -3903,6 +4131,8 @@ ${feedback}
 Write ONLY the content block for this target dimension.
 Rules:
 - Use the PASS 1 SECTION SOURCE above as the source of truth for this section.
+- Use the PASS 1 TARGET-DIMENSION BRIEF as the primary extraction target when available.
+- Use the TARGET DIMENSION EVIDENCE PACK first when grounding claims and citation placement.
 - Extract and adapt only the parts of the pass 1 draft that belong to this target dimension.
 - Do not repeat prior accepted content.
 - Keep continuity with the previous accepted dimension.
@@ -3977,7 +4207,9 @@ Return ONLY JSON:
         acceptedBlockCount: params.flow.acceptedBlocks.length,
         acceptedContextHash: buildAcceptedContextHash(params.flow.acceptedBlocks),
         acceptedSummary,
-        acceptedContextPreview: priorContext
+        acceptedContextPreview: priorContext,
+        pass1DimensionSummary: targetPass1Brief?.sourceSummary || '',
+        targetEvidenceSummary
       }
     },
     citationKeys: evaluation.citationKeys,
@@ -4111,7 +4343,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           const generatedPass1 = await executeDraftSectionPrompt({
             sessionId,
             sectionKey,
-            prompt: bundle.prompt,
+            prompt: bundle.pass1Prompt,
             headers: requestHeaders,
             tenantContext,
             purpose: 'paper_section_pass1_dimension_flow',
@@ -4137,7 +4369,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
               baseContentInternal: pass1Content,
               baseMemory: parsedPass1.memory as any,
               memory: parsedPass1.memory as any,
-              pass1PromptUsed: bundle.prompt,
+              pass1PromptUsed: bundle.pass1Prompt,
               pass1LlmResponse: generatedPass1.output,
               pass1TokensUsed: generatedPass1.outputTokens,
               pass1CompletedAt: new Date(),

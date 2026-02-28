@@ -17,6 +17,10 @@ interface DimensionPass1Memory {
   termsIntroduced: string[];
   mainClaims: string[];
   forwardReferences: string[];
+  sectionIntent?: string;
+  openingStrategy?: string;
+  closingStrategy?: string;
+  sectionOutline?: string[];
 }
 
 interface DimensionPass1SourceReview {
@@ -41,6 +45,8 @@ interface DimensionProposalReviewTrace {
   acceptedContextHash: string;
   acceptedSummary: string;
   acceptedContextPreview: string;
+  pass1DimensionSummary?: string;
+  targetEvidenceSummary?: string;
 }
 
 interface InlineDimensionProposalProps {
@@ -211,6 +217,22 @@ export default function InlineDimensionProposal({
                       <strong>Bridge hint:</strong> {reviewTrace.bridgeHint}
                     </div>
                   )}
+                  {reviewTrace.pass1DimensionSummary && (
+                    <div>
+                      <strong>Pass 1 dimension summary:</strong>
+                      <div className="mt-1 whitespace-pre-wrap rounded border border-slate-200 bg-white px-2 py-1 text-[10px] leading-5 text-slate-600">
+                        {reviewTrace.pass1DimensionSummary}
+                      </div>
+                    </div>
+                  )}
+                  {reviewTrace.targetEvidenceSummary && (
+                    <div>
+                      <strong>Target evidence passed in:</strong>
+                      <div className="mt-1 whitespace-pre-wrap rounded border border-slate-200 bg-white px-2 py-1 text-[10px] leading-5 text-slate-600">
+                        {reviewTrace.targetEvidenceSummary}
+                      </div>
+                    </div>
+                  )}
                   {reviewTrace.acceptedSummary && (
                     <div>
                       <strong>Accepted summary passed forward:</strong>
@@ -239,11 +261,23 @@ export default function InlineDimensionProposal({
                   </div>
                   {pass1Source.memory && (
                     <div className="space-y-1">
+                      {pass1Source.memory.sectionIntent && (
+                        <div><strong>Pass 1 section intent:</strong> {pass1Source.memory.sectionIntent}</div>
+                      )}
+                      {pass1Source.memory.openingStrategy && (
+                        <div><strong>Pass 1 opening strategy:</strong> {pass1Source.memory.openingStrategy}</div>
+                      )}
+                      {pass1Source.memory.closingStrategy && (
+                        <div><strong>Pass 1 closing strategy:</strong> {pass1Source.memory.closingStrategy}</div>
+                      )}
                       {pass1Source.memory.keyPoints.length > 0 && (
                         <div><strong>Pass 1 key points:</strong> {pass1Source.memory.keyPoints.join('; ')}</div>
                       )}
                       {pass1Source.memory.mainClaims.length > 0 && (
                         <div><strong>Pass 1 claims:</strong> {pass1Source.memory.mainClaims.join('; ')}</div>
+                      )}
+                      {pass1Source.memory.sectionOutline && pass1Source.memory.sectionOutline.length > 0 && (
+                        <div><strong>Pass 1 outline:</strong> {pass1Source.memory.sectionOutline.join(' | ')}</div>
                       )}
                     </div>
                   )}

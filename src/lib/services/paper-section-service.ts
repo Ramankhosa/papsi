@@ -75,11 +75,26 @@ async function runWithConcurrency<T>(
 // Types
 // ============================================================================
 
+export interface SectionDimensionBrief {
+  dimensionKey: string;
+  dimensionLabel: string;
+  roleHint?: 'introduction' | 'body' | 'conclusion' | 'intro_conclusion';
+  sourceSummary: string;
+  claimFocus?: string[];
+  mustUseCitationKeys?: string[];
+  bridgeToNext?: string;
+}
+
 export interface SectionMemory {
   keyPoints: string[];      // 3-5 bullets summarizing what this section covers
   termsIntroduced: string[]; // Technical terms/concepts first defined here
   mainClaims: string[];      // Key assertions (labeled: BACKGROUND/GAP/THESIS/METHOD/RESULT)
   forwardReferences: string[]; // Promises to address something in later sections
+  sectionIntent?: string;
+  openingStrategy?: string;
+  closingStrategy?: string;
+  sectionOutline?: string[];
+  dimensionBriefs?: SectionDimensionBrief[];
 }
 
 export interface PaperSectionWithMemory extends Omit<PaperSection, 'memory'> {
@@ -1649,7 +1664,22 @@ OUTPUT FORMAT (Return ONLY valid JSON)
     "keyPoints": ["point1", "point2", "point3"],
     "termsIntroduced": ["term1", "term2"],
     "mainClaims": ["BACKGROUND: claim1", "GAP: claim2", "THESIS: claim3"],
-    "forwardReferences": ["will discuss X in methodology"]
+    "forwardReferences": ["will discuss X in methodology"],
+    "sectionIntent": "What this section must accomplish for the paper",
+    "openingStrategy": "How the section should open",
+    "closingStrategy": "How the section should close or bridge onward",
+    "sectionOutline": ["planned subsection 1", "planned subsection 2"],
+    "dimensionBriefs": [
+      {
+        "dimensionKey": "normalized_dimension_key",
+        "dimensionLabel": "Exact blueprint dimension label",
+        "roleHint": "introduction|body|conclusion|intro_conclusion",
+        "sourceSummary": "2-4 sentences summarizing only this dimension's slice of the section draft",
+        "claimFocus": ["specific analytical angle"],
+        "mustUseCitationKeys": ["citationKey1", "citationKey2"],
+        "bridgeToNext": "How this dimension should connect to the next one"
+      }
+    ]
   }
 }
 
@@ -1664,6 +1694,9 @@ MEMORY FIELD RULES:
 - termsIntroduced: Terms FIRST defined in THIS section only
 - mainClaims: Key assertions with type prefix (BACKGROUND/GAP/THESIS/METHOD/RESULT)
 - forwardReferences: Promises to address something in later sections
+- sectionIntent/openingStrategy/closingStrategy: concise downstream guidance for Pass 2 refinement
+- sectionOutline: planned subsection flow for the section draft
+- dimensionBriefs: align to blueprint mustCover order when available and summarize only that dimension's portion of the draft
 
 ⚠️ CRITICAL: Output ONLY raw JSON. No markdown code fences. Start with { and end with }`;
 
@@ -1751,11 +1784,29 @@ FIELD DEFINITIONS:
       const parsed = JSON.parse(text);
 
       const content = polishDraftMarkdown(parsed.content || '');
+      const dimensionBriefs = Array.isArray(parsed.memory?.dimensionBriefs)
+        ? parsed.memory.dimensionBriefs
+          .map((entry: any) => ({
+            dimensionKey: String(entry?.dimensionKey || '').trim(),
+            dimensionLabel: String(entry?.dimensionLabel || '').trim(),
+            roleHint: typeof entry?.roleHint === 'string' ? entry.roleHint : undefined,
+            sourceSummary: String(entry?.sourceSummary || '').trim(),
+            claimFocus: Array.isArray(entry?.claimFocus) ? entry.claimFocus : [],
+            mustUseCitationKeys: Array.isArray(entry?.mustUseCitationKeys) ? entry.mustUseCitationKeys : [],
+            bridgeToNext: String(entry?.bridgeToNext || '').trim() || undefined
+          }))
+          .filter((entry: SectionDimensionBrief) => entry.dimensionKey && entry.dimensionLabel && entry.sourceSummary)
+        : [];
       const memory: SectionMemory = {
         keyPoints: Array.isArray(parsed.memory?.keyPoints) ? parsed.memory.keyPoints : [],
         termsIntroduced: Array.isArray(parsed.memory?.termsIntroduced) ? parsed.memory.termsIntroduced : [],
         mainClaims: Array.isArray(parsed.memory?.mainClaims) ? parsed.memory.mainClaims : [],
-        forwardReferences: Array.isArray(parsed.memory?.forwardReferences) ? parsed.memory.forwardReferences : []
+        forwardReferences: Array.isArray(parsed.memory?.forwardReferences) ? parsed.memory.forwardReferences : [],
+        sectionIntent: typeof parsed.memory?.sectionIntent === 'string' ? parsed.memory.sectionIntent.trim() : undefined,
+        openingStrategy: typeof parsed.memory?.openingStrategy === 'string' ? parsed.memory.openingStrategy.trim() : undefined,
+        closingStrategy: typeof parsed.memory?.closingStrategy === 'string' ? parsed.memory.closingStrategy.trim() : undefined,
+        sectionOutline: Array.isArray(parsed.memory?.sectionOutline) ? parsed.memory.sectionOutline : [],
+        dimensionBriefs
       };
 
       return { content, memory };
@@ -1828,7 +1879,7 @@ FIELD DEFINITIONS:
   private transformSection(section: PaperSection): PaperSectionWithMemory {
     return {
       ...section,
-      memory: section.memory as SectionMemory | null
+      memory: section.memory as unknown as SectionMemory | null
     };
   }
 }

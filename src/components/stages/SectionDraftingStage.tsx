@@ -99,6 +99,10 @@ interface DimensionPass1Memory {
   termsIntroduced: string[];
   mainClaims: string[];
   forwardReferences: string[];
+  sectionIntent?: string;
+  openingStrategy?: string;
+  closingStrategy?: string;
+  sectionOutline?: string[];
 }
 
 interface DimensionPass1SourceReview {
@@ -123,6 +127,8 @@ interface DimensionProposalReviewTrace {
   acceptedContextHash: string;
   acceptedSummary: string;
   acceptedContextPreview: string;
+  pass1DimensionSummary?: string;
+  targetEvidenceSummary?: string;
 }
 
 interface DimensionProposal {
@@ -250,12 +256,22 @@ function toDimensionPass1Memory(raw: any): DimensionPass1Memory | null {
   const forwardReferences = Array.isArray(raw.forwardReferences)
     ? raw.forwardReferences.map((value: unknown) => String(value || '').trim()).filter(Boolean)
     : [];
+  const sectionIntent = String(raw.sectionIntent || '').trim() || undefined;
+  const openingStrategy = String(raw.openingStrategy || '').trim() || undefined;
+  const closingStrategy = String(raw.closingStrategy || '').trim() || undefined;
+  const sectionOutline = Array.isArray(raw.sectionOutline)
+    ? raw.sectionOutline.map((value: unknown) => String(value || '').trim()).filter(Boolean)
+    : [];
 
   if (
     keyPoints.length === 0
     && termsIntroduced.length === 0
     && mainClaims.length === 0
     && forwardReferences.length === 0
+    && !sectionIntent
+    && !openingStrategy
+    && !closingStrategy
+    && sectionOutline.length === 0
   ) {
     return null;
   }
@@ -264,7 +280,11 @@ function toDimensionPass1Memory(raw: any): DimensionPass1Memory | null {
     keyPoints,
     termsIntroduced,
     mainClaims,
-    forwardReferences
+    forwardReferences,
+    sectionIntent,
+    openingStrategy,
+    closingStrategy,
+    sectionOutline
   };
 }
 
@@ -304,7 +324,9 @@ function toDimensionProposalReviewTrace(raw: any): DimensionProposalReviewTrace 
     acceptedBlockCount: Number(raw.acceptedBlockCount || 0),
     acceptedContextHash: String(raw.acceptedContextHash || '').trim(),
     acceptedSummary: String(raw.acceptedSummary || ''),
-    acceptedContextPreview: String(raw.acceptedContextPreview || '')
+    acceptedContextPreview: String(raw.acceptedContextPreview || ''),
+    pass1DimensionSummary: String(raw.pass1DimensionSummary || '').trim() || undefined,
+    targetEvidenceSummary: String(raw.targetEvidenceSummary || '').trim() || undefined
   };
 }
 
