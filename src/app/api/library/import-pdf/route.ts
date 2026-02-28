@@ -8,6 +8,7 @@ import { authenticateUser } from '@/lib/auth-middleware';
 import { referenceLibraryService } from '@/lib/services/reference-library-service';
 import { referenceDocumentService } from '@/lib/services/reference-document-service';
 import { pdfParserService } from '@/lib/services/pdf-parser-service';
+import { referenceReconciliationService } from '@/lib/services/reference-reconciliation-service';
 import { prisma } from '@/lib/prisma';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -87,6 +88,7 @@ async function extractMetadataFromBuffer(buffer: Buffer): Promise<Awaited<Return
 interface ImportPdfResult {
   fileName: string;
   success: boolean;
+  documentId?: string;
   referenceId?: string;
   referenceTitle?: string;
   doi?: string | null;
@@ -162,6 +164,7 @@ async function importSinglePdf(
     return {
       fileName: file.name,
       success: true,
+      documentId: existingDocument?.id,
       referenceId: existingLinkedReference.reference.id,
       referenceTitle: existingLinkedReference.reference.title,
       doi: normalizeDoi(existingLinkedReference.reference.doi) || normalizeDoi(existingDocument?.pdfDoi) || null,
@@ -255,6 +258,7 @@ async function importSinglePdf(
   return {
     fileName: file.name,
     success: true,
+    documentId: attachResult.document?.id,
     referenceId: reference.id,
     referenceTitle: reference.title,
     doi: extractedDoi || null,
@@ -282,6 +286,30 @@ export async function POST(request: NextRequest) {
     const collectionIdValue = typeof collectionId === 'string' && collectionId.trim().length > 0
       ? collectionId.trim()
       : undefined;
+    const reconcileField = formData.get('reconcile');
+    const shouldReconcile = typeof reconcileField === 'string'
+      ? reconcileField.trim().toLowerCase() !== 'false'
+      : true;
+    const mendeleyAccessToken = typeof formData.get('mendeleyAccessToken') === 'string'
+      ? String(formData.get('mendeleyAccessToken')).trim()
+      : undefined;
+    const zoteroApiKey = typeof formData.get('zoteroApiKey') === 'string'
+      ? String(formData.get('zoteroApiKey')).trim()
+      : undefined;
+    const zoteroUserId = typeof formData.get('zoteroUserId') === 'string'
+      ? String(formData.get('zoteroUserId')).trim()
+      : undefined;
+    const zoteroGroupId = typeof formData.get('zoteroGroupId') === 'string'
+      ? String(formData.get('zoteroGroupId')).trim()
+      : undefined;
+    const effectiveMendeleyAccessToken =
+      mendeleyAccessToken || String(process.env.MENDELEY_ACCESS_TOKEN || '').trim() || undefined;
+    const effectiveZoteroApiKey =
+      zoteroApiKey || String(process.env.ZOTERO_API_KEY || '').trim() || undefined;
+    const effectiveZoteroUserId =
+      zoteroUserId || String(process.env.ZOTERO_USER_ID || '').trim() || undefined;
+    const effectiveZoteroGroupId =
+      zoteroGroupId || String(process.env.ZOTERO_GROUP_ID || '').trim() || undefined;
 
     if (files.length === 0) {
       return NextResponse.json({ error: 'No files provided' }, { status: 400 });
@@ -311,6 +339,32 @@ export async function POST(request: NextRequest) {
     const imported = results.filter((result) => result.success).length;
     const failed = results.length - imported;
     const firstSuccess = results.find((result) => result.success);
+    const successfulDocumentIds = Array.from(new Set(
+      results
+        .filter((result) => result.success && typeof result.documentId === 'string' && result.documentId.trim().length > 0)
+        .map((result) => String(result.documentId))
+    ));
+
+    let reconciliation: any = null;
+    if (shouldReconcile && successfulDocumentIds.length > 0) {
+      reconciliation = await referenceReconciliationService.runReconciliation({
+        userId: user.id,
+        actorUserId: user.id,
+        tenantId: (user as any).tenantId || null,
+        documentIds: successfulDocumentIds,
+        applyAutoLinks: true,
+        dryRun: false,
+        includeAlreadyLinkedDocuments: true,
+        providers: {
+          mendeleyAccessToken: effectiveMendeleyAccessToken,
+          zoteroApiKey: effectiveZoteroApiKey,
+          zoteroUserId: effectiveZoteroUserId,
+          zoteroGroupId: effectiveZoteroGroupId,
+        },
+      }).catch((reconcileErr: unknown) => ({
+        error: reconcileErr instanceof Error ? reconcileErr.message : 'Reconciliation failed',
+      }));
+    }
 
     // Backward compatibility for older single-file UI consumers.
     if (results.length === 1 && firstSuccess) {
@@ -322,6 +376,7 @@ export async function POST(request: NextRequest) {
             title: firstSuccess.referenceTitle,
           },
           results,
+          reconciliation,
           summary: { total: 1, imported, failed },
         },
         { status: 201 }
@@ -331,6 +386,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         results,
+        reconciliation,
         summary: {
           total: results.length,
           imported,

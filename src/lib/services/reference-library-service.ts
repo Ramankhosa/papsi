@@ -385,6 +385,7 @@ class ReferenceLibraryService {
     const existingKeys = await this.getExistingCitationKeys(userId);
     const existingDOIs = await this.getExistingDOIs(userId);
     const imported: any[] = [];
+    const attachmentHintsByReferenceId: Record<string, string[]> = {};
     const skipped: string[] = [];
     const errors: string[] = [...parseResult.errors];
 
@@ -436,6 +437,9 @@ class ReferenceLibraryService {
           },
         });
         imported.push(created);
+        if (Array.isArray(ref.attachmentHints) && ref.attachmentHints.length > 0) {
+          attachmentHintsByReferenceId[created.id] = ref.attachmentHints.slice(0, 20);
+        }
       } catch (err) {
         errors.push(`Failed to import "${ref.title}": ${err instanceof Error ? err.message : 'Unknown error'}`);
       }
@@ -446,6 +450,7 @@ class ReferenceLibraryService {
       imported: imported.length,
       skipped: skipped.length,
       references: imported,
+      attachmentHintsByReferenceId,
       errors,
       warnings: [...parseResult.warnings, ...skipped],
       format: parseResult.format,

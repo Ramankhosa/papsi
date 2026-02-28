@@ -85,6 +85,39 @@ interface Reference {
   }>;
 }
 
+interface ReconciliationCandidate {
+  documentId: string;
+  referenceId: string;
+  score: number;
+  confidence: 'auto_high' | 'auto_guarded' | 'review' | 'low';
+  hardConflict?: boolean;
+  hardConflictReason?: string;
+  reasons?: string[];
+  marginToNext?: number;
+}
+
+interface ReconciliationReviewItem {
+  documentId: string;
+  reason: string;
+  topCandidates: ReconciliationCandidate[];
+}
+
+interface ReconciliationResult {
+  batchId: string;
+  evaluatedDocuments: number;
+  evaluatedReferences: number;
+  autoLinked: Array<{
+    documentId: string;
+    referenceId: string;
+    score: number;
+    confidence: 'auto_high' | 'auto_guarded' | 'review' | 'low';
+    auditLogId?: string;
+  }>;
+  reviewQueue: ReconciliationReviewItem[];
+  unmatchedDocumentIds: string[];
+  skippedByHardConflict: Array<{ documentId: string; reason: string }>;
+}
+
 const LIBRARY_COLORS = [
   '#6366f1', // Indigo
   '#8b5cf6', // Violet
@@ -137,6 +170,14 @@ function normalizeDoi(doi?: string): string | null {
 function toDoiUrl(doi?: string): string | null {
   const cleaned = normalizeDoi(doi);
   return cleaned ? `https://doi.org/${cleaned}` : null;
+}
+
+function parseReconciliationResult(value: unknown): ReconciliationResult | null {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<ReconciliationResult>;
+  if (typeof candidate.batchId !== 'string') return null;
+  if (!Array.isArray(candidate.autoLinked) || !Array.isArray(candidate.reviewQueue)) return null;
+  return candidate as ReconciliationResult;
 }
 
 export default function ReferenceManagementPage({ authToken }: ReferenceManagementPageProps) {
@@ -867,7 +908,7 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
               <div>
                 <h3 className="text-lg font-semibold mb-2">Welcome to Reference Management!</h3>
                 <p className="text-white/90 text-sm mb-4">
-                  This is your personal reference library. Here's how it works:
+                  This is your personal reference library. Here&apos;s how it works:
                 </p>
                 <ol className="text-sm text-white/90 space-y-2 mb-4">
                   <li className="flex items-start gap-2">
@@ -1946,11 +1987,12 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
           </DialogHeader>
           
           <Tabs defaultValue="manual" className="mt-4">
-            <TabsList className="grid grid-cols-4">
+            <TabsList className="grid grid-cols-5">
               <TabsTrigger value="manual">Manual Entry</TabsTrigger>
               <TabsTrigger value="doi">By DOI</TabsTrigger>
               <TabsTrigger value="citationImport">Citation Import</TabsTrigger>
               <TabsTrigger value="pdfUpload">PDF Upload</TabsTrigger>
+              <TabsTrigger value="providerImport">Provider Sync</TabsTrigger>
             </TabsList>
             
             <TabsContent value="manual" className="space-y-4 mt-4">
@@ -2039,7 +2081,6 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
                 authToken={authToken} 
                 collectionId={selectedLibrary}
                 onImported={() => {
-                  setShowAddRef(false);
                   loadReferences();
                   loadLibraries();
                 }} 
@@ -2051,7 +2092,17 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
                 authToken={authToken}
                 collectionId={selectedLibrary}
                 onImported={() => {
-                  setShowAddRef(false);
+                  loadReferences();
+                  loadLibraries();
+                }}
+              />
+            </TabsContent>
+
+            <TabsContent value="providerImport" className="mt-4">
+              <ProviderImportSection
+                authToken={authToken}
+                collectionId={selectedLibrary}
+                onImported={() => {
                   loadReferences();
                   loadLibraries();
                 }}
@@ -2165,6 +2216,203 @@ function DOIImportSection({
   );
 }
 
+function ReconciliationSummaryPanel({
+  reconciliation,
+  title = 'Linking summary',
+  authToken,
+  onUpdated,
+}: {
+  reconciliation: ReconciliationResult;
+  title?: string;
+  authToken?: string | null;
+  onUpdated?: () => void;
+}) {
+  const [localResult, setLocalResult] = useState<ReconciliationResult>(reconciliation);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  useEffect(() => {
+    setLocalResult(reconciliation);
+    setNotice(null);
+  }, [reconciliation]);
+
+  const handleManualLink = async (documentId: string, referenceId: string) => {
+    if (!authToken) return;
+    const key = `link:${documentId}:${referenceId}`;
+    try {
+      setBusyKey(key);
+      setNotice(null);
+      const response = await fetch('/api/library/reconcile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          mode: 'link',
+          batchId: localResult.batchId,
+          documentId,
+          referenceId,
+          reason: 'Accepted from reconciliation review queue',
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to apply manual link');
+      }
+
+      const link = data.link as ReconciliationResult['autoLinked'][number];
+      setLocalResult((prev) => ({
+        ...prev,
+        batchId: typeof data.batchId === 'string' ? data.batchId : prev.batchId,
+        autoLinked: [
+          ...prev.autoLinked.filter(
+            (entry) => !(entry.documentId === link.documentId && entry.referenceId === link.referenceId)
+          ),
+          link,
+        ],
+        reviewQueue: prev.reviewQueue.filter((item) => item.documentId !== documentId),
+      }));
+      setNotice({ type: 'success', text: `Manual link applied for document ${documentId.slice(0, 8)}.` });
+      onUpdated?.();
+    } catch (error) {
+      setNotice({
+        type: 'error',
+        text: error instanceof Error ? error.message : 'Failed to apply manual link',
+      });
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handleReject = async (documentId: string, referenceId?: string) => {
+    if (!authToken) return;
+    const key = `reject:${documentId}:${referenceId || 'none'}`;
+    try {
+      setBusyKey(key);
+      setNotice(null);
+      const response = await fetch('/api/library/reconcile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          mode: 'reject',
+          batchId: localResult.batchId,
+          documentId,
+          referenceId: referenceId || undefined,
+          reason: 'Rejected from reconciliation review queue',
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to reject candidate');
+      }
+
+      setLocalResult((prev) => ({
+        ...prev,
+        batchId: typeof data.batchId === 'string' ? data.batchId : prev.batchId,
+        reviewQueue: prev.reviewQueue.filter((item) => item.documentId !== documentId),
+        unmatchedDocumentIds: Array.from(new Set([...prev.unmatchedDocumentIds, documentId])),
+      }));
+      setNotice({ type: 'success', text: `Rejected review candidate for document ${documentId.slice(0, 8)}.` });
+      onUpdated?.();
+    } catch (error) {
+      setNotice({
+        type: 'error',
+        text: error instanceof Error ? error.message : 'Failed to reject candidate',
+      });
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  return (
+    <div className="space-y-2 rounded-lg border border-indigo-200 bg-indigo-50/60 p-3 text-sm">
+      <p className="font-medium text-indigo-900">{title}</p>
+      <div className="flex flex-wrap gap-2 text-xs">
+        <Badge variant="outline" className="bg-white/80 border-indigo-300 text-indigo-800">
+          Batch: {localResult.batchId.slice(0, 8)}
+        </Badge>
+        <Badge variant="outline" className="bg-white/80 border-emerald-300 text-emerald-700">
+          Linked: {localResult.autoLinked.length}
+        </Badge>
+        <Badge variant="outline" className="bg-white/80 border-amber-300 text-amber-700">
+          Review: {localResult.reviewQueue.length}
+        </Badge>
+        <Badge variant="outline" className="bg-white/80 border-slate-300 text-slate-700">
+          Unmatched: {localResult.unmatchedDocumentIds.length}
+        </Badge>
+        {localResult.skippedByHardConflict.length > 0 && (
+          <Badge variant="outline" className="bg-white/80 border-red-300 text-red-700">
+            Hard conflicts: {localResult.skippedByHardConflict.length}
+          </Badge>
+        )}
+      </div>
+      {notice && (
+        <div className={`rounded border px-2 py-1 text-xs ${
+          notice.type === 'success'
+            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+            : 'border-red-200 bg-red-50 text-red-700'
+        }`}>
+          {notice.text}
+        </div>
+      )}
+      {localResult.reviewQueue.length > 0 && (
+        <div className="rounded border border-amber-200 bg-white p-2 text-xs text-amber-900">
+          <p className="font-medium mb-2">Review queue</p>
+          <div className="space-y-2">
+            {localResult.reviewQueue.slice(0, 5).map((item) => (
+              <div key={item.documentId} className="rounded border border-amber-100 bg-amber-50/40 p-2 space-y-1">
+                <p className="font-medium text-amber-900">
+                  Doc {item.documentId.slice(0, 8)}: {item.reason}
+                </p>
+                <div className="space-y-1">
+                  {item.topCandidates.slice(0, 3).map((candidate) => {
+                    const actionKey = `link:${item.documentId}:${candidate.referenceId}`;
+                    return (
+                      <div
+                        key={`${item.documentId}:${candidate.referenceId}`}
+                        className="flex flex-wrap items-center gap-2"
+                      >
+                        <span className="text-amber-900">
+                          Ref {candidate.referenceId.slice(0, 8)} score {candidate.score.toFixed(1)} ({candidate.confidence})
+                        </span>
+                        {authToken && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-6 px-2 text-[11px]"
+                            onClick={() => handleManualLink(item.documentId, candidate.referenceId)}
+                            disabled={busyKey !== null}
+                          >
+                            {busyKey === actionKey ? 'Linking...' : 'Link'}
+                          </Button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                {authToken && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="h-6 px-2 text-[11px] border-red-200 text-red-700 hover:bg-red-50"
+                    onClick={() => handleReject(item.documentId, item.topCandidates[0]?.referenceId)}
+                    disabled={busyKey !== null}
+                  >
+                    {busyKey?.startsWith(`reject:${item.documentId}:`) ? 'Rejecting...' : 'Reject Document'}
+                  </Button>
+                )}
+              </div>
+            ))}
+            {localResult.reviewQueue.length > 5 && (
+              <p>+{localResult.reviewQueue.length - 5} more pending review</p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // PDF Upload Import Component (supports multiple files)
 function PDFUploadImportSection({
   authToken,
@@ -2177,8 +2425,17 @@ function PDFUploadImportSection({
 }) {
   const [files, setFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [result, setResult] = useState<{
+    type: 'success' | 'error';
+    text: string;
+    reconciliation?: ReconciliationResult | null;
+  } | null>(null);
   const [selectionMode, setSelectionMode] = useState<'files' | 'folder'>('files');
+  const [runReconciliation, setRunReconciliation] = useState(true);
+  const [mendeleyAccessToken, setMendeleyAccessToken] = useState('');
+  const [zoteroApiKey, setZoteroApiKey] = useState('');
+  const [zoteroUserId, setZoteroUserId] = useState('');
+  const [zoteroGroupId, setZoteroGroupId] = useState('');
   const filesInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -2202,6 +2459,19 @@ function PDFUploadImportSection({
       files.forEach((file) => formData.append('files', file));
       if (collectionId) {
         formData.append('collectionId', collectionId);
+      }
+      formData.append('reconcile', String(runReconciliation));
+      if (mendeleyAccessToken.trim()) {
+        formData.append('mendeleyAccessToken', mendeleyAccessToken.trim());
+      }
+      if (zoteroApiKey.trim()) {
+        formData.append('zoteroApiKey', zoteroApiKey.trim());
+      }
+      if (zoteroUserId.trim()) {
+        formData.append('zoteroUserId', zoteroUserId.trim());
+      }
+      if (zoteroGroupId.trim()) {
+        formData.append('zoteroGroupId', zoteroGroupId.trim());
       }
 
       const response = await fetch('/api/library/import-pdf', {
@@ -2228,10 +2498,15 @@ function PDFUploadImportSection({
       const failedText = failedItems.length > 0
         ? ` Failed: ${failedItems.map((item: any) => `${item.fileName} (${item.error || 'error'})`).join('; ')}`
         : '';
+      const reconciliation = parseReconciliationResult(data.reconciliation);
+      const reconcileText = reconciliation
+        ? ` Linked ${reconciliation.autoLinked.length}; review ${reconciliation.reviewQueue.length}.`
+        : '';
 
       setResult({
         type: summary.imported > 0 ? 'success' : 'error',
-        text: `Imported ${summary.imported}/${summary.total} PDF file(s).${failedText}`,
+        text: `Imported ${summary.imported}/${summary.total} PDF file(s).${reconcileText}${failedText}`,
+        reconciliation,
       });
 
       if (summary.imported > 0) {
@@ -2307,6 +2582,52 @@ function PDFUploadImportSection({
         )}
       </div>
 
+      <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
+        <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+          <Checkbox
+            checked={runReconciliation}
+            onCheckedChange={(checked) => setRunReconciliation(Boolean(checked))}
+          />
+          Run auto-linking after upload
+        </label>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">Mendeley access token (optional)</label>
+            <Input
+              type="password"
+              value={mendeleyAccessToken}
+              onChange={(e) => setMendeleyAccessToken(e.target.value)}
+              placeholder="Used to search citation metadata for PDFs"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">Zotero API key (optional)</label>
+            <Input
+              type="password"
+              value={zoteroApiKey}
+              onChange={(e) => setZoteroApiKey(e.target.value)}
+              placeholder="Used to search your Zotero library"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">Zotero user ID (optional)</label>
+            <Input
+              value={zoteroUserId}
+              onChange={(e) => setZoteroUserId(e.target.value)}
+              placeholder="Required with Zotero key if using user library"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">Zotero group ID (optional)</label>
+            <Input
+              value={zoteroGroupId}
+              onChange={(e) => setZoteroGroupId(e.target.value)}
+              placeholder="Alternative to user ID"
+            />
+          </div>
+        </div>
+      </div>
+
       <div className="flex justify-end">
         <Button onClick={handleUpload} disabled={loading || files.length === 0}>
           {loading ? 'Importing PDFs...' : `Import ${files.length > 0 ? files.length : ''} PDF${files.length === 1 ? '' : 's'}`}
@@ -2314,10 +2635,20 @@ function PDFUploadImportSection({
       </div>
 
       {result && (
-        <div className={`p-3 rounded-lg text-sm ${
-          result.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
-        }`}>
-          {result.text}
+        <div className="space-y-2">
+          <div className={`p-3 rounded-lg text-sm ${
+            result.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
+          }`}>
+            {result.text}
+          </div>
+          {result.reconciliation && (
+            <ReconciliationSummaryPanel
+              reconciliation={result.reconciliation}
+              title="PDF upload reconciliation"
+              authToken={authToken}
+              onUpdated={onImported}
+            />
+          )}
         </div>
       )}
     </div>
@@ -2336,26 +2667,47 @@ function FileImportSection({
 }) {
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ imported: number; errors: string[]; addedToLibrary?: boolean } | null>(null);
+  const [result, setResult] = useState<{
+    imported: number;
+    errors: string[];
+    addedToLibrary?: boolean;
+    reconciliation?: ReconciliationResult | null;
+  } | null>(null);
+  const [autoReconcile, setAutoReconcile] = useState(true);
+  const [dryRunReconcile, setDryRunReconcile] = useState(false);
+  const [mendeleyAccessToken, setMendeleyAccessToken] = useState('');
+  const [zoteroApiKey, setZoteroApiKey] = useState('');
+  const [zoteroUserId, setZoteroUserId] = useState('');
+  const [zoteroGroupId, setZoteroGroupId] = useState('');
 
   const handleImport = async () => {
     if (!authToken || !content.trim()) return;
     try {
       setLoading(true);
       setResult(null);
+      const providers: Record<string, string> = {};
+      if (mendeleyAccessToken.trim()) providers.mendeleyAccessToken = mendeleyAccessToken.trim();
+      if (zoteroApiKey.trim()) providers.zoteroApiKey = zoteroApiKey.trim();
+      if (zoteroUserId.trim()) providers.zoteroUserId = zoteroUserId.trim();
+      if (zoteroGroupId.trim()) providers.zoteroGroupId = zoteroGroupId.trim();
+
       const response = await fetch('/api/library', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
         body: JSON.stringify({ 
           content: content.trim(),
-          collectionId: collectionId || undefined  // Add to collection if one is selected
+          collectionId: collectionId || undefined,  // Add to collection if one is selected
+          autoReconcile,
+          dryRunReconcile,
+          providers: Object.keys(providers).length > 0 ? providers : undefined,
         })
       });
       const data = await response.json();
       setResult({ 
         imported: data.imported || 0, 
         errors: data.errors || [],
-        addedToLibrary: !!collectionId && data.imported > 0
+        addedToLibrary: !!collectionId && data.imported > 0,
+        reconciliation: parseReconciliationResult(data.reconciliation),
       });
       if (data.imported > 0) {
         setContent('');
@@ -2386,6 +2738,60 @@ function FileImportSection({
           </span>
         )}
       </p>
+      <div className="rounded-lg border bg-slate-50 p-3 space-y-3">
+        <div className="flex flex-wrap items-center gap-4">
+          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+            <Checkbox
+              checked={autoReconcile}
+              onCheckedChange={(checked) => setAutoReconcile(Boolean(checked))}
+            />
+            Auto-link against uploaded PDFs
+          </label>
+          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+            <Checkbox
+              checked={dryRunReconcile}
+              onCheckedChange={(checked) => setDryRunReconcile(Boolean(checked))}
+            />
+            Dry run only
+          </label>
+        </div>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">Mendeley access token (optional)</label>
+            <Input
+              type="password"
+              value={mendeleyAccessToken}
+              onChange={(e) => setMendeleyAccessToken(e.target.value)}
+              placeholder="Use Mendeley catalog/library as signal source"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">Zotero API key (optional)</label>
+            <Input
+              type="password"
+              value={zoteroApiKey}
+              onChange={(e) => setZoteroApiKey(e.target.value)}
+              placeholder="Use Zotero library as signal source"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">Zotero user ID (optional)</label>
+            <Input
+              value={zoteroUserId}
+              onChange={(e) => setZoteroUserId(e.target.value)}
+              placeholder="Required with API key for user library"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">Zotero group ID (optional)</label>
+            <Input
+              value={zoteroGroupId}
+              onChange={(e) => setZoteroGroupId(e.target.value)}
+              placeholder="Alternative to user ID"
+            />
+          </div>
+        </div>
+      </div>
       <Textarea
         value={content}
         onChange={e => setContent(e.target.value)}
@@ -2414,14 +2820,434 @@ function FileImportSection({
         </Button>
       </div>
       {result && (
-        <div className={`p-3 rounded-lg text-sm ${
-          result.imported > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
-        }`}>
-          {result.imported > 0 
-            ? `Successfully imported ${result.imported} reference(s)${result.addedToLibrary ? ' and added to library' : ''}`
-            : result.errors.join(', ') || 'Import failed'
-          }
+        <div className="space-y-2">
+          <div className={`p-3 rounded-lg text-sm ${
+            result.imported > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
+          }`}>
+            {result.imported > 0 
+              ? `Successfully imported ${result.imported} reference(s)${result.addedToLibrary ? ' and added to library' : ''}`
+              : result.errors.join(', ') || 'Import failed'
+            }
+          </div>
+          {result.reconciliation && (
+            <ReconciliationSummaryPanel
+              reconciliation={result.reconciliation}
+              title="Citation import reconciliation"
+              authToken={authToken}
+              onUpdated={onImported}
+            />
+          )}
         </div>
+      )}
+    </div>
+  );
+}
+
+function ProviderImportSection({
+  authToken,
+  collectionId,
+  onImported,
+}: {
+  authToken: string | null;
+  collectionId?: string | null;
+  onImported: () => void;
+}) {
+  const [mode, setMode] = useState<'mendeley' | 'zotero' | 'manual'>('mendeley');
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [providerResult, setProviderResult] = useState<{
+    reconciliation?: ReconciliationResult | null;
+    batchId?: string;
+  } | null>(null);
+
+  const [mendeleyAccessToken, setMendeleyAccessToken] = useState('');
+  const [mendeleyLimit, setMendeleyLimit] = useState('100');
+
+  const [zoteroApiKey, setZoteroApiKey] = useState('');
+  const [zoteroUserId, setZoteroUserId] = useState('');
+  const [zoteroGroupId, setZoteroGroupId] = useState('');
+  const [zoteroLimit, setZoteroLimit] = useState('100');
+
+  const [autoReconcile, setAutoReconcile] = useState(true);
+  const [dryRunReconcile, setDryRunReconcile] = useState(false);
+  const [includeLinkedDocs, setIncludeLinkedDocs] = useState(true);
+  const [rollbacking, setRollbacking] = useState(false);
+
+  const resetStatus = () => {
+    setMessage(null);
+    setProviderResult(null);
+  };
+
+  const parseLimit = (value: string): number | undefined => {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+    return Math.min(parsed, 500);
+  };
+
+  const buildProvidersPayload = () => {
+    const payload: Record<string, string> = {};
+    if (mendeleyAccessToken.trim()) payload.mendeleyAccessToken = mendeleyAccessToken.trim();
+    if (zoteroApiKey.trim()) payload.zoteroApiKey = zoteroApiKey.trim();
+    if (zoteroUserId.trim()) payload.zoteroUserId = zoteroUserId.trim();
+    if (zoteroGroupId.trim()) payload.zoteroGroupId = zoteroGroupId.trim();
+    return Object.keys(payload).length > 0 ? payload : undefined;
+  };
+
+  const handleMendeleyImport = async () => {
+    if (!authToken || !mendeleyAccessToken.trim()) return;
+    try {
+      setLoading(true);
+      resetStatus();
+      const response = await fetch('/api/library/import-mendeley', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          accessToken: mendeleyAccessToken.trim(),
+          limit: parseLimit(mendeleyLimit),
+          collectionId: collectionId || undefined,
+          autoReconcile,
+          dryRunReconcile,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setMessage({ type: 'error', text: data.error || 'Mendeley import failed' });
+        return;
+      }
+      const reconciliation = parseReconciliationResult(data.reconciliation);
+      setProviderResult({ reconciliation, batchId: reconciliation?.batchId });
+      setMessage({
+        type: 'success',
+        text: `Imported ${data.imported || 0} references from Mendeley${data.skipped ? `, skipped ${data.skipped}` : ''}.`,
+      });
+      if ((data.imported || 0) > 0) onImported();
+    } catch {
+      setMessage({ type: 'error', text: 'Mendeley import failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleZoteroImport = async () => {
+    if (!authToken || !zoteroApiKey.trim() || (!zoteroUserId.trim() && !zoteroGroupId.trim())) return;
+    try {
+      setLoading(true);
+      resetStatus();
+      const response = await fetch('/api/library/import-zotero', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          apiKey: zoteroApiKey.trim(),
+          userId: zoteroUserId.trim() || undefined,
+          groupId: zoteroGroupId.trim() || undefined,
+          limit: parseLimit(zoteroLimit),
+          collectionId: collectionId || undefined,
+          autoReconcile,
+          dryRunReconcile,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setMessage({ type: 'error', text: data.error || 'Zotero import failed' });
+        return;
+      }
+      const reconciliation = parseReconciliationResult(data.reconciliation);
+      setProviderResult({ reconciliation, batchId: reconciliation?.batchId });
+      setMessage({
+        type: 'success',
+        text: `Imported ${data.imported || 0} references from Zotero${data.skipped ? `, skipped ${data.skipped}` : ''}.`,
+      });
+      if ((data.imported || 0) > 0) onImported();
+    } catch {
+      setMessage({ type: 'error', text: 'Zotero import failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleManualReconcile = async () => {
+    if (!authToken) return;
+    try {
+      setLoading(true);
+      resetStatus();
+      const response = await fetch('/api/library/reconcile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          mode: 'run',
+          applyAutoLinks: autoReconcile,
+          dryRun: dryRunReconcile,
+          includeAlreadyLinkedDocuments: includeLinkedDocs,
+          providers: buildProvidersPayload(),
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setMessage({ type: 'error', text: data.error || 'Reconciliation failed' });
+        return;
+      }
+      const reconciliation = parseReconciliationResult(data);
+      if (!reconciliation) {
+        setMessage({ type: 'error', text: 'Reconciliation response was invalid' });
+        return;
+      }
+      setProviderResult({ reconciliation, batchId: reconciliation.batchId });
+      setMessage({
+        type: 'success',
+        text: `Processed ${reconciliation.evaluatedDocuments} document(s). Auto-linked ${reconciliation.autoLinked.length}.`,
+      });
+      if (reconciliation.autoLinked.length > 0) onImported();
+    } catch {
+      setMessage({ type: 'error', text: 'Reconciliation failed' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRollback = async () => {
+    if (!authToken || !providerResult?.batchId) return;
+    try {
+      setRollbacking(true);
+      const response = await fetch('/api/library/reconcile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          mode: 'rollback',
+          batchId: providerResult.batchId,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setMessage({ type: 'error', text: data.error || 'Rollback failed' });
+        return;
+      }
+      setMessage({
+        type: 'success',
+        text: `Rollback complete for batch ${providerResult.batchId.slice(0, 8)}. Reverted ${data.reverted || 0} link(s).`,
+      });
+      onImported();
+    } catch {
+      setMessage({ type: 'error', text: 'Rollback failed' });
+    } finally {
+      setRollbacking(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-gray-600">
+        Import directly from Mendeley or Zotero, and run manual reconciliation for already-uploaded PDFs.
+        {collectionId && (
+          <span className="block mt-1 text-indigo-600 font-medium">
+            Imported references are added to the currently selected library
+          </span>
+        )}
+      </p>
+
+      <Tabs value={mode} onValueChange={(value) => {
+        setMode(value as 'mendeley' | 'zotero' | 'manual');
+        resetStatus();
+      }}>
+        <TabsList className="grid grid-cols-3">
+          <TabsTrigger value="mendeley">Mendeley</TabsTrigger>
+          <TabsTrigger value="zotero">Zotero</TabsTrigger>
+          <TabsTrigger value="manual">Manual Linking</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="mendeley" className="mt-4 space-y-3">
+          <div>
+            <label className="text-sm font-medium text-gray-700">Mendeley access token *</label>
+            <Input
+              type="password"
+              value={mendeleyAccessToken}
+              onChange={(e) => setMendeleyAccessToken(e.target.value)}
+              placeholder="OAuth access token"
+              className="mt-1"
+            />
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700">Import limit</label>
+            <Input
+              type="number"
+              value={mendeleyLimit}
+              onChange={(e) => setMendeleyLimit(e.target.value)}
+              min="1"
+              max="500"
+              className="mt-1"
+            />
+          </div>
+          <Button
+            onClick={handleMendeleyImport}
+            disabled={loading || !mendeleyAccessToken.trim()}
+          >
+            {loading ? 'Importing...' : 'Import from Mendeley'}
+          </Button>
+        </TabsContent>
+
+        <TabsContent value="zotero" className="mt-4 space-y-3">
+          <div>
+            <label className="text-sm font-medium text-gray-700">Zotero API key *</label>
+            <Input
+              type="password"
+              value={zoteroApiKey}
+              onChange={(e) => setZoteroApiKey(e.target.value)}
+              placeholder="Zotero API key"
+              className="mt-1"
+            />
+          </div>
+          <div className="grid md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm font-medium text-gray-700">User ID</label>
+              <Input
+                value={zoteroUserId}
+                onChange={(e) => setZoteroUserId(e.target.value)}
+                placeholder="Use either user or group"
+                className="mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium text-gray-700">Group ID</label>
+              <Input
+                value={zoteroGroupId}
+                onChange={(e) => setZoteroGroupId(e.target.value)}
+                placeholder="Alternative to user ID"
+                className="mt-1"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-sm font-medium text-gray-700">Import limit</label>
+            <Input
+              type="number"
+              value={zoteroLimit}
+              onChange={(e) => setZoteroLimit(e.target.value)}
+              min="1"
+              max="500"
+              className="mt-1"
+            />
+          </div>
+          <Button
+            onClick={handleZoteroImport}
+            disabled={loading || !zoteroApiKey.trim() || (!zoteroUserId.trim() && !zoteroGroupId.trim())}
+          >
+            {loading ? 'Importing...' : 'Import from Zotero'}
+          </Button>
+        </TabsContent>
+
+        <TabsContent value="manual" className="mt-4 space-y-3">
+          <p className="text-xs text-slate-600">
+            Runs constrained assignment across existing references and uploaded documents.
+          </p>
+          <div className="grid md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-medium text-gray-600 block mb-1">Mendeley token (optional)</label>
+              <Input
+                type="password"
+                value={mendeleyAccessToken}
+                onChange={(e) => setMendeleyAccessToken(e.target.value)}
+                placeholder="Optional provider signal"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600 block mb-1">Zotero API key (optional)</label>
+              <Input
+                type="password"
+                value={zoteroApiKey}
+                onChange={(e) => setZoteroApiKey(e.target.value)}
+                placeholder="Optional provider signal"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600 block mb-1">Zotero user ID (optional)</label>
+              <Input
+                value={zoteroUserId}
+                onChange={(e) => setZoteroUserId(e.target.value)}
+                placeholder="If using Zotero provider"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600 block mb-1">Zotero group ID (optional)</label>
+              <Input
+                value={zoteroGroupId}
+                onChange={(e) => setZoteroGroupId(e.target.value)}
+                placeholder="Alternative to user ID"
+              />
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-4">
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+              <Checkbox
+                checked={autoReconcile}
+                onCheckedChange={(checked) => setAutoReconcile(Boolean(checked))}
+              />
+              Apply auto-links
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+              <Checkbox
+                checked={dryRunReconcile}
+                onCheckedChange={(checked) => setDryRunReconcile(Boolean(checked))}
+              />
+              Dry run
+            </label>
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+              <Checkbox
+                checked={includeLinkedDocs}
+                onCheckedChange={(checked) => setIncludeLinkedDocs(Boolean(checked))}
+              />
+              Include already linked docs
+            </label>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={handleManualReconcile} disabled={loading}>
+              {loading ? 'Running...' : 'Run Reconciliation'}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleRollback}
+              disabled={rollbacking || !providerResult?.batchId}
+            >
+              {rollbacking ? 'Rolling back...' : 'Rollback Last Batch'}
+            </Button>
+          </div>
+        </TabsContent>
+      </Tabs>
+
+      <div className="rounded-lg border bg-slate-50 p-3 space-y-2">
+        <p className="text-sm font-medium text-slate-700">Run options</p>
+        <div className="flex flex-wrap items-center gap-4">
+          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+            <Checkbox
+              checked={autoReconcile}
+              onCheckedChange={(checked) => setAutoReconcile(Boolean(checked))}
+            />
+            Apply auto-links
+          </label>
+          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+            <Checkbox
+              checked={dryRunReconcile}
+              onCheckedChange={(checked) => setDryRunReconcile(Boolean(checked))}
+            />
+            Dry run
+          </label>
+        </div>
+      </div>
+
+      {message && (
+        <div className={`p-3 rounded-lg text-sm ${
+          message.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'
+        }`}>
+          {message.text}
+        </div>
+      )}
+
+      {providerResult?.reconciliation && (
+        <ReconciliationSummaryPanel
+          reconciliation={providerResult.reconciliation}
+          title="Provider reconciliation"
+          authToken={authToken}
+          onUpdated={onImported}
+        />
       )}
     </div>
   );

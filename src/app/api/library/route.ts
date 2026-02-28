@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { referenceLibraryService } from '@/lib/services/reference-library-service';
+import { referenceReconciliationService } from '@/lib/services/reference-reconciliation-service';
 import { authenticateUser } from '@/lib/auth-middleware';
 
 const createSchema = z.object({
@@ -43,6 +44,14 @@ const importSchema = z.object({
   content: z.string().min(1),
   format: z.enum(['auto', 'bibtex', 'ris', 'mendeley', 'zotero']).default('auto'),
   collectionId: z.string().optional(), // Auto-add imported references to this collection
+  autoReconcile: z.boolean().optional().default(false),
+  dryRunReconcile: z.boolean().optional().default(false),
+  providers: z.object({
+    mendeleyAccessToken: z.string().optional(),
+    zoteroApiKey: z.string().optional(),
+    zoteroUserId: z.string().optional(),
+    zoteroGroupId: z.string().optional(),
+  }).optional(),
 });
 
 const filterSchema = z.object({
@@ -171,6 +180,30 @@ export async function POST(request: NextRequest) {
           // Don't fail the whole import, just log the error
         }
       }
+
+      let reconciliation: any = null;
+      if (data.autoReconcile && result.references && result.references.length > 0) {
+        const importedReferenceIds = result.references.map((ref: any) => ref.id);
+        const providers = {
+          mendeleyAccessToken: data.providers?.mendeleyAccessToken || process.env.MENDELEY_ACCESS_TOKEN || undefined,
+          zoteroApiKey: data.providers?.zoteroApiKey || process.env.ZOTERO_API_KEY || undefined,
+          zoteroUserId: data.providers?.zoteroUserId || process.env.ZOTERO_USER_ID || undefined,
+          zoteroGroupId: data.providers?.zoteroGroupId || process.env.ZOTERO_GROUP_ID || undefined,
+        };
+        reconciliation = await referenceReconciliationService.runReconciliation({
+          userId: user.id,
+          actorUserId: user.id,
+          tenantId: (user as any).tenantId || null,
+          referenceIds: importedReferenceIds,
+          applyAutoLinks: true,
+          dryRun: data.dryRunReconcile,
+          includeAlreadyLinkedDocuments: true,
+          providers,
+          referenceAttachmentHints: result.attachmentHintsByReferenceId,
+        }).catch((reconcileErr: unknown) => ({
+          error: reconcileErr instanceof Error ? reconcileErr.message : 'Reconciliation failed',
+        }));
+      }
       
       return NextResponse.json({
         success: result.success,
@@ -180,6 +213,7 @@ export async function POST(request: NextRequest) {
         errors: result.errors,
         warnings: result.warnings,
         referenceIds: result.references?.map((ref: any) => ref.id) || [],
+        reconciliation,
       });
     } else {
       // Single reference create

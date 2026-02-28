@@ -40,6 +40,7 @@ export interface ParsedReference {
   externalId?: string;
   tags?: string[];
   notes?: string;
+  attachmentHints?: string[];
 }
 
 export interface ImportResult {
@@ -72,6 +73,60 @@ const BIBTEX_TYPE_MAP: Record<string, CitationSourceType> = {
 
 // Maximum number of references to parse (prevent memory issues with huge files)
 const MAX_REFERENCES = 5000;
+
+function isLikelyPdfPointer(value: string | undefined): boolean {
+  if (!value) return false;
+  return /\.pdf(?:$|[?#])/i.test(value) || /(?:^|[:\s])pdf(?:$|[:\s])/i.test(value);
+}
+
+function normalizeAttachmentHint(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  let normalized = value
+    .trim()
+    .replace(/^\{+|\}+$/g, '')
+    .replace(/^"+|"+$/g, '')
+    .replace(/^'+|'+$/g, '')
+    .replace(/^file:\/\//i, '')
+    .replace(/\|.*$/g, '')
+    .replace(/:pdf$/i, '')
+    .replace(/^:/, '')
+    .replace(/\\/g, '/')
+    .split('?')[0]
+    .split('#')[0]
+    .trim();
+
+  if (!normalized) return undefined;
+
+  // Mendeley/EndNote style values can contain leading metadata tokens separated by ":".
+  if (!normalized.toLowerCase().includes('.pdf') && normalized.includes(':')) {
+    const tail = normalized.split(':').pop();
+    if (tail) normalized = tail.trim();
+  }
+
+  return normalized || undefined;
+}
+
+function extractAttachmentHints(...values: Array<string | undefined>): string[] {
+  const hints = new Set<string>();
+
+  for (const value of values) {
+    if (!value) continue;
+
+    for (const segment of value.split(/\r?\n|;|\|/)) {
+      const normalized = normalizeAttachmentHint(segment);
+      if (!normalized) continue;
+      if (!isLikelyPdfPointer(normalized)) continue;
+
+      hints.add(normalized);
+      const baseName = normalized.split('/').pop();
+      if (baseName && baseName !== normalized) {
+        hints.add(baseName);
+      }
+    }
+  }
+
+  return Array.from(hints).slice(0, 20);
+}
 
 export function parseBibTeX(bibtexString: string): ImportResult {
   const references: ParsedReference[] = [];
@@ -143,6 +198,13 @@ export function parseBibTeX(bibtexString: string): ImportResult {
         bibtex: match[0],
         tags: fields.keywords ? fields.keywords.split(/[,;]/).map(k => k.trim()).filter(Boolean) : [],
         notes: cleanBibTeXValue(fields.note || fields.annote || '') || undefined,
+        attachmentHints: extractAttachmentHints(
+          fields.file,
+          fields.pdf,
+          fields.localfile,
+          fields['local-url'],
+          isLikelyPdfPointer(fields.url || '') ? fields.url : undefined
+        ),
       };
 
       if (ref.title) {
@@ -298,6 +360,12 @@ export function parseRIS(risString: string): ImportResult {
         externalId: fields.ID?.[0] || undefined,
         tags: fields.KW || [],
         notes: fields.N1?.[0] || undefined,
+        attachmentHints: extractAttachmentHints(
+          ...(fields.L1 || []),
+          ...(fields.L2 || []),
+          ...(fields.L4 || []),
+          ...(fields.UR || []).filter((value) => isLikelyPdfPointer(value))
+        ),
       };
 
       if (ref.title) {
@@ -412,6 +480,17 @@ export function parseMendeleyJSON(jsonString: string): ImportResult {
             .map((t: any) => typeof t === 'string' ? t : (t?.name || ''))
             .filter(Boolean),
           notes: String(item.notes || '') || undefined,
+          attachmentHints: extractAttachmentHints(
+            ...(Array.isArray(item.files)
+              ? item.files.flatMap((file: any) => [
+                  typeof file?.file_name === 'string' ? file.file_name : undefined,
+                  typeof file?.fileName === 'string' ? file.fileName : undefined,
+                  typeof file?.path === 'string' ? file.path : undefined,
+                  typeof file?.url === 'string' ? file.url : undefined,
+                  typeof file?.download_url === 'string' ? file.download_url : undefined,
+                ])
+              : [])
+          ),
         };
 
         if (ref.title) {
@@ -522,6 +601,15 @@ export function parseZoteroCSLJSON(jsonString: string): ImportResult {
           externalId: String(item.id || '') || undefined,
           tags: [],
           notes: String(item.note || '') || undefined,
+          attachmentHints: extractAttachmentHints(
+            ...(Array.isArray((item as any).attachments)
+              ? (item as any).attachments.flatMap((attachment: any) => [
+                  typeof attachment?.path === 'string' ? attachment.path : undefined,
+                  typeof attachment?.title === 'string' ? attachment.title : undefined,
+                  typeof attachment?.url === 'string' ? attachment.url : undefined,
+                ])
+              : [])
+          ),
         };
 
         if (ref.title) {
