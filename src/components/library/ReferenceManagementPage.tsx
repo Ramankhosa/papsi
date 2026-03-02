@@ -855,7 +855,12 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
       const contentType = response.headers.get('content-type') || '';
       const data = contentType.includes('application/json')
         ? await response.json()
-        : { error: 'Server returned a non-JSON response. Check server logs for the root error.' };
+        : response.status === 413
+          ? {
+            error:
+              'Upload is too large for the server/proxy limit. Reduce file size or increase Nginx client_max_body_size.',
+          }
+          : { error: 'Server returned a non-JSON response. Check server logs for the root error.' };
       if (response.ok) {
         loadReferences(currentPage, false);
       } else {
@@ -2483,7 +2488,12 @@ function PDFUploadImportSection({
       const contentType = response.headers.get('content-type') || '';
       const data = contentType.includes('application/json')
         ? await response.json()
-        : { error: 'Server returned a non-JSON response.' };
+        : response.status === 413
+          ? {
+            error:
+              'Upload is too large for the server/proxy limit. Reduce file size/count or increase Nginx client_max_body_size.',
+          }
+          : { error: 'Server returned a non-JSON response.' };
 
       if (!response.ok && response.status !== 207) {
         setResult({ type: 'error', text: data.error || 'PDF import failed' });

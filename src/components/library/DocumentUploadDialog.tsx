@@ -103,7 +103,12 @@ export function DocumentUploadDialog({
             const contentType = response.headers.get('content-type') || '';
             const data = contentType.includes('application/json')
                 ? await response.json()
-                : { error: 'Server returned a non-JSON response. Check server logs for details.' };
+                : response.status === 413
+                    ? {
+                        error:
+                            'Upload is too large for the server/proxy limit. Reduce file size or increase Nginx client_max_body_size.',
+                    }
+                    : { error: 'Server returned a non-JSON response. Check server logs for details.' };
 
             if (!response.ok) {
                 throw new Error(data.error || `Upload failed (HTTP ${response.status})`);

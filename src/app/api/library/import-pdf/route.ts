@@ -7,15 +7,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { referenceLibraryService } from '@/lib/services/reference-library-service';
 import { referenceDocumentService } from '@/lib/services/reference-document-service';
-import { pdfParserService } from '@/lib/services/pdf-parser-service';
 import { referenceReconciliationService } from '@/lib/services/reference-reconciliation-service';
 import { prisma } from '@/lib/prisma';
-import * as fs from 'fs';
-import * as path from 'path';
 import * as crypto from 'crypto';
 
 const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_REFERENCE_PDF_SIZE_MB || '50', 10);
 const MAX_FILES_PER_REQUEST = parseInt(process.env.MAX_REFERENCE_IMPORT_FILES || '30', 10);
+const IMPORT_CONCURRENCY = Math.max(
+  1,
+  Math.min(8, parseInt(process.env.REFERENCE_IMPORT_CONCURRENCY || '4', 10) || 4)
+);
 
 function normalizeDoi(value?: string | null): string | undefined {
   if (!value) return undefined;
@@ -66,23 +67,88 @@ function extractDoiFromRawPdf(buffer: Buffer): string | undefined {
   return undefined;
 }
 
-async function extractMetadataFromBuffer(buffer: Buffer): Promise<Awaited<ReturnType<typeof pdfParserService.extractMetadataOnly>>> {
-  const tempDir = path.resolve(process.cwd(), 'uploads', 'tmp', 'reference-import');
-  fs.mkdirSync(tempDir, { recursive: true });
-  const tempPath = path.join(tempDir, `${crypto.randomUUID().replace(/-/g, '')}.pdf`);
+function decodePdfLiteral(input: string): string {
+  if (!input) return '';
+  const withEscapes = input.replace(/\\([\\()])/g, '$1');
+  return withEscapes
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\f/g, '\f')
+    .replace(/\\b/g, '\b')
+    .replace(/\\(\d{3})/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)));
+}
 
-  fs.writeFileSync(tempPath, buffer);
-  try {
-    return await pdfParserService.extractMetadataOnly(tempPath);
-  } finally {
-    try {
-      if (fs.existsSync(tempPath)) {
-        fs.unlinkSync(tempPath);
-      }
-    } catch {
-      // Ignore cleanup errors for temp files.
+function decodePdfHexLiteral(input: string): string {
+  const cleaned = input.replace(/[^0-9a-fA-F]/g, '');
+  if (!cleaned) return '';
+
+  const normalized = cleaned.length % 2 === 0 ? cleaned : `${cleaned}0`;
+  let decoded = '';
+  for (let i = 0; i < normalized.length; i += 2) {
+    decoded += String.fromCharCode(parseInt(normalized.slice(i, i + 2), 16));
+  }
+  return decoded;
+}
+
+function sanitizePdfInfoValue(value: string): string | undefined {
+  const cleaned = value
+    .replace(/[^\x09\x0A\x0D\x20-\x7E]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
+function extractPdfInfoValue(rawPdfText: string, key: 'Title' | 'Author'): string | undefined {
+  const literalMatch = rawPdfText.match(new RegExp(`\\/${key}\\s*\\(([^)]{1,1024})\\)`, 'i'));
+  if (literalMatch?.[1]) {
+    return sanitizePdfInfoValue(decodePdfLiteral(literalMatch[1]));
+  }
+
+  const hexMatch = rawPdfText.match(new RegExp(`\\/${key}\\s*<([0-9a-fA-F\\s]{2,2048})>`, 'i'));
+  if (hexMatch?.[1]) {
+    return sanitizePdfInfoValue(decodePdfHexLiteral(hexMatch[1]));
+  }
+
+  return undefined;
+}
+
+function extractMetadataFromRawPdf(buffer: Buffer): {
+  title?: string;
+  authors?: string;
+  doi?: string;
+} {
+  const rawPdfText = buffer
+    .subarray(0, Math.min(buffer.length, 1024 * 1024))
+    .toString('latin1');
+
+  return {
+    title: extractPdfInfoValue(rawPdfText, 'Title'),
+    authors: extractPdfInfoValue(rawPdfText, 'Author'),
+    doi: extractDoiFromRawPdf(buffer),
+  };
+}
+
+async function mapWithConcurrency<TItem, TResult>(
+  items: TItem[],
+  limit: number,
+  worker: (item: TItem) => Promise<TResult>
+): Promise<TResult[]> {
+  const results = new Array<TResult>(items.length);
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (true) {
+      const current = nextIndex;
+      nextIndex += 1;
+      if (current >= items.length) return;
+      results[current] = await worker(items[current]);
     }
   }
+
+  const workers = Array.from({ length: Math.min(limit, items.length) }, () => runWorker());
+  await Promise.all(workers);
+  return results;
 }
 
 interface ImportPdfResult {
@@ -175,15 +241,14 @@ async function importSinglePdf(
     };
   }
 
-  const extractedMetadata = await extractMetadataFromBuffer(buffer);
+  const extractedMetadata = extractMetadataFromRawPdf(buffer);
   const mergedMetadata = {
-    title: extractedMetadata?.title || existingDocument?.pdfTitle || undefined,
-    authors: extractedMetadata?.authors || existingDocument?.pdfAuthors || undefined,
-    creationDate: extractedMetadata?.creationDate || existingDocument?.pdfCreationDate || undefined,
+    title: extractedMetadata.title || existingDocument?.pdfTitle || undefined,
+    authors: extractedMetadata.authors || existingDocument?.pdfAuthors || undefined,
+    creationDate: existingDocument?.pdfCreationDate || undefined,
     doi:
-      normalizeDoi(extractedMetadata?.doi) ||
+      normalizeDoi(extractedMetadata.doi) ||
       normalizeDoi(existingDocument?.pdfDoi) ||
-      extractDoiFromRawPdf(buffer) ||
       undefined,
   };
   const extractedDoi = mergedMetadata.doi;
@@ -322,19 +387,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const results: ImportPdfResult[] = [];
-    for (const file of files) {
+    const results = await mapWithConcurrency(files, IMPORT_CONCURRENCY, async (file) => {
       try {
-        const result = await importSinglePdf(user.id, file, collectionIdValue);
-        results.push(result);
+        return await importSinglePdf(user.id, file, collectionIdValue);
       } catch (itemErr) {
-        results.push({
+        return {
           fileName: file.name,
           success: false,
           error: itemErr instanceof Error ? itemErr.message : 'Import failed',
-        });
+        } satisfies ImportPdfResult;
       }
-    }
+    });
 
     const imported = results.filter((result) => result.success).length;
     const failed = results.length - imported;
@@ -396,9 +459,22 @@ export async function POST(request: NextRequest) {
       { status: failed > 0 ? 207 : 201 }
     );
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (
+      /too large|entity too large|request body.*large|payload.*large|body exceeded/i.test(message)
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            'Upload payload too large. Reduce file size/count or increase reverse-proxy upload limit (for Nginx: client_max_body_size).',
+        },
+        { status: 413 }
+      );
+    }
+
     console.error('PDF import error:', err);
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Failed to import from PDF' },
+      { error: message || 'Failed to import from PDF' },
       { status: 500 }
     );
   }

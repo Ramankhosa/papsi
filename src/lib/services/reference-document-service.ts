@@ -24,6 +24,8 @@ const DOMAIN_FETCH_MIN_INTERVAL_MS = Math.max(100, parseInt(process.env.PDF_FETC
 const DOMAIN_FETCH_COOLDOWN_BASE_MS = Math.max(1000, parseInt(process.env.PDF_FETCH_DOMAIN_COOLDOWN_BASE_MS || '15000', 10) || 15000);
 const DOMAIN_FETCH_COOLDOWN_MAX_MS = Math.max(DOMAIN_FETCH_COOLDOWN_BASE_MS, parseInt(process.env.PDF_FETCH_DOMAIN_COOLDOWN_MAX_MS || '300000', 10) || 300000);
 const DOMAIN_FETCH_RATE_LIMIT_RETRIES = Math.max(0, parseInt(process.env.PDF_FETCH_RATE_LIMIT_RETRIES || '2', 10) || 2);
+const ENABLE_REFERENCE_PDF_PROACTIVE_PARSING =
+    String(process.env.ENABLE_REFERENCE_PDF_PROACTIVE_PARSING || 'false').trim().toLowerCase() === 'true';
 
 interface DomainFetchState {
     tail: Promise<void>;
@@ -801,7 +803,9 @@ class ReferenceDocumentService {
             try {
                 await pdfParserService.processDocument(documentId);
                 await pdfMatchVerificationService.verifyDocumentLinks(documentId, 'post-pdf-parser');
-                proactiveParsingService.triggerForDocument(documentId, 'pdf-upload');
+                if (ENABLE_REFERENCE_PDF_PROACTIVE_PARSING) {
+                    proactiveParsingService.triggerForDocument(documentId, 'pdf-upload');
+                }
 
                 const links = await prisma.referenceDocumentLink.findMany({
                     where: { documentId, isPrimary: true },
