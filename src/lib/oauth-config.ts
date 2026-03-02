@@ -61,7 +61,7 @@ export function getAppOrigin(requestOrigin?: string): string {
   const requestParsed = requestOrigin ? parseOrigin(requestOrigin) : undefined
 
   // In local development, favor the actual request origin to avoid stale localhost
-  // values (for example, when switching from :3000 to :3005).
+  // values (for example, when switching from :3000 to :3008).
   if (requestParsed && configured) {
     const configuredParsed = parseOrigin(configured)
     const isLocalConfigured = /localhost|127\.0\.0\.1/i.test(configuredParsed)
@@ -70,7 +70,7 @@ export function getAppOrigin(requestOrigin?: string): string {
     }
   }
 
-  const raw = configured || requestParsed || 'http://localhost:3005'
+  const raw = configured || requestParsed || 'http://localhost:3008'
   return parseOrigin(raw)
 }
 

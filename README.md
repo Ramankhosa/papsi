@@ -40,7 +40,7 @@ A modern, professional authentication system built with Next.js, featuring ChatG
    ```env
    # Database and Auth
    DATABASE_URL=postgresql://postgres:123@localhost:5432/spotipr
-   NEXTAUTH_URL=http://localhost:3005/
+   NEXTAUTH_URL=http://localhost:3008/
    NEXTAUTH_SECRET=your-secret-key-change-in-production
 
    # Social Login (Optional)
@@ -70,7 +70,7 @@ A modern, professional authentication system built with Next.js, featuring ChatG
    ```
 
 5. **Open your browser:**
-   Navigate to [http://localhost:3005](http://localhost:3005)
+   Navigate to [http://localhost:3008](http://localhost:3008)
 
 ## Project Structure
 
