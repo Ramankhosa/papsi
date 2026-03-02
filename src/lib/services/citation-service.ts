@@ -74,6 +74,7 @@ export interface CreateCitationInput {
   titleFingerprint?: string;
   firstAuthorNormalized?: string;
   paperIdentityKey?: string;
+  libraryReferenceId?: string;
   notes?: string;
   tags?: string[];
   aiMeta?: CitationAIMeta; // AI-generated metadata for section generation
@@ -1210,6 +1211,7 @@ class CitationService {
         titleFingerprint,
         firstAuthorNormalized,
         paperIdentityKey,
+        libraryReferenceId: input.libraryReferenceId,
         notes: input.notes,
         tags: input.tags || [],
         aiMeta: sanitizedAIMeta as Prisma.InputJsonValue | undefined

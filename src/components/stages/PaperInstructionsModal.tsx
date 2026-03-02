@@ -43,7 +43,7 @@ export default function PaperInstructionsModal({
 
   const handleInstructionChange = (key: string, value: string) => {
     setLocalInstructions(prev => {
-      const existing = prev[key] || {};
+      const existing: UserInstruction = prev[key] ?? { instruction: '', isActive: true };
       return {
         ...prev,
         [key]: {

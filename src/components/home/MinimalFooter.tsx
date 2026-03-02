@@ -9,7 +9,7 @@ export default function MinimalFooter() {
           <div className="col-span-1">
             <div className="flex items-center gap-2 mb-6 text-white font-bold tracking-tighter">
               <div className="w-3 h-3 bg-ai-blue-500 rounded-sm" />
-              PATENTNEST.AI
+              PAPER NEST.AI
             </div>
             <p className="text-ai-graphite-500 leading-relaxed mb-6">
               System version 2.4.0<br/>
@@ -48,7 +48,7 @@ export default function MinimalFooter() {
 
         <div className="border-t border-ai-graphite-900 pt-8 flex flex-col md:flex-row justify-between items-center gap-4 text-xs text-ai-graphite-600">
           <div>
-            © 2025 PatentNest AI Systems. All rights reserved.
+            © 2025 Paper Nest AI Systems. All rights reserved.
           </div>
           <div className="flex gap-6">
              <span>LAT: 37.7749° N</span>

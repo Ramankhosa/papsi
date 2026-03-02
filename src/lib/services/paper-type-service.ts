@@ -211,12 +211,12 @@ class PaperTypeService {
       const mergedInput = {
         code,
         name: input.name ?? existingType.name,
-        description: input.description ?? existingType.description,
+        description: input.description ?? existingType.description ?? undefined,
         requiredSections: input.requiredSections ?? (existingType.requiredSections as string[]),
         optionalSections: input.optionalSections ?? (existingType.optionalSections as string[]),
         sectionOrder: input.sectionOrder ?? (existingType.sectionOrder as string[]),
         defaultWordLimits: input.defaultWordLimits ?? (existingType.defaultWordLimits as Record<string, number>),
-        defaultCitationStyle: input.defaultCitationStyle ?? existingType.defaultCitationStyle,
+        defaultCitationStyle: input.defaultCitationStyle ?? existingType.defaultCitationStyle ?? undefined,
         sortOrder: input.sortOrder ?? existingType.sortOrder
       };
       this.validatePaperTypeInput(mergedInput);

@@ -7,9 +7,11 @@ export type ToastType = 'success' | 'error' | 'warning' | 'info'
 
 interface Toast {
   id: string
-  type: ToastType
+  type?: ToastType
   title: string
   message?: string
+  description?: string
+  variant?: 'default' | 'destructive'
   duration?: number
   action?: {
     label: string
@@ -110,6 +112,8 @@ function ToastItem({
     info: 'bg-blue-500 text-white'
   }
 
+  const toastType: ToastType = toast.type ?? 'info'
+
   return (
     <motion.div
       layout
@@ -117,16 +121,16 @@ function ToastItem({
       animate={{ opacity: 1, y: 0, scale: 1 }}
       exit={{ opacity: 0, x: 100, scale: 0.95 }}
       transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-      className={`relative flex items-start gap-3 p-4 rounded-xl border shadow-lg ${colors[toast.type]}`}
+      className={`relative flex items-start gap-3 p-4 rounded-xl border shadow-lg ${colors[toastType]}`}
     >
-      <div className={`flex items-center justify-center w-6 h-6 rounded-full text-sm font-bold shrink-0 ${iconColors[toast.type]}`}>
-        {icons[toast.type]}
+      <div className={`flex items-center justify-center w-6 h-6 rounded-full text-sm font-bold shrink-0 ${iconColors[toastType]}`}>
+        {icons[toastType]}
       </div>
       
       <div className="flex-1 min-w-0">
         <p className="font-semibold text-sm">{toast.title}</p>
-        {toast.message && (
-          <p className="text-sm opacity-80 mt-0.5">{toast.message}</p>
+        {(toast.description ?? toast.message) && (
+          <p className="text-sm opacity-80 mt-0.5">{toast.description ?? toast.message}</p>
         )}
         {toast.action && (
           <button

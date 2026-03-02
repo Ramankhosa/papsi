@@ -24,6 +24,7 @@ interface TabsTriggerProps {
   children: ReactNode;
   value: string;
   className?: string;
+  title?: string;
 }
 
 interface TabsContentProps {
@@ -63,7 +64,7 @@ export function TabsList({ children, className = '' }: TabsListProps) {
   );
 }
 
-export function TabsTrigger({ children, value, className = '' }: TabsTriggerProps) {
+export function TabsTrigger({ children, value, className = '', title }: TabsTriggerProps) {
   const context = useContext(TabsContext);
   if (!context) throw new Error('TabsTrigger must be used within Tabs');
 
@@ -76,6 +77,7 @@ export function TabsTrigger({ children, value, className = '' }: TabsTriggerProp
           ? 'bg-white text-gray-950 shadow-sm'
           : 'text-gray-500 hover:text-gray-900'
       } ${className}`}
+      title={title}
       onClick={() => context.onValueChange(value)}
     >
       {children}

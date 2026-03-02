@@ -456,6 +456,7 @@ class PaperSectionService {
         twoPassEnabled
         && storedPass1Content
         && !regenerate
+        && existingSection
         && (existingSection.status === 'BASE_READY' || !hasVisibleContent)
       ) {
         return this.runPass2Only(existingSection, undefined, tenantContext || null);

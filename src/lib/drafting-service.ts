@@ -54,6 +54,12 @@ export interface IdeaNormalizationResult {
   success: boolean;
   normalizedData?: any;
   extractedFields?: {
+    title?: string;
+    researchQuestion?: string;
+    hypothesis?: string | null;
+    keywords?: string[];
+    methodology?: string[];
+    contributionType?: string[];
     searchQuery?: string;
     problem?: string;
     objectives?: string;
@@ -63,17 +69,17 @@ export interface IdeaNormalizationResult {
     outputs?: string;
     variants?: string;
     inventionType?: string[];
-      bestMethod?: string;
-      fieldOfRelevance?: string;
-      subfield?: string;
-      recommendedFocus?: string;
-      complianceNotes?: string;
-      drawingsFocus?: string;
-      claimStrategy?: string;
-      riskFlags?: string;
-      abstract?: string;
-      cpcCodes?: string[];
-      ipcCodes?: string[];
+    bestMethod?: string;
+    fieldOfRelevance?: string;
+    subfield?: string;
+    recommendedFocus?: string;
+    complianceNotes?: string;
+    drawingsFocus?: string;
+    claimStrategy?: string;
+    riskFlags?: string;
+    abstract?: string;
+    cpcCodes?: string[];
+    ipcCodes?: string[];
   };
   llmPrompt?: string;
   llmResponse?: any;
@@ -1095,6 +1101,49 @@ Respond in this exact JSON shape:
         success: false,
         error: `Failed to normalize research topic: ${error instanceof Error ? error.message : 'Unknown error'}`
       };
+    }
+  }
+
+  private static async callLLMForNormalization(prompt: string, requestHeaders?: Record<string, string>) {
+    const request = { headers: requestHeaders || {} };
+    const llmResult = await llmGateway.executeLLMOperation(request, {
+      taskCode: 'LLM2_DRAFT',
+      stageCode: 'DRAFT_IDEA_ENTRY',
+      prompt,
+      parameters: { temperature: 0.4 },
+      idempotencyKey: crypto.randomUUID()
+    });
+
+    if (!llmResult.success || !llmResult.response) {
+      return null;
+    }
+
+    let output = (llmResult.response.output || '').trim();
+    if (output.startsWith('```')) {
+      output = output.slice(3);
+      output = output.replace(/^json\s*/i, '');
+      const closingFence = output.indexOf('```');
+      if (closingFence !== -1) {
+        output = output.slice(0, closingFence);
+      }
+    }
+
+    const startBrace = output.indexOf('{');
+    const endBrace = output.lastIndexOf('}');
+    if (startBrace !== -1 && endBrace !== -1 && endBrace > startBrace) {
+      output = output.slice(startBrace, endBrace + 1);
+    }
+
+    output = output
+      .replace(/`+/g, '')
+      .replace(/,(\s*[}\]])/g, '$1')
+      .trim();
+
+    try {
+      return JSON.parse(output);
+    } catch (err) {
+      console.error('Failed to parse normalization response:', err);
+      return null;
     }
   }
 

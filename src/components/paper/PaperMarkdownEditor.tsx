@@ -1086,7 +1086,6 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
       {editor && (
         <BubbleMenu
           editor={editor}
-          tippyOptions={{ duration: 150, placement: 'top' }}
           className="flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white/95 px-1 py-0.5 shadow-xl backdrop-blur"
         >
           <MicroButton onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold">

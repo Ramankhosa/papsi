@@ -801,7 +801,8 @@ Return ONLY the JSON array.`;
    * Mark strategy as completed when all queries are done
    */
   async checkAndUpdateStrategyStatus(strategyId: string): Promise<void> {
-    const strategy = await (prisma as any).citationSearchStrategy.findUnique({
+    const strategy: (CitationSearchStrategy & { queries: CitationSearchQuery[] }) | null =
+      await (prisma as any).citationSearchStrategy.findUnique({
       where: { id: strategyId },
       include: { queries: true }
     });

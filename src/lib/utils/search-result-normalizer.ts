@@ -580,5 +580,3 @@ export const searchResultNormalizer = new SearchResultNormalizer();
 // Export class for testing
 export { SearchResultNormalizer };
 
-// Export common interfaces
-export type { NormalizationOptions, NormalizationStats };

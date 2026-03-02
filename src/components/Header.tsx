@@ -133,7 +133,7 @@ export default function Header() {
             <div className="flex items-center space-x-3">
               <AnimatedLogo size="sm" className="flex-shrink-0" useKishoFallback={true} />
               <Link href="/" className="text-xl font-bold text-gpt-gray-900">
-                PatentNest
+                Paper Nest
               </Link>
             </div>
             <div className="flex items-center space-x-3">
@@ -152,7 +152,7 @@ export default function Header() {
           <div className="flex items-center space-x-3">
             <AnimatedLogo size="sm" autoPlayDuration={2000} className="flex-shrink-0" useKishoFallback={true} />
             <Link href="/" className="text-xl font-bold text-gpt-gray-900">
-              PaperNest
+              Paper Nest
             </Link>
           </div>
 

@@ -6,6 +6,7 @@ interface BadgeProps {
   className?: string;
   style?: React.CSSProperties;
   onClick?: () => void;
+  title?: string;
 }
 
 const variants = {
@@ -15,7 +16,7 @@ const variants = {
   outline: 'border border-gray-300 text-gray-700 bg-white',
 };
 
-export function Badge({ children, variant = 'default', className = '', style, onClick }: BadgeProps) {
+export function Badge({ children, variant = 'default', className = '', style, onClick, title }: BadgeProps) {
   const variantClasses = variants[variant];
 
   return (
@@ -23,6 +24,7 @@ export function Badge({ children, variant = 'default', className = '', style, on
       className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors ${onClick ? 'cursor-pointer' : ''} ${variantClasses} ${className}`}
       style={style}
       onClick={onClick}
+      title={title}
     >
       {children}
     </span>

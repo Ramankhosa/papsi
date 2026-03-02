@@ -268,25 +268,49 @@ OUTPUT: Return only the simplified text, nothing else.`
  */
 async function getTextActionModel(userId: string): Promise<{ modelCode: string; apiKey: string } | null> {
   try {
-    // Try to get user's subscription plan model
-    const userPlan = await prisma.userSubscription.findFirst({
-      where: { userId },
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { tenantId: true }
+    });
+
+    if (!user?.tenantId) {
+      return {
+        modelCode: 'gemini-2.0-flash',
+        apiKey: process.env.GOOGLE_AI_API_KEY || ''
+      };
+    }
+
+    const now = new Date();
+    const tenantPlan = await prisma.tenantPlan.findFirst({
+      where: {
+        tenantId: user.tenantId,
+        status: 'ACTIVE',
+        effectiveFrom: { lte: now },
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }]
+      },
+      orderBy: { effectiveFrom: 'desc' },
       include: {
         plan: {
           include: {
-            stageConfigs: {
-              where: { stageCode: 'PAPER_TEXT_ACTION' },
-              include: { llmModel: true }
+            stageModelConfigs: {
+              where: {
+                isActive: true,
+                stage: { code: 'PAPER_TEXT_ACTION' }
+              },
+              orderBy: { priority: 'desc' },
+              include: {
+                model: true
+              }
             }
           }
         }
       }
     });
 
-    if (userPlan?.plan?.stageConfigs?.[0]?.llmModel) {
-      const model = userPlan.plan.stageConfigs[0].llmModel;
+    if (tenantPlan?.plan?.stageModelConfigs?.[0]?.model?.code) {
+      const modelCode = tenantPlan.plan.stageModelConfigs[0].model.code;
       return {
-        modelCode: model.modelCode,
+        modelCode,
         apiKey: process.env.GOOGLE_AI_API_KEY || ''
       };
     }
@@ -432,21 +456,30 @@ export async function performTextAction(request: TextActionRequest): Promise<Tex
       output: response.usageMetadata.candidatesTokenCount || 0
     } : undefined;
 
-    // Log the action for analytics
+    // Log the action for analytics when legacy delegate is available.
     try {
-      await prisma.aIReportLog.create({
-        data: {
-          sessionId,
-          userId,
-          reportType: `text_action_${action}`,
-          inputSize: selectedText.length,
-          outputSize: transformedText.length,
-          modelUsed: modelConfig.modelCode,
-          tokensUsed: tokenUsage?.input ? tokenUsage.input + tokenUsage.output : null,
-          status: 'SUCCESS',
-          createdAt: new Date()
+      const legacyReportLog = (
+        prisma as unknown as {
+          aIReportLog?: {
+            create: (args: { data: Record<string, unknown> }) => Promise<unknown>;
+          };
         }
-      });
+      ).aIReportLog;
+      if (legacyReportLog?.create) {
+        await legacyReportLog.create({
+          data: {
+            sessionId,
+            userId,
+            reportType: `text_action_${action}`,
+            inputSize: selectedText.length,
+            outputSize: transformedText.length,
+            modelUsed: modelConfig.modelCode,
+            tokensUsed: tokenUsage?.input ? tokenUsage.input + tokenUsage.output : null,
+            status: 'SUCCESS',
+            createdAt: new Date()
+          }
+        });
+      }
     } catch {
       // Non-critical - don't fail the action if logging fails
       console.warn('Failed to log text action');
@@ -465,18 +498,27 @@ export async function performTextAction(request: TextActionRequest): Promise<Tex
     
     // Log the failure
     try {
-      await prisma.aIReportLog.create({
-        data: {
-          sessionId,
-          userId,
-          reportType: `text_action_${action}`,
-          inputSize: selectedText.length,
-          outputSize: 0,
-          status: 'FAILED',
-          errorMessage: err instanceof Error ? err.message : 'Unknown error',
-          createdAt: new Date()
+      const legacyReportLog = (
+        prisma as unknown as {
+          aIReportLog?: {
+            create: (args: { data: Record<string, unknown> }) => Promise<unknown>;
+          };
         }
-      });
+      ).aIReportLog;
+      if (legacyReportLog?.create) {
+        await legacyReportLog.create({
+          data: {
+            sessionId,
+            userId,
+            reportType: `text_action_${action}`,
+            inputSize: selectedText.length,
+            outputSize: 0,
+            status: 'FAILED',
+            errorMessage: err instanceof Error ? err.message : 'Unknown error',
+            createdAt: new Date()
+          }
+        });
+      }
     } catch {
       // Ignore logging errors
     }

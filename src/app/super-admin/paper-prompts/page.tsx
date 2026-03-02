@@ -42,6 +42,10 @@ interface SectionPrompt {
   requiresCitations: boolean
 }
 
+const isSectionPrompt = (prompt: SupersetSection | SectionPrompt | null | undefined): prompt is SectionPrompt => {
+  return !!prompt && 'hasOverride' in prompt
+}
+
 // Paper type icons
 const PAPER_TYPE_ICONS: Record<string, string> = {
   'JOURNAL_ARTICLE': '📄',
@@ -583,17 +587,19 @@ export default function PaperPromptsPage() {
                           </button>
                         )}
                         <button
-                          onClick={() => setEditingPrompt({
-                            paperTypeCode: selectedPaperType!,
-                            sectionKey: selectedSection!,
-                            instruction: ('hasOverride' in selectedPrompt && selectedPrompt.hasOverride) 
-                              ? selectedPrompt.instruction 
-                              : '', // Empty for new override - user should write the TOP-UP additions
-                            hasOverride: 'hasOverride' in selectedPrompt ? selectedPrompt.hasOverride : false
-                          })}
+                          onClick={() => {
+                            if (!selectedPrompt) return
+                            const promptHasOverride = isSectionPrompt(selectedPrompt) && selectedPrompt.hasOverride
+                            setEditingPrompt({
+                              paperTypeCode: selectedPaperType!,
+                              sectionKey: selectedSection!,
+                              instruction: promptHasOverride ? selectedPrompt.instruction : '',
+                              hasOverride: promptHasOverride
+                            })
+                          }}
                           className="px-3 py-1.5 text-sm bg-emerald-500/20 text-emerald-400 rounded hover:bg-emerald-500/30"
                         >
-                          {'hasOverride' in selectedPrompt && selectedPrompt.hasOverride ? 'Edit Override' : 'Create Override'}
+                          {isSectionPrompt(selectedPrompt) && selectedPrompt.hasOverride ? 'Edit Override' : 'Create Override'}
                         </button>
                       </>
                     )}
@@ -615,7 +621,7 @@ export default function PaperPromptsPage() {
                           {isViewingBase ? 'Base Prompt' : ('hasOverride' in selectedPrompt && selectedPrompt.hasOverride ? 'Using Override' : 'Using Base Prompt')}
                         </div>
                       </div>
-                      {'version' in selectedPrompt && (
+                      {isSectionPrompt(selectedPrompt) && (
                         <div>
                           <span className="text-xs text-slate-500">Version</span>
                           <div className="font-medium text-slate-300">v{selectedPrompt.version}</div>

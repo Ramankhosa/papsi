@@ -24,7 +24,7 @@ const testimonials = [
   {
     user: "Start-Up Hub",
     role: "Incubator",
-    quote: "PatentNest democratizes IP protection. Our cohort companies are filing 3x faster with higher grant rates."
+    quote: "Paper Nest democratizes IP protection. Our cohort companies are filing 3x faster with higher grant rates."
   }
 ]
 

@@ -21,8 +21,8 @@ const cormorant = Cormorant_Garamond({
 })
 
 export const metadata: Metadata = {
-  title: 'PatentNest.ai – "Where Ideas Hatch Into Patents"',
-  description: 'Draft, validate, and protect inventions — effortlessly, intelligently, and globally. AI-powered patent writing for innovators.',
+  title: 'Paper Nest.ai - "Where Ideas Hatch Into Patents"',
+  description: 'Draft, validate, and protect inventions - effortlessly, intelligently, and globally. AI-powered patent writing for innovators.',
   icons: {
     icon: '/animations/logo-video.gif',
   },

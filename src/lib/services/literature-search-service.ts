@@ -56,6 +56,7 @@ export interface SearchResult {
   pmid?: string;
   pmcid?: string;
   arxivId?: string;
+  libraryReferenceId?: string;
   abstract?: string;
   doi?: string;
   url?: string;

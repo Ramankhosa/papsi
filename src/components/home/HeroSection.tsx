@@ -96,7 +96,7 @@ export default function HeroSection() {
           transition={{ delay: 0.7, duration: 0.8 }}
           className="text-5xl md:text-7xl lg:text-8xl font-bold tracking-tight text-transparent bg-clip-text bg-gradient-to-b from-white via-ai-blue-100 to-ai-blue-200/50 mb-8"
         >
-          PatentNest<span className="text-ai-blue-500">.ai</span>
+          Paper Nest<span className="text-ai-blue-500">.ai</span>
         </motion.h1>
 
         {/* Subheadline */}
