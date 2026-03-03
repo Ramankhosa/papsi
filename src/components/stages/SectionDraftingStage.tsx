@@ -1313,8 +1313,11 @@ export default function SectionDraftingStage({
       });
       const data = await res.json();
       if (res.ok) {
-        setBgGenStatus(data.status || null);
-        if (data.progress) setBgGenProgress(data.progress);
+        const normalizedStatus = typeof data.status === 'string' && data.status.trim().length > 0
+          ? data.status.trim().toUpperCase()
+          : 'IDLE';
+        setBgGenStatus(normalizedStatus);
+        setBgGenProgress(data.progress || null);
       }
     } catch { /* non-critical */ }
   }, [authToken, sessionId]);
@@ -2888,6 +2891,77 @@ export default function SectionDraftingStage({
         )}
 
         {/* Background section preparation status (two-pass pipeline) */}
+        {(bgGenStatus === 'IDLE' || bgGenStatus === null) && (
+          <div className="mt-4 max-w-[850px] mx-auto rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
+            <div className="flex items-center gap-3">
+              <span className="inline-flex h-3 w-3 rounded-full shrink-0 bg-slate-400" />
+              <div className="flex-1">
+                <p className="text-sm text-slate-800">
+                  Pass 1 reference draft is not prepared yet. Generate it from base prompts to speed up section drafting.
+                </p>
+              </div>
+              <button
+                onClick={() => handleRetryBgPreparation()}
+                disabled={bgGenRetrying}
+                className="px-3 py-1.5 text-xs rounded-lg border border-indigo-300 text-indigo-700 hover:bg-indigo-50 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {bgGenRetrying ? 'Preparing...' : 'Generate Reference Draft (Pass 1)'}
+              </button>
+              <button
+                onClick={() => setBgSectionSelectorOpen(prev => !prev)}
+                className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100"
+              >
+                {bgSectionSelectorOpen ? 'Hide Sections' : 'Select Sections'}
+              </button>
+            </div>
+
+            {bgSectionSelectorOpen && (
+              <div className="mt-3 border-t border-slate-200 pt-3">
+                <p className="text-xs font-medium text-slate-700">Run Pass 1 only for selected sections</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {bgSelectableSections.map(section => (
+                    <label
+                      key={section.key}
+                      className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-700"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={bgSelectedSectionSet.has(section.key)}
+                        onChange={() => toggleBgSectionSelection(section.key)}
+                        className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <span>{section.label}</span>
+                    </label>
+                  ))}
+                </div>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={selectAllBgSections}
+                    className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                  >
+                    Select All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearBgSectionSelection}
+                    className="px-2.5 py-1 text-xs rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRetryBgPreparation({ force: true, sectionKeys: bgSelectedSectionKeys })}
+                    disabled={bgGenRetrying || bgSelectedSectionKeys.length === 0}
+                    className="px-3 py-1 text-xs rounded-md border border-indigo-300 bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {bgGenRetrying ? 'Preparing...' : 'Run Pass 1 for Selected'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
         {bgGenStatus === 'RUNNING' && (
           <div className="mt-4 max-w-[850px] mx-auto rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 flex items-center gap-3">
             <span className="relative flex h-3 w-3 shrink-0">
