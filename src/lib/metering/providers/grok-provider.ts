@@ -50,17 +50,28 @@ export class GrokProvider implements LLMProvider {
       // Assuming OpenAI-compatible response format
       // This may need adjustment based on actual Grok API
       const choice = data.choices?.[0] || data
-      const usage = data.usage
+      const usage = (data.usage || {}) as Record<string, any>
+      const inputTokens = Number(usage.prompt_tokens) || 0
+      const outputTokens = Number(usage.completion_tokens) || 0
+      const thoughtTokens = Number(
+        usage.reasoning_tokens ??
+        usage.completion_tokens_details?.reasoning_tokens ??
+        0
+      ) || 0
+      const totalTokens = Number(usage.total_tokens) || (inputTokens + outputTokens + thoughtTokens)
 
       return {
         output: choice.message?.content || choice.content || '',
-        outputTokens: usage?.completion_tokens || 0,
+        outputTokens,
         modelClass: this.config.model,
         metadata: {
           provider: 'grok',
-          inputTokens: usage?.prompt_tokens || 0,
-          totalTokens: usage?.total_tokens || 0,
-          finishReason: choice.finish_reason
+          inputTokens,
+          outputTokens,
+          thoughtTokens,
+          totalTokens,
+          finishReason: choice.finish_reason,
+          usage
         }
       }
     } catch (error) {

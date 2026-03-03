@@ -323,6 +323,133 @@ function formatSectionLabel(sectionKey: string): string {
     .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+const SECTION_DISPLAY_NAMES: Record<string, string> = {
+  abstract: 'Abstract',
+  introduction: 'Introduction',
+  literature_review: 'Literature Review',
+  related_work: 'Related Work',
+  methodology: 'Methodology',
+  results: 'Results',
+  discussion: 'Discussion',
+  conclusion: 'Conclusion',
+  acknowledgments: 'Acknowledgments',
+  references: 'References',
+  future_directions: 'Future Directions',
+  future_work: 'Future Work',
+  case_description: 'Case Description',
+  analysis: 'Analysis',
+  recommendations: 'Recommendations',
+  main_content: 'Main Content',
+  case_studies: 'Case Studies',
+  main_findings: 'Main Findings',
+  appendix: 'Appendix'
+};
+
+function getSectionGenerationOrder(
+  sectionPlan: Array<{ sectionKey: string; dependencies: string[] }>
+): string[] {
+  const order: string[] = [];
+  const visited = new Set<string>();
+  const temp = new Set<string>();
+
+  const visit = (sectionKey: string) => {
+    if (visited.has(sectionKey)) return;
+    if (temp.has(sectionKey)) return;
+    temp.add(sectionKey);
+    const section = sectionPlan.find(s => s.sectionKey === sectionKey);
+    if (section) {
+      for (const dep of section.dependencies) {
+        if (sectionPlan.some(s => s.sectionKey === dep)) {
+          visit(dep);
+        }
+      }
+    }
+    temp.delete(sectionKey);
+    visited.add(sectionKey);
+    order.push(sectionKey);
+  };
+
+  for (const section of sectionPlan) {
+    visit(section.sectionKey);
+  }
+  return order;
+}
+
+async function getPreviousSectionMemories(
+  sessionId: string,
+  currentSectionKey: string,
+  blueprint: { sectionPlan: Array<{ sectionKey: string; purpose: string; dependencies: string[]; outputsPromised: string[] }> }
+): Promise<PreviousSectionMemoryEntry[]> {
+  const generationOrder = getSectionGenerationOrder(blueprint.sectionPlan);
+  const normalizedCurrent = normalizeSectionKey(currentSectionKey);
+  const currentIndex = generationOrder.findIndex(
+    k => normalizeSectionKey(k) === normalizedCurrent
+  );
+  const previousKeys = currentIndex > 0 ? generationOrder.slice(0, currentIndex) : [];
+  if (previousKeys.length === 0) return [];
+
+  const sections = await prisma.paperSection.findMany({
+    where: {
+      sessionId,
+      sectionKey: { in: previousKeys },
+      memory: { not: null as any }
+    },
+    select: { sectionKey: true, memory: true }
+  });
+
+  const sectionMap = new Map(sections.map(s => [s.sectionKey, s]));
+
+  return previousKeys
+    .map(key => {
+      const record = sectionMap.get(key);
+      const mem = record?.memory as any;
+      if (!mem) return null;
+      const plan = blueprint.sectionPlan.find(s => s.sectionKey === key);
+      return {
+        sectionKey: key,
+        displayName: SECTION_DISPLAY_NAMES[normalizeSectionKey(key)] || formatSectionLabel(key),
+        keyPoints: Array.isArray(mem.keyPoints) ? mem.keyPoints : [],
+        termsIntroduced: Array.isArray(mem.termsIntroduced) ? mem.termsIntroduced : [],
+        mainClaims: Array.isArray(mem.mainClaims) ? mem.mainClaims : [],
+        forwardReferences: Array.isArray(mem.forwardReferences) ? mem.forwardReferences : [],
+        outputsPromised: Array.isArray(plan?.outputsPromised) ? plan.outputsPromised : []
+      } satisfies PreviousSectionMemoryEntry;
+    })
+    .filter((entry): entry is PreviousSectionMemoryEntry => entry !== null);
+}
+
+function formatPreviousSectionMemoriesBlock(memories: PreviousSectionMemoryEntry[]): string {
+  if (memories.length === 0) return '';
+  const parts = memories.map(pm => {
+    const lines: string[] = [`### ${pm.displayName}`];
+    if (pm.outputsPromised.length > 0) {
+      lines.push(`- Promised Outputs: ${pm.outputsPromised.join('; ')}`);
+    }
+    if (pm.keyPoints.length > 0) {
+      lines.push(`- Key Points: ${pm.keyPoints.join('; ')}`);
+    }
+    if (pm.termsIntroduced.length > 0) {
+      lines.push(`- Terms Introduced: ${pm.termsIntroduced.join(', ')}`);
+    }
+    if (pm.mainClaims.length > 0) {
+      lines.push(`- Claims Made: ${pm.mainClaims.join('; ')}`);
+    }
+    if (pm.forwardReferences.length > 0) {
+      lines.push(`- Forward References: ${pm.forwardReferences.join('; ')}`);
+    }
+    return lines.join('\n');
+  });
+  return `
+═══════════════════════════════════════════════════════════════════════════════
+[CONTINUITY] PREVIOUS SECTIONS MEMORY (for cross-section coherence)
+═══════════════════════════════════════════════════════════════════════════════
+Use the terminology, concepts, and outputs established by previous sections.
+Do NOT re-derive what earlier sections already established. Build on their outputs.
+
+${parts.join('\n\n')}
+`;
+}
+
 function computeContentFingerprint(content: string): string {
   const normalized = String(content || '')
     .replace(/\r\n/g, '\n')
@@ -1418,7 +1545,18 @@ interface BlueprintPromptContext {
   keyContributions?: string[];
   sectionPlan?: Array<{ sectionKey: string; purpose?: string }>;
   mustCover?: string[];
+  mustAvoid?: string[];
   wordBudget?: number;
+}
+
+interface PreviousSectionMemoryEntry {
+  sectionKey: string;
+  displayName: string;
+  keyPoints: string[];
+  termsIntroduced: string[];
+  mainClaims: string[];
+  forwardReferences: string[];
+  outputsPromised: string[];
 }
 
 interface EvidencePromptContext {
@@ -1541,6 +1679,7 @@ interface DimensionFlowState {
 
 const DIMENSION_FLOW_VERSION = 1;
 const MAX_DIMENSION_SUMMARY_ITEMS = 8;
+const MAX_CITATIONS_PER_DIMENSION = 8;
 type DimensionRole = 'introduction' | 'body' | 'conclusion' | 'intro_conclusion';
 
 interface DimensionBudgetSnapshot {
@@ -2382,7 +2521,7 @@ function stitchAcceptedBlocks(
   }
 
   for (const block of flow.acceptedBlocks) {
-    if (orderedBlocks.find((entry) => entry.dimensionKey === block.dimensionKey)) continue;
+    if (orderedBlocks.find((entry) => normalizeDimensionKey(entry.dimensionKey) === normalizeDimensionKey(block.dimensionKey))) continue;
     orderedBlocks.push(block);
   }
 
@@ -2406,6 +2545,7 @@ interface SectionPromptRuntimeBundle {
   sectionWordBudget?: number;
   blueprintPromptContext?: BlueprintPromptContext;
   evidencePromptContext: EvidencePromptContext;
+  previousSectionMemories: PreviousSectionMemoryEntry[];
 }
 
 function formatDimensionEvidence(evidence: EvidencePromptContext['dimensionEvidence']): string {
@@ -2617,7 +2757,7 @@ function buildPass1ArtifactOutputInstructions(
       (entry.citations || [])
         .map((citation) => String(citation.citationKey || '').trim())
         .filter((key): key is string => Boolean(key))
-    )).slice(0, 5);
+    )).slice(0, MAX_CITATIONS_PER_DIMENSION);
     evidenceByDimension.set(dimensionKey, citationKeys);
   }
   const citationGuide = mustCover.length > 0
@@ -2682,7 +2822,8 @@ async function buildPrompt(
   writingSampleBlock?: string,
   blueprintContext?: BlueprintPromptContext,
   evidenceContext?: EvidencePromptContext,
-  outputMode: SectionPromptOutputMode = 'markdown'
+  outputMode: SectionPromptOutputMode = 'markdown',
+  previousSectionMemories?: PreviousSectionMemoryEntry[]
 ): Promise<string> {
   let basePrompt = await sectionTemplateService.getPromptForSection(sectionKey, paperTypeCode, context);
   const hasCitationModePlaceholders = /\{\{AUTO_CITATION_MODE\}\}|\{\{ALLOWED_CITATION_KEYS\}\}/.test(basePrompt);
@@ -2815,6 +2956,7 @@ async function buildPrompt(
 
   const userBlock = userInstructions ? `\n\nUSER INSTRUCTIONS:\n${userInstructions}` : '';
   const styleBlock = writingSampleBlock ? `\n\n${writingSampleBlock}` : '';
+  const crossSectionBlock = formatPreviousSectionMemoriesBlock(previousSectionMemories || []);
   const outputInstructions = outputMode === 'pass1_json'
     ? buildPass1ArtifactOutputInstructions(blueprintContext, evidenceContext)
     : `OUTPUT FORMAT (MANDATORY):
@@ -2825,7 +2967,7 @@ async function buildPrompt(
 - Preserve citation placeholders exactly in [CITE:key] format.
 - Do not use HTML tags.`;
 
-  return `${basePrompt}${topicBlock}${archetypeBlock}${evidenceBlock}${coverageBlock}${citationsBlock}${styleBlock}${userBlock}
+  return `${basePrompt}${topicBlock}${archetypeBlock}${crossSectionBlock}${evidenceBlock}${coverageBlock}${citationsBlock}${styleBlock}${userBlock}
 
 ${outputInstructions}`;
 }
@@ -3267,6 +3409,11 @@ async function generateSection(
     }
 
     await emitStatus?.('llm_generation', 'Polishing evidence draft for publication');
+    const dimensionCitations = (evidencePromptContext.dimensionEvidence || []).map(dim => ({
+      dimensionKey: normalizeDimensionKey(dim.dimension),
+      dimensionLabel: dim.dimension,
+      expectedCitationKeys: (dim.citations || []).map(c => String(c.citationKey || '').trim()).filter(Boolean),
+    }));
     const runPolish = () => sectionPolishService.polishWithRetry({
       sectionKey,
       displayName: sectionRecord?.displayName || formatSectionLabel(sectionKey),
@@ -3274,6 +3421,7 @@ async function generateSection(
       sessionId,
       paperTypeCode,
       tenantContext: tenantContext || null,
+      dimensionCitations: dimensionCitations.length > 0 ? dimensionCitations : undefined,
     });
     let polishResult = await runPolish();
 
@@ -3360,7 +3508,15 @@ async function generateSection(
     rawContent = extractSectionOutput(rawOutput).content;
   }
 
-  const sectionContent = rawContent!;
+  if (!rawContent?.trim()) {
+    throw new DraftingRequestError(
+      'Section generation returned empty content',
+      500,
+      { error: 'LLM returned empty or invalid output', retryable: true }
+    );
+  }
+
+  const sectionContent = rawContent;
   const knownSessionKeys = new Set(citations.map(c => c.citationKey));
 
   await emitStatus?.(
@@ -3584,6 +3740,10 @@ async function generateSection(
     }
   }
 
+  const dimensionCoverageReport = pass2ValidationReport
+    ? (pass2ValidationReport as any).dimensionCoverage
+    : undefined;
+
   return {
     sectionKey,
     content: polishedContent,
@@ -3603,6 +3763,9 @@ async function generateSection(
       usedEvidencePack: useMappedEvidence ? citationContext.usedEvidencePack : false,
       gaps: citationContext.evidenceGaps
     },
+    ...(dimensionCoverageReport && !dimensionCoverageReport.passed
+      ? { dimensionCoverage: dimensionCoverageReport }
+      : {}),
     tokensUsed: llmTokensUsed,
     prompt
   };
@@ -3690,9 +3853,14 @@ async function buildSectionPromptRuntimeBundle(params: {
       keyContributions: blueprint.keyContributions,
       sectionPlan: blueprint.sectionPlan.map((entry) => ({ sectionKey: entry.sectionKey, purpose: entry.purpose })),
       mustCover: currentSectionPlan?.mustCover || [],
+      mustAvoid: currentSectionPlan?.mustAvoid || [],
       wordBudget: blueprintWordBudget
     };
   }
+
+  const previousSectionMemories = blueprint
+    ? await getPreviousSectionMemories(sessionId, normalizedSectionKey, blueprint)
+    : [];
 
   const sectionWordBudget = await resolveSectionWordBudget({
     sectionKey: normalizedSectionKey,
@@ -3741,55 +3909,45 @@ async function buildSectionPromptRuntimeBundle(params: {
     };
   }
 
+  const sharedContext = {
+    researchTopic,
+    archetype: {
+      archetypeId: session.archetypeId,
+      archetypeConfidence: session.archetypeConfidence,
+      contributionMode: session.contributionMode,
+      evaluationScope: session.evaluationScope,
+      evidenceModality: session.evidenceModality,
+      archetypeRationale: session.archetypeRationale,
+      archetypeEvidenceStale: session.archetypeEvidenceStale
+    },
+    citationCount: citations.length,
+    availableCitations: citations,
+    previousSections: extraSections
+  };
+
   const prompt = await buildPrompt(
     normalizedSectionKey,
     paperTypeCode,
-    {
-      researchTopic,
-      archetype: {
-        archetypeId: session.archetypeId,
-        archetypeConfidence: session.archetypeConfidence,
-        contributionMode: session.contributionMode,
-        evaluationScope: session.evaluationScope,
-        evidenceModality: session.evidenceModality,
-        archetypeRationale: session.archetypeRationale,
-        archetypeEvidenceStale: session.archetypeEvidenceStale
-      },
-      citationCount: citations.length,
-      availableCitations: citations,
-      previousSections: extraSections
-    },
+    sharedContext,
     useMappedEvidence ? citationContext.citationInstructions : '',
     params.instructions,
     params.writingSampleBlock,
     blueprintPromptContext,
     evidencePromptContext,
-    'markdown'
+    'markdown',
+    previousSectionMemories
   );
   const pass1Prompt = await buildPrompt(
     normalizedSectionKey,
     paperTypeCode,
-    {
-      researchTopic,
-      archetype: {
-        archetypeId: session.archetypeId,
-        archetypeConfidence: session.archetypeConfidence,
-        contributionMode: session.contributionMode,
-        evaluationScope: session.evaluationScope,
-        evidenceModality: session.evidenceModality,
-        archetypeRationale: session.archetypeRationale,
-        archetypeEvidenceStale: session.archetypeEvidenceStale
-      },
-      citationCount: citations.length,
-      availableCitations: citations,
-      previousSections: extraSections
-    },
+    sharedContext,
     useMappedEvidence ? citationContext.citationInstructions : '',
     params.instructions,
     params.writingSampleBlock,
     blueprintPromptContext,
     evidencePromptContext,
-    'pass1_json'
+    'pass1_json',
+    previousSectionMemories
   );
 
   return {
@@ -3803,7 +3961,8 @@ async function buildSectionPromptRuntimeBundle(params: {
     citationContext,
     sectionWordBudget,
     blueprintPromptContext,
-    evidencePromptContext
+    evidencePromptContext,
+    previousSectionMemories
   };
 }
 
@@ -3831,15 +3990,24 @@ function buildBlueprintDimensionPlan(
       (entry.citations || [])
         .map((citation) => String(citation.citationKey || '').trim())
         .filter((key): key is string => Boolean(key))
-    )).slice(0, 5);
+    )).slice(0, MAX_CITATIONS_PER_DIMENSION);
     evidenceByDimension.set(dimensionKey, keys);
   }
 
+  const sectionAvoidClaims = (bundle.blueprintPromptContext?.mustAvoid || [])
+    .map((claim) => String(claim || '').trim())
+    .filter(Boolean);
+
   const plan: DimensionPlanEntry[] = mustCover
-    .map((dimensionLabel) => {
+    .map((dimensionLabel, index) => {
       const dimensionKey = normalizeDimensionKey(dimensionLabel);
       if (!dimensionKey) return null;
       const mustUseCitationKeys = evidenceByDimension.get(dimensionKey) || [];
+      const isLast = index === mustCover.length - 1;
+      const nextLabel = isLast ? null : mustCover[index + 1];
+      const bridgeHint = isLast
+        ? 'Conclude this dimension naturally as the final topic of the section.'
+        : `Transition smoothly from "${dimensionLabel}" into the next topic: "${nextLabel}".`;
       return {
       dimensionKey: normalizeDimensionKey(dimensionLabel),
       dimensionLabel,
@@ -3847,8 +4015,8 @@ function buildBlueprintDimensionPlan(
         ? `Cover the frozen blueprint dimension "${dimensionLabel}" with evidence-grounded analysis.`
         : `Address the frozen blueprint dimension "${dimensionLabel}" clearly and defensibly.`,
       mustUseCitationKeys,
-      avoidClaims: [] as string[],
-      bridgeHint: 'Transition cleanly to the next required dimension.'
+      avoidClaims: sectionAvoidClaims,
+      bridgeHint
       } satisfies DimensionPlanEntry;
     })
     .filter((entry): entry is DimensionPlanEntry => Boolean(entry))
@@ -4135,7 +4303,7 @@ async function generateDimensionProposal(params: {
     memory: pass1Memory,
     reused: true
   });
-  const pass1SourcePreview = pass1Source?.preview || buildDimensionPriorContext(pass1Content, 6000);
+  const pass1SourceFull = pass1Content;
   const targetPass1Brief = findPass1DimensionBrief(
     pass1Memory,
     params.targetDimension.dimensionKey,
@@ -4207,6 +4375,30 @@ async function generateDimensionProposal(params: {
       ? `Pass 1 closing guidance: ${pass1Memory?.closingStrategy || '(none)'}` : ''
   ].filter(Boolean).join('\n');
 
+  const crossSectionBlock = formatPreviousSectionMemoriesBlock(params.bundle.previousSectionMemories);
+
+  const isEvidenceGapDimension = !params.targetDimension.mustUseCitationKeys.length
+    && (params.bundle.evidencePromptContext.gaps || []).some(
+      gap => normalizeDimensionKey(gap) === normalizeDimensionKey(params.targetDimension.dimensionKey)
+        || normalizeDimensionKey(gap) === normalizeDimensionKey(params.targetDimension.dimensionLabel)
+    );
+  const evidenceGapGuardrail = isEvidenceGapDimension
+    ? `
+═══════════════════════════════════════════════════════════════════════════════
+⚠️  EVIDENCE GAP — ANTI-HALLUCINATION GUARD (MANDATORY)
+═══════════════════════════════════════════════════════════════════════════════
+No mapped evidence exists for this dimension. STRICT RULES:
+- Do NOT fabricate or invent citation keys. Do NOT use [CITE:...] unless the key
+  appears in the MANDATORY SECTION COVERAGE KEYS above.
+- Make theoretical or analytical arguments only. Ground claims in reasoning, not
+  invented references.
+- If empirical evidence is needed but unavailable, explicitly state:
+  "Further empirical investigation is warranted" or similar hedging.
+- You may reference concepts from the PASS 1 source but do NOT cite papers
+  that are not in your allowed citation set.
+`
+    : '';
+
   const prompt = `You are drafting ONE dimension for a paper section.
 
 SECTION KEY: ${params.sectionKey}
@@ -4220,9 +4412,9 @@ AVOID THESE CLAIMS: ${avoidClaims}
 BRIDGE HINT: ${params.targetDimension.bridgeHint || '(none)'}
 ${budgetLines}
 ROLE DIRECTIVE: ${roleDirective}
-
+${evidenceGapGuardrail}
 PASS 1 SECTION SOURCE (use this as the source of truth for section-level content):
-${pass1SourcePreview || '(No pass 1 source available)'}
+${pass1SourceFull || '(No pass 1 source available)'}
 
 PASS 1 MEMORY SUMMARY:
 ${formatPass1MemoryForPrompt(pass1Memory)}
@@ -4241,7 +4433,7 @@ ${acceptedSummary}
 
 ACCEPTED SECTION CONTENT SO FAR (for continuity; do not rewrite it):
 ${priorContext}
-
+${crossSectionBlock}
 MASTER SECTION GUIDANCE:
 ${params.bundle.prompt}
 ${feedback}
@@ -4260,6 +4452,7 @@ Rules:
 - Use [CITE:key] placeholders exactly.
 - If this dimension has REQUIRED CITATION KEYS, include each at least once.
 - Keep output focused on this dimension only.
+- Use the same terminology and concepts established by previous sections (see PREVIOUS SECTIONS MEMORY).
 ${targetRule}
 ${minRule}
 ${lengthRule}
@@ -4902,6 +5095,11 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
 
         if (flowCompleted && sectionContentForPersist.trim()) {
           polishSummary = { attempted: true, applied: false };
+          const acceptDimCitations = (bundle.evidencePromptContext.dimensionEvidence || []).map(dim => ({
+            dimensionKey: normalizeDimensionKey(dim.dimension),
+            dimensionLabel: dim.dimension,
+            expectedCitationKeys: (dim.citations || []).map(c => String(c.citationKey || '').trim()).filter(Boolean),
+          }));
           const polishResult = await sectionPolishService.polishWithRetry({
             sectionKey,
             displayName: sectionRecord.displayName || formatSectionLabel(sectionKey),
@@ -4909,6 +5107,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             sessionId,
             paperTypeCode,
             tenantContext: tenantContext || null,
+            dimensionCitations: acceptDimCitations.length > 0 ? acceptDimCitations : undefined,
           });
 
           if (polishResult.success && polishResult.polishedContent) {
@@ -4925,6 +5124,9 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
               sectionKey,
               error: polishSummary.error
             });
+          }
+          if (polishResult.driftReport?.dimensionCoverage && !polishResult.driftReport.dimensionCoverage.passed) {
+            (polishSummary as any).dimensionCoverage = polishResult.driftReport.dimensionCoverage;
           }
         }
 
@@ -5050,7 +5252,10 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
               }
               : {})
           },
-          ...(polishSummary ? { polish: polishSummary } : {})
+          ...(polishSummary ? { polish: polishSummary } : {}),
+          ...(polishSummary?.attempted && !polishSummary?.applied
+            ? { polishFailed: true }
+            : {})
         });
       }
 

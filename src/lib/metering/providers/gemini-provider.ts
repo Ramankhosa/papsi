@@ -77,6 +77,33 @@ export class GeminiProvider implements LLMProvider {
     }
   }
 
+  private readTokenNumber(value: unknown): number {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      return Math.floor(value)
+    }
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return Math.floor(parsed)
+      }
+    }
+    return 0
+  }
+
+  private extractThoughtTokens(usage: Record<string, unknown> | undefined): number {
+    if (!usage) return 0
+
+    const usageObject = usage as Record<string, unknown>
+    return this.readTokenNumber(
+      usageObject.thoughtsTokenCount ??
+      usageObject.thoughtTokenCount ??
+      usageObject.thinkingTokenCount ??
+      usageObject.reasoningTokenCount ??
+      usageObject.reasoning_tokens ??
+      usageObject.thinking_tokens
+    )
+  }
+
   async execute(request: LLMRequest, limits: EnforcementDecision): Promise<LLMResponse> {
     if (!this.client) {
       throw new Error('Gemini client not initialized')
@@ -192,7 +219,14 @@ export class GeminiProvider implements LLMProvider {
           console.log(`Gemini API call successful on attempt ${attempt}`)
 
           const output = response.text()
-          const usage = response.usageMetadata
+          const usage =
+            response.usageMetadata && typeof response.usageMetadata === 'object'
+              ? (response.usageMetadata as Record<string, unknown>)
+              : undefined
+          const inputTokens = this.readTokenNumber(usage?.promptTokenCount)
+          const outputTokens = this.readTokenNumber(usage?.candidatesTokenCount)
+          const totalTokens = this.readTokenNumber(usage?.totalTokenCount)
+          const thoughtTokens = this.extractThoughtTokens(usage)
 
           // Log response details for debugging
           console.log('🔍 Gemini API response details:', {
@@ -215,13 +249,16 @@ export class GeminiProvider implements LLMProvider {
 
           return {
             output,
-            outputTokens: usage?.candidatesTokenCount || 0,
+            outputTokens,
             modelClass: requestedModel,
             metadata: {
               provider: 'gemini',
-              inputTokens: usage?.promptTokenCount || 0,
-              totalTokens: usage?.totalTokenCount || 0,
-              finishReason: response.candidates?.[0]?.finishReason
+              inputTokens,
+              outputTokens,
+              thoughtTokens,
+              totalTokens,
+              finishReason: response.candidates?.[0]?.finishReason,
+              usage
             }
           }
         } catch (error) {
@@ -402,18 +439,28 @@ export class GeminiProvider implements LLMProvider {
       throw new Error(`Gemini API returned empty response (finishReason: ${candidate?.finishReason || 'unknown'})`)
     }
 
-    const usage = data?.usageMetadata
+    const usage =
+      data?.usageMetadata && typeof data.usageMetadata === 'object'
+        ? (data.usageMetadata as Record<string, unknown>)
+        : undefined
+    const inputTokens = this.readTokenNumber(usage?.promptTokenCount)
+    const outputTokens = this.readTokenNumber(usage?.candidatesTokenCount)
+    const totalTokens = this.readTokenNumber(usage?.totalTokenCount)
+    const thoughtTokens = this.extractThoughtTokens(usage)
     return {
       output,
-      outputTokens: usage?.candidatesTokenCount || 0,
+      outputTokens,
       modelClass: requestedModel,
       metadata: {
         provider: 'gemini',
-        inputTokens: usage?.promptTokenCount || 0,
-        totalTokens: usage?.totalTokenCount || 0,
+        inputTokens,
+        outputTokens,
+        thoughtTokens,
+        totalTokens,
         finishReason: candidate?.finishReason,
         modelUsed: modelClass,
-        thinkingLevel: thinkingLevel || undefined
+        thinkingLevel: thinkingLevel || undefined,
+        usage
       }
     }
   }

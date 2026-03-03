@@ -102,6 +102,45 @@ export class OpenAIProvider implements LLMProvider {
     return { apiModel: modelCode, isThinkingVariant: false }
   }
 
+  private readTokenNumber(value: unknown): number {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      return Math.floor(value)
+    }
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return Math.floor(parsed)
+      }
+    }
+    return 0
+  }
+
+  private extractThoughtTokens(usage: Record<string, unknown> | undefined): number {
+    if (!usage) return 0
+
+    const completionDetails =
+      usage.completion_tokens_details && typeof usage.completion_tokens_details === 'object'
+        ? (usage.completion_tokens_details as Record<string, unknown>)
+        : {}
+    const outputDetails =
+      usage.output_tokens_details && typeof usage.output_tokens_details === 'object'
+        ? (usage.output_tokens_details as Record<string, unknown>)
+        : {}
+
+    return this.readTokenNumber(
+      usage.reasoning_tokens ??
+      usage.reasoningTokens ??
+      usage.thinking_tokens ??
+      usage.thinkingTokens ??
+      usage.thought_tokens ??
+      usage.thoughtTokens ??
+      completionDetails.reasoning_tokens ??
+      completionDetails.thinking_tokens ??
+      outputDetails.reasoning_tokens ??
+      outputDetails.thinking_tokens
+    )
+  }
+
   async execute(request: LLMRequest, limits: EnforcementDecision): Promise<LLMResponse> {
     // Use the model specified in the request (from model resolver) or fall back to config default
     const requestedModel = request.modelClass || this.config.model
@@ -232,7 +271,14 @@ export class OpenAIProvider implements LLMProvider {
 
           const data = await response.json()
           const choice = data.choices?.[0]
-          const usage = data.usage
+          const usage =
+            data.usage && typeof data.usage === 'object'
+              ? (data.usage as Record<string, unknown>)
+              : undefined
+          const inputTokens = this.readTokenNumber(usage?.prompt_tokens)
+          const outputTokens = this.readTokenNumber(usage?.completion_tokens)
+          const totalTokens = this.readTokenNumber(usage?.total_tokens)
+          const thoughtTokens = this.extractThoughtTokens(usage)
 
           if (!choice?.message?.content) {
             throw new Error('OpenAI API returned an empty response')
@@ -240,14 +286,17 @@ export class OpenAIProvider implements LLMProvider {
 
           return {
             output: choice.message.content,
-            outputTokens: usage?.completion_tokens || 0,
+            outputTokens,
             modelClass: requestedModel, // Preserve the configured model code (may be a thinking alias)
             metadata: {
               provider: 'openai',
-              inputTokens: usage?.prompt_tokens || 0,
-              totalTokens: usage?.total_tokens || 0,
+              inputTokens,
+              outputTokens,
+              thoughtTokens,
+              totalTokens,
               finishReason: choice.finish_reason,
-              modelUsed: modelToUse
+              modelUsed: modelToUse,
+              usage
             }
           }
         } catch (error) {

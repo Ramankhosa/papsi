@@ -92,8 +92,15 @@ export class DeepSeekProvider implements LLMProvider {
       })
 
       const outputText = response.choices?.[0]?.message?.content || ''
-      const inputTokens = response.usage?.prompt_tokens || 0
-      const outputTokens = response.usage?.completion_tokens || 0
+      const usage = (response.usage || {}) as Record<string, any>
+      const inputTokens = Number(usage.prompt_tokens) || 0
+      const outputTokens = Number(usage.completion_tokens) || 0
+      const thoughtTokens = Number(
+        usage.reasoning_tokens ??
+        usage.completion_tokens_details?.reasoning_tokens ??
+        0
+      ) || 0
+      const totalTokens = Number(usage.total_tokens) || (inputTokens + outputTokens + thoughtTokens)
       const latency = Date.now() - startTime
 
       return {
@@ -104,8 +111,12 @@ export class DeepSeekProvider implements LLMProvider {
           provider: this.name,
           model: actualModel,
           inputTokens,
+          outputTokens,
+          thoughtTokens,
+          totalTokens,
           latencyMs: latency,
-          finishReason: response.choices?.[0]?.finish_reason
+          finishReason: response.choices?.[0]?.finish_reason,
+          usage
         }
       }
     } catch (error: any) {

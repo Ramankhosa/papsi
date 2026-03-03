@@ -9796,6 +9796,78 @@ async function handleGenerateSections(user: any, patentId: string, data: any, re
   const mergedInstructions: Record<string, string> = { ...(instructions || {}) }
 
   const effectiveJurisdiction = (jurisdiction || session.activeJurisdiction || session.draftingJurisdictions?.[0] || 'US').toUpperCase()
+  const selectedJurisdictions = (Array.isArray(session.draftingJurisdictions) ? session.draftingJurisdictions : [])
+    .map((value: string) => (value || '').toUpperCase())
+    .filter((value: string) => value && value !== 'REFERENCE')
+
+  // Pass 2 gate: for multi-jurisdiction sessions, non-reference section generation
+  // is blocked until the pass-1 reference draft is complete for all required sections.
+  if (session.isMultiJurisdiction === true && effectiveJurisdiction !== 'REFERENCE') {
+    const referenceDraft = session.referenceDraftId
+      ? await prisma.annexureDraft.findUnique({ where: { id: session.referenceDraftId } })
+      : await prisma.annexureDraft.findFirst({
+          where: { sessionId, jurisdiction: 'REFERENCE' },
+          orderBy: { version: 'desc' }
+        })
+
+    if (!session.referenceDraftComplete || !referenceDraft) {
+      return NextResponse.json(
+        {
+          error: 'Pass 2 is locked until the Reference Draft (Pass 1) is complete for all required sections.',
+          code: 'REFERENCE_DRAFT_REQUIRED'
+        },
+        { status: 409 }
+      )
+    }
+
+    const gateJurisdictions = selectedJurisdictions.length > 0 ? selectedJurisdictions : [effectiveJurisdiction]
+    const { sections: requiredReferenceSections } = await getReferenceDraftSections(gateJurisdictions)
+    const extraSections = (referenceDraft.extraSections as any) || {}
+    const rawReferenceDraft = extraSections._rawDraft || {}
+    const referenceFieldMap: Record<string, string> = {
+      title: referenceDraft.title || '',
+      fieldOfInvention: referenceDraft.fieldOfInvention || '',
+      background: referenceDraft.background || '',
+      summary: referenceDraft.summary || '',
+      briefDescriptionOfDrawings: referenceDraft.briefDescriptionOfDrawings || '',
+      detailedDescription: referenceDraft.detailedDescription || '',
+      bestMethod: referenceDraft.bestMethod || '',
+      bestMode: referenceDraft.bestMethod || '',
+      claims: referenceDraft.claims || '',
+      abstract: referenceDraft.abstract || '',
+      industrialApplicability: referenceDraft.industrialApplicability || '',
+      listOfNumerals: referenceDraft.listOfNumerals || ''
+    }
+
+    const missingReferenceSections = requiredReferenceSections.filter(sectionKey => {
+      const rawValue = rawReferenceDraft?.[sectionKey]
+      const fallbackValue = referenceFieldMap[sectionKey] || ''
+      const resolvedValue = typeof rawValue === 'string' && rawValue.trim() ? rawValue : fallbackValue
+      return typeof resolvedValue !== 'string' || !resolvedValue.trim()
+    })
+
+    if (missingReferenceSections.length > 0) {
+      // Keep session state strict when an incomplete reference draft is detected.
+      await prisma.draftingSession.update({
+        where: { id: sessionId },
+        data: {
+          referenceDraftComplete: false,
+          referenceDraftId: null
+        }
+      }).catch((error) => {
+        console.warn('[handleGenerateSections] Failed to reset stale reference draft status:', error)
+      })
+
+      return NextResponse.json(
+        {
+          error: 'Pass 2 is locked because the Reference Draft is incomplete.',
+          code: 'REFERENCE_DRAFT_INCOMPLETE',
+          missingSections: missingReferenceSections
+        },
+        { status: 409 }
+      )
+    }
+  }
 
   // Check for frozen claims - use them instead of regenerating
   const normalizedData = normalizeClaimsForSession((session.ideaRecord?.normalizedData as any) || {})
@@ -10350,7 +10422,8 @@ async function handleGetDraftByVersion(user: any, patentId: string, data: any) {
 // ============================================================================
 
 import { 
-  generateReferenceDraft, 
+  generateReferenceDraftSection,
+  getReferenceDraftSections,
   translateReferenceDraft, 
   getSectionMapping,
   validateDraft
@@ -10449,80 +10522,183 @@ async function handleGenerateReferenceDraft(
   }
   const hasFrozenClaims = !!frozenClaimsForDraft
 
-  // Generate reference draft with ONLY the sections needed by selected jurisdictions
-  const result = await generateReferenceDraft(session, jurisdictionsToUse, user.tenantId, requestHeaders, hasFrozenClaims ? frozenClaimsForDraft : undefined)
+  // Pass 1 execution model: generate required reference sections in parallel
+  // with a worker pool (minimum concurrency 10) and mark completion only when
+  // all required sections are available.
+  const requestedConcurrency = Number(data?.concurrency)
+  const workerConcurrency = Math.max(
+    10,
+    Number.isFinite(requestedConcurrency) && requestedConcurrency > 0
+      ? Math.floor(requestedConcurrency)
+      : 10
+  )
 
-  if (!result.success || !result.draft) {
-    return NextResponse.json({ error: result.error || 'Failed to generate reference draft' }, { status: 500 })
+  const { sections: requiredSections, sectionDetails } = await getReferenceDraftSections(jurisdictionsToUse)
+  if (!Array.isArray(requiredSections) || requiredSections.length === 0) {
+    return NextResponse.json(
+      { error: 'No reference sections are configured for the selected jurisdictions' },
+      { status: 400 }
+    )
   }
 
-  // Enforce frozen claims into the reference draft (no regeneration)
-  if (hasFrozenClaims) {
-    result.draft.claims = frozenClaimsForDraft
-  }
-
-  // Build full text for storage (only include generated sections)
-  const fullDraftText = Object.entries(result.draft)
-    .filter(([_, value]) => value && value.trim()) // Only include non-empty sections
-    .map(([key, value]) => `## ${key}\n\n${value}`)
-    .join('\n\n---\n\n')
-
-  // Store as AnnexureDraft with jurisdiction='REFERENCE'
+  // Pull latest REFERENCE draft so regeneration can preserve prior good sections.
   const lastReferenceDraft = await prisma.annexureDraft.findFirst({
     where: { sessionId, jurisdiction: 'REFERENCE' },
     orderBy: { version: 'desc' }
   })
-  const version = (lastReferenceDraft?.version || 0) + 1
 
+  const existingExtraSections = (lastReferenceDraft?.extraSections as any) || {}
+  const existingRawDraft = existingExtraSections?._rawDraft || {}
+  const existingSections: Record<string, string> = {}
+
+  const assignIfNonEmpty = (key: string, value: unknown) => {
+    if (typeof value === 'string' && value.trim()) {
+      existingSections[key] = value.trim()
+    }
+  }
+
+  for (const [key, value] of Object.entries(existingRawDraft)) {
+    if (key.startsWith('_')) continue
+    assignIfNonEmpty(key, value)
+  }
+
+  assignIfNonEmpty('title', lastReferenceDraft?.title)
+  assignIfNonEmpty('fieldOfInvention', lastReferenceDraft?.fieldOfInvention)
+  assignIfNonEmpty('background', lastReferenceDraft?.background)
+  assignIfNonEmpty('summary', lastReferenceDraft?.summary)
+  assignIfNonEmpty('briefDescriptionOfDrawings', lastReferenceDraft?.briefDescriptionOfDrawings)
+  assignIfNonEmpty('detailedDescription', lastReferenceDraft?.detailedDescription)
+  assignIfNonEmpty('bestMethod', lastReferenceDraft?.bestMethod)
+  assignIfNonEmpty('bestMode', lastReferenceDraft?.bestMethod)
+  assignIfNonEmpty('claims', lastReferenceDraft?.claims)
+  assignIfNonEmpty('abstract', lastReferenceDraft?.abstract)
+  assignIfNonEmpty('industrialApplicability', lastReferenceDraft?.industrialApplicability)
+  assignIfNonEmpty('listOfNumerals', lastReferenceDraft?.listOfNumerals)
+
+  const generatedSections: Record<string, string> = {}
+  const failedSections: Array<{ sectionKey: string; error: string }> = []
+  let cursor = 0
+  const maxWorkers = Math.min(requiredSections.length, workerConcurrency)
+
+  console.log(
+    `[handleGenerateReferenceDraft] Pass 1 parallel start: sections=${requiredSections.length}, concurrency=${maxWorkers}, jurisdictions=${jurisdictionsToUse.join(', ')}`
+  )
+
+  await Promise.all(
+    Array.from({ length: maxWorkers }).map(async () => {
+      while (true) {
+        const currentIndex = cursor++
+        if (currentIndex >= requiredSections.length) break
+
+        const sectionKey = requiredSections[currentIndex]
+        const contextSnapshot = { ...existingSections, ...generatedSections }
+
+        try {
+          const sectionResult = await generateReferenceDraftSection(
+            session,
+            sectionKey,
+            jurisdictionsToUse,
+            contextSnapshot,
+            user.tenantId,
+            requestHeaders,
+            hasFrozenClaims ? frozenClaimsForDraft : undefined
+          )
+
+          if (sectionResult.success && sectionResult.content && sectionResult.content.trim()) {
+            generatedSections[sectionKey] = sectionResult.content.trim()
+          } else {
+            failedSections.push({
+              sectionKey,
+              error: sectionResult.error || 'No content returned'
+            })
+          }
+        } catch (error) {
+          failedSections.push({
+            sectionKey,
+            error: error instanceof Error ? error.message : 'Unknown section generation error'
+          })
+        }
+      }
+    })
+  )
+
+  const mergedDraft: Record<string, string> = {
+    ...existingSections,
+    ...generatedSections
+  }
+
+  // Enforce frozen claims into pass 1 output.
+  if (hasFrozenClaims) {
+    mergedDraft.claims = frozenClaimsForDraft
+  }
+
+  const missingRequiredSections = requiredSections.filter(sectionKey => {
+    const value = mergedDraft[sectionKey]
+    return typeof value !== 'string' || !value.trim()
+  })
+  const allSectionsComplete = failedSections.length === 0 && missingRequiredSections.length === 0
+
+  // Build full text for storage (only include generated sections)
+  const fullDraftText = Object.entries(mergedDraft)
+    .filter(([_, value]) => value && value.trim())
+    .map(([key, value]) => `## ${key}\n\n${value}`)
+    .join('\n\n---\n\n')
+
+  const version = (lastReferenceDraft?.version || 0) + 1
   const referenceDraft = await prisma.annexureDraft.create({
     data: {
       sessionId,
       version,
       jurisdiction: 'REFERENCE',
-      // Map superset keys to AnnexureDraft schema fields (use empty string if not in dynamic superset)
-      title: result.draft.title || '',
-      fieldOfInvention: result.draft.fieldOfInvention || '',
-      background: result.draft.background || '',
-      summary: result.draft.summary || '',
-      briefDescriptionOfDrawings: result.draft.briefDescriptionOfDrawings || '',
-      detailedDescription: result.draft.detailedDescription || '',
-      bestMethod: result.draft.bestMethod || result.draft.bestMode || '',
-      claims: result.draft.claims || '',
-      abstract: result.draft.abstract || '',
-      industrialApplicability: result.draft.industrialApplicability || '',
-      listOfNumerals: result.draft.listOfNumerals || '',
+      title: mergedDraft.title || '',
+      fieldOfInvention: mergedDraft.fieldOfInvention || '',
+      background: mergedDraft.background || '',
+      summary: mergedDraft.summary || '',
+      briefDescriptionOfDrawings: mergedDraft.briefDescriptionOfDrawings || '',
+      detailedDescription: mergedDraft.detailedDescription || '',
+      bestMethod: mergedDraft.bestMethod || mergedDraft.bestMode || '',
+      claims: mergedDraft.claims || '',
+      abstract: mergedDraft.abstract || '',
+      industrialApplicability: mergedDraft.industrialApplicability || '',
+      listOfNumerals: mergedDraft.listOfNumerals || '',
       fullDraftText,
       extraSections: {
-        // Store extended superset sections
-        preamble: result.draft.preamble || '',
-        objectsOfInvention: result.draft.objectsOfInvention || '',
-        technicalProblem: result.draft.technicalProblem || '',
-        technicalSolution: result.draft.technicalSolution || '',
-        advantageousEffects: result.draft.advantageousEffects || '',
-        crossReference: result.draft.crossReference || '',
-        // Store metadata about the dynamic superset
-        _dynamicSections: result.dynamicSections, // The sections that were actually generated
-        _sectionDetails: result.sectionDetails, // Which jurisdictions needed which sections
+        preamble: mergedDraft.preamble || '',
+        objectsOfInvention: mergedDraft.objectsOfInvention || '',
+        technicalProblem: mergedDraft.technicalProblem || '',
+        technicalSolution: mergedDraft.technicalSolution || '',
+        advantageousEffects: mergedDraft.advantageousEffects || '',
+        crossReference: mergedDraft.crossReference || '',
+        _dynamicSections: requiredSections,
+        _sectionDetails: sectionDetails,
         _selectedJurisdictions: selectedJurisdictions,
-        _rawDraft: result.draft
+        _rawDraft: mergedDraft,
+        _generationMeta: {
+          mode: 'parallel_section_workers',
+          requestedConcurrency: workerConcurrency,
+          actualConcurrency: maxWorkers,
+          failedSections,
+          missingRequiredSections
+        }
       },
-      isValid: true
+      isValid: allSectionsComplete
     }
   })
 
-  // Update session to mark reference draft as complete
   await prisma.draftingSession.update({
     where: { id: sessionId },
     data: {
-      referenceDraftComplete: true,
-      referenceDraftId: referenceDraft.id,
+      referenceDraftComplete: allSectionsComplete,
+      referenceDraftId: allSectionsComplete ? referenceDraft.id : null,
       jurisdictionDraftStatus: {
         ...(session!.jurisdictionDraftStatus as any || {}),
         REFERENCE: {
-          status: 'done',
+          status: allSectionsComplete ? 'done' : 'partial',
           latestVersion: version,
-          sectionsGenerated: result.dynamicSections?.length || 0,
-          updatedAt: new Date().toISOString()
+          sectionsGenerated: Object.keys(generatedSections).length,
+          sectionsRequired: requiredSections.length,
+          updatedAt: new Date().toISOString(),
+          failedSections: failedSections.map(entry => entry.sectionKey)
         }
       }
     }
@@ -10531,24 +10707,48 @@ async function handleGenerateReferenceDraft(
   // Get full superset size from database for optimization metrics
   const allSupersetKeys = await getSupersetSectionKeys()
   const fullSupersetSize = allSupersetKeys.length
-  const sectionsGenerated = result.dynamicSections?.length || 0
+  const sectionsGenerated = requiredSections.length
+
+  if (!allSectionsComplete) {
+    return NextResponse.json(
+      {
+        error: 'Reference draft generation is incomplete. Complete Pass 1 for all required sections before proceeding to Pass 2.',
+        success: false,
+        draft: mergedDraft,
+        draftId: referenceDraft.id,
+        version,
+        completedCount: requiredSections.length - missingRequiredSections.length,
+        requiredCount: requiredSections.length,
+        failedSections,
+        missingSections: missingRequiredSections,
+        optimization: {
+          sectionsGenerated,
+          fullSupersetSize,
+          sectionsSaved: fullSupersetSize - sectionsGenerated,
+          selectedJurisdictions: jurisdictionsToUse,
+          dynamicSections: requiredSections
+        }
+      },
+      { status: 500 }
+    )
+  }
 
   return NextResponse.json({
     success: true,
-    draft: result.draft,
+    draft: mergedDraft,
     draftId: referenceDraft.id,
     version,
-    tokensUsed: result.tokensUsed,
-    // Include metadata about optimization
     optimization: {
       sectionsGenerated,
       fullSupersetSize,
       sectionsSaved: fullSupersetSize - sectionsGenerated,
       selectedJurisdictions: jurisdictionsToUse,
-      dynamicSections: result.dynamicSections
-    },
-    // Include warnings about missing context (prior art, figures, components)
-    warnings: result.warnings
+      dynamicSections: requiredSections,
+      concurrency: {
+        requested: workerConcurrency,
+        actual: maxWorkers
+      }
+    }
   })
 }
 
@@ -10582,8 +10782,6 @@ async function handleGetReferenceSections(
     return NextResponse.json({ error: 'No jurisdictions selected' }, { status: 400 })
   }
 
-  // Import and use getReferenceDraftSections
-  const { getReferenceDraftSections } = await import('@/lib/multi-jurisdiction-service')
   const { sections, sectionDetails } = await getReferenceDraftSections(selectedJurisdictions)
 
   // Get existing reference draft sections (if any)
@@ -10727,9 +10925,6 @@ async function handleGenerateReferenceSection(
     frozenClaimsForDraft = htmlToPlainText(frozenClaimsHtml)
   }
 
-  // Import and use generateReferenceDraftSection
-  const { generateReferenceDraftSection } = await import('@/lib/multi-jurisdiction-service')
-  
   const result = await generateReferenceDraftSection(
     session,
     sectionKey,
@@ -10819,7 +11014,6 @@ async function handleGenerateReferenceSection(
 
   // Check if all required sections are now complete
   // Get the list of required sections for the selected jurisdictions
-  const { getReferenceDraftSections } = await import('@/lib/multi-jurisdiction-service')
   const { sections: requiredSections } = await getReferenceDraftSections(selectedJurisdictions)
   
   // Check if all required sections have content in newRawDraft
@@ -10953,6 +11147,37 @@ async function handleTranslateToJurisdiction(
     advantageousEffects: extraSections.advantageousEffects || '',
     // Additional optional superset sections (EP/DE)
     listOfNumerals: extraSections.listOfNumerals || referenceDraft.listOfNumerals || ''
+  }
+
+  // Enforce pass-1 completeness before running pass-2 translation.
+  const selectedJurisdictions = (Array.isArray(session.draftingJurisdictions) ? session.draftingJurisdictions : [])
+    .map((value: string) => (value || '').toUpperCase())
+    .filter((value: string) => value && value !== 'REFERENCE')
+  const gateJurisdictions = selectedJurisdictions.length > 0 ? selectedJurisdictions : [targetCode]
+  const { sections: requiredReferenceSections } = await getReferenceDraftSections(gateJurisdictions)
+  const missingReferenceSections = requiredReferenceSections.filter(sectionKey => {
+    const value = rawDraft[sectionKey]
+    return typeof value !== 'string' || !value.trim()
+  })
+  if (missingReferenceSections.length > 0) {
+    await prisma.draftingSession.update({
+      where: { id: sessionId },
+      data: {
+        referenceDraftComplete: false,
+        referenceDraftId: null
+      }
+    }).catch((error) => {
+      console.warn('[handleTranslateToJurisdiction] Failed to reset stale reference draft status:', error)
+    })
+
+    return NextResponse.json(
+      {
+        error: 'Pass 2 translation is locked because the Reference Draft is incomplete.',
+        code: 'REFERENCE_DRAFT_INCOMPLETE',
+        missingSections: missingReferenceSections
+      },
+      { status: 409 }
+    )
   }
 
   // Translate to target jurisdiction with language support

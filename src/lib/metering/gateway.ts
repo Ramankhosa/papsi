@@ -220,16 +220,52 @@ export class LLMGateway {
 
       // 7. Record usage (metering for billing/quotas)
       if (decision.reservationId) {
+        const responseMetadata =
+          response.metadata && typeof response.metadata === 'object'
+            ? (response.metadata as Record<string, unknown>)
+            : {}
+        const normalizedUsage =
+          responseMetadata.tokenUsage && typeof responseMetadata.tokenUsage === 'object'
+            ? (responseMetadata.tokenUsage as Record<string, unknown>)
+            : {}
+
+        const meteredInputTokens =
+          typeof normalizedUsage.inputTokens === 'number'
+            ? normalizedUsage.inputTokens
+            : typeof responseMetadata.inputTokens === 'number'
+            ? responseMetadata.inputTokens
+            : (llmRequest.inputTokens ?? 0)
+
+        const meteredOutputTokens =
+          typeof normalizedUsage.outputTokens === 'number'
+            ? normalizedUsage.outputTokens
+            : typeof responseMetadata.outputTokens === 'number'
+            ? responseMetadata.outputTokens
+            : response.outputTokens
+
+        const meteredThoughtTokens =
+          typeof normalizedUsage.thoughtTokens === 'number'
+            ? normalizedUsage.thoughtTokens
+            : typeof responseMetadata.thoughtTokens === 'number'
+            ? responseMetadata.thoughtTokens
+            : 0
+
+        const meteredTotalTokens =
+          typeof normalizedUsage.totalTokens === 'number'
+            ? normalizedUsage.totalTokens
+            : meteredInputTokens + meteredOutputTokens + meteredThoughtTokens
+
         const usageStats: UsageStats = {
-          // Use ?? (nullish coalescing) to handle 0 as a valid value
-          inputTokens: llmRequest.inputTokens ?? 0,
-          outputTokens: response.outputTokens,
+          inputTokens: meteredInputTokens,
+          outputTokens: meteredOutputTokens,
           modelClass: response.modelClass as any,
           apiCalls: 1,
           metadata: {
             ...llmRequest.metadata,
             stageCode: llmRequest.stageCode,
-            modelSource: modelResolution?.source
+            modelSource: modelResolution?.source,
+            thoughtTokens: meteredThoughtTokens,
+            totalTokens: meteredTotalTokens
           }
         }
 

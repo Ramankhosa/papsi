@@ -3,6 +3,8 @@ import { authenticateUser } from '@/lib/auth-middleware';
 import { libraryConnectionService } from '@/lib/services/library-connection-service';
 import { isMendeleyConfigured } from '@/lib/library-oauth-config';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: NextRequest) {
   try {
     const { user, error } = await authenticateUser(request);
@@ -11,12 +13,22 @@ export async function GET(request: NextRequest) {
     }
 
     const connections = await libraryConnectionService.getActiveConnections(user.id);
+    const mendeleyReady = isMendeleyConfigured();
+
+    if (!mendeleyReady) {
+      console.warn(
+        '[library/connections] Mendeley not configured. MENDELEY_CLIENT_ID present:',
+        !!process.env.MENDELEY_CLIENT_ID,
+        'MENDELEY_CLIENT_SECRET present:',
+        !!process.env.MENDELEY_CLIENT_SECRET
+      );
+    }
 
     return NextResponse.json({
       connections,
       providers: {
-        mendeley: { configured: isMendeleyConfigured() },
-        zotero: { configured: true }, // always available (user provides own key)
+        mendeley: { configured: mendeleyReady },
+        zotero: { configured: true },
       },
     });
   } catch (err) {

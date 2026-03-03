@@ -2072,6 +2072,13 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     return map
   }, [session?.annexureDrafts])
   const isMultiJurisdiction = availableJurisdictions.length > 1
+  const normalizedActiveJurisdiction = (activeJurisdiction || '').toUpperCase()
+  const isReferenceJurisdiction = normalizedActiveJurisdiction === 'REFERENCE'
+  const pass2GenerationLocked = isMultiJurisdiction && !session?.referenceDraftComplete && !isReferenceJurisdiction
+
+  const notifyPass2Locked = useCallback(() => {
+    alert('Pass 2 is locked. Complete the Reference Draft (Pass 1) for all required sections first.')
+  }, [])
 
   const addableCountries = useMemo(
     () => availableCountries.filter(c => !availableJurisdictions.includes(c.code)),
@@ -2209,11 +2216,20 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
 
   // Sync active jurisdiction when session updates
   useEffect(() => {
-    const nextJurisdiction = session?.activeJurisdiction || session?.draftingJurisdictions?.[0]
-    if (nextJurisdiction && nextJurisdiction !== activeJurisdiction) {
+    const nextJurisdictionRaw = session?.activeJurisdiction || session?.draftingJurisdictions?.[0]
+    const nextJurisdiction = nextJurisdictionRaw ? String(nextJurisdictionRaw).toUpperCase() : ''
+    if (nextJurisdiction && nextJurisdiction !== normalizedActiveJurisdiction) {
       setActiveJurisdiction(nextJurisdiction)
     }
-  }, [session?.activeJurisdiction, session?.draftingJurisdictions])
+  }, [session?.activeJurisdiction, session?.draftingJurisdictions, normalizedActiveJurisdiction])
+
+  // In multi-jurisdiction mode, keep users on Pass 1 until reference draft is complete.
+  useEffect(() => {
+    if (!isMultiJurisdiction || session?.referenceDraftComplete) return
+    if (normalizedActiveJurisdiction !== 'REFERENCE') {
+      setActiveJurisdiction('REFERENCE')
+    }
+  }, [isMultiJurisdiction, session?.referenceDraftComplete, normalizedActiveJurisdiction])
 
   // Keep source-of-truth in sync
   useEffect(() => {
@@ -2523,12 +2539,18 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
         },
         body: JSON.stringify({
           action: 'generate_reference_draft',
-          sessionId: session.id
+          sessionId: session.id,
+          forceRegenerate,
+          concurrency: 10
         })
       })
       const data = await res.json()
       if (!res.ok) {
         console.error('Reference draft generation failed:', data.error)
+        if (data?.draft && typeof data.draft === 'object') {
+          setGenerated(data.draft)
+        }
+        await onRefresh()
         alert(`❌ Failed to generate reference draft: ${data.error || 'Unknown error'}`)
         return
       }
@@ -2621,6 +2643,10 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
 
   const handleGenerate = async (keys: string[], skipRefresh = false) => {
     if (loading) return
+    if (pass2GenerationLocked) {
+      notifyPass2Locked()
+      return
+    }
     setLoading(true)
     setShowActivity(true)
     setCurrentKeys(keys)
@@ -2704,6 +2730,12 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
   // Helper function to generate a single section (used by auto-mode)
   const generateSingleSection = async (sectionKey: string, isReference: boolean): Promise<{ success: boolean; content?: string; error?: string }> => {
     try {
+      if (!isReference && pass2GenerationLocked) {
+        return {
+          success: false,
+          error: 'Pass 2 is locked until the reference draft is complete.'
+        }
+      }
       if (isReference) {
         // Use REFERENCE-specific API
         const res = await fetch(`/api/patents/${patent?.id}/drafting`, {
@@ -2906,6 +2938,10 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
     if (autoModeRunning || loading) return
 
     if (!sectionConfigs) return
+    if (pass2GenerationLocked) {
+      notifyPass2Locked()
+      return
+    }
 
     // Get all section keys that don't have content yet
     const pendingSections = sectionConfigs
@@ -2954,6 +2990,10 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
 
   const handleRegenerateSection = async (key: string) => {
     if (sectionLoading[key]) return
+    if (pass2GenerationLocked) {
+      notifyPass2Locked()
+      return
+    }
     setSectionLoading(prev => ({ ...prev, [key]: true }))
     setShowActivity(true)
     try {
@@ -3566,15 +3606,46 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
             
             {/* Action buttons for multi-jurisdiction - same UI pattern as other jurisdictions */}
             <div className="mt-4 flex flex-wrap gap-2">
-              {activeJurisdiction === 'REFERENCE' && session?.referenceDraftComplete && (
+              {isReferenceJurisdiction && !session?.referenceDraftComplete && (
+                <button
+                  onClick={() => void handleGenerateReferenceDraft(false)}
+                  disabled={generatingReference || loading || autoModeRunning}
+                  className="px-4 py-2 bg-purple-600 text-white rounded-lg font-medium hover:bg-purple-700 disabled:opacity-60 flex items-center gap-2"
+                >
+                  {generatingReference ? (
+                    <>
+                      <span className="animate-spin">...</span>
+                      Generating Reference Draft...
+                    </>
+                  ) : (
+                    <>Generate Reference Draft</>
+                  )}
+                </button>
+              )}
+
+              {isReferenceJurisdiction && session?.referenceDraftComplete && (
                 <div className="flex flex-wrap gap-2">
                   <span className="px-3 py-2 bg-emerald-50 text-emerald-700 rounded-lg text-sm flex items-center gap-2">
-                    ✅ Reference Draft Complete
+                    Reference Draft Complete
                   </span>
+                  <button
+                    onClick={() => void handleGenerateReferenceDraft(true)}
+                    disabled={generatingReference || loading || autoModeRunning}
+                    className="px-4 py-2 bg-white border border-purple-200 text-purple-700 rounded-lg font-medium hover:bg-purple-50 disabled:opacity-60 flex items-center gap-2"
+                  >
+                    {generatingReference ? (
+                      <>
+                        <span className="animate-spin">...</span>
+                        Regenerating...
+                      </>
+                    ) : (
+                      <>Regenerate Reference Draft</>
+                    )}
+                  </button>
                 </div>
               )}
-              
-              {activeJurisdiction !== 'REFERENCE' && session?.referenceDraftComplete && (
+
+              {!isReferenceJurisdiction && session?.referenceDraftComplete && (
                 <button
                   onClick={() => handleTranslateToJurisdiction(activeJurisdiction)}
                   disabled={!!translating}
@@ -3595,7 +3666,7 @@ export default function AnnexureDraftStage({ session, patent, onComplete, onRefr
               )}
               
               {/* Translate All button */}
-              {activeJurisdiction === 'REFERENCE' && session?.referenceDraftComplete && availableJurisdictions.length > 0 && (
+              {isReferenceJurisdiction && session?.referenceDraftComplete && availableJurisdictions.length > 0 && (
                 <button
                   onClick={async () => {
                     for (const code of availableJurisdictions) {

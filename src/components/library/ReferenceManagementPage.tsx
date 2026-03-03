@@ -754,58 +754,32 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#39;');
 
-  const handleViewPDF = async (refId: string) => {
-    if (!authToken) return;
-    try {
-      const response = await fetch(`/api/library/${refId}/document/serve`, {
-        headers: { Authorization: `Bearer ${authToken}` }
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        throw new Error(data?.error || `Failed to open document (HTTP ${response.status})`);
-      }
+  const openViewerWindow = (title: string, loadingMessage: string): Window | null => {
+    const popup = window.open('', '_blank');
+    if (!popup) return null;
 
-      const blob = await response.blob();
-      const url = URL.createObjectURL(blob);
-      const popup = window.open(url, '_blank', 'noopener,noreferrer');
-      if (!popup) {
-        URL.revokeObjectURL(url);
-        throw new Error('Popup blocked. Please allow popups and try again.');
-      }
-
-      setTimeout(() => {
-        URL.revokeObjectURL(url);
-      }, 60_000);
-    } catch (err) {
-      console.error('Failed to view PDF:', err);
-      alert(err instanceof Error ? err.message : 'Failed to open document');
-    }
+    popup.opener = null;
+    popup.document.write(`<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${escapeHtml(title)}</title>
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; margin: 20px; color: #111827; }
+    </style>
+  </head>
+  <body>
+    <p>${escapeHtml(loadingMessage)}</p>
+  </body>
+</html>`);
+    popup.document.close();
+    return popup;
   };
 
-  const handleViewText = async (refId: string, refTitle: string) => {
-    if (!authToken) return;
-    try {
-      const response = await fetch(`/api/references/${refId}/full-text`, {
-        headers: { Authorization: `Bearer ${authToken}` }
-      });
-      const data = await response.json().catch(() => null);
-      if (!response.ok || !data?.success) {
-        throw new Error(data?.error || `Failed to open full text (HTTP ${response.status})`);
-      }
-
-      const text = String(data.text || '');
-      if (!text.trim()) {
-        throw new Error('No extracted text available for this document yet.');
-      }
-
-      const popup = window.open('', '_blank', 'noopener,noreferrer');
-      if (!popup) {
-        throw new Error('Popup blocked. Please allow popups and try again.');
-      }
-
-      const safeTitle = escapeHtml(refTitle || 'Document Text');
-      const safeText = escapeHtml(text);
-      popup.document.write(`<!doctype html>
+  const createTextViewerHtml = (title: string, text: string) => {
+    const safeTitle = escapeHtml(title || 'Document Text');
+    const safeText = escapeHtml(text);
+    return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
@@ -820,9 +794,75 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
     <h1>${safeTitle}</h1>
     <pre>${safeText}</pre>
   </body>
-</html>`);
-      popup.document.close();
+</html>`;
+  };
+
+  const handleViewPDF = async (refId: string) => {
+    if (!authToken) return;
+    const viewerWindow = openViewerWindow('Loading PDF', 'Loading document...');
+    try {
+      const response = await fetch(`/api/library/${refId}/document/serve`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new Error(data?.error || `Failed to open document (HTTP ${response.status})`);
+      }
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      if (viewerWindow && !viewerWindow.closed) {
+        viewerWindow.location.replace(url);
+      } else {
+        window.location.assign(url);
+      }
+
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+      }, 60_000);
     } catch (err) {
+      if (viewerWindow && !viewerWindow.closed) {
+        viewerWindow.close();
+      }
+      console.error('Failed to view PDF:', err);
+      alert(err instanceof Error ? err.message : 'Failed to open document');
+    }
+  };
+
+  const handleViewText = async (refId: string, refTitle: string) => {
+    if (!authToken) return;
+    const viewerWindow = openViewerWindow(refTitle || 'Document Text', 'Loading full text...');
+    try {
+      const response = await fetch(`/api/references/${refId}/full-text`, {
+        headers: { Authorization: `Bearer ${authToken}` }
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.error || `Failed to open full text (HTTP ${response.status})`);
+      }
+
+      const text = String(data.text || '');
+      if (!text.trim()) {
+        throw new Error('No extracted text available for this document yet.');
+      }
+
+      const html = createTextViewerHtml(refTitle || 'Document Text', text);
+      if (viewerWindow && !viewerWindow.closed) {
+        viewerWindow.document.open();
+        viewerWindow.document.write(html);
+        viewerWindow.document.close();
+      } else {
+        const htmlBlob = new Blob([html], { type: 'text/html;charset=utf-8' });
+        const url = URL.createObjectURL(htmlBlob);
+        window.location.assign(url);
+        setTimeout(() => {
+          URL.revokeObjectURL(url);
+        }, 60_000);
+      }
+    } catch (err) {
+      if (viewerWindow && !viewerWindow.closed) {
+        viewerWindow.close();
+      }
       console.error('Failed to view full text:', err);
       alert(err instanceof Error ? err.message : 'Failed to open full text');
     }
@@ -2911,12 +2951,19 @@ function ProviderImportSection({
       const response = await fetch('/api/library/connections', {
         headers: { Authorization: `Bearer ${authToken}` },
       });
-      if (!response.ok) return;
+      if (!response.ok) {
+        console.warn('Failed to load library connections:', response.status);
+        // Default to configured=true so users see the connect button
+        // rather than a misleading "not configured" admin message
+        setMendeleyConfigured(true);
+        return;
+      }
       const data = await response.json();
       setConnections(data.connections || []);
-      setMendeleyConfigured(data.providers?.mendeley?.configured ?? false);
-    } catch {
-      // silent
+      setMendeleyConfigured(data.providers?.mendeley?.configured ?? true);
+    } catch (err) {
+      console.warn('Failed to load library connections:', err);
+      setMendeleyConfigured(true);
     } finally {
       setConnectionsLoaded(true);
     }
@@ -3347,4 +3394,3 @@ function ProviderImportSection({
     </div>
   );
 }
-

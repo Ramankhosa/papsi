@@ -71,6 +71,32 @@ export class AnthropicProvider implements LLMProvider {
     return 2
   }
 
+  private readTokenNumber(value: unknown): number {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      return Math.floor(value)
+    }
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return Math.floor(parsed)
+      }
+    }
+    return 0
+  }
+
+  private extractThoughtTokens(usage: Record<string, unknown> | undefined): number {
+    if (!usage) return 0
+
+    return this.readTokenNumber(
+      usage.thinking_tokens ??
+      usage.reasoning_tokens ??
+      usage.thought_tokens ??
+      usage.thinkingTokens ??
+      usage.reasoningTokens ??
+      usage.thoughtTokens
+    )
+  }
+
   async execute(request: LLMRequest, limits: EnforcementDecision): Promise<LLMResponse> {
     if (!this.client) {
       throw new Error('Anthropic client not initialized')
@@ -165,8 +191,14 @@ export class AnthropicProvider implements LLMProvider {
         .map((block: any) => block.text)
         .join('')
 
-      const inputTokens = response.usage?.input_tokens || 0
-      const outputTokens = response.usage?.output_tokens || 0
+      const usage =
+        response.usage && typeof response.usage === 'object'
+          ? (response.usage as Record<string, unknown>)
+          : undefined
+      const inputTokens = this.readTokenNumber(usage?.input_tokens)
+      const outputTokens = this.readTokenNumber(usage?.output_tokens)
+      const thoughtTokens = this.extractThoughtTokens(usage)
+      const totalTokens = this.readTokenNumber(usage?.total_tokens) || (inputTokens + outputTokens + thoughtTokens)
       const latency = Date.now() - startTime
 
       return {
@@ -177,8 +209,12 @@ export class AnthropicProvider implements LLMProvider {
           provider: this.name,
           model: actualModel,
           inputTokens,
+          outputTokens,
+          thoughtTokens,
+          totalTokens,
           latencyMs: latency,
-          stopReason: response.stop_reason
+          stopReason: response.stop_reason,
+          usage
         }
       }
     } catch (error: any) {

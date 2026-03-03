@@ -20,6 +20,12 @@ import crypto from 'crypto';
 // Types
 // ============================================================================
 
+export interface DimensionCitationExpectation {
+  dimensionKey: string;
+  dimensionLabel: string;
+  expectedCitationKeys: string[];
+}
+
 export interface PolishInput {
   sectionKey: string;
   displayName: string;
@@ -27,6 +33,16 @@ export interface PolishInput {
   sessionId: string;
   paperTypeCode: string;
   tenantContext?: TenantContext | null;
+  dimensionCitations?: DimensionCitationExpectation[];
+}
+
+export interface DimensionCoverageEntry {
+  dimensionKey: string;
+  dimensionLabel: string;
+  expectedCitationKeys: string[];
+  presentCitationKeys: string[];
+  missingCitationKeys: string[];
+  covered: boolean;
 }
 
 export interface DriftReport {
@@ -44,6 +60,11 @@ export interface DriftReport {
     polishedNumbers: string[];
     missing: string[];
     added: string[];
+  };
+  dimensionCoverage?: {
+    passed: boolean;
+    dimensions: DimensionCoverageEntry[];
+    uncoveredDimensions: string[];
   };
 }
 
@@ -92,7 +113,11 @@ function extractNumbers(text: string): string[] {
   return Array.from(new Set(nums));
 }
 
-function buildDriftReport(baseContent: string, polishedContent: string): DriftReport {
+function buildDriftReport(
+  baseContent: string,
+  polishedContent: string,
+  dimensionCitations?: DimensionCitationExpectation[]
+): DriftReport {
   const baseCites = extractCiteKeys(baseContent);
   const polishedCites = extractCiteKeys(polishedContent);
 
@@ -124,10 +149,35 @@ function buildDriftReport(baseContent: string, polishedContent: string): DriftRe
     added: addedNums,
   };
 
+  let dimensionCoverage: DriftReport['dimensionCoverage'];
+  if (dimensionCitations && dimensionCitations.length > 0) {
+    const dimensions: DimensionCoverageEntry[] = dimensionCitations.map(dim => {
+      const presentKeys = dim.expectedCitationKeys.filter(k => polishedSet.has(k));
+      const missingKeys = dim.expectedCitationKeys.filter(k => !polishedSet.has(k));
+      return {
+        dimensionKey: dim.dimensionKey,
+        dimensionLabel: dim.dimensionLabel,
+        expectedCitationKeys: dim.expectedCitationKeys,
+        presentCitationKeys: presentKeys,
+        missingCitationKeys: missingKeys,
+        covered: dim.expectedCitationKeys.length === 0 || presentKeys.length > 0,
+      };
+    });
+    const uncoveredDimensions = dimensions
+      .filter(d => !d.covered)
+      .map(d => d.dimensionLabel);
+    dimensionCoverage = {
+      passed: uncoveredDimensions.length === 0,
+      dimensions,
+      uncoveredDimensions,
+    };
+  }
+
   return {
     passed: citationParity.passed && numberPreservation.passed,
     citationParity,
     numberPreservation,
+    dimensionCoverage,
   };
 }
 
@@ -357,7 +407,7 @@ class SectionPolishService {
 
       polished = polishDraftMarkdown(polished);
 
-      const driftReport = buildDriftReport(input.baseContent, polished);
+      const driftReport = buildDriftReport(input.baseContent, polished, input.dimensionCitations);
 
       return {
         success: true,

@@ -13,7 +13,17 @@
 import { prisma } from '@/lib/prisma'
 
 // Default pricing fallback for unknown models (conservative $1/$4 per M)
-const DEFAULT_PRICING = { input: 0.000001, output: 0.000004 }
+interface ModelPricing {
+  input: number
+  output: number
+  thoughtTokenCost?: number
+}
+
+const DEFAULT_PRICING: ModelPricing = {
+  input: 0.000001,
+  output: 0.000004,
+  thoughtTokenCost: 0.000004
+}
 
 // Contingency multiplier (10%)
 export const CONTINGENCY_MULTIPLIER = 1.10
@@ -22,7 +32,7 @@ export const CONTINGENCY_MULTIPLIER = 1.10
 export const USD_TO_INR = 95
 
 // Cache for database-loaded pricing (per-token costs in USD)
-let dbPricingCache: Map<string, { input: number; output: number }> | null = null
+let dbPricingCache: Map<string, ModelPricing> | null = null
 let dbPricingLoadedAt: number = 0
 const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes cache
 
@@ -30,8 +40,8 @@ const CACHE_TTL_MS = 5 * 60 * 1000 // 5 minutes cache
  * Load pricing from database tables
  * Priority: LLMModel (llm-config) > LLMModelPrice (model-costs)
  */
-async function loadDatabasePricing(): Promise<Map<string, { input: number; output: number }>> {
-  const priceMap = new Map<string, { input: number; output: number }>()
+async function loadDatabasePricing(): Promise<Map<string, ModelPricing>> {
+  const priceMap = new Map<string, ModelPricing>()
   
   try {
     // First, load from LLMModel table (primary source, configured in llm-config)
@@ -91,7 +101,7 @@ async function loadDatabasePricing(): Promise<Map<string, { input: number; outpu
 /**
  * Get cached or fresh database pricing
  */
-async function getDatabasePricing(): Promise<Map<string, { input: number; output: number }>> {
+async function getDatabasePricing(): Promise<Map<string, ModelPricing>> {
   const now = Date.now()
   
   // Check if cache is still valid
@@ -137,13 +147,13 @@ export interface CostBreakdown {
   // Token counts
   inputTokens: number
   outputTokens: number
-  thoughtTokens?: number
+  thoughtTokens: number
   totalTokens: number
   
   // Cost components in USD
   inputCost: number
   outputCost: number
-  thoughtCost?: number
+  thoughtCost: number
   actualCost: number
   contingencyCost: number  // 10% added for contingency
   
@@ -154,39 +164,80 @@ export interface CostBreakdown {
   // Per-million rates for display
   inputPricePerMillion: number
   outputPricePerMillion: number
-  thoughtPricePerMillion?: number
+  thoughtPricePerMillion: number
+}
+
+function canonicalizeModelCode(modelCode: string): string {
+  return modelCode.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function getPricingLookupCandidates(modelCode: string): string[] {
+  const trimmedCode = modelCode.trim()
+  if (!trimmedCode) return []
+
+  const candidates = new Set<string>([trimmedCode, trimmedCode.toLowerCase()])
+
+  // Route/model aliases commonly suffix "-thinking", while pricing is stored for base model code.
+  if (trimmedCode.toLowerCase().endsWith('-thinking')) {
+    const baseCode = trimmedCode.slice(0, -'-thinking'.length)
+    if (baseCode) {
+      candidates.add(baseCode)
+      candidates.add(baseCode.toLowerCase())
+    }
+  }
+
+  return Array.from(candidates)
+}
+
+function applyThoughtTokenFallback(pricing: ModelPricing): ModelPricing {
+  return {
+    ...pricing,
+    thoughtTokenCost: pricing.thoughtTokenCost ?? pricing.output
+  }
 }
 
 /**
  * Get pricing for a model from cache (sync version for use in calculateCost)
  * Falls back to default pricing if model not found in cache
  */
-export function getModelPricingSync(modelCode: string): { input: number; output: number; thoughtTokenCost?: number } {
+export function getModelPricingSync(modelCode: string): ModelPricing {
   // Check database cache first
   if (dbPricingCache) {
-    const dbPrice = dbPricingCache.get(modelCode)
-    if (dbPrice) {
-      return dbPrice
+    const lookupCandidates = getPricingLookupCandidates(modelCode)
+
+    // Exact lookup (including base alias candidates).
+    for (const candidate of lookupCandidates) {
+      const dbPrice = dbPricingCache.get(candidate)
+      if (dbPrice) {
+        return applyThoughtTokenFallback(dbPrice)
+      }
     }
     
-    // Try case-insensitive match
-    const lowerCode = modelCode.toLowerCase()
+    // Case-insensitive lookup.
     for (const [code, price] of Array.from(dbPricingCache.entries())) {
-      if (code.toLowerCase() === lowerCode) {
-        return price
+      if (lookupCandidates.includes(code.toLowerCase())) {
+        return applyThoughtTokenFallback(price)
+      }
+    }
+
+    // Canonicalized lookup handles punctuation variants like 3.5 vs 3-5.
+    const canonicalCandidates = new Set(lookupCandidates.map(canonicalizeModelCode))
+    for (const [code, price] of Array.from(dbPricingCache.entries())) {
+      if (canonicalCandidates.has(canonicalizeModelCode(code))) {
+        return applyThoughtTokenFallback(price)
       }
     }
   }
   
   // Return default pricing - model not configured
   console.warn(`[CostCalculator] Model not found in database: ${modelCode}, using default pricing ($1/$4 per 1M)`)
-  return DEFAULT_PRICING
+  return applyThoughtTokenFallback(DEFAULT_PRICING)
 }
 
 /**
  * Get pricing for a model (async version that ensures cache is loaded)
  */
-export async function getModelPricing(modelCode: string): Promise<{ input: number; output: number; thoughtTokenCost?: number }> {
+export async function getModelPricing(modelCode: string): Promise<ModelPricing> {
   // Ensure cache is loaded
   await getDatabasePricing()
   return getModelPricingSync(modelCode)
@@ -221,13 +272,19 @@ export function calculateCost(
 ): CostBreakdown {
   const pricing = getModelPricingSync(modelCode)
   const provider = getProviderFromModel(modelCode)
+
+  const normalizedInputTokens = Number.isFinite(inputTokens) && inputTokens > 0 ? Math.floor(inputTokens) : 0
+  const normalizedOutputTokens = Number.isFinite(outputTokens) && outputTokens > 0 ? Math.floor(outputTokens) : 0
+  const rawThoughtTokens = typeof thoughtTokens === 'number' ? thoughtTokens : 0
+  const normalizedThoughtTokens = Number.isFinite(rawThoughtTokens) && rawThoughtTokens > 0
+    ? Math.floor(rawThoughtTokens)
+    : 0
   
   // Calculate individual costs
-  const inputCost = inputTokens * pricing.input
-  const outputCost = outputTokens * pricing.output
-  const thoughtCost = thoughtTokens && pricing.thoughtTokenCost
-    ? thoughtTokens * pricing.thoughtTokenCost
-    : 0
+  const inputCost = normalizedInputTokens * pricing.input
+  const outputCost = normalizedOutputTokens * pricing.output
+  const thoughtTokenCost = pricing.thoughtTokenCost ?? pricing.output
+  const thoughtCost = normalizedThoughtTokens * thoughtTokenCost
   
   // Total actual cost
   const actualCost = inputCost + outputCost + thoughtCost
@@ -237,15 +294,15 @@ export function calculateCost(
   
   return {
     // Token counts
-    inputTokens,
-    outputTokens,
-    thoughtTokens: thoughtTokens || undefined,
-    totalTokens: inputTokens + outputTokens + (thoughtTokens || 0),
+    inputTokens: normalizedInputTokens,
+    outputTokens: normalizedOutputTokens,
+    thoughtTokens: normalizedThoughtTokens,
+    totalTokens: normalizedInputTokens + normalizedOutputTokens + normalizedThoughtTokens,
     
     // Costs
     inputCost,
     outputCost,
-    thoughtCost: thoughtCost || undefined,
+    thoughtCost,
     actualCost,
     contingencyCost,
     
@@ -256,7 +313,7 @@ export function calculateCost(
     // Per-million rates
     inputPricePerMillion: pricing.input * 1_000_000,
     outputPricePerMillion: pricing.output * 1_000_000,
-    thoughtPricePerMillion: pricing.thoughtTokenCost ? pricing.thoughtTokenCost * 1_000_000 : undefined,
+    thoughtPricePerMillion: thoughtTokenCost * 1_000_000,
   }
 }
 
@@ -326,12 +383,9 @@ export function generateCostLogMessage(
   message += `${thinDivider}\n`
   
   // Token Breakdown
-  message += `📥 INPUT TOKENS:   ${costBreakdown.inputTokens.toLocaleString().padStart(10)} × $${(costBreakdown.inputPricePerMillion).toFixed(2)}/M = ${formatCost(costBreakdown.inputCost)}\n`
+  message += `📥 PROMPT TOKENS:  ${costBreakdown.inputTokens.toLocaleString().padStart(10)} × $${(costBreakdown.inputPricePerMillion).toFixed(2)}/M = ${formatCost(costBreakdown.inputCost)}\n`
+  message += `🧠 THOUGHT TOKENS: ${costBreakdown.thoughtTokens.toLocaleString().padStart(10)} × $${(costBreakdown.thoughtPricePerMillion).toFixed(2)}/M = ${formatCost(costBreakdown.thoughtCost)}\n`
   message += `📤 OUTPUT TOKENS:  ${costBreakdown.outputTokens.toLocaleString().padStart(10)} × $${(costBreakdown.outputPricePerMillion).toFixed(2)}/M = ${formatCost(costBreakdown.outputCost)}\n`
-  
-  if (costBreakdown.thoughtTokens && costBreakdown.thoughtCost) {
-    message += `🧠 THOUGHT TOKENS: ${costBreakdown.thoughtTokens.toLocaleString().padStart(10)} × $${(costBreakdown.thoughtPricePerMillion || 0).toFixed(2)}/M = ${formatCost(costBreakdown.thoughtCost)}\n`
-  }
   
   message += `📊 TOTAL TOKENS:   ${costBreakdown.totalTokens.toLocaleString().padStart(10)}\n`
   message += `${thinDivider}\n`

@@ -3,10 +3,9 @@
 // Now supports flexible model configuration via super admin
 
 import type { LLMRequest, LLMResponse, EnforcementDecision } from '../types'
-import { MeteringError } from '../index'
 import type { LLMProvider } from './llm-provider'
 import { createLLMProvider, getProviderFromModelCode, type ProviderConfig, type ProviderType } from './llm-provider'
-import { logLLMCost, calculateCost, type CostBreakdown, ensurePricingLoaded, isPricingLoaded } from '../cost-calculator'
+import { logLLMCost, ensurePricingLoaded, isPricingLoaded } from '../cost-calculator'
 
 const SHOULD_LOG_PROVIDER_INIT = process.env.LLM_PROVIDER_INIT_LOGS === 'true'
 const parsePositiveIntEnv = (value: string | undefined, fallback: number): number => {
@@ -26,6 +25,13 @@ export interface RoutingDecision {
   reason: string
   costEstimate?: number
   modelCode?: string
+}
+
+interface NormalizedTokenUsage {
+  inputTokens: number
+  outputTokens: number
+  thoughtTokens: number
+  totalTokens: number
 }
 
 /**
@@ -235,6 +241,110 @@ export class LLMProviderRouter {
     }
   }
 
+  private readTokenNumber(value: unknown): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+      return Math.floor(value)
+    }
+
+    if (typeof value === 'string' && value.trim().length > 0) {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return Math.floor(parsed)
+      }
+    }
+
+    return undefined
+  }
+
+  private getNestedValue(source: unknown, path: string[]): unknown {
+    let current: unknown = source
+    for (const key of path) {
+      if (!current || typeof current !== 'object') {
+        return undefined
+      }
+      current = (current as Record<string, unknown>)[key]
+    }
+    return current
+  }
+
+  private firstTokenNumber(...values: unknown[]): number | undefined {
+    for (const value of values) {
+      const parsed = this.readTokenNumber(value)
+      if (parsed !== undefined) return parsed
+    }
+    return undefined
+  }
+
+  private normalizeTokenUsage(response: LLMResponse, request: LLMRequest): NormalizedTokenUsage {
+    const metadata =
+      response.metadata && typeof response.metadata === 'object'
+        ? (response.metadata as Record<string, unknown>)
+        : {}
+
+    const usageCandidate = metadata.usage ?? metadata.usageMetadata
+    const usage =
+      usageCandidate && typeof usageCandidate === 'object'
+        ? (usageCandidate as Record<string, unknown>)
+        : {}
+
+    const inputTokens = this.firstTokenNumber(
+      metadata.inputTokens,
+      metadata.promptTokens,
+      metadata.promptTokenCount,
+      metadata.prompt_tokens,
+      usage.prompt_tokens,
+      usage.input_tokens,
+      usage.promptTokenCount,
+      usage.inputTokenCount,
+      request.inputTokens
+    ) ?? 0
+
+    const outputTokens = this.firstTokenNumber(
+      response.outputTokens,
+      metadata.outputTokens,
+      metadata.completionTokens,
+      metadata.completion_tokens,
+      metadata.candidatesTokenCount,
+      usage.completion_tokens,
+      usage.output_tokens,
+      usage.candidatesTokenCount,
+      usage.outputTokenCount
+    ) ?? 0
+
+    const thoughtTokens = this.firstTokenNumber(
+      metadata.thoughtTokens,
+      metadata.reasoningTokens,
+      metadata.reasoning_tokens,
+      metadata.thinkingTokens,
+      metadata.thoughtTokenCount,
+      metadata.thoughtsTokenCount,
+      usage.reasoning_tokens,
+      usage.thinking_tokens,
+      usage.reasoningTokenCount,
+      usage.thinkingTokenCount,
+      usage.thoughtTokenCount,
+      usage.thoughtsTokenCount,
+      this.getNestedValue(usage, ['completion_tokens_details', 'reasoning_tokens']),
+      this.getNestedValue(usage, ['completion_tokens_details', 'thinking_tokens']),
+      this.getNestedValue(usage, ['output_tokens_details', 'reasoning_tokens']),
+      this.getNestedValue(usage, ['output_tokens_details', 'thinking_tokens'])
+    ) ?? 0
+
+    const totalTokens = this.firstTokenNumber(
+      metadata.totalTokens,
+      metadata.total_tokens,
+      usage.total_tokens,
+      usage.totalTokenCount
+    ) ?? (inputTokens + outputTokens + thoughtTokens)
+
+    return {
+      inputTokens,
+      outputTokens,
+      thoughtTokens,
+      totalTokens
+    }
+  }
+
   async routeAndExecute(
     request: LLMRequest,
     limits: EnforcementDecision,
@@ -272,24 +382,24 @@ export class LLMProviderRouter {
 
       const duration = Date.now() - startTime
       
-      // Calculate and log cost breakdown
-      // Use ?? (nullish coalescing) instead of || to handle 0 as a valid value
-      const inputTokens = response.metadata?.inputTokens ?? request.inputTokens ?? 0
-      const outputTokens = response.outputTokens ?? 0
-      const thoughtTokens = response.metadata?.thoughtTokens
+      // Normalize token fields so cost logs are consistent across providers/models.
+      const tokenUsage = this.normalizeTokenUsage(response, request)
       
       const costBreakdown = logLLMCost(
         request.taskCode || 'LLM_CALL',
         actualModelCode,
-        inputTokens,
-        outputTokens,
-        thoughtTokens,
+        tokenUsage.inputTokens,
+        tokenUsage.outputTokens,
+        tokenUsage.thoughtTokens,
         {
           taskCode: request.taskCode,
           stageCode: (request as any).stageCode,
           patentId: request.metadata?.patentId,
+          paperId: request.metadata?.paperId,
           userId: request.metadata?.userId,
           tenantId: request.metadata?.tenantId,
+          module: request.metadata?.module,
+          action: request.metadata?.action,
           duration
         }
       )
@@ -302,11 +412,16 @@ export class LLMProviderRouter {
           routingReason: reason,
           selectedProvider: provider.name,
           modelUsed: actualModelCode,
+          inputTokens: tokenUsage.inputTokens,
+          outputTokens: tokenUsage.outputTokens,
+          thoughtTokens: tokenUsage.thoughtTokens,
+          totalTokens: tokenUsage.totalTokens,
+          tokenUsage,
           // Add cost information to metadata
           costBreakdown: {
-            inputTokens,
-            outputTokens,
-            thoughtTokens,
+            inputTokens: tokenUsage.inputTokens,
+            outputTokens: tokenUsage.outputTokens,
+            thoughtTokens: tokenUsage.thoughtTokens,
             totalTokens: costBreakdown.totalTokens,
             actualCost: costBreakdown.actualCost,
             contingencyCost: costBreakdown.contingencyCost,
@@ -502,18 +617,15 @@ export class LLMProviderRouter {
       
       const duration = Date.now() - startTime
       
-      // Calculate and log cost breakdown
-      // Use ?? (nullish coalescing) instead of || to handle 0 as a valid value
-      const inputTokens = response.metadata?.inputTokens ?? request.inputTokens ?? 0
-      const outputTokens = response.outputTokens ?? 0
-      const thoughtTokens = response.metadata?.thoughtTokens
+      // Normalize token fields so cost logs are consistent across providers/models.
+      const tokenUsage = this.normalizeTokenUsage(response, request)
       
       const costBreakdown = logLLMCost(
         `${request.taskCode || 'LLM_CALL'}${isFallback ? ' [FALLBACK]' : ''}`,
         modelCode,
-        inputTokens,
-        outputTokens,
-        thoughtTokens,
+        tokenUsage.inputTokens,
+        tokenUsage.outputTokens,
+        tokenUsage.thoughtTokens,
         {
           taskCode: request.taskCode,
           stageCode: (request as any).stageCode,
@@ -534,11 +646,16 @@ export class LLMProviderRouter {
           selectedProvider: provider.name,
           modelUsed: modelCode,
           wasFallback: isFallback,
+          inputTokens: tokenUsage.inputTokens,
+          outputTokens: tokenUsage.outputTokens,
+          thoughtTokens: tokenUsage.thoughtTokens,
+          totalTokens: tokenUsage.totalTokens,
+          tokenUsage,
           // Add cost information to metadata
           costBreakdown: {
-            inputTokens,
-            outputTokens,
-            thoughtTokens,
+            inputTokens: tokenUsage.inputTokens,
+            outputTokens: tokenUsage.outputTokens,
+            thoughtTokens: tokenUsage.thoughtTokens,
             totalTokens: costBreakdown.totalTokens,
             actualCost: costBreakdown.actualCost,
             contingencyCost: costBreakdown.contingencyCost,
@@ -673,13 +790,13 @@ export class LLMProviderRouter {
     for (const provider of fallbackProviders) {
       try {
         console.log(`Trying fallback provider: ${provider.name}`)
-        const response = await provider.execute(request, limits)
+        const fallbackModel = request.modelClass || provider.supportedModels[0]
+        const response = await this.executeWithProvider(request, limits, provider, fallbackModel, true)
 
         return {
           ...response,
           metadata: {
             ...response.metadata,
-            wasFallback: true,
             originalProvider: failedProvider,
             fallbackProvider: provider.name
           }
