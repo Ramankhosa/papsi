@@ -3,6 +3,8 @@ import { prisma } from '@/lib/prisma';
 import { paperTypeService, type PaperTypeWithSections } from '@/lib/services/paper-type-service';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 type PaperTypeResponse = {
   id: string;
