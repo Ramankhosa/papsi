@@ -13,6 +13,7 @@ export const dynamic = 'force-dynamic';
 const retrySchema = z.object({
   jobIds: z.array(z.string().min(1)).min(1).max(50).optional(),
   concurrency: z.number().int().min(1).max(MAX_DEEP_ANALYSIS_CONCURRENCY).optional().default(MAX_DEEP_ANALYSIS_CONCURRENCY),
+  allowTextFallback: z.boolean().optional().default(false),
 });
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
@@ -64,6 +65,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
     const result = await deepAnalysisService.retryFailed(sessionId, input.jobIds, {
       concurrency: input.concurrency,
       tenantContext,
+      allowTextFallback: input.allowTextFallback,
     });
 
     return NextResponse.json(result);

@@ -626,6 +626,7 @@ export interface ExtractEvidenceCardsInput {
   referenceArchetype?: string | null;
   deepAnalysisLabel?: string | null;
   preparedText: PreparedPaperText;
+  allowTextFallback?: boolean;
   pdfAttachment?: {
     filePath: string;
     filename: string;
@@ -796,18 +797,27 @@ class EvidenceExtractionService {
     depthLabel: Exclude<DeepAnalysisLabel, 'LIT_ONLY'>,
     archetype: ReferenceArchetype
   ): Promise<ExtractEvidenceCardsResult> {
-    const prompt = buildExtractionPrompt(
-      archetype,
-      depthLabel,
-      preparedText,
-      input.blueprintDimensions
-    );
+    const allowTextFallback = input.allowTextFallback === true;
+    const hasPreparedText = hasNonEmptyText(preparedText.fullText);
+    const prompt = hasPreparedText
+      ? buildExtractionPrompt(
+        archetype,
+        depthLabel,
+        preparedText,
+        input.blueprintDimensions
+      )
+      : null;
     const nativePdfPrompt = buildNativePdfPrompt(
       archetype,
       depthLabel,
       input.blueprintDimensions
     );
     const nativePdfPayload = this.resolveNativePdfPayload(input, nativePdfPrompt);
+    const hasNativePayload = Boolean(nativePdfPayload?.content && nativePdfPayload.content.parts.length > 0);
+
+    if (!hasNativePayload && !hasPreparedText) {
+      throw new Error('No native PDF payload or parsed text available for evidence extraction');
+    }
 
     let lastError: Error | null = null;
 
@@ -842,10 +852,20 @@ class EvidenceExtractionService {
             return nativeResult;
           } catch (nativeError) {
             const nativeMessage = nativeError instanceof Error ? nativeError.message : String(nativeError);
+            if (!allowTextFallback) {
+              throw new Error(
+                `Native PDF mode failed (${nativeMessage.slice(0, 180)}). `
+                + 'Run text extraction and retry with text fallback enabled.'
+              );
+            }
             const fallbackWarning = `Native PDF mode failed; fell back to parsed text (${nativeMessage.slice(0, 180)})`;
             warnings.push(fallbackWarning);
             console.warn(`[EvidenceExtraction] ${fallbackWarning}`);
           }
+        }
+
+        if (!hasPreparedText || !prompt) {
+          throw new Error('Parsed text fallback unavailable. Run text extraction and retry.');
         }
 
         const textResult = await this.runExtractionRequest(

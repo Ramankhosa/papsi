@@ -29,6 +29,8 @@ export interface PreparedCitationTextResult {
   referenceId: string | null;
   documentId: string | null;
   parserUsed: 'PDFJS' | 'GROBID' | 'REGEX_FALLBACK';
+  textAvailable: boolean;
+  warning?: string | null;
   pdfAttachment: {
     filePath: string;
     filename: string;
@@ -42,6 +44,7 @@ export interface CitationTextReadinessResult {
   referenceId: string | null;
   documentId: string | null;
   parserCandidate: 'PDFJS' | 'GROBID' | 'REGEX_FALLBACK' | null;
+  textAvailable: boolean;
   hasAttachedSource: boolean;
 }
 
@@ -204,7 +207,6 @@ class TextPreparationService {
       throw new Error(`No full-text document linked for citation ${citation.id}`);
     }
 
-    const preparedText = await this.prepareFromDocument(matched.document, depthLabel);
     const resolvedStoragePath = this.resolveStoragePath(matched.document.storagePath);
     const mimeType = String(matched.document.mimeType || '').trim() || 'application/pdf';
     const hasPdfAttachment = Boolean(
@@ -220,11 +222,31 @@ class TextPreparationService {
       }
       : null;
 
+    let preparedText: PreparedPaperText;
+    let textAvailable = false;
+    let warning: string | null = null;
+
+    try {
+      preparedText = await this.prepareFromDocument(matched.document, depthLabel);
+      textAvailable = true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!pdfAttachment) {
+        throw error;
+      }
+
+      warning = `Parsed text unavailable (${message}); proceeding with native PDF extraction`;
+      preparedText = this.buildPdfOnlyPreparedText(citation, depthLabel);
+      textAvailable = false;
+    }
+
     return {
       preparedText,
       referenceId: matched.referenceId,
       documentId: matched.document.id,
       parserUsed: preparedText.source,
+      textAvailable,
+      warning,
       pdfAttachment,
     };
   }
@@ -242,6 +264,7 @@ class TextPreparationService {
         referenceId: null,
         documentId: null,
         parserCandidate: null,
+        textAvailable: false,
         hasAttachedSource: false,
       };
     }
@@ -254,6 +277,7 @@ class TextPreparationService {
         referenceId: null,
         documentId: null,
         parserCandidate: null,
+        textAvailable: false,
         hasAttachedSource: false,
       };
     }
@@ -275,6 +299,7 @@ class TextPreparationService {
         referenceId: matched.referenceId,
         documentId: matched.document.id,
         parserCandidate,
+        textAvailable: true,
         hasAttachedSource,
       };
     }
@@ -288,6 +313,7 @@ class TextPreparationService {
         referenceId: matched.referenceId,
         documentId: matched.document.id,
         parserCandidate: null,
+        textAvailable: false,
         hasAttachedSource,
       };
     }
@@ -300,16 +326,18 @@ class TextPreparationService {
         referenceId: matched.referenceId,
         documentId: matched.document.id,
         parserCandidate: null,
+        textAvailable: false,
         hasAttachedSource,
       };
     }
 
     return {
       ready: true,
-      reason: null,
+      reason: 'Native PDF extraction available (parsed text optional)',
       referenceId: matched.referenceId,
       documentId: matched.document.id,
-      parserCandidate: 'PDFJS',
+      parserCandidate: null,
+      textAvailable: false,
       hasAttachedSource,
     };
   }
@@ -604,6 +632,35 @@ class TextPreparationService {
       .filter((item): item is PreparedPaperSection => Boolean(item));
 
     return sections.length > 0 ? sections : null;
+  }
+
+  private buildPdfOnlyPreparedText(
+    citation: CitationIdentity,
+    depthLabel: DeepAnalysisLabel
+  ): PreparedPaperText {
+    const fallbackText = normalizeExtractedText(
+      [
+        `Title: ${String(citation.title || '').trim() || 'Untitled paper'}`,
+        citation.year ? `Year: ${citation.year}` : null,
+        Array.isArray(citation.authors) && citation.authors.length > 0
+          ? `Authors: ${citation.authors.slice(0, 10).join('; ')}`
+          : null,
+        citation.doi ? `DOI: ${citation.doi}` : null,
+        'Parsed text is not available for this citation. Use attached PDF for native extraction.',
+      ].filter(Boolean).join('\n')
+    );
+
+    const bounded = clampByTokenBudget(
+      fallbackText || 'Parsed text unavailable. Use attached PDF for native extraction.',
+      maxCharsForDepth(depthLabel, 0.6)
+    );
+
+    return {
+      fullText: bounded,
+      rawFullText: bounded,
+      source: 'REGEX_FALLBACK',
+      estimatedTokens: estimateTokens(bounded),
+    };
   }
 
   private resolveStoragePath(storagePath?: string | null): string | null {

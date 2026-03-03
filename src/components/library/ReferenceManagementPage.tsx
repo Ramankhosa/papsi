@@ -1983,7 +1983,7 @@ export default function ReferenceManagementPage({ authToken }: ReferenceManageme
 
       {/* Add Reference Dialog */}
       <Dialog open={showAddRef} onOpenChange={setShowAddRef}>
-        <DialogContent className="bg-white max-w-2xl">
+        <DialogContent className="bg-white max-w-2xl max-h-[88vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Add New Reference</DialogTitle>
             <DialogDescription>
@@ -2361,7 +2361,7 @@ function ReconciliationSummaryPanel({
       {localResult.reviewQueue.length > 0 && (
         <div className="rounded border border-amber-200 bg-white p-2 text-xs text-amber-900">
           <p className="font-medium mb-2">Review queue</p>
-          <div className="space-y-2">
+          <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
             {localResult.reviewQueue.slice(0, 5).map((item) => (
               <div key={item.documentId} className="rounded border border-amber-100 bg-amber-50/40 p-2 space-y-1">
                 <p className="font-medium text-amber-900">
@@ -2501,6 +2501,7 @@ function PDFUploadImportSection({
       }
 
       const summary = data.summary || { total: files.length, imported: 0, failed: files.length };
+      const citationsLinked = Number(summary?.citationsLinked || 0);
       const failedItems = Array.isArray(data.results)
         ? data.results.filter((item: any) => !item.success).slice(0, 3)
         : [];
@@ -2515,7 +2516,9 @@ function PDFUploadImportSection({
 
       setResult({
         type: summary.imported > 0 ? 'success' : 'error',
-        text: `Imported ${summary.imported}/${summary.total} PDF file(s).${reconcileText}${failedText}`,
+        text: `Imported ${summary.imported}/${summary.total} PDF file(s).`
+          + `${citationsLinked > 0 ? ` Linked ${citationsLinked} citation(s).` : ''}`
+          + `${reconcileText}${failedText}`,
         reconciliation,
       });
 
@@ -2904,20 +2907,23 @@ function ProviderImportSection({
   };
 
   const handleMendeleyImport = async () => {
-    if (!authToken || !mendeleyAccessToken.trim()) return;
+    if (!authToken) return;
     try {
       setLoading(true);
       resetStatus();
+      const payload: Record<string, unknown> = {
+        limit: parseLimit(mendeleyLimit),
+        collectionId: collectionId || undefined,
+        autoReconcile,
+        dryRunReconcile,
+      };
+      if (mendeleyAccessToken.trim()) {
+        payload.accessToken = mendeleyAccessToken.trim();
+      }
       const response = await fetch('/api/library/import-mendeley', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({
-          accessToken: mendeleyAccessToken.trim(),
-          limit: parseLimit(mendeleyLimit),
-          collectionId: collectionId || undefined,
-          autoReconcile,
-          dryRunReconcile,
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await response.json();
       if (!response.ok) {
@@ -2939,22 +2945,23 @@ function ProviderImportSection({
   };
 
   const handleZoteroImport = async () => {
-    if (!authToken || !zoteroApiKey.trim() || (!zoteroUserId.trim() && !zoteroGroupId.trim())) return;
+    if (!authToken) return;
     try {
       setLoading(true);
       resetStatus();
+      const payload: Record<string, unknown> = {
+        limit: parseLimit(zoteroLimit),
+        collectionId: collectionId || undefined,
+        autoReconcile,
+        dryRunReconcile,
+      };
+      if (zoteroApiKey.trim()) payload.apiKey = zoteroApiKey.trim();
+      if (zoteroUserId.trim()) payload.userId = zoteroUserId.trim();
+      if (zoteroGroupId.trim()) payload.groupId = zoteroGroupId.trim();
       const response = await fetch('/api/library/import-zotero', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({
-          apiKey: zoteroApiKey.trim(),
-          userId: zoteroUserId.trim() || undefined,
-          groupId: zoteroGroupId.trim() || undefined,
-          limit: parseLimit(zoteroLimit),
-          collectionId: collectionId || undefined,
-          autoReconcile,
-          dryRunReconcile,
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await response.json();
       if (!response.ok) {
@@ -3066,12 +3073,12 @@ function ProviderImportSection({
 
         <TabsContent value="mendeley" className="mt-4 space-y-3">
           <div>
-            <label className="text-sm font-medium text-gray-700">Mendeley access token *</label>
+            <label className="text-sm font-medium text-gray-700">Mendeley access token (optional)</label>
             <Input
               type="password"
               value={mendeleyAccessToken}
               onChange={(e) => setMendeleyAccessToken(e.target.value)}
-              placeholder="OAuth access token"
+              placeholder="Leave blank to use server-configured token"
               className="mt-1"
             />
           </div>
@@ -3088,7 +3095,7 @@ function ProviderImportSection({
           </div>
           <Button
             onClick={handleMendeleyImport}
-            disabled={loading || !mendeleyAccessToken.trim()}
+            disabled={loading}
           >
             {loading ? 'Importing...' : 'Import from Mendeley'}
           </Button>
@@ -3096,27 +3103,27 @@ function ProviderImportSection({
 
         <TabsContent value="zotero" className="mt-4 space-y-3">
           <div>
-            <label className="text-sm font-medium text-gray-700">Zotero API key *</label>
+            <label className="text-sm font-medium text-gray-700">Zotero API key (optional)</label>
             <Input
               type="password"
               value={zoteroApiKey}
               onChange={(e) => setZoteroApiKey(e.target.value)}
-              placeholder="Zotero API key"
+              placeholder="Leave blank to use server-configured key"
               className="mt-1"
             />
           </div>
           <div className="grid md:grid-cols-2 gap-3">
             <div>
-              <label className="text-sm font-medium text-gray-700">User ID</label>
+              <label className="text-sm font-medium text-gray-700">User ID (optional)</label>
               <Input
                 value={zoteroUserId}
                 onChange={(e) => setZoteroUserId(e.target.value)}
-                placeholder="Use either user or group"
+                placeholder="Leave blank to use server default"
                 className="mt-1"
               />
             </div>
             <div>
-              <label className="text-sm font-medium text-gray-700">Group ID</label>
+              <label className="text-sm font-medium text-gray-700">Group ID (optional)</label>
               <Input
                 value={zoteroGroupId}
                 onChange={(e) => setZoteroGroupId(e.target.value)}
@@ -3138,7 +3145,7 @@ function ProviderImportSection({
           </div>
           <Button
             onClick={handleZoteroImport}
-            disabled={loading || !zoteroApiKey.trim() || (!zoteroUserId.trim() && !zoteroGroupId.trim())}
+            disabled={loading}
           >
             {loading ? 'Importing...' : 'Import from Zotero'}
           </Button>

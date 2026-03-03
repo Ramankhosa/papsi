@@ -23,6 +23,7 @@ import type { TenantContext } from '../metering';
 interface StartBatchOptions {
   concurrency?: number;
   tenantContext?: TenantContext | null;
+  allowTextFallback?: boolean;
 }
 
 export interface DeepAnalysisStartJobSummary {
@@ -283,7 +284,7 @@ class DeepAnalysisService {
     sessionId: string,
     batchId: string,
     jobIds: string[],
-    options: { concurrency: number; tenantContext?: TenantContext | null },
+    options: { concurrency: number; tenantContext?: TenantContext | null; allowTextFallback?: boolean },
     source: 'start' | 'retry' | 'status'
   ): void {
     const ids = Array.from(new Set(jobIds.map(id => String(id || '').trim()).filter(Boolean)));
@@ -352,7 +353,7 @@ class DeepAnalysisService {
 
   private async triggerActiveBatches(
     sessionId: string,
-    options: { concurrency: number; tenantContext?: TenantContext | null }
+    options: { concurrency: number; tenantContext?: TenantContext | null; allowTextFallback?: boolean }
   ): Promise<void> {
     const pendingJobs = await prisma.deepAnalysisJob.findMany({
       where: {
@@ -536,7 +537,9 @@ class DeepAnalysisService {
         return;
       }
 
-      const textSource = readiness.parserCandidate || 'REGEX_FALLBACK';
+      const textSource = readiness.textAvailable
+        ? (readiness.parserCandidate || 'REGEX_FALLBACK')
+        : 'NATIVE_PDF';
 
       const job = await prisma.deepAnalysisJob.upsert({
         where: {
@@ -604,6 +607,7 @@ class DeepAnalysisService {
         {
           concurrency,
           tenantContext: options.tenantContext || null,
+          allowTextFallback: options.allowTextFallback === true,
         },
         'start'
       );
@@ -666,6 +670,7 @@ class DeepAnalysisService {
         referenceId: null,
         documentId: null,
         parserCandidate: null,
+        textAvailable: false,
         hasAttachedSource: false,
       }));
 
@@ -705,7 +710,7 @@ class DeepAnalysisService {
     sessionId: string,
     batchId: string,
     jobIds: string[],
-    options: { concurrency: number; tenantContext?: TenantContext | null }
+    options: { concurrency: number; tenantContext?: TenantContext | null; allowTextFallback?: boolean }
   ): Promise<void> {
     const sessionUserId = await this.getSessionUserId(sessionId);
     const jobs = await prisma.deepAnalysisJob.findMany({
@@ -754,6 +759,7 @@ class DeepAnalysisService {
         blueprint,
         sessionUserId,
         tenantContext: options.tenantContext || null,
+        allowTextFallback: options.allowTextFallback === true,
       });
     });
     extractionDone = true;
@@ -970,6 +976,7 @@ class DeepAnalysisService {
       blueprint: BlueprintWithSectionPlan | null;
       sessionUserId: string;
       tenantContext?: TenantContext | null;
+      allowTextFallback?: boolean;
     }
   ): Promise<void> {
     const jobId = job.id;
@@ -1010,7 +1017,11 @@ class DeepAnalysisService {
         { userId: context.sessionUserId }
       );
 
-      console.log(`[DeepAnalysis] Job ${jobId}: text ready (source=${prepared.preparedText.source}, tokens≈${prepared.preparedText.estimatedTokens}, sections=${prepared.preparedText.sections?.length ?? 0})`);
+      console.log(
+        `[DeepAnalysis] Job ${jobId}: input ready (source=${prepared.preparedText.source}, `
+        + `tokens~${prepared.preparedText.estimatedTokens}, sections=${prepared.preparedText.sections?.length ?? 0}, `
+        + `textAvailable=${prepared.textAvailable}, pdfAttached=${Boolean(prepared.pdfAttachment)})`
+      );
 
       const movedToExtracting = await prisma.deepAnalysisJob.updateMany({
         where: {
@@ -1019,7 +1030,7 @@ class DeepAnalysisService {
         },
         data: {
           status: 'EXTRACTING',
-          textSource: prepared.preparedText.source,
+          textSource: prepared.textAvailable ? prepared.preparedText.source : 'NATIVE_PDF',
         },
       });
       if (movedToExtracting.count === 0) {
@@ -1035,6 +1046,7 @@ class DeepAnalysisService {
         deepAnalysisLabel: job.deepAnalysisLabel,
         preparedText: prepared.preparedText,
         pdfAttachment: prepared.pdfAttachment,
+        allowTextFallback: context.allowTextFallback === true,
         blueprintDimensions: context.dimensions,
         tenantContext: context.tenantContext || null,
       });
@@ -1050,7 +1062,15 @@ class DeepAnalysisService {
       const verifyAgainst = depthLabel === 'DEEP_ANCHOR'
         ? (prepared.preparedText.rawFullText || prepared.preparedText.fullText)
         : prepared.preparedText.fullText;
-      const verifiedCards = quoteVerificationService.verifyAllCards(extracted.cards, verifyAgainst);
+      const canVerifyQuotes = prepared.textAvailable && typeof verifyAgainst === 'string' && verifyAgainst.trim().length > 0;
+      const verifiedCards = canVerifyQuotes
+        ? quoteVerificationService.verifyAllCards(extracted.cards, verifyAgainst)
+        : extracted.cards.map(card => ({
+          ...card,
+          quoteVerified: false,
+          quoteVerificationMethod: null,
+          quoteVerificationScore: null,
+        }));
 
       const cardIdentityRows: ExtractedCardWithIdentity[] = verifiedCards.map((card, index) => ({
         ...card,
@@ -1083,6 +1103,12 @@ class DeepAnalysisService {
       }
 
       const warningParts = [...extracted.warnings];
+      if (prepared.warning) {
+        warningParts.push(prepared.warning);
+      }
+      if (!canVerifyQuotes) {
+        warningParts.push('Quote verification skipped: parsed text unavailable; extracted from native PDF');
+      }
       const cardCreateData = cardIdentityRows.map(card => ({
         jobId,
         sessionId: job.sessionId,
@@ -1410,6 +1436,7 @@ class DeepAnalysisService {
       {
         concurrency,
         tenantContext: options.tenantContext || null,
+        allowTextFallback: options.allowTextFallback === true,
       },
       'retry'
     );

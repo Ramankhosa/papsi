@@ -410,10 +410,11 @@ export default function FullTextEvidenceExtractionStage({
     } finally { setActionState(null); }
   }, [authHeaders, authToken, loadCandidates, loadCards, loadSession, loadStatus, sessionId]);
 
-  const handleRetryFailed = useCallback(async () => {
+  const handleRetryFailed = useCallback(async (options?: { allowTextFallback?: boolean }) => {
     if (!authToken || !statusPayload) return;
     const failed = statusPayload.jobs.filter(j => String(j.status || '').toUpperCase() === 'FAILED');
     if (failed.length === 0) return;
+    const allowTextFallback = options?.allowTextFallback === true;
     setActionState('retrying');
     setError(null);
     setLastEstimatedSeconds(null);
@@ -423,7 +424,8 @@ export default function FullTextEvidenceExtractionStage({
         headers: { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
         body: JSON.stringify({
           jobIds: failed.map(j => j.jobId),
-          concurrency: DEEP_ANALYSIS_CONCURRENCY
+          concurrency: DEEP_ANALYSIS_CONCURRENCY,
+          allowTextFallback,
         })
       });
       const payload = await response.json();
@@ -533,6 +535,8 @@ export default function FullTextEvidenceExtractionStage({
   );
 
   const failedJobCount = statusPayload?.jobs?.filter(j => String(j.status || '').toUpperCase() === 'FAILED').length || 0;
+  const parsedTextReadyCount = (textExtractionStatus?.structuredReady ?? 0) + (textExtractionStatus?.basicTextOnly ?? 0);
+  const canRetryWithTextFallback = failedJobCount > 0 && parsedTextReadyCount > 0;
   const deepAnalysisDone = statusPayload?.status === 'COMPLETED' || statusPayload?.status === 'PARTIAL';
   const canManuallyPrepareSections =
     !!statusPayload &&
@@ -801,8 +805,19 @@ export default function FullTextEvidenceExtractionStage({
               </Button>
             )}
             {failedJobCount > 0 && (
-              <Button variant="outline" size="sm" onClick={handleRetryFailed} disabled={isMutating} className="text-amber-600 border-amber-200 hover:bg-amber-50 h-8 text-xs">
+              <Button variant="outline" size="sm" onClick={() => handleRetryFailed()} disabled={isMutating} className="text-amber-600 border-amber-200 hover:bg-amber-50 h-8 text-xs">
                 Retry ({failedJobCount})
+              </Button>
+            )}
+            {canRetryWithTextFallback && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleRetryFailed({ allowTextFallback: true })}
+                disabled={isMutating}
+                className="text-teal-700 border-teal-300 hover:bg-teal-50 h-8 text-xs"
+              >
+                Retry + Text Fallback
               </Button>
             )}
             {canManuallyPrepareSections && (

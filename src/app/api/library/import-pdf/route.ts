@@ -47,6 +47,24 @@ function parseAuthors(authors?: string): string[] {
     .slice(0, 20);
 }
 
+function normalizeTitleForMatch(value?: string | null): string {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeAuthorLastName(value?: string | null): string {
+  const cleaned = String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9,\s]/g, ' ')
+    .trim();
+  if (!cleaned) return '';
+  const parts = cleaned.split(/[\s,]+/).filter(Boolean);
+  return parts[parts.length - 1] || '';
+}
+
 function extractDoiFromRawPdf(buffer: Buffer): string | undefined {
   // Inspect only a bounded prefix to avoid expensive scans on large PDFs.
   const rawText = buffer.subarray(0, Math.min(buffer.length, 2 * 1024 * 1024)).toString('latin1');
@@ -162,7 +180,133 @@ interface ImportPdfResult {
   pdfAttached?: boolean;
   pdfAlreadyExistsForReference?: boolean;
   pdfStatus?: string | null;
+  linkedCitationCount?: number;
   error?: string;
+}
+
+async function findExistingReferenceForPdf(input: {
+  userId: string;
+  doi?: string | null;
+  title?: string | null;
+  authors?: string[] | null;
+  year?: number | null;
+}) {
+  const normalizedDoi = normalizeDoi(input.doi);
+  if (normalizedDoi) {
+    const byDoi = await prisma.referenceLibrary.findFirst({
+      where: {
+        userId: input.userId,
+        isActive: true,
+        doi: { equals: normalizedDoi, mode: 'insensitive' },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    if (byDoi) return byDoi;
+  }
+
+  const title = String(input.title || '').trim();
+  if (!title) return null;
+
+  const year = Number.isFinite(Number(input.year)) ? Number(input.year) : null;
+  const yearWindow = year ? [year - 1, year, year + 1] : null;
+  const expectedFirstAuthorLast = normalizeAuthorLastName(input.authors?.[0] || '');
+
+  const candidates = await prisma.referenceLibrary.findMany({
+    where: {
+      userId: input.userId,
+      isActive: true,
+      title: { equals: title, mode: 'insensitive' },
+      ...(yearWindow ? { year: { in: yearWindow } } : {}),
+    },
+    orderBy: { updatedAt: 'desc' },
+    take: 12,
+  });
+
+  if (candidates.length === 0) return null;
+  if (!expectedFirstAuthorLast) return candidates[0];
+
+  const withAuthor = candidates.find(candidate =>
+    Array.isArray(candidate.authors)
+    && candidate.authors.some(author => normalizeAuthorLastName(author) === expectedFirstAuthorLast)
+  );
+
+  return withAuthor || candidates[0];
+}
+
+async function linkReferenceToUserCitations(input: {
+  userId: string;
+  referenceId: string;
+  referenceDoi?: string | null;
+  referenceTitle?: string | null;
+  referenceYear?: number | null;
+  referenceAuthors?: string[] | null;
+}): Promise<number> {
+  const citationIds = new Set<string>();
+  const normalizedDoi = normalizeDoi(input.referenceDoi);
+
+  if (normalizedDoi) {
+    const doiMatches = await prisma.citation.findMany({
+      where: {
+        isActive: true,
+        libraryReferenceId: null,
+        session: { userId: input.userId },
+        doi: { equals: normalizedDoi, mode: 'insensitive' },
+      },
+      select: { id: true },
+      take: 500,
+    });
+    doiMatches.forEach(match => citationIds.add(match.id));
+  }
+
+  const title = String(input.referenceTitle || '').trim();
+  const normalizedTitle = normalizeTitleForMatch(title);
+  if (normalizedTitle) {
+    const expectedYear = Number.isFinite(Number(input.referenceYear)) ? Number(input.referenceYear) : null;
+    const expectedAuthorLast = normalizeAuthorLastName(input.referenceAuthors?.[0] || '');
+
+    const titleMatches = await prisma.citation.findMany({
+      where: {
+        isActive: true,
+        libraryReferenceId: null,
+        session: { userId: input.userId },
+        title: { equals: title, mode: 'insensitive' },
+      },
+      select: {
+        id: true,
+        year: true,
+        authors: true,
+      },
+      take: 300,
+    });
+
+    for (const match of titleMatches) {
+      if (expectedYear && match.year && Math.abs(match.year - expectedYear) > 1) {
+        continue;
+      }
+      if (expectedAuthorLast) {
+        const hasAuthor = Array.isArray(match.authors)
+          && match.authors.some(author => normalizeAuthorLastName(author) === expectedAuthorLast);
+        if (!hasAuthor) continue;
+      }
+      citationIds.add(match.id);
+    }
+  }
+
+  if (citationIds.size === 0) {
+    return 0;
+  }
+
+  const updated = await prisma.citation.updateMany({
+    where: {
+      id: { in: Array.from(citationIds) },
+      libraryReferenceId: null,
+    },
+    data: {
+      libraryReferenceId: input.referenceId,
+    },
+  });
+
+  return updated.count;
 }
 
 async function importSinglePdf(
@@ -219,6 +363,15 @@ async function importSinglePdf(
     : null;
 
   if (existingLinkedReference) {
+    const linkedCitationCount = await linkReferenceToUserCitations({
+      userId,
+      referenceId: existingLinkedReference.reference.id,
+      referenceDoi: existingLinkedReference.reference.doi,
+      referenceTitle: existingLinkedReference.reference.title,
+      referenceYear: existingLinkedReference.reference.year,
+      referenceAuthors: existingLinkedReference.reference.authors,
+    });
+
     if (collectionIdValue) {
       try {
         await referenceLibraryService.addToCollection(userId, collectionIdValue, [existingLinkedReference.reference.id]);
@@ -238,6 +391,7 @@ async function importSinglePdf(
       pdfAttached: false,
       pdfAlreadyExistsForReference: true,
       pdfStatus: existingDocument?.status,
+      linkedCitationCount,
     };
   }
 
@@ -280,6 +434,16 @@ async function importSinglePdf(
   }
 
   if (!reference) {
+    reference = await findExistingReferenceForPdf({
+      userId,
+      doi: extractedDoi,
+      title: mergedMetadata.title,
+      authors: parseAuthors(mergedMetadata.authors),
+      year: mergedMetadata.creationDate ? mergedMetadata.creationDate.getFullYear() : undefined,
+    });
+  }
+
+  if (!reference) {
     const fallbackTitle = mergedMetadata.title?.trim() || file.name.replace(/\.pdf$/i, '').trim() || 'Untitled PDF';
     reference = await referenceLibraryService.createReference({
       userId,
@@ -319,6 +483,14 @@ async function importSinglePdf(
   }
 
   const alreadyHadPdf = attachResult.error === 'Reference already has a PDF attached. Use replace to update it.';
+  const linkedCitationCount = await linkReferenceToUserCitations({
+    userId,
+    referenceId: reference.id,
+    referenceDoi: reference.doi || extractedDoi,
+    referenceTitle: reference.title || mergedMetadata.title,
+    referenceYear: reference.year || (mergedMetadata.creationDate ? mergedMetadata.creationDate.getFullYear() : undefined),
+    referenceAuthors: Array.isArray(reference.authors) ? reference.authors : parseAuthors(mergedMetadata.authors),
+  });
 
   return {
     fileName: file.name,
@@ -331,6 +503,7 @@ async function importSinglePdf(
     pdfAttached: attachResult.success,
     pdfAlreadyExistsForReference: alreadyHadPdf,
     pdfStatus: attachResult.document?.status || null,
+    linkedCitationCount,
   };
 }
 
@@ -401,6 +574,7 @@ export async function POST(request: NextRequest) {
 
     const imported = results.filter((result) => result.success).length;
     const failed = results.length - imported;
+    const citationsLinked = results.reduce((sum, result) => sum + Number(result.linkedCitationCount || 0), 0);
     const firstSuccess = results.find((result) => result.success);
     const successfulDocumentIds = Array.from(new Set(
       results
@@ -440,7 +614,7 @@ export async function POST(request: NextRequest) {
           },
           results,
           reconciliation,
-          summary: { total: 1, imported, failed },
+          summary: { total: 1, imported, failed, citationsLinked },
         },
         { status: 201 }
       );
@@ -454,6 +628,7 @@ export async function POST(request: NextRequest) {
           total: results.length,
           imported,
           failed,
+          citationsLinked,
         },
       },
       { status: failed > 0 ? 207 : 201 }
