@@ -10,6 +10,7 @@ import {
   stripTrailingSections,
 } from './proactive-parsing-service';
 import { removeNullCharacters, sanitizeForPostgres } from '../utils/postgres-sanitize';
+import { normalizeDoi as normalizeDoiValue, normalizeSearchText } from '../utils/reference-matching-normalization';
 
 interface CitationIdentity {
   id: string;
@@ -78,20 +79,10 @@ const DEPTH_TOKEN_BUDGET: Record<DeepAnalysisLabel, number> = {
 };
 
 const normalize = (value: string) =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  normalizeSearchText(value);
 
 const normalizeDoi = (value?: string | null): string => {
-  if (!value || typeof value !== 'string') return '';
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/^https?:\/\/(dx\.)?doi\.org\//, '')
-    .replace(/^doi:/, '')
-    .replace(/\s+/g, '');
+  return normalizeDoiValue(value) || '';
 };
 
 const estimateTokens = (text: string): number => Math.ceil(String(text || '').length / 4);
@@ -491,26 +482,38 @@ class TextPreparationService {
     }
 
     scored.sort((a, b) => b.score - a.score);
+    const hasParsedText = (candidate: { score: number; item: MatchedReferenceDocument }) =>
+      typeof candidate.item.document.parsedText === 'string' && candidate.item.document.parsedText.trim().length > 0;
+    const topCandidate = scored[0];
 
-    const withText = scored.find(candidate =>
-      typeof candidate.item.document.parsedText === 'string' && candidate.item.document.parsedText.trim().length > 0
-    );
-
-    if (withText) {
-      // Backfill the libraryReferenceId on the citation if it was resolved by fuzzy match
-      if (!directRefId) {
-        this.backfillLibraryReferenceId(citation.id, withText.item.referenceId).catch(() => {});
+    let selected = topCandidate || null;
+    if (selected && !hasParsedText(selected)) {
+      const nearbyWithText = scored.find(candidate =>
+        hasParsedText(candidate)
+        && selected.score - candidate.score <= 12
+      );
+      if (nearbyWithText) {
+        selected = nearbyWithText;
       }
-      this.setCachedResolvedReference(cacheKey, withText.item);
-      return withText.item;
     }
 
-    const fallback = scored[0]?.item || null;
-    if (fallback && !directRefId) {
-      this.backfillLibraryReferenceId(citation.id, fallback.referenceId).catch(() => {});
+    if (selected) {
+      const topScore = topCandidate?.score ?? selected.score;
+      const selectedIsTop = selected === topCandidate;
+      const shouldBackfill = !directRefId
+        && selected.score >= 90
+        && (selectedIsTop || (topScore - selected.score <= 5));
+
+      if (shouldBackfill) {
+        this.backfillLibraryReferenceId(citation.id, selected.item.referenceId).catch(() => {});
+      }
+
+      this.setCachedResolvedReference(cacheKey, selected.item);
+      return selected.item;
     }
-    this.setCachedResolvedReference(cacheKey, fallback);
-    return fallback;
+
+    this.setCachedResolvedReference(cacheKey, null);
+    return null;
   }
 
   private async lookupLibraryReferenceIdFromCitation(citationId: string): Promise<string | null> {

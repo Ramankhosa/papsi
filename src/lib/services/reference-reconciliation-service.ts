@@ -2,6 +2,11 @@ import * as crypto from 'crypto';
 import { CitationSourceType } from '@prisma/client';
 import { prisma } from '../prisma';
 import { referenceConnectorService } from './reference-connector-service';
+import {
+  normalizeDoi as normalizeDoiValue,
+  normalizeIdentifier,
+  normalizeSearchText,
+} from '../utils/reference-matching-normalization';
 
 type SuppressionType = 'SUPPLEMENTARY' | 'ERRATUM' | 'EDITORIAL' | 'COMMENTARY' | 'RETRACTION' | null;
 type CandidateConfidence = 'auto_high' | 'auto_guarded' | 'review' | 'low';
@@ -55,6 +60,7 @@ type ObservedDocumentProfile = {
 
 type ResolvedDoiMetadata = {
   doi: string;
+  titleNormalized: string;
   titleTokens: Set<string>;
   authors: Set<string>;
   year: number | null;
@@ -146,26 +152,27 @@ const PMID_REGEX = /\bpmid[:\s#]*([0-9]{6,9})\b/i;
 const PMCID_REGEX = /\bpmcid[:\s#]*(pmc[0-9]{4,})\b/i;
 const ARXIV_REGEX = /\barxiv[:\s]*([0-9]{4}\.[0-9]{4,5}(?:v\d+)?|[a-z\-]+\/[0-9]{7}(?:v\d+)?)\b/i;
 const YEAR_REGEX = /\b(19\d{2}|20\d{2}|21\d{2})\b/g;
-const TITLE_STOP_WORDS = new Set(['a', 'an', 'the', 'of', 'on', 'for', 'to', 'in', 'at', 'by', 'from', 'with', 'without', 'and', 'or', 'as', 'via', 'using', 'study', 'analysis', 'paper', 'article']);
+const TITLE_STOP_WORDS = new Set(['a', 'an', 'the', 'of', 'on', 'for', 'to', 'in', 'at', 'by', 'from', 'with', 'without', 'and', 'or', 'as', 'via', 'using']);
 const SUPPLEMENTARY_REGEX = /\b(supplementary|supplemental|supporting\s+information|appendix|appendices)\b/i;
 const ERRATUM_REGEX = /\b(erratum|correction|corrigendum|addendum)\b/i;
 const EDITORIAL_REGEX = /\b(editorial|editor(?:'s)?\s+note)\b/i;
 const COMMENTARY_REGEX = /\b(commentary|response\s+to|letter\s+to\s+the\s+editor)\b/i;
 const RETRACTION_REGEX = /\b(retraction|retracted)\b/i;
+const SURNAME_PARTICLES = new Set(['da', 'de', 'del', 'della', 'der', 'di', 'du', 'ibn', 'la', 'le', 'van', 'von']);
+const MAX_CROSSREF_CONCURRENCY = Math.max(1, Math.min(8, Number.parseInt(String(process.env.CROSSREF_MAX_CONCURRENCY || '4'), 10) || 4));
+const CROSSREF_TIMEOUT_MS = Math.max(2000, Number.parseInt(String(process.env.CROSSREF_TIMEOUT_MS || '6000'), 10) || 6000);
+const CROSSREF_RETRIES = Math.max(0, Math.min(2, Number.parseInt(String(process.env.CROSSREF_RETRIES || '1'), 10) || 1));
 
 function normalizeText(value: unknown): string {
-  return String(value || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  return normalizeSearchText(value);
 }
 
 function normalizeDoi(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const normalized = value.trim().replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '').replace(/^doi:\s*/i, '').replace(/[)\],;]+$/, '').replace(/\.+$/, '').trim().toLowerCase();
-  if (!normalized) return null;
-  return /^10\.\d{4,9}\/\S+$/i.test(normalized) ? normalized : null;
+  return normalizeDoiValue(value);
 }
 
 function tokenizeTitle(value: string): Set<string> {
-  return new Set(normalizeText(value).split(' ').map((t) => t.trim()).filter((t) => t.length >= 3 && !TITLE_STOP_WORDS.has(t)));
+  return new Set(normalizeText(value).split(' ').map((t) => t.trim()).filter((t) => t.length >= 2 && !TITLE_STOP_WORDS.has(t)));
 }
 
 function tokenizeFilename(name: string): Set<string> {
@@ -194,11 +201,64 @@ function toAuthorLastNameSet(value: unknown): Set<string> {
   const set = new Set<string>();
   for (const name of names) {
     const candidate = name.includes(',') ? name.split(',')[0] || name : name;
-    const parts = candidate.split(/\s+/).map((p) => p.trim().toLowerCase()).filter(Boolean);
+    const parts = normalizeText(candidate).split(/\s+/).map((p) => p.trim()).filter(Boolean);
+    if (parts.length === 0) continue;
+
     const last = parts[parts.length - 1];
-    if (last && last.length >= 2) set.add(last);
+    if (last) set.add(last);
+
+    if (parts.length >= 2) {
+      const secondLast = parts[parts.length - 2];
+      if (secondLast && secondLast.length >= 2 && !SURNAME_PARTICLES.has(secondLast)) {
+        set.add(secondLast);
+      }
+    }
+
+    const compound: string[] = [last];
+    let idx = parts.length - 2;
+    while (idx >= 0 && SURNAME_PARTICLES.has(parts[idx])) {
+      compound.unshift(parts[idx]);
+      idx -= 1;
+    }
+    if (compound.length > 1) {
+      set.add(compound.join(' '));
+    }
   }
   return set;
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a) return b.length;
+  if (!b) return a.length;
+
+  const prev = new Array<number>(b.length + 1);
+  const curr = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j += 1) prev[j] = j;
+
+  for (let i = 1; i <= a.length; i += 1) {
+    curr[0] = i;
+    const aChar = a.charCodeAt(i - 1);
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = aChar === b.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(
+        curr[j - 1] + 1,
+        prev[j] + 1,
+        prev[j - 1] + cost
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) prev[j] = curr[j];
+  }
+
+  return prev[b.length];
+}
+
+function normalizedEditSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+  const distance = levenshteinDistance(a, b);
+  return Math.max(0, 1 - (distance / maxLen));
 }
 
 function toCandidateConfidence(score: number): CandidateConfidence {
@@ -210,17 +270,34 @@ function toCandidateConfidence(score: number): CandidateConfidence {
 
 function extractLikelyTitleFromText(parsedText: string): string | null {
   const lines = String(parsedText || '').split('\n').map((l) => l.trim()).filter(Boolean);
-  for (const line of lines.slice(0, 20)) {
-    if (/^(abstract|keywords?|introduction|copyright)\b/i.test(line)) continue;
-    if (line.length < 12 || line.length > 260) continue;
-    return line;
+  let best: { line: string; score: number } | null = null;
+  for (const line of lines.slice(0, 40)) {
+    if (/^(abstract|keywords?|introduction|copyright|journal|vol(?:ume)?\.?|issue|published|received|accepted)\b/i.test(line)) continue;
+    if (line.length < 20 || line.length > 240) continue;
+    if (/10\.\d{4,9}\//i.test(line) || /^https?:\/\//i.test(line) || /^www\./i.test(line)) continue;
+    if (/^[-\d\s.,;:()]+$/.test(line)) continue;
+
+    const normalized = normalizeText(line);
+    const words = normalized.split(' ').filter(Boolean);
+    if (words.length < 4 || words.length > 22) continue;
+
+    let score = 0;
+    if (words.length >= 6 && words.length <= 18) score += 2;
+    if (!/[;|]/.test(line)) score += 1;
+    if (line.length >= 35 && line.length <= 180) score += 2;
+    if (/^[A-Z]/.test(line)) score += 1;
+    if (/[:\-]/.test(line)) score += 0.5;
+
+    if (!best || score > best.score) {
+      best = { line, score };
+    }
   }
-  return null;
+  return best && best.score >= 3 ? best.line : null;
 }
 
 function extractIdentifier(regex: RegExp, text: string): string | null {
   const match = String(text || '').slice(0, 100000).match(regex);
-  return match?.[1] ? String(match[1]).trim().toLowerCase() : null;
+  return normalizeIdentifier(match?.[1] || null);
 }
 
 function extractFirstDoiFromText(text: string): string | null {
@@ -233,11 +310,30 @@ function extractFirstDoiFromText(text: string): string | null {
 
 function extractYearHints(text: string): Set<number> {
   const set = new Set<number>();
-  for (const match of Array.from(String(text || '').slice(0, 20000).matchAll(YEAR_REGEX))) {
+  const source = String(text || '').slice(0, 40000);
+  const refMarker = source.search(/\n\s*(references|bibliography|works\s+cited|literature\s+cited)\b/i);
+  const sample = refMarker > 2000 ? source.slice(0, refMarker) : source.slice(0, 12000);
+  const maxYear = new Date().getUTCFullYear() + 1;
+  for (const match of Array.from(sample.matchAll(YEAR_REGEX))) {
     const year = Number.parseInt(match[1], 10);
-    if (Number.isFinite(year)) set.add(year);
+    if (Number.isFinite(year) && year >= 1900 && year <= maxYear) set.add(year);
+    if (set.size >= 20) break;
   }
   return set;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function containsWholePhrase(text: string, phrase: string): boolean {
+  if (!text || !phrase) return false;
+  const pattern = `\\b${escapeRegExp(phrase).replace(/\s+/g, '\\s+')}\\b`;
+  return new RegExp(pattern, 'i').test(text);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function detectSuppressionType(...inputs: Array<string | null | undefined>): SuppressionType {
@@ -283,6 +379,8 @@ function basenameOf(value: string): string {
 
 export class ReferenceReconciliationService {
   private readonly crossrefCache = new Map<string, Promise<ResolvedDoiMetadata | null>>();
+  private activeCrossrefRequests = 0;
+  private readonly crossrefWaitQueue: Array<() => void> = [];
 
   async runReconciliation(options: ReconcileLibraryOptions): Promise<ReconciliationRunResult> {
     const batchId = options.batchId || crypto.randomUUID();
@@ -309,11 +407,12 @@ export class ReferenceReconciliationService {
       }
       scored.sort((a, b) => b.score - a.score);
       scoredByDocument.set(document.id, scored);
-      const best = scored[0];
-      if (best?.hardConflict) {
+      const hasValidCandidate = scored.some((candidate) => !candidate.hardConflict);
+      const firstHardConflict = scored.find((candidate) => candidate.hardConflict);
+      if (!hasValidCandidate && firstHardConflict) {
         hardConflicts.push({
           documentId: document.id,
-          reason: best.hardConflictReason || 'Hard conflict',
+          reason: firstHardConflict.hardConflictReason || 'Hard conflict',
         });
       }
     }
@@ -380,22 +479,46 @@ export class ReferenceReconciliationService {
     if (!batchId) throw new Error('batchId is required for rollback');
 
     const actorUserId = input.actorUserId || input.userId;
-    const events = await prisma.auditLog.findMany({
-      where: {
-        resource: 'reference_document_link',
-        OR: [
-          { action: 'LIBRARY_REFERENCE_AUTO_LINKED' },
-          { action: 'LIBRARY_REFERENCE_MANUAL_LINKED' },
-        ],
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 2000,
-    });
+    let matchedEvents: Array<{ id: string; meta: unknown }> = [];
+    let jsonPathFilterSupported = true;
+    try {
+      matchedEvents = await prisma.auditLog.findMany({
+        where: {
+          resource: 'reference_document_link',
+          action: {
+            in: ['LIBRARY_REFERENCE_AUTO_LINKED', 'LIBRARY_REFERENCE_MANUAL_LINKED'],
+          },
+          AND: [
+            { meta: { path: ['batchId'], equals: batchId } },
+            { meta: { path: ['userId'], equals: input.userId } },
+          ],
+        },
+        select: { id: true, meta: true },
+        orderBy: { createdAt: 'desc' },
+        take: 5000,
+      });
+    } catch {
+      jsonPathFilterSupported = false;
+    }
 
-    const matchedEvents = events.filter((event) => {
-      const meta = (event.meta || {}) as Record<string, any>;
-      return meta?.batchId === batchId && meta?.userId === input.userId;
-    });
+    // Fallback for deployments that do not support JSON-path filtering in Prisma.
+    if (!jsonPathFilterSupported) {
+      const fallbackEvents = await prisma.auditLog.findMany({
+        where: {
+          resource: 'reference_document_link',
+          action: {
+            in: ['LIBRARY_REFERENCE_AUTO_LINKED', 'LIBRARY_REFERENCE_MANUAL_LINKED'],
+          },
+        },
+        select: { id: true, meta: true },
+        orderBy: { createdAt: 'desc' },
+        take: 10000,
+      });
+      matchedEvents = fallbackEvents.filter((event) => {
+        const meta = (event.meta || {}) as Record<string, any>;
+        return meta?.batchId === batchId && meta?.userId === input.userId;
+      });
+    }
 
     const errors: string[] = [];
     let reverted = 0;
@@ -599,25 +722,48 @@ export class ReferenceReconciliationService {
       ? Array.from(new Set(documentIds.map((id) => String(id || '').trim()).filter(Boolean)))
       : [];
 
-    return prisma.referenceDocument.findMany({
-      where: {
-        userId,
-        ...(normalizedIds.length > 0 ? { id: { in: normalizedIds } } : {}),
-        ...(includeAlreadyLinkedDocuments ? {} : { references: { none: { isPrimary: true } } }),
-      },
-      select: {
-        id: true,
-        originalFilename: true,
-        sourceIdentifier: true,
-        status: true,
-        pdfTitle: true,
-        pdfAuthors: true,
-        pdfDoi: true,
-        parsedText: true,
-      },
-      orderBy: { updatedAt: 'desc' },
-      take: normalizedIds.length > 0 ? normalizedIds.length : 500,
-    });
+    const where = {
+      userId,
+      ...(normalizedIds.length > 0 ? { id: { in: normalizedIds } } : {}),
+      ...(includeAlreadyLinkedDocuments ? {} : { references: { none: { isPrimary: true } } }),
+    };
+    const select = {
+      id: true,
+      originalFilename: true,
+      sourceIdentifier: true,
+      status: true,
+      pdfTitle: true,
+      pdfAuthors: true,
+      pdfDoi: true,
+      parsedText: true,
+    } as const;
+
+    if (normalizedIds.length > 0) {
+      return prisma.referenceDocument.findMany({
+        where,
+        select,
+        orderBy: { updatedAt: 'desc' },
+      });
+    }
+
+    const results: DocumentRecord[] = [];
+    const pageSize = 500;
+    let cursor: string | undefined;
+    while (true) {
+      const page = await prisma.referenceDocument.findMany({
+        where,
+        select,
+        orderBy: { id: 'asc' },
+        take: pageSize,
+        ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      });
+      if (page.length === 0) break;
+      results.push(...page);
+      if (page.length < pageSize) break;
+      cursor = page[page.length - 1].id;
+    }
+
+    return results;
   }
 
   private async buildObservedProfile(
@@ -625,7 +771,7 @@ export class ReferenceReconciliationService {
     providers?: ReconciliationProviders
   ): Promise<ObservedDocumentProfile> {
     const parsedText = String(document.parsedText || '');
-    const textSample = parsedText.slice(0, 16000);
+    const textSample = parsedText.slice(0, 20000);
     const inferredTitle = extractLikelyTitleFromText(parsedText);
     const observedTitle = String(document.pdfTitle || inferredTitle || '').trim() || null;
     const observedDoi = normalizeDoi(document.pdfDoi) || extractFirstDoiFromText(parsedText);
@@ -650,7 +796,7 @@ export class ReferenceReconciliationService {
 
     const title = observedTitle || externalMendeley?.title || externalZotero?.title || null;
     const doi = normalizeDoi(observedDoi || externalMendeley?.doi || externalZotero?.doi);
-    const yearHints = extractYearHints(textSample);
+    const yearHints = extractYearHints(parsedText);
     if (externalMendeley?.year) yearHints.add(externalMendeley.year);
     if (externalZotero?.year) yearHints.add(externalZotero.year);
 
@@ -659,6 +805,9 @@ export class ReferenceReconciliationService {
     const zVenue = normalizeText(externalZotero?.venue || '');
     if (mVenue.length >= 6) venueSignals.add(mVenue);
     if (zVenue.length >= 6) venueSignals.add(zVenue);
+    const normalizedSignalText = normalizeText(
+      `${String(document.originalFilename || '')}\n${String(document.sourceIdentifier || '')}\n${textSample}`
+    );
 
     return {
       documentId: document.id,
@@ -668,15 +817,15 @@ export class ReferenceReconciliationService {
       title,
       titleTokens: tokenizeTitle(title || ''),
       doi,
-      pmid: extractIdentifier(PMID_REGEX, textSample) || normalizeText(externalMendeley?.pmid || externalZotero?.pmid || '') || null,
-      pmcid: extractIdentifier(PMCID_REGEX, textSample) || normalizeText(externalMendeley?.pmcid || externalZotero?.pmcid || '') || null,
-      arxivId: extractIdentifier(ARXIV_REGEX, textSample) || normalizeText(externalMendeley?.arxivId || externalZotero?.arxivId || '') || null,
+      pmid: extractIdentifier(PMID_REGEX, textSample) || normalizeIdentifier(externalMendeley?.pmid || externalZotero?.pmid),
+      pmcid: extractIdentifier(PMCID_REGEX, textSample) || normalizeIdentifier(externalMendeley?.pmcid || externalZotero?.pmcid),
+      arxivId: extractIdentifier(ARXIV_REGEX, textSample) || normalizeIdentifier(externalMendeley?.arxivId || externalZotero?.arxivId),
       authorLastNames: toAuthorLastNameSet(document.pdfAuthors || externalMendeley?.authors || externalZotero?.authors || []),
       yearHints,
       venueSignals,
       filenameTokens: tokenizeFilename(document.originalFilename || ''),
       suppressionType: detectSuppressionType(title, document.originalFilename, textSample),
-      textSample: `${String(document.originalFilename || '').toLowerCase()}\n${String(document.sourceIdentifier || '').toLowerCase()}\n${textSample.toLowerCase()}`,
+      textSample: normalizedSignalText,
     };
   }
 
@@ -687,12 +836,15 @@ export class ReferenceReconciliationService {
     let hardConflictReason: string | undefined;
 
     const expectedDoi = normalizeDoi(reference.doi);
-    const expectedPmid = normalizeText(reference.pmid || '') || null;
-    const expectedPmcid = normalizeText(reference.pmcid || '') || null;
-    const expectedArxiv = normalizeText(reference.arxivId || '') || null;
+    const expectedPmid = normalizeIdentifier(reference.pmid);
+    const expectedPmcid = normalizeIdentifier(reference.pmcid);
+    const expectedArxiv = normalizeIdentifier(reference.arxivId);
+    const expectedTitleNormalized = normalizeText(reference.title || '');
+    const observedTitleNormalized = normalizeText(observed.title || '');
     const expectedTitleTokens = tokenizeTitle(reference.title || '');
     const expectedAuthors = toAuthorLastNameSet(reference.authors || []);
     const titleSimilarity = jaccard(expectedTitleTokens, observed.titleTokens);
+    const titleEditSimilarity = normalizedEditSimilarity(expectedTitleNormalized, observedTitleNormalized);
     const authorOverlap = overlapRatio(expectedAuthors, observed.authorLastNames);
     const referenceSuppression = detectReferenceSuppression(reference);
 
@@ -710,7 +862,7 @@ export class ReferenceReconciliationService {
     }
     if (!hardConflict && expectedArxiv && observed.arxivId && expectedArxiv !== observed.arxivId) {
       hardConflict = true;
-      hardConflictReason = `arXiv mismatch (${expectedArxiv} vs ${observed.arxivId})`;
+      hardConflictReason = `ArXiv mismatch (${expectedArxiv} vs ${observed.arxivId})`;
     }
     if (!hardConflict && observed.suppressionType && referenceSuppression !== observed.suppressionType) {
       hardConflict = true;
@@ -737,7 +889,9 @@ export class ReferenceReconciliationService {
     } else if (!expectedDoi && observed.doi) {
       const resolved = await this.resolveCrossrefDoi(observed.doi);
       if (resolved) {
-        const rt = jaccard(expectedTitleTokens, resolved.titleTokens);
+        const rtToken = jaccard(expectedTitleTokens, resolved.titleTokens);
+        const rtEdit = normalizedEditSimilarity(expectedTitleNormalized, resolved.titleNormalized);
+        const rt = Math.max(rtToken, rtEdit);
         const ra = overlapRatio(expectedAuthors, resolved.authors);
         if (rt >= 0.9) {
           score += 28;
@@ -776,15 +930,15 @@ export class ReferenceReconciliationService {
       reasons.push(...attachmentHintSignal.reasons);
     }
 
-    if (titleSimilarity >= 0.9) {
+    if (titleSimilarity >= 0.9 || titleEditSimilarity >= 0.92) {
       score += 40;
-      reasons.push('Title similarity >= 0.90');
-    } else if (titleSimilarity >= 0.8) {
+      reasons.push('Title similarity strong');
+    } else if (titleSimilarity >= 0.8 || titleEditSimilarity >= 0.85) {
       score += 30;
-      reasons.push('Title similarity 0.80-0.89');
-    } else if (titleSimilarity >= 0.65) {
+      reasons.push('Title similarity moderate');
+    } else if (titleSimilarity >= 0.65 || titleEditSimilarity >= 0.75) {
       score += 18;
-      reasons.push('Title similarity 0.65-0.79');
+      reasons.push('Title similarity partial');
     } else if (observed.title && reference.title) {
       score -= 15;
       reasons.push('Title mismatch penalty');
@@ -813,10 +967,14 @@ export class ReferenceReconciliationService {
     }
 
     const venue = normalizeText(reference.venue || '');
-    if (venue && (observed.textSample.includes(venue) || observed.venueSignals.has(venue))) {
+    const venueMatched = venue.length >= 8 && (
+      observed.venueSignals.has(venue)
+      || containsWholePhrase(observed.textSample, venue)
+    );
+    if (venueMatched) {
       score += 6;
       reasons.push('Venue signal match');
-    } else if (venue && observed.venueSignals.size > 0) {
+    } else if (venue && observed.venueSignals.size > 0 && !observed.venueSignals.has(venue)) {
       score -= 8;
       reasons.push('Venue mismatch penalty');
     }
@@ -832,11 +990,13 @@ export class ReferenceReconciliationService {
       reasons.push(`Suppression penalty (${observed.suppressionType})`);
     }
 
+    const boundedScore = Math.max(-100, Math.min(100, score));
+
     return {
       documentId: observed.documentId,
       referenceId: reference.id,
-      score,
-      confidence: toCandidateConfidence(score),
+      score: boundedScore,
+      confidence: toCandidateConfidence(boundedScore),
       titleSimilarity,
       authorOverlap,
       hardConflict: false,
@@ -1143,6 +1303,23 @@ export class ReferenceReconciliationService {
     return { score: bestScore, reasons };
   }
 
+  private async withCrossrefPermit<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.activeCrossrefRequests >= MAX_CROSSREF_CONCURRENCY) {
+      await new Promise<void>((resolve) => {
+        this.crossrefWaitQueue.push(resolve);
+      });
+    }
+
+    this.activeCrossrefRequests += 1;
+    try {
+      return await operation();
+    } finally {
+      this.activeCrossrefRequests = Math.max(0, this.activeCrossrefRequests - 1);
+      const next = this.crossrefWaitQueue.shift();
+      if (next) next();
+    }
+  }
+
   private async resolveCrossrefDoi(doi: string): Promise<ResolvedDoiMetadata | null> {
     const normalized = normalizeDoi(doi);
     if (!normalized) return null;
@@ -1150,36 +1327,71 @@ export class ReferenceReconciliationService {
     if (cached) return cached;
 
     const resolver = (async () => {
-      try {
-        const response = await fetch(`https://api.crossref.org/works/${encodeURIComponent(normalized)}`, {
-          headers: {
-            'User-Agent': 'Papsi/1.0 Reference Reconciliation',
-            Accept: 'application/json',
-          },
-        });
-        if (!response.ok) return null;
-        const payload = await response.json();
-        const message = payload?.message || {};
-        const title = Array.isArray(message?.title) ? String(message.title[0] || '').trim() : '';
-        const authors = new Set<string>();
-        if (Array.isArray(message?.author)) {
-          for (const author of message.author) {
-            const family = normalizeText(author?.family || '');
-            if (family) authors.add(family.split(' ').pop() as string);
+      const crossrefEmail = String(process.env.CROSSREF_CONTACT_EMAIL || process.env.SUPPORT_EMAIL || '').trim();
+      const userAgent = crossrefEmail
+        ? `Papsi/1.0 Reference Reconciliation (mailto:${crossrefEmail})`
+        : 'Papsi/1.0 Reference Reconciliation';
+
+      for (let attempt = 0; attempt <= CROSSREF_RETRIES; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), CROSSREF_TIMEOUT_MS);
+        try {
+          const response = await this.withCrossrefPermit(() => fetch(
+            `https://api.crossref.org/works/${encodeURIComponent(normalized)}`,
+            {
+              headers: {
+                'User-Agent': userAgent,
+                Accept: 'application/json',
+              },
+              signal: controller.signal,
+            }
+          ));
+          clearTimeout(timeout);
+
+          if (response.status === 404) return null;
+          if (response.status === 429 || response.status >= 500) {
+            if (attempt < CROSSREF_RETRIES) {
+              await sleep(250 * (attempt + 1));
+              continue;
+            }
+            return null;
           }
+          if (!response.ok) return null;
+
+          const payload = await response.json();
+          const message = payload?.message || {};
+          const title = Array.isArray(message?.title) ? String(message.title[0] || '').trim() : '';
+          const titleNormalized = normalizeText(title);
+          const authors = new Set<string>();
+          if (Array.isArray(message?.author)) {
+            const normalizedAuthors = toAuthorLastNameSet(
+              message.author.map((author: Record<string, unknown>) =>
+                `${String(author?.family || '')} ${String(author?.given || '')}`.trim()
+              )
+            );
+            for (const name of Array.from(normalizedAuthors)) authors.add(name);
+          }
+          const year = Array.isArray(message?.issued?.['date-parts']?.[0])
+            ? Number.parseInt(String(message.issued['date-parts'][0][0] || ''), 10)
+            : null;
+          return {
+            doi: normalized,
+            titleNormalized,
+            titleTokens: tokenizeTitle(title),
+            authors,
+            year: Number.isFinite(year as number) ? (year as number) : null,
+          };
+        } catch {
+          clearTimeout(timeout);
+          if (attempt < CROSSREF_RETRIES) {
+            await sleep(250 * (attempt + 1));
+            continue;
+          }
+          return null;
         }
-        const year = Array.isArray(message?.issued?.['date-parts']?.[0])
-          ? Number.parseInt(String(message.issued['date-parts'][0][0] || ''), 10)
-          : null;
-        return {
-          doi: normalized,
-          titleTokens: tokenizeTitle(title),
-          authors,
-          year: Number.isFinite(year as number) ? (year as number) : null,
-        };
-      } catch {
-        return null;
       }
+
+      return null;
     })();
 
     this.crossrefCache.set(normalized, resolver);

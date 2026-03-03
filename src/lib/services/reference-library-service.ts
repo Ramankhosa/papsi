@@ -34,6 +34,7 @@ export interface CreateReferenceInput {
   abstract?: string;
   sourceType?: CitationSourceType;
   importSource?: CitationImportSource;
+  externalId?: string;
   notes?: string;
   tags?: string[];
   pdfUrl?: string;
@@ -149,6 +150,7 @@ class ReferenceLibraryService {
       abstract: input.abstract,
       sourceType: input.sourceType || 'OTHER',
       importSource: input.importSource || 'MANUAL',
+      externalId: input.externalId,
       citationKey,
       notes: input.notes,
       tags: input.tags || [],

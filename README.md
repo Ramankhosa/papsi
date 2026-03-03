@@ -53,6 +53,11 @@ A modern, professional authentication system built with Next.js, featuring ChatG
    TWITTER_CLIENT_ID=your-twitter-client-id
    TWITTER_CLIENT_SECRET=your-twitter-client-secret
 
+   # Library Integrations (Optional)
+   MENDELEY_CLIENT_ID=your-mendeley-client-id
+   MENDELEY_CLIENT_SECRET=your-mendeley-client-secret
+   # Zotero uses user-provided API keys (no server-side config needed)
+
    # External Access
    NEXT_PUBLIC_TINYMCE_API_KEY=your-tinymce-api-key
    SENDGRID_API_KEY=your-sendgrid-api-key

@@ -1,8 +1,10 @@
 import { CitationImportSource, CitationSourceType } from '@prisma/client';
+import { prisma } from '../prisma';
 import { referenceLibraryService } from './reference-library-service';
 
 interface ImportResultSummary {
   imported: number;
+  updated: number;
   skipped: number;
   errors: string[];
   warnings: string[];
@@ -102,24 +104,35 @@ class ReferenceConnectorService {
       throw new Error('Mendeley access token is required');
     }
 
-    const limit = Math.min(Math.max(options.limit || 100, 1), 500);
-    const response = await fetch(`https://api.mendeley.com/documents?view=all&limit=${limit}`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/vnd.mendeley-document.1+json',
-      },
-    });
+    const pageSize = Math.min(Math.max(options.limit || 200, 1), 500);
+    const allDocuments: any[] = [];
+    let nextUrl: string | null = `https://api.mendeley.com/documents?view=all&limit=${pageSize}`;
 
-    if (!response.ok) {
-      throw new Error(`Mendeley import failed (${response.status})`);
+    while (nextUrl) {
+      const response = await fetch(nextUrl, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/vnd.mendeley-document.1+json',
+        },
+      });
+
+      if (!response.ok) {
+        if (allDocuments.length > 0) break; // partial success on later pages
+        throw new Error(`Mendeley import failed (${response.status})`);
+      }
+
+      const payload = await response.json();
+      if (Array.isArray(payload)) {
+        allDocuments.push(...payload);
+      }
+
+      // Mendeley uses Link header with rel="next" for pagination
+      nextUrl = this.parseLinkNext(response.headers.get('link'));
     }
-
-    const payload = await response.json();
-    const documents = Array.isArray(payload) ? payload : [];
 
     return this.persistNormalizedReferences(
       userId,
-      documents.map((doc: any) => this.normalizeMendeleyDocument(doc))
+      allDocuments.map((doc: any) => this.normalizeMendeleyDocument(doc))
     );
   }
 
@@ -135,31 +148,48 @@ class ReferenceConnectorService {
       throw new Error('Provide either Zotero userId or groupId');
     }
 
-    const limit = Math.min(Math.max(options.limit || 100, 1), 500);
+    const pageSize = Math.min(Math.max(options.limit || 100, 1), 100); // Zotero max per page is 100
     const base = userLibraryId
       ? `https://api.zotero.org/users/${encodeURIComponent(userLibraryId)}`
       : `https://api.zotero.org/groups/${encodeURIComponent(groupLibraryId as string)}`;
 
-    const response = await fetch(
-      `${base}/items?format=json&include=data&itemType=-attachment&limit=${limit}&sort=dateAdded&direction=desc`,
-      {
-        headers: {
-          'Zotero-API-Key': apiKey,
-          'Zotero-API-Version': '3',
-        },
+    const allItems: any[] = [];
+    let start = 0;
+    let totalResults = Infinity;
+
+    while (start < totalResults) {
+      const response = await fetch(
+        `${base}/items?format=json&include=data&itemType=-attachment&limit=${pageSize}&start=${start}&sort=dateAdded&direction=desc`,
+        {
+          headers: {
+            'Zotero-API-Key': apiKey,
+            'Zotero-API-Version': '3',
+          },
+        }
+      );
+
+      if (!response.ok) {
+        if (allItems.length > 0) break; // partial success on later pages
+        throw new Error(`Zotero import failed (${response.status})`);
       }
-    );
 
-    if (!response.ok) {
-      throw new Error(`Zotero import failed (${response.status})`);
+      // Zotero returns Total-Results header with the total count
+      const totalHeader = response.headers.get('Total-Results');
+      if (totalHeader) {
+        totalResults = parseInt(totalHeader, 10) || Infinity;
+      }
+
+      const payload = await response.json();
+      const items = Array.isArray(payload) ? payload : [];
+      if (items.length === 0) break;
+
+      allItems.push(...items);
+      start += items.length;
     }
-
-    const payload = await response.json();
-    const items = Array.isArray(payload) ? payload : [];
 
     return this.persistNormalizedReferences(
       userId,
-      items.map((item: any) => this.normalizeZoteroItem(item))
+      allItems.map((item: any) => this.normalizeZoteroItem(item))
     );
   }
 
@@ -259,6 +289,7 @@ class ReferenceConnectorService {
     const errors: string[] = [];
     const warnings: string[] = [];
     let skipped = 0;
+    let updated = 0;
 
     for (const normalized of normalizedReferences) {
       if (!normalized || !normalized.title) {
@@ -267,6 +298,55 @@ class ReferenceConnectorService {
       }
 
       try {
+        // Check for existing reference by externalId + importSource (provider-level dedup)
+        if (normalized.externalId) {
+          const existing = await prisma.referenceLibrary.findFirst({
+            where: {
+              userId,
+              externalId: normalized.externalId,
+              importSource: normalized.importSource,
+              isActive: true,
+            },
+            select: { id: true },
+          });
+
+          if (existing) {
+            await prisma.referenceLibrary.update({
+              where: { id: existing.id },
+              data: {
+                title: normalized.title,
+                authors: normalized.authors,
+                year: normalized.year,
+                venue: normalized.venue,
+                volume: normalized.volume,
+                issue: normalized.issue,
+                pages: normalized.pages,
+                doi: normalized.doi,
+                url: normalized.url,
+                isbn: normalized.isbn,
+                publisher: normalized.publisher,
+                edition: normalized.edition,
+                publicationPlace: normalized.publicationPlace,
+                publicationDate: normalized.publicationDate,
+                articleNumber: normalized.articleNumber,
+                issn: normalized.issn,
+                journalAbbreviation: normalized.journalAbbreviation,
+                pmid: normalized.pmid,
+                pmcid: normalized.pmcid,
+                arxivId: normalized.arxivId,
+                abstract: normalized.abstract,
+                sourceType: normalized.sourceType,
+                notes: normalized.notes,
+                tags: normalized.tags || [],
+                pdfUrl: normalized.pdfUrl,
+              },
+            });
+            updated += 1;
+            importedIds.push(existing.id);
+            continue;
+          }
+        }
+
         const created = await referenceLibraryService.createReference({
           userId,
           title: normalized.title,
@@ -292,6 +372,7 @@ class ReferenceConnectorService {
           abstract: normalized.abstract,
           sourceType: normalized.sourceType,
           importSource: normalized.importSource,
+          externalId: normalized.externalId,
           notes: normalized.notes,
           tags: normalized.tags || [],
           pdfUrl: normalized.pdfUrl,
@@ -308,7 +389,8 @@ class ReferenceConnectorService {
     }
 
     return {
-      imported: importedIds.length,
+      imported: importedIds.length - updated,
+      updated,
       skipped,
       errors,
       warnings,
@@ -370,14 +452,24 @@ class ReferenceConnectorService {
         return type === 'author' || type === 'editor';
       })
       .map((creator: any) => {
+        // Zotero uses firstName/lastName (camelCase), not first_name/last_name
         if (creator?.name) return trimString(creator.name);
-        return trimString(`${creator?.firstName || ''} ${creator?.lastName || ''}`);
+        const first = String(creator?.firstName || '').trim();
+        const last = String(creator?.lastName || '').trim();
+        if (last && first) return `${first} ${last}`;
+        return trimString(last || first);
       })
       .filter(Boolean) as string[];
 
     const tags = Array.isArray(data?.tags)
       ? data.tags.map((tag: any) => trimString(tag?.tag || tag)).filter(Boolean) as string[]
       : [];
+
+    // Zotero stores PMID/PMCID/arXiv in the "extra" field as key-value lines
+    const extra = String(data?.extra || '');
+    const pmid = trimString(data?.pmid) || this.extractExtraField(extra, 'PMID');
+    const pmcid = trimString(data?.pmcid) || this.extractExtraField(extra, 'PMCID');
+    const arxivId = trimString(data?.arxivId) || this.extractExtraField(extra, 'arXiv');
 
     return {
       title,
@@ -395,14 +487,35 @@ class ReferenceConnectorService {
       edition: trimString(data?.edition),
       publicationPlace: trimString(data?.place),
       publicationDate: trimString(data?.date),
+      pmid,
+      pmcid,
+      arxivId,
       sourceType: mapZoteroType(data?.itemType),
       importSource: 'ZOTERO_IMPORT',
       externalId: trimString(item?.key || data?.key),
       tags,
       abstract: trimString(data?.abstractNote),
-      notes: trimString(data?.extra),
+      notes: extra || undefined,
       pdfUrl: undefined,
     };
+  }
+
+  /** Parse Mendeley `Link` header to extract the `rel="next"` URL */
+  private parseLinkNext(linkHeader: string | null): string | null {
+    if (!linkHeader) return null;
+    const parts = linkHeader.split(',');
+    for (const part of parts) {
+      const match = part.match(/<([^>]+)>;\s*rel="next"/);
+      if (match) return match[1];
+    }
+    return null;
+  }
+
+  /** Extract a field value from Zotero's extra field (e.g. "PMID: 12345678") */
+  private extractExtraField(extra: string, key: string): string | undefined {
+    const regex = new RegExp(`^${key}:\\s*(.+)$`, 'im');
+    const match = extra.match(regex);
+    return match ? trimString(match[1]) : undefined;
   }
 }
 

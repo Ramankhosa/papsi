@@ -6,6 +6,7 @@ import { citationService } from '@/lib/services/citation-service';
 import { citationStyleService, type CitationData } from '@/lib/services/citation-style-service';
 import { citationMappingService, type CitationMetaSnapshot, type PaperBlueprintMapping } from '@/lib/services/citation-mapping-service';
 import { paperLibraryService } from '@/lib/services/paper-library-service';
+import { normalizeDoi as normalizeDoiValue } from '@/lib/utils/reference-matching-normalization';
 import {
   buildCitationKeyLookup,
   citationKeyIdentity,
@@ -377,12 +378,7 @@ async function buildCitationPreview(
 }
 
 function normalizeDoi(doi?: string | null): string {
-  return typeof doi === 'string'
-    ? doi.trim().toLowerCase()
-        .replace(/^https?:\/\/(dx\.)?doi\.org\//, '')
-        .replace(/^doi:/, '')
-        .replace(/\s+/g, '')
-    : '';
+  return normalizeDoiValue(doi) || '';
 }
 
 function normalizeTitleFingerprint(title?: string | null): string {

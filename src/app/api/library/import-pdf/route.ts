@@ -4,11 +4,14 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { referenceLibraryService } from '@/lib/services/reference-library-service';
 import { referenceDocumentService } from '@/lib/services/reference-document-service';
 import { referenceReconciliationService } from '@/lib/services/reference-reconciliation-service';
+import { libraryConnectionService } from '@/lib/services/library-connection-service';
 import { prisma } from '@/lib/prisma';
+import { normalizeDoi as normalizeDoiValue, normalizeSearchText } from '@/lib/utils/reference-matching-normalization';
 import * as crypto from 'crypto';
 
 const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_REFERENCE_PDF_SIZE_MB || '50', 10);
@@ -19,21 +22,7 @@ const IMPORT_CONCURRENCY = Math.max(
 );
 
 function normalizeDoi(value?: string | null): string | undefined {
-  if (!value) return undefined;
-
-  const match = value
-    .trim()
-    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '')
-    .replace(/^doi:\s*/i, '')
-    .match(/10\.\d{4,9}\/\S+/i);
-
-  if (!match) return undefined;
-
-  const cleaned = match[0]
-    .replace(/[)\],;]+$/, '')
-    .replace(/\.+$/, '');
-
-  return cleaned || undefined;
+  return normalizeDoiValue(value) || undefined;
 }
 
 function parseAuthors(authors?: string): string[] {
@@ -48,21 +37,31 @@ function parseAuthors(authors?: string): string[] {
 }
 
 function normalizeTitleForMatch(value?: string | null): string {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return normalizeSearchText(value);
 }
 
 function normalizeAuthorLastName(value?: string | null): string {
-  const cleaned = String(value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9,\s]/g, ' ')
-    .trim();
+  const cleaned = normalizeSearchText(String(value || '').replace(/,/g, ' '));
   if (!cleaned) return '';
   const parts = cleaned.split(/[\s,]+/).filter(Boolean);
   return parts[parts.length - 1] || '';
+}
+
+function tokenizeTitleForMatch(value?: string | null): Set<string> {
+  return new Set(
+    normalizeTitleForMatch(value)
+      .split(' ')
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 2)
+  );
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  for (const token of Array.from(a)) if (b.has(token)) intersection += 1;
+  const union = a.size + b.size - intersection;
+  return union > 0 ? intersection / union : 0;
 }
 
 function extractDoiFromRawPdf(buffer: Buffer): string | undefined {
@@ -189,7 +188,6 @@ async function findExistingReferenceForPdf(input: {
   doi?: string | null;
   title?: string | null;
   authors?: string[] | null;
-  year?: number | null;
 }) {
   const normalizedDoi = normalizeDoi(input.doi);
   if (normalizedDoi) {
@@ -207,30 +205,76 @@ async function findExistingReferenceForPdf(input: {
   const title = String(input.title || '').trim();
   if (!title) return null;
 
-  const year = Number.isFinite(Number(input.year)) ? Number(input.year) : null;
-  const yearWindow = year ? [year - 1, year, year + 1] : null;
+  const normalizedTitle = normalizeTitleForMatch(title);
+  if (!normalizedTitle) return null;
   const expectedFirstAuthorLast = normalizeAuthorLastName(input.authors?.[0] || '');
+  const titleTokens = tokenizeTitleForMatch(normalizedTitle);
+  const longestTitleToken = normalizedTitle
+    .split(' ')
+    .filter((token) => token.length >= 4)
+    .sort((a, b) => b.length - a.length)[0];
 
-  const candidates = await prisma.referenceLibrary.findMany({
+  const titleQueryClauses: Prisma.ReferenceLibraryWhereInput[] = [
+    { title: { equals: title, mode: 'insensitive' } },
+  ];
+  if (title.length >= 18) {
+    titleQueryClauses.push({
+      title: {
+        contains: title.slice(0, Math.min(90, title.length)),
+        mode: 'insensitive',
+      },
+    });
+  }
+  if (longestTitleToken) {
+    titleQueryClauses.push({
+      title: {
+        contains: longestTitleToken,
+        mode: 'insensitive',
+      },
+    });
+  }
+
+  const fetchCandidates = () => prisma.referenceLibrary.findMany({
     where: {
       userId: input.userId,
       isActive: true,
-      title: { equals: title, mode: 'insensitive' },
-      ...(yearWindow ? { year: { in: yearWindow } } : {}),
+      OR: titleQueryClauses,
     },
     orderBy: { updatedAt: 'desc' },
-    take: 12,
+    take: 40,
   });
+  const candidates = await fetchCandidates();
 
   if (candidates.length === 0) return null;
-  if (!expectedFirstAuthorLast) return candidates[0];
 
-  const withAuthor = candidates.find(candidate =>
-    Array.isArray(candidate.authors)
-    && candidate.authors.some(author => normalizeAuthorLastName(author) === expectedFirstAuthorLast)
-  );
+  const ranked = candidates
+    .map((candidate) => {
+      const candidateTitleNormalized = normalizeTitleForMatch(candidate.title);
+      const candidateTitleTokens = tokenizeTitleForMatch(candidateTitleNormalized);
+      const titleSimilarity = jaccard(titleTokens, candidateTitleTokens);
 
-  return withAuthor || candidates[0];
+      let score = titleSimilarity * 100;
+      if (candidateTitleNormalized === normalizedTitle) score += 35;
+      else if (
+        candidateTitleNormalized.includes(normalizedTitle)
+        || normalizedTitle.includes(candidateTitleNormalized)
+      ) score += 16;
+
+      if (expectedFirstAuthorLast) {
+        const hasFirstAuthorMatch = Array.isArray(candidate.authors)
+          && candidate.authors.some(author => normalizeAuthorLastName(author) === expectedFirstAuthorLast);
+        if (hasFirstAuthorMatch) score += 12;
+        else score -= 6;
+      }
+
+      return { score, titleSimilarity, candidate };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const best = ranked[0];
+  if (!best) return null;
+  if (best.titleSimilarity < 0.45 && best.score < 55) return null;
+  return best.candidate;
 }
 
 async function linkReferenceToUserCitations(input: {
@@ -341,7 +385,6 @@ async function importSinglePdf(
       pdfTitle: true,
       pdfAuthors: true,
       pdfDoi: true,
-      pdfCreationDate: true,
       status: true,
     },
   });
@@ -399,7 +442,6 @@ async function importSinglePdf(
   const mergedMetadata = {
     title: extractedMetadata.title || existingDocument?.pdfTitle || undefined,
     authors: extractedMetadata.authors || existingDocument?.pdfAuthors || undefined,
-    creationDate: existingDocument?.pdfCreationDate || undefined,
     doi:
       normalizeDoi(extractedMetadata.doi) ||
       normalizeDoi(existingDocument?.pdfDoi) ||
@@ -439,7 +481,6 @@ async function importSinglePdf(
       doi: extractedDoi,
       title: mergedMetadata.title,
       authors: parseAuthors(mergedMetadata.authors),
-      year: mergedMetadata.creationDate ? mergedMetadata.creationDate.getFullYear() : undefined,
     });
   }
 
@@ -449,7 +490,6 @@ async function importSinglePdf(
       userId,
       title: fallbackTitle,
       authors: parseAuthors(mergedMetadata.authors),
-      year: mergedMetadata.creationDate ? mergedMetadata.creationDate.getFullYear() : undefined,
       doi: extractedDoi || undefined,
       sourceType: extractedDoi ? 'JOURNAL_ARTICLE' : 'OTHER',
       importSource: extractedDoi ? 'DOI_LOOKUP' : 'MANUAL',
@@ -488,7 +528,7 @@ async function importSinglePdf(
     referenceId: reference.id,
     referenceDoi: reference.doi || extractedDoi,
     referenceTitle: reference.title || mergedMetadata.title,
-    referenceYear: reference.year || (mergedMetadata.creationDate ? mergedMetadata.creationDate.getFullYear() : undefined),
+    referenceYear: reference.year || undefined,
     referenceAuthors: Array.isArray(reference.authors) ? reference.authors : parseAuthors(mergedMetadata.authors),
   });
 
@@ -528,26 +568,20 @@ export async function POST(request: NextRequest) {
     const shouldReconcile = typeof reconcileField === 'string'
       ? reconcileField.trim().toLowerCase() !== 'false'
       : true;
-    const mendeleyAccessToken = typeof formData.get('mendeleyAccessToken') === 'string'
-      ? String(formData.get('mendeleyAccessToken')).trim()
-      : undefined;
-    const zoteroApiKey = typeof formData.get('zoteroApiKey') === 'string'
-      ? String(formData.get('zoteroApiKey')).trim()
-      : undefined;
-    const zoteroUserId = typeof formData.get('zoteroUserId') === 'string'
-      ? String(formData.get('zoteroUserId')).trim()
-      : undefined;
-    const zoteroGroupId = typeof formData.get('zoteroGroupId') === 'string'
-      ? String(formData.get('zoteroGroupId')).trim()
-      : undefined;
-    const effectiveMendeleyAccessToken =
-      mendeleyAccessToken || String(process.env.MENDELEY_ACCESS_TOKEN || '').trim() || undefined;
-    const effectiveZoteroApiKey =
-      zoteroApiKey || String(process.env.ZOTERO_API_KEY || '').trim() || undefined;
-    const effectiveZoteroUserId =
-      zoteroUserId || String(process.env.ZOTERO_USER_ID || '').trim() || undefined;
-    const effectiveZoteroGroupId =
-      zoteroGroupId || String(process.env.ZOTERO_GROUP_ID || '').trim() || undefined;
+    // Resolve provider tokens from stored connections (tokens never touch the client)
+    let effectiveMendeleyAccessToken: string | undefined;
+    let effectiveZoteroApiKey: string | undefined;
+    let effectiveZoteroUserId: string | undefined;
+    const effectiveZoteroGroupId: string | undefined = undefined;
+    try {
+      const { accessToken } = await libraryConnectionService.ensureValidToken(user.id, 'mendeley');
+      effectiveMendeleyAccessToken = accessToken;
+    } catch { /* no Mendeley connection */ }
+    try {
+      const { accessToken, providerUserId } = await libraryConnectionService.ensureValidToken(user.id, 'zotero');
+      effectiveZoteroApiKey = accessToken;
+      effectiveZoteroUserId = providerUserId ?? undefined;
+    } catch { /* no Zotero connection */ }
 
     if (files.length === 0) {
       return NextResponse.json({ error: 'No files provided' }, { status: 400 });

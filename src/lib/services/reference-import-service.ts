@@ -128,6 +128,195 @@ function extractAttachmentHints(...values: Array<string | undefined>): string[] 
   return Array.from(hints).slice(0, 20);
 }
 
+type ParsedBibTeXEntry = {
+  entryType: string;
+  citationKey: string;
+  fieldsString: string;
+  rawEntry: string;
+};
+
+function findMatchingDelimiter(input: string, startIndex: number, openChar: '{' | '(', closeChar: '}' | ')'): number {
+  let depth = 0;
+  let inQuotes = false;
+  let escaped = false;
+
+  for (let i = startIndex; i < input.length; i += 1) {
+    const ch = input[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (inQuotes) continue;
+
+    if (ch === openChar) {
+      depth += 1;
+      continue;
+    }
+    if (ch === closeChar) {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
+}
+
+function splitBibTeXEntryContent(content: string): { citationKey: string; fieldsString: string } | null {
+  let depthBrace = 0;
+  let depthParen = 0;
+  let inQuotes = false;
+  let escaped = false;
+
+  for (let i = 0; i < content.length; i += 1) {
+    const ch = content[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (inQuotes) continue;
+
+    if (ch === '{') depthBrace += 1;
+    else if (ch === '}') depthBrace = Math.max(0, depthBrace - 1);
+    else if (ch === '(') depthParen += 1;
+    else if (ch === ')') depthParen = Math.max(0, depthParen - 1);
+    else if (ch === ',' && depthBrace === 0 && depthParen === 0) {
+      return {
+        citationKey: content.slice(0, i).trim(),
+        fieldsString: content.slice(i + 1),
+      };
+    }
+  }
+
+  return null;
+}
+
+function parseBibTeXEntries(input: string, warnings: string[]): ParsedBibTeXEntry[] {
+  const entries: ParsedBibTeXEntry[] = [];
+  let index = 0;
+
+  while (index < input.length) {
+    const atIndex = input.indexOf('@', index);
+    if (atIndex < 0) break;
+
+    let cursor = atIndex + 1;
+    while (cursor < input.length && /\s/.test(input[cursor])) cursor += 1;
+
+    const typeStart = cursor;
+    while (cursor < input.length && /[a-z0-9_]/i.test(input[cursor])) cursor += 1;
+    const entryType = input.slice(typeStart, cursor).trim().toLowerCase();
+    if (!entryType) {
+      index = atIndex + 1;
+      continue;
+    }
+
+    while (cursor < input.length && /\s/.test(input[cursor])) cursor += 1;
+    const openChar = input[cursor];
+    if (openChar !== '{' && openChar !== '(') {
+      index = atIndex + 1;
+      continue;
+    }
+
+    const closeChar = openChar === '{' ? '}' : ')';
+    const closingIndex = findMatchingDelimiter(input, cursor, openChar, closeChar);
+    if (closingIndex < 0) {
+      warnings.push(`Unterminated BibTeX entry starting near index ${atIndex}`);
+      break;
+    }
+
+    const content = input.slice(cursor + 1, closingIndex).trim();
+    const split = splitBibTeXEntryContent(content);
+    if (split && split.citationKey) {
+      entries.push({
+        entryType,
+        citationKey: split.citationKey,
+        fieldsString: split.fieldsString,
+        rawEntry: input.slice(atIndex, closingIndex + 1),
+      });
+    }
+
+    index = closingIndex + 1;
+  }
+
+  return entries;
+}
+
+function splitBibTeXConcatenatedValue(value: string): string[] {
+  const segments: string[] = [];
+  let start = 0;
+  let depthBrace = 0;
+  let depthParen = 0;
+  let inQuotes = false;
+  let escaped = false;
+
+  for (let i = 0; i < value.length; i += 1) {
+    const ch = value[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+    if (inQuotes) continue;
+
+    if (ch === '{') depthBrace += 1;
+    else if (ch === '}') depthBrace = Math.max(0, depthBrace - 1);
+    else if (ch === '(') depthParen += 1;
+    else if (ch === ')') depthParen = Math.max(0, depthParen - 1);
+    else if (ch === '#' && depthBrace === 0 && depthParen === 0) {
+      segments.push(value.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+
+  segments.push(value.slice(start).trim());
+  return segments.filter(Boolean);
+}
+
+function unwrapBibTeXFieldSegment(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    return trimmed.slice(1, -1).trim();
+  }
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1).trim();
+  }
+  if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function normalizeBibTeXFieldValue(rawValue: string): string {
+  const parts = splitBibTeXConcatenatedValue(rawValue)
+    .map((part) => unwrapBibTeXFieldSegment(part))
+    .filter(Boolean);
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
+}
+
 export function parseBibTeX(bibtexString: string): ImportResult {
   const references: ParsedReference[] = [];
   const errors: string[] = [];
@@ -138,12 +327,10 @@ export function parseBibTeX(bibtexString: string): ImportResult {
     return { success: false, references: [], errors: ['Invalid input'], warnings: [], format: 'bibtex' };
   }
 
-  // Match BibTeX entries
-  const entryRegex = /@(\w+)\s*\{\s*([^,]*)\s*,([^@]*)\}/gi;
-  let match;
+  const entries = parseBibTeXEntries(bibtexString, warnings);
   let count = 0;
 
-  while ((match = entryRegex.exec(bibtexString)) !== null) {
+  for (const entry of entries) {
     // Limit to prevent memory issues
     if (count >= MAX_REFERENCES) {
       warnings.push(`Import limited to ${MAX_REFERENCES} references`);
@@ -152,9 +339,9 @@ export function parseBibTeX(bibtexString: string): ImportResult {
     count++;
 
     try {
-      const entryType = match[1].toLowerCase();
-      const citationKey = match[2].trim();
-      const fieldsString = match[3];
+      const entryType = entry.entryType;
+      const citationKey = entry.citationKey.trim();
+      const fieldsString = entry.fieldsString;
 
       // Parse fields
       const fields = parseBibTeXFields(fieldsString);
@@ -195,7 +382,7 @@ export function parseBibTeX(bibtexString: string): ImportResult {
         sourceType: BIBTEX_TYPE_MAP[entryType] || 'OTHER',
         importSource: 'BIBTEX_IMPORT',
         citationKey: citationKey || undefined,
-        bibtex: match[0],
+        bibtex: entry.rawEntry,
         tags: fields.keywords ? fields.keywords.split(/[,;]/).map(k => k.trim()).filter(Boolean) : [],
         notes: cleanBibTeXValue(fields.note || fields.annote || '') || undefined,
         attachmentHints: extractAttachmentHints(
@@ -228,15 +415,70 @@ export function parseBibTeX(bibtexString: string): ImportResult {
 
 function parseBibTeXFields(fieldsString: string): Record<string, string> {
   const fields: Record<string, string> = {};
-  
-  // Match field = {value} or field = "value" or field = number
-  const fieldRegex = /([\w-]+)\s*=\s*(?:\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}|"([^"]*)"|(\d+))/gi;
-  let fieldMatch;
 
-  while ((fieldMatch = fieldRegex.exec(fieldsString)) !== null) {
-    const key = fieldMatch[1].toLowerCase();
-    const value = fieldMatch[2] || fieldMatch[3] || fieldMatch[4] || '';
-    fields[key] = value;
+  let index = 0;
+  const input = String(fieldsString || '');
+
+  while (index < input.length) {
+    while (index < input.length && /[\s,]/.test(input[index])) index += 1;
+    if (index >= input.length) break;
+
+    const keyStart = index;
+    while (index < input.length && /[\w-]/.test(input[index])) index += 1;
+    const key = input.slice(keyStart, index).trim().toLowerCase();
+    if (!key) {
+      index += 1;
+      continue;
+    }
+
+    while (index < input.length && /\s/.test(input[index])) index += 1;
+    if (input[index] !== '=') {
+      while (index < input.length && input[index] !== ',') index += 1;
+      continue;
+    }
+
+    index += 1; // skip "="
+    while (index < input.length && /\s/.test(input[index])) index += 1;
+    const valueStart = index;
+
+    let depthBrace = 0;
+    let depthParen = 0;
+    let inQuotes = false;
+    let escaped = false;
+
+    while (index < input.length) {
+      const ch = input[index];
+      if (escaped) {
+        escaped = false;
+        index += 1;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        index += 1;
+        continue;
+      }
+      if (ch === '"') {
+        inQuotes = !inQuotes;
+        index += 1;
+        continue;
+      }
+      if (!inQuotes) {
+        if (ch === '{') depthBrace += 1;
+        else if (ch === '}') depthBrace = Math.max(0, depthBrace - 1);
+        else if (ch === '(') depthParen += 1;
+        else if (ch === ')') depthParen = Math.max(0, depthParen - 1);
+        else if (ch === ',' && depthBrace === 0 && depthParen === 0) {
+          break;
+        }
+      }
+      index += 1;
+    }
+
+    const rawValue = input.slice(valueStart, index).trim();
+    fields[key] = normalizeBibTeXFieldValue(rawValue);
+
+    if (input[index] === ',') index += 1;
   }
 
   return fields;

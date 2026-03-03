@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { authenticateUser } from '@/lib/auth-middleware';
+import { libraryConnectionService } from '@/lib/services/library-connection-service';
 import { referenceConnectorService } from '@/lib/services/reference-connector-service';
 import { referenceLibraryService } from '@/lib/services/reference-library-service';
 import { referenceReconciliationService } from '@/lib/services/reference-reconciliation-service';
 
 const schema = z.object({
-  accessToken: z.string().min(1).optional(),
   limit: z.number().min(1).max(500).optional(),
   collectionId: z.string().optional(),
   autoReconcile: z.boolean().optional().default(true),
@@ -22,13 +22,9 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json().catch(() => ({}));
     const data = schema.parse(body);
-    const accessToken = String(data.accessToken || process.env.MENDELEY_ACCESS_TOKEN || '').trim();
-    if (!accessToken) {
-      return NextResponse.json(
-        { error: 'Mendeley access token is required (request payload or MENDELEY_ACCESS_TOKEN env)' },
-        { status: 400 }
-      );
-    }
+
+    // Get access token from stored connection (auto-refreshes if expired)
+    const { accessToken } = await libraryConnectionService.ensureValidToken(user.id, 'mendeley');
 
     const result = await referenceConnectorService.importFromMendeley(user.id, {
       accessToken,

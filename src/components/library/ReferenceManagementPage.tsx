@@ -1,4 +1,4 @@
-﻿'use client';
+'use client';
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -2856,6 +2856,18 @@ function FileImportSection({
   );
 }
 
+interface LibraryConnectionInfo {
+  provider: 'mendeley' | 'zotero';
+  displayName: string | null;
+  email: string | null;
+  lastSyncAt: string | null;
+  lastSyncStatus: string | null;
+  lastSyncMessage: string | null;
+  totalImported: number;
+  isActive: boolean;
+  createdAt: string;
+}
+
 function ProviderImportSection({
   authToken,
   collectionId,
@@ -2867,118 +2879,156 @@ function ProviderImportSection({
 }) {
   const [mode, setMode] = useState<'mendeley' | 'zotero' | 'manual'>('mendeley');
   const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [providerResult, setProviderResult] = useState<{
     reconciliation?: ReconciliationResult | null;
     batchId?: string;
   } | null>(null);
 
-  const [mendeleyAccessToken, setMendeleyAccessToken] = useState('');
-  const [mendeleyLimit, setMendeleyLimit] = useState('100');
+  // Connection state
+  const [connections, setConnections] = useState<LibraryConnectionInfo[]>([]);
+  const [mendeleyConfigured, setMendeleyConfigured] = useState(false);
+  const [connectionsLoaded, setConnectionsLoaded] = useState(false);
 
+  // Zotero connect form
   const [zoteroApiKey, setZoteroApiKey] = useState('');
   const [zoteroUserId, setZoteroUserId] = useState('');
-  const [zoteroGroupId, setZoteroGroupId] = useState('');
-  const [zoteroLimit, setZoteroLimit] = useState('100');
+  const [connectingZotero, setConnectingZotero] = useState(false);
 
+  // Manual reconciliation
   const [autoReconcile, setAutoReconcile] = useState(true);
   const [dryRunReconcile, setDryRunReconcile] = useState(false);
   const [includeLinkedDocs, setIncludeLinkedDocs] = useState(true);
   const [rollbacking, setRollbacking] = useState(false);
+
+  const mendeleyConnection = connections.find((c) => c.provider === 'mendeley');
+  const zoteroConnection = connections.find((c) => c.provider === 'zotero');
+
+  const loadConnections = useCallback(async () => {
+    if (!authToken) return;
+    try {
+      const response = await fetch('/api/library/connections', {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (!response.ok) return;
+      const data = await response.json();
+      setConnections(data.connections || []);
+      setMendeleyConfigured(data.providers?.mendeley?.configured ?? false);
+    } catch {
+      // silent
+    } finally {
+      setConnectionsLoaded(true);
+    }
+  }, [authToken]);
+
+  useEffect(() => {
+    loadConnections();
+  }, [loadConnections]);
+
+  // Detect redirect back from Mendeley OAuth
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const connected = params.get('connected');
+    const error = params.get('error');
+    if (connected === 'mendeley') {
+      setMessage({ type: 'success', text: 'Mendeley account connected successfully!' });
+      setMode('mendeley');
+      loadConnections();
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (error?.startsWith('mendeley')) {
+      const errorMessages: Record<string, string> = {
+        mendeley_denied: 'Mendeley authorization was denied.',
+        mendeley_missing_params: 'Authorization response was incomplete.',
+        mendeley_invalid_state: 'Authorization state was invalid. Please try again.',
+        mendeley_callback_failed: 'Mendeley connection failed. Please try again.',
+      };
+      setMessage({ type: 'error', text: errorMessages[error] || 'Mendeley connection failed.' });
+      setMode('mendeley');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, [loadConnections]);
 
   const resetStatus = () => {
     setMessage(null);
     setProviderResult(null);
   };
 
-  const parseLimit = (value: string): number | undefined => {
-    const parsed = Number.parseInt(value, 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
-    return Math.min(parsed, 500);
+  const handleSync = async (provider: 'mendeley' | 'zotero') => {
+    if (!authToken) return;
+    try {
+      setSyncing(true);
+      resetStatus();
+      const response = await fetch('/api/library/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ provider }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        setMessage({ type: 'error', text: data.error || `${provider} sync failed` });
+        return;
+      }
+      setMessage({
+        type: 'success',
+        text: `Synced from ${provider}: ${data.imported || 0} new, ${data.updated || 0} updated, ${data.skipped || 0} skipped.`,
+      });
+      if ((data.imported || 0) > 0 || (data.updated || 0) > 0) onImported();
+      loadConnections();
+    } catch {
+      setMessage({ type: 'error', text: `${provider} sync failed` });
+    } finally {
+      setSyncing(false);
+    }
   };
 
-  const buildProvidersPayload = () => {
-    const payload: Record<string, string> = {};
-    if (mendeleyAccessToken.trim()) payload.mendeleyAccessToken = mendeleyAccessToken.trim();
-    if (zoteroApiKey.trim()) payload.zoteroApiKey = zoteroApiKey.trim();
-    if (zoteroUserId.trim()) payload.zoteroUserId = zoteroUserId.trim();
-    if (zoteroGroupId.trim()) payload.zoteroGroupId = zoteroGroupId.trim();
-    return Object.keys(payload).length > 0 ? payload : undefined;
-  };
-
-  const handleMendeleyImport = async () => {
+  const handleDisconnect = async (provider: 'mendeley' | 'zotero') => {
     if (!authToken) return;
     try {
       setLoading(true);
       resetStatus();
-      const payload: Record<string, unknown> = {
-        limit: parseLimit(mendeleyLimit),
-        collectionId: collectionId || undefined,
-        autoReconcile,
-        dryRunReconcile,
-      };
-      if (mendeleyAccessToken.trim()) {
-        payload.accessToken = mendeleyAccessToken.trim();
-      }
-      const response = await fetch('/api/library/import-mendeley', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify(payload),
+      const response = await fetch(`/api/library/oauth/${provider}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
       });
-      const data = await response.json();
       if (!response.ok) {
-        setMessage({ type: 'error', text: data.error || 'Mendeley import failed' });
+        const data = await response.json().catch(() => ({}));
+        setMessage({ type: 'error', text: data.error || 'Disconnect failed' });
         return;
       }
-      const reconciliation = parseReconciliationResult(data.reconciliation);
-      setProviderResult({ reconciliation, batchId: reconciliation?.batchId });
-      setMessage({
-        type: 'success',
-        text: `Imported ${data.imported || 0} references from Mendeley${data.skipped ? `, skipped ${data.skipped}` : ''}.`,
-      });
-      if ((data.imported || 0) > 0) onImported();
+      setMessage({ type: 'success', text: `${provider === 'mendeley' ? 'Mendeley' : 'Zotero'} disconnected.` });
+      loadConnections();
     } catch {
-      setMessage({ type: 'error', text: 'Mendeley import failed' });
+      setMessage({ type: 'error', text: 'Disconnect failed' });
     } finally {
       setLoading(false);
     }
   };
 
-  const handleZoteroImport = async () => {
-    if (!authToken) return;
+  const handleConnectZotero = async () => {
+    if (!authToken || !zoteroApiKey.trim() || !zoteroUserId.trim()) return;
     try {
-      setLoading(true);
+      setConnectingZotero(true);
       resetStatus();
-      const payload: Record<string, unknown> = {
-        limit: parseLimit(zoteroLimit),
-        collectionId: collectionId || undefined,
-        autoReconcile,
-        dryRunReconcile,
-      };
-      if (zoteroApiKey.trim()) payload.apiKey = zoteroApiKey.trim();
-      if (zoteroUserId.trim()) payload.userId = zoteroUserId.trim();
-      if (zoteroGroupId.trim()) payload.groupId = zoteroGroupId.trim();
-      const response = await fetch('/api/library/import-zotero', {
+      const response = await fetch('/api/library/oauth/zotero', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ apiKey: zoteroApiKey.trim(), zoteroUserId: zoteroUserId.trim() }),
       });
       const data = await response.json();
       if (!response.ok) {
-        setMessage({ type: 'error', text: data.error || 'Zotero import failed' });
+        setMessage({ type: 'error', text: data.error || 'Zotero connection failed' });
         return;
       }
-      const reconciliation = parseReconciliationResult(data.reconciliation);
-      setProviderResult({ reconciliation, batchId: reconciliation?.batchId });
-      setMessage({
-        type: 'success',
-        text: `Imported ${data.imported || 0} references from Zotero${data.skipped ? `, skipped ${data.skipped}` : ''}.`,
-      });
-      if ((data.imported || 0) > 0) onImported();
+      setMessage({ type: 'success', text: 'Zotero account connected successfully!' });
+      setZoteroApiKey('');
+      setZoteroUserId('');
+      loadConnections();
     } catch {
-      setMessage({ type: 'error', text: 'Zotero import failed' });
+      setMessage({ type: 'error', text: 'Zotero connection failed' });
     } finally {
-      setLoading(false);
+      setConnectingZotero(false);
     }
   };
 
@@ -2995,7 +3045,6 @@ function ProviderImportSection({
           applyAutoLinks: autoReconcile,
           dryRun: dryRunReconcile,
           includeAlreadyLinkedDocuments: includeLinkedDocs,
-          providers: buildProvidersPayload(),
         }),
       });
       const data = await response.json();
@@ -3050,10 +3099,77 @@ function ProviderImportSection({
     }
   };
 
+  const formatDate = (iso: string | null) => {
+    if (!iso) return 'Never';
+    try { return new Date(iso).toLocaleString(); } catch { return iso; }
+  };
+
+  const renderConnectionCard = (
+    provider: 'mendeley' | 'zotero',
+    connection: LibraryConnectionInfo
+  ) => (
+    <div className="rounded-lg border bg-white p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-semibold text-slate-800">
+            {connection.displayName || (provider === 'mendeley' ? 'Mendeley' : 'Zotero')}
+          </p>
+          {connection.email && (
+            <p className="text-xs text-slate-500">{connection.email}</p>
+          )}
+        </div>
+        <Badge variant="outline" className="bg-emerald-50 text-emerald-700 border-emerald-200">
+          Connected
+        </Badge>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
+        <div>
+          <span className="font-medium">Last sync:</span>{' '}
+          {formatDate(connection.lastSyncAt)}
+        </div>
+        <div>
+          <span className="font-medium">Total imported:</span>{' '}
+          {connection.totalImported}
+        </div>
+        {connection.lastSyncStatus && (
+          <div>
+            <span className="font-medium">Status:</span>{' '}
+            <span className={
+              connection.lastSyncStatus === 'success' ? 'text-emerald-600' :
+              connection.lastSyncStatus === 'failed' ? 'text-red-600' : 'text-amber-600'
+            }>
+              {connection.lastSyncStatus}
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="flex gap-2">
+        <Button
+          size="sm"
+          onClick={() => handleSync(provider)}
+          disabled={syncing || loading}
+        >
+          {syncing ? 'Syncing...' : 'Sync Now'}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="text-red-600 border-red-200 hover:bg-red-50"
+          onClick={() => handleDisconnect(provider)}
+          disabled={syncing || loading}
+        >
+          Disconnect
+        </Button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="space-y-4">
       <p className="text-sm text-gray-600">
-        Import directly from Mendeley or Zotero, and run manual reconciliation for already-uploaded PDFs.
+        Connect your Mendeley or Zotero library to sync references, or run manual reconciliation for already-uploaded PDFs.
         {collectionId && (
           <span className="block mt-1 text-indigo-600 font-medium">
             Imported references are added to the currently selected library
@@ -3072,125 +3188,107 @@ function ProviderImportSection({
         </TabsList>
 
         <TabsContent value="mendeley" className="mt-4 space-y-3">
-          <div>
-            <label className="text-sm font-medium text-gray-700">Mendeley access token (optional)</label>
-            <Input
-              type="password"
-              value={mendeleyAccessToken}
-              onChange={(e) => setMendeleyAccessToken(e.target.value)}
-              placeholder="Leave blank to use server-configured token"
-              className="mt-1"
-            />
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-700">Import limit</label>
-            <Input
-              type="number"
-              value={mendeleyLimit}
-              onChange={(e) => setMendeleyLimit(e.target.value)}
-              min="1"
-              max="500"
-              className="mt-1"
-            />
-          </div>
-          <Button
-            onClick={handleMendeleyImport}
-            disabled={loading}
-          >
-            {loading ? 'Importing...' : 'Import from Mendeley'}
-          </Button>
+          {mendeleyConnection ? (
+            renderConnectionCard('mendeley', mendeleyConnection)
+          ) : (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5 text-center space-y-3">
+              {mendeleyConfigured ? (
+                <>
+                  <p className="text-sm text-slate-600">
+                    Connect your Mendeley account to import and sync your library automatically.
+                  </p>
+                  <Button
+                    onClick={() => {
+                      window.location.href = `/api/library/oauth/mendeley?authorization=${authToken}`;
+                    }}
+                    disabled={loading || !connectionsLoaded}
+                  >
+                    Connect to Mendeley
+                  </Button>
+                </>
+              ) : (
+                <p className="text-sm text-slate-500">
+                  Mendeley OAuth is not configured on this server. Ask your administrator to set
+                  <code className="mx-1 px-1 py-0.5 bg-slate-100 rounded text-xs">MENDELEY_CLIENT_ID</code>
+                  and
+                  <code className="mx-1 px-1 py-0.5 bg-slate-100 rounded text-xs">MENDELEY_CLIENT_SECRET</code>
+                  environment variables.
+                </p>
+              )}
+            </div>
+          )}
         </TabsContent>
 
         <TabsContent value="zotero" className="mt-4 space-y-3">
-          <div>
-            <label className="text-sm font-medium text-gray-700">Zotero API key (optional)</label>
-            <Input
-              type="password"
-              value={zoteroApiKey}
-              onChange={(e) => setZoteroApiKey(e.target.value)}
-              placeholder="Leave blank to use server-configured key"
-              className="mt-1"
-            />
-          </div>
-          <div className="grid md:grid-cols-2 gap-3">
-            <div>
-              <label className="text-sm font-medium text-gray-700">User ID (optional)</label>
-              <Input
-                value={zoteroUserId}
-                onChange={(e) => setZoteroUserId(e.target.value)}
-                placeholder="Leave blank to use server default"
-                className="mt-1"
-              />
+          {zoteroConnection ? (
+            renderConnectionCard('zotero', zoteroConnection)
+          ) : (
+            <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-5 space-y-4">
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-700">Connect your Zotero library</p>
+                <ol className="text-xs text-slate-600 list-decimal list-inside space-y-1">
+                  <li>
+                    Go to{' '}
+                    <a
+                      href="https://www.zotero.org/settings/keys/new"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-indigo-600 underline hover:text-indigo-800"
+                    >
+                      zotero.org/settings/keys
+                    </a>{' '}
+                    and create a new private key with library read access
+                  </li>
+                  <li>
+                    Find your numeric User ID on your{' '}
+                    <a
+                      href="https://www.zotero.org/settings/keys"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-indigo-600 underline hover:text-indigo-800"
+                    >
+                      Zotero settings page
+                    </a>{' '}
+                    (shown as &quot;Your userID for use in API calls is ...&quot;)
+                  </li>
+                  <li>Paste both values below and click Connect</li>
+                </ol>
+              </div>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-sm font-medium text-gray-700">API Key</label>
+                  <Input
+                    type="password"
+                    value={zoteroApiKey}
+                    onChange={(e) => setZoteroApiKey(e.target.value)}
+                    placeholder="Paste your Zotero API key"
+                    className="mt-1"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-700">User ID</label>
+                  <Input
+                    value={zoteroUserId}
+                    onChange={(e) => setZoteroUserId(e.target.value)}
+                    placeholder="Your numeric Zotero user ID"
+                    className="mt-1"
+                  />
+                </div>
+                <Button
+                  onClick={handleConnectZotero}
+                  disabled={connectingZotero || !zoteroApiKey.trim() || !zoteroUserId.trim()}
+                >
+                  {connectingZotero ? 'Connecting...' : 'Connect Zotero'}
+                </Button>
+              </div>
             </div>
-            <div>
-              <label className="text-sm font-medium text-gray-700">Group ID (optional)</label>
-              <Input
-                value={zoteroGroupId}
-                onChange={(e) => setZoteroGroupId(e.target.value)}
-                placeholder="Alternative to user ID"
-                className="mt-1"
-              />
-            </div>
-          </div>
-          <div>
-            <label className="text-sm font-medium text-gray-700">Import limit</label>
-            <Input
-              type="number"
-              value={zoteroLimit}
-              onChange={(e) => setZoteroLimit(e.target.value)}
-              min="1"
-              max="500"
-              className="mt-1"
-            />
-          </div>
-          <Button
-            onClick={handleZoteroImport}
-            disabled={loading}
-          >
-            {loading ? 'Importing...' : 'Import from Zotero'}
-          </Button>
+          )}
         </TabsContent>
 
         <TabsContent value="manual" className="mt-4 space-y-3">
           <p className="text-xs text-slate-600">
             Runs constrained assignment across existing references and uploaded documents.
           </p>
-          <div className="grid md:grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs font-medium text-gray-600 block mb-1">Mendeley token (optional)</label>
-              <Input
-                type="password"
-                value={mendeleyAccessToken}
-                onChange={(e) => setMendeleyAccessToken(e.target.value)}
-                placeholder="Optional provider signal"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-gray-600 block mb-1">Zotero API key (optional)</label>
-              <Input
-                type="password"
-                value={zoteroApiKey}
-                onChange={(e) => setZoteroApiKey(e.target.value)}
-                placeholder="Optional provider signal"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-gray-600 block mb-1">Zotero user ID (optional)</label>
-              <Input
-                value={zoteroUserId}
-                onChange={(e) => setZoteroUserId(e.target.value)}
-                placeholder="If using Zotero provider"
-              />
-            </div>
-            <div>
-              <label className="text-xs font-medium text-gray-600 block mb-1">Zotero group ID (optional)</label>
-              <Input
-                value={zoteroGroupId}
-                onChange={(e) => setZoteroGroupId(e.target.value)}
-                placeholder="Alternative to user ID"
-              />
-            </div>
-          </div>
           <div className="flex flex-wrap items-center gap-4">
             <label className="inline-flex items-center gap-2 text-sm text-slate-700">
               <Checkbox
@@ -3229,26 +3327,6 @@ function ProviderImportSection({
           </div>
         </TabsContent>
       </Tabs>
-
-      <div className="rounded-lg border bg-slate-50 p-3 space-y-2">
-        <p className="text-sm font-medium text-slate-700">Run options</p>
-        <div className="flex flex-wrap items-center gap-4">
-          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-            <Checkbox
-              checked={autoReconcile}
-              onCheckedChange={(checked) => setAutoReconcile(Boolean(checked))}
-            />
-            Apply auto-links
-          </label>
-          <label className="inline-flex items-center gap-2 text-sm text-slate-700">
-            <Checkbox
-              checked={dryRunReconcile}
-              onCheckedChange={(checked) => setDryRunReconcile(Boolean(checked))}
-            />
-            Dry run
-          </label>
-        </div>
-      </div>
 
       {message && (
         <div className={`p-3 rounded-lg text-sm ${

@@ -1,4 +1,8 @@
 import { prisma } from '../prisma';
+import {
+  normalizeDoi as normalizeDoiValue,
+  normalizeSearchText,
+} from '../utils/reference-matching-normalization';
 
 type VerificationPhase = 'post-pdf-parser' | 'post-proactive';
 type VerificationDecision = 'keep' | 'detach';
@@ -38,29 +42,16 @@ const DOI_REGEX = /(?:doi[:\s]+|https?:\/\/(?:dx\.)?doi\.org\/)?(10\.\d{4,9}\/[^
 const SUPPLEMENTARY_REGEX = /\b(supplementary|supplemental|supporting\s+information|appendix|appendices|correction|erratum|editorial)\b/i;
 const TITLE_STOP_WORDS = new Set([
   'a', 'an', 'the', 'of', 'on', 'for', 'to', 'in', 'at', 'by', 'from', 'with', 'without',
-  'and', 'or', 'as', 'via', 'using', 'use', 'based', 'study', 'analysis',
+  'and', 'or', 'as', 'via', 'using', 'use', 'based',
 ]);
+const SURNAME_PARTICLES = new Set(['da', 'de', 'del', 'della', 'der', 'di', 'du', 'ibn', 'la', 'le', 'van', 'von']);
 
 function normalizeDoi(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const cleaned = value
-    .trim()
-    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '')
-    .replace(/^doi:\s*/i, '')
-    .replace(/[)\],;]+$/, '')
-    .replace(/\.+$/, '')
-    .trim()
-    .toLowerCase();
-  if (!cleaned) return null;
-  return /^10\.\d{4,9}\/\S+$/i.test(cleaned) ? cleaned : null;
+  return normalizeDoiValue(value);
 }
 
 function normalizeText(value: unknown): string {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return normalizeSearchText(value);
 }
 
 function tokenizeTitle(value: string): Set<string> {
@@ -87,13 +78,30 @@ function extractLikelyTitleFromText(parsedText: string): string | null {
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean);
-  for (const line of lines.slice(0, 20)) {
+
+  let best: { line: string; score: number } | null = null;
+  for (const line of lines.slice(0, 40)) {
     if (line.startsWith('## ')) continue;
-    if (/^(abstract|keywords?|introduction)\b/i.test(line)) continue;
-    if (line.length < 12 || line.length > 260) continue;
-    return line;
+    if (/^(abstract|keywords?|introduction|copyright|journal|vol(?:ume)?\.?|issue|published)\b/i.test(line)) continue;
+    if (line.length < 20 || line.length > 240) continue;
+    if (/10\.\d{4,9}\//i.test(line) || /^https?:\/\//i.test(line)) continue;
+    if (/^[-\d\s.,;:()]+$/.test(line)) continue;
+
+    const words = normalizeText(line).split(' ').filter(Boolean);
+    if (words.length < 4 || words.length > 22) continue;
+
+    let score = 0;
+    if (words.length >= 6 && words.length <= 18) score += 2;
+    if (!/[;|]/.test(line)) score += 1;
+    if (line.length >= 35 && line.length <= 180) score += 2;
+    if (/^[A-Z]/.test(line)) score += 1;
+
+    if (!best || score > best.score) {
+      best = { line, score };
+    }
   }
-  return null;
+
+  return best && best.score >= 3 ? best.line : null;
 }
 
 function extractFirstDoiFromText(text: string): string | null {
@@ -128,14 +136,64 @@ function toAuthorLastNameSet(value: unknown): Set<string> {
     }
     const parts = candidate
       .split(/\s+/)
-      .map(part => part.trim().toLowerCase())
+      .map(part => normalizeText(part))
       .filter(Boolean);
+    if (parts.length === 0) continue;
+
     const last = parts[parts.length - 1];
-    if (last && last.length >= 2) {
-      lastNames.add(last);
+    lastNames.add(last);
+
+    if (parts.length >= 2) {
+      const secondLast = parts[parts.length - 2];
+      if (secondLast && secondLast.length >= 2 && !SURNAME_PARTICLES.has(secondLast)) {
+        lastNames.add(secondLast);
+      }
+    }
+
+    const compound: string[] = [last];
+    let idx = parts.length - 2;
+    while (idx >= 0 && SURNAME_PARTICLES.has(parts[idx])) {
+      compound.unshift(parts[idx]);
+      idx -= 1;
+    }
+    if (compound.length > 1) {
+      lastNames.add(compound.join(' '));
     }
   }
   return lastNames;
+}
+
+function levenshteinDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a) return b.length;
+  if (!b) return a.length;
+
+  const prev = new Array<number>(b.length + 1);
+  const curr = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j += 1) prev[j] = j;
+
+  for (let i = 1; i <= a.length; i += 1) {
+    curr[0] = i;
+    const aChar = a.charCodeAt(i - 1);
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = aChar === b.charCodeAt(j - 1) ? 0 : 1;
+      curr[j] = Math.min(
+        curr[j - 1] + 1,
+        prev[j] + 1,
+        prev[j - 1] + cost
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) prev[j] = curr[j];
+  }
+
+  return prev[b.length];
+}
+
+function normalizedEditSimilarity(a: string, b: string): number {
+  if (!a || !b) return 0;
+  const maxLen = Math.max(a.length, b.length);
+  if (maxLen === 0) return 1;
+  return Math.max(0, 1 - (levenshteinDistance(a, b) / maxLen));
 }
 
 function overlapRatio(expected: Set<string>, observed: Set<string>): number {
@@ -195,7 +253,7 @@ class PdfMatchVerificationService {
       const evaluation = this.evaluate(expected, observed, phase);
 
       if (evaluation.decision === 'detach') {
-        const didDetach = await this.detachPrimaryLink(link.id, link.referenceId);
+        const didDetach = await this.detachPrimaryLink(link.id, link.referenceId, documentId, phase, evaluation);
         if (didDetach) {
           detached += 1;
           console.warn(
@@ -289,13 +347,15 @@ class PdfMatchVerificationService {
     const titleSimilarity = expected.titleTokens.size > 0 && observed.titleTokens.size > 0
       ? jaccard(expected.titleTokens, observed.titleTokens)
       : 0;
-    if (titleSimilarity >= 0.8) {
+    const titleEditSimilarity = normalizedEditSimilarity(expected.titleNormalized, observed.titleNormalized);
+    const titleSignal = Math.max(titleSimilarity, titleEditSimilarity);
+    if (titleSignal >= 0.8) {
       score += 25;
       reasons.push('Title very close');
-    } else if (titleSimilarity >= 0.6) {
+    } else if (titleSignal >= 0.6) {
       score += 15;
       reasons.push('Title close');
-    } else if (titleSimilarity >= 0.45) {
+    } else if (titleSignal >= 0.45) {
       score += 8;
       reasons.push('Title partial match');
     } else if (observed.title && expected.title) {
@@ -346,9 +406,9 @@ class PdfMatchVerificationService {
     }
 
     if (phase === 'post-proactive' && observedEvidenceStrong) {
-      const veryLowSemanticMatch = titleSimilarity < 0.2 && authorOverlap === 0;
+      const veryLowSemanticMatch = titleSignal < 0.2 && authorOverlap === 0;
       const likelyWrongDocument = score < 10 && veryLowSemanticMatch;
-      const supplementaryMismatch = observed.hasSupplementarySignal && titleSimilarity < 0.35 && authorOverlap < 0.2;
+      const supplementaryMismatch = observed.hasSupplementarySignal && titleSignal < 0.35 && authorOverlap < 0.2;
 
       if (likelyWrongDocument || supplementaryMismatch) {
         return {
@@ -374,20 +434,47 @@ class PdfMatchVerificationService {
       decision: 'keep',
       confidence,
       score,
-      titleSimilarity,
+      titleSimilarity: titleSignal,
       authorOverlap,
       reason: reasons.length > 0 ? reasons.join('; ') : 'Insufficient mismatch evidence',
     };
   }
 
-  private async detachPrimaryLink(linkId: string, referenceId: string): Promise<boolean> {
+  private async detachPrimaryLink(
+    linkId: string,
+    referenceId: string,
+    documentId: string,
+    phase: VerificationPhase,
+    evaluation: Evaluation
+  ): Promise<boolean> {
     try {
-      await prisma.referenceDocumentLink.delete({
+      await prisma.referenceDocumentLink.update({
         where: { id: linkId },
+        data: { isPrimary: false },
       });
     } catch {
       return false;
     }
+
+    await prisma.auditLog.create({
+      data: {
+        actorUserId: null,
+        tenantId: null,
+        action: 'LIBRARY_REFERENCE_LINK_VERIFICATION_DETACHED',
+        resource: 'reference_document_link',
+        meta: {
+          linkId,
+          referenceId,
+          documentId,
+          phase,
+          reason: evaluation.reason,
+          score: evaluation.score,
+          titleSimilarity: evaluation.titleSimilarity,
+          authorOverlap: evaluation.authorOverlap,
+          detachedAt: new Date().toISOString(),
+        },
+      },
+    }).catch(() => undefined);
 
     const remainingPrimary = await prisma.referenceDocumentLink.count({
       where: {

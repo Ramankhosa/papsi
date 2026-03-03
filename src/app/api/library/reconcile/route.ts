@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { referenceReconciliationService } from '@/lib/services/reference-reconciliation-service';
+import { libraryConnectionService } from '@/lib/services/library-connection-service';
 
 const runSchema = z.object({
   referenceIds: z.array(z.string().min(1)).optional(),
@@ -9,12 +10,6 @@ const runSchema = z.object({
   applyAutoLinks: z.boolean().optional().default(true),
   dryRun: z.boolean().optional().default(false),
   includeAlreadyLinkedDocuments: z.boolean().optional().default(true),
-  providers: z.object({
-    mendeleyAccessToken: z.string().min(1).optional(),
-    zoteroApiKey: z.string().min(1).optional(),
-    zoteroUserId: z.string().min(1).optional(),
-    zoteroGroupId: z.string().min(1).optional(),
-  }).optional(),
 });
 
 const rollbackSchema = z.object({
@@ -107,12 +102,17 @@ export async function POST(request: NextRequest) {
     }
 
     const data = runSchema.parse(body);
-    const providers = {
-      mendeleyAccessToken: data.providers?.mendeleyAccessToken || process.env.MENDELEY_ACCESS_TOKEN || undefined,
-      zoteroApiKey: data.providers?.zoteroApiKey || process.env.ZOTERO_API_KEY || undefined,
-      zoteroUserId: data.providers?.zoteroUserId || process.env.ZOTERO_USER_ID || undefined,
-      zoteroGroupId: data.providers?.zoteroGroupId || process.env.ZOTERO_GROUP_ID || undefined,
-    };
+    // Build providers from stored connections (tokens never touch the client)
+    const providers: Record<string, string | undefined> = {};
+    try {
+      const { accessToken } = await libraryConnectionService.ensureValidToken(user.id, 'mendeley');
+      providers.mendeleyAccessToken = accessToken;
+    } catch { /* no Mendeley connection */ }
+    try {
+      const { accessToken, providerUserId } = await libraryConnectionService.ensureValidToken(user.id, 'zotero');
+      providers.zoteroApiKey = accessToken;
+      providers.zoteroUserId = providerUserId ?? undefined;
+    } catch { /* no Zotero connection */ }
     const result = await referenceReconciliationService.runReconciliation({
       userId: user.id,
       actorUserId: user.id,

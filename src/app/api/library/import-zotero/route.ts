@@ -1,14 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { authenticateUser } from '@/lib/auth-middleware';
+import { libraryConnectionService } from '@/lib/services/library-connection-service';
 import { referenceConnectorService } from '@/lib/services/reference-connector-service';
 import { referenceLibraryService } from '@/lib/services/reference-library-service';
 import { referenceReconciliationService } from '@/lib/services/reference-reconciliation-service';
 
 const schema = z.object({
-  apiKey: z.string().min(1).optional(),
-  userId: z.string().optional(),
-  groupId: z.string().optional(),
   limit: z.number().min(1).max(500).optional(),
   collectionId: z.string().optional(),
   autoReconcile: z.boolean().optional().default(true),
@@ -24,26 +22,20 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json().catch(() => ({}));
     const data = schema.parse(body);
-    const apiKey = String(data.apiKey || process.env.ZOTERO_API_KEY || '').trim();
-    const userId = String(data.userId || process.env.ZOTERO_USER_ID || '').trim() || undefined;
-    const groupId = String(data.groupId || process.env.ZOTERO_GROUP_ID || '').trim() || undefined;
-    if (!apiKey) {
+
+    // Get API key and user ID from stored connection
+    const { accessToken: apiKey, providerUserId } = await libraryConnectionService.ensureValidToken(user.id, 'zotero');
+
+    if (!providerUserId) {
       return NextResponse.json(
-        { error: 'Zotero API key is required (request payload or ZOTERO_API_KEY env)' },
-        { status: 400 }
-      );
-    }
-    if (!userId && !groupId) {
-      return NextResponse.json(
-        { error: 'Provide Zotero userId/groupId in request or ZOTERO_USER_ID/ZOTERO_GROUP_ID env' },
+        { error: 'Zotero user ID is missing. Please reconnect your Zotero account.' },
         { status: 400 }
       );
     }
 
     const result = await referenceConnectorService.importFromZotero(user.id, {
       apiKey,
-      userId,
-      groupId,
+      userId: providerUserId,
       limit: data.limit,
     });
 
@@ -62,8 +54,7 @@ export async function POST(request: NextRequest) {
         dryRun: data.dryRunReconcile,
         providers: {
           zoteroApiKey: apiKey,
-          zoteroUserId: userId,
-          zoteroGroupId: groupId,
+          zoteroUserId: providerUserId,
         },
       }).catch((err: unknown) => ({
         error: err instanceof Error ? err.message : 'Reconciliation failed',

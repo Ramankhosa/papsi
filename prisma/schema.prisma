@@ -221,6 +221,9 @@ model User {
   // Reference document attachments (PDFs)
   referenceDocuments ReferenceDocument[]
 
+  // Library provider connections (Mendeley OAuth, Zotero API key)
+  libraryConnections LibraryConnection[]
+
   @@map("users")
 }
 
@@ -4873,4 +4876,37 @@ model EvidenceCardMapping {
   @@index([sectionKey])
   @@index([sectionKey, dimension])
   @@map("evidence_card_mappings")
+}
+
+model LibraryConnection {
+  id       String @id @default(cuid())
+  userId   String
+  provider String // "mendeley" | "zotero"
+
+  // Encrypted tokens (AES-256-CBC via encryptToken from auth.ts)
+  accessTokenEnc  String?
+  refreshTokenEnc String?
+  tokenExpiresAt  DateTime?
+
+  // Zotero-specific: numeric user ID from zotero.org
+  providerUserId String?
+
+  // Provider profile info
+  displayName String?
+  email       String?
+
+  // Sync metadata
+  lastSyncAt      DateTime?
+  lastSyncStatus  String? // "success" | "partial" | "failed"
+  lastSyncMessage String?
+  totalImported   Int      @default(0)
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, provider])
+  @@map("library_connections")
 }
