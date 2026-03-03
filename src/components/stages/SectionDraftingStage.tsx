@@ -73,6 +73,18 @@ type SectionCitationValidation = {
   unknownKeys: string[];
 };
 
+type ReferenceDraftSectionView = {
+  sectionKey: string;
+  displayName: string;
+  status: string;
+  hasContent: boolean;
+  content: string;
+  wordCount: number;
+  generatedAt: string | null;
+  source: 'pass1_artifact' | 'base_content_internal' | 'none';
+  updatedAt: string | null;
+};
+
 type DimensionPlanStatus = 'accepted' | 'pending' | 'todo';
 
 interface DimensionPlanItem {
@@ -1055,6 +1067,16 @@ export default function SectionDraftingStage({
   const [bgGenRetrying, setBgGenRetrying] = useState(false);
   const [bgSectionSelectorOpen, setBgSectionSelectorOpen] = useState(false);
   const [bgSelectedSectionKeys, setBgSelectedSectionKeys] = useState<string[]>([]);
+  const [showReferenceDraftModal, setShowReferenceDraftModal] = useState(false);
+  const [referenceDraftLoading, setReferenceDraftLoading] = useState(false);
+  const [referenceDraftError, setReferenceDraftError] = useState<string | null>(null);
+  const [referenceDraftSections, setReferenceDraftSections] = useState<ReferenceDraftSectionView[]>([]);
+  const [referenceDraftSummary, setReferenceDraftSummary] = useState<{
+    totalSections: number;
+    withPass1Content: number;
+    withoutPass1Content: number;
+  } | null>(null);
+  const [referenceDraftFetchedAt, setReferenceDraftFetchedAt] = useState<string | null>(null);
   const [sectionCitationValidation, setSectionCitationValidation] = useState<Record<string, SectionCitationValidation>>({});
   const [dimensionPanelOpen, setDimensionPanelOpen] = useState<Record<string, boolean>>({});
   const [dimensionBySection, setDimensionBySection] = useState<Record<string, DimensionDraftUIState>>({});
@@ -1300,6 +1322,12 @@ export default function SectionDraftingStage({
     setDimensionBySection({});
     setBgSectionSelectorOpen(false);
     setBgSelectedSectionKeys([]);
+    setShowReferenceDraftModal(false);
+    setReferenceDraftLoading(false);
+    setReferenceDraftError(null);
+    setReferenceDraftSections([]);
+    setReferenceDraftSummary(null);
+    setReferenceDraftFetchedAt(null);
   }, [sessionId]);
 
   useEffect(() => { loadSession(); loadCitations(); loadFigures(); }, [loadSession, loadCitations, loadFigures]);
@@ -1372,6 +1400,53 @@ export default function SectionDraftingStage({
       setBgGenRetrying(false);
     }
   }, [authToken, bgGenRetrying, loadBgGenStatus, sessionId, showMsg]);
+
+  const loadReferenceDraftOutput = useCallback(async () => {
+    if (!authToken || !sessionId) return;
+    setReferenceDraftLoading(true);
+    setReferenceDraftError(null);
+    try {
+      const res = await fetch(`/api/papers/${sessionId}/reference-draft`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+        cache: 'no-store'
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to fetch reference draft output');
+      }
+
+      const sections = Array.isArray(data?.sections)
+        ? data.sections.map((section: any) => ({
+            sectionKey: normalizeSectionKey(String(section?.sectionKey || '')),
+            displayName: String(section?.displayName || section?.sectionKey || 'Untitled Section'),
+            status: String(section?.status || 'NOT_STARTED'),
+            hasContent: Boolean(section?.hasContent),
+            content: String(section?.content || ''),
+            wordCount: Number(section?.wordCount || 0),
+            generatedAt: section?.generatedAt ? String(section.generatedAt) : null,
+            source: section?.source === 'pass1_artifact' || section?.source === 'base_content_internal'
+              ? section.source
+              : 'none',
+            updatedAt: section?.updatedAt ? String(section.updatedAt) : null
+          } as ReferenceDraftSectionView))
+        : [];
+
+      setReferenceDraftSections(sections);
+      setReferenceDraftSummary(data?.summary || null);
+      setReferenceDraftFetchedAt(new Date().toISOString());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to fetch reference draft output';
+      setReferenceDraftError(message);
+      showMsg(message, 'error');
+    } finally {
+      setReferenceDraftLoading(false);
+    }
+  }, [authToken, sessionId, showMsg]);
+
+  const handleOpenReferenceDraftModal = useCallback(async () => {
+    setShowReferenceDraftModal(true);
+    await loadReferenceDraftOutput();
+  }, [loadReferenceDraftOutput]);
 
   useEffect(() => { loadBgGenStatus(); }, [loadBgGenStatus]);
 
@@ -2732,6 +2807,12 @@ export default function SectionDraftingStage({
 
   // Total word count
   const totalWordCount = useMemo(() => Object.values(content).reduce((acc, c) => acc + computeWordCount(c), 0), [content]);
+  const formatDateTime = useCallback((value: string | null | undefined) => {
+    if (!value) return 'Not available';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+  }, []);
 
   // ============================================================================
   // Render
@@ -2908,6 +2989,15 @@ export default function SectionDraftingStage({
                 {bgGenRetrying ? 'Preparing...' : 'Generate Reference Draft (Pass 1)'}
               </button>
               <button
+                onClick={() => {
+                  void handleOpenReferenceDraftModal();
+                }}
+                disabled={referenceDraftLoading}
+                className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {referenceDraftLoading ? 'Loading...' : 'View Reference Draft'}
+              </button>
+              <button
                 onClick={() => setBgSectionSelectorOpen(prev => !prev)}
                 className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100"
               >
@@ -2968,7 +3058,7 @@ export default function SectionDraftingStage({
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75" />
               <span className="relative inline-flex rounded-full h-3 w-3 bg-indigo-500" />
             </span>
-            <div>
+            <div className="flex-1">
               <p className="text-sm font-medium text-indigo-800">
                 Assembling paper structure for final content generation...
               </p>
@@ -2979,6 +3069,15 @@ export default function SectionDraftingStage({
                 </p>
               )}
             </div>
+            <button
+              onClick={() => {
+                void handleOpenReferenceDraftModal();
+              }}
+              disabled={referenceDraftLoading}
+              className="px-3 py-1.5 text-xs rounded-lg border border-indigo-300 text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {referenceDraftLoading ? 'Loading...' : 'View Reference Draft'}
+            </button>
           </div>
         )}
         {(bgGenStatus === 'COMPLETED' || bgGenStatus === 'PARTIAL') && bgGenProgress && (
@@ -3016,6 +3115,19 @@ export default function SectionDraftingStage({
                       : 'Retry Section Prep'}
                 </button>
               )}
+              <button
+                onClick={() => {
+                  void handleOpenReferenceDraftModal();
+                }}
+                disabled={referenceDraftLoading}
+                className={`px-3 py-1.5 text-xs rounded-lg border disabled:opacity-50 disabled:cursor-not-allowed ${
+                  bgGenStatus === 'PARTIAL'
+                    ? 'border-amber-300 text-amber-800 hover:bg-amber-100'
+                    : 'border-emerald-300 text-emerald-800 hover:bg-emerald-100'
+                }`}
+              >
+                {referenceDraftLoading ? 'Loading...' : 'View Reference Draft'}
+              </button>
               {bgGenStatus === 'PARTIAL' && (bgGenLiveCounts?.failed || 0) > 0 && (
                 <button
                   onClick={() => handleRetryBgPreparation({ retryFailedOnly: true })}
@@ -3110,6 +3222,15 @@ export default function SectionDraftingStage({
                 className="px-3 py-1.5 text-xs rounded-lg border border-red-300 text-red-800 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {bgGenRetrying ? 'Retrying...' : 'Retry Section Prep'}
+              </button>
+              <button
+                onClick={() => {
+                  void handleOpenReferenceDraftModal();
+                }}
+                disabled={referenceDraftLoading}
+                className="px-3 py-1.5 text-xs rounded-lg border border-red-300 text-red-800 hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {referenceDraftLoading ? 'Loading...' : 'View Reference Draft'}
               </button>
               <button
                 onClick={() => setBgSectionSelectorOpen(prev => !prev)}
@@ -3592,6 +3713,119 @@ export default function SectionDraftingStage({
       <PaperInstructionsModal isOpen={showAllInstructionsModal} onClose={() => setShowAllInstructionsModal(false)}
         sections={(sectionConfigs || fallbackSections).flatMap(s => s.keys.map(k => ({ key: k, label: displayName[k] || formatSectionLabel(k) })))}
         instructions={userInstructions} onSaveAll={(newInstr) => setUserInstructions(newInstr as Record<string, UserInstruction>)} />
+
+      {/* Reference Draft (Pass 1) Preview Modal */}
+      <AnimatePresence>
+        {showReferenceDraftModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setShowReferenceDraftModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.96, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              className="bg-white rounded-2xl shadow-2xl max-w-6xl w-full max-h-[90vh] overflow-hidden flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="p-4 border-b border-slate-200 flex flex-wrap items-start justify-between gap-3 bg-slate-50">
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-800">Reference Draft Output (Pass 1)</h3>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Review base-prompt outputs across all configured sections.
+                  </p>
+                  {referenceDraftSummary && (
+                    <p className="text-xs text-slate-600 mt-1">
+                      {referenceDraftSummary.withPass1Content} / {referenceDraftSummary.totalSections} sections have Pass 1 output
+                    </p>
+                  )}
+                  {referenceDraftFetchedAt && (
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Last fetched: {formatDateTime(referenceDraftFetchedAt)}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => { void loadReferenceDraftOutput(); }}
+                    disabled={referenceDraftLoading}
+                    className="px-3 py-1.5 text-xs rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-100 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {referenceDraftLoading ? 'Refreshing...' : 'Refresh'}
+                  </button>
+                  <button
+                    onClick={() => setShowReferenceDraftModal(false)}
+                    className="w-8 h-8 rounded-lg hover:bg-slate-200 flex items-center justify-center"
+                  >
+                    <X className="w-5 h-5 text-slate-600" />
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-white">
+                {referenceDraftLoading && referenceDraftSections.length === 0 && (
+                  <div className="flex items-center justify-center py-10 text-slate-500">
+                    <Loader2 className="w-5 h-5 animate-spin mr-2" />
+                    Loading reference draft output...
+                  </div>
+                )}
+
+                {!referenceDraftLoading && referenceDraftError && referenceDraftSections.length === 0 && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {referenceDraftError}
+                  </div>
+                )}
+
+                {!referenceDraftLoading && !referenceDraftError && referenceDraftSections.length === 0 && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    No sections found for Pass 1 preview.
+                  </div>
+                )}
+
+                {referenceDraftSections.map((section) => (
+                  <div key={section.sectionKey} className="rounded-lg border border-slate-200 overflow-hidden">
+                    <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-sm font-semibold text-slate-800">{section.displayName}</h4>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                          section.hasContent
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                            : 'bg-slate-100 text-slate-600 border-slate-200'
+                        }`}>
+                          {section.hasContent ? 'Pass 1 Ready' : 'No Pass 1 Output'}
+                        </span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full border border-slate-200 bg-white text-slate-600">
+                          {section.wordCount} words
+                        </span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full border border-slate-200 bg-white text-slate-500">
+                          status: {section.status}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        generated: {formatDateTime(section.generatedAt)} {section.source !== 'none' ? ` • source: ${section.source}` : ''}
+                      </p>
+                    </div>
+                    <div className="p-4 bg-white">
+                      {section.content ? (
+                        <pre className="whitespace-pre-wrap break-words text-[13px] leading-6 text-slate-800 font-sans">
+                          {section.content}
+                        </pre>
+                      ) : (
+                        <p className="text-sm text-slate-500 italic">
+                          Pass 1 output not generated for this section yet.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Figure Preview Modal */}
       <AnimatePresence>

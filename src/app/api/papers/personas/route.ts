@@ -6,8 +6,7 @@
  */
 
 import { NextResponse, NextRequest } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth-config';
+import { authenticateUser } from '@/lib/auth-middleware';
 import { prisma } from '@/lib/prisma';
 import { invalidatePaperWritingSampleCache } from '@/lib/paper-writing-sample-service';
 import { z } from 'zod';
@@ -52,28 +51,26 @@ const updateSampleSchema = z.object({
 
 export async function GET(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { user, error } = await authenticateUser(request);
+    if (error || !user) {
+      return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 });
     }
 
     const { searchParams } = new URL(request.url);
     const includeOrgPersonas = searchParams.get('includeOrg') === 'true';
     const personaId = searchParams.get('personaId');
 
-    // If personaId provided, get samples for that persona
     if (personaId) {
-      // SECURITY: Verify user has access to this persona (owns it or it's org-visible)
       const persona = await prisma.paperWritingPersona.findFirst({
         where: {
           id: personaId,
           OR: [
-            { createdBy: session.user.id }, // User owns it
+            { createdBy: user.id },
             { 
-              tenantId: session.user.tenantId || undefined,
+              tenantId: user.tenantId || undefined,
               visibility: 'ORGANIZATION',
               isActive: true
-            } // Or it's org-visible
+            }
           ]
         }
       });
@@ -106,10 +103,9 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // Get user's own personas
     const userPersonas = await prisma.paperWritingPersona.findMany({
       where: {
-        createdBy: session.user.id,
+        createdBy: user.id,
         isActive: true
       },
       include: {
@@ -118,15 +114,14 @@ export async function GET(request: NextRequest) {
       orderBy: { name: 'asc' }
     });
 
-    // Optionally get org personas
     let orgPersonas: any[] = [];
-    if (includeOrgPersonas && session.user.tenantId) {
+    if (includeOrgPersonas && user.tenantId) {
       orgPersonas = await prisma.paperWritingPersona.findMany({
         where: {
-          tenantId: session.user.tenantId,
+          tenantId: user.tenantId,
           visibility: 'ORGANIZATION',
           isActive: true,
-          createdBy: { not: session.user.id } // Exclude user's own
+          createdBy: { not: user.id }
         },
         include: {
           _count: { select: { samples: true } },
@@ -179,9 +174,9 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id || !session.user.tenantId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { user, error } = await authenticateUser(request);
+    if (error || !user || !user.tenantId) {
+      return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 });
     }
 
     const body = await request.json();
@@ -199,11 +194,10 @@ export async function POST(request: NextRequest) {
 
         const { name, description, visibility, isTemplate } = validation.data;
 
-        // Check for duplicate name
         const existing = await prisma.paperWritingPersona.findUnique({
           where: {
             createdBy_name: {
-              createdBy: session.user.id,
+              createdBy: user.id,
               name
             }
           }
@@ -218,8 +212,8 @@ export async function POST(request: NextRequest) {
 
         const persona = await prisma.paperWritingPersona.create({
           data: {
-            tenantId: session.user.tenantId,
-            createdBy: session.user.id,
+            tenantId: user.tenantId,
+            createdBy: user.id,
             name,
             description,
             visibility,
@@ -250,11 +244,10 @@ export async function POST(request: NextRequest) {
 
         const { personaId, ...updates } = validation.data;
 
-        // Verify ownership
         const persona = await prisma.paperWritingPersona.findFirst({
           where: {
             id: personaId,
-            createdBy: session.user.id
+            createdBy: user.id
           }
         });
 
@@ -291,11 +284,10 @@ export async function POST(request: NextRequest) {
 
         const { personaId, paperTypeCode, sectionKey, sampleText, notes } = validation.data;
 
-        // Verify persona ownership
         const persona = await prisma.paperWritingPersona.findFirst({
           where: {
             id: personaId,
-            createdBy: session.user.id
+            createdBy: user.id
           }
         });
 
@@ -303,10 +295,9 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ error: 'Persona not found' }, { status: 404 });
         }
 
-        // Check for existing sample
         const existing = await prisma.paperWritingSample.findFirst({
           where: {
-            userId: session.user.id,
+            userId: user.id,
             paperTypeCode: paperTypeCode.toUpperCase(),
             personaId,
             sectionKey
@@ -326,7 +317,7 @@ export async function POST(request: NextRequest) {
           });
 
           // Invalidate cache for this user
-          invalidatePaperWritingSampleCache(session.user.id);
+          invalidatePaperWritingSampleCache(user.id);
 
           return NextResponse.json({
             success: true,
@@ -345,8 +336,8 @@ export async function POST(request: NextRequest) {
         // Create new sample
         const sample = await prisma.paperWritingSample.create({
           data: {
-            userId: session.user.id,
-            tenantId: session.user.tenantId,
+            userId: user.id,
+            tenantId: user.tenantId,
             personaId,
             personaName: persona.name,
             paperTypeCode: paperTypeCode.toUpperCase(),
@@ -358,7 +349,7 @@ export async function POST(request: NextRequest) {
         });
 
         // Invalidate cache for this user
-        invalidatePaperWritingSampleCache(session.user.id);
+        invalidatePaperWritingSampleCache(user.id);
 
         return NextResponse.json({
           success: true,
@@ -388,7 +379,7 @@ export async function POST(request: NextRequest) {
         const sample = await prisma.paperWritingSample.findFirst({
           where: {
             id: sampleId,
-            userId: session.user.id
+            userId: user.id
           }
         });
 
@@ -407,7 +398,7 @@ export async function POST(request: NextRequest) {
         });
 
         // Invalidate cache for this user
-        invalidatePaperWritingSampleCache(session.user.id);
+        invalidatePaperWritingSampleCache(user.id);
 
         return NextResponse.json({
           success: true,
@@ -433,13 +424,13 @@ export async function POST(request: NextRequest) {
         await prisma.paperWritingSample.updateMany({
           where: {
             id: sampleId,
-            userId: session.user.id
+            userId: user.id
           },
           data: { isActive: false }
         });
 
         // Invalidate cache for this user
-        invalidatePaperWritingSampleCache(session.user.id);
+        invalidatePaperWritingSampleCache(user.id);
 
         return NextResponse.json({ success: true });
       }
@@ -463,9 +454,9 @@ export async function POST(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { user, error } = await authenticateUser(request);
+    if (error || !user) {
+      return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 });
     }
 
     const body = await request.json();
@@ -479,7 +470,7 @@ export async function DELETE(request: NextRequest) {
     const persona = await prisma.paperWritingPersona.findFirst({
       where: {
         id: personaId,
-        createdBy: session.user.id
+        createdBy: user.id
       }
     });
 

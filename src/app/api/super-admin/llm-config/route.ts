@@ -13,6 +13,8 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifyJWT } from '@/lib/auth'
 import { prisma } from '@/lib/prisma'
 import { clearModelCache } from '@/lib/metering/model-resolver'
+import { llmGateway } from '@/lib/metering/gateway'
+import { refreshPricingCache } from '@/lib/metering/cost-calculator'
 
 // ============================================================================
 // Auth Helper
@@ -153,6 +155,8 @@ export async function POST(request: NextRequest) {
     const { action } = body
 
     switch (action) {
+      case 'refresh_cache':
+        return refreshCache()
       case 'create_model':
         return createModel(body)
       case 'update_model':
@@ -180,6 +184,19 @@ export async function POST(request: NextRequest) {
     console.error('POST /api/super-admin/llm-config error:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
+}
+
+async function refreshCache() {
+  // Clears model-resolution cache, reinitializes provider routing, and
+  // refreshes pricing cache so admin changes are reflected immediately.
+  clearModelCache()
+  await llmGateway.refreshProviders()
+  await refreshPricingCache()
+
+  return NextResponse.json({
+    success: true,
+    message: 'LLM cache refreshed. New model/stage config will apply to upcoming requests immediately.'
+  })
 }
 
 // ============================================================================

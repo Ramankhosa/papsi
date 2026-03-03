@@ -384,10 +384,21 @@ export class LLMProviderRouter {
       
       // Normalize token fields so cost logs are consistent across providers/models.
       const tokenUsage = this.normalizeTokenUsage(response, request)
+      const responseMetadata =
+        response.metadata && typeof response.metadata === 'object'
+          ? (response.metadata as Record<string, unknown>)
+          : {}
+      const providerReportedModel =
+        typeof responseMetadata.modelUsed === 'string'
+          ? responseMetadata.modelUsed
+          : typeof responseMetadata.model === 'string'
+          ? responseMetadata.model
+          : undefined
+      const loggedModelCode = providerReportedModel || actualModelCode
       
       const costBreakdown = logLLMCost(
         request.taskCode || 'LLM_CALL',
-        actualModelCode,
+        loggedModelCode,
         tokenUsage.inputTokens,
         tokenUsage.outputTokens,
         tokenUsage.thoughtTokens,
@@ -400,7 +411,9 @@ export class LLMProviderRouter {
           tenantId: request.metadata?.tenantId,
           module: request.metadata?.module,
           action: request.metadata?.action,
-          duration
+          duration,
+          resolvedModelCode: actualModelCode,
+          providerModel: providerReportedModel
         }
       )
 
@@ -411,7 +424,7 @@ export class LLMProviderRouter {
           ...response.metadata,
           routingReason: reason,
           selectedProvider: provider.name,
-          modelUsed: actualModelCode,
+          modelUsed: loggedModelCode,
           inputTokens: tokenUsage.inputTokens,
           outputTokens: tokenUsage.outputTokens,
           thoughtTokens: tokenUsage.thoughtTokens,
@@ -619,10 +632,21 @@ export class LLMProviderRouter {
       
       // Normalize token fields so cost logs are consistent across providers/models.
       const tokenUsage = this.normalizeTokenUsage(response, request)
+      const responseMetadata =
+        response.metadata && typeof response.metadata === 'object'
+          ? (response.metadata as Record<string, unknown>)
+          : {}
+      const providerReportedModel =
+        typeof responseMetadata.modelUsed === 'string'
+          ? responseMetadata.modelUsed
+          : typeof responseMetadata.model === 'string'
+          ? responseMetadata.model
+          : undefined
+      const loggedModelCode = providerReportedModel || modelCode
       
       const costBreakdown = logLLMCost(
         `${request.taskCode || 'LLM_CALL'}${isFallback ? ' [FALLBACK]' : ''}`,
-        modelCode,
+        loggedModelCode,
         tokenUsage.inputTokens,
         tokenUsage.outputTokens,
         tokenUsage.thoughtTokens,
@@ -635,7 +659,9 @@ export class LLMProviderRouter {
           tenantId: request.metadata?.tenantId,
           duration,
           module: request.metadata?.module,
-          action: request.metadata?.action
+          action: request.metadata?.action,
+          resolvedModelCode: modelCode,
+          providerModel: providerReportedModel
         }
       )
       
@@ -644,7 +670,7 @@ export class LLMProviderRouter {
         metadata: {
           ...response.metadata,
           selectedProvider: provider.name,
-          modelUsed: modelCode,
+          modelUsed: loggedModelCode,
           wasFallback: isFallback,
           inputTokens: tokenUsage.inputTokens,
           outputTokens: tokenUsage.outputTokens,

@@ -343,6 +343,8 @@ export function generateCostLogMessage(
     duration?: number
     module?: string
     action?: string
+    resolvedModelCode?: string
+    providerModel?: string
   }
 ): string {
   const divider = '═'.repeat(70)
@@ -360,7 +362,17 @@ export function generateCostLogMessage(
   message += `${thinDivider}\n`
   
   // Model & Provider Info
-  message += `📊 MODEL: ${costBreakdown.modelCode} (${costBreakdown.provider})\n`
+  const providerModel = typeof metadata?.providerModel === 'string' ? metadata.providerModel.trim() : ''
+  const displayModel = providerModel || costBreakdown.modelCode
+  message += `📊 MODEL: ${displayModel} (${costBreakdown.provider})\n`
+
+  if (
+    metadata?.resolvedModelCode &&
+    metadata.resolvedModelCode.trim() &&
+    metadata.resolvedModelCode !== displayModel
+  ) {
+    message += `🧭 CONFIGURED MODEL: ${metadata.resolvedModelCode}\n`
+  }
   
   if (metadata?.taskCode) {
     message += `🎯 Task: ${metadata.taskCode}`
@@ -429,6 +441,8 @@ export function logLLMCost(
     duration?: number
     module?: string
     action?: string
+    resolvedModelCode?: string
+    providerModel?: string
   }
 ): CostBreakdown {
   const costBreakdown = calculateCost(modelCode, inputTokens, outputTokens, thoughtTokens)

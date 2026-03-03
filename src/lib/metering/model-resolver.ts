@@ -82,14 +82,18 @@ export async function resolveModel(
 
   // 1. Try stage-specific config (most specific)
   if (stageCode) {
-    const stageLookupCode =
-      stageCode === 'PAPER_ARCHETYPE_DETECTION' ? 'PAPER_CONTENT_GENERATION' : stageCode
-    if (stageLookupCode !== stageCode) {
+    result = await getStageConfig(planId, stageCode)
+
+    // Backward compatibility: older plans may not have a dedicated archetype stage
+    // config and historically reused PAPER_CONTENT_GENERATION.
+    if (!result && stageCode === 'PAPER_ARCHETYPE_DETECTION') {
+      const fallbackStageCode = 'PAPER_CONTENT_GENERATION'
       console.log(
-        `[ModelResolver] Stage ${stageCode} re-routed to ${stageLookupCode} to reuse paper content stage config`
+        `[ModelResolver] No direct config for ${stageCode}; falling back to ${fallbackStageCode}`
       )
+      result = await getStageConfig(planId, fallbackStageCode)
     }
-    result = await getStageConfig(planId, stageLookupCode)
+
     if (result) {
       console.log(`[ModelResolver] Found stage config: ${result.modelCode}`)
     }
@@ -119,6 +123,21 @@ export async function resolveModel(
   if (!result) {
     result = await getSystemDefault()
     console.log(`[ModelResolver] Using system default: ${result.modelCode}`)
+  }
+
+  // Safety floor: archetype detection prompt includes many topic fields and often
+  // exceeds generic/default maxTokensIn values (e.g. 2000), causing preflight failure.
+  if (stageCode === 'PAPER_ARCHETYPE_DETECTION') {
+    const archetypeMinInputTokens = 12000
+    if (!result.maxTokensIn || result.maxTokensIn < archetypeMinInputTokens) {
+      console.log(
+        `[ModelResolver] Raising ${stageCode} maxTokensIn from ${result.maxTokensIn ?? 'unset'} to ${archetypeMinInputTokens}`
+      )
+      result = {
+        ...result,
+        maxTokensIn: archetypeMinInputTokens
+      }
+    }
   }
 
   // Cache the result

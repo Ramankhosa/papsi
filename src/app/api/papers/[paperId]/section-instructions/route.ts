@@ -8,8 +8,7 @@
  */
 
 import { NextResponse, NextRequest } from 'next/server';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth-config';
+import { authenticateUser } from '@/lib/auth-middleware';
 import { prisma } from '@/lib/prisma';
 import { z } from 'zod';
 
@@ -43,37 +42,34 @@ export async function GET(
   { params }: { params: Promise<{ paperId: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { user, error } = await authenticateUser(request);
+    if (error || !user) {
+      return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 });
     }
 
     const { paperId } = await params;
 
-    // Verify session ownership
     const draftingSession = await prisma.draftingSession.findUnique({
       where: { id: paperId },
       select: { userId: true }
     });
 
-    if (!draftingSession || draftingSession.userId !== session.user.id) {
+    if (!draftingSession || draftingSession.userId !== user.id) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
-    // Fetch session-level instructions
     const sessionInstructions = await prisma.userSectionInstruction.findMany({
       where: {
-        userId: session.user.id,
+        userId: user.id,
         sessionId: paperId,
         isActive: true
       },
       orderBy: { sectionKey: 'asc' }
     });
 
-    // Fetch user-level (persistent) instructions
     const userInstructions = await prisma.userSectionInstruction.findMany({
       where: {
-        userId: session.user.id,
+        userId: user.id,
         sessionId: null,
         isActive: true
       },
@@ -124,15 +120,14 @@ export async function POST(
   { params }: { params: Promise<{ paperId: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { user, error } = await authenticateUser(request);
+    if (error || !user) {
+      return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 });
     }
 
     const { paperId } = await params;
     const body = await request.json();
 
-    // Validate input
     const validation = upsertInstructionSchema.safeParse(body);
     if (!validation.success) {
       return NextResponse.json(
@@ -143,8 +138,6 @@ export async function POST(
 
     const { sectionKey, paperTypeCode, instruction, emphasis, avoid, style, wordCount, scope } = validation.data;
 
-    // Verify session ownership and get paper type
-    // Note: Cannot use both select and include in Prisma - use select with nested relation
     const draftingSession = await prisma.draftingSession.findUnique({
       where: { id: paperId },
       select: { 
@@ -154,13 +147,11 @@ export async function POST(
       }
     });
 
-    if (!draftingSession || draftingSession.userId !== session.user.id) {
+    if (!draftingSession || draftingSession.userId !== user.id) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
-    // Determine sessionId and paperTypeCode based on scope
     const targetSessionId = scope === 'session' ? paperId : null;
-    // Use provided paperTypeCode, or session's paper type, or '*' for universal
     const targetPaperTypeCode = paperTypeCode || draftingSession.paperType?.code || '*';
 
     const instructionData = {
@@ -176,20 +167,19 @@ export async function POST(
 
     let result;
 
-    // Prisma composite unique input does not accept null sessionId for upsert.
     if (targetSessionId) {
       result = await prisma.userSectionInstruction.upsert({
         where: {
           userId_sessionId_jurisdiction_sectionKey: {
-            userId: session.user.id,
+            userId: user.id,
             sessionId: targetSessionId,
-            jurisdiction: '*', // Legacy field, kept for backward compat
+            jurisdiction: '*',
             sectionKey
           }
         },
         update: instructionData,
         create: {
-          userId: session.user.id,
+          userId: user.id,
           sessionId: targetSessionId,
           jurisdiction: '*',
           sectionKey,
@@ -199,7 +189,7 @@ export async function POST(
     } else {
       const existingUserLevelInstruction = await prisma.userSectionInstruction.findFirst({
         where: {
-          userId: session.user.id,
+          userId: user.id,
           sessionId: null,
           jurisdiction: '*',
           sectionKey
@@ -215,7 +205,7 @@ export async function POST(
       } else {
         result = await prisma.userSectionInstruction.create({
           data: {
-            userId: session.user.id,
+            userId: user.id,
             sessionId: null,
             jurisdiction: '*',
             sectionKey,
@@ -258,15 +248,14 @@ export async function DELETE(
   { params }: { params: Promise<{ paperId: string }> }
 ) {
   try {
-    const session = await getServerSession(authOptions);
-    if (!session?.user?.id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const { user, error } = await authenticateUser(request);
+    if (error || !user) {
+      return NextResponse.json({ error: error?.message || 'Unauthorized' }, { status: error?.status || 401 });
     }
 
     const { paperId } = await params;
     const body = await request.json();
 
-    // Validate input
     const validation = deleteInstructionSchema.safeParse(body);
     if (!validation.success) {
       return NextResponse.json(
@@ -277,23 +266,20 @@ export async function DELETE(
 
     const { sectionKey, scope } = validation.data;
 
-    // Verify session ownership
     const draftingSession = await prisma.draftingSession.findUnique({
       where: { id: paperId },
       select: { userId: true }
     });
 
-    if (!draftingSession || draftingSession.userId !== session.user.id) {
+    if (!draftingSession || draftingSession.userId !== user.id) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
-    // Determine sessionId based on scope
     const targetSessionId = scope === 'session' ? paperId : null;
 
-    // Soft delete (set isActive = false)
     await prisma.userSectionInstruction.updateMany({
       where: {
-        userId: session.user.id,
+        userId: user.id,
         sessionId: targetSessionId,
         jurisdiction: '*',
         sectionKey

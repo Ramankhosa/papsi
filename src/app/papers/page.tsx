@@ -374,8 +374,14 @@ export default function PapersPage() {
 
                 <div className={viewMode === 'list' ? 'flex-1' : ''}>
                   <div className="flex items-start justify-between mb-3">
-                    <div className="flex-1">
-                      <h3 className={`font-semibold text-slate-900 ${viewMode === 'list' ? 'text-base' : 'text-lg'} truncate`}>
+                    <div className="flex-1 min-w-0">
+                      <h3
+                        className={`font-semibold text-slate-900 ${
+                          viewMode === 'list'
+                            ? 'text-base truncate'
+                            : 'text-lg leading-snug line-clamp-2 break-words'
+                        }`}
+                      >
                         {paper.title || 'Untitled Paper'}
                       </h3>
                       <div className="flex items-center gap-2 mt-1">

@@ -45,23 +45,31 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refreshTimerRef = useRef<NodeJS.Timeout | null>(null)
   const activityTimerRef = useRef<NodeJS.Timeout | null>(null)
   const lastActivityRef = useRef<number>(Date.now())
-  const initializationRef = useRef<boolean>(false) // Prevent re-initialization
-  
-  // Activity timeout - refresh token if user has been active in the last 5 minutes
-  const ACTIVITY_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
+  const initializationRef = useRef<boolean>(false)
 
-  // Parse JWT to get expiry time
+  // Refs to always hold the latest values — avoids stale closures in timers/callbacks
+  const tokenRef = useRef<string | null>(null)
+  const refreshAccessTokenRef = useRef<(showModalOnFailure?: boolean) => Promise<string | null>>(null as any)
+  const performLogoutRef = useRef<(callServer?: boolean, logoutAll?: boolean, showExpiredModal?: boolean) => Promise<void>>(null as any)
+
+  const ACTIVITY_THRESHOLD_MS = 5 * 60 * 1000
+
+  // Keep tokenRef in sync with token state
+  useEffect(() => {
+    tokenRef.current = token
+  }, [token])
+
   const getTokenExpiry = useCallback((jwt: string): number | null => {
     try {
       const payload = JSON.parse(atob(jwt.split('.')[1]))
-      return payload.exp * 1000 // Convert to milliseconds
+      return payload.exp * 1000
     } catch {
       return null
     }
   }, [])
-  // Schedule proactive token refresh (before expiry)
-  const scheduleTokenRefresh = useCallback((currentToken: string, refreshFn: () => Promise<string | null>) => {
-    // Clear any existing timer
+
+  // Schedule proactive token refresh — uses refs to always call the latest refreshAccessToken
+  const scheduleTokenRefresh = useCallback((currentToken: string) => {
     if (refreshTimerRef.current) {
       clearTimeout(refreshTimerRef.current)
     }
@@ -69,117 +77,134 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const expiry = getTokenExpiry(currentToken)
     if (!expiry) return
 
-    // Refresh 2 minutes before expiry (or half the remaining time if less than 4 minutes)
     const now = Date.now()
     const timeUntilExpiry = expiry - now
-    const refreshIn = Math.max(timeUntilExpiry - 2 * 60 * 1000, timeUntilExpiry / 2, 30000) // At least 30 seconds
+    const refreshIn = Math.max(timeUntilExpiry - 2 * 60 * 1000, timeUntilExpiry / 2, 30000)
 
     if (timeUntilExpiry > 0) {
       refreshTimerRef.current = setTimeout(async () => {
         console.log('Proactively refreshing token before expiry')
-        await refreshFn()
+        await refreshAccessTokenRef.current(true)
       }, refreshIn)
     }
   }, [getTokenExpiry])
 
-  // Perform logout (clear state and optionally call server)
   const performLogout = useCallback(async (callServer: boolean = true, logoutAll: boolean = false, showExpiredModal: boolean = false) => {
-    // Clear refresh timer
     if (refreshTimerRef.current) {
       clearTimeout(refreshTimerRef.current)
     }
-    
-    // Clear activity timer
     if (activityTimerRef.current) {
-      clearTimeout(activityTimerRef.current)
+      clearInterval(activityTimerRef.current)
     }
 
-    // Call server logout to invalidate refresh token
     if (callServer) {
       try {
+        const currentToken = tokenRef.current
         await fetch(`/api/v1/auth/logout${logoutAll ? '?all=true' : ''}`, {
           method: 'POST',
           credentials: 'include',
-          headers: token ? { 'Authorization': `Bearer ${token}` } : {}
+          headers: currentToken ? { 'Authorization': `Bearer ${currentToken}` } : {}
         })
       } catch (error) {
         console.error('Logout API error:', error)
       }
     }
 
-    // Clear local state
     setUser(null)
     setToken(null)
+    tokenRef.current = null
     tokenExpiryRef.current = null
     localStorage.removeItem('auth_token')
-    
-    // Show session expired modal if needed (e.g., token refresh failed)
+
     if (showExpiredModal) {
       setIsSessionExpired(true)
     }
-  }, [token])
+  }, [])
 
-  // Refresh access token using refresh token cookie
+  // Keep performLogoutRef in sync
+  useEffect(() => {
+    performLogoutRef.current = performLogout
+  }, [performLogout])
+
   const refreshAccessToken = useCallback(async (showModalOnFailure: boolean = true): Promise<string | null> => {
-    // If already refreshing, wait for that to complete
     if (isRefreshing && refreshPromise) {
       return refreshPromise
     }
 
     isRefreshing = true
     refreshPromise = (async () => {
-      try {
-        const response = await fetch('/api/v1/auth/refresh', {
-          method: 'POST',
-          credentials: 'include' // Include cookies
-        })
+      const MAX_RETRIES = 1
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const response = await fetch('/api/v1/auth/refresh', {
+            method: 'POST',
+            credentials: 'include'
+          })
 
-        if (response.ok) {
-          const data = await response.json()
-          const newToken = data.token
-          setToken(newToken)
-          localStorage.setItem('auth_token', newToken)
-          tokenExpiryRef.current = getTokenExpiry(newToken)
-          scheduleTokenRefresh(newToken, () => refreshAccessToken(true))
-          // Reset session expired state on successful refresh
-          setIsSessionExpired(false)
-          return newToken
-        } else {
-          // Refresh failed - session expired
-          console.log('Token refresh failed - session expired')
-          // Only show modal if user was previously logged in and flag is true
-          const wasLoggedIn = !!localStorage.getItem('auth_token')
-          await performLogout(false, false, showModalOnFailure && wasLoggedIn)
-          return null
+          if (response.ok) {
+            const data = await response.json()
+            const newToken = data.token
+            setToken(newToken)
+            tokenRef.current = newToken
+            localStorage.setItem('auth_token', newToken)
+            tokenExpiryRef.current = getTokenExpiry(newToken)
+            scheduleTokenRefresh(newToken)
+            setIsSessionExpired(false)
+            return newToken
+          }
+
+          // 401 means the refresh token itself is invalid/revoked — no point retrying
+          if (response.status === 401) {
+            break
+          }
+
+          // Server error (5xx) — retry after a short delay
+          if (attempt < MAX_RETRIES) {
+            console.log(`Token refresh attempt ${attempt + 1} failed (status ${response.status}), retrying...`)
+            await new Promise(r => setTimeout(r, 2000))
+            continue
+          }
+        } catch (error) {
+          // Network error — retry after a short delay
+          if (attempt < MAX_RETRIES) {
+            console.log(`Token refresh attempt ${attempt + 1} failed (network error), retrying...`)
+            await new Promise(r => setTimeout(r, 2000))
+            continue
+          }
+          console.error('Token refresh error after retries:', error)
         }
-      } catch (error) {
-        console.error('Token refresh error:', error)
-        const wasLoggedIn = !!localStorage.getItem('auth_token')
-        await performLogout(false, false, showModalOnFailure && wasLoggedIn)
-        return null
-      } finally {
-        isRefreshing = false
-        refreshPromise = null
       }
+
+      // All attempts failed
+      console.log('Token refresh failed after retries - session expired')
+      const wasLoggedIn = !!localStorage.getItem('auth_token')
+      await performLogoutRef.current(false, false, showModalOnFailure && wasLoggedIn)
+      return null
     })()
 
+    refreshPromise.finally(() => {
+      isRefreshing = false
+      refreshPromise = null
+    })
+
     return refreshPromise
-  }, [getTokenExpiry, performLogout, scheduleTokenRefresh])
+  }, [getTokenExpiry, scheduleTokenRefresh])
 
-  // Authenticated fetch with automatic token refresh
+  // Keep refreshAccessTokenRef in sync
+  useEffect(() => {
+    refreshAccessTokenRef.current = refreshAccessToken
+  }, [refreshAccessToken])
+
+  // Authenticated fetch — uses tokenRef to always read the latest token
   const authFetch = useCallback(async (url: string, options: RequestInit = {}): Promise<Response> => {
-    // Register activity on each API call
     lastActivityRef.current = Date.now()
-    
-    let currentToken = token
 
-    // Check if token is expired or about to expire (within 30 seconds)
+    let currentToken = tokenRef.current
+
     const expiry = tokenExpiryRef.current
     if (expiry && Date.now() > expiry - 30000) {
-      // Token expired or about to expire - refresh first
-      currentToken = await refreshAccessToken(true)
+      currentToken = await refreshAccessTokenRef.current(true)
       if (!currentToken) {
-        // Refresh failed - return 401 response (modal already shown)
         return new Response(JSON.stringify({ code: 'SESSION_EXPIRED', message: 'Session expired. Please log in again.' }), {
           status: 401,
           headers: { 'Content-Type': 'application/json' }
@@ -187,7 +212,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     }
 
-    // Make the request with current token
     const response = await fetch(url, {
       ...options,
       credentials: 'include',
@@ -197,11 +221,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
     })
 
-    // If 401, try to refresh and retry once
     if (response.status === 401 && currentToken) {
-      const newToken = await refreshAccessToken(true)
+      const newToken = await refreshAccessTokenRef.current(true)
       if (newToken) {
-        // Retry with new token
         return fetch(url, {
           ...options,
           credentials: 'include',
@@ -211,30 +233,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
         })
       }
-      // If refresh failed, modal is already shown
     }
 
     return response
-  }, [token, refreshAccessToken])
-  
-  // Register user activity - call this on user interactions to prevent session timeout
+  }, [])
+
   const registerActivity = useCallback(() => {
     lastActivityRef.current = Date.now()
-    
-    // If token is about to expire and user is active, proactively refresh
+
     const expiry = tokenExpiryRef.current
-    if (expiry && token) {
+    if (expiry && tokenRef.current) {
       const timeUntilExpiry = expiry - Date.now()
-      // If less than 3 minutes until expiry and user is active, refresh now
       if (timeUntilExpiry > 0 && timeUntilExpiry < 3 * 60 * 1000) {
         console.log('User active, proactively refreshing token')
-        refreshAccessToken(false) // Don't show modal for proactive refresh
+        refreshAccessTokenRef.current(false)
       }
     }
-  }, [token, refreshAccessToken])
+  }, [])
 
   const refreshUser = useCallback(async (authToken?: string) => {
-    const tokenToUse = authToken || token
+    const tokenToUse = authToken || tokenRef.current
     if (!tokenToUse) {
       setIsLoading(false)
       return
@@ -252,10 +270,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const userData = await response.json()
         setUser(userData)
       } else if (response.status === 401) {
-        // Token invalid - try refresh
-        const newToken = await refreshAccessToken()
+        const newToken = await refreshAccessTokenRef.current()
         if (newToken) {
-          // Retry with new token
           const retryResponse = await fetch('/api/v1/auth/whoami', {
             headers: {
               'Authorization': `Bearer ${newToken}`
@@ -266,19 +282,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const userData = await retryResponse.json()
             setUser(userData)
           } else {
-            await performLogout(false)
+            await performLogoutRef.current(false)
           }
         }
       } else {
-        await performLogout(false)
+        await performLogoutRef.current(false)
       }
     } catch (error) {
       console.error('Failed to refresh user:', error)
-      await performLogout(false)
+      await performLogoutRef.current(false)
     } finally {
       setIsLoading(false)
     }
-  }, [token, refreshAccessToken, performLogout])
+  }, [])
 
   // Load token and user from localStorage on mount (runs only once)
   useEffect(() => {
@@ -292,26 +308,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const storedToken = localStorage.getItem('auth_token')
       if (storedToken) {
         const expiry = getTokenExpiry(storedToken)
-        
-        // Check if token is expired
+
         if (expiry && Date.now() > expiry) {
-          // Token expired - try to refresh (don't show modal on initial load)
-          const newToken = await refreshAccessToken(false)
+          const newToken = await refreshAccessTokenRef.current(false)
           if (newToken) {
             await refreshUser(newToken)
           } else {
             setIsLoading(false)
           }
         } else {
-          // Token still valid
           setToken(storedToken)
+          tokenRef.current = storedToken
           tokenExpiryRef.current = expiry
-          scheduleTokenRefresh(storedToken, () => refreshAccessToken(true))
+          scheduleTokenRefresh(storedToken)
           await refreshUser(storedToken)
         }
       } else {
-        // No token - try to refresh (might have valid refresh token cookie, don't show modal)
-        const newToken = await refreshAccessToken(false)
+        const newToken = await refreshAccessTokenRef.current(false)
         if (newToken) {
           await refreshUser(newToken)
         } else {
@@ -348,10 +361,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (response.ok) {
         const { token: newToken } = data
         setToken(newToken)
+        tokenRef.current = newToken
         localStorage.setItem('auth_token', newToken)
         tokenExpiryRef.current = getTokenExpiry(newToken)
-        scheduleTokenRefresh(newToken, () => refreshAccessToken(true))
-        // Reset session expired state on successful login
+        scheduleTokenRefresh(newToken)
         setIsSessionExpired(false)
 
         // Get user info
@@ -431,35 +444,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
   
-  // Check activity and refresh token if user is active
+  // Check activity and refresh token if user is active — uses refs to avoid stale closures
   useEffect(() => {
     if (!token) return
-    
+
     const checkActivityAndRefresh = () => {
       const now = Date.now()
       const timeSinceActivity = now - lastActivityRef.current
       const expiry = tokenExpiryRef.current
-      
-      // If user has been active in the last 5 minutes and token expires soon, refresh
+
       if (expiry && timeSinceActivity < ACTIVITY_THRESHOLD_MS) {
         const timeUntilExpiry = expiry - now
-        // Refresh if less than 2 minutes until expiry
         if (timeUntilExpiry > 0 && timeUntilExpiry < 2 * 60 * 1000) {
           console.log('Activity detected, refreshing token before expiry')
-          refreshAccessToken(false)
+          refreshAccessTokenRef.current(false)
         }
       }
     }
-    
-    // Check every minute
+
     activityTimerRef.current = setInterval(checkActivityAndRefresh, 60 * 1000)
-    
+
     return () => {
       if (activityTimerRef.current) {
         clearInterval(activityTimerRef.current)
       }
     }
-  }, [token, refreshAccessToken])
+  }, [token])
 
   return (
     <AuthContext.Provider value={{

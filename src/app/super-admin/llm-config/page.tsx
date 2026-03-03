@@ -411,6 +411,7 @@ export default function LLMConfigPage() {
   const [activeTab, setActiveTab] = useState<'overview' | 'models' | 'stages' | 'configs'>('overview')
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [refreshingCache, setRefreshingCache] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
@@ -593,6 +594,37 @@ export default function LLMConfigPage() {
       setError(err instanceof Error ? err.message : 'Failed to copy')
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleRefreshCache = async () => {
+    try {
+      setRefreshingCache(true)
+      setError(null)
+      setSuccess(null)
+
+      const response = await fetch('/api/super-admin/llm-config', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('auth_token') || ''}`
+        },
+        body: JSON.stringify({
+          action: 'refresh_cache'
+        })
+      })
+
+      const body = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(body?.error || 'Failed to refresh LLM cache')
+      }
+
+      setSuccess(body?.message || 'LLM cache refreshed successfully')
+      await fetchData()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to refresh cache')
+    } finally {
+      setRefreshingCache(false)
     }
   }
 
@@ -955,6 +987,16 @@ export default function LLMConfigPage() {
                     <option key={plan.id} value={plan.id}>{plan.name}</option>
                   ))}
                 </select>
+              </div>
+              <div>
+                <label className="block text-sm text-slate-400 mb-1">Model Cache</label>
+                <button
+                  onClick={handleRefreshCache}
+                  disabled={refreshingCache || saving}
+                  className="bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg px-4 py-2 text-white text-sm font-medium transition"
+                >
+                  {refreshingCache ? 'Refreshing...' : 'Refresh Cache'}
+                </button>
               </div>
             </div>
 
