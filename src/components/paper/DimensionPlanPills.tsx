@@ -1,6 +1,5 @@
 'use client';
 
-import { motion } from 'framer-motion';
 import { Check, Circle } from 'lucide-react';
 
 interface DimensionPlanItem {
@@ -29,38 +28,37 @@ export default function DimensionPlanPills({
   if (!plan || plan.length === 0) return null;
 
   return (
-    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+    <div className="mt-0.5 mb-1 flex flex-wrap items-center gap-1">
       {plan.map((item) => {
         const isAccepted = item.status === 'accepted';
         const isActive = activeDimensionKey && activeDimensionKey === item.dimensionKey;
 
         const classes = isAccepted
-          ? 'text-emerald-600 bg-emerald-50 border-emerald-200'
+          ? 'text-emerald-600 bg-emerald-50/60 border-emerald-200/70'
           : isActive || item.status === 'pending'
-            ? 'text-indigo-600 bg-indigo-50 border-indigo-300 animate-pulse'
-            : 'text-slate-400 bg-slate-50 border-slate-200';
+            ? 'text-indigo-500 bg-indigo-50/50 border-indigo-200'
+            : 'text-slate-400 bg-slate-50/50 border-slate-200/70';
 
         return (
-          <motion.button
+          <button
             key={item.dimensionKey}
             type="button"
             onClick={() => onSelect?.(item.dimensionKey)}
             disabled={Boolean(disabled)}
-            className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium tracking-[0.2px] transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 ${classes}`}
-            transition={{ duration: 0.3, ease: 'easeOut' }}
+            className={`inline-flex items-center gap-0.5 rounded-full border px-2 py-0.5 text-[10px] font-medium tracking-[0.15px] transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 ${classes}`}
             title={item.dimensionLabel}
           >
             {isAccepted ? (
-              <Check className="h-3 w-3" />
+              <Check className="h-2.5 w-2.5" />
             ) : (
-              <Circle className="h-2.5 w-2.5" />
+              <Circle className="h-2 w-2" />
             )}
-            <span className="max-w-[140px] truncate">{item.dimensionLabel}</span>
-          </motion.button>
+            <span className="max-w-[120px] truncate">{item.dimensionLabel}</span>
+          </button>
         );
       })}
 
-      <span className="ml-1 text-[11px] font-semibold text-indigo-500">
+      <span className="ml-0.5 text-[10px] font-medium text-slate-400">
         {acceptedCount}/{totalCount}
       </span>
     </div>

@@ -4915,3 +4915,31 @@ model LibraryConnection {
   @@unique([userId, provider])
   @@map("library_connections")
 }
+
+// ============================================================================
+// System Prompt Templates
+// ============================================================================
+// Externalizes hardcoded pipeline prompts (polish rules, dimension directives,
+// output format, quality rules, guardrails) so they can be customized per
+// application mode (paper, grant, patent) without code changes.
+
+model SystemPromptTemplate {
+  id              String   @id @default(cuid())
+  templateKey     String   @map("template_key")
+  applicationMode String   @default("paper") @map("application_mode")
+  sectionScope    String   @default("*") @map("section_scope")
+  paperTypeScope  String   @default("*") @map("paper_type_scope")
+  content         String   @db.Text
+  priority        Int      @default(0)
+  status          String   @default("ACTIVE")
+  description     String?  @db.Text
+  createdBy       String?  @map("created_by")
+  updatedBy       String?  @map("updated_by")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([templateKey, applicationMode, sectionScope, paperTypeScope], name: "system_prompt_unique")
+  @@index([templateKey, applicationMode])
+  @@index([applicationMode])
+  @@map("system_prompt_templates")
+}

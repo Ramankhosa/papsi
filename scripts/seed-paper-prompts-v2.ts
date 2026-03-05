@@ -2106,6 +2106,416 @@ function reportMethodologyConstraints() {
   console.log('\n  ✓ Constraints are loaded from TypeScript module at runtime')
 }
 
+// ============================================================================
+// SYSTEM PROMPT TEMPLATES
+// Pipeline-level prompts externalized so they can be customized per
+// application mode (paper, grant, patent) without code changes.
+// ============================================================================
+
+interface SystemPromptDef {
+  templateKey: string
+  applicationMode: string
+  sectionScope: string
+  paperTypeScope: string
+  content: string
+  priority: number
+  description: string
+}
+
+const systemPromptTemplates: SystemPromptDef[] = [
+  // ── Polish Pass 2 Prompts ──────────────────────────────────────────────────
+
+  {
+    templateKey: 'polish_persona',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: `You are a senior academic editor. Rewrite the draft below into polished,
+publication-ready prose. The draft already contains all the correct facts,
+evidence, and citation anchors — your job is ONLY to improve readability,
+flow, and academic tone.`,
+    priority: 0,
+    description: 'Pass 2 polish persona — defines the role the LLM assumes during section polishing.'
+  },
+
+  {
+    templateKey: 'polish_citation_rules',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: `1. CITATION ANCHORS — MANDATORY PRESERVATION
+   • Every [CITE:key] marker in the draft MUST appear in your output.
+   • Do NOT drop, rename, merge, or invent any [CITE:key] anchor.
+   • You may reposition a citation within the same sentence or adjacent
+     sentence if it improves flow, but the anchor string must be identical.
+   • Citation format is ALWAYS: [CITE:ExactKey] — do not change the key text.`,
+    priority: 0,
+    description: 'Pass 2 citation anchor preservation rules — violations cause automatic rejection.'
+  },
+
+  {
+    templateKey: 'polish_factual_fidelity',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: `2. FACTUAL FIDELITY
+   • Do NOT add new claims, statistics, entities, or findings.
+   • Do NOT remove or soften existing claims.
+   • Preserve all numbers, percentages, p-values, and quantitative data verbatim.
+   • If the draft says "may" or "suggests", keep that hedging — do not upgrade
+     to "proves" or "demonstrates" unless the draft already uses those words.`,
+    priority: 0,
+    description: 'Pass 2 factual fidelity rules — prevents the LLM from altering evidence claims.'
+  },
+
+  {
+    templateKey: 'polish_structural_rules',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: `3. STRUCTURAL PRESERVATION
+   • Keep the same subsection headings (### level).
+   • Maintain the same logical order of arguments.
+   • You may split or merge paragraphs for readability.
+   • Keep bullet points if they serve clarity.`,
+    priority: 0,
+    description: 'Pass 2 structural preservation rules — default for body sections.'
+  },
+
+  {
+    templateKey: 'polish_structural_rules',
+    applicationMode: 'paper',
+    sectionScope: 'abstract',
+    paperTypeScope: '*',
+    content: `3. STRUCTURAL TRANSFORMATION — PROSE ONLY
+   • This is an abstract section. It MUST read as continuous, flowing paragraphs.
+   • Convert ALL bullet points, numbered lists, and section headers into integrated prose paragraphs.
+   • Do NOT use any bullet points, dashes, numbered items, or subsection headings (###, ####).
+   • Merge fragmented points into coherent paragraph-level arguments.
+   • The output should read like a single cohesive narrative — no structural scaffolding.
+   • Maintain the same logical order of arguments from the draft.`,
+    priority: 0,
+    description: 'Pass 2 structural rules for abstract — forces continuous prose instead of structured output.'
+  },
+
+  {
+    templateKey: 'polish_structural_rules',
+    applicationMode: 'paper',
+    sectionScope: 'conclusion',
+    paperTypeScope: '*',
+    content: `3. STRUCTURAL TRANSFORMATION — PROSE ONLY
+   • This is a conclusion section. It MUST read as continuous, flowing paragraphs.
+   • Convert ALL bullet points, numbered lists, and section headers into integrated prose paragraphs.
+   • Do NOT use any bullet points, dashes, numbered items, or subsection headings (###, ####).
+   • Merge fragmented points into coherent paragraph-level arguments.
+   • The output should read like a single cohesive narrative — no structural scaffolding.
+   • Maintain the same logical order of arguments from the draft.`,
+    priority: 0,
+    description: 'Pass 2 structural rules for conclusion — forces continuous prose instead of structured output.'
+  },
+
+  {
+    templateKey: 'polish_improvement_directives',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: `4. WHAT YOU SHOULD IMPROVE
+   • Sentence flow and transitions between paragraphs.
+   • Eliminate awkward phrasing, redundancy, and filler.
+   • Ensure consistent academic register throughout.
+   • Strengthen topic sentences and paragraph cohesion.
+   • Smooth transitions between subsections.`,
+    priority: 0,
+    description: 'Pass 2 improvement directives — what the editor should actively improve.'
+  },
+
+  {
+    templateKey: 'polish_hedging_rules',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: `5. HEDGING AND SCOPE GUARD
+   • Downgrade "demonstrates/proves" to "suggests/indicates" for single-study findings.
+   • Preserve scope conditions and boundary notes.
+   • Do not generalize beyond stated scope.
+   • If noveltyType = TRANSLATIONAL, replace innovation verbs with validation/adaptation verbs where necessary.`,
+    priority: 0,
+    description: 'Pass 2 hedging and scope guard — prevents overclaiming in polished output.'
+  },
+
+  {
+    templateKey: 'polish_rhythm_rules',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: `6. RHYTHM PRESERVATION
+   • Preserve contrast paragraphs.
+   • Avoid flattening argumentative tension.
+   • If 3+ paragraphs share structure, vary one.
+   • Maintain varied sentence lengths.`,
+    priority: 0,
+    description: 'Pass 2 rhythm preservation — maintains argumentative flow variety.'
+  },
+
+  // ── Dimension Generation Prompts ───────────────────────────────────────────
+
+  {
+    templateKey: 'dimension_role_introduction',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: 'Open the section: orient the reader to this section scope, establish context, and set up the upcoming analysis.',
+    priority: 0,
+    description: 'Dimension role directive for introduction-role dimensions.'
+  },
+
+  {
+    templateKey: 'dimension_role_body',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: 'Develop the core body analysis for this dimension while maintaining continuity with the surrounding dimensions.',
+    priority: 0,
+    description: 'Dimension role directive for body-role dimensions.'
+  },
+
+  {
+    templateKey: 'dimension_role_conclusion',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: 'Close the section: synthesize the section-level takeaway and end cleanly without introducing new major subtopics.',
+    priority: 0,
+    description: 'Dimension role directive for conclusion-role dimensions.'
+  },
+
+  {
+    templateKey: 'dimension_role_intro_conclusion',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: 'Because this is the only dimension, both introduce and conclude the section in a compact arc.',
+    priority: 0,
+    description: 'Dimension role directive when a single dimension must handle both intro and conclusion.'
+  },
+
+  {
+    templateKey: 'dimension_prompt_rules',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: `Rules:
+- Use the PASS 1 SECTION SOURCE above as the source of truth for this section.
+- Use the PASS 1 TARGET-DIMENSION BRIEF as the primary extraction target when available.
+- Use the TARGET DIMENSION EVIDENCE PACK first when grounding claims and citation placement.
+- Extract and adapt only the parts of the pass 1 draft that belong to this target dimension.
+- Do not repeat prior accepted content.
+- Keep continuity with the previous accepted dimension.
+- If this role is introduction, open the section naturally before narrowing into the target dimension.
+- If this role is conclusion, close the section cleanly and synthesize the section-level takeaway without adding new major claims.
+- If there is a next dimension, leave a natural bridge toward the next required dimension.
+- Use [CITE:key] placeholders exactly.
+- If this dimension has REQUIRED CITATION KEYS, include each at least once.
+- Keep output focused on this dimension only.
+- Use the same terminology and concepts established by previous sections (see PREVIOUS SECTIONS MEMORY).
+- FORMATTING: Output plain academic prose only. Do NOT use bold (**), italic (*), or any markdown emphasis markers. Headings are acceptable but inline formatting must be plain text.`,
+    priority: 0,
+    description: 'Core rules block injected into every dimension generation prompt.'
+  },
+
+  {
+    templateKey: 'evidence_gap_guardrail',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: `═══════════════════════════════════════════════════════════════════════════════
+⚠️  EVIDENCE GAP — ANTI-HALLUCINATION GUARD (MANDATORY)
+═══════════════════════════════════════════════════════════════════════════════
+No mapped evidence exists for this dimension. STRICT RULES:
+- Do NOT fabricate or invent citation keys. Do NOT use [CITE:...] unless the key
+  appears in the MANDATORY SECTION COVERAGE KEYS above.
+- Make theoretical or analytical arguments only. Ground claims in reasoning, not
+  invented references.
+- If empirical evidence is needed but unavailable, explicitly state:
+  "Further empirical investigation is warranted" or similar hedging.
+- You may reference concepts from the PASS 1 source but do NOT cite papers
+  that are not in your allowed citation set.`,
+    priority: 0,
+    description: 'Anti-hallucination guardrail injected when a dimension has no mapped evidence.'
+  },
+
+  // ── Intellectual Rigor Block (Pass 1) ──────────────────────────────────────
+
+  {
+    templateKey: 'intellectual_rigor_block',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: `═══════════════════════════════════════════════════════════════════════════════
+INTELLECTUAL RIGOR BLOCK v3
+NOVELTY FRAMING
+- Frame contributions as resolving a specific limitation, tension, or contested assumption.
+- Avoid contextual-only novelty unless explicitly classified as TRANSLATIONAL.
+- State clearly what prior work could not achieve.
+
+If noveltyType = TRANSLATIONAL:
+- Frame as validation, feasibility, adaptation, or contextual testing.
+- Do NOT claim methodological invention.
+
+ANALYTICAL LITERATURE
+- Organize by analytical themes, not paper-by-paper summaries.
+- For each theme, include at least one explicit comparison or contrast when supported by evidence.
+- Use positional relation labels to clarify whether cited work reinforces, contradicts, extends, or qualifies your argument.
+- Surface boundary conditions when relevant.
+
+SCOPE DISCIPLINE
+- Do not generalize beyond stated scope.
+- Use hedging for single-study findings.
+- Distinguish clearly between cited findings and your own findings.
+- Treat "Not extracted from source" as absence of extracted evidence, not evidence of absence.
+
+METHODOLOGY DEFENSE
+- Justify chosen approach relative to at least one named alternative.
+- State assumptions explicitly.
+- Acknowledge constraints before presenting results.
+
+ARGUMENT RHYTHM
+- Vary paragraph structures.
+- Include genuine analytical tension when supported by evidence.
+- Do not force tension.
+- Avoid uniform paragraph openings.
+- Mix short analytical sentences with longer evidence-based sentences.
+COHERENCE RULES (Always Apply)
+═══════════════════════════════════════════════════════════════════════════════
+1. Support the thesis statement in all assertions
+2. Do NOT redefine terms already introduced in previous sections
+3. Do NOT contradict claims made in previous sections
+4. Do NOT include content listed in "MUST AVOID"
+5. Reference previous sections naturally where appropriate
+6. Explicitly discuss evidence mapped as CONTRAST
+7. Clearly distinguish YOUR claims from CITED claims
+8. Strong claims must include supporting evidence or acknowledge need for further investigation`,
+    priority: 0,
+    description: 'Pass 1 intellectual rigor block — novelty framing, scope discipline, coherence rules.'
+  },
+
+  // ── Section Guidance (per section) ─────────────────────────────────────────
+
+  {
+    templateKey: 'section_guidance',
+    applicationMode: 'paper',
+    sectionScope: 'abstract',
+    paperTypeScope: '*',
+    content: 'Remember: The abstract should be self-contained and include all key information. It should be understandable without reading the full paper.',
+    priority: 0,
+    description: 'Section-specific guidance for abstract.'
+  },
+
+  {
+    templateKey: 'section_guidance',
+    applicationMode: 'paper',
+    sectionScope: 'introduction',
+    paperTypeScope: '*',
+    content: 'Structure your introduction as an inverted pyramid: broad context -> specific problem -> your approach.',
+    priority: 0,
+    description: 'Section-specific guidance for introduction.'
+  },
+
+  {
+    templateKey: 'section_guidance',
+    applicationMode: 'paper',
+    sectionScope: 'literature_review',
+    paperTypeScope: '*',
+    content: 'Organize thematically rather than chronologically. Show how studies relate to each other and identify gaps.',
+    priority: 0,
+    description: 'Section-specific guidance for literature review.'
+  },
+
+  {
+    templateKey: 'section_guidance',
+    applicationMode: 'paper',
+    sectionScope: 'methodology',
+    paperTypeScope: '*',
+    content: 'Provide enough detail that another researcher could replicate your study. Justify methodological choices.',
+    priority: 0,
+    description: 'Section-specific guidance for methodology.'
+  },
+
+  {
+    templateKey: 'section_guidance',
+    applicationMode: 'paper',
+    sectionScope: 'results',
+    paperTypeScope: '*',
+    content: 'Present results first, interpret them in the Discussion section. Use tables/figures to enhance clarity.',
+    priority: 0,
+    description: 'Section-specific guidance for results.'
+  },
+
+  {
+    templateKey: 'section_guidance',
+    applicationMode: 'paper',
+    sectionScope: 'discussion',
+    paperTypeScope: '*',
+    content: 'Don\'t just restate results - interpret what they mean in the broader context of existing literature.',
+    priority: 0,
+    description: 'Section-specific guidance for discussion.'
+  },
+
+  {
+    templateKey: 'section_guidance',
+    applicationMode: 'paper',
+    sectionScope: 'conclusion',
+    paperTypeScope: '*',
+    content: 'Focus on contributions and implications, not just summarizing what you did.',
+    priority: 0,
+    description: 'Section-specific guidance for conclusion.'
+  },
+]
+
+async function seedSystemPromptTemplates() {
+  console.log('\n🌱 Seeding System Prompt Templates...\n')
+
+  let seeded = 0
+  for (const tmpl of systemPromptTemplates) {
+    await prisma.systemPromptTemplate.upsert({
+      where: {
+        system_prompt_unique: {
+          templateKey: tmpl.templateKey,
+          applicationMode: tmpl.applicationMode,
+          sectionScope: tmpl.sectionScope,
+          paperTypeScope: tmpl.paperTypeScope,
+        }
+      },
+      update: {
+        content: tmpl.content,
+        priority: tmpl.priority,
+        description: tmpl.description,
+        status: 'ACTIVE',
+        updatedAt: new Date(),
+      },
+      create: {
+        templateKey: tmpl.templateKey,
+        applicationMode: tmpl.applicationMode,
+        sectionScope: tmpl.sectionScope,
+        paperTypeScope: tmpl.paperTypeScope,
+        content: tmpl.content,
+        priority: tmpl.priority,
+        description: tmpl.description,
+        status: 'ACTIVE',
+      }
+    })
+    const scope = tmpl.sectionScope !== '*' ? ` [${tmpl.sectionScope}]` : ''
+    console.log(`  ✓ ${tmpl.templateKey}${scope} (${tmpl.content.length} chars)`)
+    seeded++
+  }
+
+  console.log(`\n✅ Seeded ${seeded} system prompt templates`)
+}
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
 async function main() {
   console.log('\n' + '═'.repeat(70))
   console.log('  PAPER PROMPTS V2 - Action-Focused Seeding')
@@ -2126,18 +2536,23 @@ async function main() {
     // 2. Seed paper type overrides (TOP-UP additions)
     await seedPaperTypeOverrides()
     
-    // 3. Report methodology constraints (loaded from TypeScript)
+    // 3. Seed system prompt templates (polish rules, dimension directives, etc.)
+    await seedSystemPromptTemplates()
+
+    // 4. Report methodology constraints (loaded from TypeScript)
     reportMethodologyConstraints()
 
     // Summary
     const baseSectionCount = await prisma.paperSupersetSection.count()
     const overrideCount = await prisma.paperTypeSectionPrompt.count({ where: { status: 'ACTIVE' } })
+    const systemTemplateCount = await prisma.systemPromptTemplate.count({ where: { status: 'ACTIVE' } })
 
     console.log('\n' + '═'.repeat(70))
     console.log('  SUMMARY')
     console.log('═'.repeat(70))
     console.log(`\n  Base Sections: ${baseSectionCount}`)
     console.log(`  Paper Type Overrides: ${overrideCount}`)
+    console.log(`  System Prompt Templates: ${systemTemplateCount}`)
     console.log(`  Methodology Types: 6`)
     console.log(`\n  PROMPT ARCHITECTURE:`)
     console.log(`  ┌─────────────────────────────────────────────────────────────┐`)
@@ -2147,6 +2562,7 @@ async function main() {
     console.log(`  │  [P4] + Blueprint Context (thesis, section plan)            │`)
     console.log(`  │  [P5] + Writing Persona (user's style samples)              │`)
     console.log(`  │  [P6] + User Instructions (HIGHEST PRIORITY)                │`)
+    console.log(`  │  [SYS] System Prompt Templates (polish, dimension, rigor)   │`)
     console.log(`  └─────────────────────────────────────────────────────────────┘`)
     console.log('\n✨ V2 Seeding complete!\n')
   } catch (error) {

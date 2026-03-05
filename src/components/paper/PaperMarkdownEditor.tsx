@@ -595,8 +595,8 @@ const EDITOR_STYLES = `
   font-size: 11pt;
   line-height: 1.8;
   color: #1a1a2e;
-  padding: 1.5rem;
-  min-height: 180px;
+  padding: 0.5rem 0.25rem;
+  min-height: 2em;
   outline: none;
 }
 
@@ -988,13 +988,13 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
   }, [editor]);
 
   return (
-    <div className={`paper-editor relative rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow ${hasFocus ? 'ring-2 ring-indigo-200 border-indigo-300 shadow-md' : ''} ${className}`}>
+    <div className={`paper-editor relative bg-white transition-all duration-150 ${hasFocus ? 'rounded-lg ring-1 ring-indigo-200/70 shadow-sm' : 'rounded-none border-transparent'} ${className}`}>
       {/* Inject editor styles */}
       <style>{EDITOR_STYLES}</style>
 
       {/* Sticky toolbar - visible when editor has focus */}
       {editor && hasFocus && (
-        <div className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-slate-100 px-2 py-1.5 rounded-t-xl flex items-center gap-0.5 flex-wrap">
+        <div className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-slate-100/80 px-2 py-1 rounded-t-lg flex items-center gap-0.5 flex-wrap">
           {/* Text formatting */}
           <MicroButton
             onClick={applyNormalFormatting}
@@ -1150,7 +1150,7 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
 
       <EditorContent editor={editor} />
       {editor?.isEmpty && (
-        <div className="pointer-events-none absolute left-6 top-14 text-slate-400 text-sm italic">
+        <div className="pointer-events-none absolute left-2 top-10 text-slate-300 text-sm italic">
           {placeholder}
         </div>
       )}

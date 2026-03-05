@@ -8,6 +8,7 @@
 
 import { prisma } from '../prisma';
 import { paperTypeService } from './paper-type-service';
+import { systemPromptTemplateService, TEMPLATE_KEYS } from './system-prompt-template-service';
 import type { PaperTypeDefinition, PaperSupersetSection, PaperTypeSectionPrompt } from '@prisma/client';
 
 export interface SectionTemplate {
@@ -140,7 +141,7 @@ class SectionTemplateService {
     }
 
     // Add section-specific guidance
-    const guidanceBlock = this.buildGuidanceBlock(sectionKey, context);
+    const guidanceBlock = await this.buildGuidanceBlock(sectionKey, context);
     if (guidanceBlock) {
       prompt += `\n\n${guidanceBlock}`;
     }
@@ -471,7 +472,7 @@ class SectionTemplateService {
       prompt += `\n\n${constraintsBlock}`;
     }
 
-    const guidanceBlock = this.buildGuidanceBlock(sectionKey, context);
+    const guidanceBlock = await this.buildGuidanceBlock(sectionKey, context);
     if (guidanceBlock) {
       prompt += `\n\n${guidanceBlock}`;
     }
@@ -663,8 +664,8 @@ class SectionTemplateService {
     return parts.length > 0 ? `CONSTRAINTS:\n${parts.map(part => `- ${part}`).join('\n')}` : '';
   }
 
-  private buildGuidanceBlock(sectionKey: string, context: SectionPromptContext): string {
-    const guidance: Record<string, string> = {
+  private async buildGuidanceBlock(sectionKey: string, _context: SectionPromptContext): Promise<string> {
+    const FALLBACK_GUIDANCE: Record<string, string> = {
       abstract: `Remember: The abstract should be self-contained and include all key information. It should be understandable without reading the full paper.`,
       introduction: `Structure your introduction as an inverted pyramid: broad context -> specific problem -> your approach.`,
       literature_review: `Organize thematically rather than chronologically. Show how studies relate to each other and identify gaps.`,
@@ -674,7 +675,13 @@ class SectionTemplateService {
       conclusion: `Focus on contributions and implications, not just summarizing what you did.`
     };
 
-    return guidance[this.normalizeSectionKey(sectionKey)] || '';
+    const normalized = this.normalizeSectionKey(sectionKey);
+    const fallback = FALLBACK_GUIDANCE[normalized] || '';
+
+    return systemPromptTemplateService.resolveWithFallback(
+      { templateKey: TEMPLATE_KEYS.SECTION_GUIDANCE, applicationMode: 'paper', sectionScope: normalized },
+      fallback
+    );
   }
 
   private normalizeSectionKey(sectionKey: string): string {

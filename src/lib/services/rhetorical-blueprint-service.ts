@@ -205,6 +205,90 @@ const DEFAULTS_BY_SECTION: Record<string, RhetoricalSlot[]> = {
       citationPolicy: { mode: 'optional', maxCitations: 1 },
     },
   ],
+  conclusion: [
+    {
+      key: 'SynthesisRecap',
+      required: true,
+      placement: 'start',
+      intent: 'Summarize the key findings and contributions without restating the abstract.',
+      constraints: ['No new results or data', 'Tie back to thesis statement'],
+      citationPolicy: { mode: 'none', maxCitations: 0 },
+    },
+    {
+      key: 'ContributionSignificance',
+      required: true,
+      placement: 'middle',
+      intent: 'Articulate the significance of contributions to the field.',
+      constraints: ['Must align with ResearchIntentLock contributions', 'No overclaims'],
+      citationPolicy: { mode: 'optional', maxCitations: 1 },
+    },
+    {
+      key: 'PracticalImplications',
+      required: false,
+      placement: 'middle',
+      intent: 'State practical or policy implications if applicable.',
+      constraints: ['Ground in reported findings only'],
+      citationPolicy: { mode: 'none', maxCitations: 0 },
+    },
+    {
+      key: 'LimitationsAndFutureDirections',
+      required: true,
+      placement: 'end',
+      intent: 'Acknowledge limitations and outline concrete future research directions.',
+      constraints: ['Be specific about limitations', 'Future work must be actionable'],
+      citationPolicy: { mode: 'none', maxCitations: 0 },
+    },
+    {
+      key: 'ClosingStatement',
+      required: true,
+      placement: 'final',
+      intent: 'End with a concise closing that reinforces the paper thesis.',
+      constraints: ['1-2 sentences max', 'No new claims'],
+      citationPolicy: { mode: 'none', maxCitations: 0 },
+    },
+  ],
+  abstract: [
+    {
+      key: 'BackgroundMotivation',
+      required: true,
+      placement: 'start',
+      intent: 'State the research problem and motivation in 1-2 sentences.',
+      constraints: ['Keep to 1-2 sentences', 'No citations'],
+      citationPolicy: { mode: 'none', maxCitations: 0 },
+    },
+    {
+      key: 'ObjectiveScope',
+      required: true,
+      placement: 'start',
+      intent: 'State the research objective and scope.',
+      constraints: ['1 sentence', 'Must align with thesis'],
+      citationPolicy: { mode: 'none', maxCitations: 0 },
+    },
+    {
+      key: 'MethodApproach',
+      required: true,
+      placement: 'middle',
+      intent: 'Briefly describe the methodology or approach.',
+      constraints: ['1-2 sentences', 'Key method only'],
+      citationPolicy: { mode: 'none', maxCitations: 0 },
+    },
+    {
+      key: 'KeyFindings',
+      required: true,
+      placement: 'middle',
+      intent: 'State the principal results or findings.',
+      constraints: ['Be specific', 'Include key metrics if applicable'],
+      citationPolicy: { mode: 'none', maxCitations: 0 },
+    },
+    {
+      key: 'SignificanceImplication',
+      required: true,
+      placement: 'end',
+      intent: 'Close with the significance or broader implications.',
+      constraints: ['1-2 sentences', 'No overclaims'],
+      citationPolicy: { mode: 'none', maxCitations: 0 },
+    },
+  ],
 };
 
 function normalizeSectionKey(value: string): string {
@@ -281,7 +365,7 @@ export function getDefaultRhetoricalBlueprint(sectionKey: string): RhetoricalBlu
   const templateKey = toSectionTemplateKey(sectionKey);
   const slots = DEFAULTS_BY_SECTION[templateKey] || [];
   return {
-    enabled: false,
+    enabled: slots.length > 0,
     slots: slots.map(cloneSlot),
   };
 }

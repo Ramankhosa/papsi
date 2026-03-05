@@ -21,6 +21,7 @@ import type { TenantContext } from '@/lib/metering';
 import { researchIntentLockService, type ResearchIntentLock } from '@/lib/services/research-intent-lock-service';
 import { buildRhetoricalPromptBlock, type RhetoricalBlueprint } from '@/lib/services/rhetorical-blueprint-service';
 import { rhetoricalComposerService } from '@/lib/services/rhetorical-composer-service';
+import { systemPromptTemplateService, TEMPLATE_KEYS } from '@/lib/services/system-prompt-template-service';
 import {
   buildCitationKeyLookup,
   citationKeyIdentity,
@@ -2101,7 +2102,48 @@ function truncateContentToWordLimit(content: string, maxWords: number): {
     };
   }
 
+  // Allow up to 15% soft tolerance before truncating — keeps final sentences intact
+  const softCeiling = Math.ceil(limit * 1.15);
+  if (originalWords <= softCeiling) {
+    return {
+      content: normalized,
+      originalWords,
+      finalWords: originalWords,
+      trimmed: false
+    };
+  }
+
+  // Sentence-boundary-aware truncation: find the last complete sentence
+  // within or near the word limit, rather than chopping mid-sentence.
   const words = normalized.split(/\s+/).filter(Boolean);
+  const roughCut = words.slice(0, softCeiling).join(' ');
+
+  // Find the last sentence-ending punctuation within the rough cut
+  const sentenceEndPattern = /[.!?]\s*(?:\n|$)|[.!?]["')\]]*\s/g;
+  let lastSentenceEnd = -1;
+  let match: RegExpExecArray | null;
+  while ((match = sentenceEndPattern.exec(roughCut)) !== null) {
+    const candidateEnd = match.index + match[0].trimEnd().length;
+    const candidateWordCount = computeWordCount(roughCut.slice(0, candidateEnd));
+    if (candidateWordCount >= Math.floor(limit * 0.7)) {
+      lastSentenceEnd = candidateEnd;
+    }
+  }
+
+  if (lastSentenceEnd > 0) {
+    const sentenceBounded = roughCut.slice(0, lastSentenceEnd).trim();
+    const finalWords = computeWordCount(sentenceBounded);
+    if (finalWords >= Math.floor(limit * 0.7)) {
+      return {
+        content: sentenceBounded,
+        originalWords,
+        finalWords,
+        trimmed: true
+      };
+    }
+  }
+
+  // Fallback: hard cut at the limit (original behavior)
   const clipped = words.slice(0, limit).join(' ').trim();
   const finalWords = computeWordCount(clipped);
   return {
@@ -2112,17 +2154,72 @@ function truncateContentToWordLimit(content: string, maxWords: number): {
   };
 }
 
-function buildDimensionRoleDirective(role: DimensionRole): string {
-  switch (role) {
-    case 'introduction':
-      return 'Open the section: orient the reader to this section scope, establish context, and set up the upcoming analysis.';
-    case 'conclusion':
-      return 'Close the section: synthesize the section-level takeaway and end cleanly without introducing new major subtopics.';
-    case 'intro_conclusion':
-      return 'Because this is the only dimension, both introduce and conclude the section in a compact arc.';
-    default:
-      return 'Develop the core body analysis for this dimension while maintaining continuity with the surrounding dimensions.';
-  }
+const DIMENSION_ROLE_FALLBACKS: Record<string, string> = {
+  introduction: 'Open the section: orient the reader to this section scope, establish context, and set up the upcoming analysis.',
+  conclusion: 'Close the section: synthesize the section-level takeaway and end cleanly without introducing new major subtopics.',
+  intro_conclusion: 'Because this is the only dimension, both introduce and conclude the section in a compact arc.',
+  body: 'Develop the core body analysis for this dimension while maintaining continuity with the surrounding dimensions.',
+};
+
+const DIMENSION_ROLE_TEMPLATE_KEY: Record<string, string> = {
+  introduction: TEMPLATE_KEYS.DIMENSION_ROLE_INTRODUCTION,
+  conclusion: TEMPLATE_KEYS.DIMENSION_ROLE_CONCLUSION,
+  intro_conclusion: TEMPLATE_KEYS.DIMENSION_ROLE_INTRO_CONCLUSION,
+  body: TEMPLATE_KEYS.DIMENSION_ROLE_BODY,
+};
+
+async function buildDimensionRoleDirective(role: DimensionRole): Promise<string> {
+  const key = DIMENSION_ROLE_TEMPLATE_KEY[role] || TEMPLATE_KEYS.DIMENSION_ROLE_BODY;
+  const fallback = DIMENSION_ROLE_FALLBACKS[role] || DIMENSION_ROLE_FALLBACKS.body;
+  return systemPromptTemplateService.resolveWithFallback(
+    { templateKey: key, applicationMode: 'paper' },
+    fallback
+  );
+}
+
+function buildRhetoricalSlotsBlockForDimension(
+  slots: RhetoricalBlueprint['slots'],
+  role: DimensionRole,
+  dimensionIndex: number,
+  totalDimensions: number
+): string {
+  if (!slots || slots.length === 0) return '';
+
+  const placementFilter = (slot: { placement: string }): boolean => {
+    const p = String(slot.placement || '').toLowerCase();
+    if (role === 'intro_conclusion') return true;
+    if (role === 'introduction') return p === 'start' || p === 'opening' || p === 'begin';
+    if (role === 'conclusion') return p === 'end' || p === 'close' || p === 'final';
+    return p === 'middle';
+  };
+
+  const relevantSlots = slots.filter(placementFilter);
+
+  // For body dimensions with no matching middle slots, provide the full
+  // section-level rhetorical context so the LLM knows where this dimension
+  // sits in the overall argumentative arc.
+  const contextSlots = relevantSlots.length > 0 ? relevantSlots : slots;
+  const isFullContext = relevantSlots.length === 0;
+
+  const slotLines = contextSlots.map((slot, idx) => {
+    const reqTag = slot.required ? '[REQUIRED]' : '[OPTIONAL]';
+    const constraintList = (slot.constraints || []).join('; ');
+    const activeTag = relevantSlots.includes(slot) ? '' : ' (handled by other dimensions)';
+    return `  ${idx + 1}. ${reqTag} "${slot.key}" (${slot.placement})${activeTag}: ${slot.intent}${constraintList ? ` | Constraints: ${constraintList}` : ''}`;
+  });
+
+  const positionContext = `This is dimension ${dimensionIndex + 1} of ${totalDimensions} (role: ${role}).`;
+
+  return `
+RHETORICAL STRUCTURE GUIDANCE:
+${positionContext}
+${isFullContext ? 'Full section rhetorical arc (for context — focus on moves relevant to this dimension\'s position):' : 'Rhetorical moves to weave into this dimension:'}
+${slotLines.join('\n')}
+- Follow the slot order for paragraph intents within your dimension's placement zone.
+- Do not force artificial paragraphs; integrate moves naturally into the evidence-based narrative.
+- Citation policy per slot: respect "none" (no citations) vs "optional" (cite where appropriate).
+- Body dimensions: maintain analytical depth and evidence grounding as your primary focus.
+`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -3518,38 +3615,37 @@ async function generateSection(
   if (
     rawContent
     && isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT')
+    && isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B')
     && blueprintPromptContext?.rhetoricalBlueprint?.enabled
   ) {
     try {
-      const rhetoricalResult = isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B')
-        ? await rhetoricalComposerService.applyPass2B({
-            sessionId,
-            sectionKey,
-            content: rawContent,
-            rhetoricalBlueprint: blueprintPromptContext.rhetoricalBlueprint,
-            researchIntentLock: blueprintPromptContext.researchIntentLock || null,
-            fallbackContributions: blueprintPromptContext.keyContributions || [],
-            evidenceDigestSummary: formatEvidenceDigest(evidencePromptContext.evidenceDigest),
-            tenantContext: tenantContext || null,
-            requestHeaders
-          })
-        : await rhetoricalComposerService.enforceContributionLock({
-            sessionId,
-            sectionKey,
-            content: rawContent,
-            rhetoricalBlueprint: blueprintPromptContext.rhetoricalBlueprint,
-            researchIntentLock: blueprintPromptContext.researchIntentLock || null,
-            fallbackContributions: blueprintPromptContext.keyContributions || [],
-            tenantContext: tenantContext || null,
-            requestHeaders
-          });
+      const preRhetoricalContent = rawContent;
+      const preRhetoricalPass2Prompt = pass2PromptUsed;
+      const rhetoricalResult = await rhetoricalComposerService.applyPass2B({
+        sessionId,
+        sectionKey,
+        content: rawContent,
+        rhetoricalBlueprint: blueprintPromptContext.rhetoricalBlueprint,
+        researchIntentLock: blueprintPromptContext.researchIntentLock || null,
+        fallbackContributions: blueprintPromptContext.keyContributions || [],
+        evidenceDigestSummary: formatEvidenceDigest(evidencePromptContext.evidenceDigest),
+        tenantContext: tenantContext || null,
+        requestHeaders
+      });
 
-      if (rhetoricalResult.content) {
+      const rolledBack = !rhetoricalResult.validation.passed;
+      if (!rolledBack && rhetoricalResult.content) {
         rawContent = rhetoricalResult.content;
+      } else {
+        rawContent = preRhetoricalContent;
       }
-      if (rhetoricalResult.promptUsed && useTwoPassPipeline) {
+
+      if (!rolledBack && rhetoricalResult.promptUsed && useTwoPassPipeline) {
         pass2PromptUsed = rhetoricalResult.promptUsed;
+      } else if (useTwoPassPipeline) {
+        pass2PromptUsed = preRhetoricalPass2Prompt;
       }
+
       if (rhetoricalResult.tokensUsed) {
         pass2TokensUsed = Number(pass2TokensUsed || 0) + Number(rhetoricalResult.tokensUsed || 0);
         llmTokensUsed = Number(llmTokensUsed || 0) + Number(rhetoricalResult.tokensUsed || 0);
@@ -3557,11 +3653,14 @@ async function generateSection(
 
       const rhetoricalValidation = {
         enabled: true,
-        pass2bApplied: isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B'),
+        pass2bApplied: true,
+        rolledBack,
         retries: rhetoricalResult.retries,
         passed: rhetoricalResult.validation.passed,
         violations: rhetoricalResult.validation.violations,
-        inspectedParagraphs: rhetoricalResult.validation.inspectedParagraphs
+        inspectedParagraphs: rhetoricalResult.validation.inspectedParagraphs,
+        requiredSlotsChecked: rhetoricalResult.validation.requiredSlotsChecked,
+        slotViolations: rhetoricalResult.validation.slotViolations
       };
       const currentValidation = (
         mergedValidationReport
@@ -3581,13 +3680,13 @@ async function generateSection(
         rhetoricalValidation
       };
       if (!rhetoricalResult.validation.passed) {
-        console.warn('[PaperDrafting] Rhetorical contribution validation still failing after retries', {
+        console.warn('[PaperDrafting] Rhetorical validation failed after retries; reverting to pre-rhetorical content', {
           sectionKey,
           violations: rhetoricalResult.validation.violations
         });
       }
     } catch (error) {
-      console.warn('[PaperDrafting] Rhetorical composer/enforcer failed (non-fatal):', error);
+      console.warn('[PaperDrafting] Rhetorical composer failed (non-fatal):', error);
     }
   }
 
@@ -4401,18 +4500,31 @@ function evaluateDimensionCitationValidation(params: {
   };
 }
 
+function stripInlineFormatting(text: string): string {
+  let result = text;
+  // Bold-italic: ***text*** or ___text___
+  result = result.replace(/(\*{3}|_{3})(?!\s)([\s\S]*?\S)\1/g, '$2');
+  // Bold: **text** or __text__
+  result = result.replace(/(\*{2}|_{2})(?!\s)([\s\S]*?\S)\1/g, '$2');
+  // Italic: *text* or _text_ (but not citation placeholders like [CITE:...])
+  result = result.replace(/(?<!\w)(\*|_)(?!\s)([\s\S]*?\S)\1(?!\w)/g, '$2');
+  return result;
+}
+
 function extractDimensionContentFromOutput(rawOutput: string): string {
+  let content: string;
   const parsed = extractJsonObjectFromOutput(rawOutput);
   if (parsed && typeof parsed.content === 'string' && parsed.content.trim()) {
-    return parsed.content.trim();
+    content = parsed.content.trim();
+  } else {
+    const fenced = rawOutput.match(/```(?:markdown|md|text)?\s*([\s\S]*?)```/i);
+    if (fenced?.[1]?.trim()) {
+      content = fenced[1].trim();
+    } else {
+      content = rawOutput.trim();
+    }
   }
-
-  const fenced = rawOutput.match(/```(?:markdown|md|text)?\s*([\s\S]*?)```/i);
-  if (fenced?.[1]?.trim()) {
-    return fenced[1].trim();
-  }
-
-  return rawOutput.trim();
+  return stripInlineFormatting(content);
 }
 
 function buildDimensionFlowResponse(
@@ -4506,7 +4618,7 @@ async function generateDimensionProposal(params: {
   const requiredKeys = params.targetDimension.mustUseCitationKeys.join(', ') || '(none)';
   const avoidClaims = params.targetDimension.avoidClaims.join('; ') || '(none)';
   const feedback = params.feedback?.trim() ? `\nREWRITE FEEDBACK:\n${params.feedback.trim()}` : '';
-  const roleDirective = buildDimensionRoleDirective(budget.role);
+  const roleDirective = await buildDimensionRoleDirective(budget.role);
   const targetIndex = params.flow.plan.findIndex(
     (entry) => normalizeDimensionKey(entry.dimensionKey) === normalizeDimensionKey(params.targetDimension.dimensionKey)
   );
@@ -4571,14 +4683,27 @@ async function generateDimensionProposal(params: {
 
   const crossSectionBlock = formatPreviousSectionMemoriesBlock(params.bundle.previousSectionMemories);
 
+  const rhetoricalBlueprint = params.bundle.blueprintPromptContext?.rhetoricalBlueprint;
+  const rhetoricalSlotsBlock = (
+    rhetoricalBlueprint?.enabled
+    && Array.isArray(rhetoricalBlueprint.slots)
+    && rhetoricalBlueprint.slots.length > 0
+  )
+    ? buildRhetoricalSlotsBlockForDimension(
+        rhetoricalBlueprint.slots,
+        budget.role,
+        targetIndex >= 0 ? targetIndex : 0,
+        params.flow.plan.length
+      )
+    : '';
+
   const isEvidenceGapDimension = !params.targetDimension.mustUseCitationKeys.length
     && (params.bundle.evidencePromptContext.gaps || []).some(
       gap => normalizeDimensionKey(gap) === normalizeDimensionKey(params.targetDimension.dimensionKey)
         || normalizeDimensionKey(gap) === normalizeDimensionKey(params.targetDimension.dimensionLabel)
     );
-  const evidenceGapGuardrail = isEvidenceGapDimension
-    ? `
-═══════════════════════════════════════════════════════════════════════════════
+
+  const FALLBACK_EVIDENCE_GAP = `═══════════════════════════════════════════════════════════════════════════════
 ⚠️  EVIDENCE GAP — ANTI-HALLUCINATION GUARD (MANDATORY)
 ═══════════════════════════════════════════════════════════════════════════════
 No mapped evidence exists for this dimension. STRICT RULES:
@@ -4589,9 +4714,38 @@ No mapped evidence exists for this dimension. STRICT RULES:
 - If empirical evidence is needed but unavailable, explicitly state:
   "Further empirical investigation is warranted" or similar hedging.
 - You may reference concepts from the PASS 1 source but do NOT cite papers
-  that are not in your allowed citation set.
-`
-    : '';
+  that are not in your allowed citation set.`;
+
+  const FALLBACK_DIMENSION_RULES = `Rules:
+- Use the PASS 1 SECTION SOURCE above as the source of truth for this section.
+- Use the PASS 1 TARGET-DIMENSION BRIEF as the primary extraction target when available.
+- Use the TARGET DIMENSION EVIDENCE PACK first when grounding claims and citation placement.
+- Extract and adapt only the parts of the pass 1 draft that belong to this target dimension.
+- Do not repeat prior accepted content.
+- Keep continuity with the previous accepted dimension.
+- If this role is introduction, open the section naturally before narrowing into the target dimension.
+- If this role is conclusion, close the section cleanly and synthesize the section-level takeaway without adding new major claims.
+- If there is a next dimension, leave a natural bridge toward the next required dimension.
+- Use [CITE:key] placeholders exactly.
+- If this dimension has REQUIRED CITATION KEYS, include each at least once.
+- Keep output focused on this dimension only.
+- Use the same terminology and concepts established by previous sections (see PREVIOUS SECTIONS MEMORY).
+- FORMATTING: Output plain academic prose only. Do NOT use bold (**), italic (*), or any markdown emphasis markers. Headings are acceptable but inline formatting must be plain text.`;
+
+  const [evidenceGapTemplate, dimensionRulesTemplate] = await Promise.all([
+    isEvidenceGapDimension
+      ? systemPromptTemplateService.resolveWithFallback(
+          { templateKey: TEMPLATE_KEYS.EVIDENCE_GAP_GUARDRAIL, applicationMode: 'paper' },
+          FALLBACK_EVIDENCE_GAP
+        )
+      : Promise.resolve(''),
+    systemPromptTemplateService.resolveWithFallback(
+      { templateKey: TEMPLATE_KEYS.DIMENSION_PROMPT_RULES, applicationMode: 'paper' },
+      FALLBACK_DIMENSION_RULES
+    ),
+  ]);
+
+  const evidenceGapGuardrail = isEvidenceGapDimension ? `\n${evidenceGapTemplate}\n` : '';
 
   const prompt = `You are drafting ONE dimension for a paper section.
 
@@ -4606,6 +4760,7 @@ AVOID THESE CLAIMS: ${avoidClaims}
 BRIDGE HINT: ${params.targetDimension.bridgeHint || '(none)'}
 ${budgetLines}
 ROLE DIRECTIVE: ${roleDirective}
+${rhetoricalSlotsBlock}
 ${evidenceGapGuardrail}
 PASS 1 SECTION SOURCE (use this as the source of truth for section-level content):
 ${pass1SourceFull || '(No pass 1 source available)'}
@@ -4633,20 +4788,7 @@ ${params.bundle.prompt}
 ${feedback}
 
 Write ONLY the content block for this target dimension.
-Rules:
-- Use the PASS 1 SECTION SOURCE above as the source of truth for this section.
-- Use the PASS 1 TARGET-DIMENSION BRIEF as the primary extraction target when available.
-- Use the TARGET DIMENSION EVIDENCE PACK first when grounding claims and citation placement.
-- Extract and adapt only the parts of the pass 1 draft that belong to this target dimension.
-- Do not repeat prior accepted content.
-- Keep continuity with the previous accepted dimension.
-- If this role is introduction, open the section naturally before narrowing into the target dimension.
-- If this role is conclusion, close the section cleanly and synthesize the section-level takeaway without adding new major claims.
-- If there is a next dimension, leave a natural bridge toward "${nextDimensionLabel || 'the next required dimension'}".
-- Use [CITE:key] placeholders exactly.
-- If this dimension has REQUIRED CITATION KEYS, include each at least once.
-- Keep output focused on this dimension only.
-- Use the same terminology and concepts established by previous sections (see PREVIOUS SECTIONS MEMORY).
+${dimensionRulesTemplate}
 ${targetRule}
 ${minRule}
 ${lengthRule}
@@ -5026,19 +5168,34 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           });
         }
 
-        const generated = await generateDimensionProposal({
-          sessionId,
-          sectionKey,
-          bundle,
-          flow,
-          targetDimension,
-          pass1Content: storedPass1.content,
-          pass1Memory: storedPass1.memory,
-          headers: requestHeaders,
-          tenantContext,
-          feedback: payload.feedback,
-          temperature: payload.temperature
-        });
+        let generated: Awaited<ReturnType<typeof generateDimensionProposal>>;
+        try {
+          generated = await generateDimensionProposal({
+            sessionId,
+            sectionKey,
+            bundle,
+            flow,
+            targetDimension,
+            pass1Content: storedPass1.content,
+            pass1Memory: storedPass1.memory,
+            headers: requestHeaders,
+            tenantContext,
+            feedback: payload.feedback,
+            temperature: payload.temperature
+          });
+        } catch (genError) {
+          console.error('[PaperDrafting] generate_dimension LLM call failed, returning persisted flow state', genError);
+          return NextResponse.json(
+            {
+              error: genError instanceof Error ? genError.message : 'Dimension generation failed',
+              sectionKey,
+              dimension: targetDimension,
+              recovered: true,
+              ...buildDimensionFlowResponse(flow)
+            },
+            { status: 502 }
+          );
+        }
 
         flow.pendingProposal = generated.proposal;
         if (flow.bufferedProposals) {
@@ -5286,54 +5443,59 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           flowCompleted
           && sectionContentForPersist.trim()
           && isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT')
+          && isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B')
           && bundle.blueprintPromptContext?.rhetoricalBlueprint?.enabled
         ) {
           try {
-            const rhetoricalResult = isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B')
-              ? await rhetoricalComposerService.applyPass2B({
-                  sessionId,
-                  sectionKey,
-                  content: sectionContentForPersist,
-                  rhetoricalBlueprint: bundle.blueprintPromptContext.rhetoricalBlueprint,
-                  researchIntentLock: bundle.blueprintPromptContext.researchIntentLock || null,
-                  fallbackContributions: bundle.blueprintPromptContext.keyContributions || [],
-                  evidenceDigestSummary: formatEvidenceDigest(bundle.evidencePromptContext.evidenceDigest),
-                  tenantContext: tenantContext || null,
-                  requestHeaders
-                })
-              : await rhetoricalComposerService.enforceContributionLock({
-                  sessionId,
-                  sectionKey,
-                  content: sectionContentForPersist,
-                  rhetoricalBlueprint: bundle.blueprintPromptContext.rhetoricalBlueprint,
-                  researchIntentLock: bundle.blueprintPromptContext.researchIntentLock || null,
-                  fallbackContributions: bundle.blueprintPromptContext.keyContributions || [],
-                  tenantContext: tenantContext || null,
-                  requestHeaders
-                });
+            const preRhetoricalContent = sectionContentForPersist;
+            const rhetoricalResult = await rhetoricalComposerService.applyPass2B({
+              sessionId,
+              sectionKey,
+              content: sectionContentForPersist,
+              rhetoricalBlueprint: bundle.blueprintPromptContext.rhetoricalBlueprint,
+              researchIntentLock: bundle.blueprintPromptContext.researchIntentLock || null,
+              fallbackContributions: bundle.blueprintPromptContext.keyContributions || [],
+              evidenceDigestSummary: formatEvidenceDigest(bundle.evidencePromptContext.evidenceDigest),
+              tenantContext: tenantContext || null,
+              requestHeaders
+            });
 
-            if (rhetoricalResult.content) {
+            const rolledBack = !rhetoricalResult.validation.passed;
+            if (!rolledBack && rhetoricalResult.content) {
               sectionContentForPersist = rhetoricalResult.content;
+            } else {
+              sectionContentForPersist = preRhetoricalContent;
             }
+
             if (!polishSummary) {
               polishSummary = { attempted: false, applied: false };
             }
             (polishSummary as any).rhetoricalValidation = {
               enabled: true,
-              pass2bApplied: isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B'),
+              pass2bApplied: true,
+              rolledBack,
               retries: rhetoricalResult.retries,
               passed: rhetoricalResult.validation.passed,
               violations: rhetoricalResult.validation.violations,
-              inspectedParagraphs: rhetoricalResult.validation.inspectedParagraphs
+              inspectedParagraphs: rhetoricalResult.validation.inspectedParagraphs,
+              requiredSlotsChecked: rhetoricalResult.validation.requiredSlotsChecked,
+              slotViolations: rhetoricalResult.validation.slotViolations
             };
 
             const combinedTokens = Number(polishMetadata?.tokensUsed || 0) + Number(rhetoricalResult.tokensUsed || 0);
-            if (rhetoricalResult.promptUsed || combinedTokens > 0) {
+            if ((!rolledBack && rhetoricalResult.promptUsed) || combinedTokens > 0) {
               polishMetadata = {
-                promptUsed: rhetoricalResult.promptUsed || polishMetadata?.promptUsed,
+                promptUsed: (!rolledBack && rhetoricalResult.promptUsed) ? rhetoricalResult.promptUsed : polishMetadata?.promptUsed,
                 tokensUsed: combinedTokens > 0 ? combinedTokens : undefined,
                 completedAt: new Date()
               };
+            }
+
+            if (!rhetoricalResult.validation.passed) {
+              console.warn('[PaperDrafting] Rhetorical validation failed after retries in dimension flow; reverted to pre-rhetorical content', {
+                sectionKey,
+                violations: rhetoricalResult.validation.violations
+              });
             }
           } catch (error) {
             console.warn('[PaperDrafting] Rhetorical pass after dimension flow failed (non-fatal):', error);

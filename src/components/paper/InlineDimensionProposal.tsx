@@ -1,6 +1,5 @@
 'use client';
 
-import { AnimatePresence, motion } from 'framer-motion';
 import { Loader2, RefreshCw } from 'lucide-react';
 import MarkdownRenderer from '@/components/paper/MarkdownRenderer';
 
@@ -70,6 +69,7 @@ interface InlineDimensionProposalProps {
   onProposalChange: (value: string) => void;
   onFeedbackChange: (value: string) => void;
   onRewrite: () => void;
+  onFixCitations?: (badKeys: string[]) => void;
   onSkipAnimation?: () => void;
 }
 
@@ -114,6 +114,7 @@ export default function InlineDimensionProposal({
   onProposalChange,
   onFeedbackChange,
   onRewrite,
+  onFixCitations,
   onSkipAnimation,
 }: InlineDimensionProposalProps) {
   const streamedText = isStreaming
@@ -124,18 +125,10 @@ export default function InlineDimensionProposal({
   const warningState = hasWarnings(validation);
 
   return (
-    <AnimatePresence initial={false}>
-      <motion.div
-        key={`inline-proposal-${dimensionLabel}`}
-        initial={{ opacity: 0, y: 8 }}
-        animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -4 }}
-        transition={{ duration: 0.3, ease: 'easeOut' }}
-        className="group/inline relative my-2 rounded-r-lg border-l-[3px] border-indigo-400 bg-[rgba(99,102,241,0.04)] px-5 pb-10 pt-3 transition-colors duration-200 hover:bg-[rgba(99,102,241,0.07)]"
-      >
-        <div className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[0.3px] text-indigo-500/80">
+    <div className="group/inline relative my-1.5 border-l-2 border-indigo-300/60 bg-indigo-50/30 pl-4 pr-2 pb-8 pt-2">
+        <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.3px] text-indigo-400/80">
           <span>{dimensionLabel || 'Dimension Draft'}</span>
-          <span className="h-px flex-1 bg-indigo-200" />
+          <span className="h-px flex-1 bg-indigo-100" />
         </div>
 
         {isStreaming ? (
@@ -163,31 +156,59 @@ export default function InlineDimensionProposal({
           <MarkdownRenderer content={contentText} className="!my-0" />
         )}
 
-        {warningState && validation && (
-          <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800">
-            {validation.disallowedKeys.length > 0 && (
-              <div>Disallowed: {validation.disallowedKeys.slice(0, 4).join(', ')}</div>
-            )}
-            {validation.unknownKeys.length > 0 && (
-              <div>Unknown: {validation.unknownKeys.slice(0, 4).join(', ')}</div>
-            )}
-            {validation.missingRequiredKeys.length > 0 && (
-              <div>Missing required: {validation.missingRequiredKeys.slice(0, 4).join(', ')}</div>
-            )}
-            {onAcceptBypass && (
-              <div className="mt-1.5">
-                <button
-                  type="button"
-                  onClick={onAcceptBypass}
-                  disabled={Boolean(isAccepting) || !proposalText.trim()}
-                  className="rounded border border-amber-300 bg-white px-2 py-0.5 text-[10px] font-medium text-amber-700 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  Accept anyway
-                </button>
+        {warningState && validation && (() => {
+          const allBadKeys = [
+            ...validation.disallowedKeys,
+            ...validation.unknownKeys
+          ];
+          return (
+            <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800">
+              {validation.disallowedKeys.length > 0 && (
+                <div>Disallowed: {validation.disallowedKeys.slice(0, 4).join(', ')}</div>
+              )}
+              {validation.unknownKeys.length > 0 && (
+                <div>Unknown: {validation.unknownKeys.slice(0, 4).join(', ')}</div>
+              )}
+              {validation.missingRequiredKeys.length > 0 && (
+                <div>Missing required: {validation.missingRequiredKeys.slice(0, 4).join(', ')}</div>
+              )}
+              <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                {onFixCitations && allBadKeys.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => onFixCitations(allBadKeys)}
+                    disabled={Boolean(isRewriting)}
+                    className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-white px-2.5 py-0.5 text-[10px] font-medium text-amber-700 transition-colors hover:bg-amber-100 hover:border-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isRewriting ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                    Fix citation deviation
+                  </button>
+                )}
+                {onFixCitations && validation.missingRequiredKeys.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => onFixCitations(validation.missingRequiredKeys)}
+                    disabled={Boolean(isRewriting)}
+                    className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-white px-2.5 py-0.5 text-[10px] font-medium text-amber-700 transition-colors hover:bg-amber-100 hover:border-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {isRewriting ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                    Add missing citations
+                  </button>
+                )}
+                {onAcceptBypass && (
+                  <button
+                    type="button"
+                    onClick={onAcceptBypass}
+                    disabled={Boolean(isAccepting) || !proposalText.trim()}
+                    className="rounded-full border border-slate-300 bg-white px-2.5 py-0.5 text-[10px] font-medium text-slate-500 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Accept anyway
+                  </button>
+                )}
               </div>
-            )}
-          </div>
-        )}
+            </div>
+          );
+        })()}
 
         {(reviewTrace || pass1Source) && (
           <details className="mt-2 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[11px] text-slate-700">
@@ -295,43 +316,35 @@ export default function InlineDimensionProposal({
           </details>
         )}
 
-        <AnimatePresence initial={false}>
-          {showRewriteInput && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.2, ease: 'easeOut' }}
-              className="mt-2 overflow-hidden"
-            >
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  className="flex-1 rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-sm text-slate-700 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-200"
-                  placeholder="What should change?"
-                  value={feedback || ''}
-                  onChange={(e) => onFeedbackChange(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      onRewrite();
-                    }
-                  }}
-                  autoFocus
-                />
-                <button
-                  type="button"
-                  onClick={onRewrite}
-                  disabled={Boolean(isRewriting)}
-                  className="inline-flex items-center gap-1 rounded-md bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {isRewriting ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                  Go
-                </button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {showRewriteInput && (
+          <div className="mt-2">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                className="flex-1 rounded-md border border-indigo-200 bg-white px-3 py-1.5 text-sm text-slate-700 placeholder:text-slate-400 focus:border-indigo-400 focus:outline-none focus:ring-1 focus:ring-indigo-200"
+                placeholder="What should change?"
+                value={feedback || ''}
+                onChange={(e) => onFeedbackChange(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    onRewrite();
+                  }
+                }}
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={onRewrite}
+                disabled={Boolean(isRewriting)}
+                className="inline-flex items-center gap-1 rounded-md bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isRewriting ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                Go
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="inline-dimension-actions absolute bottom-2 right-3 flex gap-1 opacity-0 transition-opacity duration-150 group-hover/inline:opacity-100 group-focus-within/inline:opacity-100">
           <button
@@ -393,7 +406,6 @@ export default function InlineDimensionProposal({
             }
           }
         `}</style>
-      </motion.div>
-    </AnimatePresence>
+    </div>
   );
 }

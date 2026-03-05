@@ -41,6 +41,7 @@ import { argumentPlannerService } from './argument-planner-service';
 import { citationValidator } from './citation-validator';
 import { buildRhetoricalPromptBlock } from './rhetorical-blueprint-service';
 import { rhetoricalComposerService } from './rhetorical-composer-service';
+import { systemPromptTemplateService, TEMPLATE_KEYS } from './system-prompt-template-service';
 import type { PaperSection, PaperSectionStatus } from '@prisma/client';
 import crypto from 'crypto';
 import { polishDraftMarkdown } from '../markdown-draft-formatter';
@@ -711,7 +712,10 @@ class PaperSectionService {
       ? { ...(polishResult.driftReport as unknown as Record<string, unknown>) }
       : {};
 
-    if (isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT')) {
+    if (
+      isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT')
+      && isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B')
+    ) {
       const blueprint = await blueprintService.getBlueprint(section.sessionId);
       const sectionPlan = blueprint?.sectionPlan.find(
         (entry) => normalizeSectionKey(entry.sectionKey) === normalizeSectionKey(section.sectionKey)
@@ -738,44 +742,47 @@ class PaperSectionService {
         const evidenceDigestSummary = formatEvidenceDigest(evidenceContext.evidenceDigest);
 
         try {
-          const rhetoricalResult = isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B')
-            ? await rhetoricalComposerService.applyPass2B({
-                sessionId: section.sessionId,
-                sectionKey: section.sectionKey,
-                content: finalContent,
-                rhetoricalBlueprint,
-                researchIntentLock: intentLock,
-                fallbackContributions: blueprint?.keyContributions || [],
-                evidenceDigestSummary,
-                tenantContext: tenantContext || null,
-              })
-            : await rhetoricalComposerService.enforceContributionLock({
-                sessionId: section.sessionId,
-                sectionKey: section.sectionKey,
-                content: finalContent,
-                rhetoricalBlueprint,
-                researchIntentLock: intentLock,
-                fallbackContributions: blueprint?.keyContributions || [],
-                tenantContext: tenantContext || null,
-              });
+          const preRhetoricalContent = finalContent;
+          const preRhetoricalPromptUsed = finalPromptUsed;
 
-          if (rhetoricalResult.content) {
-            finalContent = rhetoricalResult.content;
-          }
-          if (rhetoricalResult.promptUsed) {
-            finalPromptUsed = rhetoricalResult.promptUsed;
-          }
+          const rhetoricalResult = await rhetoricalComposerService.applyPass2B({
+            sessionId: section.sessionId,
+            sectionKey: section.sectionKey,
+            content: finalContent,
+            rhetoricalBlueprint,
+            researchIntentLock: intentLock,
+            fallbackContributions: blueprint?.keyContributions || [],
+            evidenceDigestSummary,
+            tenantContext: tenantContext || null,
+          });
+
           finalTokensUsed += Number(rhetoricalResult.tokensUsed || 0);
+          const rolledBack = !rhetoricalResult.validation.passed;
+
+          if (!rolledBack && rhetoricalResult.content) {
+            finalContent = rhetoricalResult.content;
+          } else {
+            finalContent = preRhetoricalContent;
+          }
+
+          if (!rolledBack && rhetoricalResult.promptUsed) {
+            finalPromptUsed = rhetoricalResult.promptUsed;
+          } else {
+            finalPromptUsed = preRhetoricalPromptUsed;
+          }
 
           validationReport = {
             ...validationReport,
             rhetoricalValidation: {
               enabled: true,
-              pass2bApplied: isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B'),
+              pass2bApplied: true,
+              rolledBack,
               retries: rhetoricalResult.retries,
               passed: rhetoricalResult.validation.passed,
               violations: rhetoricalResult.validation.violations,
-              inspectedParagraphs: rhetoricalResult.validation.inspectedParagraphs
+              inspectedParagraphs: rhetoricalResult.validation.inspectedParagraphs,
+              requiredSlotsChecked: rhetoricalResult.validation.requiredSlotsChecked,
+              slotViolations: rhetoricalResult.validation.slotViolations
             }
           };
         } catch (error) {
@@ -933,7 +940,8 @@ class PaperSectionService {
             undefined,
             undefined,
             sessionId,
-            sectionKey
+            sectionKey,
+            tenantContext || undefined
           );
 
           // Mark section as PREPARING unless we are only refreshing Pass 1 base
@@ -1701,6 +1709,57 @@ ${pm.memory.forwardReferences.length > 0 ? `- Promises: ${pm.memory.forwardRefer
       debugComponents.userInstructions = userInstructions;
     }
 
+    // Resolve intellectual rigor block from DB (falls back to hardcoded default)
+    const FALLBACK_RIGOR = `═══════════════════════════════════════════════════════════════════════════════
+INTELLECTUAL RIGOR BLOCK v3
+NOVELTY FRAMING
+- Frame contributions as resolving a specific limitation, tension, or contested assumption.
+- Avoid contextual-only novelty unless explicitly classified as TRANSLATIONAL.
+- State clearly what prior work could not achieve.
+
+If noveltyType = TRANSLATIONAL:
+- Frame as validation, feasibility, adaptation, or contextual testing.
+- Do NOT claim methodological invention.
+
+ANALYTICAL LITERATURE
+- Organize by analytical themes, not paper-by-paper summaries.
+- For each theme, include at least one explicit comparison or contrast when supported by evidence.
+- Use positional relation labels to clarify whether cited work reinforces, contradicts, extends, or qualifies your argument.
+- Surface boundary conditions when relevant.
+
+SCOPE DISCIPLINE
+- Do not generalize beyond stated scope.
+- Use hedging for single-study findings.
+- Distinguish clearly between cited findings and your own findings.
+- Treat "Not extracted from source" as absence of extracted evidence, not evidence of absence.
+
+METHODOLOGY DEFENSE
+- Justify chosen approach relative to at least one named alternative.
+- State assumptions explicitly.
+- Acknowledge constraints before presenting results.
+
+ARGUMENT RHYTHM
+- Vary paragraph structures.
+- Include genuine analytical tension when supported by evidence.
+- Do not force tension.
+- Avoid uniform paragraph openings.
+- Mix short analytical sentences with longer evidence-based sentences.
+COHERENCE RULES (Always Apply)
+═══════════════════════════════════════════════════════════════════════════════
+1. Support the thesis statement in all assertions
+2. Do NOT redefine terms already introduced in previous sections
+3. Do NOT contradict claims made in previous sections
+4. Do NOT include content listed in "MUST AVOID"
+5. Reference previous sections naturally where appropriate
+6. Explicitly discuss evidence mapped as CONTRAST
+7. Clearly distinguish YOUR claims from CITED claims
+8. Strong claims must include supporting evidence or acknowledge need for further investigation`;
+
+    const intellectualRigorBlock = await systemPromptTemplateService.resolveWithFallback(
+      { templateKey: TEMPLATE_KEYS.INTELLECTUAL_RIGOR_BLOCK, applicationMode: 'paper', sectionScope: sectionKey },
+      FALLBACK_RIGOR
+    );
+
     // Build prompt with EXPLICIT PRIORITY ORDERING
     // Priority: Lower numbers = lower priority, Higher numbers = higher priority
     // When contradictions exist, HIGHER PRIORITY WINS
@@ -1804,50 +1863,7 @@ When these conflict with any guidance above, FOLLOW THESE INSTRUCTIONS.
 ${userInstructions}
 ` : ''}
 
-═══════════════════════════════════════════════════════════════════════════════
-INTELLECTUAL RIGOR BLOCK v3
-NOVELTY FRAMING
-- Frame contributions as resolving a specific limitation, tension, or contested assumption.
-- Avoid contextual-only novelty unless explicitly classified as TRANSLATIONAL.
-- State clearly what prior work could not achieve.
-
-If noveltyType = TRANSLATIONAL:
-- Frame as validation, feasibility, adaptation, or contextual testing.
-- Do NOT claim methodological invention.
-
-ANALYTICAL LITERATURE
-- Organize by analytical themes, not paper-by-paper summaries.
-- For each theme, include at least one explicit comparison or contrast when supported by evidence.
-- Use positional relation labels to clarify whether cited work reinforces, contradicts, extends, or qualifies your argument.
-- Surface boundary conditions when relevant.
-
-SCOPE DISCIPLINE
-- Do not generalize beyond stated scope.
-- Use hedging for single-study findings.
-- Distinguish clearly between cited findings and your own findings.
-- Treat "Not extracted from source" as absence of extracted evidence, not evidence of absence.
-
-METHODOLOGY DEFENSE
-- Justify chosen approach relative to at least one named alternative.
-- State assumptions explicitly.
-- Acknowledge constraints before presenting results.
-
-ARGUMENT RHYTHM
-- Vary paragraph structures.
-- Include genuine analytical tension when supported by evidence.
-- Do not force tension.
-- Avoid uniform paragraph openings.
-- Mix short analytical sentences with longer evidence-based sentences.
-COHERENCE RULES (Always Apply)
-═══════════════════════════════════════════════════════════════════════════════
-1. Support the thesis statement in all assertions
-2. Do NOT redefine terms already introduced in previous sections
-3. Do NOT contradict claims made in previous sections
-4. Do NOT include content listed in "MUST AVOID"
-5. Reference previous sections naturally where appropriate
-6. Explicitly discuss evidence mapped as CONTRAST
-7. Clearly distinguish YOUR claims from CITED claims
-8. Strong claims must include supporting evidence or acknowledge need for further investigation
+${intellectualRigorBlock}
 
 ═══════════════════════════════════════════════════════════════════════════════
 CONTENT STRUCTURE (Use proper academic formatting)

@@ -1823,6 +1823,10 @@ export default function SectionDraftingStage({
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to generate dimension';
+      const recoveredPayload = (error as any)?.payload;
+      if (recoveredPayload?.recovered && recoveredPayload?.flow) {
+        applyDimensionResponse(sectionKey, recoveredPayload);
+      }
       setDimensionState(sectionKey, prev => ({
         ...prev,
         error: message
@@ -1953,7 +1957,7 @@ export default function SectionDraftingStage({
     showMsg
   ]);
 
-  const rejectDimensionDraft = useCallback(async (sectionKey: string) => {
+  const rejectDimensionDraft = useCallback(async (sectionKey: string, feedbackOverride?: string) => {
     const state = getDimensionState(sectionKey);
     if (!state.activeDimensionKey) {
       showMsg('No pending dimension to rewrite', 'warning');
@@ -1967,13 +1971,15 @@ export default function SectionDraftingStage({
       error: null
     }));
 
+    const effectiveFeedback = feedbackOverride ?? state.feedback ?? undefined;
+
     try {
       const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
       const data = await requestDraftingAction({
         action: 'reject_dimension',
         sectionKey,
         dimensionKey: state.activeDimensionKey,
-        feedback: state.feedback || undefined,
+        feedback: effectiveFeedback || undefined,
         useMappedEvidence
       });
       applyDimensionResponse(sectionKey, data);
@@ -2363,10 +2369,10 @@ export default function SectionDraftingStage({
     }
   }, [sectionConfigs, content, generateSingleSection, refreshSession]);
 
-  const handleRegenerateSection = useCallback(async (sectionKey: string) => {
+  const handleRegenerateSection = useCallback(async (sectionKey: string, instructionsOverride?: string) => {
     setSectionLoading(prev => ({ ...prev, [sectionKey]: true }));
     try {
-      const remarks = regenRemarks[sectionKey] || '';
+      const remarks = instructionsOverride ?? regenRemarks[sectionKey] ?? '';
       const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
       const generationMode = isPass1ExcludedSection(sectionKey) ? 'topup_final' : 'two_pass';
       const res = await fetch(`/api/papers/${sessionId}/drafting`, {
@@ -2859,7 +2865,7 @@ export default function SectionDraftingStage({
   const sections = sectionConfigs || fallbackSections;
 
   return (
-    <div className="min-h-screen bg-gray-100 pb-12">
+    <div className="min-h-screen bg-slate-50 pb-12">
       {/* Toast Messages */}
       <AnimatePresence>
         {message && (
@@ -3306,7 +3312,7 @@ export default function SectionDraftingStage({
           </div>
         )}
       {/* Paper Document */}
-      <div className="max-w-[850px] mx-auto bg-white shadow-[0_4px_24px_rgba(0,0,0,0.06)] min-h-[1100px] px-[60px] py-[60px] relative border border-gray-100">
+      <div className="max-w-[850px] mx-auto bg-white shadow-[0_1px_12px_rgba(0,0,0,0.08)] min-h-[1100px] px-[72px] py-[72px] relative border border-gray-100/60 rounded-sm">
         {showActivity && (currentKeys || autoModeRunning) && (
           <div className="absolute top-4 right-4 z-10">
             <BackendActivityPanel isVisible={true} onClose={() => setShowActivity(false)}
@@ -3314,7 +3320,7 @@ export default function SectionDraftingStage({
         </div>
         )}
 
-        <div className="space-y-2">
+        <div>
           {sections.map((section, idx) => {
             const isGenerating = loading && currentKeys?.some(k => section.keys.includes(k));
             const isRegenerating = section.keys.some(k => sectionLoading[k]);
@@ -3342,17 +3348,18 @@ export default function SectionDraftingStage({
             })();
 
             return (
-              <div key={section.keys.join('|') || idx} className="relative py-2">
-                <div className="mb-2 flex flex-wrap items-end justify-between gap-2">
+              <div key={section.keys.join('|') || idx} className="group/section-parent relative" style={{ marginTop: idx === 0 ? 0 : '1.5em' }}>
+                <div className="mb-1 flex flex-wrap items-end justify-between gap-2">
                   <div className="min-w-0 flex-1">
                     <h3
-                      className="mb-1 text-slate-800"
+                      className="text-slate-900"
                       style={{
                         fontFamily: '"Times New Roman", "Noto Serif", Georgia, serif',
-                        fontSize: '16px',
+                        fontSize: '15px',
                         fontWeight: 700,
                         textTransform: 'uppercase',
-                        letterSpacing: '0.5px'
+                        letterSpacing: '0.4px',
+                        lineHeight: '1.4'
                       }}
                     >
                       {section.label || section.keys.map(k => displayName[k] || k).join(' / ')}
@@ -3372,26 +3379,45 @@ export default function SectionDraftingStage({
                       />
                     )}
 
-                    {sectionCitationIssue && (
-                      <p className="mt-1 text-[11px] text-rose-600">
-                        Remove invalid citation: {[
-                          ...sectionCitationIssue.disallowedKeys,
-                          ...sectionCitationIssue.unknownKeys
-                        ].slice(0, 6).join(', ')}
-                      </p>
-                    )}
+                    {sectionCitationIssue && (() => {
+                      const allBadKeys = [
+                        ...sectionCitationIssue.disallowedKeys,
+                        ...sectionCitationIssue.unknownKeys
+                      ];
+                      const targetKey = section.keys[0] || '';
+                      const isFixing = sectionLoading[targetKey];
+                      return (
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          <p className="text-[11px] text-rose-500">
+                            Citation issue: {allBadKeys.slice(0, 4).join(', ')}{allBadKeys.length > 4 ? ` +${allBadKeys.length - 4} more` : ''}
+                          </p>
+                          <button
+                            type="button"
+                            disabled={isFixing || isWorking || autoModeRunning}
+                            onClick={() => {
+                              const fixInstruction = `Citation deviation detected. The following citation keys are invalid or not in the allowed evidence set: ${allBadKeys.join(', ')}. Remove these invalid keys. Where the removed citation supported a claim, replace it with a relevant allowed citation key only if one naturally fits the context — do not force citations. Do not invent new citation keys.`;
+                              void handleRegenerateSection(targetKey, fixInstruction);
+                            }}
+                            className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[10px] font-medium text-rose-600 transition-colors hover:bg-rose-100 hover:border-rose-300 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            {isFixing ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                            Fix citation deviation
+                          </button>
+                        </div>
+                      );
+                    })()}
                   </div>
 
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    {isSavingSection && <span className="animate-pulse text-amber-500">Saving...</span>}
-                    {hasPending && !isSavingSection && <span>Unsaved</span>}
+                  <div className="flex items-center gap-1.5 text-[11px] text-slate-300 opacity-0 transition-opacity duration-200 group-hover/section-parent:opacity-100">
+                    {isSavingSection && <span className="animate-pulse text-amber-400">Saving</span>}
+                    {hasPending && !isSavingSection && <span className="text-slate-400">Unsaved</span>}
                     {section.wordLimit && (
                       <span>{sectionWordCount} / {section.wordLimit}</span>
                     )}
                   </div>
                 </div>
 
-                <div className="space-y-4 text-gray-800 text-justify">
+                <div className="text-gray-800" style={{ textAlign: 'justify', lineHeight: '1.8' }}>
                   {section.keys.map(keyName => {
                     const normalizedKey = normalizeSectionKey(keyName);
                     const sectionSupportsDimensionFlow = supportsDimensionFlow(keyName);
@@ -3412,7 +3438,17 @@ export default function SectionDraftingStage({
                     return (
                       <div key={keyName} className="section-wrapper group/section relative">
                         {section.keys.length > 1 && (
-                          <h4 className="mb-1 mt-2 text-[12px] font-semibold uppercase tracking-[0.3px] text-slate-500">
+                          <h4
+                            className="text-slate-700"
+                            style={{
+                              fontFamily: '"Times New Roman", "Noto Serif", Georgia, serif',
+                              fontSize: '13.5px',
+                              fontWeight: 600,
+                              fontStyle: 'italic',
+                              marginTop: '0.8em',
+                              marginBottom: '0.25em'
+                            }}
+                          >
                             {displayName[keyName] || keyName}
                           </h4>
                         )}
@@ -3502,20 +3538,20 @@ export default function SectionDraftingStage({
                                 editor.saveSelection();
                               }
                             }}
-                            placeholder={isWorking ? 'Generating...' : 'Write polished section content with headings, bullets, and academic structure.'}
+                            placeholder={isWorking ? 'Generating...' : 'Begin writing...'}
                             disabled={isWorking}
-                            className="min-h-[190px]"
+                            className="min-h-[60px]"
                           />
                         </div>
 
                         {!isWorking && !dimensionState.started && (!hasDraftContent || sectionSupportsDimensionFlow) && (
-                          <div className="mt-1 flex items-center gap-2 text-xs">
+                          <div className="mt-2 flex items-center gap-2 text-xs opacity-60 transition-opacity duration-200 hover:opacity-100">
                             {!hasDraftContent && (
                               <button
                                 type="button"
                                 onClick={() => void handleGenerate([keyName])}
                                 disabled={loading || autoModeRunning}
-                                className="rounded-md border border-slate-200 bg-white px-2 py-1 font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 Draft
                               </button>
@@ -3528,9 +3564,9 @@ export default function SectionDraftingStage({
                                   void beginStructuredDraft(keyName);
                                 }}
                                 disabled={loading || autoModeRunning}
-                                className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2 py-1 font-medium text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                className="inline-flex items-center gap-1 rounded border border-indigo-200/60 bg-indigo-50/50 px-2 py-0.5 text-[11px] font-medium text-indigo-600 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
                               >
-                                <Sparkles className="h-3.5 w-3.5" />
+                                <Sparkles className="h-3 w-3" />
                                 {hasDraftContent ? 'Structured from Pass 1' : 'Structured'}
                               </button>
                             )}
@@ -3538,7 +3574,7 @@ export default function SectionDraftingStage({
                         )}
 
                         {showInlineDimension && dimensionState.error && (
-                          <div className="mt-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs text-rose-700">
+                          <div className="mt-1.5 rounded border border-rose-200/70 bg-rose-50/60 px-2.5 py-1 text-[11px] text-rose-600">
                             {dimensionState.error}
                           </div>
                         )}
@@ -3549,9 +3585,9 @@ export default function SectionDraftingStage({
                               type="button"
                               onClick={() => void generateDimensionDraft(keyName, { dimensionKey: dimensionState.nextDimensionKey || undefined })}
                               disabled={dimensionBusy || sectionLoading[keyName]}
-                              className="inline-flex items-center gap-1 rounded-md border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+                              className="inline-flex items-center gap-1 rounded border border-indigo-200/60 bg-indigo-50/50 px-2 py-0.5 text-[11px] font-medium text-indigo-600 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              {dimensionBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                              {dimensionBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
                               Generate next dimension
                             </button>
                           </div>
@@ -3599,6 +3635,15 @@ export default function SectionDraftingStage({
                               }));
                             }}
                             onRewrite={() => rejectDimensionDraft(keyName)}
+                            onFixCitations={(badKeys) => {
+                              const isMissing = badKeys.every(k =>
+                                dimensionState.proposalValidation?.missingRequiredKeys?.includes(k)
+                              );
+                              const fixFeedback = isMissing
+                                ? `These citation keys were expected but are missing: ${badKeys.join(', ')}. Where the evidence from these sources is relevant to this dimension's argument, incorporate a [CITE:key] placeholder naturally. Only include a citation if it genuinely supports a claim — do not force all keys in.`
+                                : `Citation deviation detected. The following citation keys are invalid or not in the allowed evidence set: ${badKeys.join(', ')}. Remove these invalid keys. Where the removed citation supported a claim, replace it with a relevant allowed citation key only if one naturally fits the context — do not force citations. Do not invent new citation keys.`;
+                              void rejectDimensionDraft(keyName, fixFeedback);
+                            }}
                             onSkipAnimation={() => {
                               setDimensionState(keyName, prev => ({
                                 ...prev,
@@ -3610,13 +3655,9 @@ export default function SectionDraftingStage({
                         )}
 
                         {showInlineDimension && dimensionState.completed && (
-                          <motion.div
-                            initial={{ opacity: 0, y: 4 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700"
-                          >
+                          <div className="mt-2 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700">
                             Structured draft complete for this section.
-                          </motion.div>
+                          </div>
                         )}
 
                         {(() => {
@@ -3671,29 +3712,46 @@ export default function SectionDraftingStage({
                         })()}
 
                         {regenOpen[keyName] && (
-                          <div className="mt-4 rounded-lg border border-indigo-100 bg-indigo-50/50 p-4 shadow-sm">
-                            <div className="mb-2 flex items-center gap-2">
-                              <RefreshCw className="h-4 w-4 text-indigo-600" />
-                              <label className="text-xs font-semibold text-indigo-900">Refinement Instructions</label>
-                            </div>
-                            <textarea
-                              className="w-full rounded-md border-indigo-200 bg-white p-3 text-sm focus:border-indigo-500 focus:ring-indigo-500"
-                              value={regenRemarks[keyName] || ''}
-                              onChange={(e) => setRegenRemarks(prev => ({ ...prev, [keyName]: e.target.value }))}
-                              placeholder="E.g., 'Make it more concise', 'Add more citations'..."
-                              rows={3}
-                            />
-                            <div className="mt-3 flex justify-end gap-2">
+                          <div className="absolute right-0 top-0 z-30 w-[320px] rounded-lg border border-slate-200 bg-white p-3 shadow-lg">
+                            <div className="mb-2 flex items-center justify-between">
+                              <label className="text-xs font-semibold text-slate-700">Refinement</label>
                               <button
                                 onClick={() => setRegenOpen(prev => ({ ...prev, [keyName]: false }))}
-                                className="rounded border border-transparent px-3 py-1.5 text-xs text-gray-600 hover:border-gray-200 hover:bg-white"
+                                className="flex h-5 w-5 items-center justify-center rounded hover:bg-slate-100"
                               >
-                                Cancel
+                                <X className="h-3 w-3 text-slate-400" />
                               </button>
+                            </div>
+                            <div className="mb-2 flex flex-wrap gap-1">
+                              {[
+                                'More concise',
+                                'Add more citations',
+                                'More analytical depth',
+                                'Improve flow & transitions',
+                                'Simplify language',
+                                'Strengthen argumentation'
+                              ].map(preset => (
+                                <button
+                                  key={preset}
+                                  onClick={() => setRegenRemarks(prev => ({ ...prev, [keyName]: (prev[keyName] ? prev[keyName] + '. ' : '') + preset }))}
+                                  className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] text-slate-600 transition-colors hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-700"
+                                >
+                                  {preset}
+                                </button>
+                              ))}
+                            </div>
+                            <textarea
+                              className="w-full rounded-md border border-slate-200 bg-white p-2 text-xs focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400"
+                              value={regenRemarks[keyName] || ''}
+                              onChange={(e) => setRegenRemarks(prev => ({ ...prev, [keyName]: e.target.value }))}
+                              placeholder="Additional instructions..."
+                              rows={2}
+                            />
+                            <div className="mt-2 flex justify-end">
                               <button
                                 onClick={() => handleRegenerateSection(keyName)}
                                 disabled={sectionLoading[keyName]}
-                                className="flex items-center gap-2 rounded bg-indigo-600 px-4 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+                                className="flex items-center gap-1.5 rounded-md bg-indigo-600 px-3 py-1.5 text-[11px] font-medium text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
                               >
                                 {sectionLoading[keyName] && <Loader2 className="h-3 w-3 animate-spin" />}
                                 {sectionLoading[keyName] ? 'Regenerating...' : 'Regenerate'}
@@ -3708,9 +3766,8 @@ export default function SectionDraftingStage({
               </div>
             );
           })}
-          {/* AI Review Panel */}
           {Object.keys(content).some(k => content[k]) && (
-            <div className="mt-16 border-t pt-8">
+            <div className="mt-12 border-t border-slate-100 pt-6">
               <PaperValidationPanel sessionId={session?.id || ''} paperId={sessionId} draft={content} onFix={handleFix} authToken={authToken} />
             </div>
           )}

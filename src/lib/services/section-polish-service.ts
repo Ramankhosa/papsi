@@ -14,6 +14,7 @@
 import { llmGateway, type TenantContext } from '../metering';
 import { polishDraftMarkdown, stripInlineMarkdownStyling } from '../markdown-draft-formatter';
 import { sectionTemplateService } from './section-template-service';
+import { systemPromptTemplateService, TEMPLATE_KEYS } from './system-prompt-template-service';
 import crypto from 'crypto';
 
 // ============================================================================
@@ -252,58 +253,96 @@ ${parts.join('\n\n')}
     console.warn(`[SectionPolish] Could not load paper-type prompt for ${input.paperTypeCode}/${input.sectionKey}:`, err);
   }
 
+  const normalizedKey = input.sectionKey.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const scopeLookup = { applicationMode: 'paper', sectionScope: normalizedKey };
+
+  // Hardcoded fallbacks (used if DB has no row for this template key)
+  const FALLBACK_PERSONA = `You are a senior academic editor. Rewrite the draft below into polished,
+publication-ready prose. The draft already contains all the correct facts,
+evidence, and citation anchors — your job is ONLY to improve readability,
+flow, and academic tone.`;
+
+  const FALLBACK_CITATION_RULES = `1. CITATION ANCHORS — MANDATORY PRESERVATION
+   • Every [CITE:key] marker in the draft MUST appear in your output.
+   • Do NOT drop, rename, merge, or invent any [CITE:key] anchor.
+   • You may reposition a citation within the same sentence or adjacent
+     sentence if it improves flow, but the anchor string must be identical.
+   • Citation format is ALWAYS: [CITE:ExactKey] — do not change the key text.`;
+
+  const FALLBACK_FACTUAL = `2. FACTUAL FIDELITY
+   • Do NOT add new claims, statistics, entities, or findings.
+   • Do NOT remove or soften existing claims.
+   • Preserve all numbers, percentages, p-values, and quantitative data verbatim.
+   • If the draft says "may" or "suggests", keep that hedging — do not upgrade
+     to "proves" or "demonstrates" unless the draft already uses those words.`;
+
+  const isProseOnlySection = ['abstract', 'conclusion', 'conclusions'].includes(normalizedKey);
+  const FALLBACK_STRUCTURAL = isProseOnlySection
+    ? `3. STRUCTURAL TRANSFORMATION — PROSE ONLY
+   • This is an ${normalizedKey} section. It MUST read as continuous, flowing paragraphs.
+   • Convert ALL bullet points, numbered lists, and section headers into integrated prose paragraphs.
+   • Do NOT use any bullet points, dashes, numbered items, or subsection headings (###, ####).
+   • Merge fragmented points into coherent paragraph-level arguments.
+   • The output should read like a single cohesive narrative — no structural scaffolding.
+   • Maintain the same logical order of arguments from the draft.`
+    : `3. STRUCTURAL PRESERVATION
+   • Keep the same subsection headings (### level).
+   • Maintain the same logical order of arguments.
+   • You may split or merge paragraphs for readability.
+   • Keep bullet points if they serve clarity.`;
+
+  const FALLBACK_IMPROVEMENT = `4. WHAT YOU SHOULD IMPROVE
+   • Sentence flow and transitions between paragraphs.
+   • Eliminate awkward phrasing, redundancy, and filler.
+   • Ensure consistent academic register throughout.
+   • Strengthen topic sentences and paragraph cohesion.
+   • Smooth transitions between subsections.`;
+
+  const FALLBACK_HEDGING = `5. HEDGING AND SCOPE GUARD
+   • Downgrade "demonstrates/proves" to "suggests/indicates" for single-study findings.
+   • Preserve scope conditions and boundary notes.
+   • Do not generalize beyond stated scope.
+   • If noveltyType = TRANSLATIONAL, replace innovation verbs with validation/adaptation verbs where necessary.`;
+
+  const FALLBACK_RHYTHM = `6. RHYTHM PRESERVATION
+   • Preserve contrast paragraphs.
+   • Avoid flattening argumentative tension.
+   • If 3+ paragraphs share structure, vary one.
+   • Maintain varied sentence lengths.`;
+
+  const [persona, citationRules, factualFidelity, structuralRule, improvementDirectives, hedgingRules, rhythmRules] =
+    await Promise.all([
+      systemPromptTemplateService.resolveWithFallback({ templateKey: TEMPLATE_KEYS.POLISH_PERSONA, ...scopeLookup }, FALLBACK_PERSONA),
+      systemPromptTemplateService.resolveWithFallback({ templateKey: TEMPLATE_KEYS.POLISH_CITATION_RULES, ...scopeLookup }, FALLBACK_CITATION_RULES),
+      systemPromptTemplateService.resolveWithFallback({ templateKey: TEMPLATE_KEYS.POLISH_FACTUAL_FIDELITY, ...scopeLookup }, FALLBACK_FACTUAL),
+      systemPromptTemplateService.resolveWithFallback({ templateKey: TEMPLATE_KEYS.POLISH_STRUCTURAL_RULES, ...scopeLookup }, FALLBACK_STRUCTURAL),
+      systemPromptTemplateService.resolveWithFallback({ templateKey: TEMPLATE_KEYS.POLISH_IMPROVEMENT_DIRECTIVES, ...scopeLookup }, FALLBACK_IMPROVEMENT),
+      systemPromptTemplateService.resolveWithFallback({ templateKey: TEMPLATE_KEYS.POLISH_HEDGING_RULES, ...scopeLookup }, FALLBACK_HEDGING),
+      systemPromptTemplateService.resolveWithFallback({ templateKey: TEMPLATE_KEYS.POLISH_RHYTHM_RULES, ...scopeLookup }, FALLBACK_RHYTHM),
+    ]);
+
   return `
 ═══════════════════════════════════════════════════════════════════════════════
 TASK: PUBLICATION POLISH — ${input.displayName.toUpperCase()}
 ═══════════════════════════════════════════════════════════════════════════════
 
-You are a senior academic editor. Rewrite the draft below into polished,
-publication-ready prose. The draft already contains all the correct facts,
-evidence, and citation anchors — your job is ONLY to improve readability,
-flow, and academic tone.
+${persona}
 ${retryBlock}
 ═══════════════════════════════════════════════════════════════════════════════
 STRICT RULES — VIOLATIONS CAUSE AUTOMATIC REJECTION
 ═══════════════════════════════════════════════════════════════════════════════
 
-1. CITATION ANCHORS — MANDATORY PRESERVATION
-   • Every [CITE:key] marker in the draft MUST appear in your output.
-   • Do NOT drop, rename, merge, or invent any [CITE:key] anchor.
-   • You may reposition a citation within the same sentence or adjacent
-     sentence if it improves flow, but the anchor string must be identical.
-   • Citation format is ALWAYS: [CITE:ExactKey] — do not change the key text.
+${citationRules}
 
-2. FACTUAL FIDELITY
-   • Do NOT add new claims, statistics, entities, or findings.
-   • Do NOT remove or soften existing claims.
-   • Preserve all numbers, percentages, p-values, and quantitative data verbatim.
-   • If the draft says "may" or "suggests", keep that hedging — do not upgrade
-     to "proves" or "demonstrates" unless the draft already uses those words.
+${factualFidelity}
 
-3. STRUCTURAL PRESERVATION
-   • Keep the same subsection headings (### level).
-   • Maintain the same logical order of arguments.
-   • You may split or merge paragraphs for readability.
-   • Keep bullet points if they serve clarity.
+${structuralRule}
 
-4. WHAT YOU SHOULD IMPROVE
-   • Sentence flow and transitions between paragraphs.
-   • Eliminate awkward phrasing, redundancy, and filler.
-   • Ensure consistent academic register throughout.
-   • Strengthen topic sentences and paragraph cohesion.
-   • Smooth transitions between subsections.
+${improvementDirectives}
 
-5. HEDGING AND SCOPE GUARD
-   • Downgrade "demonstrates/proves" to "suggests/indicates" for single-study findings.
-   • Preserve scope conditions and boundary notes.
-   • Do not generalize beyond stated scope.
-   • If noveltyType = TRANSLATIONAL, replace innovation verbs with validation/adaptation verbs where necessary.
+${hedgingRules}
 
-6. RHYTHM PRESERVATION
-   • Preserve contrast paragraphs.
-   • Avoid flattening argumentative tension.
-   • If 3+ paragraphs share structure, vary one.
-   • Maintain varied sentence lengths.
+${rhythmRules}
 ${publicationTypeBlock}
 ═══════════════════════════════════════════════════════════════════════════════
 DRAFT TO POLISH

@@ -6,6 +6,11 @@ import { citationStyleService } from '../../lib/services/citation-style-service'
 describe('Paper Writing Workflow Integration', () => {
   let testUserId: string;
   let testTenantId: string;
+  let testPatentId: string;
+  let testJournalPaperTypeId: string;
+  let testConferencePaperTypeId: string;
+  let testApaCitationStyleId: string;
+  let testIeeeCitationStyleId: string;
 
   beforeEach(async () => {
     // Create test user and tenant with all required fields
@@ -27,14 +32,170 @@ describe('Paper Writing Workflow Integration', () => {
         tenantId: testTenant.id,
         email: 'test-paper-workflow@example.com',
         passwordHash: 'hashed-password',
-        first_name: 'Test',
-        last_name: 'User',
-        roles: ['USER']
+        firstName: 'Test',
+        lastName: 'User',
+        roles: ['ANALYST']
       }
     });
 
+    const testProject = await prisma.project.upsert({
+      where: { id: 'test-project-paper-workflow' },
+      update: {
+        name: 'Test Project for Paper Workflow',
+        userId: testUser.id
+      },
+      create: {
+        id: 'test-project-paper-workflow',
+        name: 'Test Project for Paper Workflow',
+        userId: testUser.id
+      }
+    });
+
+    const testPatent = await prisma.patent.upsert({
+      where: { id: 'test-patent-paper-workflow' },
+      update: {
+        projectId: testProject.id,
+        title: 'Integration Test Patent Placeholder',
+        createdBy: testUser.id
+      },
+      create: {
+        id: 'test-patent-paper-workflow',
+        projectId: testProject.id,
+        title: 'Integration Test Patent Placeholder',
+        createdBy: testUser.id
+      }
+    });
+
+    const [journalPaperType, conferencePaperType, apaStyle, ieeeStyle] = await Promise.all([
+      prisma.paperTypeDefinition.upsert({
+        where: { code: 'JOURNAL_ARTICLE' },
+        update: {
+          name: 'Journal Article',
+          description: 'Traditional academic journal article',
+          requiredSections: ['abstract', 'introduction', 'methodology', 'results', 'discussion', 'conclusion'],
+          optionalSections: ['literature_review', 'acknowledgments', 'references'],
+          sectionOrder: ['abstract', 'introduction', 'literature_review', 'methodology', 'results', 'discussion', 'conclusion', 'acknowledgments', 'references'],
+          defaultWordLimits: {
+            abstract: 250,
+            introduction: 1000,
+            methodology: 1500,
+            results: 1000,
+            discussion: 1500,
+            conclusion: 500
+          },
+          defaultCitationStyle: 'APA7',
+          isActive: true
+        },
+        create: {
+          code: 'JOURNAL_ARTICLE',
+          name: 'Journal Article',
+          description: 'Traditional academic journal article',
+          requiredSections: ['abstract', 'introduction', 'methodology', 'results', 'discussion', 'conclusion'],
+          optionalSections: ['literature_review', 'acknowledgments', 'references'],
+          sectionOrder: ['abstract', 'introduction', 'literature_review', 'methodology', 'results', 'discussion', 'conclusion', 'acknowledgments', 'references'],
+          defaultWordLimits: {
+            abstract: 250,
+            introduction: 1000,
+            methodology: 1500,
+            results: 1000,
+            discussion: 1500,
+            conclusion: 500
+          },
+          defaultCitationStyle: 'APA7',
+          sortOrder: 1
+        }
+      }),
+      prisma.paperTypeDefinition.upsert({
+        where: { code: 'CONFERENCE_PAPER' },
+        update: {
+          name: 'Conference Paper',
+          description: 'Academic conference paper format',
+          requiredSections: ['abstract', 'introduction', 'related_work', 'methodology', 'results', 'conclusion'],
+          optionalSections: ['discussion', 'acknowledgments', 'references'],
+          sectionOrder: ['abstract', 'introduction', 'related_work', 'methodology', 'results', 'discussion', 'conclusion', 'acknowledgments', 'references'],
+          defaultWordLimits: {
+            abstract: 200,
+            introduction: 800,
+            related_work: 600,
+            methodology: 1000,
+            results: 800,
+            conclusion: 400
+          },
+          defaultCitationStyle: 'IEEE',
+          isActive: true
+        },
+        create: {
+          code: 'CONFERENCE_PAPER',
+          name: 'Conference Paper',
+          description: 'Academic conference paper format',
+          requiredSections: ['abstract', 'introduction', 'related_work', 'methodology', 'results', 'conclusion'],
+          optionalSections: ['discussion', 'acknowledgments', 'references'],
+          sectionOrder: ['abstract', 'introduction', 'related_work', 'methodology', 'results', 'discussion', 'conclusion', 'acknowledgments', 'references'],
+          defaultWordLimits: {
+            abstract: 200,
+            introduction: 800,
+            related_work: 600,
+            methodology: 1000,
+            results: 800,
+            conclusion: 400
+          },
+          defaultCitationStyle: 'IEEE',
+          sortOrder: 2
+        }
+      }),
+      prisma.citationStyleDefinition.upsert({
+        where: { code: 'APA7' },
+        update: {
+          name: 'APA 7th Edition',
+          inTextFormatTemplate: '(Author, Year)',
+          bibliographyRules: {},
+          bibliographySortOrder: 'alphabetical',
+          supportsShortTitles: false,
+          maxAuthorsBeforeEtAl: 20,
+          isActive: true
+        },
+        create: {
+          code: 'APA7',
+          name: 'APA 7th Edition',
+          inTextFormatTemplate: '(Author, Year)',
+          bibliographyRules: {},
+          bibliographySortOrder: 'alphabetical',
+          supportsShortTitles: false,
+          maxAuthorsBeforeEtAl: 20,
+          sortOrder: 1
+        }
+      }),
+      prisma.citationStyleDefinition.upsert({
+        where: { code: 'IEEE' },
+        update: {
+          name: 'IEEE',
+          inTextFormatTemplate: '[1]',
+          bibliographyRules: {},
+          bibliographySortOrder: 'order_of_appearance',
+          supportsShortTitles: false,
+          maxAuthorsBeforeEtAl: 6,
+          isActive: true
+        },
+        create: {
+          code: 'IEEE',
+          name: 'IEEE',
+          inTextFormatTemplate: '[1]',
+          bibliographyRules: {},
+          bibliographySortOrder: 'order_of_appearance',
+          supportsShortTitles: false,
+          maxAuthorsBeforeEtAl: 6,
+          sortOrder: 2
+        }
+      })
+    ]);
+
     testUserId = testUser.id;
     testTenantId = testTenant.id;
+    testPatentId = testPatent.id;
+    testJournalPaperTypeId = journalPaperType.id;
+    testConferencePaperTypeId = conferencePaperType.id;
+    testApaCitationStyleId = apaStyle.id;
+    testIeeeCitationStyleId = ieeeStyle.id;
   });
 
   afterEach(async () => {
@@ -113,10 +274,11 @@ describe('Paper Writing Workflow Integration', () => {
       // Step 1: Create paper session with research topic
       const session = await prisma.draftingSession.create({
         data: {
+          patentId: testPatentId,
           userId: testUserId,
           tenantId: testTenantId,
-          paperTypeId: 'paper_type_journal_article',
-          citationStyleId: 'citation_style_apa7',
+          paperTypeId: testJournalPaperTypeId,
+          citationStyleId: testApaCitationStyleId,
           status: 'ANNEXURE_DRAFT',
           literatureReviewStatus: 'COMPLETED',
           targetWordCount: 6000,
@@ -138,7 +300,7 @@ describe('Paper Writing Workflow Integration', () => {
       });
 
       expect(session.researchTopic?.title).toBe('Integration Test Paper: AI in Healthcare');
-      expect(session.paperTypeId).toBe('paper_type_journal_article');
+      expect(session.paperTypeId).toBe(testJournalPaperTypeId);
 
       // Step 2: Add citations to the paper
       const citations = await Promise.all([
@@ -211,7 +373,7 @@ Recent advances in machine learning and deep learning have enabled AI systems to
           id: citations[0].id,
           title: citations[0].title,
           authors: citations[0].authors,
-          year: citations[0].year,
+          year: citations[0].year ?? undefined,
           citationKey: citations[0].citationKey
         },
         'APA7'
@@ -242,10 +404,11 @@ Recent advances in machine learning and deep learning have enabled AI systems to
       // Create initial paper
       const session = await prisma.draftingSession.create({
         data: {
+          patentId: testPatentId,
           userId: testUserId,
           tenantId: testTenantId,
-          paperTypeId: 'paper_type_journal_article',
-          citationStyleId: 'citation_style_apa7',
+          paperTypeId: testJournalPaperTypeId,
+          citationStyleId: testApaCitationStyleId,
           status: 'ANNEXURE_DRAFT',
           researchTopic: {
             create: {
@@ -264,7 +427,7 @@ Recent advances in machine learning and deep learning have enabled AI systems to
       // Change paper type to conference paper
       await prisma.draftingSession.update({
         where: { id: session.id },
-        data: { paperTypeId: 'paper_type_conference_paper' }
+        data: { paperTypeId: testConferencePaperTypeId }
       });
 
       const updatedSession = await prisma.draftingSession.findUnique({
@@ -285,10 +448,11 @@ Recent advances in machine learning and deep learning have enabled AI systems to
       // Create paper with citations
       const session = await prisma.draftingSession.create({
         data: {
+          patentId: testPatentId,
           userId: testUserId,
           tenantId: testTenantId,
-          paperTypeId: 'paper_type_journal_article',
-          citationStyleId: 'citation_style_apa7',
+          paperTypeId: testJournalPaperTypeId,
+          citationStyleId: testApaCitationStyleId,
           status: 'ANNEXURE_DRAFT',
           citations: {
             create: [
@@ -315,7 +479,7 @@ Recent advances in machine learning and deep learning have enabled AI systems to
           id: citation.id,
           title: citation.title,
           authors: citation.authors,
-          year: citation.year,
+          year: citation.year ?? undefined,
           citationKey: citation.citationKey
         },
         'APA7'
@@ -324,7 +488,7 @@ Recent advances in machine learning and deep learning have enabled AI systems to
       // Change citation style to IEEE
       await prisma.draftingSession.update({
         where: { id: session.id },
-        data: { citationStyleId: 'citation_style_ieee' }
+        data: { citationStyleId: testIeeeCitationStyleId }
       });
 
       // Format with IEEE
@@ -333,7 +497,7 @@ Recent advances in machine learning and deep learning have enabled AI systems to
           id: citation.id,
           title: citation.title,
           authors: citation.authors,
-          year: citation.year,
+          year: citation.year ?? undefined,
           citationKey: citation.citationKey
         },
         'IEEE'
@@ -341,7 +505,7 @@ Recent advances in machine learning and deep learning have enabled AI systems to
 
       // Citations should be formatted differently
       expect(apaCitation).not.toBe(ieeeCitation);
-      expect(apaCitation).toContain('(Test');
+      expect(apaCitation).toContain('(Author');
       expect(ieeeCitation).toBe('[1]');
     });
   });
@@ -376,10 +540,11 @@ Recent advances in machine learning and deep learning have enabled AI systems to
       // Attempt to create citation with invalid DOI should still work (DOI is optional)
       const session = await prisma.draftingSession.create({
         data: {
+          patentId: testPatentId,
           userId: testUserId,
           tenantId: testTenantId,
-          paperTypeId: 'paper_type_journal_article',
-          citationStyleId: 'citation_style_apa7',
+          paperTypeId: testJournalPaperTypeId,
+          citationStyleId: testApaCitationStyleId,
           status: 'ANNEXURE_DRAFT'
         }
       });
@@ -407,10 +572,11 @@ Recent advances in machine learning and deep learning have enabled AI systems to
     it('should detect and handle duplicate citation imports', async () => {
       const session = await prisma.draftingSession.create({
         data: {
+          patentId: testPatentId,
           userId: testUserId,
           tenantId: testTenantId,
-          paperTypeId: 'paper_type_journal_article',
-          citationStyleId: 'citation_style_apa7',
+          paperTypeId: testJournalPaperTypeId,
+          citationStyleId: testApaCitationStyleId,
           status: 'ANNEXURE_DRAFT'
         }
       });
@@ -467,10 +633,11 @@ Recent advances in machine learning and deep learning have enabled AI systems to
       // of external search APIs
       const session = await prisma.draftingSession.create({
         data: {
+          patentId: testPatentId,
           userId: testUserId,
           tenantId: testTenantId,
-          paperTypeId: 'paper_type_journal_article',
-          citationStyleId: 'citation_style_apa7',
+          paperTypeId: testJournalPaperTypeId,
+          citationStyleId: testApaCitationStyleId,
           status: 'ANNEXURE_DRAFT',
           literatureReviewStatus: 'NOT_STARTED' // Search not completed
         }
