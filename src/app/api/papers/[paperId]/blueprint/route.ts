@@ -16,7 +16,11 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
-import { blueprintService, type SectionPlanItem } from '@/lib/services/blueprint-service';
+import {
+  blueprintService,
+  type RhetoricalBlueprintBySection,
+  type SectionPlanItem
+} from '@/lib/services/blueprint-service';
 import { deepAnalysisService } from '@/lib/services/deep-analysis-service';
 
 export const runtime = 'nodejs';
@@ -31,6 +35,33 @@ const generateBlueprintSchema = z.object({
 });
 
 const dimensionTypeEnum = z.enum(['foundational', 'methodological', 'empirical', 'comparative', 'gap']);
+const rhetoricalCitationModeEnum = z.enum(['optional', 'none', 'required']);
+
+const rhetoricalCitationPolicySchema = z.object({
+  mode: rhetoricalCitationModeEnum,
+  maxCitations: z.number().int().min(0).max(2)
+});
+
+const rhetoricalSlotSchema = z.object({
+  key: z.string().min(1).max(100),
+  required: z.boolean(),
+  placement: z.string().min(1).max(80),
+  intent: z.string().min(1).max(600),
+  constraints: z.array(z.string().min(1).max(300)).default([]),
+  citationPolicy: rhetoricalCitationPolicySchema
+});
+
+const rhetoricalBlueprintSchema = z.object({
+  enabled: z.boolean(),
+  slots: z.array(rhetoricalSlotSchema).max(12)
+});
+
+const thematicBlueprintSchema = z.object({
+  mustCover: z.array(z.string().min(10).max(200)),
+  mustAvoid: z.array(z.string()),
+  mustCoverTyping: z.record(z.string(), dimensionTypeEnum).optional(),
+  suggestedCitationCount: z.number().min(1).max(50).optional()
+});
 
 const updateBlueprintSchema = z.object({
   action: z.literal('update'),
@@ -46,9 +77,12 @@ const updateBlueprintSchema = z.object({
     wordBudget: z.number().optional(),
     dependencies: z.array(z.string()),
     outputsPromised: z.array(z.string()),
-    suggestedCitationCount: z.number().min(1).max(50).optional()
+    suggestedCitationCount: z.number().min(1).max(50).optional(),
+    thematicBlueprint: thematicBlueprintSchema.optional(),
+    rhetoricalBlueprint: rhetoricalBlueprintSchema.optional()
   })).optional(),
-  preferredTerms: z.record(z.string(), z.string()).optional()
+  preferredTerms: z.record(z.string(), z.string()).optional(),
+  rhetoricalBlueprints: z.record(z.string(), rhetoricalBlueprintSchema).optional()
 });
 
 const freezeSchema = z.object({
@@ -352,6 +386,9 @@ export async function PUT(
     if (data.keyContributions) updates.keyContributions = data.keyContributions;
     if (data.sectionPlan) updates.sectionPlan = data.sectionPlan as SectionPlanItem[];
     if (data.preferredTerms) updates.preferredTerms = data.preferredTerms;
+    if (data.rhetoricalBlueprints) {
+      updates.rhetoricalBlueprints = data.rhetoricalBlueprints as RhetoricalBlueprintBySection;
+    }
 
     if (Object.keys(updates).length === 0) {
       return NextResponse.json(

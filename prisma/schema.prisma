@@ -3937,6 +3937,7 @@ model PaperBlueprint {
 
   // Versioning
   version   Int   @default(1)
+  blueprintSchemaVersion Int @default(2) @map("blueprint_schema_version")
   changeLog Json? // Array of { version, changedAt, changes[] }
 
   // Research Intent Lock — thesis guardrails, allowed/forbidden claims, venue target

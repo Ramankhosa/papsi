@@ -12,6 +12,11 @@
 import { prisma } from '../prisma';
 import { llmGateway, type TenantContext } from '../metering';
 import { paperTypeService } from './paper-type-service';
+import {
+  getDefaultRhetoricalBlueprint,
+  normalizeRhetoricalBlueprint,
+  type RhetoricalBlueprint
+} from './rhetorical-blueprint-service';
 import type { 
   PaperBlueprint, 
   ResearchTopic, 
@@ -34,6 +39,13 @@ export type DimensionType =
   | 'comparative'    // Papers comparing alternative approaches
   | 'gap';           // Papers identifying limitations or research gaps
 
+export interface ThematicBlueprint {
+  mustCover: string[];
+  mustAvoid: string[];
+  mustCoverTyping?: Record<string, DimensionType>;
+  suggestedCitationCount?: number;
+}
+
 export interface SectionPlanItem {
   sectionKey: string;
   purpose: string;
@@ -46,7 +58,11 @@ export interface SectionPlanItem {
   // Citation mapping support (Part B integration)
   mustCoverTyping?: Record<string, DimensionType>; // Maps each mustCover dimension to its type
   suggestedCitationCount?: number; // Minimum citations expected for this section
+  thematicBlueprint?: ThematicBlueprint;
+  rhetoricalBlueprint?: RhetoricalBlueprint;
 }
+
+export type RhetoricalBlueprintBySection = Record<string, RhetoricalBlueprint>;
 
 export interface BlueprintGenerationInput {
   sessionId: string;
@@ -60,6 +76,7 @@ export interface BlueprintWithSectionPlan extends Omit<PaperBlueprint, 'sectionP
   sectionPlan: SectionPlanItem[];
   preferredTerms: Record<string, string> | null;
   changeLog: Array<{ version: number; changedAt: string; changes: string[] }> | null;
+  blueprintSchemaVersion: number;
 }
 
 export interface SectionContext {
@@ -71,6 +88,8 @@ export interface SectionContext {
   dependencies: string[];
   mustCoverTyping?: Record<string, DimensionType>;
   suggestedCitationCount?: number;
+  thematicBlueprint?: ThematicBlueprint;
+  rhetoricalBlueprint?: RhetoricalBlueprint;
 }
 
 export interface BlueprintContext {
@@ -238,6 +257,7 @@ class BlueprintService {
 
     // Parse the LLM response
     const blueprintData = this.parseBlueprintResponse(result.response.output);
+    const normalizedSectionPlan = this.normalizeSectionPlan(blueprintData.sectionPlan);
 
     // Create blueprint in database
     const blueprint = await prisma.paperBlueprint.create({
@@ -246,11 +266,12 @@ class BlueprintService {
         thesisStatement: blueprintData.thesisStatement,
         centralObjective: blueprintData.centralObjective,
         keyContributions: blueprintData.keyContributions,
-        sectionPlan: blueprintData.sectionPlan as any,
+        sectionPlan: normalizedSectionPlan as any,
         preferredTerms: blueprintData.preferredTerms || {},
         narrativeArc: blueprintData.narrativeArc,
         paperTypeCode,
         methodologyType: methodologyKey,
+        blueprintSchemaVersion: 2,
         status: 'DRAFT',
         llmPromptUsed: prompt,
         llmResponse: result.response.output,
@@ -350,6 +371,7 @@ class BlueprintService {
       keyContributions: string[];
       sectionPlan: SectionPlanItem[];
       preferredTerms: Record<string, string>;
+      rhetoricalBlueprints: RhetoricalBlueprintBySection;
     }>
   ): Promise<BlueprintWithSectionPlan> {
     const blueprint = await prisma.paperBlueprint.findUnique({
@@ -364,6 +386,20 @@ class BlueprintService {
       throw new Error('Cannot update frozen blueprint. Unfreeze first.');
     }
 
+    const currentBlueprint = this.transformBlueprint(blueprint);
+    let normalizedSectionPlan = currentBlueprint.sectionPlan;
+
+    if (updates.sectionPlan) {
+      normalizedSectionPlan = this.normalizeSectionPlan(updates.sectionPlan);
+    }
+
+    if (updates.rhetoricalBlueprints && Object.keys(updates.rhetoricalBlueprints).length > 0) {
+      normalizedSectionPlan = this.applyRhetoricalOverrides(
+        normalizedSectionPlan,
+        updates.rhetoricalBlueprints
+      );
+    }
+
     // Build change log entry
     const changes: string[] = [];
     if (updates.thesisStatement) changes.push('thesis statement');
@@ -371,6 +407,7 @@ class BlueprintService {
     if (updates.keyContributions) changes.push('key contributions');
     if (updates.sectionPlan) changes.push('section plan');
     if (updates.preferredTerms) changes.push('preferred terms');
+    if (updates.rhetoricalBlueprints) changes.push('rhetorical blueprint');
 
     const existingLog = (blueprint.changeLog as any[]) || [];
     const newLogEntry = {
@@ -385,8 +422,9 @@ class BlueprintService {
         ...(updates.thesisStatement && { thesisStatement: updates.thesisStatement }),
         ...(updates.centralObjective && { centralObjective: updates.centralObjective }),
         ...(updates.keyContributions && { keyContributions: updates.keyContributions }),
-        ...(updates.sectionPlan && { sectionPlan: updates.sectionPlan as any }),
+        ...((updates.sectionPlan || updates.rhetoricalBlueprints) && { sectionPlan: normalizedSectionPlan as any }),
         ...(updates.preferredTerms && { preferredTerms: updates.preferredTerms }),
+        blueprintSchemaVersion: 2,
         status: 'DRAFT',
         version: { increment: 1 },
         changeLog: [...existingLog, newLogEntry]
@@ -422,7 +460,9 @@ class BlueprintService {
         wordBudget: sectionPlan.wordBudget,
         dependencies: sectionPlan.dependencies,
         mustCoverTyping: sectionPlan.mustCoverTyping,
-        suggestedCitationCount: sectionPlan.suggestedCitationCount
+        suggestedCitationCount: sectionPlan.suggestedCitationCount,
+        thematicBlueprint: sectionPlan.thematicBlueprint,
+        rhetoricalBlueprint: sectionPlan.rhetoricalBlueprint
       },
       preferredTerms: blueprint.preferredTerms || {}
     };
@@ -729,7 +769,7 @@ CRITICAL RULES:
       throw new Error('At least 2 key contributions are required');
     }
 
-    const sectionPlan = blueprint.sectionPlan as unknown as SectionPlanItem[];
+    const sectionPlan = this.normalizeSectionPlan(blueprint.sectionPlan as unknown as SectionPlanItem[]);
     if (!sectionPlan || sectionPlan.length < 3) {
       throw new Error('Section plan must have at least 3 sections');
     }
@@ -795,12 +835,153 @@ CRITICAL RULES:
     }
   }
 
+  private normalizeSectionPlan(rawSectionPlan: unknown): SectionPlanItem[] {
+    const rows = Array.isArray(rawSectionPlan) ? rawSectionPlan : [];
+    const normalized: SectionPlanItem[] = [];
+
+    for (let index = 0; index < rows.length; index += 1) {
+      const entry = rows[index];
+      const raw = (entry && typeof entry === 'object' && !Array.isArray(entry))
+        ? entry as Record<string, unknown>
+        : {};
+
+      const sectionKey = String(raw.sectionKey || `section_${index + 1}`).trim();
+      if (!sectionKey) {
+        continue;
+      }
+
+      const thematicRaw = (
+        raw.thematicBlueprint
+        && typeof raw.thematicBlueprint === 'object'
+        && !Array.isArray(raw.thematicBlueprint)
+      )
+        ? raw.thematicBlueprint as Record<string, unknown>
+        : null;
+
+      const mustCover = Array.isArray(raw.mustCover)
+        ? raw.mustCover.map(item => String(item || '').trim()).filter(Boolean)
+        : Array.isArray(thematicRaw?.mustCover)
+          ? thematicRaw.mustCover.map(item => String(item || '').trim()).filter(Boolean)
+          : [];
+      const mustAvoid = Array.isArray(raw.mustAvoid)
+        ? raw.mustAvoid.map(item => String(item || '').trim()).filter(Boolean)
+        : Array.isArray(thematicRaw?.mustAvoid)
+          ? thematicRaw.mustAvoid.map(item => String(item || '').trim()).filter(Boolean)
+          : [];
+
+      const mustCoverTypingRaw = (
+        raw.mustCoverTyping
+        && typeof raw.mustCoverTyping === 'object'
+        && !Array.isArray(raw.mustCoverTyping)
+      )
+        ? raw.mustCoverTyping as Record<string, unknown>
+        : (
+          thematicRaw?.mustCoverTyping
+          && typeof thematicRaw.mustCoverTyping === 'object'
+          && !Array.isArray(thematicRaw.mustCoverTyping)
+        )
+          ? thematicRaw.mustCoverTyping as Record<string, unknown>
+          : {};
+
+      const mustCoverTyping: Record<string, DimensionType> = {};
+      for (const [dimension, type] of Object.entries(mustCoverTypingRaw)) {
+        const normalizedType = String(type || '').trim().toLowerCase();
+        if (
+          normalizedType === 'foundational'
+          || normalizedType === 'methodological'
+          || normalizedType === 'empirical'
+          || normalizedType === 'comparative'
+          || normalizedType === 'gap'
+        ) {
+          mustCoverTyping[String(dimension || '').trim()] = normalizedType as DimensionType;
+        }
+      }
+
+      const suggestedCitationCountRaw = raw.suggestedCitationCount ?? thematicRaw?.suggestedCitationCount;
+      const suggestedCitationCount = Number.isFinite(Number(suggestedCitationCountRaw))
+        ? Number(suggestedCitationCountRaw)
+        : undefined;
+
+      const thematicBlueprint: ThematicBlueprint = {
+        mustCover,
+        mustAvoid,
+        ...(Object.keys(mustCoverTyping).length > 0 ? { mustCoverTyping } : {}),
+        ...(typeof suggestedCitationCount === 'number' ? { suggestedCitationCount } : {}),
+      };
+
+      const rhetoricalBlueprint = normalizeRhetoricalBlueprint(
+        sectionKey,
+        raw.rhetoricalBlueprint
+      );
+
+      const wordBudget = Number.isFinite(Number(raw.wordBudget))
+        ? Number(raw.wordBudget)
+        : undefined;
+
+      const normalizedSection: SectionPlanItem = {
+        sectionKey,
+        purpose: String(raw.purpose || '').trim(),
+        mustCover,
+        mustAvoid,
+        ...(typeof wordBudget === 'number' ? { wordBudget } : {}),
+        dependencies: Array.isArray(raw.dependencies)
+          ? raw.dependencies.map(item => String(item || '').trim()).filter(Boolean)
+          : [],
+        outputsPromised: Array.isArray(raw.outputsPromised)
+          ? raw.outputsPromised.map(item => String(item || '').trim()).filter(Boolean)
+          : [],
+        ...(Object.keys(mustCoverTyping).length > 0 ? { mustCoverTyping } : {}),
+        ...(typeof suggestedCitationCount === 'number' ? { suggestedCitationCount } : {}),
+        thematicBlueprint,
+        rhetoricalBlueprint,
+      };
+
+      normalized.push(normalizedSection);
+    }
+
+    return normalized;
+  }
+
+  private applyRhetoricalOverrides(
+    sectionPlan: SectionPlanItem[],
+    overrides: RhetoricalBlueprintBySection
+  ): SectionPlanItem[] {
+    const normalizedOverrides = new Map<string, RhetoricalBlueprint>();
+    for (const [sectionKey, blueprint] of Object.entries(overrides || {})) {
+      const normalized = String(sectionKey || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+      if (!normalized) continue;
+      normalizedOverrides.set(
+        normalized,
+        normalizeRhetoricalBlueprint(sectionKey, blueprint)
+      );
+    }
+
+    return sectionPlan.map((section) => {
+      const normalizedSectionKey = String(section.sectionKey || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+      const override = normalizedOverrides.get(normalizedSectionKey);
+      if (!override) return section;
+      return {
+        ...section,
+        rhetoricalBlueprint: override,
+      };
+    });
+  }
+
   private transformBlueprint(blueprint: PaperBlueprint): BlueprintWithSectionPlan {
+    const normalizedSectionPlan = this.normalizeSectionPlan(blueprint.sectionPlan as unknown);
+    const sectionPlan = normalizedSectionPlan.map((entry) => ({
+      ...entry,
+      rhetoricalBlueprint: entry.rhetoricalBlueprint || getDefaultRhetoricalBlueprint(entry.sectionKey),
+    }));
+
     return {
       ...blueprint,
-      sectionPlan: (blueprint.sectionPlan as unknown as SectionPlanItem[]) || [],
+      sectionPlan,
       preferredTerms: (blueprint.preferredTerms as Record<string, string>) || null,
-      changeLog: (blueprint.changeLog as Array<{ version: number; changedAt: string; changes: string[] }>) || null
+      changeLog: (blueprint.changeLog as Array<{ version: number; changedAt: string; changes: string[] }>) || null,
+      blueprintSchemaVersion: Number((blueprint as any).blueprintSchemaVersion) > 0
+        ? Number((blueprint as any).blueprintSchemaVersion)
+        : 2
     };
   }
 }

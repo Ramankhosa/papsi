@@ -18,6 +18,9 @@ import { sectionPolishService } from '@/lib/services/section-polish-service';
 import { citationValidator } from '@/lib/services/citation-validator';
 import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 import type { TenantContext } from '@/lib/metering';
+import { researchIntentLockService, type ResearchIntentLock } from '@/lib/services/research-intent-lock-service';
+import { buildRhetoricalPromptBlock, type RhetoricalBlueprint } from '@/lib/services/rhetorical-blueprint-service';
+import { rhetoricalComposerService } from '@/lib/services/rhetorical-composer-service';
 import {
   buildCitationKeyLookup,
   citationKeyIdentity,
@@ -1562,6 +1565,14 @@ interface BlueprintPromptContext {
   mustCover?: string[];
   mustAvoid?: string[];
   wordBudget?: number;
+  thematicBlueprint?: {
+    mustCover: string[];
+    mustAvoid: string[];
+    mustCoverTyping?: Record<string, string>;
+    suggestedCitationCount?: number;
+  };
+  rhetoricalBlueprint?: RhetoricalBlueprint;
+  researchIntentLock?: ResearchIntentLock | null;
 }
 
 interface PreviousSectionMemoryEntry {
@@ -2931,6 +2942,14 @@ async function buildPrompt(
   const mustCoverDimensions = blueprintContext?.mustCover?.length
     ? blueprintContext.mustCover.map(d => `- ${d}`).join('\n')
     : '(none specified)';
+  const rhetoricalBlock = isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT')
+    ? buildRhetoricalPromptBlock({
+        sectionKey,
+        rhetoricalBlueprint: blueprintContext?.rhetoricalBlueprint,
+        researchIntentLock: blueprintContext?.researchIntentLock || null,
+        fallbackContributions: blueprintContext?.keyContributions || []
+      })
+    : '';
 
   basePrompt = basePrompt.replace(/\{\{BLUEPRINT_THESIS\}\}/g, blueprintThesis);
   basePrompt = basePrompt.replace(/\{\{BLUEPRINT_CONTRIBUTIONS\}\}/g, blueprintContributions);
@@ -3036,7 +3055,7 @@ async function buildPrompt(
 - Preserve citation placeholders exactly in [CITE:key] format.
 - Do not use HTML tags.`;
 
-  return `${basePrompt}${topicBlock}${archetypeBlock}${crossSectionBlock}${evidenceBlock}${coverageBlock}${citationsBlock}${styleBlock}${userBlock}
+  return `${basePrompt}${topicBlock}${archetypeBlock}${crossSectionBlock}${rhetoricalBlock ? `\n\n${rhetoricalBlock}` : ''}${evidenceBlock}${coverageBlock}${citationsBlock}${styleBlock}${userBlock}
 
 ${outputInstructions}`;
 }
@@ -3324,7 +3343,8 @@ async function generateSection(
     sectionKey,
     instructions: payload.instructions,
     useMappedEvidence: payload.useMappedEvidence,
-    writingSampleBlock
+    writingSampleBlock,
+    tenantContext
   });
   const researchTopic = bundle.researchTopic;
   const citations = bundle.citations;
@@ -3364,6 +3384,7 @@ async function generateSection(
   let pass2PromptUsed: string | undefined;
   let pass2TokensUsed: number | undefined;
   let pass2ValidationReport: unknown;
+  let mergedValidationReport: unknown;
   let pass2CompletedAt: Date | undefined;
   const requestedGenerationMode =
     payload.generationMode === 'two_pass' && !isPass1BypassedSection(sectionKey)
@@ -3457,6 +3478,7 @@ async function generateSection(
     pass2PromptUsed = polishResult.promptUsed;
     pass2TokensUsed = polishResult.tokensUsed ?? undefined;
     pass2ValidationReport = polishResult.driftReport;
+    mergedValidationReport = pass2ValidationReport;
     pass2CompletedAt = new Date();
     llmTokensUsed = (llmTokensUsed || 0) + (polishResult.tokensUsed || 0);
     if (llmTokensUsed === 0) llmTokensUsed = undefined;
@@ -3491,6 +3513,82 @@ async function generateSection(
     llmTokensUsed = result.response.outputTokens;
     const rawOutput = (result.response.output || '').trim();
     rawContent = extractSectionOutput(rawOutput).content;
+  }
+
+  if (
+    rawContent
+    && isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT')
+    && blueprintPromptContext?.rhetoricalBlueprint?.enabled
+  ) {
+    try {
+      const rhetoricalResult = isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B')
+        ? await rhetoricalComposerService.applyPass2B({
+            sessionId,
+            sectionKey,
+            content: rawContent,
+            rhetoricalBlueprint: blueprintPromptContext.rhetoricalBlueprint,
+            researchIntentLock: blueprintPromptContext.researchIntentLock || null,
+            fallbackContributions: blueprintPromptContext.keyContributions || [],
+            evidenceDigestSummary: formatEvidenceDigest(evidencePromptContext.evidenceDigest),
+            tenantContext: tenantContext || null,
+            requestHeaders
+          })
+        : await rhetoricalComposerService.enforceContributionLock({
+            sessionId,
+            sectionKey,
+            content: rawContent,
+            rhetoricalBlueprint: blueprintPromptContext.rhetoricalBlueprint,
+            researchIntentLock: blueprintPromptContext.researchIntentLock || null,
+            fallbackContributions: blueprintPromptContext.keyContributions || [],
+            tenantContext: tenantContext || null,
+            requestHeaders
+          });
+
+      if (rhetoricalResult.content) {
+        rawContent = rhetoricalResult.content;
+      }
+      if (rhetoricalResult.promptUsed && useTwoPassPipeline) {
+        pass2PromptUsed = rhetoricalResult.promptUsed;
+      }
+      if (rhetoricalResult.tokensUsed) {
+        pass2TokensUsed = Number(pass2TokensUsed || 0) + Number(rhetoricalResult.tokensUsed || 0);
+        llmTokensUsed = Number(llmTokensUsed || 0) + Number(rhetoricalResult.tokensUsed || 0);
+      }
+
+      const rhetoricalValidation = {
+        enabled: true,
+        pass2bApplied: isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B'),
+        retries: rhetoricalResult.retries,
+        passed: rhetoricalResult.validation.passed,
+        violations: rhetoricalResult.validation.violations,
+        inspectedParagraphs: rhetoricalResult.validation.inspectedParagraphs
+      };
+      const currentValidation = (
+        mergedValidationReport
+        && typeof mergedValidationReport === 'object'
+        && !Array.isArray(mergedValidationReport)
+      )
+        ? mergedValidationReport as Record<string, unknown>
+        : (
+          pass2ValidationReport
+          && typeof pass2ValidationReport === 'object'
+          && !Array.isArray(pass2ValidationReport)
+        )
+          ? pass2ValidationReport as Record<string, unknown>
+          : {};
+      mergedValidationReport = {
+        ...currentValidation,
+        rhetoricalValidation
+      };
+      if (!rhetoricalResult.validation.passed) {
+        console.warn('[PaperDrafting] Rhetorical contribution validation still failing after retries', {
+          sectionKey,
+          violations: rhetoricalResult.validation.violations
+        });
+      }
+    } catch (error) {
+      console.warn('[PaperDrafting] Rhetorical composer/enforcer failed (non-fatal):', error);
+    }
   }
 
   if (!rawContent?.trim()) {
@@ -3710,7 +3808,7 @@ async function generateSection(
           pass2PromptUsed,
           pass2TokensUsed,
           pass2CompletedAt: pass2CompletedAt || new Date(),
-          validationReport: pass2ValidationReport as any,
+          validationReport: (mergedValidationReport || pass2ValidationReport) as any,
           status: 'DRAFT',
           isStale: false,
           generatedAt: new Date(),
@@ -3725,8 +3823,8 @@ async function generateSection(
     }
   }
 
-  const dimensionCoverageReport = pass2ValidationReport
-    ? (pass2ValidationReport as any).dimensionCoverage
+  const dimensionCoverageReport = (mergedValidationReport || pass2ValidationReport)
+    ? ((mergedValidationReport || pass2ValidationReport) as any).dimensionCoverage
     : undefined;
 
   return {
@@ -3802,8 +3900,9 @@ async function buildSectionPromptRuntimeBundle(params: {
   instructions?: string;
   useMappedEvidence?: boolean;
   writingSampleBlock?: string;
+  tenantContext?: TenantContext | null;
 }): Promise<SectionPromptRuntimeBundle> {
-  const { sessionId, session, paperTypeCode, sectionKey } = params;
+  const { sessionId, session, paperTypeCode, sectionKey, tenantContext } = params;
   const normalizedSectionKey = normalizeSectionKey(sectionKey);
   const requestedMappedEvidence = params.useMappedEvidence !== false;
   const sectionContextPolicy = await sectionTemplateService.getSectionContextPolicy(normalizedSectionKey, paperTypeCode);
@@ -3831,15 +3930,42 @@ async function buildSectionPromptRuntimeBundle(params: {
     const currentSectionPlan = blueprint.sectionPlan.find(
       (entry) => normalizeSectionKey(entry.sectionKey) === normalizedSectionKey
     );
+    let researchIntentLock: ResearchIntentLock | null = (
+      blueprint.intentLock
+      && typeof blueprint.intentLock === 'object'
+      && !Array.isArray(blueprint.intentLock)
+    )
+      ? blueprint.intentLock as unknown as ResearchIntentLock
+      : null;
+    if (!researchIntentLock && tenantContext && isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT')) {
+      try {
+        researchIntentLock = await researchIntentLockService.getOrCreateIntentLock(sessionId, tenantContext);
+      } catch (error) {
+        console.warn('[PaperDrafting] Failed to derive ResearchIntentLock for prompt injection:', error);
+      }
+    }
+
+    const thematicBlueprint = currentSectionPlan?.thematicBlueprint || {
+      mustCover: currentSectionPlan?.mustCover || [],
+      mustAvoid: currentSectionPlan?.mustAvoid || [],
+      ...(currentSectionPlan?.mustCoverTyping ? { mustCoverTyping: currentSectionPlan.mustCoverTyping } : {}),
+      ...(typeof currentSectionPlan?.suggestedCitationCount === 'number'
+        ? { suggestedCitationCount: currentSectionPlan.suggestedCitationCount }
+        : {})
+    };
+
     blueprintWordBudget = normalizePositiveWordBudget(currentSectionPlan?.wordBudget);
     blueprintPromptContext = {
       thesisStatement: blueprint.thesisStatement,
       centralObjective: blueprint.centralObjective,
       keyContributions: blueprint.keyContributions,
       sectionPlan: blueprint.sectionPlan.map((entry) => ({ sectionKey: entry.sectionKey, purpose: entry.purpose })),
-      mustCover: currentSectionPlan?.mustCover || [],
-      mustAvoid: currentSectionPlan?.mustAvoid || [],
-      wordBudget: blueprintWordBudget
+      mustCover: thematicBlueprint.mustCover || [],
+      mustAvoid: thematicBlueprint.mustAvoid || [],
+      wordBudget: blueprintWordBudget,
+      thematicBlueprint,
+      rhetoricalBlueprint: currentSectionPlan?.rhetoricalBlueprint,
+      researchIntentLock
     };
   }
 
@@ -4711,7 +4837,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           paperTypeCode,
           sectionKey,
           instructions: payload.instructions,
-          useMappedEvidence: payload.useMappedEvidence
+          useMappedEvidence: payload.useMappedEvidence,
+          tenantContext
         });
         let sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
         let storedPass1 = readStoredPass1Data(sectionRecord);
@@ -4819,7 +4946,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           session,
           paperTypeCode,
           sectionKey,
-          useMappedEvidence: payload.useMappedEvidence
+          useMappedEvidence: payload.useMappedEvidence,
+          tenantContext
         });
 
         const resolvedFlowBudget = normalizePositiveWordBudget(flow.sectionWordBudget)
@@ -4993,7 +5121,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           session,
           paperTypeCode,
           sectionKey,
-          useMappedEvidence: payload.useMappedEvidence
+          useMappedEvidence: payload.useMappedEvidence,
+          tenantContext
         });
         const resolvedFlowBudget = normalizePositiveWordBudget(flow.sectionWordBudget)
           || normalizePositiveWordBudget(bundle.sectionWordBudget);
@@ -5150,6 +5279,64 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           }
           if (polishResult.driftReport?.dimensionCoverage && !polishResult.driftReport.dimensionCoverage.passed) {
             (polishSummary as any).dimensionCoverage = polishResult.driftReport.dimensionCoverage;
+          }
+        }
+
+        if (
+          flowCompleted
+          && sectionContentForPersist.trim()
+          && isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT')
+          && bundle.blueprintPromptContext?.rhetoricalBlueprint?.enabled
+        ) {
+          try {
+            const rhetoricalResult = isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B')
+              ? await rhetoricalComposerService.applyPass2B({
+                  sessionId,
+                  sectionKey,
+                  content: sectionContentForPersist,
+                  rhetoricalBlueprint: bundle.blueprintPromptContext.rhetoricalBlueprint,
+                  researchIntentLock: bundle.blueprintPromptContext.researchIntentLock || null,
+                  fallbackContributions: bundle.blueprintPromptContext.keyContributions || [],
+                  evidenceDigestSummary: formatEvidenceDigest(bundle.evidencePromptContext.evidenceDigest),
+                  tenantContext: tenantContext || null,
+                  requestHeaders
+                })
+              : await rhetoricalComposerService.enforceContributionLock({
+                  sessionId,
+                  sectionKey,
+                  content: sectionContentForPersist,
+                  rhetoricalBlueprint: bundle.blueprintPromptContext.rhetoricalBlueprint,
+                  researchIntentLock: bundle.blueprintPromptContext.researchIntentLock || null,
+                  fallbackContributions: bundle.blueprintPromptContext.keyContributions || [],
+                  tenantContext: tenantContext || null,
+                  requestHeaders
+                });
+
+            if (rhetoricalResult.content) {
+              sectionContentForPersist = rhetoricalResult.content;
+            }
+            if (!polishSummary) {
+              polishSummary = { attempted: false, applied: false };
+            }
+            (polishSummary as any).rhetoricalValidation = {
+              enabled: true,
+              pass2bApplied: isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B'),
+              retries: rhetoricalResult.retries,
+              passed: rhetoricalResult.validation.passed,
+              violations: rhetoricalResult.validation.violations,
+              inspectedParagraphs: rhetoricalResult.validation.inspectedParagraphs
+            };
+
+            const combinedTokens = Number(polishMetadata?.tokensUsed || 0) + Number(rhetoricalResult.tokensUsed || 0);
+            if (rhetoricalResult.promptUsed || combinedTokens > 0) {
+              polishMetadata = {
+                promptUsed: rhetoricalResult.promptUsed || polishMetadata?.promptUsed,
+                tokensUsed: combinedTokens > 0 ? combinedTokens : undefined,
+                completedAt: new Date()
+              };
+            }
+          } catch (error) {
+            console.warn('[PaperDrafting] Rhetorical pass after dimension flow failed (non-fatal):', error);
           }
         }
 
@@ -5323,7 +5510,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           session,
           paperTypeCode,
           sectionKey,
-          useMappedEvidence: payload.useMappedEvidence
+          useMappedEvidence: payload.useMappedEvidence,
+          tenantContext
         });
         const resolvedFlowBudget = normalizePositiveWordBudget(flow.sectionWordBudget)
           || normalizePositiveWordBudget(bundle.sectionWordBudget);

@@ -36,7 +36,10 @@ import {
   Link2,
   ArrowLeft,
   ArrowRight,
-  ListFilter
+  ListFilter,
+  ArrowUp,
+  ArrowDown,
+  RotateCcw
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -53,6 +56,34 @@ interface DimensionType {
   type?: 'foundational' | 'methodological' | 'empirical' | 'comparative' | 'gap';
 }
 
+type RhetoricalCitationMode = 'optional' | 'none' | 'required';
+
+interface RhetoricalCitationPolicy {
+  mode: RhetoricalCitationMode;
+  maxCitations: number;
+}
+
+interface RhetoricalSlot {
+  key: string;
+  required: boolean;
+  placement: string;
+  intent: string;
+  constraints: string[];
+  citationPolicy: RhetoricalCitationPolicy;
+}
+
+interface RhetoricalBlueprint {
+  enabled: boolean;
+  slots: RhetoricalSlot[];
+}
+
+interface ThematicBlueprint {
+  mustCover: string[];
+  mustAvoid: string[];
+  mustCoverTyping?: Record<string, string>;
+  suggestedCitationCount?: number;
+}
+
 interface SectionPlanItem {
   sectionKey: string;
   purpose: string;
@@ -63,6 +94,8 @@ interface SectionPlanItem {
   dependencies: string[];
   outputsPromised: string[];
   suggestedCitationCount?: number;
+  thematicBlueprint?: ThematicBlueprint;
+  rhetoricalBlueprint?: RhetoricalBlueprint;
 }
 
 interface Blueprint {
@@ -76,6 +109,7 @@ interface Blueprint {
   narrativeArc?: string;
   status: 'DRAFT' | 'FROZEN' | 'REVISION_PENDING';
   version: number;
+  blueprintSchemaVersion?: number;
 }
 
 interface BlueprintStageProps {
@@ -108,6 +142,264 @@ const SECTION_ICONS: Record<string, any> = {
 };
 
 const ALL_SECTIONS_FILTER = '__all_sections__';
+const RHETORICAL_PLACEMENTS = ['start', 'middle', 'end', 'final'] as const;
+
+const RHETORICAL_DEFAULTS_BY_SECTION: Record<string, RhetoricalSlot[]> = {
+  introduction: [
+    {
+      key: 'ContextBackground',
+      required: true,
+      placement: 'start',
+      intent: 'Introduce domain context and establish background.',
+      constraints: ['No novelty claims', 'Keep 1-2 paragraphs max'],
+      citationPolicy: { mode: 'optional', maxCitations: 2 }
+    },
+    {
+      key: 'GapResearchQuestion',
+      required: true,
+      placement: 'end',
+      intent: 'State the gap and research question clearly near section close.',
+      constraints: ['Ground the gap in thematic evidence', 'Avoid solution details'],
+      citationPolicy: { mode: 'optional', maxCitations: 2 }
+    },
+    {
+      key: 'Contributions',
+      required: true,
+      placement: 'final',
+      intent: 'Provide the contribution list as the final paragraph.',
+      constraints: ['Must match ResearchIntentLock contributions exactly', 'No new claims'],
+      citationPolicy: { mode: 'optional', maxCitations: 1 }
+    },
+    {
+      key: 'PaperStructure',
+      required: false,
+      placement: 'final',
+      intent: 'Optionally preview section flow.',
+      constraints: ['1 short paragraph max'],
+      citationPolicy: { mode: 'none', maxCitations: 0 }
+    }
+  ],
+  literature_review: [
+    {
+      key: 'ResearchLandscape',
+      required: true,
+      placement: 'start',
+      intent: 'Frame the research landscape at a high level.',
+      constraints: ['Use thematic clusters, not paper-by-paper narration'],
+      citationPolicy: { mode: 'optional', maxCitations: 2 }
+    },
+    {
+      key: 'ThematicSynthesis',
+      required: true,
+      placement: 'middle',
+      intent: 'Synthesize literature thematically with tension and overlap.',
+      constraints: ['Keep claims tied to evidence digest'],
+      citationPolicy: { mode: 'optional', maxCitations: 2 }
+    },
+    {
+      key: 'Limitations',
+      required: true,
+      placement: 'end',
+      intent: 'Highlight unresolved limitations in prior work.',
+      constraints: ['Do not introduce the paper method yet'],
+      citationPolicy: { mode: 'optional', maxCitations: 1 }
+    },
+    {
+      key: 'StudyPositioning',
+      required: false,
+      placement: 'end',
+      intent: 'Position the current study relative to the mapped gap.',
+      constraints: ['Stay concise'],
+      citationPolicy: { mode: 'optional', maxCitations: 1 }
+    }
+  ],
+  methodology: [
+    {
+      key: 'ResearchDesign',
+      required: true,
+      placement: 'start',
+      intent: 'Declare the research design and rationale.',
+      constraints: ['Do not report results'],
+      citationPolicy: { mode: 'none', maxCitations: 0 }
+    },
+    {
+      key: 'SystemArchitecture',
+      required: true,
+      placement: 'middle',
+      intent: 'Describe the system/approach architecture.',
+      constraints: ['Align terminology with prior sections'],
+      citationPolicy: { mode: 'none', maxCitations: 0 }
+    },
+    {
+      key: 'DataProtocol',
+      required: true,
+      placement: 'middle',
+      intent: 'Detail data sources, preprocessing, and sampling protocol.',
+      constraints: ['Report reproducibility-critical settings'],
+      citationPolicy: { mode: 'none', maxCitations: 0 }
+    },
+    {
+      key: 'EvaluationStrategy',
+      required: true,
+      placement: 'end',
+      intent: 'Define evaluation metrics and comparison plan.',
+      constraints: ['No outcome claims'],
+      citationPolicy: { mode: 'none', maxCitations: 0 }
+    },
+    {
+      key: 'ImplementationDetails',
+      required: false,
+      placement: 'end',
+      intent: 'Optional implementation details and tooling notes.',
+      constraints: ['Keep concise and reproducible'],
+      citationPolicy: { mode: 'none', maxCitations: 0 }
+    }
+  ],
+  results: [
+    {
+      key: 'ExperimentalContext',
+      required: true,
+      placement: 'start',
+      intent: 'State experimental setup context for interpreting outcomes.',
+      constraints: ['No method restatement'],
+      citationPolicy: { mode: 'none', maxCitations: 0 }
+    },
+    {
+      key: 'EmpiricalFindings',
+      required: true,
+      placement: 'middle',
+      intent: 'Report empirical findings clearly and directly.',
+      constraints: ['Use measured outcomes only'],
+      citationPolicy: { mode: 'none', maxCitations: 0 }
+    },
+    {
+      key: 'ComparativeAnalysis',
+      required: true,
+      placement: 'end',
+      intent: 'Compare findings against baselines or alternatives.',
+      constraints: ['Avoid causal overclaims'],
+      citationPolicy: { mode: 'none', maxCitations: 0 }
+    },
+    {
+      key: 'Robustness',
+      required: false,
+      placement: 'end',
+      intent: 'Optional robustness and sensitivity checks.',
+      constraints: ['Mention uncertainty where relevant'],
+      citationPolicy: { mode: 'none', maxCitations: 0 }
+    }
+  ],
+  discussion: [
+    {
+      key: 'Interpretation',
+      required: true,
+      placement: 'start',
+      intent: 'Interpret core findings and their meaning.',
+      constraints: ['Tie interpretation to reported results'],
+      citationPolicy: { mode: 'optional', maxCitations: 1 }
+    },
+    {
+      key: 'RelationToLiterature',
+      required: true,
+      placement: 'middle',
+      intent: 'Relate findings to prior literature and disagreements.',
+      constraints: ['Use explicit reinforce/contradict/extend framing'],
+      citationPolicy: { mode: 'optional', maxCitations: 2 }
+    },
+    {
+      key: 'Implications',
+      required: true,
+      placement: 'middle',
+      intent: 'Explain theoretical/practical implications.',
+      constraints: ['Do not introduce unsupported new results'],
+      citationPolicy: { mode: 'optional', maxCitations: 1 }
+    },
+    {
+      key: 'LimitationsFuture',
+      required: true,
+      placement: 'end',
+      intent: 'Close with limitations and future work.',
+      constraints: ['Maintain scope discipline'],
+      citationPolicy: { mode: 'optional', maxCitations: 1 }
+    }
+  ]
+};
+
+function normalizeSectionKey(value: string): string {
+  return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function toRhetoricalTemplateKey(sectionKey: string): string {
+  const normalized = normalizeSectionKey(sectionKey);
+  if (normalized === 'related_work') return 'literature_review';
+  return normalized;
+}
+
+function cloneRhetoricalSlot(slot: RhetoricalSlot): RhetoricalSlot {
+  return {
+    key: slot.key,
+    required: Boolean(slot.required),
+    placement: slot.placement,
+    intent: slot.intent,
+    constraints: [...(slot.constraints || [])],
+    citationPolicy: {
+      mode: slot.citationPolicy?.mode || 'optional',
+      maxCitations: typeof slot.citationPolicy?.maxCitations === 'number'
+        ? Math.max(0, Math.min(2, Math.round(slot.citationPolicy.maxCitations)))
+        : 1
+    }
+  };
+}
+
+function buildDefaultRhetoricalBlueprint(sectionKey: string): RhetoricalBlueprint {
+  const templateKey = toRhetoricalTemplateKey(sectionKey);
+  const slots = RHETORICAL_DEFAULTS_BY_SECTION[templateKey] || [];
+  return {
+    enabled: false,
+    slots: slots.map(cloneRhetoricalSlot)
+  };
+}
+
+function resolveRhetoricalBlueprint(section: SectionPlanItem): RhetoricalBlueprint {
+  const fallback = buildDefaultRhetoricalBlueprint(section.sectionKey);
+  const incoming = section.rhetoricalBlueprint;
+  if (!incoming || typeof incoming !== 'object' || !Array.isArray(incoming.slots)) {
+    return fallback;
+  }
+
+  return {
+    enabled: Boolean(incoming.enabled),
+    slots: incoming.slots.map(cloneRhetoricalSlot)
+  };
+}
+
+function syncThematicBlueprint(section: SectionPlanItem): SectionPlanItem {
+  const mustCover = Array.isArray(section.mustCover)
+    ? section.mustCover.map(item => String(item || '').trim()).filter(Boolean)
+    : [];
+  const mustAvoid = Array.isArray(section.mustAvoid)
+    ? section.mustAvoid.map(item => String(item || '').trim()).filter(Boolean)
+    : [];
+  const mustCoverTyping = section.mustCoverTyping && typeof section.mustCoverTyping === 'object'
+    ? section.mustCoverTyping
+    : undefined;
+  const suggestedCitationCount = typeof section.suggestedCitationCount === 'number'
+    ? section.suggestedCitationCount
+    : section.thematicBlueprint?.suggestedCitationCount;
+
+  return {
+    ...section,
+    mustCover,
+    mustAvoid,
+    ...(mustCoverTyping ? { mustCoverTyping } : {}),
+    thematicBlueprint: {
+      mustCover,
+      mustAvoid,
+      ...(mustCoverTyping ? { mustCoverTyping } : {}),
+      ...(typeof suggestedCitationCount === 'number' ? { suggestedCitationCount } : {})
+    }
+  };
+}
 
 function formatSectionName(key: string): string {
   return key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -251,6 +543,278 @@ function DimensionCard({
   );
 }
 
+interface RhetoricalSlotCardProps {
+  slot: RhetoricalSlot;
+  index: number;
+  isEditing: boolean;
+  isFrozen: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  onSave: (slot: RhetoricalSlot) => void;
+  onCancel: () => void;
+}
+
+function RhetoricalSlotCard({
+  slot,
+  index,
+  isEditing,
+  isFrozen,
+  canMoveUp,
+  canMoveDown,
+  onEdit,
+  onDelete,
+  onMoveUp,
+  onMoveDown,
+  onSave,
+  onCancel
+}: RhetoricalSlotCardProps) {
+  const [draftKey, setDraftKey] = useState(slot.key || '');
+  const [draftIntent, setDraftIntent] = useState(slot.intent || '');
+  const [draftPlacement, setDraftPlacement] = useState(slot.placement || 'middle');
+  const [draftRequired, setDraftRequired] = useState(Boolean(slot.required));
+  const [draftMode, setDraftMode] = useState<RhetoricalCitationMode>(slot.citationPolicy?.mode || 'optional');
+  const [draftMaxCitations, setDraftMaxCitations] = useState(
+    typeof slot.citationPolicy?.maxCitations === 'number'
+      ? Math.max(0, Math.min(2, Math.round(slot.citationPolicy.maxCitations)))
+      : 1
+  );
+  const [draftConstraints, setDraftConstraints] = useState((slot.constraints || []).join('\n'));
+
+  useEffect(() => {
+    setDraftKey(slot.key || '');
+    setDraftIntent(slot.intent || '');
+    setDraftPlacement(slot.placement || 'middle');
+    setDraftRequired(Boolean(slot.required));
+    setDraftMode(slot.citationPolicy?.mode || 'optional');
+    setDraftMaxCitations(
+      typeof slot.citationPolicy?.maxCitations === 'number'
+        ? Math.max(0, Math.min(2, Math.round(slot.citationPolicy.maxCitations)))
+        : 1
+    );
+    setDraftConstraints((slot.constraints || []).join('\n'));
+  }, [slot, isEditing]);
+
+  if (isEditing) {
+    return (
+      <motion.div
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="rounded-xl border-2 border-blue-300 dark:border-blue-700 bg-white dark:bg-slate-900 p-3 shadow-sm"
+      >
+        <div className="grid md:grid-cols-2 gap-2 mb-2">
+          <div>
+            <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              Slot Key
+            </label>
+            <input
+              value={draftKey}
+              onChange={(e) => setDraftKey(e.target.value)}
+              placeholder="Contributions"
+              className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              Placement
+            </label>
+            <select
+              value={draftPlacement}
+              onChange={(e) => setDraftPlacement(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-sm"
+            >
+              {RHETORICAL_PLACEMENTS.map((placement) => (
+                <option key={placement} value={placement}>
+                  {placement}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="mb-2">
+          <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            Intent
+          </label>
+          <Textarea
+            value={draftIntent}
+            onChange={(e) => setDraftIntent(e.target.value)}
+            className="mt-1 min-h-[80px] resize-y"
+          />
+        </div>
+
+        <div className="mb-2">
+          <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            Constraints (one per line)
+          </label>
+          <Textarea
+            value={draftConstraints}
+            onChange={(e) => setDraftConstraints(e.target.value)}
+            className="mt-1 min-h-[70px] resize-y"
+          />
+        </div>
+
+        <div className="grid md:grid-cols-3 gap-2 items-end mb-2">
+          <label className="inline-flex items-center gap-2 rounded-lg border border-slate-300 dark:border-slate-700 px-2.5 py-2 text-sm">
+            <input
+              type="checkbox"
+              checked={draftRequired}
+              onChange={(e) => setDraftRequired(e.target.checked)}
+            />
+            Required
+          </label>
+          <div>
+            <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              Citation Mode
+            </label>
+            <select
+              value={draftMode}
+              onChange={(e) => setDraftMode(e.target.value as RhetoricalCitationMode)}
+              className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-sm"
+            >
+              <option value="optional">optional</option>
+              <option value="none">none</option>
+              <option value="required">required</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              Max Citations
+            </label>
+            <input
+              type="number"
+              min={0}
+              max={2}
+              value={draftMaxCitations}
+              onChange={(e) => {
+                const parsed = Number(e.target.value);
+                if (!Number.isFinite(parsed)) {
+                  setDraftMaxCitations(0);
+                  return;
+                }
+                setDraftMaxCitations(Math.max(0, Math.min(2, Math.round(parsed))));
+              }}
+              className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-2 text-sm"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={onCancel}>
+            <X className="w-4 h-4 mr-1" />
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => {
+              const constraints = draftConstraints
+                .split('\n')
+                .map(entry => entry.trim())
+                .filter(Boolean);
+              onSave({
+                key: draftKey.trim(),
+                required: draftRequired,
+                placement: draftPlacement.trim() || 'middle',
+                intent: draftIntent.trim(),
+                constraints,
+                citationPolicy: {
+                  mode: draftMode,
+                  maxCitations: Math.max(0, Math.min(2, Math.round(draftMaxCitations)))
+                }
+              });
+            }}
+            disabled={!draftKey.trim() || !draftIntent.trim()}
+            className="bg-blue-600 hover:bg-blue-700 text-white"
+          >
+            <Check className="w-4 h-4 mr-1" />
+            Save Slot
+          </Button>
+        </div>
+      </motion.div>
+    );
+  }
+
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/70 p-3"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="secondary" className="text-[10px]">
+              #{index + 1}
+            </Badge>
+            <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">{slot.key}</span>
+            <Badge variant="outline" className="text-[10px]">
+              {slot.placement}
+            </Badge>
+            <Badge
+              variant="outline"
+              className={`text-[10px] ${slot.required ? 'border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300' : 'border-slate-300 text-slate-600 dark:border-slate-700 dark:text-slate-300'}`}
+            >
+              {slot.required ? 'required' : 'optional'}
+            </Badge>
+          </div>
+          <p className="text-sm text-slate-700 dark:text-slate-200 mt-2">{slot.intent}</p>
+          {slot.constraints.length > 0 && (
+            <ul className="mt-2 space-y-1">
+              {slot.constraints.map((constraint, constraintIndex) => (
+                <li key={`${slot.key}-constraint-${constraintIndex}`} className="text-xs text-slate-500 dark:text-slate-400">
+                  - {constraint}
+                </li>
+              ))}
+            </ul>
+          )}
+          <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+            Citation policy: {slot.citationPolicy.mode}, max {slot.citationPolicy.maxCitations}
+          </div>
+        </div>
+
+        {!isFrozen && (
+          <div className="flex items-center gap-1">
+            <button
+              onClick={onMoveUp}
+              disabled={!canMoveUp}
+              className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-slate-500 disabled:opacity-30"
+              title="Move up"
+            >
+              <ArrowUp className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={onMoveDown}
+              disabled={!canMoveDown}
+              className="p-1.5 rounded-md border border-slate-200 dark:border-slate-700 text-slate-500 disabled:opacity-30"
+              title="Move down"
+            >
+              <ArrowDown className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={onEdit}
+              className="p-1.5 rounded-md border border-blue-200 dark:border-blue-700 text-blue-600 dark:text-blue-300"
+              title="Edit slot"
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={onDelete}
+              className="p-1.5 rounded-md border border-red-200 dark:border-red-700 text-red-600 dark:text-red-300"
+              title="Delete slot"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+      </div>
+    </motion.div>
+  );
+}
+
 interface SectionNodeProps {
   section: SectionPlanItem;
   isFrozen: boolean;
@@ -260,14 +824,24 @@ interface SectionNodeProps {
 
 function SectionNode({ section, isFrozen, isFocused = false, onUpdateSection }: SectionNodeProps) {
   const [isExpanded, setIsExpanded] = useState(true);
+  const [activeTab, setActiveTab] = useState<'thematic' | 'rhetorical'>('thematic');
   const [editingDimensionIndex, setEditingDimensionIndex] = useState<number | null>(null);
   const [isAddingNew, setIsAddingNew] = useState(false);
+  const [editingSlotIndex, setEditingSlotIndex] = useState<number | null>(null);
+  const [isAddingSlot, setIsAddingSlot] = useState(false);
 
   const Icon = SECTION_ICONS[section.sectionKey] || SECTION_ICONS.default;
+  const rhetoricalBlueprint = resolveRhetoricalBlueprint(section);
   const dimensionCount = section.mustCover?.length || 0;
   const mustAvoidCount = section.mustAvoid?.length || 0;
   const dependencyCount = section.dependencies?.length || 0;
   const outputsCount = section.outputsPromised?.length || 0;
+  const rhetoricalSlotCount = rhetoricalBlueprint.slots.length;
+  const requiredRhetoricalSlots = rhetoricalBlueprint.slots.filter(slot => slot.required).length;
+
+  const pushSectionUpdate = (updated: SectionPlanItem) => {
+    onUpdateSection(syncThematicBlueprint(updated));
+  };
 
   const handleSaveDimension = (index: number, newDimension: string, newType: string) => {
     const updated = { ...section };
@@ -280,7 +854,7 @@ function SectionNode({ section, isFrozen, isFocused = false, onUpdateSection }: 
       delete updated.mustCoverTyping[section.mustCover[index]];
     }
     
-    onUpdateSection(updated);
+    pushSectionUpdate(updated);
     setEditingDimensionIndex(null);
   };
 
@@ -294,15 +868,76 @@ function SectionNode({ section, isFrozen, isFocused = false, onUpdateSection }: 
       delete updated.mustCoverTyping[removedDimension];
     }
     
-    onUpdateSection(updated);
+    pushSectionUpdate(updated);
   };
 
   const handleAddDimension = (newDimension: string, newType: string) => {
     const updated = { ...section };
     updated.mustCover = [...section.mustCover, newDimension];
     updated.mustCoverTyping = { ...section.mustCoverTyping, [newDimension]: newType };
-    onUpdateSection(updated);
+    pushSectionUpdate(updated);
     setIsAddingNew(false);
+  };
+
+  const updateRhetoricalBlueprint = (next: RhetoricalBlueprint) => {
+    pushSectionUpdate({
+      ...section,
+      rhetoricalBlueprint: next
+    });
+  };
+
+  const handleToggleRhetoricalEnabled = () => {
+    updateRhetoricalBlueprint({
+      ...rhetoricalBlueprint,
+      enabled: !rhetoricalBlueprint.enabled
+    });
+  };
+
+  const handleSaveRhetoricalSlot = (index: number, slot: RhetoricalSlot) => {
+    const updatedSlots = [...rhetoricalBlueprint.slots];
+    updatedSlots[index] = cloneRhetoricalSlot(slot);
+    updateRhetoricalBlueprint({
+      ...rhetoricalBlueprint,
+      slots: updatedSlots
+    });
+    setEditingSlotIndex(null);
+  };
+
+  const handleDeleteRhetoricalSlot = (index: number) => {
+    const updatedSlots = rhetoricalBlueprint.slots.filter((_, slotIndex) => slotIndex !== index);
+    updateRhetoricalBlueprint({
+      ...rhetoricalBlueprint,
+      slots: updatedSlots
+    });
+    setEditingSlotIndex(null);
+  };
+
+  const handleMoveRhetoricalSlot = (fromIndex: number, toIndex: number) => {
+    if (toIndex < 0 || toIndex >= rhetoricalBlueprint.slots.length) return;
+    const updatedSlots = [...rhetoricalBlueprint.slots];
+    const [moved] = updatedSlots.splice(fromIndex, 1);
+    updatedSlots.splice(toIndex, 0, moved);
+    updateRhetoricalBlueprint({
+      ...rhetoricalBlueprint,
+      slots: updatedSlots
+    });
+    setEditingSlotIndex(toIndex);
+  };
+
+  const handleAddRhetoricalSlot = (slot: RhetoricalSlot) => {
+    updateRhetoricalBlueprint({
+      ...rhetoricalBlueprint,
+      slots: [...rhetoricalBlueprint.slots, cloneRhetoricalSlot(slot)]
+    });
+    setIsAddingSlot(false);
+  };
+
+  const handleResetRhetoricalDefaults = () => {
+    const defaults = buildDefaultRhetoricalBlueprint(section.sectionKey);
+    defaults.enabled = rhetoricalBlueprint.enabled;
+    updateRhetoricalBlueprint(defaults);
+    setEditingSlotIndex(null);
+    setIsAddingSlot(false);
   };
 
   return (
@@ -335,6 +970,12 @@ function SectionNode({ section, isFrozen, isFocused = false, onUpdateSection }: 
           <div className="flex items-center gap-2">
             <Badge variant="secondary" className="text-xs">{dimensionCount} must have</Badge>
             <Badge variant="outline" className="text-xs border-rose-200 text-rose-700 dark:border-rose-900 dark:text-rose-300">{mustAvoidCount} don&apos;t do</Badge>
+            <Badge
+              variant="outline"
+              className={`text-xs ${rhetoricalBlueprint.enabled ? 'border-blue-300 text-blue-700 dark:border-blue-800 dark:text-blue-300' : 'border-slate-300 text-slate-600 dark:border-slate-700 dark:text-slate-300'}`}
+            >
+              rhetorical {rhetoricalBlueprint.enabled ? 'on' : 'off'}
+            </Badge>
             <motion.div
               animate={{ rotate: isExpanded ? 180 : 0 }}
               transition={{ duration: 0.2 }}
@@ -364,135 +1005,272 @@ function SectionNode({ section, isFrozen, isFocused = false, onUpdateSection }: 
                     </p>
                   </div>
 
-                  <div className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50/70 dark:bg-emerald-950/20 p-3">
-                    <div className="flex items-center justify-between gap-2 mb-3">
-                      <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
-                        Must Have ({dimensionCount})
-                      </div>
-                      {section.suggestedCitationCount && (
-                        <Badge variant="outline" className="text-[10px] border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300">
-                          ~{section.suggestedCitationCount} citations
-                        </Badge>
-                      )}
-                    </div>
-
-                    <div className="space-y-2 ml-2 border-l-2 border-emerald-200/80 dark:border-emerald-900/70 pl-4">
-                      {section.mustCover.map((dim, idx) => (
-                        <DimensionCard
-                          key={`${section.sectionKey}-${idx}`}
-                          dimension={dim}
-                          type={section.mustCoverTyping?.[dim]}
-                          sectionKey={section.sectionKey}
-                          isEditing={editingDimensionIndex === idx}
-                          isFrozen={isFrozen}
-                          onEdit={() => setEditingDimensionIndex(idx)}
-                          onDelete={() => handleDeleteDimension(idx)}
-                          onSave={(newDim, newType) => handleSaveDimension(idx, newDim, newType)}
-                          onCancel={() => setEditingDimensionIndex(null)}
-                        />
-                      ))}
-
-                      {dimensionCount === 0 && (
-                        <div className="text-sm text-emerald-700/70 dark:text-emerald-300/70">
-                          No must-have dimensions yet.
-                        </div>
-                      )}
-
-                      {/* Add New Dimension */}
-                      {isAddingNew ? (
-                        <DimensionCard
-                          dimension=""
-                          type="empirical"
-                          sectionKey={section.sectionKey}
-                          isEditing={true}
-                          isFrozen={false}
-                          onEdit={() => {}}
-                          onDelete={() => setIsAddingNew(false)}
-                          onSave={handleAddDimension}
-                          onCancel={() => setIsAddingNew(false)}
-                        />
-                      ) : !isFrozen && (
-                        <motion.button
-                          whileHover={{ scale: 1.02 }}
-                          whileTap={{ scale: 0.98 }}
-                          onClick={() => setIsAddingNew(true)}
-                          className="w-full p-3 rounded-xl border-2 border-dashed border-emerald-300 dark:border-emerald-700
-                            text-emerald-700 dark:text-emerald-400 hover:border-emerald-500 hover:text-emerald-800
-                            dark:hover:border-emerald-500 dark:hover:text-emerald-300
-                            flex items-center justify-center gap-2 transition-colors"
-                        >
-                          <Plus className="w-4 h-4" />
-                          <span className="text-sm">Add Must-Have Dimension</span>
-                        </motion.button>
-                      )}
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white/70 dark:bg-slate-900/60 p-2">
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => setActiveTab('thematic')}
+                        className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
+                          activeTab === 'thematic'
+                            ? 'bg-emerald-600 text-white'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        Thematic Blueprint
+                      </button>
+                      <button
+                        onClick={() => setActiveTab('rhetorical')}
+                        className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
+                          activeTab === 'rhetorical'
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        Rhetorical Blueprint
+                      </button>
                     </div>
                   </div>
 
-                  <div className="grid md:grid-cols-2 gap-3">
-                    <div className="rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50/70 dark:bg-rose-950/20 p-3">
-                      <div className="text-[11px] font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-300 mb-2 flex items-center gap-1.5">
-                        <Ban className="w-3.5 h-3.5" />
-                        Don&apos;t Do ({mustAvoidCount})
-                      </div>
-                      {mustAvoidCount > 0 ? (
-                        <ul className="space-y-1.5">
-                          {section.mustAvoid.map((item, idx) => (
-                            <li key={`${section.sectionKey}-avoid-${idx}`} className="flex items-start gap-2 text-sm text-rose-800 dark:text-rose-200">
-                              <span className="mt-0.5 text-rose-500 dark:text-rose-400">
-                                <X className="w-3.5 h-3.5" />
-                              </span>
-                              <span>{item}</span>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="text-sm text-rose-700/70 dark:text-rose-300/70">No explicit avoid rules defined.</p>
-                      )}
-                    </div>
-
-                    <div className="rounded-xl border border-amber-200 dark:border-amber-900 bg-amber-50/70 dark:bg-amber-950/20 p-3">
-                      <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-2 flex items-center gap-1.5">
-                        <Link2 className="w-3.5 h-3.5" />
-                        Must Do Before ({dependencyCount})
-                      </div>
-                      {dependencyCount > 0 ? (
-                        <div className="flex flex-wrap gap-2">
-                          {section.dependencies.map((dependency) => (
-                            <Badge
-                              key={`${section.sectionKey}-dependency-${dependency}`}
-                              variant="outline"
-                              className="border-amber-300 text-amber-800 dark:border-amber-800 dark:text-amber-300"
-                            >
-                              {formatSectionName(dependency)}
+                  {activeTab === 'thematic' ? (
+                    <>
+                      <div className="rounded-xl border border-emerald-200 dark:border-emerald-900 bg-emerald-50/70 dark:bg-emerald-950/20 p-3">
+                        <div className="flex items-center justify-between gap-2 mb-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+                            Must Have ({dimensionCount})
+                          </div>
+                          {section.suggestedCitationCount && (
+                            <Badge variant="outline" className="text-[10px] border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300">
+                              ~{section.suggestedCitationCount} citations
                             </Badge>
-                          ))}
+                          )}
                         </div>
-                      ) : (
-                        <p className="text-sm text-amber-700/70 dark:text-amber-300/70">No required dependency sections.</p>
-                      )}
-                    </div>
-                  </div>
 
-                  <div className="rounded-xl border border-indigo-200 dark:border-indigo-900 bg-indigo-50/70 dark:bg-indigo-950/20 p-3">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300 mb-2 flex items-center gap-1.5">
-                      <ChevronRight className="w-3.5 h-3.5" />
-                      Outputs Promised ({outputsCount})
-                    </div>
-                    {outputsCount > 0 ? (
-                      <div className="flex flex-wrap gap-2">
-                        {section.outputsPromised.map((output, idx) => (
-                          <Badge
-                            key={`${section.sectionKey}-output-${idx}`}
-                            className="bg-indigo-100 text-indigo-800 hover:bg-indigo-100 dark:bg-indigo-900/60 dark:text-indigo-200"
-                          >
-                            {output}
-                          </Badge>
-                        ))}
+                        <div className="space-y-2 ml-2 border-l-2 border-emerald-200/80 dark:border-emerald-900/70 pl-4">
+                          {section.mustCover.map((dim, idx) => (
+                            <DimensionCard
+                              key={`${section.sectionKey}-${idx}`}
+                              dimension={dim}
+                              type={section.mustCoverTyping?.[dim]}
+                              sectionKey={section.sectionKey}
+                              isEditing={editingDimensionIndex === idx}
+                              isFrozen={isFrozen}
+                              onEdit={() => setEditingDimensionIndex(idx)}
+                              onDelete={() => handleDeleteDimension(idx)}
+                              onSave={(newDim, newType) => handleSaveDimension(idx, newDim, newType)}
+                              onCancel={() => setEditingDimensionIndex(null)}
+                            />
+                          ))}
+
+                          {dimensionCount === 0 && (
+                            <div className="text-sm text-emerald-700/70 dark:text-emerald-300/70">
+                              No must-have dimensions yet.
+                            </div>
+                          )}
+
+                          {isAddingNew ? (
+                            <DimensionCard
+                              dimension=""
+                              type="empirical"
+                              sectionKey={section.sectionKey}
+                              isEditing={true}
+                              isFrozen={false}
+                              onEdit={() => {}}
+                              onDelete={() => setIsAddingNew(false)}
+                              onSave={handleAddDimension}
+                              onCancel={() => setIsAddingNew(false)}
+                            />
+                          ) : !isFrozen && (
+                            <motion.button
+                              whileHover={{ scale: 1.02 }}
+                              whileTap={{ scale: 0.98 }}
+                              onClick={() => setIsAddingNew(true)}
+                              className="w-full p-3 rounded-xl border-2 border-dashed border-emerald-300 dark:border-emerald-700
+                                text-emerald-700 dark:text-emerald-400 hover:border-emerald-500 hover:text-emerald-800
+                                dark:hover:border-emerald-500 dark:hover:text-emerald-300
+                                flex items-center justify-center gap-2 transition-colors"
+                            >
+                              <Plus className="w-4 h-4" />
+                              <span className="text-sm">Add Must-Have Dimension</span>
+                            </motion.button>
+                          )}
+                        </div>
                       </div>
-                    ) : (
-                      <p className="text-sm text-indigo-700/70 dark:text-indigo-300/70">No downstream outputs listed.</p>
-                    )}
-                  </div>
+
+                      <div className="grid md:grid-cols-2 gap-3">
+                        <div className="rounded-xl border border-rose-200 dark:border-rose-900 bg-rose-50/70 dark:bg-rose-950/20 p-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-rose-700 dark:text-rose-300 mb-2 flex items-center gap-1.5">
+                            <Ban className="w-3.5 h-3.5" />
+                            Don&apos;t Do ({mustAvoidCount})
+                          </div>
+                          {mustAvoidCount > 0 ? (
+                            <ul className="space-y-1.5">
+                              {section.mustAvoid.map((item, idx) => (
+                                <li key={`${section.sectionKey}-avoid-${idx}`} className="flex items-start gap-2 text-sm text-rose-800 dark:text-rose-200">
+                                  <span className="mt-0.5 text-rose-500 dark:text-rose-400">
+                                    <X className="w-3.5 h-3.5" />
+                                  </span>
+                                  <span>{item}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="text-sm text-rose-700/70 dark:text-rose-300/70">No explicit avoid rules defined.</p>
+                          )}
+                        </div>
+
+                        <div className="rounded-xl border border-amber-200 dark:border-amber-900 bg-amber-50/70 dark:bg-amber-950/20 p-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300 mb-2 flex items-center gap-1.5">
+                            <Link2 className="w-3.5 h-3.5" />
+                            Must Do Before ({dependencyCount})
+                          </div>
+                          {dependencyCount > 0 ? (
+                            <div className="flex flex-wrap gap-2">
+                              {section.dependencies.map((dependency) => (
+                                <Badge
+                                  key={`${section.sectionKey}-dependency-${dependency}`}
+                                  variant="outline"
+                                  className="border-amber-300 text-amber-800 dark:border-amber-800 dark:text-amber-300"
+                                >
+                                  {formatSectionName(dependency)}
+                                </Badge>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-sm text-amber-700/70 dark:text-amber-300/70">No required dependency sections.</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-indigo-200 dark:border-indigo-900 bg-indigo-50/70 dark:bg-indigo-950/20 p-3">
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-indigo-700 dark:text-indigo-300 mb-2 flex items-center gap-1.5">
+                          <ChevronRight className="w-3.5 h-3.5" />
+                          Outputs Promised ({outputsCount})
+                        </div>
+                        {outputsCount > 0 ? (
+                          <div className="flex flex-wrap gap-2">
+                            {section.outputsPromised.map((output, idx) => (
+                              <Badge
+                                key={`${section.sectionKey}-output-${idx}`}
+                                className="bg-indigo-100 text-indigo-800 hover:bg-indigo-100 dark:bg-indigo-900/60 dark:text-indigo-200"
+                              >
+                                {output}
+                              </Badge>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-indigo-700/70 dark:text-indigo-300/70">No downstream outputs listed.</p>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="rounded-xl border border-blue-200 dark:border-blue-900 bg-blue-50/70 dark:bg-blue-950/20 p-3">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <div className="text-[11px] font-semibold uppercase tracking-wide text-blue-700 dark:text-blue-300">
+                              Prompt-Level Argument Moves
+                            </div>
+                            <p className="text-xs text-blue-700/80 dark:text-blue-300/80 mt-1">
+                              Rhetorical slots guide section structure only and are excluded from evidence mapping and citation coverage validators.
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={handleToggleRhetoricalEnabled}
+                              disabled={isFrozen}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border ${
+                                rhetoricalBlueprint.enabled
+                                  ? 'bg-blue-600 text-white border-blue-600'
+                                  : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700'
+                              } ${isFrozen ? 'opacity-60 cursor-not-allowed' : ''}`}
+                            >
+                              {rhetoricalBlueprint.enabled ? 'Enabled' : 'Disabled'}
+                            </button>
+                            {!isFrozen && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleResetRhetoricalDefaults}
+                                className="text-xs"
+                              >
+                                <RotateCcw className="w-3.5 h-3.5 mr-1" />
+                                Reset Defaults
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="mt-3 flex items-center gap-2 flex-wrap">
+                          <Badge variant="outline" className="text-[10px] border-blue-300 text-blue-700 dark:border-blue-800 dark:text-blue-300">
+                            {rhetoricalSlotCount} slots
+                          </Badge>
+                          <Badge variant="outline" className="text-[10px] border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300">
+                            {requiredRhetoricalSlots} required
+                          </Badge>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        {rhetoricalBlueprint.slots.map((slot, slotIndex) => (
+                          <RhetoricalSlotCard
+                            key={`${section.sectionKey}-slot-${slotIndex}-${slot.key}`}
+                            slot={slot}
+                            index={slotIndex}
+                            isEditing={editingSlotIndex === slotIndex}
+                            isFrozen={isFrozen}
+                            canMoveUp={slotIndex > 0}
+                            canMoveDown={slotIndex < rhetoricalBlueprint.slots.length - 1}
+                            onEdit={() => setEditingSlotIndex(slotIndex)}
+                            onDelete={() => handleDeleteRhetoricalSlot(slotIndex)}
+                            onMoveUp={() => handleMoveRhetoricalSlot(slotIndex, slotIndex - 1)}
+                            onMoveDown={() => handleMoveRhetoricalSlot(slotIndex, slotIndex + 1)}
+                            onSave={(nextSlot) => handleSaveRhetoricalSlot(slotIndex, nextSlot)}
+                            onCancel={() => setEditingSlotIndex(null)}
+                          />
+                        ))}
+
+                        {rhetoricalBlueprint.slots.length === 0 && (
+                          <div className="rounded-xl border border-slate-300 dark:border-slate-700 border-dashed p-4 text-sm text-slate-500 dark:text-slate-400">
+                            No rhetorical slots configured for this section.
+                          </div>
+                        )}
+
+                        {isAddingSlot ? (
+                          <RhetoricalSlotCard
+                            slot={{
+                              key: '',
+                              required: true,
+                              placement: 'middle',
+                              intent: '',
+                              constraints: [],
+                              citationPolicy: { mode: 'optional', maxCitations: 1 }
+                            }}
+                            index={rhetoricalBlueprint.slots.length}
+                            isEditing={true}
+                            isFrozen={false}
+                            canMoveUp={false}
+                            canMoveDown={false}
+                            onEdit={() => {}}
+                            onDelete={() => setIsAddingSlot(false)}
+                            onMoveUp={() => {}}
+                            onMoveDown={() => {}}
+                            onSave={handleAddRhetoricalSlot}
+                            onCancel={() => setIsAddingSlot(false)}
+                          />
+                        ) : !isFrozen && (
+                          <motion.button
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
+                            onClick={() => setIsAddingSlot(true)}
+                            className="w-full p-3 rounded-xl border-2 border-dashed border-blue-300 dark:border-blue-800
+                              text-blue-700 dark:text-blue-300 hover:border-blue-500 dark:hover:border-blue-600
+                              flex items-center justify-center gap-2 transition-colors"
+                          >
+                            <Plus className="w-4 h-4" />
+                            <span className="text-sm">Add Rhetorical Slot</span>
+                          </motion.button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-4 pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center gap-2 flex-wrap">
@@ -510,6 +1288,12 @@ function SectionNode({ section, isFrozen, isFocused = false, onUpdateSection }: 
                   </Badge>
                   <Badge variant="outline" className="text-xs border-rose-300 text-rose-700 dark:border-rose-800 dark:text-rose-300">
                     {mustAvoidCount} avoid rules
+                  </Badge>
+                  <Badge
+                    variant="outline"
+                    className={`text-xs ${rhetoricalBlueprint.enabled ? 'border-blue-300 text-blue-700 dark:border-blue-800 dark:text-blue-300' : 'border-slate-300 text-slate-600 dark:border-slate-700 dark:text-slate-300'}`}
+                  >
+                    {rhetoricalSlotCount} rhetorical slots
                   </Badge>
                 </div>
               </CardContent>
@@ -702,7 +1486,7 @@ export default function BlueprintStage({
     if (!blueprint) return;
     
     const newSectionPlan = blueprint.sectionPlan.map(s =>
-      s.sectionKey === sectionKey ? updated : s
+      s.sectionKey === sectionKey ? syncThematicBlueprint(updated) : s
     );
     
     handleSave({ sectionPlan: newSectionPlan } as any);
@@ -729,6 +1513,9 @@ export default function BlueprintStage({
   const selectedSectionIndex = sections.findIndex(section => section.sectionKey === sectionFilter);
   const totalMustHave = sections.reduce((sum, section) => sum + (section.mustCover?.length || 0), 0);
   const totalDontDo = sections.reduce((sum, section) => sum + (section.mustAvoid?.length || 0), 0);
+  const totalRhetoricalEnabled = sections.reduce((sum, section) => (
+    resolveRhetoricalBlueprint(section).enabled ? sum + 1 : sum
+  ), 0);
 
   const moveSectionFilter = (direction: -1 | 1) => {
     if (!sections.length || sectionFilter === ALL_SECTIONS_FILTER) return;
@@ -1098,6 +1885,9 @@ export default function BlueprintStage({
               </Badge>
               <Badge variant="outline" className="text-xs border-rose-300 text-rose-700 dark:border-rose-900 dark:text-rose-300">
                 {totalDontDo} don&apos;t-do
+              </Badge>
+              <Badge variant="outline" className="text-xs border-blue-300 text-blue-700 dark:border-blue-900 dark:text-blue-300">
+                {totalRhetoricalEnabled} rhetorical enabled
               </Badge>
             </div>
           </div>

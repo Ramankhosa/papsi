@@ -36,9 +36,11 @@ import { sectionPolishService, type DriftReport } from './section-polish-service
 import { evidencePackService, type SectionEvidencePack, type EvidenceDigest } from './evidence-pack-service';
 import type { AssignedCitation } from './citation-coverage-distributor';
 import { isFeatureEnabled } from '../feature-flags';
-import { researchIntentLockService } from './research-intent-lock-service';
+import { researchIntentLockService, type ResearchIntentLock } from './research-intent-lock-service';
 import { argumentPlannerService } from './argument-planner-service';
 import { citationValidator } from './citation-validator';
+import { buildRhetoricalPromptBlock } from './rhetorical-blueprint-service';
+import { rhetoricalComposerService } from './rhetorical-composer-service';
 import type { PaperSection, PaperSectionStatus } from '@prisma/client';
 import crypto from 'crypto';
 import { polishDraftMarkdown } from '../markdown-draft-formatter';
@@ -698,18 +700,102 @@ class PaperSectionService {
       };
     }
 
+    let finalContent = polishResult.polishedContent;
+    let finalPromptUsed = polishResult.promptUsed;
+    let finalTokensUsed = Number(polishResult.tokensUsed || 0);
+    let validationReport: Record<string, unknown> = (
+      polishResult.driftReport
+      && typeof polishResult.driftReport === 'object'
+      && !Array.isArray(polishResult.driftReport)
+    )
+      ? { ...(polishResult.driftReport as unknown as Record<string, unknown>) }
+      : {};
+
+    if (isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT')) {
+      const blueprint = await blueprintService.getBlueprint(section.sessionId);
+      const sectionPlan = blueprint?.sectionPlan.find(
+        (entry) => normalizeSectionKey(entry.sectionKey) === normalizeSectionKey(section.sectionKey)
+      );
+      const rhetoricalBlueprint = sectionPlan?.rhetoricalBlueprint;
+
+      if (rhetoricalBlueprint?.enabled) {
+        let intentLock: ResearchIntentLock | null = null;
+        if (tenantContext) {
+          try {
+            intentLock = await researchIntentLockService.getOrCreateIntentLock(section.sessionId, tenantContext);
+          } catch (error) {
+            console.warn('[PaperSectionService] Failed to load intent lock for rhetorical validation:', error);
+          }
+        } else if (
+          blueprint?.intentLock
+          && typeof blueprint.intentLock === 'object'
+          && !Array.isArray(blueprint.intentLock)
+        ) {
+          intentLock = blueprint.intentLock as unknown as ResearchIntentLock;
+        }
+
+        const evidenceContext = await this.getPass1EvidencePromptContext(section.sessionId, section.sectionKey);
+        const evidenceDigestSummary = formatEvidenceDigest(evidenceContext.evidenceDigest);
+
+        try {
+          const rhetoricalResult = isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B')
+            ? await rhetoricalComposerService.applyPass2B({
+                sessionId: section.sessionId,
+                sectionKey: section.sectionKey,
+                content: finalContent,
+                rhetoricalBlueprint,
+                researchIntentLock: intentLock,
+                fallbackContributions: blueprint?.keyContributions || [],
+                evidenceDigestSummary,
+                tenantContext: tenantContext || null,
+              })
+            : await rhetoricalComposerService.enforceContributionLock({
+                sessionId: section.sessionId,
+                sectionKey: section.sectionKey,
+                content: finalContent,
+                rhetoricalBlueprint,
+                researchIntentLock: intentLock,
+                fallbackContributions: blueprint?.keyContributions || [],
+                tenantContext: tenantContext || null,
+              });
+
+          if (rhetoricalResult.content) {
+            finalContent = rhetoricalResult.content;
+          }
+          if (rhetoricalResult.promptUsed) {
+            finalPromptUsed = rhetoricalResult.promptUsed;
+          }
+          finalTokensUsed += Number(rhetoricalResult.tokensUsed || 0);
+
+          validationReport = {
+            ...validationReport,
+            rhetoricalValidation: {
+              enabled: true,
+              pass2bApplied: isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B'),
+              retries: rhetoricalResult.retries,
+              passed: rhetoricalResult.validation.passed,
+              violations: rhetoricalResult.validation.violations,
+              inspectedParagraphs: rhetoricalResult.validation.inspectedParagraphs
+            }
+          };
+        } catch (error) {
+          console.warn('[PaperSectionService] Rhetorical composer failed (non-fatal):', error);
+        }
+      }
+    }
+
     const updated = await prisma.paperSection.update({
       where: { id: section.id },
       data: {
-        content: polishResult.polishedContent,
-        wordCount: this.countWords(polishResult.polishedContent),
-        promptUsed: polishResult.promptUsed,
-        llmResponse: polishResult.polishedContent,
-        tokensUsed: polishResult.tokensUsed,
-        pass2PromptUsed: polishResult.promptUsed,
-        pass2TokensUsed: polishResult.tokensUsed,
+        content: finalContent,
+        wordCount: this.countWords(finalContent),
+        promptUsed: finalPromptUsed,
+        llmResponse: finalContent,
+        tokensUsed: finalTokensUsed > 0 ? finalTokensUsed : undefined,
+        pass2PromptUsed: finalPromptUsed,
+        pass2TokensUsed: finalTokensUsed > 0 ? finalTokensUsed : undefined,
         pass2CompletedAt: new Date(),
-        validationReport: polishResult.driftReport as any,
+        validationReport: Object.keys(validationReport).length > 0 ? validationReport as any : null,
         status: 'DRAFT' as PaperSectionStatus,
         version: { increment: 1 },
       }
@@ -1438,6 +1524,7 @@ class PaperSectionService {
       methodologyConstraints?: string;
       blueprintContext?: string;
       intentLock?: string;
+      rhetoricalBlueprint?: string;
       argumentPlan?: string;
       previousMemories?: string;
       preferredTerms?: string;
@@ -1527,16 +1614,38 @@ ${evidenceGaps}`
 
     // Tier 2: Generate ResearchIntentLock + ArgumentPlan (gated by ENABLE_ARGUMENT_PLAN)
     let intentLockBlock = '';
+    let rhetoricalBlock = '';
     let argumentPlanBlock = '';
+    let intentLock: ResearchIntentLock | null = null;
+    const rhetoricalBlueprintEnabled = isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT');
+    const argumentPlanEnabled = isFeatureEnabled('ENABLE_ARGUMENT_PLAN');
 
-    if (isFeatureEnabled('ENABLE_ARGUMENT_PLAN') && sessionId && sectionKey && tenantContext) {
+    if ((argumentPlanEnabled || rhetoricalBlueprintEnabled) && sessionId && sectionKey && tenantContext) {
       try {
-        const intentLock = await researchIntentLockService.getOrCreateIntentLock(sessionId, tenantContext);
+        intentLock = await researchIntentLockService.getOrCreateIntentLock(sessionId, tenantContext);
         if (intentLock) {
           intentLockBlock = researchIntentLockService.formatForPrompt(intentLock);
           debugComponents.intentLock = intentLockBlock;
         }
+      } catch (e) {
+        console.warn('[PaperSectionService] Tier 2 generation failed (non-fatal):', e);
+      }
+    }
 
+    if (rhetoricalBlueprintEnabled) {
+      rhetoricalBlock = buildRhetoricalPromptBlock({
+        sectionKey: currentSection.sectionKey,
+        rhetoricalBlueprint: currentSection.rhetoricalBlueprint,
+        researchIntentLock: intentLock,
+        fallbackContributions: keyContributions
+      });
+      if (rhetoricalBlock) {
+        debugComponents.rhetoricalBlueprint = rhetoricalBlock;
+      }
+    }
+
+    if (argumentPlanEnabled && sessionId && sectionKey && tenantContext) {
+      try {
         const argumentPlan = await argumentPlannerService.buildArgumentPlan(
           sessionId,
           sectionKey,
@@ -1549,7 +1658,7 @@ ${evidenceGaps}`
           debugComponents.argumentPlan = argumentPlanBlock;
         }
       } catch (e) {
-        console.warn('[PaperSectionService] Tier 2 generation failed (non-fatal):', e);
+        console.warn('[PaperSectionService] Argument plan generation failed (non-fatal):', e);
       }
     }
 
@@ -1639,6 +1748,9 @@ ${citationModeFallbackBlock}
 ${intentLockBlock ? `
 [PRIORITY 2.55 - RESEARCH INTENT LOCK] THESIS GUARDRAILS
 ${intentLockBlock}
+` : ''}
+${rhetoricalBlock ? `
+${rhetoricalBlock}
 ` : ''}
 
 ${evidenceFallbackBlock ? `
