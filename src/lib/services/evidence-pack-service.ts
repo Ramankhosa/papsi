@@ -69,6 +69,28 @@ export interface SectionEvidencePack {
   dimensionEvidence: DimensionEvidence[];
   gaps: string[];
   coverageAssignments: AssignedCitation[];
+  evidenceDigest: EvidenceDigest;
+}
+
+// ============================================================================
+// Evidence Digest — Compact prompt-safe evidence representation
+// ============================================================================
+
+export interface EvidenceDigestEntry {
+  citationKey: string;
+  claimType: string;   // BACKGROUND|GAP|METHOD|RESULT|LIMITATION|DEFINITION
+  claim: string;       // 1–2 sentence compressed claim
+  method?: string;     // method tag
+  evidenceStrength: 'weak' | 'medium' | 'strong';
+  confidence: number;  // 0.0–1.0
+  stance?: 'supports' | 'contradicts' | 'extends' | 'neutral';
+  mustCite: boolean;
+}
+
+export interface EvidenceDigest {
+  digests: EvidenceDigestEntry[];
+  mustCiteKeys: string[];
+  optionalCiteKeys: string[];
 }
 
 const CONFIDENCE_WEIGHT: Record<'HIGH' | 'MEDIUM' | 'LOW', number> = {
@@ -244,19 +266,19 @@ function extractCitationMeta(aiMeta: unknown): {
   const relevanceScore = Number(meta.relevanceScore);
   const claimTypesSupported = Array.isArray(meta.claimTypesSupported)
     ? Array.from(
-        new Set(
-          meta.claimTypesSupported
-            .map(value => String(value).trim().toUpperCase())
-            .filter(value => CLAIM_TYPE_SET.has(value))
-        )
-      ).slice(0, 3) as Array<
-        'BACKGROUND' |
-        'GAP' |
-        'METHOD' |
-        'LIMITATION' |
-        'DATASET' |
-        'IMPLEMENTATION_CONSTRAINT'
-      >
+      new Set(
+        meta.claimTypesSupported
+          .map(value => String(value).trim().toUpperCase())
+          .filter(value => CLAIM_TYPE_SET.has(value))
+      )
+    ).slice(0, 3) as Array<
+      'BACKGROUND' |
+      'GAP' |
+      'METHOD' |
+      'LIMITATION' |
+      'DATASET' |
+      'IMPLEMENTATION_CONSTRAINT'
+    >
     : undefined;
   const rawPositionalRelation = meta.positionalRelation && typeof meta.positionalRelation === 'object'
     ? meta.positionalRelation as Record<string, unknown>
@@ -275,11 +297,11 @@ function extractCitationMeta(aiMeta: unknown): {
     evidenceBoundary: clampText(meta.evidenceBoundary, 400) ?? null,
     positionalRelation: POSITIONAL_RELATION_SET.has(relation) || rationale
       ? {
-          relation: POSITIONAL_RELATION_SET.has(relation)
-            ? relation as 'REINFORCES' | 'CONTRADICTS' | 'EXTENDS' | 'QUALIFIES' | 'TENSION'
-            : undefined,
-          rationale: rationale || undefined
-        }
+        relation: POSITIONAL_RELATION_SET.has(relation)
+          ? relation as 'REINFORCES' | 'CONTRADICTS' | 'EXTENDS' | 'QUALIFIES' | 'TENSION'
+          : undefined,
+        rationale: rationale || undefined
+      }
       : null,
     relevanceScore: Number.isFinite(relevanceScore) ? relevanceScore : 0
   };
@@ -448,11 +470,11 @@ function toSnapshotFromSuggestion(suggestion: SuggestionForBackfill): CitationMe
     : null;
   const positionalRelation = rawPositionalRelation
     ? {
-        relation: POSITIONAL_RELATION_SET.has(String(rawPositionalRelation.relation || '').trim().toUpperCase())
-          ? String(rawPositionalRelation.relation).trim().toUpperCase() as NonNullable<CitationMetaSnapshot['positionalRelation']>['relation']
-          : undefined,
-        rationale: clampText(rawPositionalRelation.rationale, 300)
-      }
+      relation: POSITIONAL_RELATION_SET.has(String(rawPositionalRelation.relation || '').trim().toUpperCase())
+        ? String(rawPositionalRelation.relation).trim().toUpperCase() as NonNullable<CitationMetaSnapshot['positionalRelation']>['relation']
+        : undefined,
+      rationale: clampText(rawPositionalRelation.rationale, 300)
+    }
     : undefined;
   const snapshot: CitationMetaSnapshot = {
     keyContribution: clampText(meta.keyContribution, 400),
@@ -462,12 +484,12 @@ function toSnapshotFromSuggestion(suggestion: SuggestionForBackfill): CitationMe
     limitationsOrGaps: clampText(meta.limitationsOrGaps, 500) ?? null,
     claimTypesSupported: Array.isArray(meta.claimTypesSupported)
       ? Array.from(
-          new Set(
-            meta.claimTypesSupported
-              .map(value => String(value).trim().toUpperCase())
-              .filter(value => CLAIM_TYPE_SET.has(value))
-          )
-        ).slice(0, 3) as CitationMetaSnapshot['claimTypesSupported']
+        new Set(
+          meta.claimTypesSupported
+            .map(value => String(value).trim().toUpperCase())
+            .filter(value => CLAIM_TYPE_SET.has(value))
+        )
+      ).slice(0, 3) as CitationMetaSnapshot['claimTypesSupported']
       : undefined,
     evidenceBoundary: clampText(meta.evidenceBoundary, 400) ?? null,
     positionalRelation: positionalRelation?.relation || positionalRelation?.rationale
@@ -475,11 +497,11 @@ function toSnapshotFromSuggestion(suggestion: SuggestionForBackfill): CitationMe
       : undefined,
     usage: meta.usage && typeof meta.usage === 'object'
       ? {
-          introduction: Boolean((meta.usage as Record<string, unknown>).introduction),
-          literatureReview: Boolean((meta.usage as Record<string, unknown>).literatureReview),
-          methodology: Boolean((meta.usage as Record<string, unknown>).methodology),
-          comparison: Boolean((meta.usage as Record<string, unknown>).comparison)
-        }
+        introduction: Boolean((meta.usage as Record<string, unknown>).introduction),
+        literatureReview: Boolean((meta.usage as Record<string, unknown>).literatureReview),
+        methodology: Boolean((meta.usage as Record<string, unknown>).methodology),
+        comparison: Boolean((meta.usage as Record<string, unknown>).comparison)
+      }
       : undefined,
     relevanceScore: Number.isFinite(Number(suggestion.relevanceScore))
       ? Math.max(0, Math.min(100, Number(suggestion.relevanceScore)))
@@ -672,6 +694,95 @@ class EvidencePackService {
     return mappings.length;
   }
 
+  /**
+   * Build a compact EvidenceDigest from the rich dimensionEvidence data.
+   * This is the prompt-safe representation — no quotes, no full card text.
+   */
+  buildEvidenceDigest(
+    dimensionEvidence: DimensionEvidence[],
+    allowedCitationKeys: string[]
+  ): EvidenceDigest {
+    const seenKeys = new Set<string>();
+    const entries: EvidenceDigestEntry[] = [];
+    const relevanceScores = new Map<string, number>();
+
+    // Collect all citations across dimensions
+    for (const dim of dimensionEvidence) {
+      for (const citation of dim.citations) {
+        // Track best relevance score per key
+        const prev = relevanceScores.get(citation.citationKey) || 0;
+        if (citation.relevanceScore > prev) {
+          relevanceScores.set(citation.citationKey, citation.relevanceScore);
+        }
+
+        if (seenKeys.has(citation.citationKey)) continue;
+        seenKeys.add(citation.citationKey);
+
+        // Pick the best claim source: evidence card claim > key contribution > key findings > title
+        const topCard = citation.evidenceCards?.[0];
+        const claim = topCard?.claim
+          || citation.keyContribution
+          || citation.keyFindings
+          || citation.remark
+          || citation.title;
+
+        // Derive claimType from card or citation meta
+        const claimType = topCard?.claimType
+          || citation.claimTypesSupported?.[0]
+          || 'BACKGROUND';
+
+        // Map confidence to strength
+        const strengthMap: Record<string, 'weak' | 'medium' | 'strong'> = {
+          HIGH: 'strong', MEDIUM: 'medium', LOW: 'weak'
+        };
+        const evidenceStrength = strengthMap[citation.confidence] || 'medium';
+
+        // Map positional relation to stance
+        const stanceMap: Record<string, 'supports' | 'contradicts' | 'extends' | 'neutral'> = {
+          REINFORCES: 'supports', SUPPORTS: 'supports',
+          CONTRADICTS: 'contradicts',
+          EXTENDS: 'extends',
+          QUALIFIES: 'neutral', TENSION: 'contradicts'
+        };
+        const stance = citation.positionalRelation?.relation
+          ? stanceMap[citation.positionalRelation.relation] || 'neutral'
+          : 'neutral';
+
+        entries.push({
+          citationKey: citation.citationKey,
+          claimType,
+          claim: String(claim || '').slice(0, 300),
+          method: citation.methodologicalApproach || topCard?.studyDesign || undefined,
+          evidenceStrength,
+          confidence: CONFIDENCE_WEIGHT[citation.confidence] / 3, // normalize to 0–1
+          stance,
+          mustCite: false, // assigned below
+        });
+      }
+    }
+
+    // Select must-cite keys: top N by relevance + deep-anchor citations
+    const MAX_MUST_CITE = Math.min(5, Math.ceil(entries.length * 0.3));
+    const sortedByRelevance = [...entries]
+      .sort((a, b) => (relevanceScores.get(b.citationKey) || 0) - (relevanceScores.get(a.citationKey) || 0));
+
+    const mustCiteKeys: string[] = [];
+    for (const entry of sortedByRelevance) {
+      if (mustCiteKeys.length >= MAX_MUST_CITE) break;
+      entry.mustCite = true;
+      mustCiteKeys.push(entry.citationKey);
+    }
+
+    const mustCiteSet = new Set(mustCiteKeys);
+    const optionalCiteKeys = allowedCitationKeys.filter(k => !mustCiteSet.has(k));
+
+    return {
+      digests: entries,
+      mustCiteKeys,
+      optionalCiteKeys,
+    };
+  }
+
   async getEvidencePack(sessionId: string, sectionKey: string): Promise<SectionEvidencePack> {
     const requestedSectionKey = sectionKey;
     const normalizedRequestedSectionKey = normalizeSectionKey(requestedSectionKey);
@@ -690,7 +801,8 @@ class EvidencePackService {
         allowedCitationKeys: [],
         dimensionEvidence: [],
         gaps: [],
-        coverageAssignments: resolveCoverageAssignments(requestedSectionKey)
+        coverageAssignments: resolveCoverageAssignments(requestedSectionKey),
+        evidenceDigest: { digests: [], mustCiteKeys: [], optionalCiteKeys: [] },
       };
     }
 
@@ -707,7 +819,8 @@ class EvidencePackService {
         allowedCitationKeys: [],
         dimensionEvidence: [],
         gaps: [],
-        coverageAssignments: resolveCoverageAssignments(resolvedSectionKey)
+        coverageAssignments: resolveCoverageAssignments(resolvedSectionKey),
+        evidenceDigest: { digests: [], mustCiteKeys: [], optionalCiteKeys: [] },
       };
     }
 
@@ -927,13 +1040,16 @@ class EvidencePackService {
       .slice(0, selectionLimits.maxAllowedCitationKeys)
       .map(([key]) => key);
 
+    const evidenceDigest = this.buildEvidenceDigest(dimensionEvidence, allowedCitationKeys);
+
     return {
       sectionKey: resolvedSectionKey,
       hasBlueprint: true,
       allowedCitationKeys,
       dimensionEvidence,
       gaps,
-      coverageAssignments: resolveCoverageAssignments(resolvedSectionKey)
+      coverageAssignments: resolveCoverageAssignments(resolvedSectionKey),
+      evidenceDigest,
     };
   }
 }

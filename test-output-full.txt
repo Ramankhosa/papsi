@@ -1,0 +1,1247 @@
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+
+[1m[7m[36m RUN [39m[27m[22m [36mv2.1.9 [39m[90mC:/Users/raman/Documents/Papsi[39m
+
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mgetAllPaperTypes[2m > [22mshould return all active paper types
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mgetAllPaperTypes[2m > [22mshould return cached data when available
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mgetPaperType[2m > [22mshould return single paper type by code
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mgetPaperType[2m > [22mshould return null for inactive paper type
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mgetPaperType[2m > [22mshould return null for non-existent paper type
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mgetSectionsForPaperType[2m > [22mshould return ordered sections for paper type
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mgetSectionsForPaperType[2m > [22mshould return null for unknown paper type
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mvalidateSectionStructure[2m > [22mshould validate complete paper structure
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mvalidateSectionStructure[2m > [22mshould identify missing required sections
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mvalidateSectionStructure[2m > [22mshould warn about undefined sections
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mvalidateSectionStructure[2m > [22mshould handle unknown paper type
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mcreatePaperType[2m > [22mshould create new paper type successfully
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mcreatePaperType[2m > [22mshould validate required fields
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mcreatePaperType[2m > [22mshould validate section order includes required sections
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mcreatePaperType[2m > [22mshould validate word limits are positive numbers
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mupdatePaperType[2m > [22mshould update paper type successfully
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mupdatePaperType[2m > [22mshould throw error for non-existent paper type
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mdeletePaperType[2m > [22mshould soft delete paper type when not in use
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mdeletePaperType[2m > [22mshould prevent deletion when paper type is in use
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mgetPaperTypeUsageStats[2m > [22mshould return usage statistics for all paper types
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mcaching[2m > [22mshould invalidate cache after create/update/delete operations
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mtransformPaperType[2m > [22mshould correctly transform database model to service interface
+ [32m✓[39m src/tests/unit/paper-type-service.test.ts[2m > [22mPaperTypeService[2m > [22mtransformPaperType[2m > [22mshould handle array inputs (for tests)
+ [32m✓[39m src/tests/components/stage-navigation.test.ts[2m > [22mStage Navigation Logic[2m > [22mStage Transitions[2m > [22mshould allow proceeding when all requirements are met
+ [32m✓[39m src/tests/components/stage-navigation.test.ts[2m > [22mStage Navigation Logic[2m > [22mStage Transitions[2m > [22mshould block proceeding when topic is not defined
+ [32m✓[39m src/tests/components/stage-navigation.test.ts[2m > [22mStage Navigation Logic[2m > [22mStage Transitions[2m > [22mshould block proceeding when insufficient citations
+ [32m✓[39m src/tests/components/stage-navigation.test.ts[2m > [22mStage Navigation Logic[2m > [22mStage Transitions[2m > [22mshould block proceeding when paper type not selected
+ [32m✓[39m src/tests/components/stage-navigation.test.ts[2m > [22mStage Navigation Logic[2m > [22mStage Transitions[2m > [22mshould block proceeding when sections are incomplete
+ [32m✓[39m src/tests/components/stage-navigation.test.ts[2m > [22mStage Navigation Logic[2m > [22mStage Navigation[2m > [22mshould return next stage correctly
+ [32m✓[39m src/tests/components/stage-navigation.test.ts[2m > [22mStage Navigation Logic[2m > [22mStage Navigation[2m > [22mshould return previous stage correctly
+ [32m✓[39m src/tests/components/stage-navigation.test.ts[2m > [22mStage Navigation Logic[2m > [22mStage Navigation[2m > [22mshould handle invalid stages
+ [32m✓[39m src/tests/components/stage-navigation.test.ts[2m > [22mStage Navigation Logic[2m > [22mProgress Calculation[2m > [22mshould calculate progress correctly
+ [32m✓[39m src/tests/components/stage-navigation.test.ts[2m > [22mStage Navigation Logic[2m > [22mProgress Calculation[2m > [22mshould return 0 for invalid stages
+ [32m✓[39m src/tests/components/stage-navigation.test.ts[2m > [22mStage Navigation Logic[2m > [22mStage Requirements[2m > [22mshould return correct requirements for each stage
+ [32m✓[39m src/tests/components/stage-navigation.test.ts[2m > [22mStage Navigation Logic[2m > [22mStage Requirements[2m > [22mshould return empty requirements for unknown stages
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatInTextCitation[2m > [22mshould format APA7 in-text citation correctly
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatInTextCitation[2m > [22mshould format single author APA7 citation
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatInTextCitation[2m > [22mshould format two authors APA7 citation
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatInTextCitation[2m > [22mshould handle missing year
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatInTextCitation[2m > [22mshould handle missing authors
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatInTextCitation[2m > [22mshould format IEEE in-text citation
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatInTextCitation[2m > [22mshould format IEEE in-text citation with explicit citation number
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatInTextCitation[2m > [22mshould format IEEE in-text citation using citation numbering map
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatInTextCitation[2m > [22mshould format Chicago author-date in-text citation
+ [31m×[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatInTextCitation[2m > [22mshould format MLA9 in-text citation
+[31m   → expected '(Smith 145)' to be '(Smith 2023)' // Object.is equality[39m
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatInTextCitation[2m > [22mshould throw error for unknown citation style
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatBibliographyEntry[2m > [22mshould format APA7 bibliography entry correctly
+ [31m×[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatBibliographyEntry[2m > [22mshould format IEEE bibliography entry
+[31m   → expected 'J. A. Smith, E. R. Johnson, M. K. Bro…' to contain 'J. A. Smith, E. R. Johnson, M. K. Bro…'[39m
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mformatBibliographyEntry[2m > [22mshould format Chicago bibliography entry
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mgenerateCitationKey[2m > [22mshould generate citation key from authors and year
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mgenerateCitationKey[2m > [22mshould generate unique keys for same author/year combinations
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mgenerateCitationKey[2m > [22mshould handle multiple duplicate keys
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mgenerateCitationKey[2m > [22mshould generate key from title when no authors
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mgenerateCitationKey[2m > [22mshould handle missing year
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mparseBibTeX[2m > [22mshould parse BibTeX article entry
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mparseBibTeX[2m > [22mshould parse multiple BibTeX entries
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mexportToBibTeX[2m > [22mshould export citations to BibTeX format
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mgenerateBibliography[2m > [22mshould generate bibliography with alphabetical sorting
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mgenerateBibliography[2m > [22mshould generate bibliography with order of appearance
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mgenerateBibliography[2m > [22mshould return empty string for empty citations array
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mcaching[2m > [22mshould cache citation style lookups
+ [32m✓[39m src/tests/unit/citation-style-service.test.ts[2m > [22mCitationStyleService[2m > [22mcaching[2m > [22mshould invalidate cache when requested
+[90mstdout[2m | src/tests/unit/citation-mapping-service.test.ts[2m > [22m[2mCitationMappingService[2m > [22m[2mCoverage Report Generation[2m > [22m[2mshould generate correct coverage statistics
+[22m[39m📚 Non-review paper (unknown) - filtered to 2 sections: literature_review, methodology
+
+[90mstdout[2m | src/tests/unit/citation-mapping-service.test.ts[2m > [22m[2mCitationMappingService[2m > [22m[2mCoverage Report Generation[2m > [22m[2mshould generate warnings for high unmapped rate
+[22m[39m📚 Non-review paper (unknown) - filtered to 1 sections: literature_review
+
+[90mstdout[2m | src/tests/unit/citation-mapping-service.test.ts[2m > [22m[2mCitationMappingService[2m > [22m[2mCoverage Report Generation[2m > [22m[2mshould generate empty coverage report when no citations
+[22m[39m📚 Non-review paper (unknown) - filtered to 1 sections: introduction
+
+[90mstderr[2m | src/tests/unit/citation-mapping-service.test.ts[2m > [22m[2mCitationMappingService[2m > [22m[2mResponse Parsing[2m > [22m[2mshould return error mappings for invalid JSON
+[22m[39mFailed to parse mapping response: SyntaxError: Unexpected token 'N', "Not valid "... is not valid JSON
+    at JSON.parse (<anonymous>)
+    at CitationMappingService.parseMappingResponse [90m(C:\Users\raman\Documents\Papsi\[39msrc\lib\services\citation-mapping-service.ts:584:27[90m)[39m
+    at [90mC:\Users\raman\Documents\Papsi\[39msrc\tests\unit\citation-mapping-service.test.ts:339:39
+    at [90mfile:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:146:14
+    at [90mfile:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:533:11
+    at runWithTimeout [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:39:7[90m)[39m
+    at runTest [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1056:17[90m)[39m
+[90m    at processTicksAndRejections (node:internal/process/task_queues:105:5)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+
+[90mstdout[2m | src/tests/unit/citation-mapping-service.test.ts[2m > [22m[2mCitationMappingService[2m > [22m[2mBlueprint Mapping Prompt Construction[2m > [22m[2mshould build comprehensive prompt with papers and blueprint
+[22m[39m📚 Non-review paper (unknown) - filtered to 1 sections: literature_review
+
+[90mstdout[2m | src/tests/unit/citation-mapping-service.test.ts[2m > [22m[2mCitationMappingService[2m > [22m[2mBlueprint Mapping Prompt Construction[2m > [22m[2mshould handle papers with missing abstract
+[22m[39m📚 Non-review paper (unknown) - filtered to 1 sections: intro
+
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mDimension Mapping Validation[2m > [22mshould validate dimension mappings correctly
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mDimension Mapping Validation[2m > [22mshould filter out invalid mappings
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mDimension Mapping Validation[2m > [22mshould limit to maximum 4 dimensions per paper
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mDimension Mapping Validation[2m > [22mshould truncate overly long remarks
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mDimension Mapping Validation[2m > [22mshould default invalid confidence to MEDIUM
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mMapping Status Determination[2m > [22mshould return MAPPED when dimensions exist
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mMapping Status Determination[2m > [22mshould return UNMAPPED when no dimensions
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mMapping Status Determination[2m > [22mshould return WEAK when single LOW confidence mapping
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mMapping Status Determination[2m > [22mshould return MAPPED when multiple dimensions even with LOW confidence
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mError Mapping Creation[2m > [22mshould create error mapping for failed papers
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mCoverage Report Generation[2m > [22mshould generate correct coverage statistics
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mCoverage Report Generation[2m > [22mshould generate warnings for high unmapped rate
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mCoverage Report Generation[2m > [22mshould generate empty coverage report when no citations
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mResponse Parsing[2m > [22mshould parse valid mapping response
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mResponse Parsing[2m > [22mshould handle JSON with markdown code fences
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mResponse Parsing[2m > [22mshould return error mappings for invalid JSON
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mResponse Parsing[2m > [22mshould handle snake_case field names from LLM
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mBlueprint Mapping Prompt Construction[2m > [22mshould build comprehensive prompt with papers and blueprint
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mBlueprint Mapping Prompt Construction[2m > [22mshould handle papers with missing abstract
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mConfidence Validation[2m > [22mshould accept valid confidence levels
+ [32m✓[39m src/tests/unit/citation-mapping-service.test.ts[2m > [22mCitationMappingService[2m > [22mConfidence Validation[2m > [22mshould default invalid confidence to MEDIUM
+[90mstdout[2m | src/tests/unit/literature-search-service.test.ts[2m > [22m[2mLiteratureSearchService[2m > [22m[2msearch[2m > [22m[2mshould search across multiple providers and deduplicate results
+[22m[39mSearch request completed for provider1
+Search request completed for provider2
+
+[90mstderr[2m | src/tests/unit/literature-search-service.test.ts[2m > [22m[2mLiteratureSearchService[2m > [22m[2msearch[2m > [22m[2mshould handle provider failures gracefully
+[22m[39mSearch failed for mock_provider: Error: API Error
+    at [90mC:\Users\raman\Documents\Papsi\[39msrc\tests\unit\literature-search-service.test.ts:106:55
+    at [90mfile:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:146:14
+    at [90mfile:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:533:11
+    at runWithTimeout [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:39:7[90m)[39m
+    at runTest [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1056:17[90m)[39m
+[90m    at processTicksAndRejections (node:internal/process/task_queues:105:5)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+    at runFiles [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1262:5[90m)[39m
+
+[90mstdout[2m | src/tests/unit/literature-search-service.test.ts[2m > [22m[2mLiteratureSearchService[2m > [22m[2msearch[2m > [22m[2mshould respect result limits
+[22m[39mSearch request completed for mock_provider
+
+[90mstdout[2m | src/tests/unit/literature-search-service.test.ts[2m > [22m[2mLiteratureSearchService[2m > [22m[2mrate limiting[2m > [22m[2mshould enforce rate limits
+[22m[39mSearch request completed for mock_provider
+
+[90mstdout[2m | src/tests/unit/literature-search-service.test.ts[2m > [22m[2mLiteratureSearchService[2m > [22m[2mrate limiting[2m > [22m[2mshould reset rate limit after period expires
+[22m[39mSearch request completed for mock_provider
+Search request completed for mock_provider
+
+[90mstdout[2m | src/tests/unit/literature-search-service.test.ts[2m > [22m[2mLiteratureSearchService[2m > [22m[2mcaching[2m > [22m[2mshould expire cached results after TTL
+[22m[39mSearch request completed for mock_provider
+
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22msearch[2m > [22mshould search across multiple providers and deduplicate results
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22msearch[2m > [22mshould return cached results when available
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22msearch[2m > [22mshould handle provider failures gracefully
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22msearch[2m > [22mshould respect result limits
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22mgetByIdentifier[2m > [22mshould retrieve result by DOI from appropriate provider
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22mgetByIdentifier[2m > [22mshould return null when DOI not found
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22mdeduplication[2m > [22mshould deduplicate results by DOI
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22mdeduplication[2m > [22mshould preserve result with more complete metadata when deduplicating
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22mrate limiting[2m > [22mshould enforce rate limits
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22mrate limiting[2m > [22mshould reset rate limit after period expires
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22mcaching[2m > [22mshould cache search results
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22mcaching[2m > [22mshould expire cached results after TTL
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22mcache key generation[2m > [22mshould generate consistent cache keys for same inputs
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22mcache key generation[2m > [22mshould generate different keys for different inputs
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22mnormalization[2m > [22mshould normalize author names consistently
+ [32m✓[39m src/tests/unit/literature-search-service.test.ts[2m > [22mLiteratureSearchService[2m > [22mnormalization[2m > [22mshould handle missing fields gracefully
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mCitation Loading[2m > [22mshould load citations for the current session
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mCitation Filtering[2m > [22mshould return all citations when search term is empty
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mCitation Filtering[2m > [22mshould filter by title
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mCitation Filtering[2m > [22mshould filter by author
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mCitation Filtering[2m > [22mshould filter by venue
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mCitation Filtering[2m > [22mshould filter by citation key
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mCitation Filtering[2m > [22mshould be case insensitive
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mCitation Filtering[2m > [22mshould return multiple matches
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mCitation Formatting[2m > [22mshould format citation for preview
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mSelection Validation[2m > [22mshould require at least one citation
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mSelection Validation[2m > [22mshould accept single citation selection
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mSelection Validation[2m > [22mshould accept multiple citation selections
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mSelection Validation[2m > [22mshould reject too many citations
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mInsert Text Generation[2m > [22mshould generate insert text for single citation
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mInsert Text Generation[2m > [22mshould generate insert text for multiple citations
+ [32m✓[39m src/tests/components/citation-picker-modal.test.ts[2m > [22mCitationPickerModal Component Logic[2m > [22mInsert Text Generation[2m > [22mshould handle empty selection
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mparseParagraphs[2m > [22mshould split markdown by double newlines
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mparseParagraphs[2m > [22mshould exclude heading-only blocks
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mparseParagraphs[2m > [22mshould keep heading + text blocks
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mparseParagraphs[2m > [22mshould return empty array for empty/null input
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mcountCitesInText[2m > [22mshould count single [CITE:key] markers
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mcountCitesInText[2m > [22mshould handle compound citations [CITE:a, b]
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mcountCitesInText[2m > [22mshould return 0 for text without citations
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mcountCitesInText[2m > [22mshould handle case-insensitive [CITE:] and [cite:]
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mcollectAllCiteKeys[2m > [22mshould collect unique keys across paragraphs
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mvalidate[2m > [22mshould PASS when under budget
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mvalidate[2m > [22mshould FAIL when paragraph exceeds max cites
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mvalidate[2m > [22mshould detect missing must-cite keys
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mvalidate[2m > [22mshould PASS when all must-cites are present and under budget
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mbuildRewritePrompt[2m > [22mshould format directives for violations
+ [32m✓[39m src/tests/components/paper-type-selector.test.ts[2m > [22mPaperTypeSelector Component Logic[2m > [22mPaper Type Loading[2m > [22mshould load all active paper types
+ [32m✓[39m src/tests/components/paper-type-selector.test.ts[2m > [22mPaperTypeSelector Component Logic[2m > [22mPaper Type Loading[2m > [22mshould handle loading errors gracefully
+ [32m✓[39m src/tests/components/paper-type-selector.test.ts[2m > [22mPaperTypeSelector Component Logic[2m > [22mSelection Validation[2m > [22mshould validate required paper type selection
+ [32m✓[39m src/tests/components/paper-type-selector.test.ts[2m > [22mPaperTypeSelector Component Logic[2m > [22mSelection Validation[2m > [22mshould accept valid paper type selections
+ [32m✓[39m src/tests/components/paper-type-selector.test.ts[2m > [22mPaperTypeSelector Component Logic[2m > [22mSelection Validation[2m > [22mshould reject invalid paper type selections
+ [32m✓[39m src/tests/components/paper-type-selector.test.ts[2m > [22mPaperTypeSelector Component Logic[2m > [22mDisplay Information[2m > [22mshould provide correct display information for journal articles
+ [32m✓[39m src/tests/components/paper-type-selector.test.ts[2m > [22mPaperTypeSelector Component Logic[2m > [22mDisplay Information[2m > [22mshould provide correct display information for conference papers
+ [32m✓[39m src/tests/components/paper-type-selector.test.ts[2m > [22mPaperTypeSelector Component Logic[2m > [22mDisplay Information[2m > [22mshould return null for unknown paper types
+ [32m✓[39m src/tests/unit/citation-coverage-distributor.test.ts[2m > [22mCitationCoverageDistributor[2m > [22mshould assign citation with usage.introduction=true to introduction section
+ [32m✓[39m src/tests/unit/citation-coverage-distributor.test.ts[2m > [22mCitationCoverageDistributor[2m > [22mshould assign citation with claimTypesSupported=METHOD to methodology section
+ [32m✓[39m src/tests/unit/citation-coverage-distributor.test.ts[2m > [22mCitationCoverageDistributor[2m > [22mshould not assign same citation to a section more than 2 times
+ [32m✓[39m src/tests/unit/citation-coverage-distributor.test.ts[2m > [22mCitationCoverageDistributor[2m > [22mshould assign every citation to at least one section (catch-all guarantee)
+ [32m✓[39m src/tests/unit/citation-coverage-distributor.test.ts[2m > [22mCitationCoverageDistributor[2m > [22mshould handle citations with no aiMeta gracefully
+ [32m✓[39m src/tests/unit/citation-coverage-distributor.test.ts[2m > [22mCitationCoverageDistributor[2m > [22mshould respect SECTION_MAX_ASSIGN cap and redistribute overflow
+ [32m✓[39m src/tests/unit/citation-coverage-distributor.test.ts[2m > [22mCitationCoverageDistributor[2m > [22mshould return unassigned=[] when all citations are placed
+ [32m✓[39m src/tests/unit/markdown-draft-formatter.test.ts[2m > [22mpolishDraftMarkdown[2m > [22mextracts fenced markdown and normalizes list markers
+ [32m✓[39m src/tests/unit/markdown-draft-formatter.test.ts[2m > [22mpolishDraftMarkdown[2m > [22mnormalizes ordered list formats and preserves citation placeholders
+ [32m✓[39m src/tests/unit/markdown-draft-formatter.test.ts[2m > [22mpolishDraftMarkdown[2m > [22mpromotes standalone bold text into markdown headings
+ [32m✓[39m src/tests/unit/markdown-draft-formatter.test.ts[2m > [22mpolishDraftMarkdown[2m > [22mdoes NOT promote bold labels with trailing prose into headings
+ [32m✓[39m src/tests/unit/markdown-draft-formatter.test.ts[2m > [22mpolishDraftMarkdown[2m > [22mpromotes ALL-CAPS colon headings but not mixed-case labels
+ [32m✓[39m src/tests/unit/markdown-draft-formatter.test.ts[2m > [22mpolishDraftMarkdown[2m > [22mpreserves blockquotes with > prefix
+ [32m✓[39m src/tests/unit/markdown-draft-formatter.test.ts[2m > [22mpolishDraftMarkdown[2m > [22mdecodes literal escaped newlines from JSON content strings
+ [32m✓[39m src/tests/unit/markdown-draft-formatter.test.ts[2m > [22mpolishDraftMarkdown[2m > [22mformats alphabetical bibliography as markdown bullets
+ [32m✓[39m src/tests/unit/markdown-draft-formatter.test.ts[2m > [22mpolishDraftMarkdown[2m > [22mformats order-of-appearance bibliography as numbered markdown list
+ [32m✓[39m src/lib/__tests__/section-display-order.test.ts[2m > [22msection-display-order[2m > [22misNumberedHeading detects existing numeric prefixes
+ [32m✓[39m src/lib/__tests__/section-display-order.test.ts[2m > [22msection-display-order[2m > [22mensureDisplayOrder validates positive finite numbers
+ [32m✓[39m src/lib/__tests__/section-display-order.test.ts[2m > [22msection-display-order[2m > [22mformatNumberedHeading prefixes using displayOrder and does not double-prefix
+ [32m✓[39m src/lib/__tests__/section-display-order.test.ts[2m > [22msection-display-order[2m > [22mresolveDisplayOrder inherits superset order when country order is null
+ [32m✓[39m src/lib/__tests__/section-display-order.test.ts[2m > [22msection-display-order[2m > [22mresolveDisplayOrder parses supersetCode when both orders are null
+ [32m✓[39m src/lib/__tests__/diagram-renderer-policy.test.ts[2m > [22mchooseDiagramRenderer[2m > [22mprefers PlantUML for UML-ish intents
+ [32m✓[39m src/lib/__tests__/diagram-renderer-policy.test.ts[2m > [22mchooseDiagramRenderer[2m > [22mprefers PlantUML for architecture/system intents
+ [32m✓[39m src/lib/__tests__/diagram-renderer-policy.test.ts[2m > [22mchooseDiagramRenderer[2m > [22muses Mermaid when explicitly requested
+ [32m✓[39m src/lib/__tests__/diagram-renderer-policy.test.ts[2m > [22mchooseDiagramRenderer[2m > [22muses Mermaid for gantt diagrams by default
+ [32m✓[39m src/lib/__tests__/diagram-renderer-policy.test.ts[2m > [22mchooseDiagramRenderer[2m > [22mprefers PlantUML when Mermaid recently failed
+ [32m✓[39m src/lib/__tests__/diagram-renderer-policy.test.ts[2m > [22mchooseDiagramRenderer[2m > [22muses Mermaid for Mermaid-like specs only after recent PlantUML failure
+ [31m×[39m src/tests/integration/paper-workflow.test.ts[2m > [22mPaper Writing Workflow Integration[2m > [22mComplete Paper Creation Workflow[2m > [22mshould create a complete paper from topic to export-ready
+[31m   → 
+Invalid `prisma.user.upsert()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:22:40
+
+  19   }
+  20 });
+  21 
+→ 22 const testUser = await prisma.user.upsert({
+       where: {
+         id: "test-user-paper-workflow"
+       },
+       update: {},
+       create: {
+         id: "test-user-paper-workflow",
+         tenantId: "test-tenant-paper-workflow",
+         ~~~~~~~~
+         email: "test-paper-workflow@example.com",
+         passwordHash: "hashed-password",
+         first_name: "Test",
+         last_name: "User",
+         roles: [
+           "USER"
+         ],
+     ?   name?: String | Null,
+     ?   firstName?: String | Null,
+     ?   lastName?: String | Null,
+     ?   status?: UserStatus,
+     ?   emailVerified?: Boolean,
+     ?   noveltySearchesCompleted?: Int,
+     ?   oauthProvider?: OAuthProvider | Null,
+     ?   oauthProviderId?: String | Null,
+     ?   oauthProfile?: NullableJsonNullValueInput | Json,
+     ?   createdAt?: DateTime,
+     ?   updatedAt?: DateTime,
+     ?   tenant?: TenantCreateNestedOneWithoutUsersInput,
+     ?   signupAtiToken?: ATITokenCreateNestedOneWithoutSignupUsersInput,
+     ?   projects?: ProjectCreateNestedManyWithoutUserInput,
+     ?   collaborations?: ProjectCollaboratorCreateNestedManyWithoutUserInput,
+     ?   patents?: PatentCreateNestedManyWithoutCreatorInput,
+     ?   annexureVersions?: AnnexureVersionCreateNestedManyWithoutCreatorInput,
+     ?   auditLogs?: AuditLogCreateNestedManyWithoutActorInput,
+     ?   usageLogs?: UsageLogCreateNestedManyWithoutUserInput,
+     ?   createdPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutCreatorInput,
+     ?   approvedPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutApproverInput,
+     ?   priorArtHistory?: PriorArtSearchHistoryCreateNestedManyWithoutUserInput,
+     ?   priorArtRuns?: PriorArtRunCreateNestedManyWithoutUserInput,
+     ?   credits?: UserCreditCreateNestedOneWithoutUserInput,
+     ?   noveltyAssessments?: NoveltyAssessmentRunCreateNestedManyWithoutUserInput,
+     ?   noveltySearchRuns?: NoveltySearchRunCreateNestedManyWithoutUserInput,
+     ?   draftingSessions?: DraftingSessionCreateNestedManyWithoutUserInput,
+     ?   draftingHistory?: DraftingHistoryCreateNestedManyWithoutUserInput,
+     ?   referenceLibrary?: ReferenceLibraryCreateNestedManyWithoutUserInput,
+     ?   referenceCollections?: ReferenceCollectionCreateNestedManyWithoutUserInput,
+     ?   emailVerificationTokens?: EmailVerificationTokenCreateNestedManyWithoutUserInput,
+     ?   passwordResetTokens?: PasswordResetTokenCreateNestedManyWithoutUserInput,
+     ?   refreshTokens?: RefreshTokenCreateNestedManyWithoutUserInput,
+     ?   createdIdeaBankIdeas?: IdeaBankIdeaCreateNestedManyWithoutCreatorInput,
+     ?   ideaBankReservations?: IdeaBankReservationCreateNestedManyWithoutUserInput,
+     ?   ideaBankHistory?: IdeaBankHistoryCreateNestedManyWithoutUserInput,
+     ?   styleProfiles?: StyleProfileCreateNestedManyWithoutCreatorInput,
+     ?   lockedStyleProfiles?: StyleProfileCreateNestedManyWithoutLockerInput,
+     ?   ownedStyleProfiles?: StyleProfileCreateNestedManyWithoutUserInput,
+     ?   styleTrainingJobs?: StyleTrainingJobCreateNestedManyWithoutUserInput,
+     ?   documents?: DocumentCreateNestedManyWithoutUserInput,
+     ?   createdCountryProfiles?: CountryProfileCreateNestedManyWithoutCreatorInput,
+     ?   updatedCountryProfiles?: CountryProfileCreateNestedManyWithoutUpdaterInput,
+     ?   writingSamples?: WritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPersonas?: WritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   paperWritingSamples?: PaperWritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPaperPersonas?: PaperWritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   teamMemberships?: TeamMemberCreateNestedManyWithoutUserInput,
+     ?   serviceQuotas?: UserServiceQuotaCreateNestedManyWithoutUserInput,
+     ?   userDiagramStyles?: UserDiagramStyleCreateNestedManyWithoutUserInput,
+     ?   userExportStyles?: UserExportStyleCreateNestedManyWithoutUserInput,
+     ?   userValidationOverrides?: UserValidationOverrideCreateNestedManyWithoutUserInput,
+     ?   configImports?: CountryConfigImportCreateNestedManyWithoutImporterInput,
+     ?   serviceCompletionUsage?: ServiceCompletionUsageCreateNestedManyWithoutUserInput,
+     ?   ideationSessions?: IdeationSessionCreateNestedManyWithoutUserInput,
+     ?   sectionInstructions?: UserSectionInstructionCreateNestedManyWithoutUserInput,
+     ?   referenceDocuments?: ReferenceDocumentCreateNestedManyWithoutUserInput,
+     ?   libraryConnections?: LibraryConnectionCreateNestedManyWithoutUserInput
+       }
+     })
+
+Unknown argument `tenantId`. Did you mean `tenant`? Available options are marked with ?.[39m
+ [32m✓[39m src/lib/__tests__/figure-sequence.test.ts[2m > [22mfigure-sequence[2m > [22mnormalizes to include all available figures exactly once
+ [32m✓[39m src/lib/__tests__/figure-sequence.test.ts[2m > [22mfigure-sequence[2m > [22mdrops sourceId mismatches to prevent spoofing
+ [32m✓[39m src/tests/unit/proactive-parsing-reference-trimming.test.ts[2m > [22mReference Section Trimming[2m > [22mmatches common bibliography heading variants
+ [32m✓[39m src/tests/unit/proactive-parsing-reference-trimming.test.ts[2m > [22mReference Section Trimming[2m > [22mstrips bibliography when heading is "References and Notes"
+ [32m✓[39m src/tests/unit/proactive-parsing-reference-trimming.test.ts[2m > [22mReference Section Trimming[2m > [22mstrips short reference lists after numbered heading variants
+ [32m✓[39m src/tests/unit/proactive-parsing-reference-trimming.test.ts[2m > [22mReference Section Trimming[2m > [22mdoes not truncate when "references" appears in regular body text
+ [32m✓[39m src/tests/unit/proactive-parsing-reference-trimming.test.ts[2m > [22mReference Section Trimming[2m > [22mtext preparation regexClean applies the same hard-stop trimming
+[90mstdout[2m | src/lib/metering/providers/__tests__/model-aliasing.test.ts[2m > [22m[2mProvider model aliasing[2m > [22m[2mGeminiProvider maps gemini-3-pro-preview-thinking to gemini-3-pro-preview for limits/costs
+[22m[39mInitializing Gemini provider (gemini) with API key present: true
+API key length: 1
+Gemini client initialized successfully
+
+ [32m✓[39m src/lib/metering/providers/__tests__/model-aliasing.test.ts[2m > [22mProvider model aliasing[2m > [22mOpenAIProvider normalizes *-thinking to base model
+ [32m✓[39m src/lib/metering/providers/__tests__/model-aliasing.test.ts[2m > [22mProvider model aliasing[2m > [22mGeminiProvider maps gemini-3-pro-preview-thinking to gemini-3-pro-preview for limits/costs
+ [32m✓[39m src/lib/metering/providers/__tests__/model-aliasing.test.ts[2m > [22mProvider model aliasing[2m > [22mroutes new model codes to the expected providers
+ [32m✓[39m src/tests/unit/citation-key-normalization.test.ts[2m > [22mcitation key normalization[2m > [22mnormalizes key wrappers and trailing punctuation
+ [32m✓[39m src/tests/unit/citation-key-normalization.test.ts[2m > [22mcitation key normalization[2m > [22msplits multi-key markers with mixed separators
+ [32m✓[39m src/tests/unit/citation-key-normalization.test.ts[2m > [22mcitation key normalization[2m > [22mresolves folded diacritic variants to canonical key
+ [32m✓[39m src/tests/unit/citation-key-normalization.test.ts[2m > [22mcitation key normalization[2m > [22mresolves common mojibake key variants to canonical key
+ [32m✓[39m src/tests/unit/citation-key-normalization.test.ts[2m > [22mcitation key normalization[2m > [22maccepts unicode citation keys and rejects non-citation bracket tokens
+[90mstderr[2m | src/tests/integration/paper-workflow.test.ts[2m > [22m[2mPaper Writing Workflow Integration[2m > [22m[2mComplete Paper Creation Workflow[2m > [22m[2mshould create a complete paper from topic to export-ready
+[22m[39mCleanup error: PrismaClientKnownRequestError: 
+Invalid `prisma.tenant.deleteMany()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:102:27
+
+   99 });
+  100 
+  101 // Finally delete the tenant
+→ 102 await prisma.tenant.deleteMany(
+Foreign key constraint violated: `tenant_plans_tenantId_fkey (index)`
+    at $n.handleRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:7315[90m)[39m
+    at $n.handleAndLogRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6623[90m)[39m
+    at $n.request [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6307[90m)[39m
+    at l [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:130:9633[90m)[39m
+    at [90mC:\Users\raman\Documents\Papsi\[39msrc\tests\integration\paper-workflow.test.ts:102:7
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:964:22[90m)[39m
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:970:10[90m)[39m
+    at runTest [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1085:9[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m {
+  code: [32m'P2003'[39m,
+  clientVersion: [32m'5.22.0'[39m,
+  meta: {
+    modelName: [32m'Tenant'[39m,
+    field_name: [32m'tenant_plans_tenantId_fkey (index)'[39m
+  }
+}
+
+[90mstderr[2m | src/tests/integration/paper-workflow.test.ts[2m > [22m[2mPaper Writing Workflow Integration[2m > [22m[2mComplete Paper Creation Workflow[2m > [22m[2mshould handle paper type changes correctly
+[22m[39mCleanup error: PrismaClientKnownRequestError: 
+Invalid `prisma.tenant.deleteMany()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:102:27
+
+   99 });
+  100 
+  101 // Finally delete the tenant
+→ 102 await prisma.tenant.deleteMany(
+Foreign key constraint violated: `tenant_plans_tenantId_fkey (index)`
+    at $n.handleRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:7315[90m)[39m
+    at $n.handleAndLogRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6623[90m)[39m
+    at $n.request [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6307[90m)[39m
+    at l [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:130:9633[90m)[39m
+    at [90mC:\Users\raman\Documents\Papsi\[39msrc\tests\integration\paper-workflow.test.ts:102:7
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:964:22[90m)[39m
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:970:10[90m)[39m
+    at runTest [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1085:9[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m {
+  code: [32m'P2003'[39m,
+  clientVersion: [32m'5.22.0'[39m,
+  meta: {
+    modelName: [32m'Tenant'[39m,
+    field_name: [32m'tenant_plans_tenantId_fkey (index)'[39m
+  }
+}
+
+[90mstderr[2m | src/tests/integration/paper-workflow.test.ts[2m > [22m[2mPaper Writing Workflow Integration[2m > [22m[2mComplete Paper Creation Workflow[2m > [22m[2mshould handle citation style changes
+[22m[39mCleanup error: PrismaClientKnownRequestError: 
+Invalid `prisma.tenant.deleteMany()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:102:27
+
+   99 });
+  100 
+  101 // Finally delete the tenant
+→ 102 await prisma.tenant.deleteMany(
+Foreign key constraint violated: `tenant_plans_tenantId_fkey (index)`
+    at $n.handleRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:7315[90m)[39m
+    at $n.handleAndLogRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6623[90m)[39m
+    at $n.request [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6307[90m)[39m
+    at l [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:130:9633[90m)[39m
+    at [90mC:\Users\raman\Documents\Papsi\[39msrc\tests\integration\paper-workflow.test.ts:102:7
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:964:22[90m)[39m
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:970:10[90m)[39m
+    at runTest [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1085:9[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m {
+  code: [32m'P2003'[39m,
+  clientVersion: [32m'5.22.0'[39m,
+  meta: {
+    modelName: [32m'Tenant'[39m,
+    field_name: [32m'tenant_plans_tenantId_fkey (index)'[39m
+  }
+}
+
+[90mstderr[2m | src/tests/integration/paper-workflow.test.ts[2m > [22m[2mPaper Writing Workflow Integration[2m > [22m[2mError Handling[2m > [22m[2mshould handle invalid paper type gracefully
+[22m[39mCleanup error: PrismaClientKnownRequestError: 
+Invalid `prisma.tenant.deleteMany()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:102:27
+
+   99 });
+  100 
+  101 // Finally delete the tenant
+→ 102 await prisma.tenant.deleteMany(
+Foreign key constraint violated: `tenant_plans_tenantId_fkey (index)`
+    at $n.handleRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:7315[90m)[39m
+    at $n.handleAndLogRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6623[90m)[39m
+    at $n.request [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6307[90m)[39m
+    at l [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:130:9633[90m)[39m
+    at [90mC:\Users\raman\Documents\Papsi\[39msrc\tests\integration\paper-workflow.test.ts:102:7
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:964:22[90m)[39m
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:970:10[90m)[39m
+    at runTest [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1085:9[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m {
+  code: [32m'P2003'[39m,
+  clientVersion: [32m'5.22.0'[39m,
+  meta: {
+    modelName: [32m'Tenant'[39m,
+    field_name: [32m'tenant_plans_tenantId_fkey (index)'[39m
+  }
+}
+
+[90mstderr[2m | src/tests/integration/paper-workflow.test.ts[2m > [22m[2mPaper Writing Workflow Integration[2m > [22m[2mError Handling[2m > [22m[2mshould handle citation style not found
+[22m[39mCleanup error: PrismaClientKnownRequestError: 
+Invalid `prisma.tenant.deleteMany()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:102:27
+
+   99 });
+  100 
+  101 // Finally delete the tenant
+→ 102 await prisma.tenant.deleteMany(
+Foreign key constraint violated: `tenant_plans_tenantId_fkey (index)`
+    at $n.handleRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:7315[90m)[39m
+    at $n.handleAndLogRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6623[90m)[39m
+    at $n.request [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6307[90m)[39m
+    at l [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:130:9633[90m)[39m
+    at [90mC:\Users\raman\Documents\Papsi\[39msrc\tests\integration\paper-workflow.test.ts:102:7
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:964:22[90m)[39m
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:970:10[90m)[39m
+    at runTest [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1085:9[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m {
+  code: [32m'P2003'[39m,
+  clientVersion: [32m'5.22.0'[39m,
+  meta: {
+    modelName: [32m'Tenant'[39m,
+    field_name: [32m'tenant_plans_tenantId_fkey (index)'[39m
+  }
+}
+
+[90mstderr[2m | src/tests/integration/paper-workflow.test.ts[2m > [22m[2mPaper Writing Workflow Integration[2m > [22m[2mError Handling[2m > [22m[2mshould handle invalid DOI import gracefully
+[22m[39mCleanup error: PrismaClientKnownRequestError: 
+Invalid `prisma.tenant.deleteMany()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:102:27
+
+   99 });
+  100 
+  101 // Finally delete the tenant
+→ 102 await prisma.tenant.deleteMany(
+Foreign key constraint violated: `tenant_plans_tenantId_fkey (index)`
+    at $n.handleRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:7315[90m)[39m
+    at $n.handleAndLogRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6623[90m)[39m
+    at $n.request [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6307[90m)[39m
+    at l [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:130:9633[90m)[39m
+    at [90mC:\Users\raman\Documents\Papsi\[39msrc\tests\integration\paper-workflow.test.ts:102:7
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:964:22[90m)[39m
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:970:10[90m)[39m
+    at runTest [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1085:9[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m {
+  code: [32m'P2003'[39m,
+  clientVersion: [32m'5.22.0'[39m,
+  meta: {
+    modelName: [32m'Tenant'[39m,
+    field_name: [32m'tenant_plans_tenantId_fkey (index)'[39m
+  }
+}
+
+[90mstderr[2m | src/tests/integration/paper-workflow.test.ts[2m > [22m[2mPaper Writing Workflow Integration[2m > [22m[2mError Handling[2m > [22m[2mshould detect and handle duplicate citation imports
+[22m[39mCleanup error: PrismaClientKnownRequestError: 
+Invalid `prisma.tenant.deleteMany()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:102:27
+
+   99 });
+  100 
+  101 // Finally delete the tenant
+→ 102 await prisma.tenant.deleteMany(
+Foreign key constraint violated: `tenant_plans_tenantId_fkey (index)`
+    at $n.handleRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:7315[90m)[39m
+    at $n.handleAndLogRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6623[90m)[39m
+    at $n.request [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6307[90m)[39m
+    at l [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:130:9633[90m)[39m
+    at [90mC:\Users\raman\Documents\Papsi\[39msrc\tests\integration\paper-workflow.test.ts:102:7
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:964:22[90m)[39m
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:970:10[90m)[39m
+    at runTest [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1085:9[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m {
+  code: [32m'P2003'[39m,
+  clientVersion: [32m'5.22.0'[39m,
+  meta: {
+    modelName: [32m'Tenant'[39m,
+    field_name: [32m'tenant_plans_tenantId_fkey (index)'[39m
+  }
+}
+
+[90mstderr[2m | src/tests/integration/paper-workflow.test.ts[2m > [22m[2mPaper Writing Workflow Integration[2m > [22m[2mError Handling[2m > [22m[2mshould handle search API failure gracefully
+[22m[39mCleanup error: PrismaClientKnownRequestError: 
+Invalid `prisma.tenant.deleteMany()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:102:27
+
+   99 });
+  100 
+  101 // Finally delete the tenant
+→ 102 await prisma.tenant.deleteMany(
+Foreign key constraint violated: `tenant_plans_tenantId_fkey (index)`
+    at $n.handleRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:7315[90m)[39m
+    at $n.handleAndLogRequestError [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6623[90m)[39m
+    at $n.request [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:121:6307[90m)[39m
+    at l [90m(C:\Users\raman\Documents\Papsi\[39mnode_modules\[4m@prisma[24m\client\runtime\library.js:130:9633[90m)[39m
+    at [90mC:\Users\raman\Documents\Papsi\[39msrc\tests\integration\paper-workflow.test.ts:102:7
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:964:22[90m)[39m
+    at callSuiteHook [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:970:10[90m)[39m
+    at runTest [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1085:9[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m
+    at runSuite [90m(file:///C:/Users/raman/Documents/Papsi/[39mnode_modules/[4m@vitest[24m/runner/dist/index.js:1205:15[90m)[39m {
+  code: [32m'P2003'[39m,
+  clientVersion: [32m'5.22.0'[39m,
+  meta: {
+    modelName: [32m'Tenant'[39m,
+    field_name: [32m'tenant_plans_tenantId_fkey (index)'[39m
+  }
+}
+
+ [31m×[39m src/tests/integration/paper-workflow.test.ts[2m > [22mPaper Writing Workflow Integration[2m > [22mComplete Paper Creation Workflow[2m > [22mshould create a complete paper from topic to export-ready[33m 1952[2mms[22m[39m
+[31m   → 
+Invalid `prisma.user.upsert()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:22:40
+
+  19   }
+  20 });
+  21 
+→ 22 const testUser = await prisma.user.upsert({
+       where: {
+         id: "test-user-paper-workflow"
+       },
+       update: {},
+       create: {
+         id: "test-user-paper-workflow",
+         tenantId: "test-tenant-paper-workflow",
+         ~~~~~~~~
+         email: "test-paper-workflow@example.com",
+         passwordHash: "hashed-password",
+         first_name: "Test",
+         last_name: "User",
+         roles: [
+           "USER"
+         ],
+     ?   name?: String | Null,
+     ?   firstName?: String | Null,
+     ?   lastName?: String | Null,
+     ?   status?: UserStatus,
+     ?   emailVerified?: Boolean,
+     ?   noveltySearchesCompleted?: Int,
+     ?   oauthProvider?: OAuthProvider | Null,
+     ?   oauthProviderId?: String | Null,
+     ?   oauthProfile?: NullableJsonNullValueInput | Json,
+     ?   createdAt?: DateTime,
+     ?   updatedAt?: DateTime,
+     ?   tenant?: TenantCreateNestedOneWithoutUsersInput,
+     ?   signupAtiToken?: ATITokenCreateNestedOneWithoutSignupUsersInput,
+     ?   projects?: ProjectCreateNestedManyWithoutUserInput,
+     ?   collaborations?: ProjectCollaboratorCreateNestedManyWithoutUserInput,
+     ?   patents?: PatentCreateNestedManyWithoutCreatorInput,
+     ?   annexureVersions?: AnnexureVersionCreateNestedManyWithoutCreatorInput,
+     ?   auditLogs?: AuditLogCreateNestedManyWithoutActorInput,
+     ?   usageLogs?: UsageLogCreateNestedManyWithoutUserInput,
+     ?   createdPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutCreatorInput,
+     ?   approvedPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutApproverInput,
+     ?   priorArtHistory?: PriorArtSearchHistoryCreateNestedManyWithoutUserInput,
+     ?   priorArtRuns?: PriorArtRunCreateNestedManyWithoutUserInput,
+     ?   credits?: UserCreditCreateNestedOneWithoutUserInput,
+     ?   noveltyAssessments?: NoveltyAssessmentRunCreateNestedManyWithoutUserInput,
+     ?   noveltySearchRuns?: NoveltySearchRunCreateNestedManyWithoutUserInput,
+     ?   draftingSessions?: DraftingSessionCreateNestedManyWithoutUserInput,
+     ?   draftingHistory?: DraftingHistoryCreateNestedManyWithoutUserInput,
+     ?   referenceLibrary?: ReferenceLibraryCreateNestedManyWithoutUserInput,
+     ?   referenceCollections?: ReferenceCollectionCreateNestedManyWithoutUserInput,
+     ?   emailVerificationTokens?: EmailVerificationTokenCreateNestedManyWithoutUserInput,
+     ?   passwordResetTokens?: PasswordResetTokenCreateNestedManyWithoutUserInput,
+     ?   refreshTokens?: RefreshTokenCreateNestedManyWithoutUserInput,
+     ?   createdIdeaBankIdeas?: IdeaBankIdeaCreateNestedManyWithoutCreatorInput,
+     ?   ideaBankReservations?: IdeaBankReservationCreateNestedManyWithoutUserInput,
+     ?   ideaBankHistory?: IdeaBankHistoryCreateNestedManyWithoutUserInput,
+     ?   styleProfiles?: StyleProfileCreateNestedManyWithoutCreatorInput,
+     ?   lockedStyleProfiles?: StyleProfileCreateNestedManyWithoutLockerInput,
+     ?   ownedStyleProfiles?: StyleProfileCreateNestedManyWithoutUserInput,
+     ?   styleTrainingJobs?: StyleTrainingJobCreateNestedManyWithoutUserInput,
+     ?   documents?: DocumentCreateNestedManyWithoutUserInput,
+     ?   createdCountryProfiles?: CountryProfileCreateNestedManyWithoutCreatorInput,
+     ?   updatedCountryProfiles?: CountryProfileCreateNestedManyWithoutUpdaterInput,
+     ?   writingSamples?: WritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPersonas?: WritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   paperWritingSamples?: PaperWritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPaperPersonas?: PaperWritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   teamMemberships?: TeamMemberCreateNestedManyWithoutUserInput,
+     ?   serviceQuotas?: UserServiceQuotaCreateNestedManyWithoutUserInput,
+     ?   userDiagramStyles?: UserDiagramStyleCreateNestedManyWithoutUserInput,
+     ?   userExportStyles?: UserExportStyleCreateNestedManyWithoutUserInput,
+     ?   userValidationOverrides?: UserValidationOverrideCreateNestedManyWithoutUserInput,
+     ?   configImports?: CountryConfigImportCreateNestedManyWithoutImporterInput,
+     ?   serviceCompletionUsage?: ServiceCompletionUsageCreateNestedManyWithoutUserInput,
+     ?   ideationSessions?: IdeationSessionCreateNestedManyWithoutUserInput,
+     ?   sectionInstructions?: UserSectionInstructionCreateNestedManyWithoutUserInput,
+     ?   referenceDocuments?: ReferenceDocumentCreateNestedManyWithoutUserInput,
+     ?   libraryConnections?: LibraryConnectionCreateNestedManyWithoutUserInput
+       }
+     })
+
+Unknown argument `tenantId`. Did you mean `tenant`? Available options are marked with ?.[39m
+ [31m×[39m src/tests/integration/paper-workflow.test.ts[2m > [22mPaper Writing Workflow Integration[2m > [22mComplete Paper Creation Workflow[2m > [22mshould handle paper type changes correctly
+[31m   → 
+Invalid `prisma.user.upsert()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:22:40
+
+  19   }
+  20 });
+  21 
+→ 22 const testUser = await prisma.user.upsert({
+       where: {
+         id: "test-user-paper-workflow"
+       },
+       update: {},
+       create: {
+         id: "test-user-paper-workflow",
+         tenantId: "test-tenant-paper-workflow",
+         ~~~~~~~~
+         email: "test-paper-workflow@example.com",
+         passwordHash: "hashed-password",
+         first_name: "Test",
+         last_name: "User",
+         roles: [
+           "USER"
+         ],
+     ?   name?: String | Null,
+     ?   firstName?: String | Null,
+     ?   lastName?: String | Null,
+     ?   status?: UserStatus,
+     ?   emailVerified?: Boolean,
+     ?   noveltySearchesCompleted?: Int,
+     ?   oauthProvider?: OAuthProvider | Null,
+     ?   oauthProviderId?: String | Null,
+     ?   oauthProfile?: NullableJsonNullValueInput | Json,
+     ?   createdAt?: DateTime,
+     ?   updatedAt?: DateTime,
+     ?   tenant?: TenantCreateNestedOneWithoutUsersInput,
+     ?   signupAtiToken?: ATITokenCreateNestedOneWithoutSignupUsersInput,
+     ?   projects?: ProjectCreateNestedManyWithoutUserInput,
+     ?   collaborations?: ProjectCollaboratorCreateNestedManyWithoutUserInput,
+     ?   patents?: PatentCreateNestedManyWithoutCreatorInput,
+     ?   annexureVersions?: AnnexureVersionCreateNestedManyWithoutCreatorInput,
+     ?   auditLogs?: AuditLogCreateNestedManyWithoutActorInput,
+     ?   usageLogs?: UsageLogCreateNestedManyWithoutUserInput,
+     ?   createdPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutCreatorInput,
+     ?   approvedPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutApproverInput,
+     ?   priorArtHistory?: PriorArtSearchHistoryCreateNestedManyWithoutUserInput,
+     ?   priorArtRuns?: PriorArtRunCreateNestedManyWithoutUserInput,
+     ?   credits?: UserCreditCreateNestedOneWithoutUserInput,
+     ?   noveltyAssessments?: NoveltyAssessmentRunCreateNestedManyWithoutUserInput,
+     ?   noveltySearchRuns?: NoveltySearchRunCreateNestedManyWithoutUserInput,
+     ?   draftingSessions?: DraftingSessionCreateNestedManyWithoutUserInput,
+     ?   draftingHistory?: DraftingHistoryCreateNestedManyWithoutUserInput,
+     ?   referenceLibrary?: ReferenceLibraryCreateNestedManyWithoutUserInput,
+     ?   referenceCollections?: ReferenceCollectionCreateNestedManyWithoutUserInput,
+     ?   emailVerificationTokens?: EmailVerificationTokenCreateNestedManyWithoutUserInput,
+     ?   passwordResetTokens?: PasswordResetTokenCreateNestedManyWithoutUserInput,
+     ?   refreshTokens?: RefreshTokenCreateNestedManyWithoutUserInput,
+     ?   createdIdeaBankIdeas?: IdeaBankIdeaCreateNestedManyWithoutCreatorInput,
+     ?   ideaBankReservations?: IdeaBankReservationCreateNestedManyWithoutUserInput,
+     ?   ideaBankHistory?: IdeaBankHistoryCreateNestedManyWithoutUserInput,
+     ?   styleProfiles?: StyleProfileCreateNestedManyWithoutCreatorInput,
+     ?   lockedStyleProfiles?: StyleProfileCreateNestedManyWithoutLockerInput,
+     ?   ownedStyleProfiles?: StyleProfileCreateNestedManyWithoutUserInput,
+     ?   styleTrainingJobs?: StyleTrainingJobCreateNestedManyWithoutUserInput,
+     ?   documents?: DocumentCreateNestedManyWithoutUserInput,
+     ?   createdCountryProfiles?: CountryProfileCreateNestedManyWithoutCreatorInput,
+     ?   updatedCountryProfiles?: CountryProfileCreateNestedManyWithoutUpdaterInput,
+     ?   writingSamples?: WritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPersonas?: WritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   paperWritingSamples?: PaperWritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPaperPersonas?: PaperWritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   teamMemberships?: TeamMemberCreateNestedManyWithoutUserInput,
+     ?   serviceQuotas?: UserServiceQuotaCreateNestedManyWithoutUserInput,
+     ?   userDiagramStyles?: UserDiagramStyleCreateNestedManyWithoutUserInput,
+     ?   userExportStyles?: UserExportStyleCreateNestedManyWithoutUserInput,
+     ?   userValidationOverrides?: UserValidationOverrideCreateNestedManyWithoutUserInput,
+     ?   configImports?: CountryConfigImportCreateNestedManyWithoutImporterInput,
+     ?   serviceCompletionUsage?: ServiceCompletionUsageCreateNestedManyWithoutUserInput,
+     ?   ideationSessions?: IdeationSessionCreateNestedManyWithoutUserInput,
+     ?   sectionInstructions?: UserSectionInstructionCreateNestedManyWithoutUserInput,
+     ?   referenceDocuments?: ReferenceDocumentCreateNestedManyWithoutUserInput,
+     ?   libraryConnections?: LibraryConnectionCreateNestedManyWithoutUserInput
+       }
+     })
+
+Unknown argument `tenantId`. Did you mean `tenant`? Available options are marked with ?.[39m
+ [31m×[39m src/tests/integration/paper-workflow.test.ts[2m > [22mPaper Writing Workflow Integration[2m > [22mComplete Paper Creation Workflow[2m > [22mshould handle citation style changes
+[31m   → 
+Invalid `prisma.user.upsert()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:22:40
+
+  19   }
+  20 });
+  21 
+→ 22 const testUser = await prisma.user.upsert({
+       where: {
+         id: "test-user-paper-workflow"
+       },
+       update: {},
+       create: {
+         id: "test-user-paper-workflow",
+         tenantId: "test-tenant-paper-workflow",
+         ~~~~~~~~
+         email: "test-paper-workflow@example.com",
+         passwordHash: "hashed-password",
+         first_name: "Test",
+         last_name: "User",
+         roles: [
+           "USER"
+         ],
+     ?   name?: String | Null,
+     ?   firstName?: String | Null,
+     ?   lastName?: String | Null,
+     ?   status?: UserStatus,
+     ?   emailVerified?: Boolean,
+     ?   noveltySearchesCompleted?: Int,
+     ?   oauthProvider?: OAuthProvider | Null,
+     ?   oauthProviderId?: String | Null,
+     ?   oauthProfile?: NullableJsonNullValueInput | Json,
+     ?   createdAt?: DateTime,
+     ?   updatedAt?: DateTime,
+     ?   tenant?: TenantCreateNestedOneWithoutUsersInput,
+     ?   signupAtiToken?: ATITokenCreateNestedOneWithoutSignupUsersInput,
+     ?   projects?: ProjectCreateNestedManyWithoutUserInput,
+     ?   collaborations?: ProjectCollaboratorCreateNestedManyWithoutUserInput,
+     ?   patents?: PatentCreateNestedManyWithoutCreatorInput,
+     ?   annexureVersions?: AnnexureVersionCreateNestedManyWithoutCreatorInput,
+     ?   auditLogs?: AuditLogCreateNestedManyWithoutActorInput,
+     ?   usageLogs?: UsageLogCreateNestedManyWithoutUserInput,
+     ?   createdPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutCreatorInput,
+     ?   approvedPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutApproverInput,
+     ?   priorArtHistory?: PriorArtSearchHistoryCreateNestedManyWithoutUserInput,
+     ?   priorArtRuns?: PriorArtRunCreateNestedManyWithoutUserInput,
+     ?   credits?: UserCreditCreateNestedOneWithoutUserInput,
+     ?   noveltyAssessments?: NoveltyAssessmentRunCreateNestedManyWithoutUserInput,
+     ?   noveltySearchRuns?: NoveltySearchRunCreateNestedManyWithoutUserInput,
+     ?   draftingSessions?: DraftingSessionCreateNestedManyWithoutUserInput,
+     ?   draftingHistory?: DraftingHistoryCreateNestedManyWithoutUserInput,
+     ?   referenceLibrary?: ReferenceLibraryCreateNestedManyWithoutUserInput,
+     ?   referenceCollections?: ReferenceCollectionCreateNestedManyWithoutUserInput,
+     ?   emailVerificationTokens?: EmailVerificationTokenCreateNestedManyWithoutUserInput,
+     ?   passwordResetTokens?: PasswordResetTokenCreateNestedManyWithoutUserInput,
+     ?   refreshTokens?: RefreshTokenCreateNestedManyWithoutUserInput,
+     ?   createdIdeaBankIdeas?: IdeaBankIdeaCreateNestedManyWithoutCreatorInput,
+     ?   ideaBankReservations?: IdeaBankReservationCreateNestedManyWithoutUserInput,
+     ?   ideaBankHistory?: IdeaBankHistoryCreateNestedManyWithoutUserInput,
+     ?   styleProfiles?: StyleProfileCreateNestedManyWithoutCreatorInput,
+     ?   lockedStyleProfiles?: StyleProfileCreateNestedManyWithoutLockerInput,
+     ?   ownedStyleProfiles?: StyleProfileCreateNestedManyWithoutUserInput,
+     ?   styleTrainingJobs?: StyleTrainingJobCreateNestedManyWithoutUserInput,
+     ?   documents?: DocumentCreateNestedManyWithoutUserInput,
+     ?   createdCountryProfiles?: CountryProfileCreateNestedManyWithoutCreatorInput,
+     ?   updatedCountryProfiles?: CountryProfileCreateNestedManyWithoutUpdaterInput,
+     ?   writingSamples?: WritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPersonas?: WritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   paperWritingSamples?: PaperWritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPaperPersonas?: PaperWritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   teamMemberships?: TeamMemberCreateNestedManyWithoutUserInput,
+     ?   serviceQuotas?: UserServiceQuotaCreateNestedManyWithoutUserInput,
+     ?   userDiagramStyles?: UserDiagramStyleCreateNestedManyWithoutUserInput,
+     ?   userExportStyles?: UserExportStyleCreateNestedManyWithoutUserInput,
+     ?   userValidationOverrides?: UserValidationOverrideCreateNestedManyWithoutUserInput,
+     ?   configImports?: CountryConfigImportCreateNestedManyWithoutImporterInput,
+     ?   serviceCompletionUsage?: ServiceCompletionUsageCreateNestedManyWithoutUserInput,
+     ?   ideationSessions?: IdeationSessionCreateNestedManyWithoutUserInput,
+     ?   sectionInstructions?: UserSectionInstructionCreateNestedManyWithoutUserInput,
+     ?   referenceDocuments?: ReferenceDocumentCreateNestedManyWithoutUserInput,
+     ?   libraryConnections?: LibraryConnectionCreateNestedManyWithoutUserInput
+       }
+     })
+
+Unknown argument `tenantId`. Did you mean `tenant`? Available options are marked with ?.[39m
+ [31m×[39m src/tests/integration/paper-workflow.test.ts[2m > [22mPaper Writing Workflow Integration[2m > [22mError Handling[2m > [22mshould handle invalid paper type gracefully
+[31m   → 
+Invalid `prisma.user.upsert()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:22:40
+
+  19   }
+  20 });
+  21 
+→ 22 const testUser = await prisma.user.upsert({
+       where: {
+         id: "test-user-paper-workflow"
+       },
+       update: {},
+       create: {
+         id: "test-user-paper-workflow",
+         tenantId: "test-tenant-paper-workflow",
+         ~~~~~~~~
+         email: "test-paper-workflow@example.com",
+         passwordHash: "hashed-password",
+         first_name: "Test",
+         last_name: "User",
+         roles: [
+           "USER"
+         ],
+     ?   name?: String | Null,
+     ?   firstName?: String | Null,
+     ?   lastName?: String | Null,
+     ?   status?: UserStatus,
+     ?   emailVerified?: Boolean,
+     ?   noveltySearchesCompleted?: Int,
+     ?   oauthProvider?: OAuthProvider | Null,
+     ?   oauthProviderId?: String | Null,
+     ?   oauthProfile?: NullableJsonNullValueInput | Json,
+     ?   createdAt?: DateTime,
+     ?   updatedAt?: DateTime,
+     ?   tenant?: TenantCreateNestedOneWithoutUsersInput,
+     ?   signupAtiToken?: ATITokenCreateNestedOneWithoutSignupUsersInput,
+     ?   projects?: ProjectCreateNestedManyWithoutUserInput,
+     ?   collaborations?: ProjectCollaboratorCreateNestedManyWithoutUserInput,
+     ?   patents?: PatentCreateNestedManyWithoutCreatorInput,
+     ?   annexureVersions?: AnnexureVersionCreateNestedManyWithoutCreatorInput,
+     ?   auditLogs?: AuditLogCreateNestedManyWithoutActorInput,
+     ?   usageLogs?: UsageLogCreateNestedManyWithoutUserInput,
+     ?   createdPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutCreatorInput,
+     ?   approvedPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutApproverInput,
+     ?   priorArtHistory?: PriorArtSearchHistoryCreateNestedManyWithoutUserInput,
+     ?   priorArtRuns?: PriorArtRunCreateNestedManyWithoutUserInput,
+     ?   credits?: UserCreditCreateNestedOneWithoutUserInput,
+     ?   noveltyAssessments?: NoveltyAssessmentRunCreateNestedManyWithoutUserInput,
+     ?   noveltySearchRuns?: NoveltySearchRunCreateNestedManyWithoutUserInput,
+     ?   draftingSessions?: DraftingSessionCreateNestedManyWithoutUserInput,
+     ?   draftingHistory?: DraftingHistoryCreateNestedManyWithoutUserInput,
+     ?   referenceLibrary?: ReferenceLibraryCreateNestedManyWithoutUserInput,
+     ?   referenceCollections?: ReferenceCollectionCreateNestedManyWithoutUserInput,
+     ?   emailVerificationTokens?: EmailVerificationTokenCreateNestedManyWithoutUserInput,
+     ?   passwordResetTokens?: PasswordResetTokenCreateNestedManyWithoutUserInput,
+     ?   refreshTokens?: RefreshTokenCreateNestedManyWithoutUserInput,
+     ?   createdIdeaBankIdeas?: IdeaBankIdeaCreateNestedManyWithoutCreatorInput,
+     ?   ideaBankReservations?: IdeaBankReservationCreateNestedManyWithoutUserInput,
+     ?   ideaBankHistory?: IdeaBankHistoryCreateNestedManyWithoutUserInput,
+     ?   styleProfiles?: StyleProfileCreateNestedManyWithoutCreatorInput,
+     ?   lockedStyleProfiles?: StyleProfileCreateNestedManyWithoutLockerInput,
+     ?   ownedStyleProfiles?: StyleProfileCreateNestedManyWithoutUserInput,
+     ?   styleTrainingJobs?: StyleTrainingJobCreateNestedManyWithoutUserInput,
+     ?   documents?: DocumentCreateNestedManyWithoutUserInput,
+     ?   createdCountryProfiles?: CountryProfileCreateNestedManyWithoutCreatorInput,
+     ?   updatedCountryProfiles?: CountryProfileCreateNestedManyWithoutUpdaterInput,
+     ?   writingSamples?: WritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPersonas?: WritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   paperWritingSamples?: PaperWritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPaperPersonas?: PaperWritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   teamMemberships?: TeamMemberCreateNestedManyWithoutUserInput,
+     ?   serviceQuotas?: UserServiceQuotaCreateNestedManyWithoutUserInput,
+     ?   userDiagramStyles?: UserDiagramStyleCreateNestedManyWithoutUserInput,
+     ?   userExportStyles?: UserExportStyleCreateNestedManyWithoutUserInput,
+     ?   userValidationOverrides?: UserValidationOverrideCreateNestedManyWithoutUserInput,
+     ?   configImports?: CountryConfigImportCreateNestedManyWithoutImporterInput,
+     ?   serviceCompletionUsage?: ServiceCompletionUsageCreateNestedManyWithoutUserInput,
+     ?   ideationSessions?: IdeationSessionCreateNestedManyWithoutUserInput,
+     ?   sectionInstructions?: UserSectionInstructionCreateNestedManyWithoutUserInput,
+     ?   referenceDocuments?: ReferenceDocumentCreateNestedManyWithoutUserInput,
+     ?   libraryConnections?: LibraryConnectionCreateNestedManyWithoutUserInput
+       }
+     })
+
+Unknown argument `tenantId`. Did you mean `tenant`? Available options are marked with ?.[39m
+ [31m×[39m src/tests/integration/paper-workflow.test.ts[2m > [22mPaper Writing Workflow Integration[2m > [22mError Handling[2m > [22mshould handle citation style not found
+[31m   → 
+Invalid `prisma.user.upsert()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:22:40
+
+  19   }
+  20 });
+  21 
+→ 22 const testUser = await prisma.user.upsert({
+       where: {
+         id: "test-user-paper-workflow"
+       },
+       update: {},
+       create: {
+         id: "test-user-paper-workflow",
+         tenantId: "test-tenant-paper-workflow",
+         ~~~~~~~~
+         email: "test-paper-workflow@example.com",
+         passwordHash: "hashed-password",
+         first_name: "Test",
+         last_name: "User",
+         roles: [
+           "USER"
+         ],
+     ?   name?: String | Null,
+     ?   firstName?: String | Null,
+     ?   lastName?: String | Null,
+     ?   status?: UserStatus,
+     ?   emailVerified?: Boolean,
+     ?   noveltySearchesCompleted?: Int,
+     ?   oauthProvider?: OAuthProvider | Null,
+     ?   oauthProviderId?: String | Null,
+     ?   oauthProfile?: NullableJsonNullValueInput | Json,
+     ?   createdAt?: DateTime,
+     ?   updatedAt?: DateTime,
+     ?   tenant?: TenantCreateNestedOneWithoutUsersInput,
+     ?   signupAtiToken?: ATITokenCreateNestedOneWithoutSignupUsersInput,
+     ?   projects?: ProjectCreateNestedManyWithoutUserInput,
+     ?   collaborations?: ProjectCollaboratorCreateNestedManyWithoutUserInput,
+     ?   patents?: PatentCreateNestedManyWithoutCreatorInput,
+     ?   annexureVersions?: AnnexureVersionCreateNestedManyWithoutCreatorInput,
+     ?   auditLogs?: AuditLogCreateNestedManyWithoutActorInput,
+     ?   usageLogs?: UsageLogCreateNestedManyWithoutUserInput,
+     ?   createdPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutCreatorInput,
+     ?   approvedPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutApproverInput,
+     ?   priorArtHistory?: PriorArtSearchHistoryCreateNestedManyWithoutUserInput,
+     ?   priorArtRuns?: PriorArtRunCreateNestedManyWithoutUserInput,
+     ?   credits?: UserCreditCreateNestedOneWithoutUserInput,
+     ?   noveltyAssessments?: NoveltyAssessmentRunCreateNestedManyWithoutUserInput,
+     ?   noveltySearchRuns?: NoveltySearchRunCreateNestedManyWithoutUserInput,
+     ?   draftingSessions?: DraftingSessionCreateNestedManyWithoutUserInput,
+     ?   draftingHistory?: DraftingHistoryCreateNestedManyWithoutUserInput,
+     ?   referenceLibrary?: ReferenceLibraryCreateNestedManyWithoutUserInput,
+     ?   referenceCollections?: ReferenceCollectionCreateNestedManyWithoutUserInput,
+     ?   emailVerificationTokens?: EmailVerificationTokenCreateNestedManyWithoutUserInput,
+     ?   passwordResetTokens?: PasswordResetTokenCreateNestedManyWithoutUserInput,
+     ?   refreshTokens?: RefreshTokenCreateNestedManyWithoutUserInput,
+     ?   createdIdeaBankIdeas?: IdeaBankIdeaCreateNestedManyWithoutCreatorInput,
+     ?   ideaBankReservations?: IdeaBankReservationCreateNestedManyWithoutUserInput,
+     ?   ideaBankHistory?: IdeaBankHistoryCreateNestedManyWithoutUserInput,
+     ?   styleProfiles?: StyleProfileCreateNestedManyWithoutCreatorInput,
+     ?   lockedStyleProfiles?: StyleProfileCreateNestedManyWithoutLockerInput,
+     ?   ownedStyleProfiles?: StyleProfileCreateNestedManyWithoutUserInput,
+     ?   styleTrainingJobs?: StyleTrainingJobCreateNestedManyWithoutUserInput,
+     ?   documents?: DocumentCreateNestedManyWithoutUserInput,
+     ?   createdCountryProfiles?: CountryProfileCreateNestedManyWithoutCreatorInput,
+     ?   updatedCountryProfiles?: CountryProfileCreateNestedManyWithoutUpdaterInput,
+     ?   writingSamples?: WritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPersonas?: WritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   paperWritingSamples?: PaperWritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPaperPersonas?: PaperWritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   teamMemberships?: TeamMemberCreateNestedManyWithoutUserInput,
+     ?   serviceQuotas?: UserServiceQuotaCreateNestedManyWithoutUserInput,
+     ?   userDiagramStyles?: UserDiagramStyleCreateNestedManyWithoutUserInput,
+     ?   userExportStyles?: UserExportStyleCreateNestedManyWithoutUserInput,
+     ?   userValidationOverrides?: UserValidationOverrideCreateNestedManyWithoutUserInput,
+     ?   configImports?: CountryConfigImportCreateNestedManyWithoutImporterInput,
+     ?   serviceCompletionUsage?: ServiceCompletionUsageCreateNestedManyWithoutUserInput,
+     ?   ideationSessions?: IdeationSessionCreateNestedManyWithoutUserInput,
+     ?   sectionInstructions?: UserSectionInstructionCreateNestedManyWithoutUserInput,
+     ?   referenceDocuments?: ReferenceDocumentCreateNestedManyWithoutUserInput,
+     ?   libraryConnections?: LibraryConnectionCreateNestedManyWithoutUserInput
+       }
+     })
+
+Unknown argument `tenantId`. Did you mean `tenant`? Available options are marked with ?.[39m
+ [31m×[39m src/tests/integration/paper-workflow.test.ts[2m > [22mPaper Writing Workflow Integration[2m > [22mError Handling[2m > [22mshould handle invalid DOI import gracefully
+[31m   → 
+Invalid `prisma.user.upsert()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:22:40
+
+  19   }
+  20 });
+  21 
+→ 22 const testUser = await prisma.user.upsert({
+       where: {
+         id: "test-user-paper-workflow"
+       },
+       update: {},
+       create: {
+         id: "test-user-paper-workflow",
+         tenantId: "test-tenant-paper-workflow",
+         ~~~~~~~~
+         email: "test-paper-workflow@example.com",
+         passwordHash: "hashed-password",
+         first_name: "Test",
+         last_name: "User",
+         roles: [
+           "USER"
+         ],
+     ?   name?: String | Null,
+     ?   firstName?: String | Null,
+     ?   lastName?: String | Null,
+     ?   status?: UserStatus,
+     ?   emailVerified?: Boolean,
+     ?   noveltySearchesCompleted?: Int,
+     ?   oauthProvider?: OAuthProvider | Null,
+     ?   oauthProviderId?: String | Null,
+     ?   oauthProfile?: NullableJsonNullValueInput | Json,
+     ?   createdAt?: DateTime,
+     ?   updatedAt?: DateTime,
+     ?   tenant?: TenantCreateNestedOneWithoutUsersInput,
+     ?   signupAtiToken?: ATITokenCreateNestedOneWithoutSignupUsersInput,
+     ?   projects?: ProjectCreateNestedManyWithoutUserInput,
+     ?   collaborations?: ProjectCollaboratorCreateNestedManyWithoutUserInput,
+     ?   patents?: PatentCreateNestedManyWithoutCreatorInput,
+     ?   annexureVersions?: AnnexureVersionCreateNestedManyWithoutCreatorInput,
+     ?   auditLogs?: AuditLogCreateNestedManyWithoutActorInput,
+     ?   usageLogs?: UsageLogCreateNestedManyWithoutUserInput,
+     ?   createdPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutCreatorInput,
+     ?   approvedPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutApproverInput,
+     ?   priorArtHistory?: PriorArtSearchHistoryCreateNestedManyWithoutUserInput,
+     ?   priorArtRuns?: PriorArtRunCreateNestedManyWithoutUserInput,
+     ?   credits?: UserCreditCreateNestedOneWithoutUserInput,
+     ?   noveltyAssessments?: NoveltyAssessmentRunCreateNestedManyWithoutUserInput,
+     ?   noveltySearchRuns?: NoveltySearchRunCreateNestedManyWithoutUserInput,
+     ?   draftingSessions?: DraftingSessionCreateNestedManyWithoutUserInput,
+     ?   draftingHistory?: DraftingHistoryCreateNestedManyWithoutUserInput,
+     ?   referenceLibrary?: ReferenceLibraryCreateNestedManyWithoutUserInput,
+     ?   referenceCollections?: ReferenceCollectionCreateNestedManyWithoutUserInput,
+     ?   emailVerificationTokens?: EmailVerificationTokenCreateNestedManyWithoutUserInput,
+     ?   passwordResetTokens?: PasswordResetTokenCreateNestedManyWithoutUserInput,
+     ?   refreshTokens?: RefreshTokenCreateNestedManyWithoutUserInput,
+     ?   createdIdeaBankIdeas?: IdeaBankIdeaCreateNestedManyWithoutCreatorInput,
+     ?   ideaBankReservations?: IdeaBankReservationCreateNestedManyWithoutUserInput,
+     ?   ideaBankHistory?: IdeaBankHistoryCreateNestedManyWithoutUserInput,
+     ?   styleProfiles?: StyleProfileCreateNestedManyWithoutCreatorInput,
+     ?   lockedStyleProfiles?: StyleProfileCreateNestedManyWithoutLockerInput,
+     ?   ownedStyleProfiles?: StyleProfileCreateNestedManyWithoutUserInput,
+     ?   styleTrainingJobs?: StyleTrainingJobCreateNestedManyWithoutUserInput,
+     ?   documents?: DocumentCreateNestedManyWithoutUserInput,
+     ?   createdCountryProfiles?: CountryProfileCreateNestedManyWithoutCreatorInput,
+     ?   updatedCountryProfiles?: CountryProfileCreateNestedManyWithoutUpdaterInput,
+     ?   writingSamples?: WritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPersonas?: WritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   paperWritingSamples?: PaperWritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPaperPersonas?: PaperWritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   teamMemberships?: TeamMemberCreateNestedManyWithoutUserInput,
+     ?   serviceQuotas?: UserServiceQuotaCreateNestedManyWithoutUserInput,
+     ?   userDiagramStyles?: UserDiagramStyleCreateNestedManyWithoutUserInput,
+     ?   userExportStyles?: UserExportStyleCreateNestedManyWithoutUserInput,
+     ?   userValidationOverrides?: UserValidationOverrideCreateNestedManyWithoutUserInput,
+     ?   configImports?: CountryConfigImportCreateNestedManyWithoutImporterInput,
+     ?   serviceCompletionUsage?: ServiceCompletionUsageCreateNestedManyWithoutUserInput,
+     ?   ideationSessions?: IdeationSessionCreateNestedManyWithoutUserInput,
+     ?   sectionInstructions?: UserSectionInstructionCreateNestedManyWithoutUserInput,
+     ?   referenceDocuments?: ReferenceDocumentCreateNestedManyWithoutUserInput,
+     ?   libraryConnections?: LibraryConnectionCreateNestedManyWithoutUserInput
+       }
+     })
+
+Unknown argument `tenantId`. Did you mean `tenant`? Available options are marked with ?.[39m
+ [31m×[39m src/tests/integration/paper-workflow.test.ts[2m > [22mPaper Writing Workflow Integration[2m > [22mError Handling[2m > [22mshould detect and handle duplicate citation imports
+[31m   → 
+Invalid `prisma.user.upsert()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:22:40
+
+  19   }
+  20 });
+  21 
+→ 22 const testUser = await prisma.user.upsert({
+       where: {
+         id: "test-user-paper-workflow"
+       },
+       update: {},
+       create: {
+         id: "test-user-paper-workflow",
+         tenantId: "test-tenant-paper-workflow",
+         ~~~~~~~~
+         email: "test-paper-workflow@example.com",
+         passwordHash: "hashed-password",
+         first_name: "Test",
+         last_name: "User",
+         roles: [
+           "USER"
+         ],
+     ?   name?: String | Null,
+     ?   firstName?: String | Null,
+     ?   lastName?: String | Null,
+     ?   status?: UserStatus,
+     ?   emailVerified?: Boolean,
+     ?   noveltySearchesCompleted?: Int,
+     ?   oauthProvider?: OAuthProvider | Null,
+     ?   oauthProviderId?: String | Null,
+     ?   oauthProfile?: NullableJsonNullValueInput | Json,
+     ?   createdAt?: DateTime,
+     ?   updatedAt?: DateTime,
+     ?   tenant?: TenantCreateNestedOneWithoutUsersInput,
+     ?   signupAtiToken?: ATITokenCreateNestedOneWithoutSignupUsersInput,
+     ?   projects?: ProjectCreateNestedManyWithoutUserInput,
+     ?   collaborations?: ProjectCollaboratorCreateNestedManyWithoutUserInput,
+     ?   patents?: PatentCreateNestedManyWithoutCreatorInput,
+     ?   annexureVersions?: AnnexureVersionCreateNestedManyWithoutCreatorInput,
+     ?   auditLogs?: AuditLogCreateNestedManyWithoutActorInput,
+     ?   usageLogs?: UsageLogCreateNestedManyWithoutUserInput,
+     ?   createdPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutCreatorInput,
+     ?   approvedPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutApproverInput,
+     ?   priorArtHistory?: PriorArtSearchHistoryCreateNestedManyWithoutUserInput,
+     ?   priorArtRuns?: PriorArtRunCreateNestedManyWithoutUserInput,
+     ?   credits?: UserCreditCreateNestedOneWithoutUserInput,
+     ?   noveltyAssessments?: NoveltyAssessmentRunCreateNestedManyWithoutUserInput,
+     ?   noveltySearchRuns?: NoveltySearchRunCreateNestedManyWithoutUserInput,
+     ?   draftingSessions?: DraftingSessionCreateNestedManyWithoutUserInput,
+     ?   draftingHistory?: DraftingHistoryCreateNestedManyWithoutUserInput,
+     ?   referenceLibrary?: ReferenceLibraryCreateNestedManyWithoutUserInput,
+     ?   referenceCollections?: ReferenceCollectionCreateNestedManyWithoutUserInput,
+     ?   emailVerificationTokens?: EmailVerificationTokenCreateNestedManyWithoutUserInput,
+     ?   passwordResetTokens?: PasswordResetTokenCreateNestedManyWithoutUserInput,
+     ?   refreshTokens?: RefreshTokenCreateNestedManyWithoutUserInput,
+     ?   createdIdeaBankIdeas?: IdeaBankIdeaCreateNestedManyWithoutCreatorInput,
+     ?   ideaBankReservations?: IdeaBankReservationCreateNestedManyWithoutUserInput,
+     ?   ideaBankHistory?: IdeaBankHistoryCreateNestedManyWithoutUserInput,
+     ?   styleProfiles?: StyleProfileCreateNestedManyWithoutCreatorInput,
+     ?   lockedStyleProfiles?: StyleProfileCreateNestedManyWithoutLockerInput,
+     ?   ownedStyleProfiles?: StyleProfileCreateNestedManyWithoutUserInput,
+     ?   styleTrainingJobs?: StyleTrainingJobCreateNestedManyWithoutUserInput,
+     ?   documents?: DocumentCreateNestedManyWithoutUserInput,
+     ?   createdCountryProfiles?: CountryProfileCreateNestedManyWithoutCreatorInput,
+     ?   updatedCountryProfiles?: CountryProfileCreateNestedManyWithoutUpdaterInput,
+     ?   writingSamples?: WritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPersonas?: WritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   paperWritingSamples?: PaperWritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPaperPersonas?: PaperWritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   teamMemberships?: TeamMemberCreateNestedManyWithoutUserInput,
+     ?   serviceQuotas?: UserServiceQuotaCreateNestedManyWithoutUserInput,
+     ?   userDiagramStyles?: UserDiagramStyleCreateNestedManyWithoutUserInput,
+     ?   userExportStyles?: UserExportStyleCreateNestedManyWithoutUserInput,
+     ?   userValidationOverrides?: UserValidationOverrideCreateNestedManyWithoutUserInput,
+     ?   configImports?: CountryConfigImportCreateNestedManyWithoutImporterInput,
+     ?   serviceCompletionUsage?: ServiceCompletionUsageCreateNestedManyWithoutUserInput,
+     ?   ideationSessions?: IdeationSessionCreateNestedManyWithoutUserInput,
+     ?   sectionInstructions?: UserSectionInstructionCreateNestedManyWithoutUserInput,
+     ?   referenceDocuments?: ReferenceDocumentCreateNestedManyWithoutUserInput,
+     ?   libraryConnections?: LibraryConnectionCreateNestedManyWithoutUserInput
+       }
+     })
+
+Unknown argument `tenantId`. Did you mean `tenant`? Available options are marked with ?.[39m
+ [31m×[39m src/tests/integration/paper-workflow.test.ts[2m > [22mPaper Writing Workflow Integration[2m > [22mError Handling[2m > [22mshould handle search API failure gracefully
+[31m   → 
+Invalid `prisma.user.upsert()` invocation in
+C:\Users\raman\Documents\Papsi\src\tests\integration\paper-workflow.test.ts:22:40
+
+  19   }
+  20 });
+  21 
+→ 22 const testUser = await prisma.user.upsert({
+       where: {
+         id: "test-user-paper-workflow"
+       },
+       update: {},
+       create: {
+         id: "test-user-paper-workflow",
+         tenantId: "test-tenant-paper-workflow",
+         ~~~~~~~~
+         email: "test-paper-workflow@example.com",
+         passwordHash: "hashed-password",
+         first_name: "Test",
+         last_name: "User",
+         roles: [
+           "USER"
+         ],
+     ?   name?: String | Null,
+     ?   firstName?: String | Null,
+     ?   lastName?: String | Null,
+     ?   status?: UserStatus,
+     ?   emailVerified?: Boolean,
+     ?   noveltySearchesCompleted?: Int,
+     ?   oauthProvider?: OAuthProvider | Null,
+     ?   oauthProviderId?: String | Null,
+     ?   oauthProfile?: NullableJsonNullValueInput | Json,
+     ?   createdAt?: DateTime,
+     ?   updatedAt?: DateTime,
+     ?   tenant?: TenantCreateNestedOneWithoutUsersInput,
+     ?   signupAtiToken?: ATITokenCreateNestedOneWithoutSignupUsersInput,
+     ?   projects?: ProjectCreateNestedManyWithoutUserInput,
+     ?   collaborations?: ProjectCollaboratorCreateNestedManyWithoutUserInput,
+     ?   patents?: PatentCreateNestedManyWithoutCreatorInput,
+     ?   annexureVersions?: AnnexureVersionCreateNestedManyWithoutCreatorInput,
+     ?   auditLogs?: AuditLogCreateNestedManyWithoutActorInput,
+     ?   usageLogs?: UsageLogCreateNestedManyWithoutUserInput,
+     ?   createdPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutCreatorInput,
+     ?   approvedPriorArtBundles?: PriorArtSearchBundleCreateNestedManyWithoutApproverInput,
+     ?   priorArtHistory?: PriorArtSearchHistoryCreateNestedManyWithoutUserInput,
+     ?   priorArtRuns?: PriorArtRunCreateNestedManyWithoutUserInput,
+     ?   credits?: UserCreditCreateNestedOneWithoutUserInput,
+     ?   noveltyAssessments?: NoveltyAssessmentRunCreateNestedManyWithoutUserInput,
+     ?   noveltySearchRuns?: NoveltySearchRunCreateNestedManyWithoutUserInput,
+     ?   draftingSessions?: DraftingSessionCreateNestedManyWithoutUserInput,
+     ?   draftingHistory?: DraftingHistoryCreateNestedManyWithoutUserInput,
+     ?   referenceLibrary?: ReferenceLibraryCreateNestedManyWithoutUserInput,
+     ?   referenceCollections?: ReferenceCollectionCreateNestedManyWithoutUserInput,
+     ?   emailVerificationTokens?: EmailVerificationTokenCreateNestedManyWithoutUserInput,
+     ?   passwordResetTokens?: PasswordResetTokenCreateNestedManyWithoutUserInput,
+     ?   refreshTokens?: RefreshTokenCreateNestedManyWithoutUserInput,
+     ?   createdIdeaBankIdeas?: IdeaBankIdeaCreateNestedManyWithoutCreatorInput,
+     ?   ideaBankReservations?: IdeaBankReservationCreateNestedManyWithoutUserInput,
+     ?   ideaBankHistory?: IdeaBankHistoryCreateNestedManyWithoutUserInput,
+     ?   styleProfiles?: StyleProfileCreateNestedManyWithoutCreatorInput,
+     ?   lockedStyleProfiles?: StyleProfileCreateNestedManyWithoutLockerInput,
+     ?   ownedStyleProfiles?: StyleProfileCreateNestedManyWithoutUserInput,
+     ?   styleTrainingJobs?: StyleTrainingJobCreateNestedManyWithoutUserInput,
+     ?   documents?: DocumentCreateNestedManyWithoutUserInput,
+     ?   createdCountryProfiles?: CountryProfileCreateNestedManyWithoutCreatorInput,
+     ?   updatedCountryProfiles?: CountryProfileCreateNestedManyWithoutUpdaterInput,
+     ?   writingSamples?: WritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPersonas?: WritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   paperWritingSamples?: PaperWritingSampleCreateNestedManyWithoutUserInput,
+     ?   createdPaperPersonas?: PaperWritingPersonaCreateNestedManyWithoutCreatorInput,
+     ?   teamMemberships?: TeamMemberCreateNestedManyWithoutUserInput,
+     ?   serviceQuotas?: UserServiceQuotaCreateNestedManyWithoutUserInput,
+     ?   userDiagramStyles?: UserDiagramStyleCreateNestedManyWithoutUserInput,
+     ?   userExportStyles?: UserExportStyleCreateNestedManyWithoutUserInput,
+     ?   userValidationOverrides?: UserValidationOverrideCreateNestedManyWithoutUserInput,
+     ?   configImports?: CountryConfigImportCreateNestedManyWithoutImporterInput,
+     ?   serviceCompletionUsage?: ServiceCompletionUsageCreateNestedManyWithoutUserInput,
+     ?   ideationSessions?: IdeationSessionCreateNestedManyWithoutUserInput,
+     ?   sectionInstructions?: UserSectionInstructionCreateNestedManyWithoutUserInput,
+     ?   referenceDocuments?: ReferenceDocumentCreateNestedManyWithoutUserInput,
+     ?   libraryConnections?: LibraryConnectionCreateNestedManyWithoutUserInput
+       }
+     })
+
+Unknown argument `tenantId`. Did you mean `tenant`? Available options are marked with ?.[39m
+Terminate batch job (Y/N)? Terminate batch job (Y/N)? 

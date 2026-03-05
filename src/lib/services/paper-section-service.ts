@@ -16,15 +16,15 @@ import { llmGateway, type TenantContext } from '../metering';
 import { blueprintService, type BlueprintContext, type SectionPlanItem } from './blueprint-service';
 import { sectionTemplateService } from './section-template-service';
 import { getMethodologyConstraints } from '../prompts/methodology-constraints';
-import { 
-  getPaperWritingSample, 
-  buildPaperWritingSampleBlock, 
+import {
+  getPaperWritingSample,
+  buildPaperWritingSampleBlock,
   getPaperSectionStyleHints,
-  type PaperPersonaSelection 
+  type PaperPersonaSelection
 } from '../paper-writing-sample-service';
-import { 
-  paperPromptDebug, 
-  buildPromptDebugInfo, 
+import {
+  paperPromptDebug,
+  buildPromptDebugInfo,
   buildLLMDebugInfo,
   logFullReport,
   isDebugEnabled,
@@ -33,9 +33,12 @@ import {
   type FullDebugReport
 } from './paper-prompt-debug';
 import { sectionPolishService, type DriftReport } from './section-polish-service';
-import { evidencePackService, type SectionEvidencePack } from './evidence-pack-service';
+import { evidencePackService, type SectionEvidencePack, type EvidenceDigest } from './evidence-pack-service';
 import type { AssignedCitation } from './citation-coverage-distributor';
 import { isFeatureEnabled } from '../feature-flags';
+import { researchIntentLockService } from './research-intent-lock-service';
+import { argumentPlannerService } from './argument-planner-service';
+import { citationValidator } from './citation-validator';
 import type { PaperSection, PaperSectionStatus } from '@prisma/client';
 import crypto from 'crypto';
 import { polishDraftMarkdown } from '../markdown-draft-formatter';
@@ -231,6 +234,7 @@ interface Pass1EvidencePromptContext {
   dimensionEvidence: SectionEvidencePack['dimensionEvidence'];
   gaps: string[];
   coverageAssignments: AssignedCitation[];
+  evidenceDigest: EvidenceDigest;
 }
 
 function formatDimensionEvidence(
@@ -279,9 +283,6 @@ function formatDimensionEvidence(
         if (card.doesNotSupport) {
           lines.push(`    Does NOT support: ${card.doesNotSupport}`);
         }
-        if (card.sourceFragment) {
-          lines.push(`    Quote: "${card.sourceFragment}"${card.pageHint ? ` (${card.pageHint})` : ''}`);
-        }
       }
     }
 
@@ -291,120 +292,46 @@ function formatDimensionEvidence(
   return lines.join('\n').trim();
 }
 
-function formatRelevanceNotes(
-  evidence: SectionEvidencePack['dimensionEvidence']
-): string {
-  if (!evidence || evidence.length === 0) {
-    return '(No relevance notes available)';
-  }
-
-  const allCitations = new Map<string, {
-    title: string;
-    dimensions: Set<string>;
-    relevance?: string;
-    contribution?: string;
-    findings?: string;
-    method?: string | null;
-    limitations?: string | null;
-    boundary?: string | null;
-    positionalRelation?: string | null;
-    claimTypes?: string[];
-    cardClaims?: string[];
-  }>();
-
-  for (const dim of evidence) {
-    for (const citation of dim.citations) {
-      if (!allCitations.has(citation.citationKey)) {
-        allCitations.set(citation.citationKey, {
-          title: citation.title,
-          dimensions: new Set<string>(),
-          relevance: citation.relevanceToResearch,
-          contribution: citation.keyContribution,
-          findings: citation.keyFindings,
-          method: citation.methodologicalApproach,
-          limitations: citation.limitationsOrGaps,
-          boundary: citation.evidenceBoundary,
-          positionalRelation: citation.positionalRelation?.relation
-            ? citation.positionalRelation.rationale
-              ? `${citation.positionalRelation.relation}: ${citation.positionalRelation.rationale}`
-              : citation.positionalRelation.relation
-            : null,
-          claimTypes: citation.claimTypesSupported ? [...citation.claimTypesSupported] : [],
-          cardClaims: Array.isArray(citation.evidenceCards)
-            ? citation.evidenceCards
-                .map(card => String(card.claim || '').trim())
-                .filter(Boolean)
-                .slice(0, 3)
-            : []
-        });
-      }
-
-      const existing = allCitations.get(citation.citationKey)!;
-      existing.dimensions.add(dim.dimension);
-      if (!existing.relevance && citation.relevanceToResearch) existing.relevance = citation.relevanceToResearch;
-      if (!existing.contribution && citation.keyContribution) existing.contribution = citation.keyContribution;
-      if (!existing.findings && citation.keyFindings) existing.findings = citation.keyFindings;
-      if (!existing.method && citation.methodologicalApproach) existing.method = citation.methodologicalApproach;
-      if (!existing.limitations && citation.limitationsOrGaps) existing.limitations = citation.limitationsOrGaps;
-      if (!existing.boundary && citation.evidenceBoundary) existing.boundary = citation.evidenceBoundary;
-      if (!existing.positionalRelation && citation.positionalRelation?.relation) {
-        existing.positionalRelation = citation.positionalRelation.rationale
-          ? `${citation.positionalRelation.relation}: ${citation.positionalRelation.rationale}`
-          : citation.positionalRelation.relation;
-      }
-      if (citation.claimTypesSupported?.length) {
-        const merged = new Set([...(existing.claimTypes || []), ...citation.claimTypesSupported]);
-        existing.claimTypes = Array.from(merged);
-      }
-      if (Array.isArray(citation.evidenceCards) && citation.evidenceCards.length) {
-        const mergedClaims = [...(existing.cardClaims || [])];
-        for (const card of citation.evidenceCards) {
-          const claim = String(card.claim || '').trim();
-          if (!claim || mergedClaims.includes(claim)) continue;
-          mergedClaims.push(claim);
-          if (mergedClaims.length >= 4) break;
-        }
-        existing.cardClaims = mergedClaims;
-      }
-    }
-  }
-
-  return Array.from(allCitations.entries())
-    .map(([key, data]) => {
-      const parts = [
-        data.claimTypes?.length ? `claimTypes: ${data.claimTypes.join(', ')}` : '',
-        data.relevance ? `relevance: ${data.relevance}` : '',
-        data.contribution ? `contribution: ${data.contribution}` : '',
-        data.findings ? `findings: ${data.findings}` : '',
-        data.method ? `method: ${data.method}` : '',
-        data.limitations ? `gap: ${data.limitations}` : '',
-        data.boundary ? `boundary: ${data.boundary}` : '',
-        data.positionalRelation ? `position: ${data.positionalRelation}` : '',
-        data.cardClaims?.length ? `cardClaims: ${data.cardClaims.join(' || ')}` : '',
-      ].filter(Boolean);
-      const base = `[${key}]: "${data.title}" - dimensions: ${Array.from(data.dimensions).join(', ')}`;
-      return parts.length > 0 ? `${base}; ${parts.join(' | ')}` : base;
-    })
-    .join('\n');
-}
-
-function formatCoverageAssignments(assignments: AssignedCitation[]): string {
-  if (!assignments || assignments.length === 0) {
-    return '(No coverage assignments)';
+/**
+ * Format evidence digest into a compact prompt block.
+ * One line per citation — claim type, claim, strength, stance.
+ * Replaces the verbose formatRelevanceNotes().
+ */
+function formatEvidenceDigest(digest: EvidenceDigest): string {
+  if (!digest || digest.digests.length === 0) {
+    return '(No evidence digest available)';
   }
 
   const lines: string[] = [
-    'These citations were assigned to this section to ensure full paper coverage.',
-    'You MUST use each one at least once using [CITE:key] format.',
-    'Each citation may appear at most 2 times in this section.',
+    'EVIDENCE DIGEST (one line per citation — use these as grounding, not verbatim sources):',
     ''
   ];
 
-  for (const assignment of assignments) {
-    const reason = assignment.claimType || 'GENERAL';
-    const findings = assignment.keyFindings ? ` | Key finding: ${assignment.keyFindings}` : '';
-    lines.push(`- key: ${assignment.citationKey} | "${assignment.title}" | Use for: ${reason}${findings}`);
+  for (const entry of digest.digests) {
+    const mustTag = entry.mustCite ? ' [MUST-CITE]' : '';
+    const methodTag = entry.method ? ` | method: ${entry.method.slice(0, 80)}` : '';
+    lines.push(
+      `- [${entry.citationKey}]${mustTag}: ${entry.claimType} | ${entry.claim.slice(0, 200)} | ` +
+      `strength: ${entry.evidenceStrength} | stance: ${entry.stance || 'neutral'}${methodTag}`
+    );
   }
+
+  return lines.join('\n');
+}
+
+/**
+ * Format citation budget rules for prompt injection.
+ * Replaces the "MUST use each one at least once" mandate.
+ */
+function formatCitationBudgetRules(digest: EvidenceDigest): string {
+  const lines: string[] = [
+    'CITATION BUDGET RULES:',
+    `- Must-cite keys (MUST appear at least once): ${digest.mustCiteKeys.length > 0 ? digest.mustCiteKeys.join(', ') : '(none)'}`,
+    `- Optional pool (use where contextually appropriate): ${digest.optionalCiteKeys.length > 0 ? digest.optionalCiteKeys.join(', ') : '(none)'}`,
+    `- Max citations per paragraph: 3`,
+    `- Do NOT cite-dump. Each citation must serve a distinct argumentative purpose.`,
+    `- Use [CITE:key] format for all citations.`,
+  ];
 
   return lines.join('\n');
 }
@@ -419,11 +346,11 @@ class PaperSectionService {
    * Generate a single paper section with memory
    */
   async generateSection(input: SectionGenerationInput): Promise<SectionGenerationResult> {
-    const { 
-      sessionId, 
-      sectionKey, 
-      userInstructions, 
-      useStoredInstructions = true, 
+    const {
+      sessionId,
+      sectionKey,
+      userInstructions,
+      useStoredInstructions = true,
       usePersonaStyle = false,
       personaSelection,
       regenerate,
@@ -506,7 +433,7 @@ class PaperSectionService {
 
       // Fetch and combine user instructions (paper-type-specific)
       let combinedUserInstructions = '';
-      
+
       if (useStoredInstructions) {
         const storedInstructions = await this.getUserSectionInstructions(
           session.userId,
@@ -518,7 +445,7 @@ class PaperSectionService {
           combinedUserInstructions = this.formatUserInstructions(storedInstructions);
         }
       }
-      
+
       if (userInstructions) {
         if (combinedUserInstructions) {
           combinedUserInstructions += `\n\nADDITIONAL ONE-TIME INSTRUCTIONS:\n${userInstructions}`;
@@ -555,7 +482,8 @@ class PaperSectionService {
         combinedUserInstructions || undefined,
         writingStyleBlock || undefined,
         sessionId,
-        sectionKey
+        sectionKey,
+        tenantContext || undefined
       );
 
       if (isDebugEnabled() && debugInfo) {
@@ -618,7 +546,19 @@ class PaperSectionService {
         };
       }
 
-      const parsed = this.parseSectionResponse(result.response.output);
+      let parsed = this.parseSectionResponse(result.response.output);
+      if (twoPassEnabled) {
+        parsed = {
+          ...parsed,
+          content: await this.enforceCitationBudgetValidator({
+            sessionId,
+            sectionKey,
+            content: parsed.content,
+            llmRequestContext,
+            purpose: 'paper_section_pass1_citation_budget_rewrite'
+          })
+        };
+      }
       const blueprintVersion = blueprint?.version || 1;
 
       // ── Single-pass path ──
@@ -915,7 +855,17 @@ class PaperSectionService {
             throw new Error(result.error?.message || 'LLM call failed');
           }
 
-          const parsed = this.parseSectionResponse(result.response.output);
+          let parsed = this.parseSectionResponse(result.response.output);
+          parsed = {
+            ...parsed,
+            content: await this.enforceCitationBudgetValidator({
+              sessionId,
+              sectionKey,
+              content: parsed.content,
+              llmRequestContext,
+              purpose: 'paper_section_pass1_bg_citation_budget_rewrite'
+            })
+          };
           const pass1CompletedAt = new Date();
           const pass1Artifact = buildStoredPass1Artifact({
             content: parsed.content,
@@ -929,32 +879,32 @@ class PaperSectionService {
             where: { sessionId_sectionKey: { sessionId, sectionKey } },
             data: refreshBaseOnly
               ? {
-                  baseContentInternal: parsed.content,
-                  baseMemory: parsed.memory as any,
-                  pass1Artifact: pass1Artifact as any,
-                  memory: parsed.memory as any,
-                  blueprintVersion,
-                  pass1PromptUsed: prompt,
-                  pass1LlmResponse: result.response.output,
-                  pass1TokensUsed: result.response.outputTokens,
-                  pass1CompletedAt,
-                  isStale: false,
-                }
+                baseContentInternal: parsed.content,
+                baseMemory: parsed.memory as any,
+                pass1Artifact: pass1Artifact as any,
+                memory: parsed.memory as any,
+                blueprintVersion,
+                pass1PromptUsed: prompt,
+                pass1LlmResponse: result.response.output,
+                pass1TokensUsed: result.response.outputTokens,
+                pass1CompletedAt,
+                isStale: false,
+              }
               : {
-                  baseContentInternal: parsed.content,
-                  baseMemory: parsed.memory as any,
-                  pass1Artifact: pass1Artifact as any,
-                  memory: parsed.memory as any,
-                  content: existing?.content || '',
-                  wordCount: existing?.content ? this.countWords(existing.content) : 0,
-                  blueprintVersion,
-                  pass1PromptUsed: prompt,
-                  pass1LlmResponse: result.response.output,
-                  pass1TokensUsed: result.response.outputTokens,
-                  pass1CompletedAt,
-                  status: 'BASE_READY' as PaperSectionStatus,
-                  generatedAt: pass1CompletedAt,
-                }
+                baseContentInternal: parsed.content,
+                baseMemory: parsed.memory as any,
+                pass1Artifact: pass1Artifact as any,
+                memory: parsed.memory as any,
+                content: existing?.content || '',
+                wordCount: existing?.content ? this.countWords(existing.content) : 0,
+                blueprintVersion,
+                pass1PromptUsed: prompt,
+                pass1LlmResponse: result.response.output,
+                pass1TokensUsed: result.response.outputTokens,
+                pass1CompletedAt,
+                status: 'BASE_READY' as PaperSectionStatus,
+                generatedAt: pass1CompletedAt,
+              }
           });
 
           progress.sections[sectionKey] = 'done';
@@ -1399,6 +1349,7 @@ class PaperSectionService {
         dimensionEvidence: [],
         gaps: [],
         coverageAssignments: [],
+        evidenceDigest: { digests: [], mustCiteKeys: [], optionalCiteKeys: [] },
       };
     }
 
@@ -1422,6 +1373,7 @@ class PaperSectionService {
         dimensionEvidence: evidencePack.dimensionEvidence || [],
         gaps: evidencePack.gaps || [],
         coverageAssignments: evidencePack.coverageAssignments || [],
+        evidenceDigest: evidencePack.evidenceDigest,
       };
     } catch (error) {
       console.warn(`[PaperSectionService] Failed to load evidence pack for ${sectionKey}:`, error);
@@ -1431,6 +1383,7 @@ class PaperSectionService {
         dimensionEvidence: [],
         gaps: [],
         coverageAssignments: [],
+        evidenceDigest: { digests: [], mustCiteKeys: [], optionalCiteKeys: [] },
       };
     }
   }
@@ -1447,7 +1400,8 @@ class PaperSectionService {
     userInstructions?: string,
     writingStyleBlock?: string,
     sessionId?: string,
-    sectionKey?: string
+    sectionKey?: string,
+    tenantContext?: TenantContext
   ): Promise<{ prompt: string; debugInfo: PromptDebugInfo | null }> {
     const { thesisStatement, centralObjective, keyContributions, currentSection, preferredTerms } = blueprintContext;
 
@@ -1457,6 +1411,8 @@ class PaperSectionService {
       paperTypeOverride?: string;
       methodologyConstraints?: string;
       blueprintContext?: string;
+      intentLock?: string;
+      argumentPlan?: string;
       previousMemories?: string;
       preferredTerms?: string;
       writingPersona?: string;
@@ -1478,33 +1434,42 @@ class PaperSectionService {
     }
 
     // Inject evidence-pack placeholders and build fallback evidence blocks.
+    const citationBudgetValidatorEnabled = isFeatureEnabled('ENABLE_CITATION_BUDGET_VALIDATOR');
     const hasCitationModePlaceholders = /\{\{AUTO_CITATION_MODE\}\}|\{\{ALLOWED_CITATION_KEYS\}\}/.test(basePrompt);
-    const hasEvidencePlaceholders = /\{\{DIMENSION_EVIDENCE_NOTES\}\}|\{\{RELEVANCE_NOTES\}\}|\{\{EVIDENCE_GAPS\}\}/.test(basePrompt);
-    const hasCoveragePlaceholders = /\{\{CITATION_COVERAGE_ASSIGNMENTS\}\}/.test(basePrompt);
+    const hasEvidencePlaceholders = /\{\{DIMENSION_EVIDENCE_NOTES\}\}|\{\{RELEVANCE_NOTES\}\}|\{\{EVIDENCE_GAPS\}\}|\{\{EVIDENCE_DIGEST\}\}/.test(basePrompt);
+    const hasDigestPlaceholders = /\{\{RELEVANCE_NOTES\}\}|\{\{EVIDENCE_DIGEST\}\}/.test(basePrompt);
+    const hasCoveragePlaceholders = /\{\{CITATION_COVERAGE_ASSIGNMENTS\}\}|\{\{CITATION_BUDGET_RULES\}\}/.test(basePrompt);
     const evidenceContext = await this.getPass1EvidencePromptContext(sessionId, currentSection.sectionKey);
     const autoCitationMode = evidenceContext.useMappedEvidence ? 'ON' : 'OFF';
     const allowedKeys = evidenceContext.allowedCitationKeys.length > 0
       ? evidenceContext.allowedCitationKeys.join(', ')
       : '(none)';
-    const dimensionEvidenceNotes = evidenceContext.dimensionEvidence.length > 0
-      ? formatDimensionEvidence(evidenceContext.dimensionEvidence)
-      : '(no evidence pack available)';
-    const relevanceNotes = evidenceContext.dimensionEvidence.length > 0
-      ? formatRelevanceNotes(evidenceContext.dimensionEvidence)
-      : '(no relevance notes available)';
+    const dimensionEvidenceNotes = citationBudgetValidatorEnabled
+      ? ''
+      : (
+        evidenceContext.dimensionEvidence.length > 0
+          ? formatDimensionEvidence(evidenceContext.dimensionEvidence)
+          : '(no evidence pack available)'
+      );
+    const evidenceDigestBlock = evidenceContext.evidenceDigest.digests.length > 0
+      ? formatEvidenceDigest(evidenceContext.evidenceDigest)
+      : '(no evidence digest available)';
     const evidenceGaps = evidenceContext.gaps.length > 0
       ? evidenceContext.gaps.join('; ')
       : '(none detected)';
-    const coverageNotes = evidenceContext.coverageAssignments.length > 0
-      ? formatCoverageAssignments(evidenceContext.coverageAssignments)
-      : '(no mandatory coverage citations for this section)';
+    const citationBudgetBlock = evidenceContext.evidenceDigest.digests.length > 0
+      ? formatCitationBudgetRules(evidenceContext.evidenceDigest)
+      : '(no citation budget rules)';
 
+    // Replace both new and legacy placeholders for backward compatibility
     basePrompt = basePrompt.replace(/\{\{AUTO_CITATION_MODE\}\}/g, autoCitationMode);
     basePrompt = basePrompt.replace(/\{\{ALLOWED_CITATION_KEYS\}\}/g, allowedKeys);
     basePrompt = basePrompt.replace(/\{\{DIMENSION_EVIDENCE_NOTES\}\}/g, dimensionEvidenceNotes);
-    basePrompt = basePrompt.replace(/\{\{RELEVANCE_NOTES\}\}/g, relevanceNotes);
+    basePrompt = basePrompt.replace(/\{\{RELEVANCE_NOTES\}\}/g, evidenceDigestBlock);
+    basePrompt = basePrompt.replace(/\{\{EVIDENCE_DIGEST\}\}/g, evidenceDigestBlock);
     basePrompt = basePrompt.replace(/\{\{EVIDENCE_GAPS\}\}/g, evidenceGaps);
-    basePrompt = basePrompt.replace(/\{\{CITATION_COVERAGE_ASSIGNMENTS\}\}/g, coverageNotes);
+    basePrompt = basePrompt.replace(/\{\{CITATION_COVERAGE_ASSIGNMENTS\}\}/g, citationBudgetBlock);
+    basePrompt = basePrompt.replace(/\{\{CITATION_BUDGET_RULES\}\}/g, citationBudgetBlock);
 
     const citationModeFallbackBlock = !hasCitationModePlaceholders
       ? `AUTO_CITATION_MODE: ${autoCitationMode}
@@ -1517,23 +1482,50 @@ Citation Rules:
 - If mode is OFF and no valid key applies, write the claim without citation.`
       : '';
 
+    const evidenceFallbackBody = citationBudgetValidatorEnabled
+      ? evidenceDigestBlock
+      : (dimensionEvidenceNotes || evidenceDigestBlock);
     const evidenceFallbackBlock = evidenceContext.useMappedEvidence
-      && evidenceContext.dimensionEvidence.length > 0
-      && !hasEvidencePlaceholders
-      ? `DIMENSION EVIDENCE NOTES:
-${dimensionEvidenceNotes}
-
-RELEVANCE NOTES:
-${relevanceNotes}
+      && evidenceContext.evidenceDigest.digests.length > 0
+      && (citationBudgetValidatorEnabled ? !hasDigestPlaceholders : !hasEvidencePlaceholders)
+      ? `${evidenceFallbackBody}
 
 EVIDENCE GAPS:
 ${evidenceGaps}`
       : '';
     const coverageFallbackBlock = evidenceContext.useMappedEvidence
-      && evidenceContext.coverageAssignments.length > 0
+      && evidenceContext.evidenceDigest.digests.length > 0
       && !hasCoveragePlaceholders
-      ? coverageNotes
+      ? citationBudgetBlock
       : '';
+
+    // Tier 2: Generate ResearchIntentLock + ArgumentPlan (gated by ENABLE_ARGUMENT_PLAN)
+    let intentLockBlock = '';
+    let argumentPlanBlock = '';
+
+    if (isFeatureEnabled('ENABLE_ARGUMENT_PLAN') && sessionId && sectionKey && tenantContext) {
+      try {
+        const intentLock = await researchIntentLockService.getOrCreateIntentLock(sessionId, tenantContext);
+        if (intentLock) {
+          intentLockBlock = researchIntentLockService.formatForPrompt(intentLock);
+          debugComponents.intentLock = intentLockBlock;
+        }
+
+        const argumentPlan = await argumentPlannerService.buildArgumentPlan(
+          sessionId,
+          sectionKey,
+          evidenceContext.evidenceDigest,
+          intentLock,
+          tenantContext
+        );
+        if (argumentPlan) {
+          argumentPlanBlock = argumentPlannerService.formatForPrompt(argumentPlan);
+          debugComponents.argumentPlan = argumentPlanBlock;
+        }
+      } catch (e) {
+        console.warn('[PaperSectionService] Tier 2 generation failed (non-fatal):', e);
+      }
+    }
 
     // Get methodology-specific constraints to inject
     const methodologyBlock = getMethodologyConstraints(methodologyType, currentSection.sectionKey);
@@ -1577,7 +1569,7 @@ ${pm.memory.forwardReferences.length > 0 ? `- Promises: ${pm.memory.forwardRefer
     // Build prompt with EXPLICIT PRIORITY ORDERING
     // Priority: Lower numbers = lower priority, Higher numbers = higher priority
     // When contradictions exist, HIGHER PRIORITY WINS
-    
+
     const prompt = `
 ╔═══════════════════════════════════════════════════════════════════════════════╗
 ║  PROMPT PRIORITY GUIDE                                                        ║
@@ -1618,14 +1610,22 @@ ${citationModeFallbackBlock ? `
 [PRIORITY 2.5 - CITATION MODE] SECTION CITATION CONTROL
 ${citationModeFallbackBlock}
 ` : ''}
+${intentLockBlock ? `
+[PRIORITY 2.55 - RESEARCH INTENT LOCK] THESIS GUARDRAILS
+${intentLockBlock}
+` : ''}
 
 ${evidenceFallbackBlock ? `
 [PRIORITY 2.6 - EVIDENCE PACK] DIMENSION MAPPINGS, RELEVANCE, AND GAPS
 ${evidenceFallbackBlock}
 ` : ''}
 ${coverageFallbackBlock ? `
-[PRIORITY 2.7 - CITATION COVERAGE] MANDATORY CITATIONS FOR THIS SECTION
+[PRIORITY 2.7 - CITATION COVERAGE] CITATION BUDGET RULES
 ${coverageFallbackBlock}
+` : ''}
+${argumentPlanBlock ? `
+[PRIORITY 2.8 - ARGUMENT PLAN] SECTION OUTLINE (follow this structure)
+${argumentPlanBlock}
 ` : ''}
 ${previousSectionsSummary ? `
 ═══════════════════════════════════════════════════════════════════════════════
@@ -1792,6 +1792,119 @@ MEMORY FIELD RULES:
     return { prompt, debugInfo };
   }
 
+  private extractCitationKeySet(content: string): Set<string> {
+    const { keys } = citationValidator.countCitesInText(String(content || ''));
+    return new Set(
+      keys
+        .map((key) => String(key || '').trim())
+        .filter(Boolean)
+    );
+  }
+
+  private extractRewriteContent(output: string): string {
+    const raw = String(output || '').trim();
+    if (!raw) return '';
+    try {
+      const parsed = this.parseSectionResponse(raw);
+      if (parsed.content?.trim()) {
+        return parsed.content;
+      }
+    } catch {
+      // fall through to raw markdown
+    }
+    return polishDraftMarkdown(raw);
+  }
+
+  private async enforceCitationBudgetValidator(params: {
+    sessionId: string;
+    sectionKey: string;
+    content: string;
+    llmRequestContext: { tenantContext: TenantContext } | { headers: Record<string, string> };
+    purpose: string;
+  }): Promise<string> {
+    if (!isFeatureEnabled('ENABLE_CITATION_BUDGET_VALIDATOR')) {
+      return params.content;
+    }
+
+    let currentContent = polishDraftMarkdown(String(params.content || '').trim());
+    if (!currentContent) {
+      return currentContent;
+    }
+
+    const initialCitationKeys = this.extractCitationKeySet(currentContent);
+    const evidenceContext = await this.getPass1EvidencePromptContext(params.sessionId, params.sectionKey);
+    const mustCiteKeys = evidenceContext.evidenceDigest.mustCiteKeys
+      .map((key) => String(key || '').trim())
+      .filter((key) => key && initialCitationKeys.has(key));
+
+    let report = citationValidator.validate(currentContent, { mustCiteKeys });
+    const maxRewriteAttempts = 2;
+
+    for (let attempt = 1; attempt <= maxRewriteAttempts && !report.passed; attempt++) {
+      const rewritePrompt = `${citationValidator.buildRewritePrompt(currentContent, report)}
+
+ADDITIONAL HARD RULES:
+- Do NOT introduce any new [CITE:key] markers that were not present in the ORIGINAL DRAFT.
+- Reduce citation density only by removing or redistributing existing citation markers in violating paragraphs.
+- Preserve meaning, factual claims, and paragraph order.
+- Return ONLY corrected markdown content.`;
+
+      const rewriteResult = await llmGateway.executeLLMOperation(
+        params.llmRequestContext,
+        {
+          taskCode: 'LLM2_DRAFT',
+          stageCode: 'PAPER_SECTION_DRAFT',
+          prompt: rewritePrompt,
+          parameters: {
+            purpose: params.purpose,
+            temperature: 0.2,
+          },
+          idempotencyKey: crypto.randomUUID(),
+          metadata: {
+            sessionId: params.sessionId,
+            sectionKey: params.sectionKey,
+            purpose: params.purpose,
+            attempt,
+          }
+        }
+      );
+
+      if (!rewriteResult.success || !rewriteResult.response?.output) {
+        console.warn(
+          `[PaperSectionService] Citation budget rewrite failed for ${params.sectionKey} (attempt ${attempt}):`,
+          rewriteResult.error?.message || 'empty response'
+        );
+        break;
+      }
+
+      const rewrittenContent = this.extractRewriteContent(rewriteResult.response.output);
+      if (!rewrittenContent) {
+        break;
+      }
+
+      const rewrittenKeys = this.extractCitationKeySet(rewrittenContent);
+      const introducedNewKey = Array.from(rewrittenKeys).some((key) => !initialCitationKeys.has(key));
+      if (introducedNewKey) {
+        console.warn(
+          `[PaperSectionService] Citation rewrite introduced new citation keys for ${params.sectionKey}; discarding attempt ${attempt}.`
+        );
+        continue;
+      }
+
+      currentContent = rewrittenContent;
+      report = citationValidator.validate(currentContent, { mustCiteKeys });
+    }
+
+    if (!report.passed) {
+      console.warn(
+        `[PaperSectionService] Citation budget validator still reports violations for ${params.sectionKey} after rewrites.`,
+        report.rewriteDirectives
+      );
+    }
+
+    return currentContent;
+  }
+
   private buildMemoryExtractionPrompt(content: string, sectionKey: string): string {
     return `Extract a structured memory summary from the following ${sectionKey} section.
 
@@ -1889,7 +2002,7 @@ FIELD DEFINITIONS:
     } catch (error) {
       console.error('Section parse error:', error);
       console.error('Raw output:', output.substring(0, 500));
-      
+
       // Try to extract content even if JSON is malformed
       const contentMatch = output.match(/"content"\s*:\s*"([\s\S]*?)(?:","memory"|"})/);
       if (contentMatch) {
@@ -1965,4 +2078,3 @@ export const paperSectionService = new PaperSectionService();
 
 // Export class for testing
 export { PaperSectionService };
-

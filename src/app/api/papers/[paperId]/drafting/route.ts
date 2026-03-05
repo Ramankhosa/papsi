@@ -15,6 +15,7 @@ import { evidencePackService, type SectionEvidencePack } from '@/lib/services/ev
 import { formatBibliographyMarkdown, polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
 import { isFeatureEnabled } from '@/lib/feature-flags';
 import { sectionPolishService } from '@/lib/services/section-polish-service';
+import { citationValidator } from '@/lib/services/citation-validator';
 import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 import type { TenantContext } from '@/lib/metering';
 import {
@@ -1565,6 +1566,7 @@ interface EvidencePromptContext {
   dimensionEvidence: SectionEvidencePack['dimensionEvidence'];
   gaps: string[];
   coverageAssignments: SectionEvidencePack['coverageAssignments'];
+  evidenceDigest: SectionEvidencePack['evidenceDigest'];
 }
 
 interface DimensionPlanEntry {
@@ -2608,9 +2610,6 @@ function formatDimensionEvidence(evidence: EvidencePromptContext['dimensionEvide
         if (card.doesNotSupport) {
           lines.push(`    Does NOT support: ${card.doesNotSupport}`);
         }
-        if (card.sourceFragment) {
-          lines.push(`    Quote: "${card.sourceFragment}"${card.pageHint ? ` (${card.pageHint})` : ''}`);
-        }
       }
     }
 
@@ -2712,16 +2711,50 @@ function formatRelevanceNotes(evidence: EvidencePromptContext['dimensionEvidence
     .join('\n');
 }
 
-function formatCoverageAssignments(assignments: EvidencePromptContext['coverageAssignments']): string {
-  if (!assignments || assignments.length === 0) return '(No coverage assignments)';
+function formatEvidenceDigest(digest: EvidencePromptContext['evidenceDigest']): string {
+  if (!digest || digest.digests.length === 0) {
+    return '(No evidence digest available)';
+  }
 
   const lines: string[] = [
-    '[PRIORITY 2.7 - CITATION COVERAGE] MANDATORY CITATIONS FOR THIS SECTION',
-    'These citations are assigned for full-paper citation coverage.',
-    'You MUST cite each one at least once using [CITE:key].',
-    'Each citation may appear at most 2 times in this section.',
+    'EVIDENCE DIGEST (one line per citation - use as grounding, not verbatim):',
     ''
   ];
+
+  for (const entry of digest.digests) {
+    const mustTag = entry.mustCite ? ' [MUST-CITE]' : '';
+    const methodTag = entry.method ? ` | method: ${entry.method.slice(0, 80)}` : '';
+    lines.push(
+      `- [${entry.citationKey}]${mustTag}: ${entry.claimType} | ${entry.claim.slice(0, 200)} | ` +
+      `strength: ${entry.evidenceStrength} | stance: ${entry.stance || 'neutral'}${methodTag}`
+    );
+  }
+
+  return lines.join('\n');
+}
+
+function formatCoverageAssignments(
+  assignments: EvidencePromptContext['coverageAssignments'],
+  useBudgetMode: boolean
+): string {
+  if (!assignments || assignments.length === 0) return '(No coverage assignments)';
+
+  const lines: string[] = useBudgetMode
+    ? [
+      '[PRIORITY 2.7 - CITATION COVERAGE] CITATION BUDGET GUIDANCE',
+      'These citations are assigned for section-level coverage.',
+      'Cite only when a citation directly supports a claim.',
+      'Do NOT enumerate citations for coverage compliance.',
+      'Follow citation budget: max 3 citations per paragraph; avoid citation-dumping.',
+      ''
+    ]
+    : [
+      '[PRIORITY 2.7 - CITATION COVERAGE] SECTION COVERAGE GUIDANCE',
+      'These citations are assigned for full-paper citation coverage.',
+      'Use assigned citations only when they substantively support the paragraph claim.',
+      'Avoid citation enumeration and avoid citation-dumping.',
+      ''
+    ];
 
   for (const assignment of assignments) {
     const reason = assignment.claimType || 'GENERAL';
@@ -2826,9 +2859,11 @@ async function buildPrompt(
   previousSectionMemories?: PreviousSectionMemoryEntry[]
 ): Promise<string> {
   let basePrompt = await sectionTemplateService.getPromptForSection(sectionKey, paperTypeCode, context);
+  const citationBudgetValidatorEnabled = isFeatureEnabled('ENABLE_CITATION_BUDGET_VALIDATOR');
   const hasCitationModePlaceholders = /\{\{AUTO_CITATION_MODE\}\}|\{\{ALLOWED_CITATION_KEYS\}\}/.test(basePrompt);
-  const hasEvidencePlaceholders = /\{\{DIMENSION_EVIDENCE_NOTES\}\}|\{\{RELEVANCE_NOTES\}\}|\{\{EVIDENCE_GAPS\}\}/.test(basePrompt);
-  const hasCoveragePlaceholders = /\{\{CITATION_COVERAGE_ASSIGNMENTS\}\}/.test(basePrompt);
+  const hasEvidencePlaceholders = /\{\{DIMENSION_EVIDENCE_NOTES\}\}|\{\{RELEVANCE_NOTES\}\}|\{\{EVIDENCE_GAPS\}\}|\{\{EVIDENCE_DIGEST\}\}/.test(basePrompt);
+  const hasDigestPlaceholders = /\{\{RELEVANCE_NOTES\}\}|\{\{EVIDENCE_DIGEST\}\}/.test(basePrompt);
+  const hasCoveragePlaceholders = /\{\{CITATION_COVERAGE_ASSIGNMENTS\}\}|\{\{CITATION_BUDGET_RULES\}\}/.test(basePrompt);
   const topic = context?.researchTopic;
   const sectionTitle = sectionKey
     .replace(/[_-]+/g, ' ')
@@ -2901,12 +2936,24 @@ async function buildPrompt(
   // ============================================================================
   // EVIDENCE PACK PLACEHOLDERS
   // ============================================================================
-  const dimensionEvidenceNotes = evidenceContext?.dimensionEvidence
-    ? formatDimensionEvidence(evidenceContext.dimensionEvidence)
-    : '(no evidence pack available)';
-  const relevanceNotes = evidenceContext?.dimensionEvidence
-    ? formatRelevanceNotes(evidenceContext.dimensionEvidence)
-    : '(no relevance notes available)';
+  const dimensionEvidenceNotes = citationBudgetValidatorEnabled
+    ? ''
+    : (
+      evidenceContext?.dimensionEvidence
+        ? formatDimensionEvidence(evidenceContext.dimensionEvidence)
+        : '(no evidence pack available)'
+    );
+  const evidenceDigest = evidenceContext?.evidenceDigest;
+  const evidenceDigestBlock = evidenceDigest?.digests?.length
+    ? formatEvidenceDigest(evidenceDigest)
+    : '(no evidence digest available)';
+  const relevanceNotes = citationBudgetValidatorEnabled
+    ? evidenceDigestBlock
+    : (
+      evidenceContext?.dimensionEvidence
+        ? formatRelevanceNotes(evidenceContext.dimensionEvidence)
+        : '(no relevance notes available)'
+    );
   const evidenceGaps = evidenceContext?.gaps?.length
     ? evidenceContext.gaps.join(', ')
     : '(none detected)';
@@ -2914,13 +2961,15 @@ async function buildPrompt(
     ? evidenceContext.coverageAssignments
     : [];
   const coverageNotes = coverageAssignments.length > 0
-    ? formatCoverageAssignments(coverageAssignments)
+    ? formatCoverageAssignments(coverageAssignments, citationBudgetValidatorEnabled)
     : '(no mandatory coverage citations for this section)';
 
   basePrompt = basePrompt.replace(/\{\{DIMENSION_EVIDENCE_NOTES\}\}/g, dimensionEvidenceNotes);
   basePrompt = basePrompt.replace(/\{\{RELEVANCE_NOTES\}\}/g, relevanceNotes);
+  basePrompt = basePrompt.replace(/\{\{EVIDENCE_DIGEST\}\}/g, evidenceDigestBlock);
   basePrompt = basePrompt.replace(/\{\{EVIDENCE_GAPS\}\}/g, evidenceGaps);
   basePrompt = basePrompt.replace(/\{\{CITATION_COVERAGE_ASSIGNMENTS\}\}/g, coverageNotes);
+  basePrompt = basePrompt.replace(/\{\{CITATION_BUDGET_RULES\}\}/g, coverageNotes);
 
   // ============================================================================
   // FALLBACK: Append blocks if prompt doesn't use placeholders
@@ -2943,10 +2992,16 @@ async function buildPrompt(
 
   // Always inject evidence block when mapped evidence is enabled, even if prompt templates
   // do not have dedicated placeholders.
+  const evidenceFallbackBody = citationBudgetValidatorEnabled
+    ? evidenceDigestBlock
+    : (dimensionEvidenceNotes || evidenceDigestBlock);
+  const hasEvidenceForFallback = citationBudgetValidatorEnabled
+    ? Boolean(evidenceContext?.evidenceDigest?.digests?.length)
+    : Boolean(evidenceContext?.dimensionEvidence?.length);
   const evidenceBlock = evidenceContext?.useMappedEvidence
-    && evidenceContext.dimensionEvidence.length > 0
-    && !hasEvidencePlaceholders
-    ? `\n\n${dimensionEvidenceNotes}\n\n[EVIDENCE GAPS]\n${evidenceGaps}`
+    && hasEvidenceForFallback
+    && (citationBudgetValidatorEnabled ? !hasDigestPlaceholders : !hasEvidencePlaceholders)
+    ? `\n\n${evidenceFallbackBody}\n\n[EVIDENCE GAPS]\n${evidenceGaps}`
     : '';
   const coverageBlock = evidenceContext?.useMappedEvidence
     && coverageAssignments.length > 0
@@ -3360,7 +3415,14 @@ async function generateSection(
       llmTokensUsed = pass1Result.response.outputTokens;
       const pass1RawOutput = (pass1Result.response.output || '').trim();
       const pass1ParsedOutput = extractSectionOutput(pass1RawOutput);
-      pass1Content = pass1ParsedOutput.content;
+      pass1Content = await enforceCitationBudgetValidatorForPass1({
+        sessionId,
+        sectionKey,
+        content: pass1ParsedOutput.content,
+        headers: requestHeaders,
+        tenantContext,
+        evidencePromptContext
+      });
       const pass1CompletedAt = new Date();
       const pass1Artifact = buildPersistedPass1Artifact({
         content: pass1Content,
@@ -3875,7 +3937,8 @@ async function buildSectionPromptRuntimeBundle(params: {
       allowedCitationKeys: citationContext.allowedCitationKeys,
       dimensionEvidence: evidencePack?.dimensionEvidence || [],
       gaps: citationContext.evidenceGaps,
-      coverageAssignments: evidencePack?.coverageAssignments || []
+      coverageAssignments: evidencePack?.coverageAssignments || [],
+      evidenceDigest: evidencePack?.evidenceDigest || { digests: [], mustCiteKeys: [], optionalCiteKeys: [] }
     };
 
     if (
@@ -3905,7 +3968,8 @@ async function buildSectionPromptRuntimeBundle(params: {
       allowedCitationKeys: [],
       dimensionEvidence: [],
       gaps: [],
-      coverageAssignments: []
+      coverageAssignments: [],
+      evidenceDigest: { digests: [], mustCiteKeys: [], optionalCiteKeys: [] }
     };
   }
 
@@ -4150,6 +4214,87 @@ async function executeDraftSectionPrompt(params: {
     output: String(result.response.output || '').trim(),
     outputTokens: result.response.outputTokens
   };
+}
+
+function extractCitationKeySet(content: string): Set<string> {
+  const { keys } = citationValidator.countCitesInText(String(content || ''));
+  return new Set(
+    keys
+      .map((key) => String(key || '').trim())
+      .filter(Boolean)
+  );
+}
+
+async function enforceCitationBudgetValidatorForPass1(params: {
+  sessionId: string;
+  sectionKey: string;
+  content: string;
+  headers: Record<string, string>;
+  tenantContext?: TenantContext | null;
+  evidencePromptContext: EvidencePromptContext;
+}): Promise<string> {
+  if (!isFeatureEnabled('ENABLE_CITATION_BUDGET_VALIDATOR')) {
+    return params.content;
+  }
+
+  let currentContent = polishDraftMarkdown(String(params.content || '').trim());
+  if (!currentContent) {
+    return currentContent;
+  }
+
+  const initialCitationKeys = extractCitationKeySet(currentContent);
+  const mustCiteKeys = (params.evidencePromptContext?.evidenceDigest?.mustCiteKeys || [])
+    .map((key) => String(key || '').trim())
+    .filter((key) => key && initialCitationKeys.has(key));
+  let report = citationValidator.validate(currentContent, { mustCiteKeys });
+  const maxRewriteAttempts = 2;
+
+  for (let attempt = 1; attempt <= maxRewriteAttempts && !report.passed; attempt++) {
+    const rewritePrompt = `${citationValidator.buildRewritePrompt(currentContent, report)}
+
+ADDITIONAL HARD RULES:
+- Do NOT introduce any new [CITE:key] markers that were not present in the ORIGINAL DRAFT.
+- Reduce citation density only by removing or redistributing existing citation markers in violating paragraphs.
+- Preserve meaning, factual claims, and paragraph order.
+- Return ONLY corrected markdown content.`;
+
+    const rewriteResult = await executeDraftSectionPrompt({
+      sessionId: params.sessionId,
+      sectionKey: params.sectionKey,
+      prompt: rewritePrompt,
+      headers: params.headers,
+      tenantContext: params.tenantContext,
+      purpose: 'paper_section_pass1_citation_budget_rewrite',
+      temperature: 0.2,
+      stageCode: 'PAPER_SECTION_DRAFT'
+    });
+
+    const rewritten = extractSectionOutput(rewriteResult.output).content;
+    if (!rewritten) {
+      break;
+    }
+
+    const rewrittenKeys = extractCitationKeySet(rewritten);
+    const introducedNewKey = Array.from(rewrittenKeys).some((key) => !initialCitationKeys.has(key));
+    if (introducedNewKey) {
+      console.warn(
+        `[PaperDrafting] Citation rewrite introduced new keys for ${params.sectionKey}; discarding attempt ${attempt}.`
+      );
+      continue;
+    }
+
+    currentContent = rewritten;
+    report = citationValidator.validate(currentContent, { mustCiteKeys });
+  }
+
+  if (!report.passed) {
+    console.warn(
+      `[PaperDrafting] Citation budget validator still reports violations for ${params.sectionKey} after rewrites.`,
+      report.rewriteDirectives
+    );
+  }
+
+  return currentContent;
 }
 
 function resolveRequiredCitationKeys(
@@ -4662,7 +4807,14 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             stageCode: 'PAPER_SECTION_DRAFT'
           });
           const parsedPass1 = extractSectionOutput(generatedPass1.output);
-          pass1Content = String(parsedPass1.content || '').trim();
+          pass1Content = await enforceCitationBudgetValidatorForPass1({
+            sessionId,
+            sectionKey,
+            content: String(parsedPass1.content || '').trim(),
+            headers: requestHeaders,
+            tenantContext,
+            evidencePromptContext: bundle.evidencePromptContext
+          });
           if (!pass1Content) {
             throw new DraftingRequestError(
               'Pass 1 generation returned empty content',

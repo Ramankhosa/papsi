@@ -1,0 +1,24 @@
+[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
+
+[1m[7m[36m RUN [39m[27m[22m [36mv2.1.9 [39m[90mC:/Users/raman/Documents/Papsi[39m
+
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mparseParagraphs[2m > [22mshould split markdown by double newlines
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mparseParagraphs[2m > [22mshould exclude heading-only blocks
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mparseParagraphs[2m > [22mshould keep heading + text blocks
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mparseParagraphs[2m > [22mshould return empty array for empty/null input
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mcountCitesInText[2m > [22mshould count single [CITE:key] markers
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mcountCitesInText[2m > [22mshould handle compound citations [CITE:a, b]
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mcountCitesInText[2m > [22mshould return 0 for text without citations
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mcountCitesInText[2m > [22mshould handle case-insensitive [CITE:] and [cite:]
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mcollectAllCiteKeys[2m > [22mshould collect unique keys across paragraphs
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mvalidate[2m > [22mshould PASS when under budget
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mvalidate[2m > [22mshould FAIL when paragraph exceeds max cites
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mvalidate[2m > [22mshould detect missing must-cite keys
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mvalidate[2m > [22mshould PASS when all must-cites are present and under budget
+ [32m✓[39m src/tests/unit/citation-validator.test.ts[2m > [22mCitation Budget Validator[2m > [22mbuildRewritePrompt[2m > [22mshould format directives for violations
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m14 passed[39m[22m[90m (14)[39m
+[2m   Start at [22m 10:52:30
+[2m   Duration [22m 1.21s[2m (transform 76ms, setup 0ms, collect 90ms, tests 11ms, environment 0ms, prepare 249ms)[22m
+

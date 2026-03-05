@@ -3939,6 +3939,9 @@ model PaperBlueprint {
   version   Int   @default(1)
   changeLog Json? // Array of { version, changedAt, changes[] }
 
+  // Research Intent Lock — thesis guardrails, allowed/forbidden claims, venue target
+  intentLock Json? @map("intent_lock")
+
   // LLM metadata
   llmPromptUsed String? @db.Text
   llmResponse   String? @db.Text
@@ -3985,6 +3988,7 @@ model PaperSection {
   pass2CompletedAt     DateTime? @map("pass2_completed_at")
   dimensionFlowState   Json?   @map("dimension_flow_state") // Structured drafting workflow state
   validationReport     Json?   @map("validation_report") // Drift guard results
+  argumentPlan         Json?   @map("argument_plan") // ArgumentPlan JSON (outline, paragraph intents, citation budgets)
 
   // Generation metadata (backward-compat: stores Pass 2 data in two-pass, or single-pass data)
   blueprintVersion Int? // Which blueprint version was used
