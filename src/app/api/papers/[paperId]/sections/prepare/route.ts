@@ -1,7 +1,7 @@
 /**
  * Section Prepare API — Background Pass 1 Generation
  *
- * POST: Trigger parallel Pass 1 for all sections (auto-fired after evidence extraction)
+ * POST: Trigger parallel Pass 1 for user-selected sections
  * GET:  Poll background generation status
  *
  * Pass 1 generates evidence-grounded drafts with [CITE:key] anchors preserved.
@@ -17,6 +17,16 @@ import { extractTenantContextFromRequest } from '@/lib/metering/auth-bridge';
 
 export const runtime = 'nodejs';
 
+const PASS1_EXCLUDED_SECTION_KEYS = new Set(['references', 'reference', 'bibliography']);
+
+function normalizeSectionKey(value: string): string {
+  return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function isPass1ExcludedSection(sectionKey: string): boolean {
+  return PASS1_EXCLUDED_SECTION_KEYS.has(normalizeSectionKey(sectionKey));
+}
+
 function parseBooleanFlag(value: unknown): boolean {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return value === 1;
@@ -30,9 +40,9 @@ function parseBooleanFlag(value: unknown): boolean {
 function parseSectionKeys(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const normalized = value
-    .map((entry) => String(entry || '').trim())
+    .map((entry) => normalizeSectionKey(String(entry || '').trim()))
     .filter(Boolean);
-  return Array.from(new Set(normalized));
+  return Array.from(new Set(normalized)).filter((sectionKey) => !isPass1ExcludedSection(sectionKey));
 }
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
@@ -158,6 +168,16 @@ export async function POST(
     const selectedSectionKeys = parseSectionKeys(requestBody?.sectionKeys);
 
     let sectionKeys: string[] | undefined;
+    if (Array.isArray(requestBody?.sectionKeys) && selectedSectionKeys.length === 0) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: 'No eligible sections selected for Pass 1. References are excluded from Pass 1.'
+        },
+        { status: 400 }
+      );
+    }
+
     if (selectedSectionKeys.length > 0) {
       sectionKeys = selectedSectionKeys;
     } else if (retryFailedOnly) {
@@ -166,7 +186,9 @@ export async function POST(
       sectionKeys = Object.entries(sectionStateMap)
         .filter(([, state]) => state === 'failed')
         .map(([sectionKey]) => sectionKey)
-        .filter(Boolean);
+        .filter(Boolean)
+        .map((sectionKey) => normalizeSectionKey(sectionKey))
+        .filter((sectionKey) => !isPass1ExcludedSection(sectionKey));
 
       if (!sectionKeys.length) {
         return NextResponse.json(
@@ -199,6 +221,12 @@ export async function POST(
       console.error('[Prepare] Background Pass 1 failed:', err);
     });
 
+    const allEligibleSectionCount = sectionKeys?.length
+      || (await paperSectionService.getSectionGenerationOrder(sessionId))
+        .map((key) => normalizeSectionKey(key))
+        .filter((key, index, list) => key && !isPass1ExcludedSection(key) && list.indexOf(key) === index)
+        .length;
+
     return NextResponse.json({
       success: true,
       message: sectionKeys?.length
@@ -212,6 +240,7 @@ export async function POST(
       forced: forceRerun,
       retryFailedOnly,
       targetedSections: sectionKeys || null,
+      totalSectionsPlanned: allEligibleSectionCount,
     });
   } catch (err) {
     console.error('[Prepare] POST error:', err);

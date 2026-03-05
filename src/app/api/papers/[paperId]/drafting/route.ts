@@ -12,7 +12,7 @@ import { DraftingService } from '@/lib/drafting-service';
 import { getWritingSample, buildWritingSampleBlock } from '@/lib/writing-sample-service';
 import { blueprintService } from '@/lib/services/blueprint-service';
 import { evidencePackService, type SectionEvidencePack } from '@/lib/services/evidence-pack-service';
-import { formatBibliographyMarkdown, polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
+import { formatBibliographyMarkdown, polishDraftMarkdown, stripInlineMarkdownStyling } from '@/lib/markdown-draft-formatter';
 import { isFeatureEnabled } from '@/lib/feature-flags';
 import { sectionPolishService } from '@/lib/services/section-polish-service';
 import { citationValidator } from '@/lib/services/citation-validator';
@@ -306,15 +306,29 @@ function computeWordCount(content: string): number {
 
 const normalizeSectionKey = (value: string) => value.trim().toLowerCase().replace(/[\s-]+/g, '_');
 const SINGLE_PASS_SECTION_KEYS = new Set(['abstract', 'conclusion']);
+const PASS1_BYPASS_SECTION_KEYS = new Set(['references', 'reference', 'bibliography']);
 
 function isSinglePassSection(sectionKey: string): boolean {
   return SINGLE_PASS_SECTION_KEYS.has(normalizeSectionKey(sectionKey));
+}
+
+function isPass1BypassedSection(sectionKey: string): boolean {
+  return PASS1_BYPASS_SECTION_KEYS.has(normalizeSectionKey(sectionKey));
 }
 
 function buildSinglePassSectionError(sectionKey: string) {
   return {
     error: `Structured dimension flow is disabled for "${sectionKey}"`,
     hint: 'Use generate_section or regenerate_section. Abstract and conclusion are generated in a single pass.'
+  };
+}
+
+function buildMissingPass1Error(sectionKey: string) {
+  return {
+    error: `Pass 1 reference draft is required for "${sectionKey}"`,
+    hint: 'Generate Reference Draft (Pass 1) first, then run section generation (Pass 2).',
+    requiresPass1: true,
+    sectionKey
   };
 }
 
@@ -3319,7 +3333,6 @@ async function generateSection(
   const evidencePromptContext = bundle.evidencePromptContext;
   const blueprintPromptContext = bundle.blueprintPromptContext;
   const prompt = bundle.prompt;
-  const pass1Prompt = bundle.pass1Prompt;
   const draft = await getOrCreatePaperDraft(sessionId, researchTopic?.title || 'Untitled Paper');
 
   // DEBUG: Log evidence and blueprint context for troubleshooting citation injection
@@ -3353,7 +3366,7 @@ async function generateSection(
   let pass2ValidationReport: unknown;
   let pass2CompletedAt: Date | undefined;
   const requestedGenerationMode =
-    payload.generationMode === 'two_pass'
+    payload.generationMode === 'two_pass' && !isPass1BypassedSection(sectionKey)
       ? 'two_pass'
       : 'topup_final';
   const twoPassEnabled = isFeatureEnabled('ENABLE_TWO_PASS_GENERATION');
@@ -3367,107 +3380,17 @@ async function generateSection(
 
     const storedPass1 = readStoredPass1Data(sectionRecord);
     let pass1Content: string | null = null;
-    const hasFinalContent = Boolean(String(sectionRecord?.content || '').trim());
-
-    // Fast path: reuse pre-generated Pass 1 draft if available.
-    // Also reuse when section has base content but no usable final content
-    // (e.g. dimension flow created/cleared visible content while retaining base draft).
-    if (
-      storedPass1.content
-      && (
-        sectionRecord.status === 'BASE_READY'
-        || !hasFinalContent
-      )
-    ) {
+    if (storedPass1.content) {
       pass1Content = storedPass1.content;
       llmTokensUsed = storedPass1.tokensUsed;
     }
 
-    // No pre-generated base content: run inline Pass 1 and persist as BASE_READY
     if (!pass1Content) {
-      const pass1Request = {
-        taskCode: 'LLM2_DRAFT' as const,
-        stageCode: 'PAPER_SECTION_DRAFT',
-        prompt: pass1Prompt,
-        parameters: {
-          temperature: payload.temperature,
-        },
-        idempotencyKey: crypto.randomUUID(),
-        metadata: {
-          sessionId,
-          paperId: sessionId,
-          sectionKey,
-          action: `generate_section_${sectionKey}`,
-          module: 'publication_ideation',
-          purpose: 'paper_section_pass1_inline'
-        }
-      };
-
-      await emitStatus?.('llm_generation', 'Generating evidence-grounded base draft');
-      const pass1Result = await llmGateway.executeLLMOperation(
-        tenantContext ? { tenantContext } : { headers: requestHeaders },
-        pass1Request
+      throw new DraftingRequestError(
+        'Pass 1 reference draft is required before Pass 2 generation',
+        409,
+        buildMissingPass1Error(sectionKey)
       );
-      if (!pass1Result.success || !pass1Result.response) {
-        throw new Error(pass1Result.error?.message || 'Pass 1 generation failed');
-      }
-
-      llmTokensUsed = pass1Result.response.outputTokens;
-      const pass1RawOutput = (pass1Result.response.output || '').trim();
-      const pass1ParsedOutput = extractSectionOutput(pass1RawOutput);
-      pass1Content = await enforceCitationBudgetValidatorForPass1({
-        sessionId,
-        sectionKey,
-        content: pass1ParsedOutput.content,
-        headers: requestHeaders,
-        tenantContext,
-        evidencePromptContext
-      });
-      const pass1CompletedAt = new Date();
-      const pass1Artifact = buildPersistedPass1Artifact({
-        content: pass1Content,
-        memory: pass1ParsedOutput.memory,
-        generatedAt: pass1CompletedAt,
-        promptUsed: pass1Prompt,
-        tokensUsed: pass1Result.response.outputTokens
-      });
-
-      if (!pass1Content?.trim()) {
-        throw new Error('Pass 1 generation returned empty content');
-      }
-
-      const pass1Data = {
-        displayName: sectionRecord?.displayName || formatSectionLabel(sectionKey),
-        content: sectionRecord?.content || '',
-        wordCount: sectionRecord?.wordCount || 0,
-        memory: pass1ParsedOutput.memory as any,
-        generationMode: 'two_pass',
-        baseContentInternal: pass1Content,
-        baseMemory: pass1ParsedOutput.memory as any,
-        pass1Artifact: pass1Artifact as any,
-        pass1PromptUsed: pass1Prompt,
-        pass1LlmResponse: pass1RawOutput,
-        pass1TokensUsed: pass1Result.response.outputTokens,
-        pass1CompletedAt,
-        status: 'BASE_READY' as const,
-        isStale: false,
-        generatedAt: pass1CompletedAt
-      };
-
-      if (sectionRecord) {
-        sectionRecord = await prisma.paperSection.update({
-          where: { id: sectionRecord.id },
-          data: { ...pass1Data, version: { increment: 1 } }
-        });
-      } else {
-        sectionRecord = await prisma.paperSection.create({
-          data: {
-            sessionId,
-            sectionKey,
-            ...pass1Data
-          } as any
-        });
-      }
     }
 
     await emitStatus?.('llm_generation', 'Polishing evidence draft for publication');
@@ -3691,7 +3614,7 @@ async function generateSection(
     }
   );
 
-  const polishedContent = polishDraftMarkdown(postProcessed.processedContent);
+  const polishedContent = stripInlineMarkdownStyling(polishDraftMarkdown(postProcessed.processedContent));
 
   // P1 Fix: Only throw on unknownCitationKeys when strictWhitelist is active.
   // When mapped evidence is OFF, unknown keys from bare brackets (e.g. [BERT], [ResNet])
@@ -4794,73 +4717,21 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         let storedPass1 = readStoredPass1Data(sectionRecord);
         let pass1Content = storedPass1.content;
         let pass1Memory = storedPass1.memory;
-        let reusedPass1 = Boolean(pass1Content);
         if (!pass1Content) {
-          const generatedPass1 = await executeDraftSectionPrompt({
-            sessionId,
-            sectionKey,
-            prompt: bundle.pass1Prompt,
-            headers: requestHeaders,
-            tenantContext,
-            purpose: 'paper_section_pass1_dimension_flow',
-            temperature: payload.temperature,
-            stageCode: 'PAPER_SECTION_DRAFT'
-          });
-          const parsedPass1 = extractSectionOutput(generatedPass1.output);
-          pass1Content = await enforceCitationBudgetValidatorForPass1({
-            sessionId,
-            sectionKey,
-            content: String(parsedPass1.content || '').trim(),
-            headers: requestHeaders,
-            tenantContext,
-            evidencePromptContext: bundle.evidencePromptContext
-          });
-          if (!pass1Content) {
-            throw new DraftingRequestError(
-              'Pass 1 generation returned empty content',
-              422,
-              { error: 'Pass 1 generation returned empty content' }
-            );
-          }
-
-          pass1Memory = parsedPass1.memory;
-          reusedPass1 = false;
-          const pass1CompletedAt = new Date();
-          const pass1Artifact = buildPersistedPass1Artifact({
-            content: pass1Content,
-            memory: parsedPass1.memory,
-            generatedAt: pass1CompletedAt,
-            promptUsed: bundle.pass1Prompt,
-            tokensUsed: generatedPass1.outputTokens
-          });
-          sectionRecord = await prisma.paperSection.update({
-            where: { id: sectionRecord.id },
-            data: {
-              displayName: sectionRecord.displayName || formatSectionLabel(sectionKey),
-              baseContentInternal: pass1Content,
-              baseMemory: parsedPass1.memory as any,
-              pass1Artifact: pass1Artifact as any,
-              memory: parsedPass1.memory as any,
-              pass1PromptUsed: bundle.pass1Prompt,
-              pass1LlmResponse: generatedPass1.output,
-              pass1TokensUsed: generatedPass1.outputTokens,
-              pass1CompletedAt,
-              status: 'BASE_READY',
-              isStale: false,
-              generatedAt: pass1CompletedAt,
-              version: { increment: 1 }
-            }
-          });
-          storedPass1 = readStoredPass1Data(sectionRecord);
-          pass1Content = storedPass1.content;
-          pass1Memory = storedPass1.memory;
+          return NextResponse.json(
+            {
+              ...buildMissingPass1Error(sectionKey),
+              hint: 'Generate Reference Draft (Pass 1) for this section first, then start structured drafting.'
+            },
+            { status: 409 }
+          );
         }
 
         const pass1Source = buildPass1SourceTrace({
           content: pass1Content,
           memory: pass1Memory,
           generatedAt: storedPass1.generatedAt,
-          reused: reusedPass1
+          reused: true
         });
 
         // Dimension plan is built deterministically from the frozen blueprint
@@ -5297,6 +5168,7 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
             finalWords: finalSectionTrim.finalWords
           };
         }
+        sectionContentForPersist = stripInlineMarkdownStyling(polishDraftMarkdown(sectionContentForPersist));
 
         let persistedSection = await persistDimensionFlowState({
           sectionId: sectionRecord.id,

@@ -148,6 +148,26 @@ function decodeEscapedLineBreaks(raw: string): string {
     .replace(/\\t/g, '\t');
 }
 
+/**
+ * Remove inline bold/italic emphasis so content renders in normal text style.
+ * Keeps structure (headings, lists, blockquotes, citations) intact.
+ */
+export function stripInlineMarkdownStyling(raw: string): string {
+  let text = String(raw || '');
+  if (!text) return '';
+
+  text = text
+    .replace(/<\/?(strong|em|i|b)\b[^>]*>/gi, '')
+    .replace(/\*\*\*([\s\S]+?)\*\*\*/g, '$1')
+    .replace(/___([\s\S]+?)___/g, '$1')
+    .replace(/\*\*([\s\S]+?)\*\*/g, '$1')
+    .replace(/__([\s\S]+?)__/g, '$1')
+    .replace(/(^|[^\*])\*([^*\n]+)\*(?!\*)/g, '$1$2')
+    .replace(/(^|[^_])_([^_\n]+)_(?!_)/g, '$1$2');
+
+  return text;
+}
+
 export function polishDraftMarkdown(raw: string): string {
   const stripped = decodeEscapedLineBreaks(stripWrappingFences(raw));
   if (!stripped) return '';

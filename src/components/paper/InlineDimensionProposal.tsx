@@ -1,7 +1,7 @@
 'use client';
 
 import { AnimatePresence, motion } from 'framer-motion';
-import { CheckCircle2, Loader2, Pencil, RefreshCw } from 'lucide-react';
+import { Loader2, RefreshCw } from 'lucide-react';
 import MarkdownRenderer from '@/components/paper/MarkdownRenderer';
 
 interface DimensionCitationValidation {
@@ -339,32 +339,39 @@ export default function InlineDimensionProposal({
             onClick={onAccept}
             disabled={Boolean(isAccepting) || !proposalText.trim()}
             title="Accept"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-emerald-500 transition-all duration-150 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+            className="inline-flex h-7 items-center justify-center rounded-md border border-emerald-300 bg-emerald-50 px-2 text-[11px] font-medium text-emerald-700 transition-all duration-150 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {isAccepting ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-[18px] w-[18px]" />}
+            {isAccepting ? (
+              <span className="inline-flex items-center gap-1">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Accepting
+              </span>
+            ) : (
+              'Accept'
+            )}
           </button>
 
           <button
             type="button"
             onClick={onToggleRewrite}
             disabled={Boolean(isRewriting)}
-            title="Rewrite"
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-slate-400 transition-all duration-150 hover:bg-slate-100 hover:text-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
+            title="Regenerate"
+            className="inline-flex h-7 items-center justify-center rounded-md border border-slate-300 bg-white px-2 text-[11px] font-medium text-slate-700 transition-all duration-150 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <RefreshCw className="h-4 w-4" />
+            {isRewriting ? 'Regenerating' : 'Regenerate'}
           </button>
 
           <button
             type="button"
             onClick={onToggleEdit}
             title="Edit"
-            className={`inline-flex h-7 w-7 items-center justify-center rounded-md border transition-all duration-150 ${
+            className={`inline-flex h-7 items-center justify-center rounded-md border px-2 text-[11px] font-medium transition-all duration-150 ${
               isEditing
-                ? 'border-indigo-200 bg-indigo-50 text-indigo-600'
-                : 'border-transparent text-slate-400 hover:bg-slate-100 hover:text-slate-600'
+                ? 'border-indigo-300 bg-indigo-50 text-indigo-700'
+                : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
             }`}
           >
-            <Pencil className="h-4 w-4" />
+            {isEditing ? 'Editing' : 'Edit'}
           </button>
         </div>
 

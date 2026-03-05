@@ -850,9 +850,15 @@ function normalizeSectionKey(sectionKey: string): string {
 }
 
 const SINGLE_PASS_SECTION_KEYS = new Set(['abstract', 'conclusion']);
+const PASS1_EXCLUDED_SECTION_KEYS = new Set(['references', 'reference', 'bibliography']);
 
 function supportsDimensionFlow(sectionKey: string): boolean {
-  return !SINGLE_PASS_SECTION_KEYS.has(normalizeSectionKey(sectionKey));
+  const normalized = normalizeSectionKey(sectionKey);
+  return !SINGLE_PASS_SECTION_KEYS.has(normalized) && !PASS1_EXCLUDED_SECTION_KEYS.has(normalized);
+}
+
+function isPass1ExcludedSection(sectionKey: string): boolean {
+  return PASS1_EXCLUDED_SECTION_KEYS.has(normalizeSectionKey(sectionKey));
 }
 
 const LEGACY_CITATION_SPAN_REGEX = /<span\b[^>]*data-cite-key=(?:"([^"]+)"|'([^']+)')[^>]*>[\s\S]*?<\/span>/gi;
@@ -1383,14 +1389,19 @@ export default function SectionDraftingStage({
       if (sectionKeys.length > 0) {
         setBgSectionSelectorOpen(false);
       }
+      const totalSectionsPlanned = Number(data?.totalSectionsPlanned || 0);
       showMsg(
         sectionKeys.length > 0
-          ? `Pass 1 started for ${sectionKeys.length} selected section(s)`
+          ? `Pass 1 started for ${sectionKeys.length} selected section(s) (0/${sectionKeys.length} generated)`
           : retryFailedOnly
             ? 'Retrying failed sections only'
             : force
-              ? 'Section preparation rerun started'
-              : 'Section preparation restarted',
+              ? totalSectionsPlanned > 0
+                ? `Pass 1 rerun started (0/${totalSectionsPlanned} generated)`
+                : 'Pass 1 rerun started'
+              : totalSectionsPlanned > 0
+                ? `Pass 1 started (0/${totalSectionsPlanned} generated)`
+                : 'Pass 1 started',
         'success'
       );
       await loadBgGenStatus();
@@ -1429,10 +1440,15 @@ export default function SectionDraftingStage({
               : 'none',
             updatedAt: section?.updatedAt ? String(section.updatedAt) : null
           } as ReferenceDraftSectionView))
+          .filter((section: ReferenceDraftSectionView) => !isPass1ExcludedSection(section.sectionKey))
         : [];
 
       setReferenceDraftSections(sections);
-      setReferenceDraftSummary(data?.summary || null);
+      setReferenceDraftSummary({
+        totalSections: sections.length,
+        withPass1Content: sections.filter((section: ReferenceDraftSectionView) => section.hasContent).length,
+        withoutPass1Content: sections.filter((section: ReferenceDraftSectionView) => !section.hasContent).length
+      });
       setReferenceDraftFetchedAt(new Date().toISOString());
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to fetch reference draft output';
@@ -1487,7 +1503,7 @@ export default function SectionDraftingStage({
     for (const section of source) {
       for (const rawKey of section.keys || []) {
         const key = normalizeSectionKey(String(rawKey || ''));
-        if (!key || seen.has(key)) continue;
+        if (!key || seen.has(key) || isPass1ExcludedSection(key)) continue;
         seen.add(key);
         sectionsForSelection.push({
           key,
@@ -2221,6 +2237,7 @@ export default function SectionDraftingStage({
       const instr = userInstructions[sectionKey];
       const instructions = instr?.isActive !== false ? instr?.instruction || '' : '';
       const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
+      const generationMode = isPass1ExcludedSection(sectionKey) ? 'topup_final' : 'two_pass';
       const res = await fetch(`/api/papers/${sessionId}/drafting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
@@ -2229,7 +2246,7 @@ export default function SectionDraftingStage({
           sectionKey,
           instructions,
           useMappedEvidence,
-          generationMode: 'two_pass',
+          generationMode,
           autoCitationRepair: false,
           usePersonaStyle,
           personaSelection
@@ -2351,6 +2368,7 @@ export default function SectionDraftingStage({
     try {
       const remarks = regenRemarks[sectionKey] || '';
       const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
+      const generationMode = isPass1ExcludedSection(sectionKey) ? 'topup_final' : 'two_pass';
       const res = await fetch(`/api/papers/${sessionId}/drafting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
@@ -2359,7 +2377,7 @@ export default function SectionDraftingStage({
           sectionKey,
           instructions: remarks,
           useMappedEvidence,
-          generationMode: 'two_pass',
+          generationMode,
           autoCitationRepair: false,
           usePersonaStyle,
           personaSelection
@@ -2978,7 +2996,7 @@ export default function SectionDraftingStage({
               <span className="inline-flex h-3 w-3 rounded-full shrink-0 bg-slate-400" />
               <div className="flex-1">
                 <p className="text-sm text-slate-800">
-                  Pass 1 reference draft is not prepared yet. Generate it from base prompts to speed up section drafting.
+                  Pass 1 reference draft is not prepared yet. Generate it for non-reference sections from base prompts to speed up section drafting.
                 </p>
               </div>
               <button
@@ -3007,7 +3025,7 @@ export default function SectionDraftingStage({
 
             {bgSectionSelectorOpen && (
               <div className="mt-3 border-t border-slate-200 pt-3">
-                <p className="text-xs font-medium text-slate-700">Run Pass 1 only for selected sections</p>
+                <p className="text-xs font-medium text-slate-700">Run Pass 1 only for selected non-reference sections</p>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {bgSelectableSections.map(section => (
                     <label
@@ -3060,11 +3078,11 @@ export default function SectionDraftingStage({
             </span>
             <div className="flex-1">
               <p className="text-sm font-medium text-indigo-800">
-                Assembling paper structure for final content generation...
+                Generating Pass 1 reference drafts...
               </p>
               {bgGenProgress && bgGenProgress.total > 0 && bgGenLiveCounts && (
                 <p className="text-xs text-indigo-600 mt-0.5">
-                  {bgGenLiveCounts.waiting} waiting • {bgGenLiveCounts.running} in progress • {bgGenLiveCounts.done} done
+                  {bgGenLiveCounts.done}/{bgGenProgress.total} generated • {bgGenLiveCounts.waiting} waiting • {bgGenLiveCounts.running} in progress
                   {bgGenLiveCounts.failed > 0 && ` • ${bgGenLiveCounts.failed} failed`}
                 </p>
               )}
@@ -3152,7 +3170,7 @@ export default function SectionDraftingStage({
             {bgSectionSelectorOpen && (
               <div className="mt-3 border-t border-white/60 pt-3">
                 <p className={`text-xs font-medium ${bgGenStatus === 'PARTIAL' ? 'text-amber-800' : 'text-emerald-800'}`}>
-                  Run Pass 1 only for selected sections
+                  Run Pass 1 only for selected non-reference sections
                 </p>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {bgSelectableSections.map(section => (
@@ -3242,7 +3260,7 @@ export default function SectionDraftingStage({
 
             {bgSectionSelectorOpen && (
               <div className="mt-3 border-t border-red-200 pt-3">
-                <p className="text-xs font-medium text-red-800">Run Pass 1 only for selected sections</p>
+                <p className="text-xs font-medium text-red-800">Run Pass 1 only for selected non-reference sections</p>
                 <div className="mt-2 flex flex-wrap gap-2">
                   {bgSelectableSections.map(section => (
                     <label
@@ -3780,9 +3798,9 @@ export default function SectionDraftingStage({
                 )}
 
                 {!referenceDraftLoading && !referenceDraftError && referenceDraftSections.length === 0 && (
-                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                    No sections found for Pass 1 preview.
-                  </div>
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    No eligible non-reference sections found for Pass 1 preview.
+                    </div>
                 )}
 
                 {referenceDraftSections.map((section) => (

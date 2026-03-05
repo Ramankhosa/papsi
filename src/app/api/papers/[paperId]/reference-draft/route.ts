@@ -10,6 +10,12 @@ function normalizeSectionKey(value: string): string {
   return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
 }
 
+const PASS1_EXCLUDED_SECTION_KEYS = new Set(['references', 'reference', 'bibliography']);
+
+function isPass1ExcludedSection(sectionKey: string): boolean {
+  return PASS1_EXCLUDED_SECTION_KEYS.has(normalizeSectionKey(sectionKey));
+}
+
 function formatSectionLabel(sectionKey: string): string {
   return normalizeSectionKey(sectionKey)
     .replace(/_/g, ' ')
@@ -127,7 +133,7 @@ export async function GET(
     const seen = new Set<string>();
     const addKey = (rawKey: string) => {
       const normalized = normalizeSectionKey(rawKey);
-      if (!normalized || seen.has(normalized)) return;
+      if (!normalized || seen.has(normalized) || isPass1ExcludedSection(normalized)) return;
       seen.add(normalized);
       orderedKeys.push(normalized);
     };
@@ -185,4 +191,3 @@ export async function GET(
     );
   }
 }
-

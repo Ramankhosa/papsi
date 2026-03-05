@@ -202,6 +202,16 @@ function readStoredPass1Content(section: Pick<PaperSection, 'baseContentInternal
   return artifactContent || String(section?.baseContentInternal || '').trim();
 }
 
+function normalizeSectionKey(sectionKey: string): string {
+  return String(sectionKey || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+const PASS1_EXCLUDED_SECTION_KEYS = new Set(['references', 'reference', 'bibliography']);
+
+function isPass1ExcludedSection(sectionKey: string): boolean {
+  return PASS1_EXCLUDED_SECTION_KEYS.has(normalizeSectionKey(sectionKey));
+}
+
 // ============================================================================
 // Section Names Map
 // ============================================================================
@@ -358,6 +368,7 @@ class PaperSectionService {
     } = input;
 
     const twoPassEnabled = isFeatureEnabled('ENABLE_TWO_PASS_GENERATION');
+    const effectiveTwoPass = twoPassEnabled && !isPass1ExcludedSection(sectionKey);
 
     try {
       // Check if blueprint is ready
@@ -374,22 +385,26 @@ class PaperSectionService {
         where: { sessionId_sectionKey: { sessionId, sectionKey } }
       });
 
-      // Two-pass fast path: if Pass 1 is done (BASE_READY), skip to Pass 2.
-      // Also skip directly to Pass 2 when base draft exists but visible content
-      // is empty (e.g. another flow reset content while retaining Pass 1 base).
-      const hasVisibleContent = Boolean(String(existingSection?.content || '').trim());
       const storedPass1Content = readStoredPass1Content(existingSection);
-      if (
-        twoPassEnabled
-        && storedPass1Content
-        && !regenerate
-        && existingSection
-        && (existingSection.status === 'BASE_READY' || !hasVisibleContent)
-      ) {
+      const reuseStatuses = ['DRAFT', 'REVIEWED', 'APPROVED'];
+      if (effectiveTwoPass) {
+        if (!existingSection || !storedPass1Content) {
+          return {
+            success: false,
+            error: `Pass 1 reference draft is missing for "${sectionKey}". Generate Pass 1 first.`
+          };
+        }
+
+        if (!regenerate && !existingSection.isStale && reuseStatuses.includes(existingSection.status)) {
+          return {
+            success: true,
+            section: this.transformSection(existingSection)
+          };
+        }
+
         return this.runPass2Only(existingSection, undefined, tenantContext || null);
       }
 
-      const reuseStatuses = ['DRAFT', 'REVIEWED', 'APPROVED'];
       if (existingSection && !regenerate && !existingSection.isStale && reuseStatuses.includes(existingSection.status)) {
         return {
           success: true,
@@ -498,17 +513,17 @@ class PaperSectionService {
         llmRequestContext,
         {
           taskCode: 'LLM2_DRAFT',
-          stageCode: twoPassEnabled ? 'PAPER_SECTION_DRAFT' : 'PAPER_SECTION_GEN',
+          stageCode: effectiveTwoPass ? 'PAPER_SECTION_DRAFT' : 'PAPER_SECTION_GEN',
           prompt,
           parameters: {
-            purpose: twoPassEnabled ? 'paper_section_pass1' : 'paper_section_generation',
+            purpose: effectiveTwoPass ? 'paper_section_pass1' : 'paper_section_generation',
             temperature: 0.5,
           },
           idempotencyKey: crypto.randomUUID(),
           metadata: {
             sessionId,
             sectionKey,
-            purpose: twoPassEnabled ? 'paper_section_pass1' : 'paper_section_generation'
+            purpose: effectiveTwoPass ? 'paper_section_pass1' : 'paper_section_generation'
           }
         }
       );
@@ -547,7 +562,7 @@ class PaperSectionService {
       }
 
       let parsed = this.parseSectionResponse(result.response.output);
-      if (twoPassEnabled) {
+      if (effectiveTwoPass) {
         parsed = {
           ...parsed,
           content: await this.enforceCitationBudgetValidator({
@@ -562,7 +577,7 @@ class PaperSectionService {
       const blueprintVersion = blueprint?.version || 1;
 
       // ── Single-pass path ──
-      if (!twoPassEnabled) {
+      if (!effectiveTwoPass) {
         const sectionData = {
           sectionKey,
           displayName: SECTION_DISPLAY_NAMES[sectionKey] || sectionKey,
@@ -638,9 +653,12 @@ class PaperSectionService {
     paperTypeCode?: string,
     tenantContext?: TenantContext | null
   ): Promise<SectionGenerationResult> {
-    const baseContent = readStoredPass1Content(section) || section.content;
+    const baseContent = readStoredPass1Content(section);
     if (!baseContent) {
-      return { success: false, error: 'No base content available for polish pass' };
+      return {
+        success: false,
+        error: `Pass 1 reference draft is missing for "${section.sectionKey}". Generate Pass 1 first.`
+      };
     }
 
     if (!paperTypeCode) {
@@ -701,7 +719,7 @@ class PaperSectionService {
   }
 
   // ============================================================================
-  // Background Parallel Pass 1 (auto-fired after evidence extraction)
+  // Background Parallel Pass 1 (manual trigger from UI)
   // ============================================================================
 
   /**
@@ -723,13 +741,17 @@ class PaperSectionService {
         return { success: false, progress, error: blueprintReady.reason || 'Blueprint not ready' };
       }
 
-      const fullGenerationOrder = await this.getSectionGenerationOrder(sessionId);
+      const fullGenerationOrder = (await this.getSectionGenerationOrder(sessionId))
+        .filter((sectionKey) => !isPass1ExcludedSection(sectionKey));
       if (fullGenerationOrder.length === 0) {
         return { success: false, progress, error: 'No sections in blueprint' };
       }
 
       const requestedSectionKeys = Array.isArray(options?.sectionKeys)
-        ? options.sectionKeys.map(key => String(key || '').trim()).filter(Boolean)
+        ? options.sectionKeys
+          .map(key => String(key || '').trim())
+          .filter(Boolean)
+          .filter((sectionKey) => !isPass1ExcludedSection(sectionKey))
         : [];
       const requestedSectionSet = requestedSectionKeys.length > 0
         ? new Set(requestedSectionKeys)
@@ -740,7 +762,11 @@ class PaperSectionService {
         : fullGenerationOrder;
 
       if (generationOrder.length === 0) {
-        return { success: false, progress, error: 'No matching sections selected for Pass 1 run' };
+        return {
+          success: false,
+          progress,
+          error: 'No eligible sections selected for Pass 1 run. References are excluded from Pass 1.'
+        };
       }
 
       progress.total = generationOrder.length;

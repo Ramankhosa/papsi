@@ -976,6 +976,17 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
     [editor, saveSelection, restoreSelection, resolveInsertContent]
   );
 
+  const applyNormalFormatting = useCallback(() => {
+    if (!editor) return;
+    editor
+      .chain()
+      .focus()
+      .unsetAllMarks()
+      .setParagraph()
+      .setTextAlign('left')
+      .run();
+  }, [editor]);
+
   return (
     <div className={`paper-editor relative rounded-xl border border-slate-200 bg-white shadow-sm transition-shadow ${hasFocus ? 'ring-2 ring-indigo-200 border-indigo-300 shadow-md' : ''} ${className}`}>
       {/* Inject editor styles */}
@@ -985,6 +996,21 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
       {editor && hasFocus && (
         <div className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-slate-100 px-2 py-1.5 rounded-t-xl flex items-center gap-0.5 flex-wrap">
           {/* Text formatting */}
+          <MicroButton
+            onClick={applyNormalFormatting}
+            active={
+              editor.isActive('paragraph')
+              && !editor.isActive('bold')
+              && !editor.isActive('italic')
+              && !editor.isActive('underline')
+              && !editor.isActive('strike')
+              && !editor.isActive('superscript')
+              && !editor.isActive('subscript')
+            }
+            title="Normal text (clear formatting)"
+          >
+            <span className="text-[10px] font-semibold">N</span>
+          </MicroButton>
           <MicroButton onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold (Ctrl+B)">
             <Bold className="w-3.5 h-3.5" />
           </MicroButton>
@@ -1088,6 +1114,21 @@ const PaperMarkdownEditor = forwardRef<PaperMarkdownEditorRef, PaperMarkdownEdit
           editor={editor}
           className="flex items-center gap-0.5 rounded-lg border border-slate-200 bg-white/95 px-1 py-0.5 shadow-xl backdrop-blur"
         >
+          <MicroButton
+            onClick={applyNormalFormatting}
+            active={
+              editor.isActive('paragraph')
+              && !editor.isActive('bold')
+              && !editor.isActive('italic')
+              && !editor.isActive('underline')
+              && !editor.isActive('strike')
+              && !editor.isActive('superscript')
+              && !editor.isActive('subscript')
+            }
+            title="Normal"
+          >
+            <span className="text-[10px] font-semibold">N</span>
+          </MicroButton>
           <MicroButton onClick={() => editor.chain().focus().toggleBold().run()} active={editor.isActive('bold')} title="Bold">
             <Bold className="w-3 h-3" />
           </MicroButton>

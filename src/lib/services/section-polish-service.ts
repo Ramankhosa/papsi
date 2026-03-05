@@ -12,7 +12,7 @@
  */
 
 import { llmGateway, type TenantContext } from '../metering';
-import { polishDraftMarkdown } from '../markdown-draft-formatter';
+import { polishDraftMarkdown, stripInlineMarkdownStyling } from '../markdown-draft-formatter';
 import { sectionTemplateService } from './section-template-service';
 import crypto from 'crypto';
 
@@ -405,7 +405,7 @@ class SectionPolishService {
         polished = fenceMatch[1].trim();
       }
 
-      polished = polishDraftMarkdown(polished);
+      polished = stripInlineMarkdownStyling(polishDraftMarkdown(polished));
 
       const driftReport = buildDriftReport(input.baseContent, polished, input.dimensionCitations);
 

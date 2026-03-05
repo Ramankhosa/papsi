@@ -738,16 +738,16 @@ export default function FullTextEvidenceExtractionStage({
                     : 'text-red-800'
             }`}>
               {bgGenStatus === 'RUNNING'
-                ? 'Assembling overall paper structure for final content generation...'
+                ? 'Generating Pass 1 reference drafts...'
                 : bgGenStatus === 'COMPLETED'
-                  ? 'Paper structure ready - sections are prepared for final generation'
+                  ? 'Pass 1 reference draft generation completed'
                   : bgGenStatus === 'PARTIAL'
-                    ? `Paper structure partially ready - ${bgGenProgress?.failed || 0} section(s) could not be prepared`
-                    : 'Paper structure preparation failed - retry before moving to drafting'}
+                    ? `Pass 1 completed with failures - ${bgGenProgress?.failed || 0} section(s) could not be prepared`
+                    : 'Pass 1 generation failed - retry before moving to drafting'}
             </p>
             {bgGenStatus === 'RUNNING' && bgGenProgress && bgGenProgress.total > 0 && bgGenLiveCounts && (
               <p className="text-xs text-indigo-600 mt-0.5">
-                {bgGenLiveCounts.waiting} waiting • {bgGenLiveCounts.running} in progress • {bgGenLiveCounts.done} done
+                {bgGenLiveCounts.done}/{bgGenProgress.total} generated • {bgGenLiveCounts.waiting} waiting • {bgGenLiveCounts.running} in progress
                 {bgGenLiveCounts.failed > 0 && ` • ${bgGenLiveCounts.failed} failed`}
               </p>
             )}
