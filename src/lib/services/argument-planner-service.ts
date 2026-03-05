@@ -116,7 +116,9 @@ class ArgumentPlannerService {
             create: {
                 sessionId,
                 sectionKey,
-                status: 'PENDING' as any,
+                displayName: section.sectionKey.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+                content: '',
+                status: 'DRAFT' as any,
                 argumentPlan: plan as any,
             },
         });
