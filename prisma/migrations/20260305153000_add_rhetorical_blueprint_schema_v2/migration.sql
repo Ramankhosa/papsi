@@ -2,13 +2,41 @@
 ALTER TABLE "paper_blueprints"
 ADD COLUMN IF NOT EXISTS "blueprint_schema_version" INTEGER NOT NULL DEFAULT 2;
 
+DO $$
+DECLARE
+  section_col text;
+  update_sql text;
+BEGIN
+  SELECT CASE
+    WHEN EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'paper_blueprints'
+        AND column_name = 'section_plan'
+    ) THEN 'section_plan'
+    WHEN EXISTS (
+      SELECT 1
+      FROM information_schema.columns
+      WHERE table_schema = current_schema()
+        AND table_name = 'paper_blueprints'
+        AND column_name = 'sectionPlan'
+    ) THEN 'sectionPlan'
+    ELSE NULL
+  END INTO section_col;
+
+  IF section_col IS NULL THEN
+    RAISE EXCEPTION 'Unable to locate section plan column on paper_blueprints (expected section_plan or sectionPlan)';
+  END IF;
+
+  update_sql := format($sql$
 WITH expanded AS (
   SELECT
     pb.id,
     item,
     lower(regexp_replace(COALESCE(item->>'sectionKey', ''), '[[:space:]-]+', '_', 'g')) AS normalized_section_key
   FROM "paper_blueprints" pb
-  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pb."section_plan", '[]'::jsonb)) AS items(item)
+  CROSS JOIN LATERAL jsonb_array_elements(COALESCE(pb.%I, '[]'::jsonb)) AS items(item)
 ),
 rewritten AS (
   SELECT
@@ -260,10 +288,14 @@ aggregated AS (
 )
 UPDATE "paper_blueprints" pb
 SET
-  "section_plan" = aggregated.section_plan,
+  %I = aggregated.section_plan,
   "blueprint_schema_version" = 2
 FROM aggregated
 WHERE pb.id = aggregated.id;
+$sql$, section_col, section_col);
+
+  EXECUTE update_sql;
+END $$;
 
 UPDATE "paper_blueprints"
 SET "blueprint_schema_version" = 2
