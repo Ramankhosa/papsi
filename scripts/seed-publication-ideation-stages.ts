@@ -233,31 +233,73 @@ const publicationStages: StageDefinition[] = [
     description: 'Format in-text citations and references according to style rules.',
     sortOrder: 35,
   },
+  {
+    code: 'PAPER_TEXT_ACTION',
+    displayName: 'Text Action Transformations',
+    description: 'Rewrite, expand, condense, simplify, and formalize selected text snippets.',
+    sortOrder: 36,
+  },
+  {
+    code: 'PAPER_REWRITER',
+    displayName: 'Advanced Rewriter',
+    description: 'Perform high-quality rewriting with stronger structure and academic tone.',
+    sortOrder: 37,
+  },
+  {
+    code: 'PAPER_FIGURE_SUGGESTION',
+    displayName: 'Figure Suggestions',
+    description: 'Generate figure ideas aligned with section content, claims, and narrative intent.',
+    sortOrder: 38,
+  },
+  {
+    code: 'PAPER_CHART_GENERATOR',
+    displayName: 'Chart Generator',
+    description: 'Generate chart plans and chart-spec outputs from quantitative descriptions.',
+    sortOrder: 39,
+  },
+  {
+    code: 'PAPER_DIAGRAM_GENERATOR',
+    displayName: 'Diagram Generator',
+    description: 'Generate diagram structures and renderable specs from textual descriptions.',
+    sortOrder: 40,
+  },
+  {
+    code: 'PAPER_DIAGRAM_FROM_TEXT',
+    displayName: 'Diagram From Text',
+    description: 'Convert selected text directly into a coherent diagram specification.',
+    sortOrder: 41,
+  },
+  {
+    code: 'PAPER_SKETCH_GENERATION',
+    displayName: 'Sketch Generation',
+    description: 'Create image-generation-ready prompts for scientific and technical figures.',
+    sortOrder: 42,
+  },
 
   // Review and repair
   {
     code: 'PAPER_REVIEW_GAPS',
     displayName: 'Check for Gaps',
     description: 'Detect missing arguments, under-supported claims, and content gaps.',
-    sortOrder: 40,
+    sortOrder: 50,
   },
   {
     code: 'PAPER_REVIEW_COHERENCE',
     displayName: 'Check Coherence',
     description: 'Map evidence to dimensions and validate cross-section coherence.',
-    sortOrder: 41,
+    sortOrder: 51,
   },
   {
     code: 'PAPER_AI_REVIEW',
     displayName: 'AI Review',
     description: 'Run full-paper quality review with actionable issue reports.',
-    sortOrder: 42,
+    sortOrder: 52,
   },
   {
     code: 'PAPER_AI_FIX',
     displayName: 'AI Fix',
     description: 'Apply targeted remediations from review findings.',
-    sortOrder: 43,
+    sortOrder: 53,
   },
 ]
 
@@ -440,6 +482,48 @@ const stageConfigs: Record<string, StageRuntimeConfig> = {
     { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 96_000, maxTokensOut: 18_000 },
     { modelPreferences: ['gpt-5.1', 'gpt-5.1-thinking'], maxTokensIn: 140_000, maxTokensOut: 26_000 },
     { modelPreferences: ['gpt-5.2', 'gpt-5.2-thinking'], maxTokensIn: 200_000, maxTokensOut: 32_000 }
+  ),
+  PAPER_TEXT_ACTION: stagePlan(
+    0.35,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 24_000, maxTokensOut: 8_000 },
+    { modelPreferences: ['gpt-5.1', 'claude-sonnet-4', 'gpt-5-mini'], maxTokensIn: 40_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2', 'claude-sonnet-4'], maxTokensIn: 64_000, maxTokensOut: 16_000 }
+  ),
+  PAPER_REWRITER: stagePlan(
+    0.4,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 40_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'claude-sonnet-4', 'gpt-5.1'], maxTokensIn: 64_000, maxTokensOut: 16_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2', 'claude-sonnet-4'], maxTokensIn: 96_000, maxTokensOut: 24_000 }
+  ),
+  PAPER_FIGURE_SUGGESTION: stagePlan(
+    0.35,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 48_000, maxTokensOut: 8_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gemini-2.5-pro', 'gpt-5.1'], maxTokensIn: 80_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2', 'gemini-2.5-pro'], maxTokensIn: 128_000, maxTokensOut: 16_000 }
+  ),
+  PAPER_CHART_GENERATOR: stagePlan(
+    0.2,
+    { modelPreferences: ['gpt-5-mini', 'gpt-4o', 'gemini-2.5-pro'], maxTokensIn: 24_000, maxTokensOut: 8_000 },
+    { modelPreferences: ['gpt-5.1', 'gpt-5-mini', 'gpt-4o'], maxTokensIn: 40_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2', 'gpt-5.1'], maxTokensIn: 64_000, maxTokensOut: 16_000 }
+  ),
+  PAPER_DIAGRAM_GENERATOR: stagePlan(
+    0.25,
+    { modelPreferences: ['gpt-5-mini', 'gpt-4o', 'gemini-2.5-pro'], maxTokensIn: 32_000, maxTokensOut: 8_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gpt-5.1', 'gpt-5-mini'], maxTokensIn: 64_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2', 'gpt-5.1-thinking'], maxTokensIn: 96_000, maxTokensOut: 16_000 }
+  ),
+  PAPER_DIAGRAM_FROM_TEXT: stagePlan(
+    0.25,
+    { modelPreferences: ['gpt-5-mini', 'gpt-4o', 'gemini-2.5-pro'], maxTokensIn: 32_000, maxTokensOut: 8_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gpt-5.1', 'gpt-5-mini'], maxTokensIn: 64_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2', 'gpt-5.1-thinking'], maxTokensIn: 96_000, maxTokensOut: 16_000 }
+  ),
+  PAPER_SKETCH_GENERATION: stagePlan(
+    0.35,
+    { modelPreferences: ['gemini-3.1-flash-image', 'gemini-3-pro-image-preview', 'gemini-2.5-pro'], maxTokensIn: 24_000, maxTokensOut: 8_000 },
+    { modelPreferences: ['gemini-3-pro-image-preview', 'gemini-3.1-flash-image', 'gpt-5-mini'], maxTokensIn: 40_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gemini-3-pro-image-preview', 'gemini-3.1-flash-image', 'gpt-5.2'], maxTokensIn: 64_000, maxTokensOut: 16_000 }
   ),
 
   PAPER_REVIEW_GAPS: stagePlan(
