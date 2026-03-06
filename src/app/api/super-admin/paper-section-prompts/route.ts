@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { authenticateUser } from '@/lib/auth-middleware'
 import { prisma } from '@/lib/prisma'
 import { sectionTemplateService } from '@/lib/services/section-template-service'
+import { systemPromptTemplateService } from '@/lib/services/system-prompt-template-service'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -67,6 +68,11 @@ export async function GET(request: NextRequest) {
       }
     })
 
+    // Get all system prompt templates
+    const systemTemplates = await prisma.systemPromptTemplate.findMany({
+      orderBy: [{ templateKey: 'asc' }, { sectionScope: 'asc' }]
+    })
+
     // Organize prompts by paper type
     const promptsByPaperType: Record<string, any[]> = {}
     const paperTypeNames: Record<string, string> = {}
@@ -127,7 +133,19 @@ export async function GET(request: NextRequest) {
         name: pt.name
       })),
       paperTypeNames,
-      promptsByPaperType
+      promptsByPaperType,
+      systemTemplates: systemTemplates.map(t => ({
+        id: t.id,
+        templateKey: t.templateKey,
+        applicationMode: t.applicationMode,
+        sectionScope: t.sectionScope,
+        paperTypeScope: t.paperTypeScope,
+        content: t.content,
+        priority: t.priority,
+        status: t.status,
+        description: t.description,
+        updatedAt: t.updatedAt.toISOString()
+      }))
     })
   } catch (error) {
     console.error('Failed to fetch paper section prompts:', error)
@@ -152,12 +170,75 @@ export async function POST(request: NextRequest) {
     // Manually refresh in-memory prompt cache used by drafting routes
     if (action === 'refresh_cache') {
       await sectionTemplateService.refreshFromDatabase()
+      systemPromptTemplateService.clearCache()
       const cacheStats = sectionTemplateService.getCacheStats()
 
       return NextResponse.json({
         success: true,
-        message: 'Drafting prompt cache refreshed from database',
+        message: 'Drafting + system prompt caches refreshed from database',
         cacheStats
+      })
+    }
+
+    if (action === 'update_system_template') {
+      const { id, content, priority, status } = body
+
+      if (!id || typeof id !== 'string') {
+        return NextResponse.json({ error: 'Missing system template id' }, { status: 400 })
+      }
+
+      if (typeof content !== 'string' || content.trim().length < 10) {
+        return NextResponse.json({ error: 'Template content must be at least 10 characters' }, { status: 400 })
+      }
+
+      const updateData: {
+        content: string
+        updatedBy: string
+        updatedAt: Date
+        priority?: number
+        status?: string
+      } = {
+        content: content.trim(),
+        updatedBy: authResult.user.id,
+        updatedAt: new Date()
+      }
+
+      if (priority !== undefined) {
+        if (!Number.isInteger(priority)) {
+          return NextResponse.json({ error: 'Priority must be an integer' }, { status: 400 })
+        }
+        updateData.priority = priority
+      }
+
+      if (status !== undefined) {
+        if (status !== 'ACTIVE' && status !== 'INACTIVE') {
+          return NextResponse.json({ error: 'Status must be ACTIVE or INACTIVE' }, { status: 400 })
+        }
+        updateData.status = status
+      }
+
+      const updated = await prisma.systemPromptTemplate.update({
+        where: { id },
+        data: updateData
+      })
+
+      systemPromptTemplateService.clearCache()
+
+      return NextResponse.json({
+        success: true,
+        message: `Updated system template ${updated.templateKey}`,
+        template: {
+          id: updated.id,
+          templateKey: updated.templateKey,
+          applicationMode: updated.applicationMode,
+          sectionScope: updated.sectionScope,
+          paperTypeScope: updated.paperTypeScope,
+          content: updated.content,
+          priority: updated.priority,
+          status: updated.status,
+          description: updated.description,
+          updatedAt: updated.updatedAt.toISOString()
+        }
       })
     }
 

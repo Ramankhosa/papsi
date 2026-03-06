@@ -134,7 +134,11 @@ interface FloatingWritingPanelProps {
   citations?: Citation[];
   onInsertFigure?: (figureId: string, position?: 'cursor' | 'end') => void;
   onInsertCitation?: (citation: Citation) => void;
-  onTextAction?: (action: 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple', selectedText: string, instructions?: string) => Promise<string>;
+  onTextAction?: (
+    action: 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple' | 'create_sections',
+    selectedText: string,
+    instructions?: string
+  ) => Promise<string>;
   onGenerateFigure?: (description: string, meta?: SmartFigureMeta) => void;
   selectedText?: TextSelection | null;
   onRefreshFigures?: () => void;
@@ -1625,7 +1629,10 @@ export default function FloatingWritingPanel({
   };
 
   // Handle text action with optional inline remarks
-  const handleTextAction = async (action: 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple', inlineRemarks?: string) => {
+  const handleTextAction = async (
+    action: 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple' | 'create_sections',
+    inlineRemarks?: string
+  ) => {
     if (!selectedText?.text || !onTextAction) return;
     
     setLoadingAction(action);
@@ -2251,6 +2258,19 @@ export default function FloatingWritingPanel({
                             disabled={!selectedText?.text}
                             loading={loadingAction === 'simple'}
                             actionId="simple"
+                            expandedAction={expandedAction}
+                            onToggleExpand={setExpandedAction}
+                            customRemarks={actionRemarks}
+                            onRemarksChange={setActionRemarks}
+                          />
+                          <TextActionButton
+                            icon={<GitBranch className="w-3.5 h-3.5" />}
+                            label="Create Sections"
+                            description="Split into headed sections"
+                            onClick={(remarks) => handleTextAction('create_sections', remarks)}
+                            disabled={!selectedText?.text}
+                            loading={loadingAction === 'create_sections'}
+                            actionId="create_sections"
                             expandedAction={expandedAction}
                             onToggleExpand={setExpandedAction}
                             customRemarks={actionRemarks}
@@ -2913,7 +2933,7 @@ export default function FloatingWritingPanel({
                             <Wand2 className="w-3.5 h-3.5 text-blue-600 mt-0.5" />
                             <div>
                               <p className="font-medium text-blue-700">Actions</p>
-                              <p className="text-blue-600/80">Select text → Rewrite, Expand, Condense, formalize, or simplify.</p>
+                              <p className="text-blue-600/80">Select text → Rewrite, Expand, Condense, formalize, simplify, or create sections.</p>
                             </div>
                           </div>
                           

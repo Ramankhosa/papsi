@@ -312,4 +312,173 @@ After seeding, verify the setup:
 
 ---
 
-*Last Updated: January 2026*
+## Figure Generation Infrastructure Setup
+
+### Overview
+
+The figure generation system has multiple rendering backends:
+
+| Backend | Purpose | Hosting |
+|---------|---------|---------|
+| QuickChart.io | Bar, line, pie, scatter charts (Chart.js) | External SaaS (free tier) |
+| Kroki.io | Mermaid and PlantUML diagrams | External SaaS (free) |
+| Gemini Image API | AI-generated scientific illustrations | Google Cloud API |
+| Python Chart Server | Publication-grade statistical plots (matplotlib/seaborn) | Docker container on GCP VM |
+
+### Step 1: Environment Variables
+
+Add these to `.env.production` on the GCP VM:
+
+```bash
+# =============================================
+# FIGURE GENERATION CONFIG
+# =============================================
+
+# Google AI API Key (already exists, used for Gemini image generation)
+# GOOGLE_AI_API_KEY=your-key-here
+
+# Sketch model override (optional - system resolves from DB by default)
+# Set this to force a specific model during development/testing
+# GEMINI_SKETCH_MODEL=gemini-3.1-flash-image
+
+# Python Chart Server (Docker container on same VM)
+PYTHON_CHART_URL=http://localhost:5100
+PYTHON_CHART_TIMEOUT_MS=45000
+
+# QuickChart (optional - free tier works without key)
+# QUICKCHART_BASE_URL=https://quickchart.io
+# QUICKCHART_API_KEY=
+
+# Kroki diagram renderer (optional - public instance is default)
+# KROKI_BASE_URL=https://kroki.io
+
+# PlantUML server (optional - Kroki is preferred)
+# PLANTUML_BASE_URL=https://www.plantuml.com/plantuml
+```
+
+### Step 2: Register Nano Banana 2 Model in Database
+
+Run the model seed script to add the new Gemini 3.1 Flash Image model:
+
+```bash
+npx tsx scripts/add-gemini-image-models.ts
+```
+
+Then assign it in Super Admin:
+1. Go to `/super-admin/llm-config`
+2. Find stage `PAPER_SKETCH_GENERATION`
+3. Set the primary model to `gemini-3.1-flash-image` (Nano Banana 2)
+4. Set fallback to `gemini-3-pro-image-preview` (Nano Banana Pro)
+
+### Step 3: Deploy Python Chart Server (Docker)
+
+The Python chart server renders publication-grade statistical plots
+(box plots, violin plots, heatmaps, ROC curves, regression plots, etc.)
+using matplotlib and seaborn. It runs as a lightweight Docker container.
+
+#### Build and run:
+
+```bash
+cd docker
+
+# Build the image
+docker build -t papsi-python-charts ./python-charts
+
+# Run the container (detached, auto-restart)
+docker run -d \
+  --name papsi-python-charts \
+  --restart unless-stopped \
+  -p 5100:5100 \
+  --memory=512m \
+  --cpus=1.0 \
+  papsi-python-charts
+
+# Verify it's healthy
+curl http://localhost:5100/health
+# Expected: {"status":"ok","renderers":["boxplot","violin","heatmap",...]}
+```
+
+#### Or use docker-compose:
+
+```bash
+cd docker
+docker compose -f docker-compose.python-charts.yml up -d
+
+# Check logs
+docker logs papsi-python-charts
+```
+
+#### Verify from the app:
+
+The app automatically detects whether the Python server is available.
+If it is not running, statistical plots fall back to Chart.js via QuickChart
+(lower quality but functional). No app restart is needed when the container
+starts or stops.
+
+### Step 4: Verify the Full Pipeline
+
+After setup, test each rendering backend:
+
+1. **Charts**: Create a paper, go to Figure Planner, add a "bar" chart -> should render via QuickChart
+2. **Diagrams**: Add a "flowchart" diagram -> should render via Kroki (Mermaid or PlantUML)
+3. **AI Illustrations**: Add an "ILLUSTRATED_FIGURE" with genre "METHOD_BLOCK" -> should generate via Gemini
+4. **Statistical Plots**: Add a "boxplot" or "heatmap" -> should render via Python server (check docker logs)
+5. **New Genres**: Try "NEURAL_ARCHITECTURE" or "EXPERIMENTAL_SETUP" illustrations for scientific process diagrams
+
+### Supported Illustration Genres
+
+| Genre | Best For | Aspect Ratio |
+|-------|----------|-------------|
+| METHOD_BLOCK | Pipeline/workflow schematics | 3:1 (wide strip) |
+| SCENARIO_STORYBOARD | Real-world usage scenarios (3 panels) | 2.5:1 |
+| NEURAL_ARCHITECTURE | Deep learning layer diagrams | 4:3 |
+| EXPERIMENTAL_SETUP | Lab/experimental configuration | 3:2 |
+| DATA_PIPELINE | ETL/ML data processing pipelines | 3:1 |
+| COMPARISON_MATRIX | Method/model comparison grids | 4:3 |
+| PROCESS_MECHANISM | Scientific processes (bio, chem, physics) | 3:2 |
+| SYSTEM_INTERACTION | Multi-system API/protocol diagrams | 3:2 |
+| CONCEPTUAL_FRAMEWORK | Theoretical framework models | 4:3 |
+| GRAPHICAL_ABSTRACT | Visual paper summary | 16:9 |
+
+### Supported Python Statistical Plot Types
+
+| Plot Type | Use Case |
+|-----------|----------|
+| boxplot | Distribution comparisons with individual data points |
+| violin | Distribution shape + quartile comparisons |
+| heatmap | Correlation matrices, feature importance maps |
+| confusion_matrix | Classification model evaluation |
+| roc_curve | Binary classifier ROC with AUC values |
+| error_bar | Group comparisons with significance brackets |
+| regression | Scatter + regression line with confidence bands |
+| bland_altman | Method agreement analysis |
+| forest_plot | Meta-analysis effect size summaries |
+| custom | User-provided matplotlib code (sandboxed) |
+
+### Troubleshooting
+
+**Python chart server not responding:**
+```bash
+# Check container status
+docker ps -a | grep python-charts
+
+# Check logs for errors
+docker logs papsi-python-charts --tail 50
+
+# Restart
+docker restart papsi-python-charts
+```
+
+**Gemini image generation failing:**
+- Verify `GOOGLE_AI_API_KEY` is valid and has Gemini API enabled
+- Check the model is registered: query `SELECT * FROM llm_models WHERE code LIKE 'gemini-3%'`
+- Check Super Admin > LLM Config for `PAPER_SKETCH_GENERATION` stage assignment
+
+**Diagrams rendering with errors:**
+- Kroki.io may have intermittent outages; check https://kroki.io status
+- The system auto-falls back from PlantUML to Mermaid (and vice versa) on render failure
+- Check the `figurePlan.nodes.lastMermaidRenderError` or `lastPlantUMLRenderError` fields
+
+---
+
+*Last Updated: March 2026*

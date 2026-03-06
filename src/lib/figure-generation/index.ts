@@ -34,6 +34,17 @@
 // Re-export types
 export * from './types'
 
+// Re-export composite figure service
+export {
+  composeMultiPanelFigure,
+  saveCompositeFigure
+} from './composite-figure-service'
+export type { CompositeLayout, SubFigure, CompositeResult } from './composite-figure-service'
+
+// Re-export Python chart service
+export { generatePythonChart, isPythonChartServerHealthy } from './python-chart-service'
+export type { PythonPlotType, PythonChartSpec } from './python-chart-service'
+
 // Re-export service functions
 export {
   generateChart,
@@ -200,38 +211,52 @@ async function generateDiagram(
 }
 
 /**
- * Generates a statistical plot.
- * Currently returns a placeholder - full implementation would use Python execution.
+ * Generates a statistical plot using the Python matplotlib server (preferred)
+ * or falls back to QuickChart for simple types.
  */
 async function generateStatisticalPlot(
   request: FigureGenerationRequest
 ): Promise<FigureGenerationResult> {
-  // For now, route simple statistical plots to QuickChart
-  // Complex plots would use Python matplotlib execution
-  
   if (!request.data && !request.code) {
     return { success: false, error: 'Data or code is required for statistical plots', errorCode: 'INVALID_DATA' }
   }
 
-  // Simple plots can be done with QuickChart
+  // Python-rendered plot types (publication grade)
+  const pythonTypes = ['boxplot', 'violin', 'heatmap', 'confusion_matrix', 'roc_curve',
+                       'regression', 'bland_altman', 'forest_plot', 'errorbar', 'error_bar', 'custom_matplotlib']
+
+  if (request.plotType && pythonTypes.includes(request.plotType)) {
+    const { isPythonChartServerHealthy, generatePythonChart, figureDataToPythonSpec } = await import('./python-chart-service')
+
+    const healthy = await isPythonChartServerHealthy()
+    if (healthy) {
+      const spec = figureDataToPythonSpec(
+        request.plotType,
+        request.data,
+        { title: request.title, xAxisLabel: undefined, yAxisLabel: undefined }
+      )
+      if (spec) {
+        return generatePythonChart(spec)
+      }
+    } else {
+      console.warn('[FigureService] Python chart server unavailable, falling back to QuickChart')
+    }
+  }
+
+  // Fallback to QuickChart for simple types or when Python is unavailable
   const simpleTypes: string[] = ['histogram', 'errorbar']
-  
-  if (request.plotType && simpleTypes.includes(request.plotType)) {
-    // Convert to line/bar chart representation
+  if (request.plotType && simpleTypes.includes(request.plotType) && request.data) {
     const chartType: DataChartType = request.plotType === 'histogram' ? 'bar' : 'line'
-    
-    return generateChart(chartType, request.data!, {
+    return generateChart(chartType, request.data, {
       title: request.title,
       theme: request.theme,
       academicStyle: request.academicStyle
     })
   }
 
-  // Complex plots require Python execution
-  // TODO: Implement Python execution service
   return {
     success: false,
-    error: `Statistical plot type '${request.plotType}' requires Python execution (not yet implemented). Use DATA_CHART category for simpler visualizations.`,
+    error: `Statistical plot type '${request.plotType}' requires the Python chart server. Ensure the Docker container is running (docker/python-charts).`,
     errorCode: 'UNSUPPORTED_TYPE'
   }
 }

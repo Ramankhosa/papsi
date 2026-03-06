@@ -257,10 +257,14 @@ ${parts.join('\n\n')}
   const scopeLookup = { applicationMode: 'paper', sectionScope: normalizedKey };
 
   // Hardcoded fallbacks (used if DB has no row for this template key)
-  const FALLBACK_PERSONA = `You are a senior academic editor. Rewrite the draft below into polished,
-publication-ready prose. The draft already contains all the correct facts,
-evidence, and citation anchors — your job is ONLY to improve readability,
-flow, and academic tone.`;
+  const FALLBACK_PERSONA = `You are a senior academic editor preparing a manuscript for Q1 journal submission.
+The draft below contains the correct facts, evidence, and citation anchors.
+Your job is to elevate the prose to publication quality:
+- Strengthen argumentative flow and analytical transitions
+- Sharpen paragraph craft — analytical openings, implication closings
+- Upgrade weak or generic phrasing to precise academic language
+- Ensure the section reads as a compelling, authoritative argument
+- Preserve all factual content and citation anchors exactly`;
 
   const FALLBACK_CITATION_RULES = `1. CITATION ANCHORS — MANDATORY PRESERVATION
    • Every [CITE:key] marker in the draft MUST appear in your output.
@@ -292,23 +296,25 @@ flow, and academic tone.`;
    • Keep bullet points if they serve clarity.`;
 
   const FALLBACK_IMPROVEMENT = `4. WHAT YOU SHOULD IMPROVE
-   • Sentence flow and transitions between paragraphs.
-   • Eliminate awkward phrasing, redundancy, and filler.
-   • Ensure consistent academic register throughout.
-   • Strengthen topic sentences and paragraph cohesion.
-   • Smooth transitions between subsections.`;
+   • ARGUMENT FLOW: Strengthen logical connections between paragraphs. Replace mechanical transitions ("Furthermore", "Additionally") with analytical ones ("This limitation motivates...", "The tension between X and Y suggests...").
+   • PARAGRAPH CRAFT: Ensure each paragraph opens with an analytical claim (not a description) and closes with an implication or transition.
+   • SENTENCE QUALITY: Eliminate redundancy, filler, and vague phrasing. Vary sentence length — mix concise analytical pivots with longer evidence-grounded sentences.
+   • ANALYTICAL DEPTH: Where the draft lists points without synthesis, weave them into a comparative argument.
+   • PRECISION: Replace generic phrases ("important", "significant", "various") with specific, concrete language.
+   • REGISTER: Maintain consistent academic register that is authoritative, not timid.`;
 
-  const FALLBACK_HEDGING = `5. HEDGING AND SCOPE GUARD
-   • Downgrade "demonstrates/proves" to "suggests/indicates" for single-study findings.
-   • Preserve scope conditions and boundary notes.
-   • Do not generalize beyond stated scope.
-   • If noveltyType = TRANSLATIONAL, replace innovation verbs with validation/adaptation verbs where necessary.`;
+  const FALLBACK_HEDGING = `5. CONFIDENCE CALIBRATION
+   • Match language strength to evidence strength — do not uniformly weaken confident claims.
+   • Strong evidence (multiple studies, statistical significance) → keep "demonstrates", "confirms", "establishes".
+   • Single-study or preliminary evidence → use "suggests", "indicates", "is consistent with".
+   • Preserve scope conditions and boundary notes from the draft.
+   • If noveltyType = TRANSLATIONAL, use validation/adaptation framing rather than invention framing.`;
 
-  const FALLBACK_RHYTHM = `6. RHYTHM PRESERVATION
-   • Preserve contrast paragraphs.
-   • Avoid flattening argumentative tension.
-   • If 3+ paragraphs share structure, vary one.
-   • Maintain varied sentence lengths.`;
+  const FALLBACK_RHYTHM = `6. RHYTHM AND TENSION
+   • Preserve and sharpen contrast paragraphs — tension is analytical depth, not a flaw.
+   • If the draft has flat, uniform paragraph structures, actively vary them: mix 3-sentence analytical pivots with 5-7 sentence evidence paragraphs.
+   • Vary sentence lengths deliberately — monotonous cadence signals shallow writing.
+   • Strengthen, don't flatten, argumentative tension between competing perspectives.`;
 
   const [persona, citationRules, factualFidelity, structuralRule, improvementDirectives, hedgingRules, rhythmRules] =
     await Promise.all([

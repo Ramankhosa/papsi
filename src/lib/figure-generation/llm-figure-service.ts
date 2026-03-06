@@ -740,9 +740,16 @@ DETERMINISTIC SPEC REQUIREMENT (hard):
 15. For DIAGRAM suggestions: include diagramSpec with deterministic nodes/edges plus constraints:
    - nodesMax <= 12, edgesMax <= 18, nodeLabelMaxWords <= 3, noDuplicateNodeLabels=true.
 16. For ILLUSTRATED_FIGURE suggestions: include illustrationSpecV2 with:
-   - figureGenre: METHOD_BLOCK|SCENARIO_STORYBOARD|CONCEPTUAL_FRAMEWORK|GRAPHICAL_ABSTRACT
+   - figureGenre: METHOD_BLOCK|SCENARIO_STORYBOARD|CONCEPTUAL_FRAMEWORK|GRAPHICAL_ABSTRACT|NEURAL_ARCHITECTURE|EXPERIMENTAL_SETUP|DATA_PIPELINE|COMPARISON_MATRIX|PROCESS_MECHANISM|SYSTEM_INTERACTION
+   - Choose the most specific genre:
+     * NEURAL_ARCHITECTURE: for deep learning layer diagrams with tensor dimensions
+     * EXPERIMENTAL_SETUP: for lab/experimental configuration schematics
+     * DATA_PIPELINE: for ETL/ML data processing pipelines with sample counts
+     * COMPARISON_MATRIX: for method/model comparison grids
+     * PROCESS_MECHANISM: for scientific processes (biological, chemical, physical)
+     * SYSTEM_INTERACTION: for multi-system API/protocol interaction diagrams
    - renderDirectives: aspectRatio, fillCanvasPercentMin, whitespaceMaxPercent, textPolicy, stylePolicy, compositionPolicy
-   - sketchPrompt derived from illustrationSpecV2 only; keep label text extremely limited to avoid garbling.
+   - sketchPrompt derived from illustrationSpecV2 only; labels should be legible and descriptive.
 17. Every suggestion MUST include renderSpec wrapper:
    - kind=chart|diagram|illustration and the matching deterministic spec.
 
@@ -811,17 +818,17 @@ OUTPUT FORMAT (return ONLY JSON array):
       "panelCount": 3,
       "stepCount": 5,
       "flowDirection": "LR|TD",
-      "figureGenre": "METHOD_BLOCK|SCENARIO_STORYBOARD|CONCEPTUAL_FRAMEWORK|GRAPHICAL_ABSTRACT",
+      "figureGenre": "METHOD_BLOCK|SCENARIO_STORYBOARD|CONCEPTUAL_FRAMEWORK|GRAPHICAL_ABSTRACT|NEURAL_ARCHITECTURE|EXPERIMENTAL_SETUP|DATA_PIPELINE|COMPARISON_MATRIX|PROCESS_MECHANISM|SYSTEM_INTERACTION",
       "panels": [{ "idHint": "p1", "title": "Input", "elements": ["Icon", "Short label"] }],
       "elements": ["icons", "arrows", "boxes"],
       "steps": ["Collect", "Process", "Evaluate"],
       "renderDirectives": {
-        "aspectRatio": "2.5:1|3:1",
+        "aspectRatio": "3:1 (strips/pipelines) | 4:3 (architectures/grids) | 3:2 (setups/processes) | 16:9 (graphical abstracts)",
         "fillCanvasPercentMin": 85,
         "whitespaceMaxPercent": 15,
-        "textPolicy": { "maxLabelsTotal": 4, "maxWordsPerLabel": 3, "forbidAllCaps": true, "titlesOnlyPreferred": true },
-        "stylePolicy": { "noGradients": true, "no3D": true, "noClipart": true, "whiteBackground": true, "paletteMode": "grayscale_plus_one_accent" },
-        "compositionPolicy": { "layoutMode": "PANELS|STRIP", "equalPanels": true, "noTextOutsidePanels": true }
+        "textPolicy": { "maxLabelsTotal": "6-15 depending on genre", "maxWordsPerLabel": "3-5", "forbidAllCaps": true, "titlesOnlyPreferred": false },
+        "stylePolicy": { "noGradients": true, "no3D": true, "noClipart": true, "whiteBackground": true, "paletteMode": "academic_muted|academic_color" },
+        "compositionPolicy": { "layoutMode": "PANELS|STRIP", "equalPanels": "true for grids, false for pipelines", "noTextOutsidePanels": false }
       },
       "captionDraft": "Short draft caption",
       "splitSuggestion": "Optional split"

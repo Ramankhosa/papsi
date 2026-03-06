@@ -1,347 +1,663 @@
 /**
- * Seed script for Publication Ideation (Paper Writing) workflow stages
- * 
- * This creates the workflow stages that Super Admin can configure
- * to control which LLM model is used for each paper writing operation.
- * 
- * Run with: npx tsx scripts/seed-publication-ideation-stages.ts
+ * Seed script for Publication Ideation (Paper Writing) workflow stages.
+ *
+ * This script seeds:
+ * 1. Paper workflow stage registry entries
+ * 2. Plan-stage model assignments
+ * 3. Generous per-stage token limits tuned by workload size
+ *
+ * Run with:
+ *   npx tsx scripts/seed-publication-ideation-stages.ts
  */
 
 import { PrismaClient } from '@prisma/client'
 
 const prisma = new PrismaClient()
+const FEATURE_CODE = 'PAPER_DRAFTING' as const
+const MIN_STAGE_MAX_TOKENS_IN = 12_000
+const MIN_STAGE_MAX_TOKENS_OUT = 8_000
+
+type PlanCode = 'FREE_PLAN' | 'PRO_PLAN' | 'ENTERPRISE_PLAN'
+
+interface StageDefinition {
+  code: string
+  displayName: string
+  description: string
+  sortOrder: number
+}
+
+interface StagePlanConfigInput {
+  modelPreferences: string[]
+  maxTokensIn: number
+  maxTokensOut: number
+}
+
+interface StagePlanConfig extends StagePlanConfigInput {
+  temperature: number
+}
+
+type StageRuntimeConfig = Record<PlanCode, StagePlanConfig>
+
+const stagePlan = (
+  temperature: number,
+  free: StagePlanConfigInput,
+  pro: StagePlanConfigInput,
+  enterprise: StagePlanConfigInput
+): StageRuntimeConfig => ({
+  FREE_PLAN: { ...free, temperature },
+  PRO_PLAN: { ...pro, temperature },
+  ENTERPRISE_PLAN: { ...enterprise, temperature },
+})
+
+const publicationStages: StageDefinition[] = [
+  // Topic and framing
+  {
+    code: 'PAPER_TOPIC_EXTRACT_FROM_FILE',
+    displayName: 'Paper Idea Normalization',
+    description: 'Extract and normalize research topic details from uploaded documents.',
+    sortOrder: 0,
+  },
+  {
+    code: 'PAPER_TOPIC_REFINE_QUESTION',
+    displayName: 'Refine Research Question',
+    description: 'Improve research question clarity, scope, and testability.',
+    sortOrder: 1,
+  },
+  {
+    code: 'PAPER_TOPIC_SUGGEST_KEYWORDS',
+    displayName: 'Suggest Keywords',
+    description: 'Generate domain-relevant academic keywords.',
+    sortOrder: 2,
+  },
+  {
+    code: 'PAPER_TOPIC_GENERATE_HYPOTHESIS',
+    displayName: 'Generate Hypothesis',
+    description: 'Generate testable hypotheses aligned with question and method.',
+    sortOrder: 3,
+  },
+  {
+    code: 'PAPER_TOPIC_DRAFT_ABSTRACT',
+    displayName: 'Draft Abstract',
+    description: 'Draft abstract content from topic context.',
+    sortOrder: 4,
+  },
+  {
+    code: 'PAPER_TOPIC_FORMULATE_QUESTION',
+    displayName: 'Help Formulate Question',
+    description: 'Guide question formulation from broad research intent.',
+    sortOrder: 5,
+  },
+  {
+    code: 'PAPER_TOPIC_ENHANCE_ALL',
+    displayName: 'Enhance All Topic Details',
+    description: 'Improve all topic fields while preserving internal consistency.',
+    sortOrder: 6,
+  },
+
+  // Legacy generic paper stages (kept for backward compatibility and fallbacks)
+  {
+    code: 'PAPER_ABSTRACT_TITLE',
+    displayName: 'Abstract and Title Generation',
+    description: 'Legacy generic stage for titles, abstracts, and keywords.',
+    sortOrder: 7,
+  },
+  {
+    code: 'PAPER_CONTENT_GENERATION',
+    displayName: 'Section Content Generation',
+    description: 'Legacy generic stage for long-form section generation.',
+    sortOrder: 8,
+  },
+  {
+    code: 'PAPER_CITATION_FORMATTING',
+    displayName: 'Citation and References',
+    description: 'Legacy generic stage for citation and bibliography formatting.',
+    sortOrder: 9,
+  },
+  {
+    code: 'PAPER_LITERATURE_ANALYSIS',
+    displayName: 'Literature Analysis',
+    description: 'Legacy generic stage for literature synthesis and analysis.',
+    sortOrder: 10,
+  },
+
+  // Literature and search strategy
+  {
+    code: 'PAPER_LITERATURE_SEARCH',
+    displayName: 'Literature Search',
+    description: 'Assist literature retrieval planning and search setup.',
+    sortOrder: 11,
+  },
+  {
+    code: 'LITERATURE_SEARCH',
+    displayName: 'Literature Search (Legacy Route)',
+    description: 'Route-specific legacy literature search strategy generation.',
+    sortOrder: 12,
+  },
+  {
+    code: 'SEARCH_STRATEGY_PLANNING',
+    displayName: 'Search Strategy Planning',
+    description: 'Build search-plan breadth/depth and category priorities.',
+    sortOrder: 13,
+  },
+  {
+    code: 'SEARCH_QUERY_GENERATION',
+    displayName: 'Search Query Generation',
+    description: 'Generate structured search queries for literature acquisition.',
+    sortOrder: 14,
+  },
+  {
+    code: 'PAPER_LITERATURE_SUMMARIZE',
+    displayName: 'Summarize Literature',
+    description: 'Extract structured evidence cards from full-text references.',
+    sortOrder: 15,
+  },
+  {
+    code: 'PAPER_LITERATURE_GAP',
+    displayName: 'Analyze Literature Gaps',
+    description: 'Identify unresolved gaps and contribution opportunities.',
+    sortOrder: 16,
+  },
+  {
+    code: 'LITERATURE_RELEVANCE',
+    displayName: 'Literature Relevance Analysis',
+    description: 'Rank and filter citations against topic and blueprint fit.',
+    sortOrder: 17,
+  },
+  {
+    code: 'CITATION_BLUEPRINT_MAPPING',
+    displayName: 'Citation Blueprint Mapping',
+    description: 'Map citations to blueprint sections and dimensions.',
+    sortOrder: 18,
+  },
+
+  // Blueprint, planning, routing
+  {
+    code: 'PAPER_BLUEPRINT_GEN',
+    displayName: 'Generate Blueprint',
+    description: 'Generate thesis, section plan, dimensions, and terminology policy.',
+    sortOrder: 20,
+  },
+  {
+    code: 'RESEARCH_INTENT_LOCK',
+    displayName: 'Research Intent Lock',
+    description: 'Create structured thesis guardrails and intent constraints.',
+    sortOrder: 21,
+  },
+  {
+    code: 'ARGUMENT_PLAN',
+    displayName: 'Argument Plan',
+    description: 'Build section-level argument skeletons with evidence constraints.',
+    sortOrder: 22,
+  },
+  {
+    code: 'PAPER_ARCHETYPE_DETECTION',
+    displayName: 'Paper Archetype Detection',
+    description: 'Classify the paper archetype and routing tags for downstream flows.',
+    sortOrder: 23,
+  },
+
+  // Drafting and refinement
+  {
+    code: 'PAPER_SECTION_DRAFT',
+    displayName: 'Draft Section (Pass 1)',
+    description: 'Generate section base draft content.',
+    sortOrder: 30,
+  },
+  {
+    code: 'PAPER_SECTION_GEN',
+    displayName: 'Generate Section with Memory (Pass 2)',
+    description: 'Polish and finalize sections with memory-aware coherence.',
+    sortOrder: 31,
+  },
+  {
+    code: 'PAPER_SECTION_IMPROVE',
+    displayName: 'Improve Section',
+    description: 'Improve clarity, rigor, flow, and citation-grounded writing quality.',
+    sortOrder: 32,
+  },
+  {
+    code: 'PAPER_CREATE_SECTIONS',
+    displayName: 'Create Sections from Selected Text',
+    description: 'Reorganize selected plain text into headed sections with coherent paragraph flow.',
+    sortOrder: 33,
+  },
+  {
+    code: 'PAPER_MEMORY_EXTRACT',
+    displayName: 'Extract Section Memory',
+    description: 'Extract structured memory from edited sections.',
+    sortOrder: 34,
+  },
+  {
+    code: 'PAPER_CITATION_FORMAT',
+    displayName: 'Format Citations',
+    description: 'Format in-text citations and references according to style rules.',
+    sortOrder: 35,
+  },
+
+  // Review and repair
+  {
+    code: 'PAPER_REVIEW_GAPS',
+    displayName: 'Check for Gaps',
+    description: 'Detect missing arguments, under-supported claims, and content gaps.',
+    sortOrder: 40,
+  },
+  {
+    code: 'PAPER_REVIEW_COHERENCE',
+    displayName: 'Check Coherence',
+    description: 'Map evidence to dimensions and validate cross-section coherence.',
+    sortOrder: 41,
+  },
+  {
+    code: 'PAPER_AI_REVIEW',
+    displayName: 'AI Review',
+    description: 'Run full-paper quality review with actionable issue reports.',
+    sortOrder: 42,
+  },
+  {
+    code: 'PAPER_AI_FIX',
+    displayName: 'AI Fix',
+    description: 'Apply targeted remediations from review findings.',
+    sortOrder: 43,
+  },
+]
+
+// Generous stage configs with quality-focused model routing.
+// Critical quality stages prefer higher-reasoning models by plan tier.
+const stageConfigs: Record<string, StageRuntimeConfig> = {
+  PAPER_TOPIC_EXTRACT_FROM_FILE: stagePlan(
+    0.2,
+    { modelPreferences: ['gpt-5-mini', 'gpt-4o', 'gemini-2.5-pro'], maxTokensIn: 64_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.1', 'gpt-5-mini', 'gpt-4o'], maxTokensIn: 96_000, maxTokensOut: 16_000 },
+    { modelPreferences: ['gpt-5.2', 'gpt-5.2-thinking', 'gpt-5.1'], maxTokensIn: 128_000, maxTokensOut: 20_000 }
+  ),
+  PAPER_TOPIC_REFINE_QUESTION: stagePlan(
+    0.35,
+    { modelPreferences: ['gemini-2.5-flash', 'gpt-5-mini'], maxTokensIn: 24_000, maxTokensOut: 8_000 },
+    { modelPreferences: ['gpt-5-mini', 'gpt-5.1'], maxTokensIn: 32_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 48_000, maxTokensOut: 16_000 }
+  ),
+  PAPER_TOPIC_SUGGEST_KEYWORDS: stagePlan(
+    0.3,
+    { modelPreferences: ['gemini-2.5-flash', 'gpt-4o-mini'], maxTokensIn: 12_000, maxTokensOut: 4_096 },
+    { modelPreferences: ['gpt-5-mini', 'gemini-2.5-flash'], maxTokensIn: 16_000, maxTokensOut: 6_000 },
+    { modelPreferences: ['gpt-5.2', 'gpt-5-mini'], maxTokensIn: 24_000, maxTokensOut: 8_000 }
+  ),
+  PAPER_TOPIC_GENERATE_HYPOTHESIS: stagePlan(
+    0.45,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 32_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gpt-5.1'], maxTokensIn: 48_000, maxTokensOut: 16_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 64_000, maxTokensOut: 24_000 }
+  ),
+  PAPER_TOPIC_DRAFT_ABSTRACT: stagePlan(
+    0.4,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 32_000, maxTokensOut: 10_000 },
+    { modelPreferences: ['gpt-5.1', 'gpt-5-mini'], maxTokensIn: 48_000, maxTokensOut: 14_000 },
+    { modelPreferences: ['gpt-5.2', 'gpt-5.2-thinking'], maxTokensIn: 64_000, maxTokensOut: 20_000 }
+  ),
+  PAPER_TOPIC_FORMULATE_QUESTION: stagePlan(
+    0.35,
+    { modelPreferences: ['gemini-2.5-flash', 'gpt-5-mini'], maxTokensIn: 24_000, maxTokensOut: 8_000 },
+    { modelPreferences: ['gpt-5-mini', 'gpt-5.1'], maxTokensIn: 32_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 48_000, maxTokensOut: 16_000 }
+  ),
+  PAPER_TOPIC_ENHANCE_ALL: stagePlan(
+    0.4,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 40_000, maxTokensOut: 16_000 },
+    { modelPreferences: ['gpt-5.1', 'gpt-5.1-thinking'], maxTokensIn: 64_000, maxTokensOut: 22_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 96_000, maxTokensOut: 28_000 }
+  ),
+  PAPER_ABSTRACT_TITLE: stagePlan(
+    0.4,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 24_000, maxTokensOut: 10_000 },
+    { modelPreferences: ['gpt-5.1', 'gpt-5-mini'], maxTokensIn: 32_000, maxTokensOut: 14_000 },
+    { modelPreferences: ['gpt-5.2', 'gpt-5.2-thinking'], maxTokensIn: 48_000, maxTokensOut: 20_000 }
+  ),
+
+  PAPER_LITERATURE_SEARCH: stagePlan(
+    0.35,
+    { modelPreferences: ['gemini-2.5-flash', 'gpt-4o-mini'], maxTokensIn: 24_000, maxTokensOut: 6_000 },
+    { modelPreferences: ['gpt-5-mini', 'gemini-2.5-flash'], maxTokensIn: 40_000, maxTokensOut: 9_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5-mini'], maxTokensIn: 64_000, maxTokensOut: 12_000 }
+  ),
+  LITERATURE_SEARCH: stagePlan(
+    0.35,
+    { modelPreferences: ['gemini-2.5-flash', 'gpt-4o-mini'], maxTokensIn: 24_000, maxTokensOut: 6_000 },
+    { modelPreferences: ['gpt-5-mini', 'gemini-2.5-flash'], maxTokensIn: 40_000, maxTokensOut: 9_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5-mini'], maxTokensIn: 64_000, maxTokensOut: 12_000 }
+  ),
+  SEARCH_STRATEGY_PLANNING: stagePlan(
+    0.35,
+    { modelPreferences: ['gemini-2.5-flash', 'gpt-5-mini'], maxTokensIn: 32_000, maxTokensOut: 6_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gpt-5-mini'], maxTokensIn: 48_000, maxTokensOut: 10_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 64_000, maxTokensOut: 16_000 }
+  ),
+  SEARCH_QUERY_GENERATION: stagePlan(
+    0.45,
+    { modelPreferences: ['gemini-2.5-flash', 'gpt-5-mini'], maxTokensIn: 32_000, maxTokensOut: 6_000 },
+    { modelPreferences: ['gpt-5-mini', 'gpt-5.1'], maxTokensIn: 48_000, maxTokensOut: 10_000 },
+    { modelPreferences: ['gpt-5.2', 'gpt-5.2-thinking'], maxTokensIn: 64_000, maxTokensOut: 16_000 }
+  ),
+  PAPER_LITERATURE_SUMMARIZE: stagePlan(
+    0,
+    { modelPreferences: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gpt-5-mini'], maxTokensIn: 140_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5.1', 'gemini-2.5-flash'], maxTokensIn: 200_000, maxTokensOut: 18_000 },
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5.2', 'gemini-3-pro-preview'], maxTokensIn: 260_000, maxTokensOut: 24_000 }
+  ),
+  PAPER_LITERATURE_GAP: stagePlan(
+    0.3,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 64_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gpt-5.1'], maxTokensIn: 96_000, maxTokensOut: 20_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 128_000, maxTokensOut: 28_000 }
+  ),
+  LITERATURE_RELEVANCE: stagePlan(
+    0.25,
+    { modelPreferences: ['gemini-2.5-flash', 'gemini-2.5-pro'], maxTokensIn: 40_000, maxTokensOut: 8_000 },
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 80_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gemini-2.5-pro'], maxTokensIn: 120_000, maxTokensOut: 18_000 }
+  ),
+  CITATION_BLUEPRINT_MAPPING: stagePlan(
+    0.3,
+    { modelPreferences: ['gemini-2.5-flash', 'gemini-2.5-pro'], maxTokensIn: 40_000, maxTokensOut: 8_000 },
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5.1'], maxTokensIn: 80_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gemini-2.5-pro'], maxTokensIn: 120_000, maxTokensOut: 18_000 }
+  ),
+  PAPER_LITERATURE_ANALYSIS: stagePlan(
+    0.35,
+    { modelPreferences: ['gemini-2.5-pro', 'gemini-2.5-flash'], maxTokensIn: 96_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gemini-2.5-pro'], maxTokensIn: 140_000, maxTokensOut: 20_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gemini-2.5-pro'], maxTokensIn: 200_000, maxTokensOut: 28_000 }
+  ),
+
+  PAPER_BLUEPRINT_GEN: stagePlan(
+    0.35,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 80_000, maxTokensOut: 16_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gpt-5.1', 'gemini-2.5-pro'], maxTokensIn: 120_000, maxTokensOut: 24_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2', 'gemini-2.5-pro'], maxTokensIn: 160_000, maxTokensOut: 32_000 }
+  ),
+  RESEARCH_INTENT_LOCK: stagePlan(
+    0.3,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 48_000, maxTokensOut: 10_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gpt-5.1'], maxTokensIn: 64_000, maxTokensOut: 16_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 96_000, maxTokensOut: 22_000 }
+  ),
+  ARGUMENT_PLAN: stagePlan(
+    0.3,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 48_000, maxTokensOut: 10_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gpt-5.1'], maxTokensIn: 64_000, maxTokensOut: 16_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 96_000, maxTokensOut: 22_000 }
+  ),
+  PAPER_ARCHETYPE_DETECTION: stagePlan(
+    0.1,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 24_000, maxTokensOut: 4_096 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gemini-2.5-pro'], maxTokensIn: 36_000, maxTokensOut: 6_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 48_000, maxTokensOut: 8_000 }
+  ),
+
+  PAPER_SECTION_DRAFT: stagePlan(
+    0.62,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 96_000, maxTokensOut: 18_000 },
+    { modelPreferences: ['gpt-5.1', 'gpt-5.1-thinking'], maxTokensIn: 140_000, maxTokensOut: 26_000 },
+    { modelPreferences: ['gpt-5.2', 'gpt-5.2-thinking'], maxTokensIn: 200_000, maxTokensOut: 32_000 }
+  ),
+  PAPER_SECTION_GEN: stagePlan(
+    0.45,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 96_000, maxTokensOut: 18_000 },
+    { modelPreferences: ['gpt-5.1', 'gpt-5.1-thinking'], maxTokensIn: 140_000, maxTokensOut: 26_000 },
+    { modelPreferences: ['gpt-5.2', 'gpt-5.2-thinking'], maxTokensIn: 200_000, maxTokensOut: 32_000 }
+  ),
+  PAPER_SECTION_IMPROVE: stagePlan(
+    0.4,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 96_000, maxTokensOut: 18_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gpt-5.1'], maxTokensIn: 140_000, maxTokensOut: 26_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 200_000, maxTokensOut: 32_000 }
+  ),
+  PAPER_CREATE_SECTIONS: stagePlan(
+    0.3,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 24_000, maxTokensOut: 8_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gpt-5.1'], maxTokensIn: 48_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 64_000, maxTokensOut: 16_000 }
+  ),
+  PAPER_MEMORY_EXTRACT: stagePlan(
+    0.2,
+    { modelPreferences: ['gemini-2.5-flash', 'gpt-4o-mini'], maxTokensIn: 24_000, maxTokensOut: 4_096 },
+    { modelPreferences: ['gpt-5-mini', 'gemini-2.5-flash'], maxTokensIn: 36_000, maxTokensOut: 6_000 },
+    { modelPreferences: ['gpt-5.2', 'gpt-5-mini'], maxTokensIn: 64_000, maxTokensOut: 8_000 }
+  ),
+  PAPER_CITATION_FORMAT: stagePlan(
+    0.2,
+    { modelPreferences: ['gemini-2.5-flash', 'gpt-4o-mini'], maxTokensIn: 16_000, maxTokensOut: 6_000 },
+    { modelPreferences: ['gpt-5-mini', 'gpt-4o'], maxTokensIn: 32_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.2', 'gpt-5-mini'], maxTokensIn: 64_000, maxTokensOut: 16_000 }
+  ),
+  PAPER_CITATION_FORMATTING: stagePlan(
+    0.2,
+    { modelPreferences: ['gemini-2.5-flash', 'gpt-4o-mini'], maxTokensIn: 16_000, maxTokensOut: 6_000 },
+    { modelPreferences: ['gpt-5-mini', 'gpt-4o'], maxTokensIn: 32_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.2', 'gpt-5-mini'], maxTokensIn: 64_000, maxTokensOut: 16_000 }
+  ),
+  PAPER_CONTENT_GENERATION: stagePlan(
+    0.6,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 96_000, maxTokensOut: 18_000 },
+    { modelPreferences: ['gpt-5.1', 'gpt-5.1-thinking'], maxTokensIn: 140_000, maxTokensOut: 26_000 },
+    { modelPreferences: ['gpt-5.2', 'gpt-5.2-thinking'], maxTokensIn: 200_000, maxTokensOut: 32_000 }
+  ),
+
+  PAPER_REVIEW_GAPS: stagePlan(
+    0.3,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 64_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gpt-5.1'], maxTokensIn: 96_000, maxTokensOut: 20_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 128_000, maxTokensOut: 28_000 }
+  ),
+  PAPER_REVIEW_COHERENCE: stagePlan(
+    0.2,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 80_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gemini-2.5-pro'], maxTokensIn: 120_000, maxTokensOut: 20_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gemini-2.5-pro'], maxTokensIn: 160_000, maxTokensOut: 28_000 }
+  ),
+  PAPER_AI_REVIEW: stagePlan(
+    0.2,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 80_000, maxTokensOut: 12_000 },
+    { modelPreferences: ['gpt-5.1-thinking', 'gpt-5.1'], maxTokensIn: 120_000, maxTokensOut: 20_000 },
+    { modelPreferences: ['gpt-5.2-thinking', 'gpt-5.2'], maxTokensIn: 160_000, maxTokensOut: 28_000 }
+  ),
+  PAPER_AI_FIX: stagePlan(
+    0.2,
+    { modelPreferences: ['gemini-2.5-pro', 'gpt-5-mini'], maxTokensIn: 80_000, maxTokensOut: 16_000 },
+    { modelPreferences: ['gpt-5.1', 'gpt-5.1-thinking'], maxTokensIn: 120_000, maxTokensOut: 24_000 },
+    { modelPreferences: ['gpt-5.2', 'gpt-5.2-thinking'], maxTokensIn: 160_000, maxTokensOut: 32_000 }
+  ),
+}
+
+const defaultStageConfigByPlan: Record<PlanCode, StagePlanConfig> = {
+  FREE_PLAN: {
+    modelPreferences: ['gemini-2.5-flash', 'gpt-4o-mini', 'gemini-2.0-flash'],
+    maxTokensIn: 24_000,
+    maxTokensOut: 6_000,
+    temperature: 0.4,
+  },
+  PRO_PLAN: {
+    modelPreferences: ['gpt-5-mini', 'gemini-2.5-flash', 'gpt-4o'],
+    maxTokensIn: 40_000,
+    maxTokensOut: 10_000,
+    temperature: 0.4,
+  },
+  ENTERPRISE_PLAN: {
+    modelPreferences: ['gpt-5.2', 'gpt-5.1', 'gemini-2.5-pro'],
+    maxTokensIn: 64_000,
+    maxTokensOut: 16_000,
+    temperature: 0.4,
+  },
+}
+
+function applyTokenFloors(config: StagePlanConfig): StagePlanConfig {
+  return {
+    ...config,
+    maxTokensIn: Math.max(config.maxTokensIn, MIN_STAGE_MAX_TOKENS_IN),
+    maxTokensOut: Math.max(config.maxTokensOut, MIN_STAGE_MAX_TOKENS_OUT),
+  }
+}
+
+function resolvePlanCode(planCode: string, planName: string): PlanCode {
+  const code = String(planCode || '').toUpperCase()
+  const name = String(planName || '').toUpperCase()
+
+  if (code.includes('ENTERPRISE') || name.includes('ENTERPRISE')) {
+    return 'ENTERPRISE_PLAN'
+  }
+  if (code.includes('PRO') || name.includes('PROFESSIONAL')) {
+    return 'PRO_PLAN'
+  }
+  return 'FREE_PLAN'
+}
 
 async function main() {
-  console.log('🚀 Seeding Publication Ideation workflow stages...')
+  console.log('Seeding publication ideation workflow stages...')
+  console.log(`Using feature: ${FEATURE_CODE}`)
 
-  // ============================================================================
-  // 1. Use existing PAPER_DRAFTING feature (defined in FeatureCode enum)
-  // ============================================================================
-  
-  const featureCode = 'PAPER_DRAFTING' // Using existing enum value
-  console.log(`✅ Using Feature: ${featureCode}`)
-
-  // ============================================================================
-  // 2. Define Publication Ideation workflow stages
-  // ============================================================================
-  
-  const publicationStages = [
-    // Research Topic Stage Operations
-    {
-      code: 'PAPER_TOPIC_EXTRACT_FROM_FILE',
-      displayName: 'Paper Idea Normalization',
-      featureCode,
-      description: 'Extract and normalize research topic details from uploaded document (Word, PDF, or text)',
-      sortOrder: 0,
-    },
-    {
-      code: 'PAPER_TOPIC_REFINE_QUESTION',
-      displayName: 'Refine Research Question',
-      featureCode,
-      description: 'AI refines and improves the research question based on topic context',
-      sortOrder: 1,
-    },
-    {
-      code: 'PAPER_TOPIC_SUGGEST_KEYWORDS',
-      displayName: 'Suggest Keywords',
-      featureCode,
-      description: 'AI suggests relevant academic keywords based on research topic',
-      sortOrder: 2,
-    },
-    {
-      code: 'PAPER_TOPIC_GENERATE_HYPOTHESIS',
-      displayName: 'Generate Hypothesis',
-      featureCode,
-      description: 'AI generates testable hypotheses based on research question and methodology',
-      sortOrder: 3,
-    },
-    {
-      code: 'PAPER_TOPIC_DRAFT_ABSTRACT',
-      displayName: 'Draft Abstract',
-      featureCode,
-      description: 'AI drafts an academic abstract based on research topic details',
-      sortOrder: 4,
-    },
-    {
-      code: 'PAPER_TOPIC_FORMULATE_QUESTION',
-      displayName: 'Help Formulate Question',
-      featureCode,
-      description: 'AI helps beginners formulate their research question with guiding prompts',
-      sortOrder: 5,
-    },
-    {
-      code: 'PAPER_TOPIC_ENHANCE_ALL',
-      displayName: 'Enhance All Topic Details',
-      featureCode,
-      description: 'AI enhances and suggests improvements across all topic fields',
-      sortOrder: 6,
-    },
-    // Literature Review Stage Operations
-    {
-      code: 'PAPER_LITERATURE_SEARCH',
-      displayName: 'Literature Search',
-      featureCode,
-      description: 'AI assists with finding relevant academic literature',
-      sortOrder: 10,
-    },
-    {
-      code: 'PAPER_LITERATURE_SUMMARIZE',
-      displayName: 'Summarize Literature',
-      featureCode,
-      description: 'AI summarizes academic papers and extracts key points',
-      sortOrder: 11,
-    },
-    {
-      code: 'PAPER_LITERATURE_GAP',
-      displayName: 'Analyze Literature Gaps',
-      featureCode,
-      description: 'AI identifies research gaps from literature review',
-      sortOrder: 12,
-    },
-    {
-      code: 'LITERATURE_RELEVANCE',
-      displayName: 'Literature Relevance Analysis',
-      featureCode,
-      description: 'AI analyzes search results to identify most relevant papers for the research topic',
-      sortOrder: 13,
-    },
-    // Blueprint Stage Operations (Coherence by Construction)
-    {
-      code: 'PAPER_BLUEPRINT_GEN',
-      displayName: 'Generate Blueprint',
-      featureCode,
-      description: 'AI generates paper blueprint with thesis, section plan, and terminology policy',
-      sortOrder: 15,
-    },
-    // Section Drafting Stage Operations
-    {
-      code: 'PAPER_SECTION_GEN',
-      displayName: 'Generate Section with Memory',
-      featureCode,
-      description: 'AI generates paper section content with inline memory summary for coherence',
-      sortOrder: 20,
-    },
-    {
-      code: 'PAPER_MEMORY_EXTRACT',
-      displayName: 'Extract Section Memory',
-      featureCode,
-      description: 'AI extracts structured memory from manually edited section content',
-      sortOrder: 21,
-    },
-    {
-      code: 'PAPER_SECTION_DRAFT',
-      displayName: 'Draft Section (Legacy)',
-      featureCode,
-      description: 'AI generates content for paper sections based on outline',
-      sortOrder: 22,
-    },
-    {
-      code: 'PAPER_SECTION_IMPROVE',
-      displayName: 'Improve Section',
-      featureCode,
-      description: 'AI improves writing style, clarity, and academic tone',
-      sortOrder: 23,
-    },
-    {
-      code: 'PAPER_CITATION_FORMAT',
-      displayName: 'Format Citations',
-      featureCode,
-      description: 'AI formats citations according to selected style',
-      sortOrder: 24,
-    },
-    // Review Stage Operations
-    {
-      code: 'PAPER_REVIEW_GAPS',
-      displayName: 'Check for Gaps',
-      featureCode,
-      description: 'AI identifies gaps and missing elements in the paper',
-      sortOrder: 30,
-    },
-    {
-      code: 'PAPER_REVIEW_COHERENCE',
-      displayName: 'Check Coherence',
-      featureCode,
-      description: 'AI checks for logical flow and coherence across sections',
-      sortOrder: 31,
-    },
-  ]
-
-  // Create/update workflow stages
   for (const stage of publicationStages) {
     await prisma.workflowStage.upsert({
       where: { code: stage.code },
       update: {
         displayName: stage.displayName,
-        featureCode: stage.featureCode,
         description: stage.description,
         sortOrder: stage.sortOrder,
+        featureCode: FEATURE_CODE,
         isActive: true,
       },
       create: {
-        ...stage,
+        code: stage.code,
+        displayName: stage.displayName,
+        description: stage.description,
+        sortOrder: stage.sortOrder,
+        featureCode: FEATURE_CODE,
         isActive: true,
       },
     })
-    console.log(`  ✅ Stage: ${stage.code} - ${stage.displayName}`)
+    console.log(`  Stage seeded: ${stage.code}`)
   }
 
-  // ============================================================================
-  // 3. Configure default models for stages (for all active plans)
-  // ============================================================================
-  
   const defaultModel = await prisma.lLMModel.findFirst({
     where: { isDefault: true, isActive: true },
   })
 
   if (!defaultModel) {
-    console.log('\n⚠️  No default LLM model found. Skipping plan-stage configuration.')
-    console.log('   Run the LLM model seeding script first, then re-run this script.')
-  } else {
-    // Get lightweight model for quick tasks
-    const lightweightModel = await prisma.lLMModel.findFirst({
-      where: {
-        OR: [
-          { code: { contains: 'flash' } },
-          { code: { contains: 'mini' } },
-          { code: { contains: 'haiku' } },
-        ],
-        isActive: true,
-      },
-    }) || defaultModel
-
-    // Get advanced model for heavy reasoning tasks
-    const advancedModel = await prisma.lLMModel.findFirst({
-      where: {
-        OR: [
-          { code: { contains: 'pro' } },
-          { code: { contains: 'sonnet' } },
-          { code: { contains: 'gpt-4o' } },
-        ],
-        isActive: true,
-      },
-    }) || defaultModel
-
-    // Get Gemini 2.5 Flash specifically for literature relevance analysis
-    // This model excels at classification and analysis tasks
-    const gemini25Flash = await prisma.lLMModel.findFirst({
-      where: {
-        code: 'gemini-2.5-flash',
-        isActive: true,
-      },
-    }) || defaultModel
-
-    // Get Gemini 2.5 Pro for critical reasoning tasks like blueprint generation
-    // This model has excellent long-context understanding and reasoning capabilities
-    const gemini25Pro = await prisma.lLMModel.findFirst({
-      where: {
-        code: 'gemini-2.5-pro',
-        isActive: true,
-      },
-    }) || await prisma.lLMModel.findFirst({
-      where: {
-        code: { contains: 'gemini-2.5-pro' },
-        isActive: true,
-      },
-    }) || advancedModel
-
-    // Get all active plans
-    const plans = await prisma.plan.findMany({
-      where: { status: 'ACTIVE' },
-    })
-
-    console.log(`\n📋 Configuring ${plans.length} plans with publication ideation stages...`)
-
-    // Get GPT-5.2 for Paper Idea Normalization (excellent at extraction and structuring)
-    const gpt52Model = await prisma.lLMModel.findFirst({
-      where: {
-        code: 'gpt-5.2',
-        isActive: true,
-      },
-    }) || advancedModel
-
-    // Stage configurations with GENEROUS token limits to prevent request failures
-    // Input tokens are set high to accommodate large context (citations, previous sections, etc.)
-    // Output tokens are set high to allow for complete responses
-    const stageConfigs: Record<string, { model: typeof defaultModel; maxTokensIn: number; maxTokensOut: number }> = {
-      // Paper Idea Normalization - extract from uploaded document (needs high quality extraction)
-      'PAPER_TOPIC_EXTRACT_FROM_FILE': { model: gpt52Model, maxTokensIn: 128000, maxTokensOut: 8000 },
-      
-      // Quick operations - use lightweight model (still generous limits)
-      'PAPER_TOPIC_SUGGEST_KEYWORDS': { model: lightweightModel, maxTokensIn: 8000, maxTokensOut: 4096 },
-      'PAPER_CITATION_FORMAT': { model: lightweightModel, maxTokensIn: 8000, maxTokensOut: 4096 },
-      'PAPER_MEMORY_EXTRACT': { model: lightweightModel, maxTokensIn: 16000, maxTokensOut: 2048 }, // Memory extraction is quick
-      
-      // Medium operations - use default model (generous limits)
-      'PAPER_TOPIC_REFINE_QUESTION': { model: defaultModel, maxTokensIn: 16000, maxTokensOut: 8192 },
-      'PAPER_TOPIC_FORMULATE_QUESTION': { model: defaultModel, maxTokensIn: 16000, maxTokensOut: 8192 },
-      'PAPER_LITERATURE_SEARCH': { model: defaultModel, maxTokensIn: 16000, maxTokensOut: 8192 },
-      
-      // Heavy operations - use advanced model (very generous limits for academic content)
-      'PAPER_BLUEPRINT_GEN': { model: gemini25Pro, maxTokensIn: 128000, maxTokensOut: 16384 }, // Blueprint generation - CRITICAL STEP - Gemini 2.5 Pro for best reasoning
-      'PAPER_TOPIC_GENERATE_HYPOTHESIS': { model: advancedModel, maxTokensIn: 32000, maxTokensOut: 8192 },
-      'PAPER_TOPIC_DRAFT_ABSTRACT': { model: advancedModel, maxTokensIn: 32000, maxTokensOut: 8192 },
-      'PAPER_TOPIC_ENHANCE_ALL': { model: advancedModel, maxTokensIn: 32000, maxTokensOut: 16384 },
-      'PAPER_LITERATURE_SUMMARIZE': { model: gemini25Flash, maxTokensIn: 120000, maxTokensOut: 12000 },
-      'PAPER_LITERATURE_GAP': { model: advancedModel, maxTokensIn: 64000, maxTokensOut: 16384 },
-      'LITERATURE_RELEVANCE': { model: gemini25Flash, maxTokensIn: 32000, maxTokensOut: 8192 }, // Gemini 2.5 Flash excels at classification
-      'PAPER_SECTION_GEN': { model: advancedModel, maxTokensIn: 64000, maxTokensOut: 16384 }, // Section gen with memory needs high limits
-      'PAPER_SECTION_DRAFT': { model: advancedModel, maxTokensIn: 64000, maxTokensOut: 16384 },
-      'PAPER_SECTION_IMPROVE': { model: advancedModel, maxTokensIn: 64000, maxTokensOut: 16384 },
-      'PAPER_REVIEW_GAPS': { model: advancedModel, maxTokensIn: 64000, maxTokensOut: 16384 },
-      'PAPER_REVIEW_COHERENCE': { model: advancedModel, maxTokensIn: 64000, maxTokensOut: 16384 },
-    }
-
-    for (const plan of plans) {
-      for (const stage of publicationStages) {
-        const workflowStage = await prisma.workflowStage.findUnique({
-          where: { code: stage.code },
-        })
-
-        if (!workflowStage) continue
-
-        const config = stageConfigs[stage.code] || { model: defaultModel, maxTokensIn: 4000, maxTokensOut: 4096 }
-
-        await prisma.planStageModelConfig.upsert({
-          where: {
-            planId_stageId: {
-              planId: plan.id,
-              stageId: workflowStage.id,
-            },
-          },
-          update: {
-            modelId: config.model.id,
-            maxTokensIn: config.maxTokensIn,
-            maxTokensOut: config.maxTokensOut,
-            temperature: 0.7,
-            isActive: true,
-          },
-          create: {
-            planId: plan.id,
-            stageId: workflowStage.id,
-            modelId: config.model.id,
-            maxTokensIn: config.maxTokensIn,
-            maxTokensOut: config.maxTokensOut,
-            temperature: 0.7,
-            isActive: true,
-          },
-        })
-      }
-
-      console.log(`  ✅ Configured plan: ${plan.name}`)
-    }
+    console.log('No default active LLM model found. Skipping plan-stage configuration.')
+    return
   }
 
-  console.log('\n✨ Publication Ideation workflow stages seeded successfully!')
-  console.log('\n📌 Super Admin can now configure LLM models for each stage at:')
-  console.log('   /super-admin/llm-config')
+  const plans = await prisma.plan.findMany({
+    where: { status: 'ACTIVE' },
+    orderBy: { name: 'asc' },
+  })
+
+  if (!plans.length) {
+    console.log('No active plans found. Stage registry seed complete.')
+    return
+  }
+
+  const activeModels = await prisma.lLMModel.findMany({
+    where: { isActive: true },
+  })
+  const modelsByCode = new Map(activeModels.map(model => [model.code.toLowerCase(), model]))
+
+  const findModelByPreference = (preference: string) => {
+    const normalized = String(preference || '').trim().toLowerCase()
+    if (!normalized) return null
+
+    const exact = modelsByCode.get(normalized)
+    if (exact) return exact
+
+    const startsWithMatch = activeModels.find(model => {
+      const code = model.code.toLowerCase()
+      return code.startsWith(`${normalized}-`) || code.startsWith(`${normalized}.`)
+    })
+    if (startsWithMatch) return startsWithMatch
+
+    return activeModels.find(model => model.code.toLowerCase().includes(normalized)) || null
+  }
+
+  const resolveModel = (
+    preferredCodes: string[],
+    fallbackModel: typeof defaultModel
+  ) => {
+    for (const preferredCode of preferredCodes) {
+      const matched = findModelByPreference(preferredCode)
+      if (matched) {
+        return matched
+      }
+    }
+    return fallbackModel
+  }
+
+  const fallbackModelByPlan: Record<PlanCode, typeof defaultModel> = {
+    FREE_PLAN: resolveModel(defaultStageConfigByPlan.FREE_PLAN.modelPreferences, defaultModel),
+    PRO_PLAN: resolveModel(defaultStageConfigByPlan.PRO_PLAN.modelPreferences, defaultModel),
+    ENTERPRISE_PLAN: resolveModel(defaultStageConfigByPlan.ENTERPRISE_PLAN.modelPreferences, defaultModel),
+  }
+
+  console.log(`Configuring ${plans.length} active plans with stage model/token settings...`)
+
+  const stageByCode = new Map(
+    (
+      await prisma.workflowStage.findMany({
+        where: { code: { in: publicationStages.map(stage => stage.code) } },
+      })
+    ).map(stage => [stage.code, stage])
+  )
+
+  for (const plan of plans) {
+    const planCode = resolvePlanCode(plan.code, plan.name)
+    const planFallbackModel = fallbackModelByPlan[planCode]
+
+    for (const stage of publicationStages) {
+      const workflowStage = stageByCode.get(stage.code)
+      if (!workflowStage) continue
+
+      const config =
+        stageConfigs[stage.code]?.[planCode] ||
+        defaultStageConfigByPlan[planCode]
+      const normalizedConfig = applyTokenFloors(config)
+
+      const selectedModel = resolveModel(normalizedConfig.modelPreferences, planFallbackModel)
+
+      await prisma.planStageModelConfig.upsert({
+        where: {
+          planId_stageId: {
+            planId: plan.id,
+            stageId: workflowStage.id,
+          },
+        },
+        update: {
+          modelId: selectedModel.id,
+          maxTokensIn: normalizedConfig.maxTokensIn,
+          maxTokensOut: normalizedConfig.maxTokensOut,
+          temperature: normalizedConfig.temperature,
+          isActive: true,
+        },
+        create: {
+          planId: plan.id,
+          stageId: workflowStage.id,
+          modelId: selectedModel.id,
+          maxTokensIn: normalizedConfig.maxTokensIn,
+          maxTokensOut: normalizedConfig.maxTokensOut,
+          temperature: normalizedConfig.temperature,
+          isActive: true,
+        },
+      })
+    }
+
+    console.log(`  Plan configured: ${plan.code} (${plan.name})`)
+  }
+
+  console.log('Publication ideation stage/model seeding completed.')
+  console.log('Super Admin can review configs at: /super-admin/llm-config')
 }
 
 main()
-  .catch((e) => {
-    console.error('❌ Error:', e)
+  .catch((error) => {
+    console.error('Seed failed:', error)
     process.exit(1)
   })
   .finally(async () => {
     await prisma.$disconnect()
   })
-

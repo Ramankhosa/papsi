@@ -137,7 +137,7 @@ export function useFloatingPanel({
 
   // Perform text action
   const performTextAction = useCallback(async (
-    action: 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple',
+    action: 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple' | 'create_sections',
     text: string,
     customInstructions?: string
   ): Promise<string> => {

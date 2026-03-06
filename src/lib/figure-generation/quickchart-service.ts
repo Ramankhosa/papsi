@@ -33,14 +33,16 @@ const QUICKCHART_BASE_URL = process.env.QUICKCHART_BASE_URL || 'https://quickcha
 const QUICKCHART_API_KEY = process.env.QUICKCHART_API_KEY // Optional for higher limits
 
 // Default styling for academic figures
+// Sized for 300 DPI journal print quality
 const ACADEMIC_DEFAULTS = {
   fontFamily: "'Helvetica Neue', Arial, sans-serif",
-  titleFontSize: 16,
-  labelFontSize: 12,
-  tickFontSize: 11,
-  legendFontSize: 11,
-  gridLineWidth: 0.5,
-  borderWidth: 1.5
+  titleFontSize: 14,
+  labelFontSize: 11,
+  tickFontSize: 10,
+  legendFontSize: 10,
+  gridLineWidth: 0.4,
+  borderWidth: 1.2,
+  devicePixelRatio: 3
 }
 
 // ============================================================================
@@ -181,11 +183,14 @@ function buildChartOptions(
   const textColor = theme?.textColor || '#1F2937'
   const gridColor = theme?.gridColor || '#E5E7EB'
 
+  const isPieType = ['pie', 'doughnut', 'polarArea'].includes(chartType)
+
   const baseOptions: any = {
     responsive: true,
     maintainAspectRatio: true,
-    
-    // Title configuration
+    layout: {
+      padding: { top: 4, right: 8, bottom: 4, left: 8 }
+    },
     plugins: {
       title: {
         display: !!title,
@@ -196,7 +201,7 @@ function buildChartOptions(
           weight: 'bold'
         },
         color: textColor,
-        padding: { top: 10, bottom: 20 }
+        padding: { top: 6, bottom: 14 }
       },
       legend: {
         display: true,
@@ -208,13 +213,26 @@ function buildChartOptions(
           },
           color: textColor,
           usePointStyle: true,
-          padding: 15
+          padding: 12,
+          boxWidth: 10
         }
       },
-      // Disable tooltip for static images
       tooltip: {
         enabled: false
-      }
+      },
+      // Data labels for pie/doughnut
+      ...(isPieType ? {
+        datalabels: {
+          display: true,
+          color: '#1F2937',
+          font: { family: fontFamily, size: ACADEMIC_DEFAULTS.tickFontSize, weight: 'bold' },
+          formatter: (value: number, context: any) => {
+            const total = context.dataset.data.reduce((a: number, b: number) => a + b, 0)
+            const pct = total > 0 ? ((value / total) * 100).toFixed(1) : '0'
+            return `${pct}%`
+          }
+        }
+      } : {})
     }
   }
 
@@ -333,6 +351,8 @@ export async function generateChart(
     const timeout = setTimeout(() => controller.abort(), 30000) // 30 second timeout
 
     try {
+      const dpr = ACADEMIC_DEFAULTS.devicePixelRatio
+
       if (usePost) {
         // Use POST for large configs
         response = await fetch(`${QUICKCHART_BASE_URL}/chart`, {
@@ -347,7 +367,7 @@ export async function generateChart(
             height,
             format,
             backgroundColor: options?.backgroundColor || '#FFFFFF',
-            devicePixelRatio: 2
+            devicePixelRatio: dpr
           }),
           signal: controller.signal
         })
@@ -358,7 +378,7 @@ export async function generateChart(
           height,
           format,
           backgroundColor: options?.backgroundColor || '#FFFFFF',
-          devicePixelRatio: 2
+          devicePixelRatio: dpr
         })
         response = await fetch(chartUrl, {
           method: 'GET',

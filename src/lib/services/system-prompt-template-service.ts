@@ -177,6 +177,10 @@ export const TEMPLATE_KEYS = {
   INTELLECTUAL_RIGOR_BLOCK: 'intellectual_rigor_block',
   EVIDENCE_GAP_GUARDRAIL: 'evidence_gap_guardrail',
   SECTION_GUIDANCE: 'section_guidance',
+  PERSUASION_BLOCK: 'persuasion_block',
+  REVIEWER_LENS: 'reviewer_lens',
+  ARGUMENTATIVE_ARC: 'argumentative_arc',
+  TEXT_ACTION_CREATE_SECTIONS: 'text_action_create_sections',
 } as const;
 
 export const systemPromptTemplateService = new SystemPromptTemplateService();

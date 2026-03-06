@@ -301,6 +301,11 @@ const STAGE_CONTROL_HELP: Record<string, StageHelpInfo> = {
     responsibility: 'Applies rewrite, expand, condense, formalize, or simplify actions on selected text.',
     tip: 'Choose models with controllable style behavior and low latency.'
   },
+  PAPER_CREATE_SECTIONS: {
+    summary: 'Section structuring from selected text.',
+    responsibility: 'Transforms a selected paragraph or block into headed subsections with coherent body text.',
+    tip: 'Prefer models that are strong at structural organization and markdown heading discipline.'
+  },
   PAPER_REWRITER: {
     summary: 'Full rewrite with academic tone.',
     responsibility: 'Rewrites larger passages while preserving meaning and improving clarity and flow.',

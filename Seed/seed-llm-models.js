@@ -153,9 +153,8 @@ async function main() {
       isActive: true,
       isDefault: false
     },
-    // Google - Image Generation Model (Nano Banana Pro for Sketch Generation)
+    // Google - Image Generation Model (Nano Banana Pro - legacy)
     // Reference: https://ai.google.dev/gemini-api/docs/image-generation
-    // gemini-3-pro-image-preview = "Nano Banana Pro" - advanced image generation
     {
       code: 'gemini-3-pro-image-preview',
       displayName: 'Gemini 3 Pro Image Preview (Nano Banana Pro)',
@@ -165,6 +164,22 @@ async function main() {
       supportsStreaming: false,
       inputCostPer1M: 100,    // $1.00
       outputCostPer1M: 400,   // $4.00 (image generation)
+      isActive: true,
+      isDefault: false
+    },
+    // Google - Nano Banana 2 (Gemini 3.1 Flash Image) - latest image generation
+    // Pro-level quality with Flash-speed. 14-object consistency, improved text rendering,
+    // extreme aspect ratios (up to 8:1), resolutions from 512px to 4K.
+    // Reference: https://deepmind.google/models/gemini/image/
+    {
+      code: 'gemini-3.1-flash-image',
+      displayName: 'Gemini 3.1 Flash Image (Nano Banana 2)',
+      provider: 'google',
+      contextWindow: 128000,
+      supportsVision: true,
+      supportsStreaming: false,
+      inputCostPer1M: 75,     // $0.75 (Flash-tier pricing)
+      outputCostPer1M: 300,   // $3.00 (image generation)
       isActive: true,
       isDefault: false
     },
@@ -738,6 +753,9 @@ async function main() {
     { code: 'DIAGRAM_SEQUENCE', displayName: 'Sequence Diagram', featureCode: 'DIAGRAM_GENERATION', sortOrder: 3, description: 'Generate sequence diagrams' },
     { code: 'DIAGRAM_BLOCK', displayName: 'Block Diagram', featureCode: 'DIAGRAM_GENERATION', sortOrder: 4, description: 'Generate block diagrams' },
 
+    // === PAPER WRITING ASSISTANT STAGES ===
+    { code: 'PAPER_CREATE_SECTIONS', displayName: 'Create Sections from Selected Text', featureCode: 'PAPER_DRAFTING', sortOrder: 1, description: 'Reorganize selected plain text into headed sections with coherent body paragraphs' },
+
     // === IDEATION ENGINE STAGES (Mind-Map Patent Ideation) ===
     { code: 'IDEATION_NORMALIZE', displayName: 'Seed Normalization', featureCode: 'IDEATION', sortOrder: 1, description: 'Extracts structured information from the seed input (core entity, goal, constraints, unknowns, contradictions)' },
     { code: 'IDEATION_CLASSIFY', displayName: 'Invention Classification', featureCode: 'IDEATION', sortOrder: 2, description: 'Classifies the invention into categories (Product/Method/System/etc.) with multi-label support' },
@@ -794,6 +812,8 @@ async function main() {
   // PRODUCTION TOKEN LIMITS - GENEROUS LIMITS TO PREVENT FAILURES
   // These limits are set high to ensure LLM requests don't fail due to token limits
   // ============================================================================
+  const MIN_STAGE_MAX_TOKENS_IN = 12000;
+  const MIN_STAGE_MAX_TOKENS_OUT = 8000;
   const tokenLimits = {
     // Core drafting stages - HIGH LIMITS for complex generation
     'DRAFT_IDEA_ENTRY':                   { maxTokensIn: 20000,  maxTokensOut: 16000 },
@@ -838,6 +858,8 @@ async function main() {
     'DIAGRAM_FLOWCHART':                  { maxTokensIn: 30000,  maxTokensOut: 8000 },
     'DIAGRAM_SEQUENCE':                   { maxTokensIn: 30000,  maxTokensOut: 8000 },
     'DIAGRAM_BLOCK':                      { maxTokensIn: 30000,  maxTokensOut: 8000 },
+    // Paper assistant stages
+    'PAPER_CREATE_SECTIONS':              { maxTokensIn: 24000,  maxTokensOut: 12000 },
     // IDEATION stages (Mind-Map Patent Ideation Engine) - GENEROUS for creative work
     'IDEATION_NORMALIZE':                 { maxTokensIn: 20000,  maxTokensOut: 8192 },
     'IDEATION_CLASSIFY':                  { maxTokensIn: 20000,  maxTokensOut: 8192 },
@@ -900,6 +922,8 @@ async function main() {
       'DIAGRAM_FLOWCHART':                  'gemini-2.5-flash-lite',
       'DIAGRAM_SEQUENCE':                   'gemini-2.5-flash-lite',
       'DIAGRAM_BLOCK':                      'gemini-2.5-flash-lite',
+      // Paper assistant stages
+      'PAPER_CREATE_SECTIONS':              'gemini-2.5-flash',
       // IDEATION stages - Use Pro for heavy reasoning, Flash Lite for lighter tasks
       'IDEATION_NORMALIZE':                 'gemini-2.5-flash-lite',
       'IDEATION_CLASSIFY':                  'gemini-2.5-flash-lite',
@@ -957,6 +981,8 @@ async function main() {
       'DIAGRAM_FLOWCHART':                  'gpt-4o',
       'DIAGRAM_SEQUENCE':                   'gpt-4o',
       'DIAGRAM_BLOCK':                      'gpt-4o',
+      // Paper assistant stages
+      'PAPER_CREATE_SECTIONS':              'gpt-5-mini',
       // IDEATION stages - Pro tier: GPT-5 for creative, Gemini Pro for analysis
       'IDEATION_NORMALIZE':                 'gemini-2.5-pro',
       'IDEATION_CLASSIFY':                  'gemini-2.5-pro',
@@ -1014,6 +1040,8 @@ async function main() {
       'DIAGRAM_FLOWCHART':                  'gpt-4o',
       'DIAGRAM_SEQUENCE':                   'gpt-4o',
       'DIAGRAM_BLOCK':                      'gpt-4o',
+      // Paper assistant stages
+      'PAPER_CREATE_SECTIONS':              'gpt-5',
       // IDEATION stages - Enterprise tier: Best models for maximum quality
       'IDEATION_NORMALIZE':                 'gpt-5-mini',
       'IDEATION_CLASSIFY':                  'gpt-5-mini',
@@ -1039,7 +1067,13 @@ async function main() {
       for (const [stageCode, modelCode] of Object.entries(config)) {
         const stageId = stagesByCode[stageCode];
         const modelId = modelsByCode[modelCode];
-        const limits = tokenLimits[stageCode] || {};
+        const rawLimits = tokenLimits[stageCode];
+        const limits = rawLimits
+          ? {
+              maxTokensIn: Math.max(rawLimits.maxTokensIn, MIN_STAGE_MAX_TOKENS_IN),
+              maxTokensOut: Math.max(rawLimits.maxTokensOut, MIN_STAGE_MAX_TOKENS_OUT),
+            }
+          : null;
         
         if (!stageId) {
           console.log(`    ⚠️ Stage ${stageCode} not found, skipping`);
@@ -1059,16 +1093,16 @@ async function main() {
           },
           update: {
             modelId: modelId,
-            maxTokensIn: limits.maxTokensIn || null,
-            maxTokensOut: limits.maxTokensOut || null,
+            maxTokensIn: limits ? limits.maxTokensIn : null,
+            maxTokensOut: limits ? limits.maxTokensOut : null,
             isActive: true
           },
           create: {
             planId: plan.id,
             stageId: stageId,
             modelId: modelId,
-            maxTokensIn: limits.maxTokensIn || null,
-            maxTokensOut: limits.maxTokensOut || null,
+            maxTokensIn: limits ? limits.maxTokensIn : null,
+            maxTokensOut: limits ? limits.maxTokensOut : null,
             isActive: true
           }
         });

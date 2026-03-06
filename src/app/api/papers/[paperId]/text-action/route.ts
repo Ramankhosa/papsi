@@ -17,7 +17,7 @@ import { polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
 // Validation Helpers
 // ============================================================================
 
-const VALID_ACTIONS: TextActionType[] = ['rewrite', 'expand', 'condense', 'formal', 'simple'];
+const VALID_ACTIONS: TextActionType[] = ['rewrite', 'expand', 'condense', 'formal', 'simple', 'create_sections'];
 
 function isValidAction(action: string): action is TextActionType {
   return VALID_ACTIONS.includes(action as TextActionType);

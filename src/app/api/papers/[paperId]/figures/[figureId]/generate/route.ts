@@ -121,7 +121,7 @@ const generateSchema = z.object({
       steps: z.array(z.string()).optional(),
       captionDraft: z.string().optional(),
       splitSuggestion: z.string().optional(),
-      figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT']).optional(),
+      figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT', 'NEURAL_ARCHITECTURE', 'EXPERIMENTAL_SETUP', 'DATA_PIPELINE', 'COMPARISON_MATRIX', 'PROCESS_MECHANISM', 'SYSTEM_INTERACTION']).optional(),
       renderDirectives: z.object({
         aspectRatio: z.string().optional(),
         fillCanvasPercentMin: z.number().optional(),
@@ -140,7 +140,7 @@ const generateSchema = z.object({
       diagramSpec: z.any().optional(),
       illustrationSpecV2: z.any().optional()
     }).optional(),
-    figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT']).optional(),
+    figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT', 'NEURAL_ARCHITECTURE', 'EXPERIMENTAL_SETUP', 'DATA_PIPELINE', 'COMPARISON_MATRIX', 'PROCESS_MECHANISM', 'SYSTEM_INTERACTION']).optional(),
     renderDirectives: z.object({
       aspectRatio: z.string().optional(),
       fillCanvasPercentMin: z.number().optional(),
@@ -795,72 +795,95 @@ export async function POST(
         break;
 
       case 'STATISTICAL_PLOT':
-        // Statistical plots use LLM for configuration
-        if (data.useLLM && data.description) {
-          let groundedDescription = `${data.description}\n\nThis is a STATISTICAL VISUALIZATION for an academic paper. Use appropriate statistical chart styling.`;
-          if (paperContext) {
-            groundedDescription = `PAPER CONTEXT:\n${paperContext}\n\nFIGURE REQUEST:\n${groundedDescription}`;
-          }
-          // Enrich with suggestion metadata
-          const statEnrichment = data.suggestionMeta || (meta.suggestionMeta as any) || {};
-          if (statEnrichment.relevantSection) {
-            groundedDescription += `\n\nTARGET SECTION: This plot belongs in the "${statEnrichment.relevantSection}" section.`;
-          }
-          if (statEnrichment.whyThisFigure) {
-            groundedDescription += `\nPURPOSE: ${statEnrichment.whyThisFigure}`;
-          }
-          if (statEnrichment.dataNeeded) {
-            groundedDescription += `\nDATA TO VISUALIZE: ${statEnrichment.dataNeeded}`;
+        {
+          // Try Python matplotlib server first for publication-grade plots
+          const pythonPlotTypes = ['boxplot', 'violin', 'heatmap', 'confusion_matrix',
+            'roc_curve', 'error_bar', 'errorbar', 'regression', 'bland_altman', 'forest_plot'];
+          const isPythonType = pythonPlotTypes.includes(data.figureType);
+
+          if (isPythonType && data.data) {
+            const { isPythonChartServerHealthy, generatePythonChart, figureDataToPythonSpec } =
+              await import('@/lib/figure-generation/python-chart-service');
+
+            const healthy = await isPythonChartServerHealthy();
+            if (healthy) {
+              const spec = figureDataToPythonSpec(data.figureType, data.data, {
+                title: data.title,
+                journal: resolvedTheme === 'ieee' ? 'ieee' : resolvedTheme === 'nature' ? 'nature' : 'default',
+              });
+              if (spec) {
+                result = await generatePythonChart(spec);
+                break;
+              }
+            }
           }
 
-          const llmResult = await generateChartConfig(
-            {
-              description: groundedDescription,
-              chartType: data.figureType as any || 'bar',
-              title: data.title,
-              sectionType: statEnrichment.relevantSection,
-              figureRole: statEnrichment.figureRole as any,
-              paperGenre: statEnrichment.paperProfile?.paperGenre,
-              studyType: statEnrichment.paperProfile?.studyType,
-              chartSpec: statEnrichment.chartSpec,
-              style: resolvedTheme as any
-            },
-            requestHeaders
-          );
+          // LLM-assisted Chart.js fallback
+          if (data.useLLM && data.description) {
+            let groundedDescription = `${data.description}\n\nThis is a STATISTICAL VISUALIZATION for an academic paper. Use appropriate statistical chart styling.`;
+            if (paperContext) {
+              groundedDescription = `PAPER CONTEXT:\n${paperContext}\n\nFIGURE REQUEST:\n${groundedDescription}`;
+            }
+            const statEnrichment = data.suggestionMeta || (meta.suggestionMeta as any) || {};
+            if (statEnrichment.relevantSection) {
+              groundedDescription += `\n\nTARGET SECTION: This plot belongs in the "${statEnrichment.relevantSection}" section.`;
+            }
+            if (statEnrichment.whyThisFigure) {
+              groundedDescription += `\nPURPOSE: ${statEnrichment.whyThisFigure}`;
+            }
+            if (statEnrichment.dataNeeded) {
+              groundedDescription += `\nDATA TO VISUALIZE: ${statEnrichment.dataNeeded}`;
+            }
 
-          if (llmResult.success && llmResult.config) {
-            llmMetadata = { tokensUsed: llmResult.tokensUsed, model: llmResult.model };
+            const llmResult = await generateChartConfig(
+              {
+                description: groundedDescription,
+                chartType: data.figureType as any || 'bar',
+                title: data.title,
+                sectionType: statEnrichment.relevantSection,
+                figureRole: statEnrichment.figureRole as any,
+                paperGenre: statEnrichment.paperProfile?.paperGenre,
+                studyType: statEnrichment.paperProfile?.studyType,
+                chartSpec: statEnrichment.chartSpec,
+                style: resolvedTheme as any
+              },
+              requestHeaders
+            );
+
+            if (llmResult.success && llmResult.config) {
+              llmMetadata = { tokensUsed: llmResult.tokensUsed, model: llmResult.model };
+              result = await generateChart(
+                llmResult.config.type as any,
+                llmResult.config.data,
+                {
+                  title: data.title,
+                  theme: { preset: resolvedTheme as any },
+                  format: 'png'
+                }
+              );
+            } else {
+              result = {
+                success: false,
+                error: llmResult.error || 'Failed to generate statistical plot',
+                errorCode: 'API_ERROR'
+              };
+            }
+          } else if (data.data) {
             result = await generateChart(
-              llmResult.config.type as any,
-              llmResult.config.data,
+              'bar',
+              data.data,
               {
                 title: data.title,
-                theme: { preset: resolvedTheme as any },
-                format: 'png'
+                theme: { preset: resolvedTheme as any }
               }
             );
           } else {
             result = {
               success: false,
-              error: llmResult.error || 'Failed to generate statistical plot',
-              errorCode: 'API_ERROR'
+              error: 'Statistical plots require data or a description',
+              errorCode: 'INVALID_DATA'
             };
           }
-        } else if (data.data) {
-          result = await generateChart(
-            'bar',
-            data.data,
-            {
-              title: data.title,
-              theme: { preset: resolvedTheme as any }
-            }
-          );
-        } else {
-          result = {
-            success: false,
-            error: 'Statistical plots require data or a description',
-            errorCode: 'INVALID_DATA'
-          };
         }
         break;
 

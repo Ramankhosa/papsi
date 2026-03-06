@@ -2082,7 +2082,7 @@ export default function SectionDraftingStage({
   }, [figures, focusedSection]);
 
   const handleTextAction = useCallback(async (
-    action: 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple',
+    action: 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple' | 'create_sections',
     text: string,
     customInstructions?: string
   ): Promise<string> => {
@@ -2134,7 +2134,15 @@ export default function SectionDraftingStage({
           }
         }
         setSelectedText(null);
-        showMsg(`Text ${action}d successfully`, 'success');
+        const actionLabels: Record<typeof action, string> = {
+          rewrite: 'rewritten',
+          expand: 'expanded',
+          condense: 'condensed',
+          formal: 'formalized',
+          simple: 'simplified',
+          create_sections: 'organized into sections',
+        };
+        showMsg(`Text ${actionLabels[action]} successfully`, 'success');
       }
 
       return data.transformedText;
@@ -3455,19 +3463,11 @@ export default function SectionDraftingStage({
 
                         <SectionFloatingToolbar
                           onGenerate={() => {
-                            if (!sectionSupportsDimensionFlow) {
-                              void handleGenerate([keyName]);
-                              return;
-                            }
-                            setDimensionPanelOpen(prev => ({ ...prev, [normalizedKey]: true }));
-                            if (dimensionState.started && !dimensionState.completed) {
+                            if (dimensionState.started && !dimensionState.completed && sectionSupportsDimensionFlow) {
+                              setDimensionPanelOpen(prev => ({ ...prev, [normalizedKey]: true }));
                               void generateDimensionDraft(keyName, {
                                 dimensionKey: dimensionState.nextDimensionKey || undefined
                               });
-                              return;
-                            }
-                            if (!dimensionState.started && !hasDraftContent) {
-                              void beginStructuredDraft(keyName);
                               return;
                             }
                             void handleGenerate([keyName]);
@@ -3544,18 +3544,16 @@ export default function SectionDraftingStage({
                           />
                         </div>
 
-                        {!isWorking && !dimensionState.started && (!hasDraftContent || sectionSupportsDimensionFlow) && (
+                        {!isWorking && !dimensionState.started && !hasDraftContent && (
                           <div className="mt-2 flex items-center gap-2 text-xs opacity-60 transition-opacity duration-200 hover:opacity-100">
-                            {!hasDraftContent && (
-                              <button
-                                type="button"
-                                onClick={() => void handleGenerate([keyName])}
-                                disabled={loading || autoModeRunning}
-                                className="rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                              >
-                                Draft
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => void handleGenerate([keyName])}
+                              disabled={loading || autoModeRunning}
+                              className="rounded border border-slate-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-50 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Full Section
+                            </button>
                             {sectionSupportsDimensionFlow && (
                               <button
                                 type="button"
@@ -3564,10 +3562,10 @@ export default function SectionDraftingStage({
                                   void beginStructuredDraft(keyName);
                                 }}
                                 disabled={loading || autoModeRunning}
-                                className="inline-flex items-center gap-1 rounded border border-indigo-200/60 bg-indigo-50/50 px-2 py-0.5 text-[11px] font-medium text-indigo-600 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                className="inline-flex items-center gap-1 rounded border border-slate-200/60 bg-slate-50/50 px-2 py-0.5 text-[11px] font-medium text-slate-400 hover:bg-slate-100 hover:text-slate-600 disabled:cursor-not-allowed disabled:opacity-50"
                               >
                                 <Sparkles className="h-3 w-3" />
-                                {hasDraftContent ? 'Structured from Pass 1' : 'Structured'}
+                                Dimension
                               </button>
                             )}
                           </div>

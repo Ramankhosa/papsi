@@ -121,9 +121,10 @@ async function resolveSketchModelCandidates(tenantId?: string | null): Promise<s
     candidates.push(envModel)
   }
 
-  // Default fallback - use Gemini image generation model
-  // Note: Must use gemini-3-pro-image-preview which supports image OUTPUT
+  // Default fallback - Nano Banana 2 (Gemini 3.1 Flash Image) for best quality/cost
+  // Falls back to legacy Nano Banana Pro if NB2 is unavailable
   if (candidates.length === 0) {
+    candidates.push('gemini-3.1-flash-image')
     candidates.push('gemini-3-pro-image-preview')
   }
 
@@ -227,23 +228,89 @@ function resolveFigureGenre(
 }
 
 function defaultRenderDirectives(genre: EffectiveFigureGenre): IllustrationRenderDirectives {
-  if (genre === 'SCENARIO_STORYBOARD') {
-    return {
-      aspectRatio: '2.5:1',
-      fillCanvasPercentMin: 85,
-      whitespaceMaxPercent: 15,
-      textPolicy: { maxLabelsTotal: 4, maxWordsPerLabel: 3, forbidAllCaps: true, titlesOnlyPreferred: true },
-      stylePolicy: { noGradients: true, no3D: true, noClipart: true, whiteBackground: true, paletteMode: 'grayscale_plus_one_accent' },
-      compositionPolicy: { layoutMode: 'PANELS', equalPanels: true, noTextOutsidePanels: true }
-    }
-  }
-  return {
-    aspectRatio: '3:1',
+  const base = {
     fillCanvasPercentMin: 85,
     whitespaceMaxPercent: 15,
-    textPolicy: { maxLabelsTotal: 4, maxWordsPerLabel: 3, forbidAllCaps: true, titlesOnlyPreferred: true },
-    stylePolicy: { noGradients: true, no3D: true, noClipart: true, whiteBackground: true, paletteMode: 'grayscale_plus_one_accent' },
-    compositionPolicy: { layoutMode: 'STRIP', equalPanels: true, noTextOutsidePanels: true }
+    stylePolicy: { noGradients: true, no3D: true, noClipart: true, whiteBackground: true, paletteMode: 'academic_muted' },
+  }
+
+  switch (genre) {
+    case 'SCENARIO_STORYBOARD':
+      return {
+        ...base,
+        aspectRatio: '2.5:1',
+        textPolicy: { maxLabelsTotal: 6, maxWordsPerLabel: 4, forbidAllCaps: true, titlesOnlyPreferred: true },
+        compositionPolicy: { layoutMode: 'PANELS', equalPanels: true, noTextOutsidePanels: true }
+      }
+    case 'NEURAL_ARCHITECTURE':
+      return {
+        ...base,
+        aspectRatio: '4:3',
+        textPolicy: { maxLabelsTotal: 15, maxWordsPerLabel: 4, forbidAllCaps: true, titlesOnlyPreferred: false },
+        stylePolicy: { ...base.stylePolicy, paletteMode: 'academic_color' },
+        compositionPolicy: { layoutMode: 'STRIP', equalPanels: false, noTextOutsidePanels: false }
+      }
+    case 'EXPERIMENTAL_SETUP':
+      return {
+        ...base,
+        aspectRatio: '3:2',
+        textPolicy: { maxLabelsTotal: 12, maxWordsPerLabel: 5, forbidAllCaps: true, titlesOnlyPreferred: false },
+        stylePolicy: { ...base.stylePolicy, paletteMode: 'academic_color' },
+        compositionPolicy: { layoutMode: 'STRIP', equalPanels: false, noTextOutsidePanels: false }
+      }
+    case 'DATA_PIPELINE':
+      return {
+        ...base,
+        aspectRatio: '3:1',
+        textPolicy: { maxLabelsTotal: 12, maxWordsPerLabel: 4, forbidAllCaps: true, titlesOnlyPreferred: false },
+        compositionPolicy: { layoutMode: 'STRIP', equalPanels: false, noTextOutsidePanels: false }
+      }
+    case 'COMPARISON_MATRIX':
+      return {
+        ...base,
+        aspectRatio: '4:3',
+        textPolicy: { maxLabelsTotal: 16, maxWordsPerLabel: 4, forbidAllCaps: true, titlesOnlyPreferred: false },
+        stylePolicy: { ...base.stylePolicy, paletteMode: 'academic_color' },
+        compositionPolicy: { layoutMode: 'PANELS', equalPanels: true, noTextOutsidePanels: false }
+      }
+    case 'PROCESS_MECHANISM':
+      return {
+        ...base,
+        aspectRatio: '3:2',
+        textPolicy: { maxLabelsTotal: 14, maxWordsPerLabel: 5, forbidAllCaps: true, titlesOnlyPreferred: false },
+        stylePolicy: { ...base.stylePolicy, paletteMode: 'academic_color' },
+        compositionPolicy: { layoutMode: 'STRIP', equalPanels: false, noTextOutsidePanels: false }
+      }
+    case 'SYSTEM_INTERACTION':
+      return {
+        ...base,
+        aspectRatio: '3:2',
+        textPolicy: { maxLabelsTotal: 12, maxWordsPerLabel: 4, forbidAllCaps: true, titlesOnlyPreferred: false },
+        compositionPolicy: { layoutMode: 'STRIP', equalPanels: false, noTextOutsidePanels: false }
+      }
+    case 'CONCEPTUAL_FRAMEWORK':
+      return {
+        ...base,
+        aspectRatio: '4:3',
+        textPolicy: { maxLabelsTotal: 10, maxWordsPerLabel: 4, forbidAllCaps: true, titlesOnlyPreferred: false },
+        compositionPolicy: { layoutMode: 'STRIP', equalPanels: false, noTextOutsidePanels: false }
+      }
+    case 'GRAPHICAL_ABSTRACT':
+      return {
+        ...base,
+        aspectRatio: '16:9',
+        textPolicy: { maxLabelsTotal: 10, maxWordsPerLabel: 5, forbidAllCaps: true, titlesOnlyPreferred: false },
+        stylePolicy: { ...base.stylePolicy, paletteMode: 'academic_color' },
+        compositionPolicy: { layoutMode: 'STRIP', equalPanels: false, noTextOutsidePanels: false }
+      }
+    case 'METHOD_BLOCK':
+    default:
+      return {
+        ...base,
+        aspectRatio: '3:1',
+        textPolicy: { maxLabelsTotal: 10, maxWordsPerLabel: 4, forbidAllCaps: true, titlesOnlyPreferred: true },
+        compositionPolicy: { layoutMode: 'STRIP', equalPanels: true, noTextOutsidePanels: true }
+      }
   }
 }
 
@@ -274,6 +341,7 @@ function buildEffectiveSketchSpec(
 
 /**
  * Build system prompt for genre-specific academic illustrations.
+ * Each genre produces publication-grade scientific figures matching Q1 journal expectations.
  */
 function buildSystemPrompt(
   genre: EffectiveFigureGenre,
@@ -284,42 +352,161 @@ function buildSystemPrompt(
   const textPolicy = d.textPolicy || {}
   const stylePolicy = d.stylePolicy || {}
 
-  const styleGuide = `STYLE MODE: ${style}
-- Flat vector only, schematic academic look
-- No photorealism, no dramatic lighting, no marketing visuals
-- White background and clean line work`
+  const commonRules = `GLOBAL STYLE RULES:
+- Publication-grade scientific illustration for Q1 journals (Nature, IEEE, Elsevier, Springer)
+- Clean vector-style rendering with precise geometric shapes and sharp edges
+- White or very light background; no photorealism, no 3D effects, no clip art
+- Muted academic color palette: navy (#1F77B4), orange (#F28E2B), teal (#2CA02C), slate (#4E4E4E), coral (#E15759)
+- All text must be legible at the output resolution -- minimum ~10pt equivalent
+- No figure numbers, no title overlays, no captions, no watermarks on the image
+- Aspect ratio target: ${d.aspectRatio}; fill >= ${d.fillCanvasPercentMin}%, whitespace <= ${d.whitespaceMaxPercent}%
+- Text: max ${textPolicy.maxLabelsTotal} labels, max ${textPolicy.maxWordsPerLabel} words per label, no all-caps
+- Generate ONLY an image with no accompanying text explanation`
 
-  if (genre === 'SCENARIO_STORYBOARD') {
-    return `You are an expert academic illustrator generating SCENARIO_STORYBOARD figures.
+  const genrePrompts: Record<string, string> = {
+    'METHOD_BLOCK': `You are an expert scientific illustrator generating a METHOD_BLOCK figure for a research paper.
 
-${styleGuide}
+${commonRules}
 
-HARD REQUIREMENTS:
-1. Generate ONLY an image (no explanatory text).
-2. Use exactly 3 equal-width panels in wide landscape composition.
-3. Show a real-world scenario flow; silhouettes allowed but non-identifying.
-4. Maximum one short label per panel and optional "On-device" tag only.
-5. No tiny text, no dense captions, no figure numbers.
-6. Aspect ratio target: ${d.aspectRatio}; content fill >= ${d.fillCanvasPercentMin}% with whitespace <= ${d.whitespaceMaxPercent}%.
-7. Text policy: maxLabelsTotal=${textPolicy.maxLabelsTotal}, maxWordsPerLabel=${textPolicy.maxWordsPerLabel}, forbidAllCaps=${textPolicy.forbidAllCaps}.
-8. Style policy: noGradients=${stylePolicy.noGradients}, no3D=${stylePolicy.no3D}, noClipart=${stylePolicy.noClipart}, paletteMode=${stylePolicy.paletteMode}.
-9. No title/caption/watermark/signature on the image.`
+GENRE-SPECIFIC RULES:
+- Show a left-to-right or top-to-bottom pipeline/workflow with modular rectangular blocks
+- Connect blocks with clean directional arrows showing data/process flow
+- Group related blocks with subtle background shading (light blue, light orange, light gray)
+- Each block has a short title label (2-4 words) centered inside
+- Use consistent block sizing; slight variations allowed for emphasis
+- Annotation arrows or dashed lines for optional/feedback paths
+- No people, no scenario illustrations; purely schematic
+- Pattern: Input -> Processing stages -> Output/Evaluation`,
+
+    'SCENARIO_STORYBOARD': `You are an expert scientific illustrator generating a SCENARIO_STORYBOARD figure for a research paper.
+
+${commonRules}
+
+GENRE-SPECIFIC RULES:
+- Show 3 equal-width panels in a wide landscape strip composition
+- Each panel depicts one stage of a real-world usage scenario
+- Use simplified human silhouettes (non-identifying) or device outlines where relevant
+- One short label per panel (2-3 words max)
+- Panels separated by thin vertical dividers or subtle spacing
+- Show temporal/causal flow from left to right
+- No decorative elements; functional illustration only`,
+
+    'NEURAL_ARCHITECTURE': `You are an expert scientific illustrator generating a NEURAL_ARCHITECTURE figure for a deep learning research paper.
+
+${commonRules}
+
+GENRE-SPECIFIC RULES:
+- Show the network architecture as stacked layers flowing left-to-right or top-to-bottom
+- Represent layers as labeled rectangles, trapezoids, or 3D cuboids (depth-stacked, flat perspective)
+- Include tensor dimension annotations where relevant (e.g., "256x256", "512-d")
+- Use color coding to distinguish layer types: convolution (blue), pooling (orange), FC (green), attention (purple), normalization (gray)
+- Show skip connections and residual paths as curved arrows or dashed lines
+- Include activation functions or operations as small rounded labels on connections
+- Mark input/output tensors with their shapes
+- Maintain architectural accuracy: layer ordering, connection patterns, and data flow must be correct
+- This is a technical schematic, not an artistic rendering`,
+
+    'EXPERIMENTAL_SETUP': `You are an expert scientific illustrator generating an EXPERIMENTAL_SETUP figure for a research paper.
+
+${commonRules}
+
+GENRE-SPECIFIC RULES:
+- Show the physical or logical experimental arrangement as a schematic diagram
+- Use simplified iconic representations of equipment, sensors, devices, and data collection points
+- Label each component clearly with 2-4 word descriptors
+- Show data flow paths, signal paths, or physical connections with labeled arrows
+- Include measurement parameters and key specifications as small annotations
+- Use dashed boxes to group subsystems (e.g., "Data Acquisition", "Processing Unit", "Display")
+- Maintain spatial relationships that reflect the actual experimental configuration
+- Include dimensions, distances, or configuration parameters where relevant
+- No photorealistic equipment; use clean schematic symbols`,
+
+    'DATA_PIPELINE': `You are an expert scientific illustrator generating a DATA_PIPELINE figure for a research paper.
+
+${commonRules}
+
+GENRE-SPECIFIC RULES:
+- Show an end-to-end data processing pipeline as a horizontal strip
+- Each stage is a rounded rectangle with a short label and optional icon
+- Show data transformations between stages with labeled arrows (e.g., "filter", "encode", "aggregate")
+- Include sample counts, data dimensions, or percentages at key points
+- Use color to distinguish pipeline phases: collection (blue), preprocessing (orange), analysis (green), output (gray)
+- Show parallel branches where processing splits and merges
+- Include data format indicators (CSV, JSON, tensor shapes) at stage boundaries
+- Highlight the key transformation steps that are novel or methodologically important`,
+
+    'COMPARISON_MATRIX': `You are an expert scientific illustrator generating a COMPARISON_MATRIX figure for a research paper.
+
+${commonRules}
+
+GENRE-SPECIFIC RULES:
+- Create a structured grid or matrix comparing methods, models, or approaches
+- Rows represent different methods/systems; columns represent evaluation criteria or features
+- Use checkmarks, X marks, circles, or color-coded cells to indicate support/performance
+- Include a clear header row and header column with short descriptive labels
+- Optionally include a small legend for the cell notation system
+- Keep the grid clean and evenly spaced with consistent cell sizes
+- Can also show side-by-side visual comparisons of outputs with labeled panels
+- Focus on making the comparison instantly readable and scannable`,
+
+    'PROCESS_MECHANISM': `You are an expert scientific illustrator generating a PROCESS_MECHANISM figure for a research paper.
+
+${commonRules}
+
+GENRE-SPECIFIC RULES:
+- Illustrate a scientific process, mechanism, or phenomenon step-by-step
+- Use numbered stages with descriptive labels showing causal or temporal progression
+- Include relevant scientific symbols, molecular structures, waveforms, or domain-specific icons
+- Show input conditions on the left, transformation in the center, output/results on the right
+- Use arrows to indicate direction of process, energy transfer, information flow, or material movement
+- Include key parameters, variables, or equations as small annotations near relevant stages
+- Use color to distinguish different substances, signals, or phases in the process
+- Suitable for biological pathways, chemical reactions, signal processing chains, or physical phenomena`,
+
+    'SYSTEM_INTERACTION': `You are an expert scientific illustrator generating a SYSTEM_INTERACTION figure for a research paper.
+
+${commonRules}
+
+GENRE-SPECIFIC RULES:
+- Show multiple systems, services, or components and their interactions
+- Each system is a distinct labeled block with clear boundaries
+- Arrows between systems show APIs, protocols, data exchange, or communication patterns
+- Label arrows with protocol names, data types, or interaction descriptions
+- Use swimlanes or spatial grouping to show system boundaries (cloud, edge, on-device)
+- Include databases as cylinder shapes, queues as parallelograms where relevant
+- Show both request and response paths where bidirectional
+- Maintain a clean topology that reflects the actual system architecture`,
+
+    'CONCEPTUAL_FRAMEWORK': `You are an expert scientific illustrator generating a CONCEPTUAL_FRAMEWORK figure for a research paper.
+
+${commonRules}
+
+GENRE-SPECIFIC RULES:
+- Show the theoretical framework or conceptual model underlying the research
+- Use boxes, circles, and labeled arrows to represent concepts and their relationships
+- Hierarchical layout: foundational concepts at the bottom, derived concepts above
+- Show causal relationships, dependencies, and feedback loops with different arrow styles
+- Include key variables, constructs, or dimensions as labeled nodes
+- Use subtle color coding to group related concepts (e.g., independent vs dependent variables)
+- Maintain academic rigor: every arrow represents a theorized relationship
+- Suitable for theoretical papers, systematic reviews, or framework proposals`,
+
+    'GRAPHICAL_ABSTRACT': `You are an expert scientific illustrator generating a GRAPHICAL_ABSTRACT for a research paper.
+
+${commonRules}
+
+GENRE-SPECIFIC RULES:
+- Create a single wide-format visual summary of the entire paper
+- Layout: left third shows the problem/input, center shows the method/approach, right third shows results/impact
+- Use a mix of simplified icons, small charts/graphs, and short text labels
+- Include the key finding or metric prominently (e.g., "92% accuracy", "3x faster")
+- Keep the visual flow clearly left-to-right with connecting arrows
+- Use the full academic color palette for visual distinction between sections
+- Must be self-explanatory: a reader should understand the paper's contribution at a glance
+- No dense text; every element serves a communicative purpose`
   }
 
-  return `You are an expert academic illustrator generating METHOD_BLOCK style figures.
-
-${styleGuide}
-
-HARD REQUIREMENTS:
-1. Generate ONLY an image (no explanatory text).
-2. Use modular block/pipeline composition with deterministic connectors.
-3. No people; no scenario scenes.
-4. Labels are titles-only and extremely short.
-5. No tiny text, no dense captions, no figure numbers.
-6. Aspect ratio target: ${d.aspectRatio}; content fill >= ${d.fillCanvasPercentMin}% with whitespace <= ${d.whitespaceMaxPercent}%.
-7. Text policy: maxLabelsTotal=${textPolicy.maxLabelsTotal}, maxWordsPerLabel=${textPolicy.maxWordsPerLabel}, forbidAllCaps=${textPolicy.forbidAllCaps}.
-8. Style policy: noGradients=${stylePolicy.noGradients}, no3D=${stylePolicy.no3D}, noClipart=${stylePolicy.noClipart}, paletteMode=${stylePolicy.paletteMode}.
-9. No title/caption/watermark/signature on the image.`
+  return genrePrompts[genre] || genrePrompts['METHOD_BLOCK']
 }
 
 /**
@@ -371,10 +558,19 @@ RENDER DIRECTIVES (hard):
 }
 
 function buildGenreReminder(genre: EffectiveFigureGenre): string {
-  if (genre === 'SCENARIO_STORYBOARD') {
-    return 'GENRE REMINDER: Produce a scenario storyboard (3 equal panels). Silhouettes allowed. One short label per panel max.'
+  const reminders: Record<string, string> = {
+    'METHOD_BLOCK': 'GENRE: Method block/pipeline schematic. Modular blocks with directional arrows. No people. Short title labels only.',
+    'SCENARIO_STORYBOARD': 'GENRE: Scenario storyboard (3 equal panels). Silhouettes allowed. One short label per panel max.',
+    'NEURAL_ARCHITECTURE': 'GENRE: Neural network architecture diagram. Stacked layers with tensor dimensions, color-coded by layer type. Technical schematic.',
+    'EXPERIMENTAL_SETUP': 'GENRE: Experimental setup schematic. Equipment/sensor icons, data flow arrows, measurement annotations. Clean technical diagram.',
+    'DATA_PIPELINE': 'GENRE: Data pipeline strip. Horizontal stages with transformation labels, sample counts, and format indicators between stages.',
+    'COMPARISON_MATRIX': 'GENRE: Comparison matrix/grid. Methods as rows, criteria as columns, checkmarks/colors for feature support.',
+    'PROCESS_MECHANISM': 'GENRE: Scientific process mechanism. Numbered stages, domain-specific symbols, parameter annotations. Causal flow.',
+    'SYSTEM_INTERACTION': 'GENRE: System interaction diagram. Distinct system blocks with labeled API/protocol arrows. Topology-accurate.',
+    'CONCEPTUAL_FRAMEWORK': 'GENRE: Conceptual framework. Hierarchical layout of theoretical constructs with relationship arrows.',
+    'GRAPHICAL_ABSTRACT': 'GENRE: Graphical abstract. Wide-format summary: problem (left) -> method (center) -> results (right). Self-explanatory.'
   }
-  return 'GENRE REMINDER: Produce a method block/pipeline schematic. No people. Titles-only labels.'
+  return reminders[genre] || reminders['METHOD_BLOCK']
 }
 
 /**
@@ -601,12 +797,14 @@ function evaluateImageQuality(
     }
   }
 
-  // Lightweight genre mismatch heuristic.
-  if (effective.genre === 'SCENARIO_STORYBOARD' && ratio > 0 && ratio < 1.7) {
-    issues.push('genre-mismatch:storyboard-not-wide')
+  // Genre-specific aspect ratio heuristics
+  const wideGenres = ['SCENARIO_STORYBOARD', 'DATA_PIPELINE', 'METHOD_BLOCK', 'GRAPHICAL_ABSTRACT']
+  const squareishGenres = ['NEURAL_ARCHITECTURE', 'COMPARISON_MATRIX', 'CONCEPTUAL_FRAMEWORK', 'EXPERIMENTAL_SETUP', 'PROCESS_MECHANISM', 'SYSTEM_INTERACTION']
+  if (wideGenres.includes(effective.genre) && ratio > 0 && ratio < 1.5) {
+    issues.push(`genre-mismatch:${effective.genre.toLowerCase()}-not-wide`)
   }
-  if (effective.genre === 'METHOD_BLOCK' && ratio > 0 && ratio < 2.0) {
-    issues.push('genre-mismatch:method-not-wide')
+  if (squareishGenres.includes(effective.genre) && ratio > 0 && ratio > 4.0) {
+    issues.push(`genre-mismatch:${effective.genre.toLowerCase()}-too-wide`)
   }
 
   return issues
@@ -617,14 +815,13 @@ function buildCorrectiveRefineInstructions(
   effective: EffectiveSketchSpec
 ): string {
   const directives = effective.directives
-  const genreInstruction = effective.genre === 'SCENARIO_STORYBOARD'
-    ? 'Convert to a strict 3-panel scenario storyboard with equal panels; silhouettes allowed; one short label per panel max.'
-    : 'Convert to a method block/pipeline schematic with no people and titles-only labels.'
+  const genreInstruction = buildGenreReminder(effective.genre)
 
   return [
     'Correct the generated image while preserving core content.',
     genreInstruction,
     'Remove tiny/garbled text and remove duplicated blocks/panels.',
+    'Ensure all labels are legible and properly positioned.',
     `Target aspect ratio: ${directives.aspectRatio}.`,
     `Increase canvas fill to at least ${directives.fillCanvasPercentMin}% and keep whitespace below ${directives.whitespaceMaxPercent}%.`,
     'Tight crop composition and center content.',
@@ -634,14 +831,27 @@ function buildCorrectiveRefineInstructions(
 
 function buildPersistedIllustrationSpecV2(effective: EffectiveSketchSpec): IllustrationStructuredSpecV2 {
   const spec: IllustrationStructuredSpecV2 = { ...(effective.specV2 || {}) }
+  const panelGenres: IllustrationFigureGenre[] = ['SCENARIO_STORYBOARD', 'COMPARISON_MATRIX']
   if (!spec.layout) {
-    spec.layout = effective.genre === 'SCENARIO_STORYBOARD' ? 'PANELS' : 'STRIP'
+    spec.layout = panelGenres.includes(effective.genre) ? 'PANELS' : 'STRIP'
   }
   if (!spec.panelCount && effective.genre === 'SCENARIO_STORYBOARD') {
     spec.panelCount = 3
   }
-  if (!spec.stepCount && effective.genre === 'METHOD_BLOCK') {
-    spec.stepCount = 5
+  if (!spec.panelCount && effective.genre === 'COMPARISON_MATRIX') {
+    spec.panelCount = 4
+  }
+  if (!spec.stepCount) {
+    const defaultSteps: Partial<Record<IllustrationFigureGenre, number>> = {
+      'METHOD_BLOCK': 5,
+      'DATA_PIPELINE': 6,
+      'PROCESS_MECHANISM': 5,
+      'NEURAL_ARCHITECTURE': 6,
+      'GRAPHICAL_ABSTRACT': 4
+    }
+    if (defaultSteps[effective.genre]) {
+      spec.stepCount = defaultSteps[effective.genre]
+    }
   }
   spec.figureGenre = effective.genre
   spec.renderDirectives = effective.directives
@@ -675,9 +885,18 @@ export async function generateSketchWithGemini(
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const isImagenModel = modelCode.toLowerCase().includes('imagen')
+        const isNanoBanana2 = modelCode.includes('3.1-flash-image')
         
         const generationConfig: any = isImagenModel ? {} : {
           responseModalities: ["TEXT", "IMAGE"],
+        }
+
+        // NB2 cost optimization: request minimum viable resolution for papers
+        // Single-column figure at 300 DPI = ~1050px. We use 1024 to stay efficient.
+        if (isNanoBanana2 && !isImagenModel) {
+          generationConfig.imageGenerationConfig = {
+            outputImageSize: '1024',
+          }
         }
         
         const model = genAI.getGenerativeModel({

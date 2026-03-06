@@ -130,6 +130,12 @@ export type IllustrationFigureGenre =
   | 'SCENARIO_STORYBOARD'
   | 'CONCEPTUAL_FRAMEWORK'
   | 'GRAPHICAL_ABSTRACT'
+  | 'NEURAL_ARCHITECTURE'
+  | 'EXPERIMENTAL_SETUP'
+  | 'DATA_PIPELINE'
+  | 'COMPARISON_MATRIX'
+  | 'PROCESS_MECHANISM'
+  | 'SYSTEM_INTERACTION'
 
 export interface IllustrationRenderDirectives {
   aspectRatio?: string
@@ -543,19 +549,19 @@ export const ACADEMIC_COLOR_PALETTES = {
 // ============================================================================
 
 export const FIGURE_DIMENSIONS = {
-  // Single column (typical journal width ~85mm)
-  singleColumn: { width: 1000, height: 750 },
+  // Single column (3.5 inches at 300 DPI = 1050px; DPR 3x handled by renderer)
+  singleColumn: { width: 1050, height: 788 },
   
-  // Double column (typical journal width ~170mm)  
-  doubleColumn: { width: 2000, height: 1200 },
+  // Double column (7 inches at 300 DPI = 2100px)
+  doubleColumn: { width: 2100, height: 1350 },
   
   // Square format
-  square: { width: 1000, height: 1000 },
+  square: { width: 1050, height: 1050 },
   
   // Wide format (for timelines, gantt charts)
-  wide: { width: 2000, height: 600 },
+  wide: { width: 2100, height: 700 },
   
   // Tall format (for hierarchies, trees)
-  tall: { width: 800, height: 1400 }
+  tall: { width: 1050, height: 1575 }
 } as const
 

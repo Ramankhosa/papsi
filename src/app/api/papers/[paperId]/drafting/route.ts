@@ -4716,23 +4716,37 @@ No mapped evidence exists for this dimension. STRICT RULES:
 - You may reference concepts from the PASS 1 source but do NOT cite papers
   that are not in your allowed citation set.`;
 
-  const FALLBACK_DIMENSION_RULES = `Rules:
-- Use the PASS 1 SECTION SOURCE above as the source of truth for this section.
-- Use the PASS 1 TARGET-DIMENSION BRIEF as the primary extraction target when available.
-- Use the TARGET DIMENSION EVIDENCE PACK first when grounding claims and citation placement.
-- Extract and adapt only the parts of the pass 1 draft that belong to this target dimension.
-- Do not repeat prior accepted content.
-- Keep continuity with the previous accepted dimension.
+  const FALLBACK_DIMENSION_RULES = `REFINEMENT APPROACH:
+- Start from the PASS 1 TARGET-DIMENSION BRIEF — this is your raw material to refine, not replace.
+- Preserve ALL evidence, citations, and factual claims from Pass 1.
+- UPGRADE: strengthen argument flow, sharpen prose, improve transitions, add analytical depth.
+- Use the TARGET DIMENSION EVIDENCE PACK to enrich citation integration — weave citations into arguments, not just append them.
+- The output should read as PUBLICATION-READY prose for this dimension — no further polish pass will follow.
+
+CONTINUITY:
+- Maintain seamless continuity with the previous accepted dimension — reference what was established and build on it.
 - If this role is introduction, open the section naturally before narrowing into the target dimension.
-- If this role is conclusion, close the section cleanly and synthesize the section-level takeaway without adding new major claims.
-- If there is a next dimension, leave a natural bridge toward the next required dimension.
-- Use [CITE:key] placeholders exactly.
-- If this dimension has REQUIRED CITATION KEYS, include each at least once.
+- If this role is conclusion, close the section cleanly and synthesize the section-level takeaway.
+- If there is a next dimension, leave a natural bridge toward it.
 - Keep output focused on this dimension only.
 - Use the same terminology and concepts established by previous sections (see PREVIOUS SECTIONS MEMORY).
-- FORMATTING: Output plain academic prose only. Do NOT use bold (**), italic (*), or any markdown emphasis markers. Headings are acceptable but inline formatting must be plain text.`;
 
-  const [evidenceGapTemplate, dimensionRulesTemplate] = await Promise.all([
+CITATIONS:
+- Use [CITE:key] placeholders exactly. Preserve all citations from Pass 1.
+- If this dimension has REQUIRED CITATION KEYS, include each at least once.
+- Weave citations into the argument — seminal works get narrative treatment, supporting evidence gets parenthetical grouping.
+
+FORMATTING: Output plain academic prose only. No bold (**), italic (*), or markdown emphasis. Headings are acceptable.
+
+ARGUMENTATIVE QUALITY:
+- Each paragraph must advance the argument — information without analytical purpose is filler.
+- Open paragraphs with analytical claims, not descriptions.
+- Synthesize across sources: show what multiple studies collectively establish, not just what each says.
+- Where evidence conflicts, discuss the tension explicitly — this is where analytical depth lives.
+- Use analytical transitions ("This limitation motivates...", "The tension between X and Y suggests...") not mechanical ones ("Furthermore", "Additionally").
+- Write to convince an expert reviewer, not just to inform.`;
+
+  const [evidenceGapTemplate, dimensionRulesTemplate, argumentativeArcBlock] = await Promise.all([
     isEvidenceGapDimension
       ? systemPromptTemplateService.resolveWithFallback(
           { templateKey: TEMPLATE_KEYS.EVIDENCE_GAP_GUARDRAIL, applicationMode: 'paper' },
@@ -4743,11 +4757,20 @@ No mapped evidence exists for this dimension. STRICT RULES:
       { templateKey: TEMPLATE_KEYS.DIMENSION_PROMPT_RULES, applicationMode: 'paper' },
       FALLBACK_DIMENSION_RULES
     ),
+    systemPromptTemplateService.resolveWithFallback(
+      { templateKey: TEMPLATE_KEYS.ARGUMENTATIVE_ARC, applicationMode: 'paper' },
+      ''
+    ),
   ]);
 
   const evidenceGapGuardrail = isEvidenceGapDimension ? `\n${evidenceGapTemplate}\n` : '';
 
-  const prompt = `You are drafting ONE dimension for a paper section.
+  const prompt = `You are refining and elevating ONE dimension of a paper section to publication quality.
+
+A Pass 1 evidence draft already exists. Your task is to take the relevant portion of that draft
+for this dimension and ELEVATE it: strengthen the argument, sharpen the prose, improve transitions,
+and ensure it reads as Q1 journal-quality prose. Preserve the evidence and citations from Pass 1
+while upgrading the analytical depth and writing quality.
 
 SECTION KEY: ${params.sectionKey}
 SECTION LABEL: ${formatSectionLabel(params.sectionKey)}
@@ -4762,13 +4785,13 @@ ${budgetLines}
 ROLE DIRECTIVE: ${roleDirective}
 ${rhetoricalSlotsBlock}
 ${evidenceGapGuardrail}
-PASS 1 SECTION SOURCE (use this as the source of truth for section-level content):
+PASS 1 SECTION SOURCE (refine and elevate the relevant portion — preserve evidence and citations):
 ${pass1SourceFull || '(No pass 1 source available)'}
 
 PASS 1 MEMORY SUMMARY:
 ${formatPass1MemoryForPrompt(pass1Memory)}
 
-PASS 1 TARGET-DIMENSION BRIEF:
+PASS 1 TARGET-DIMENSION BRIEF (this is the specific chunk to refine):
 ${formatPass1DimensionBriefForPrompt(targetPass1Brief)}
 
 TARGET DIMENSION EVIDENCE PACK:
@@ -4786,8 +4809,8 @@ ${crossSectionBlock}
 MASTER SECTION GUIDANCE:
 ${params.bundle.prompt}
 ${feedback}
-
-Write ONLY the content block for this target dimension.
+${argumentativeArcBlock ? `\n${argumentativeArcBlock}\n` : ''}
+Refine and elevate ONLY the content block for this target dimension.
 ${dimensionRulesTemplate}
 ${targetRule}
 ${minRule}
@@ -5403,103 +5426,19 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
         let polishMetadata: { promptUsed?: string; tokensUsed?: number; completedAt: Date } | null = null;
 
         if (flowCompleted && sectionContentForPersist.trim()) {
-          polishSummary = { attempted: true, applied: false };
-          const acceptDimCitations = (bundle.evidencePromptContext.dimensionEvidence || []).map(dim => ({
-            dimensionKey: normalizeDimensionKey(dim.dimension),
-            dimensionLabel: dim.dimension,
-            expectedCitationKeys: (dim.citations || []).map(c => String(c.citationKey || '').trim()).filter(Boolean),
-          }));
-          const polishResult = await sectionPolishService.polishWithRetry({
-            sectionKey,
-            displayName: sectionRecord.displayName || formatSectionLabel(sectionKey),
-            baseContent: sectionContentForPersist,
-            sessionId,
-            paperTypeCode,
-            tenantContext: tenantContext || null,
-            dimensionCitations: acceptDimCitations.length > 0 ? acceptDimCitations : undefined,
-          });
-
-          if (polishResult.success && polishResult.polishedContent) {
-            sectionContentForPersist = polishResult.polishedContent;
-            polishSummary.applied = true;
-            polishMetadata = {
-              promptUsed: polishResult.promptUsed,
-              tokensUsed: polishResult.tokensUsed ?? undefined,
-              completedAt: new Date()
-            };
-          } else {
-            polishSummary.error = polishResult.error || 'Final section polish failed';
-            console.warn('[PaperDrafting] Final stitched section polish failed; using unpolished stitched content', {
-              sectionKey,
-              error: polishSummary.error
-            });
-          }
-          if (polishResult.driftReport?.dimensionCoverage && !polishResult.driftReport.dimensionCoverage.passed) {
-            (polishSummary as any).dimensionCoverage = polishResult.driftReport.dimensionCoverage;
-          }
+          // Dimension flow already produces publication-quality prose per dimension.
+          // Skip the separate Pass 2 polish — it adds latency and can flatten the
+          // argumentative structure that dimension refinement carefully built.
+          polishSummary = { attempted: false, applied: false };
+          console.log('[PaperDrafting] Dimension flow complete — skipping Pass 2 polish (dimensions already refined to publication quality)', { sectionKey });
         }
 
-        if (
-          flowCompleted
-          && sectionContentForPersist.trim()
-          && isFeatureEnabled('ENABLE_RHETORICAL_BLUEPRINT')
-          && isFeatureEnabled('ENABLE_RHETORICAL_COMPOSER_PASS2B')
-          && bundle.blueprintPromptContext?.rhetoricalBlueprint?.enabled
-        ) {
-          try {
-            const preRhetoricalContent = sectionContentForPersist;
-            const rhetoricalResult = await rhetoricalComposerService.applyPass2B({
-              sessionId,
-              sectionKey,
-              content: sectionContentForPersist,
-              rhetoricalBlueprint: bundle.blueprintPromptContext.rhetoricalBlueprint,
-              researchIntentLock: bundle.blueprintPromptContext.researchIntentLock || null,
-              fallbackContributions: bundle.blueprintPromptContext.keyContributions || [],
-              evidenceDigestSummary: formatEvidenceDigest(bundle.evidencePromptContext.evidenceDigest),
-              tenantContext: tenantContext || null,
-              requestHeaders
-            });
-
-            const rolledBack = !rhetoricalResult.validation.passed;
-            if (!rolledBack && rhetoricalResult.content) {
-              sectionContentForPersist = rhetoricalResult.content;
-            } else {
-              sectionContentForPersist = preRhetoricalContent;
-            }
-
-            if (!polishSummary) {
-              polishSummary = { attempted: false, applied: false };
-            }
-            (polishSummary as any).rhetoricalValidation = {
-              enabled: true,
-              pass2bApplied: true,
-              rolledBack,
-              retries: rhetoricalResult.retries,
-              passed: rhetoricalResult.validation.passed,
-              violations: rhetoricalResult.validation.violations,
-              inspectedParagraphs: rhetoricalResult.validation.inspectedParagraphs,
-              requiredSlotsChecked: rhetoricalResult.validation.requiredSlotsChecked,
-              slotViolations: rhetoricalResult.validation.slotViolations
-            };
-
-            const combinedTokens = Number(polishMetadata?.tokensUsed || 0) + Number(rhetoricalResult.tokensUsed || 0);
-            if ((!rolledBack && rhetoricalResult.promptUsed) || combinedTokens > 0) {
-              polishMetadata = {
-                promptUsed: (!rolledBack && rhetoricalResult.promptUsed) ? rhetoricalResult.promptUsed : polishMetadata?.promptUsed,
-                tokensUsed: combinedTokens > 0 ? combinedTokens : undefined,
-                completedAt: new Date()
-              };
-            }
-
-            if (!rhetoricalResult.validation.passed) {
-              console.warn('[PaperDrafting] Rhetorical validation failed after retries in dimension flow; reverted to pre-rhetorical content', {
-                sectionKey,
-                violations: rhetoricalResult.validation.violations
-              });
-            }
-          } catch (error) {
-            console.warn('[PaperDrafting] Rhetorical pass after dimension flow failed (non-fatal):', error);
-          }
+        // Pass 2B (Rhetorical Composer) is skipped for dimension flow.
+        // Rhetorical slot guidance is already injected into each dimension's generation prompt,
+        // making a separate post-hoc rewrite redundant. The validation often fails and rolls back,
+        // adding cost without benefit.
+        if (flowCompleted) {
+          console.log('[PaperDrafting] Dimension flow complete — skipping Pass 2B rhetorical composer (guidance already in dimension prompts)', { sectionKey });
         }
 
         const finalSectionBudget = normalizePositiveWordBudget(flow.sectionWordBudget);
@@ -5526,13 +5465,10 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           stitchedContent: sectionContentForPersist
         });
 
-        if (polishMetadata) {
+        if (flowCompleted) {
           persistedSection = await prisma.paperSection.update({
             where: { id: sectionRecord.id },
             data: {
-              pass2PromptUsed: polishMetadata.promptUsed,
-              pass2TokensUsed: polishMetadata.tokensUsed,
-              pass2CompletedAt: polishMetadata.completedAt,
               status: 'DRAFT',
               version: { increment: 1 }
             }

@@ -28,6 +28,16 @@ interface GeminiImageModel {
 // Best Gemini models for image generation (sketch generation)
 const GEMINI_IMAGE_MODELS: GeminiImageModel[] = [
   {
+    code: 'gemini-3.1-flash-image',
+    displayName: 'Gemini 3.1 Flash Image (Nano Banana 2)',
+    contextWindow: 128000,
+    supportsVision: true,
+    supportsStreaming: false,
+    inputCostPer1M: 75,   // $0.75 per 1M
+    outputCostPer1M: 300,  // $3.00 per 1M
+    description: 'Latest image generation model. 14-object consistency, improved text rendering, extreme aspect ratios. Best for publication-grade scientific figures.'
+  },
+  {
     code: 'gemini-2.0-flash-exp',
     displayName: 'Gemini 2.0 Flash Experimental (Best Image Output)',
     contextWindow: 1048576, // 1M tokens

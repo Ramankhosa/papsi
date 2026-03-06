@@ -262,6 +262,8 @@ function formatDimensionEvidence(
     '- Use these mapped citations as primary support for this section.',
     '- Do not invent findings outside the cards/metadata below.',
     '- Prefer HIGH-confidence and quote-verified cards when available.',
+    '- SYNTHESIS INSTRUCTION: Within each dimension, weave citations into a coherent analytical narrative — do not list them sequentially.',
+    '- Use positional relations (REINFORCES/CONTRADICTS/EXTENDS/QUALIFIES) to structure comparisons between cited works.',
     '',
   ];
 
@@ -274,29 +276,72 @@ function formatDimensionEvidence(
       continue;
     }
 
+    const reinforcing: string[] = [];
+    const contradicting: string[] = [];
+    const extending: string[] = [];
+    const other: string[] = [];
+
     for (const citation of dim.citations) {
       const cards = Array.isArray(citation.evidenceCards) ? citation.evidenceCards : [];
-      const baseLine = `  [${citation.citationKey}] (${citation.year || 'n.d.'}, ${citation.confidence}) "${citation.title}"`;
-      lines.push(baseLine);
+      const relation = citation.positionalRelation?.relation;
+      const rationale = citation.positionalRelation?.rationale;
+      const relationTag = relation ? ` [${relation}]` : '';
+      const baseLine = `  [${citation.citationKey}]${relationTag} (${citation.year || 'n.d.'}, ${citation.confidence}) "${citation.title}"`;
+      const citLines: string[] = [baseLine];
+
+      if (rationale) {
+        citLines.push(`    Relation rationale: ${rationale}`);
+      }
       if (citation.remark) {
-        lines.push(`    Relevance: ${citation.remark}`);
+        citLines.push(`    Relevance: ${citation.remark}`);
       }
       if (citation.evidenceBoundary) {
-        lines.push(`    Boundary: ${citation.evidenceBoundary}`);
+        citLines.push(`    Boundary: ${citation.evidenceBoundary}`);
       }
 
       for (const card of cards.slice(0, 3)) {
-        lines.push(`    Claim: ${card.claim}`);
+        citLines.push(`    Claim: ${card.claim}`);
         if (card.quantitativeDetail) {
-          lines.push(`    Detail: ${card.quantitativeDetail}`);
+          citLines.push(`    Detail: ${card.quantitativeDetail}`);
         }
         if (card.conditions) {
-          lines.push(`    Conditions: ${card.conditions}`);
+          citLines.push(`    Conditions: ${card.conditions}`);
         }
         if (card.doesNotSupport) {
-          lines.push(`    Does NOT support: ${card.doesNotSupport}`);
+          citLines.push(`    Does NOT support: ${card.doesNotSupport}`);
         }
       }
+
+      const block = citLines.join('\n');
+      if (relation === 'CONTRADICTS' || relation === 'TENSION') contradicting.push(block);
+      else if (relation === 'EXTENDS' || relation === 'QUALIFIES') extending.push(block);
+      else if (relation === 'REINFORCES') reinforcing.push(block);
+      else other.push(block);
+    }
+
+    if (reinforcing.length > 0) {
+      lines.push(`  ── Supporting evidence (use to build your core argument) ──`);
+      lines.push(...reinforcing);
+    }
+    if (contradicting.length > 0) {
+      lines.push(`  ── Contrasting evidence (must be explicitly discussed — show tension) ──`);
+      lines.push(...contradicting);
+    }
+    if (extending.length > 0) {
+      lines.push(`  ── Extending/qualifying evidence (use to refine or bound claims) ──`);
+      lines.push(...extending);
+    }
+    if (other.length > 0) {
+      if (reinforcing.length > 0 || contradicting.length > 0 || extending.length > 0) {
+        lines.push(`  ── Additional evidence ──`);
+      }
+      lines.push(...other);
+    }
+
+    const totalCites = dim.citations.length;
+    const contrastCount = contradicting.length;
+    if (totalCites >= 3) {
+      lines.push(`  SYNTHESIS HINT: This dimension has ${totalCites} citations${contrastCount > 0 ? ` (${contrastCount} contrasting)` : ''}. Synthesize them thematically — show what they collectively establish, where they diverge, and what remains unresolved.`);
     }
 
     lines.push('');
@@ -520,7 +565,7 @@ class PaperSectionService {
           prompt,
           parameters: {
             purpose: effectiveTwoPass ? 'paper_section_pass1' : 'paper_section_generation',
-            temperature: 0.5,
+            temperature: 0.65,
           },
           idempotencyKey: crypto.randomUUID(),
           metadata: {
@@ -965,7 +1010,7 @@ class PaperSectionService {
               taskCode: 'LLM2_DRAFT',
               stageCode: 'PAPER_SECTION_DRAFT',
               prompt,
-              parameters: { purpose: 'paper_section_pass1_bg', temperature: 0.5 },
+              parameters: { purpose: 'paper_section_pass1_bg', temperature: 0.65 },
               idempotencyKey: crypto.randomUUID(),
               metadata: { sessionId, sectionKey, purpose: 'paper_section_pass1_bg' }
             }
@@ -1711,54 +1756,57 @@ ${pm.memory.forwardReferences.length > 0 ? `- Promises: ${pm.memory.forwardRefer
 
     // Resolve intellectual rigor block from DB (falls back to hardcoded default)
     const FALLBACK_RIGOR = `═══════════════════════════════════════════════════════════════════════════════
-INTELLECTUAL RIGOR BLOCK v3
+INTELLECTUAL RIGOR & ANALYTICAL DEPTH
+═══════════════════════════════════════════════════════════════════════════════
 NOVELTY FRAMING
 - Frame contributions as resolving a specific limitation, tension, or contested assumption.
-- Avoid contextual-only novelty unless explicitly classified as TRANSLATIONAL.
-- State clearly what prior work could not achieve.
-
-If noveltyType = TRANSLATIONAL:
-- Frame as validation, feasibility, adaptation, or contextual testing.
-- Do NOT claim methodological invention.
+- State clearly what prior work could not achieve — this is the foundation of your argument.
+- If noveltyType = TRANSLATIONAL: frame as validation, feasibility, adaptation, or contextual testing.
 
 ANALYTICAL LITERATURE
-- Organize by analytical themes, not paper-by-paper summaries.
-- For each theme, include at least one explicit comparison or contrast when supported by evidence.
-- Use positional relation labels to clarify whether cited work reinforces, contradicts, extends, or qualifies your argument.
-- Surface boundary conditions when relevant.
+- Organize by analytical themes — synthesize, compare, and contrast across sources.
+- Use positional relations to structure arguments: cite what reinforces, contradicts, extends, or qualifies your claims.
+- Surface boundary conditions when they strengthen analytical depth.
 
-SCOPE DISCIPLINE
-- Do not generalize beyond stated scope.
-- Use hedging for single-study findings.
-- Distinguish clearly between cited findings and your own findings.
+EVIDENCE-CALIBRATED CONFIDENCE
+- Strong evidence → confident language ("demonstrates", "confirms", "establishes")
+- Moderate evidence → calibrated language ("suggests", "is consistent with", "indicates")
+- Limited evidence → appropriately hedged ("one interpretation", "preliminary findings suggest")
+- Distinguish between cited findings, your findings, and analytical inferences.
 - Treat "Not extracted from source" as absence of extracted evidence, not evidence of absence.
 
-METHODOLOGY DEFENSE
+METHODOLOGY POSITIONING
 - Justify chosen approach relative to at least one named alternative.
-- State assumptions explicitly.
-- Acknowledge constraints before presenting results.
+- State assumptions and constraints transparently — this builds reviewer trust.
 
-ARGUMENT RHYTHM
-- Vary paragraph structures.
-- Include genuine analytical tension when supported by evidence.
-- Do not force tension.
-- Avoid uniform paragraph openings.
-- Mix short analytical sentences with longer evidence-based sentences.
+ARGUMENT CRAFT
+- Vary paragraph structures and sentence lengths — monotony signals shallow thinking.
+- Include genuine analytical tension where evidence supports it — tension is depth, not weakness.
+- Mix short analytical pivots with longer evidence-grounded paragraphs.
+
 COHERENCE RULES (Always Apply)
 ═══════════════════════════════════════════════════════════════════════════════
 1. Support the thesis statement in all assertions
-2. Do NOT redefine terms already introduced in previous sections
-3. Do NOT contradict claims made in previous sections
-4. Do NOT include content listed in "MUST AVOID"
-5. Reference previous sections naturally where appropriate
-6. Explicitly discuss evidence mapped as CONTRAST
-7. Clearly distinguish YOUR claims from CITED claims
-8. Strong claims must include supporting evidence or acknowledge need for further investigation`;
+2. Maintain terminological consistency with previous sections
+3. Reference previous sections naturally where appropriate
+4. Explicitly discuss evidence mapped as CONTRAST — this is where analytical depth lives
+5. Clearly distinguish YOUR claims from CITED claims
+6. Strong claims require supporting evidence; acknowledge gaps where they exist`;
 
-    const intellectualRigorBlock = await systemPromptTemplateService.resolveWithFallback(
-      { templateKey: TEMPLATE_KEYS.INTELLECTUAL_RIGOR_BLOCK, applicationMode: 'paper', sectionScope: sectionKey },
-      FALLBACK_RIGOR
-    );
+    const [intellectualRigorBlock, persuasionBlock, reviewerLensBlock] = await Promise.all([
+      systemPromptTemplateService.resolveWithFallback(
+        { templateKey: TEMPLATE_KEYS.INTELLECTUAL_RIGOR_BLOCK, applicationMode: 'paper', sectionScope: sectionKey },
+        FALLBACK_RIGOR
+      ),
+      systemPromptTemplateService.resolveWithFallback(
+        { templateKey: TEMPLATE_KEYS.PERSUASION_BLOCK, applicationMode: 'paper', sectionScope: sectionKey },
+        ''
+      ),
+      systemPromptTemplateService.resolveWithFallback(
+        { templateKey: TEMPLATE_KEYS.REVIEWER_LENS, applicationMode: 'paper', sectionScope: sectionKey },
+        ''
+      ),
+    ]);
 
     // Build prompt with EXPLICIT PRIORITY ORDERING
     // Priority: Lower numbers = lower priority, Higher numbers = higher priority
@@ -1864,6 +1912,20 @@ ${userInstructions}
 ` : ''}
 
 ${intellectualRigorBlock}
+
+${persuasionBlock ? `
+═══════════════════════════════════════════════════════════════════════════════
+[QUALITY STANDARD] ARGUMENTATIVE QUALITY — Q1 JOURNAL STANDARD
+═══════════════════════════════════════════════════════════════════════════════
+${persuasionBlock}
+` : ''}
+
+${reviewerLensBlock ? `
+═══════════════════════════════════════════════════════════════════════════════
+[QUALITY STANDARD] REVIEWER EVALUATION CRITERIA
+═══════════════════════════════════════════════════════════════════════════════
+${reviewerLensBlock}
+` : ''}
 
 ═══════════════════════════════════════════════════════════════════════════════
 CONTENT STRUCTURE (Use proper academic formatting)

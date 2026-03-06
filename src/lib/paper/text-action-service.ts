@@ -1,17 +1,18 @@
 /**
  * Text Action Service for Paper Writing
- * Handles AI-powered text transformations: rewrite, expand, condense, formalize, simplify
+ * Handles AI-powered text transformations: rewrite, expand, condense, formalize, simplify, create sections
  */
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { prisma } from '@/lib/prisma';
 import { polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
+import { systemPromptTemplateService, TEMPLATE_KEYS } from '@/lib/services/system-prompt-template-service';
 
 // ============================================================================
 // Types
 // ============================================================================
 
-export type TextActionType = 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple';
+export type TextActionType = 'rewrite' | 'expand' | 'condense' | 'formal' | 'simple' | 'create_sections';
 
 export interface TextActionRequest {
   sessionId: string;
@@ -256,8 +257,38 @@ OUTPUT FORMAT (MANDATORY):
 - Preserve heading/list hierarchy if present
 - Preserve citations exactly
 
-OUTPUT: Return only the simplified text, nothing else.`
+OUTPUT: Return only the simplified text, nothing else.`,
+
+  create_sections: `You are an expert academic writing editor helping organize plain text into clear headed sections.
+Your task is to RESTRUCTURE the selected text into well-organized section blocks by:
+- Identifying major ideas in the selected text
+- Creating concise, meaningful subsection headings
+- Grouping related sentences under the right heading
+- Improving flow between section blocks
+
+RULES:
+1. Preserve the original meaning, claims, and evidence
+2. Do NOT invent facts, citations, data, or references
+3. CRITICALLY IMPORTANT: Preserve ALL citations EXACTLY as written - do not modify citation format
+4. Use Markdown subsection headings (### Heading) followed by body paragraphs
+5. Keep the text academically coherent and publication-ready
+6. Do not output bullets unless the source text clearly requires a list
+7. Return ONLY the reorganized text, no explanations
+
+OUTPUT FORMAT (MANDATORY):
+- Return ONLY polished Markdown text (no JSON, no code fences, no explanations)
+- Use multiple '###' headings where appropriate
+- Preserve citations exactly
+
+OUTPUT: Return only the reorganized text, nothing else.`
 };
+
+function getStageCodeForTextAction(action: TextActionType): string {
+  if (action === 'create_sections') {
+    return 'PAPER_CREATE_SECTIONS';
+  }
+  return 'PAPER_TEXT_ACTION';
+}
 
 // ============================================================================
 // Helper Functions
@@ -266,8 +297,14 @@ OUTPUT: Return only the simplified text, nothing else.`
 /**
  * Get the appropriate LLM model for text actions
  */
-async function getTextActionModel(userId: string): Promise<{ modelCode: string; apiKey: string } | null> {
+async function getTextActionModel(userId: string, action: TextActionType): Promise<{ modelCode: string; apiKey: string } | null> {
   try {
+    const preferredStageCode = getStageCodeForTextAction(action);
+    const stageCodes =
+      preferredStageCode === 'PAPER_TEXT_ACTION'
+        ? ['PAPER_TEXT_ACTION']
+        : [preferredStageCode, 'PAPER_TEXT_ACTION'];
+
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { tenantId: true }
@@ -295,11 +332,14 @@ async function getTextActionModel(userId: string): Promise<{ modelCode: string; 
             stageModelConfigs: {
               where: {
                 isActive: true,
-                stage: { code: 'PAPER_TEXT_ACTION' }
+                stage: { code: { in: stageCodes } }
               },
               orderBy: { priority: 'desc' },
               include: {
-                model: true
+                model: true,
+                stage: {
+                  select: { code: true }
+                }
               }
             }
           }
@@ -307,8 +347,14 @@ async function getTextActionModel(userId: string): Promise<{ modelCode: string; 
       }
     });
 
-    if (tenantPlan?.plan?.stageModelConfigs?.[0]?.model?.code) {
-      const modelCode = tenantPlan.plan.stageModelConfigs[0].model.code;
+    const stageConfigs = tenantPlan?.plan?.stageModelConfigs || [];
+    const selectedConfig =
+      stageConfigs.find((cfg) => cfg.stage?.code === preferredStageCode)
+      || stageConfigs.find((cfg) => cfg.stage?.code === 'PAPER_TEXT_ACTION')
+      || null;
+
+    if (selectedConfig?.model?.code) {
+      const modelCode = selectedConfig.model.code;
       return {
         modelCode,
         apiKey: process.env.GOOGLE_AI_API_KEY || ''
@@ -361,6 +407,26 @@ function buildUserPrompt(request: TextActionRequest): string {
   return prompt;
 }
 
+async function resolveSystemPrompt(request: TextActionRequest): Promise<string> {
+  const fallback = SYSTEM_PROMPTS[request.action];
+
+  if (request.action !== 'create_sections') {
+    return fallback;
+  }
+
+  const normalizedSection =
+    request.sectionKey?.trim().toLowerCase().replace(/[\s-]+/g, '_') || '*';
+
+  return systemPromptTemplateService.resolveWithFallback(
+    {
+      templateKey: TEMPLATE_KEYS.TEXT_ACTION_CREATE_SECTIONS,
+      applicationMode: 'paper',
+      sectionScope: normalizedSection,
+    },
+    fallback
+  );
+}
+
 // ============================================================================
 // Main Service Function
 // ============================================================================
@@ -394,7 +460,7 @@ export async function performTextAction(request: TextActionRequest): Promise<Tex
 
   try {
     // Get the appropriate model
-    const modelConfig = await getTextActionModel(userId);
+    const modelConfig = await getTextActionModel(userId, action);
     if (!modelConfig?.apiKey) {
       throw new Error('No API key configured for text actions');
     }
@@ -405,13 +471,13 @@ export async function performTextAction(request: TextActionRequest): Promise<Tex
       model: modelConfig.modelCode,
       generationConfig: {
         temperature: 0.4, // Lower temperature for more consistent output
-        maxOutputTokens: 4096,
+        maxOutputTokens: 8192,
         topP: 0.95,
       }
     });
 
     // Build prompts
-    const systemPrompt = SYSTEM_PROMPTS[action];
+    const systemPrompt = await resolveSystemPrompt(request);
     const userPrompt = buildUserPrompt(request);
 
     // Generate response
