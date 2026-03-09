@@ -145,6 +145,7 @@ interface FloatingWritingPanelProps {
     instructions?: string
   ) => Promise<string>;
   onGenerateFigure?: (description: string, meta?: SmartFigureMeta) => void;
+  onGenerateExistingFigure?: (figureId: string) => Promise<void> | void;
   selectedText?: TextSelection | null;
   onRefreshFigures?: () => void;
   onRefreshCitations?: () => void;
@@ -235,14 +236,19 @@ function FigureCard({
   figure, 
   onInsert, 
   onPreview,
+  onGenerate,
+  isGenerating = false,
   compact = false 
 }: { 
   figure: FigurePlan; 
   onInsert: () => void;
   onPreview: () => void;
+  onGenerate?: () => void;
+  isGenerating?: boolean;
   compact?: boolean;
 }) {
   const [isHovered, setIsHovered] = useState(false);
+  const canGenerate = figure.status === 'PLANNED' || figure.status === 'FAILED';
   
   return (
     <motion.div
@@ -252,6 +258,15 @@ function FigureCard({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       whileHover={{ scale: 1.02 }}
+      onClick={() => {
+        if (figure.status === 'GENERATED') {
+          onPreview();
+          return;
+        }
+        if (canGenerate && onGenerate) {
+          onGenerate();
+        }
+      }}
       draggable
       onDragStart={(e) => {
         // Set drag data for drop handling
@@ -314,6 +329,31 @@ function FigureCard({
             >
               <Plus className="w-3 h-3 mr-1" />
               Insert
+            </Button>
+          </motion.div>
+        )}
+        {isHovered && canGenerate && onGenerate && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="absolute inset-0 bg-gradient-to-t from-slate-900/80 via-slate-900/40 to-transparent rounded-xl flex items-end justify-center p-2"
+          >
+            <Button
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onGenerate();
+              }}
+              disabled={isGenerating}
+              className="h-7 px-2 text-xs bg-blue-600 hover:bg-blue-700 rounded-lg"
+            >
+              {isGenerating ? (
+                <Loader2 className="w-3 h-3 animate-spin mr-1" />
+              ) : (
+                <Zap className="w-3 h-3 mr-1" />
+              )}
+              {figure.status === 'FAILED' ? 'Retry' : 'Generate'}
             </Button>
           </motion.div>
         )}
@@ -527,6 +567,7 @@ export default function FloatingWritingPanel({
   onInsertCitation,
   onTextAction,
   onGenerateFigure,
+  onGenerateExistingFigure,
   selectedText,
   onRefreshFigures,
   onRefreshCitations,
@@ -770,6 +811,7 @@ export default function FloatingWritingPanel({
   const [showQuickFigure, setShowQuickFigure] = useState(false);
   const [figureDescription, setFigureDescription] = useState('');
   const [generatingFigure, setGeneratingFigure] = useState(false);
+  const [generatingExistingFigureId, setGeneratingExistingFigureId] = useState<string | null>(null);
   
   // Smart figure suggestion state
   const [showSmartSuggest, setShowSmartSuggest] = useState(false);
@@ -1014,6 +1056,17 @@ export default function FloatingWritingPanel({
       persistSmartSuggestionStatuses(ids.map((id) => ({ id, status: 'dismissed', usedByFigureId: null })));
     }
   }, [persistSmartSuggestionStatuses, smartSuggestions]);
+
+  const handleGenerateExistingFigureClick = useCallback(async (figureId: string) => {
+    if (!onGenerateExistingFigure) return;
+    setGeneratingExistingFigureId(figureId);
+    try {
+      await onGenerateExistingFigure(figureId);
+      onRefreshFigures?.();
+    } finally {
+      setGeneratingExistingFigureId(null);
+    }
+  }, [onGenerateExistingFigure, onRefreshFigures]);
 
   /** Accept a smart suggestion: create + generate the figure immediately */
   const handleAcceptSmartSuggestion = useCallback(async (suggestion: SmartFigureMeta, index?: number) => {
@@ -2011,7 +2064,7 @@ export default function FloatingWritingPanel({
                               <Textarea
                                 value={figureDescription}
                                 onChange={e => setFigureDescription(e.target.value)}
-                                placeholder="Describe the figure you want to generate..."
+                                placeholder="Describe the figure/plot you want to generate. You can also paste raw CSV, TSV, or x/y rows here."
                                 rows={2}
                                 className="text-sm rounded-lg resize-none"
                               />
@@ -2053,6 +2106,8 @@ export default function FloatingWritingPanel({
                               compact
                               onInsert={() => onInsertFigure?.(figure.id)}
                               onPreview={() => setPreviewFigure(figure)}
+                              onGenerate={onGenerateExistingFigure ? () => handleGenerateExistingFigureClick(figure.id) : undefined}
+                              isGenerating={generatingExistingFigureId === figure.id}
                             />
                           ))}
                         </div>
@@ -3041,11 +3096,35 @@ export default function FloatingWritingPanel({
                 >
                   Close
                 </Button>
+                {onGenerateExistingFigure && previewFigure.status !== 'GENERATED' && (
+                  <Button
+                    variant="outline"
+                    onClick={async () => {
+                      setGeneratingExistingFigureId(previewFigure.id);
+                      try {
+                        await onGenerateExistingFigure(previewFigure.id);
+                        await onRefreshFigures?.();
+                        setPreviewFigure(null);
+                      } finally {
+                        setGeneratingExistingFigureId(null);
+                      }
+                    }}
+                    disabled={generatingExistingFigureId === previewFigure.id}
+                  >
+                    {generatingExistingFigureId === previewFigure.id ? (
+                      <Loader2 className="w-4 h-4 animate-spin mr-1" />
+                    ) : (
+                      <Zap className="w-4 h-4 mr-1" />
+                    )}
+                    {previewFigure.status === 'FAILED' ? 'Retry Generation' : 'Generate Figure'}
+                  </Button>
+                )}
                 <Button
                   onClick={() => {
                     onInsertFigure?.(previewFigure.id);
                     setPreviewFigure(null);
                   }}
+                  disabled={previewFigure.status !== 'GENERATED'}
                 >
                   <Plus className="w-4 h-4 mr-1" />
                   Insert Figure

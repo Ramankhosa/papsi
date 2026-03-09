@@ -60,11 +60,16 @@ export interface ChartGenerationRequest {
     values?: number[]
     datasets?: Array<{
       label: string
-      data: number[]
+      data: Array<number | { x: number; y: number; r?: number }>
       errors?: number[]
+    }>
+    pointDatasets?: Array<{
+      label: string
+      data: Array<{ x: number; y: number; r?: number }>
     }>
     datasetLabel?: string
   }
+  rawDataText?: string
   style?: 'academic' | 'nature' | 'ieee' | 'minimal' | 'modern'
 }
 
@@ -76,7 +81,7 @@ export interface ChartGenerationResult {
       labels: string[]
       datasets: Array<{
         label: string
-        data: number[]
+        data: Array<number | { x: number; y: number; r?: number }>
         backgroundColor?: string | string[]
         borderColor?: string | string[]
         borderWidth?: number
@@ -244,6 +249,7 @@ Your task: generate a valid Chart.js configuration object that produces a BEAUTI
 CRITICAL RULES:
 1. Return ONLY valid JSON. No markdown fences, no explanation, no comments in the JSON.
 2. NEVER invent or hallucinate data. Use only the exact numeric values and labels provided in the request. Do not fabricate placeholder series, placeholder labels, or synthetic results.
+2a. If the request includes raw CSV, TSV, JSON, x/y rows, pasted metrics, or lightly messy table text, normalize that content into the chart config using the exact values present in the request.
 3. The chart MUST have:
    - A clear, descriptive title (using the user's title or a refined version)
    - Properly labeled axes with units where applicable (e.g., "Accuracy (%)", "Time (seconds)")
@@ -252,7 +258,8 @@ CRITICAL RULES:
 4. For bar charts: use semi-transparent fills (rgba with 0.8 opacity), solid borders
 5. For line charts: use solid lines (borderWidth: 2.5), small point radius (3-4px), no fill unless area chart
 6. For pie/doughnut: use the full 8-color palette, add percentage labels via datalabels plugin
-7. For scatter: use distinct markers per dataset, point radius 5-6px
+7. For scatter: use distinct markers per dataset, point radius 5-6px, and dataset.data must be an array of { "x": number, "y": number } objects.
+7a. For bubble: dataset.data must be an array of { "x": number, "y": number, "r": number } objects.
 8. Font sizes: title 16px bold, axis labels 13px, tick labels 11px, legend 12px
 9. Use font family: "'Helvetica Neue', 'Arial', sans-serif"
 10. Grid lines: light gray (#E5E7EB), width 0.5
@@ -270,7 +277,7 @@ OUTPUT FORMAT (return ONLY this JSON):
     "labels": ["Label1", "Label2", ...],
     "datasets": [{
       "label": "Dataset Name",
-      "data": [value1, value2, ...],
+      "data": [value1, value2, ...] or [{"x": 1, "y": 2}, ...] for scatter or [{"x": 1, "y": 2, "r": 5}, ...] for bubble,
       "backgroundColor": ["#color1", ...] or "rgba(r,g,b,0.8)",
       "borderColor": ["#color1", ...] or "#color",
       "borderWidth": 1.5
@@ -320,6 +327,7 @@ OUTPUT RULES (STRICT):
    - Methodology: prefer flowchart/activity/pipeline.
    - Introduction: keep high-level only.
 11) Labels must be academic and neutral. Avoid marketing/hype words.
+12) If the request includes raw CSV, TSV, JSON, metrics, or pasted data rows, use that content to name entities, stages, comparisons, and relationships instead of ignoring it.
 
 SUPPORTED DIAGRAM TYPES (Mermaid fallback):
 - flowchart (default for non-UML process/architecture)
@@ -2148,7 +2156,7 @@ function normalizePlantUMLTemplateType(input?: string): {
 /**
  * Validate and repair a Chart.js configuration from LLM output
  */
-function validateChartConfig(config: any): { valid: boolean; config?: any; error?: string } {
+export function validateChartConfig(config: any): { valid: boolean; config?: any; error?: string } {
   if (!config || typeof config !== 'object') {
     return { valid: false, error: 'Config is not an object' }
   }
@@ -2183,17 +2191,42 @@ function validateChartConfig(config: any): { valid: boolean; config?: any; error
     if (!Array.isArray(ds.data)) {
       return { valid: false, error: 'Dataset missing data array' }
     }
-    // Ensure all values are numbers
-    ds.data = ds.data.map((v: any) => {
-      const num = Number(v)
-      return isNaN(num) ? 0 : num
-    })
+
+    if (config.type === 'scatter' || config.type === 'bubble') {
+      const normalizedPoints = ds.data
+        .map((point: any) => {
+          if (!point || typeof point !== 'object') return null
+          const x = Number(point.x)
+          const y = Number(point.y)
+          const r = config.type === 'bubble' ? Number(point.r) : undefined
+
+          if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+          if (config.type === 'bubble' && !Number.isFinite(r)) return null
+
+          return config.type === 'bubble'
+            ? { x, y, r }
+            : { x, y }
+        })
+        .filter((point: any) => !!point)
+
+      if (!normalizedPoints.length) {
+        return { valid: false, error: `${config.type} dataset must contain x/y point objects` }
+      }
+
+      ds.data = normalizedPoints
+    } else {
+      ds.data = ds.data.map((v: any) => {
+        const num = Number(v)
+        return isNaN(num) ? 0 : num
+      })
+    }
+
     // Ensure label
     if (!ds.label) ds.label = 'Data'
   }
 
   // For non-pie charts, ensure labels and data have matching lengths
-  if (!['pie', 'doughnut', 'radar', 'polarArea'].includes(config.type)) {
+  if (!['pie', 'doughnut', 'radar', 'polarArea', 'scatter', 'bubble'].includes(config.type)) {
     const maxDataLen = Math.max(...config.data.datasets.map((ds: any) => ds.data.length))
     if (config.data.labels.length === 0 && maxDataLen > 0) {
       config.data.labels = Array.from({ length: maxDataLen }, (_, i) => `Item ${i + 1}`)
@@ -2323,7 +2356,12 @@ export async function generateChartConfig(
         userRequest += `\n\nchartSpec (deterministic mapping - follow exactly):\n${JSON.stringify(request.chartSpec, null, 2)}`
       }
 
-      if (request.data?.datasets?.length) {
+      if (request.data?.pointDatasets?.length) {
+        userRequest += `\n\nACTUAL POINT DATA PROVIDED (use these exact x/y values):`
+        userRequest += `\n${JSON.stringify({
+          datasets: request.data.pointDatasets
+        }, null, 2)}`
+      } else if (request.data?.datasets?.length) {
         userRequest += `\n\nACTUAL STRUCTURED DATA PROVIDED (use these exact values and preserve series grouping):`
         userRequest += `\n${JSON.stringify({
           labels: request.data.labels || [],
@@ -2336,6 +2374,9 @@ export async function generateChartConfig(
         if (request.data.datasetLabel) {
           userRequest += `\nDataset label: "${request.data.datasetLabel}"`
         }
+      } else if (request.rawDataText?.trim()) {
+        userRequest += `\n\nRAW USER DATA / REQUEST TEXT (extract exact values from this; do not invent missing rows):`
+        userRequest += `\n${sanitizeAscii(request.rawDataText, true).slice(0, 4000)}`
       } else {
         throw new Error('Publication-quality chart generation requires structured numeric data.')
       }
@@ -2360,6 +2401,7 @@ export async function generateChartConfig(
           sectionType,
           figureRole: request.figureRole || null,
           hasData: !!request.data,
+          hasRawDataText: !!request.rawDataText,
           hasChartSpec: !!request.chartSpec,
           attempt
         }

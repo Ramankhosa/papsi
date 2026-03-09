@@ -649,11 +649,12 @@ export default function PaperFigurePlannerStage({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, authToken]);
 
-  // Create figure — when created from a suggestion (pendingSuggestionMeta is set),
-  // auto-trigger generation so the full flow runs: create -> LLM code gen -> render -> retry.
+  // Create the plan record, then immediately start generation so the primary
+  // manual action is consistent across charts, plots, and diagrams.
   const handleCreate = async () => {
     if (!authToken || !title.trim()) return;
     
+    const shouldAutoGenerate = true;
     const wasFromSuggestion = !!pendingSuggestionMeta;
     const originSuggestionId = pendingSuggestionId;
     setIsCreating(true);
@@ -691,8 +692,7 @@ export default function PaperFigurePlannerStage({
         markSuggestionUsed(originSuggestionId, createdFigure.id);
       }
 
-      // Auto-trigger generation for figures created from suggestions
-      if (wasFromSuggestion && createdFigure?.id) {
+      if (shouldAutoGenerate && createdFigure?.id) {
         // Small delay so React state settles and the figure card renders
         setTimeout(() => handleGenerate(createdFigure), 100);
       }
@@ -1380,42 +1380,79 @@ Please regenerate the figure incorporating the user's feedback and corrections.
 
       <div className="max-w-4xl mx-auto px-6 py-8">
         {/* Create New Figure - Clean Card */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden mb-8">
-          <div className="p-6">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
-                <Plus className="w-5 h-5 text-white" />
+        <div className="relative mb-8 overflow-hidden rounded-[28px] border border-slate-200/80 bg-white shadow-[0_24px_70px_-30px_rgba(15,23,42,0.38)]">
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-32 bg-[radial-gradient(circle_at_top_left,_rgba(59,130,246,0.18),_transparent_58%),radial-gradient(circle_at_top_right,_rgba(249,115,22,0.12),_transparent_42%)]" />
+          <div className="relative p-6 md:p-7">
+            <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+              <div className="flex items-start gap-4">
+                <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600 via-indigo-500 to-cyan-400 shadow-lg shadow-blue-500/20 ring-1 ring-white/60">
+                  <Plus className="h-5 w-5 text-white" />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-lg font-semibold tracking-tight text-slate-900">New Figure</h2>
+                    <Badge className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-blue-700 hover:bg-blue-50">
+                      LLM-guided
+                    </Badge>
+                  </div>
+                  <p className="max-w-2xl text-sm leading-6 text-slate-600">
+                    Pick a visual format, describe the insight you want, and the system will generate the appropriate chart, plot, diagram, or sketch.
+                  </p>
+                </div>
               </div>
-                    <div>
-                <h2 className="font-semibold text-slate-900">New Figure</h2>
-                <p className="text-sm text-slate-500">Describe what you want to visualize</p>
-                      </div>
-                    </div>
+              <div className="flex flex-wrap gap-2 md:max-w-xs md:justify-end">
+                <Badge className="rounded-full border border-slate-200 bg-white/90 px-3 py-1 text-[11px] font-medium text-slate-600 shadow-sm hover:bg-white">
+                  Raw data friendly
+                </Badge>
+                <Badge className="rounded-full border border-slate-200 bg-white/90 px-3 py-1 text-[11px] font-medium text-slate-600 shadow-sm hover:bg-white">
+                  Charts to sketches
+                </Badge>
+                <Badge className="rounded-full border border-slate-200 bg-white/90 px-3 py-1 text-[11px] font-medium text-slate-600 shadow-sm hover:bg-white">
+                  Single-step generation
+                </Badge>
+              </div>
+            </div>
 
             <div className="space-y-4">
               {/* Type Selector */}
               <div className="relative">
+                <div className="mb-2 flex items-center justify-between px-1">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Visual Format</p>
+                    <p className="mt-1 text-xs text-slate-500">Browse charts, plots, diagrams, illustrations, and sketches in one place.</p>
+                  </div>
+                  <div className="hidden rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-500 md:block">
+                    Scroll to explore all options
+                  </div>
+                </div>
                 <button
                   onClick={() => setShowTypeDropdown(!showTypeDropdown)}
-                  className="w-full flex items-center justify-between px-4 py-3 rounded-xl border border-slate-200 hover:border-slate-300 bg-slate-50 transition-colors"
+                  className="group w-full rounded-2xl border border-slate-200/80 bg-white px-4 py-3 shadow-sm transition-all hover:border-blue-300 hover:shadow-md"
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center justify-between gap-4">
                     {selectedType && (
                       <>
-                        <div className={`w-9 h-9 rounded-lg ${CATEGORY_COLORS[category]} flex items-center justify-center`}>
-                          <selectedType.icon className="w-4 h-4 text-white" />
-                        </div>
-                        <div className="text-left">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-slate-800">{selectedType.label}</span>
-                            <span className="text-slate-400 text-sm font-mono">{selectedType.example}</span>
+                        <div className="flex items-center gap-3">
+                          <div className={`flex h-10 w-10 items-center justify-center rounded-xl ${CATEGORY_COLORS[category]} shadow-sm`}>
+                            <selectedType.icon className="h-4 w-4 text-white" />
                           </div>
-                          <span className="text-xs text-slate-500">{selectedType.desc}</span>
-                    </div>
+                          <div className="text-left">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium text-slate-800">{selectedType.label}</span>
+                              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-mono text-slate-500">
+                                {selectedType.example}
+                              </span>
+                              <span className="hidden rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500 md:inline-flex">
+                                {category.replace('_', ' ')}
+                              </span>
+                            </div>
+                            <span className="text-xs text-slate-500">{selectedType.desc}</span>
+                          </div>
+                        </div>
                       </>
                     )}
                   </div>
-                  <ChevronDown className={`w-5 h-5 text-slate-400 transition-transform ${showTypeDropdown ? 'rotate-180' : ''}`} />
+                  <ChevronDown className={`h-5 w-5 shrink-0 text-slate-400 transition-transform group-hover:text-slate-600 ${showTypeDropdown ? 'rotate-180' : ''}`} />
                 </button>
                 
                 <AnimatePresence>
@@ -1424,10 +1461,21 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                       initial={{ opacity: 0, y: -10 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -10 }}
-                      className="absolute z-20 w-full mt-2 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden"
+                      className="absolute left-0 right-0 z-20 mt-2 overflow-hidden rounded-2xl border border-slate-200 bg-white/95 shadow-2xl backdrop-blur-xl md:left-1/2 md:right-auto md:w-[min(52rem,calc(100vw-3rem))] md:-translate-x-1/2"
                     >
                       {/* Scrollable dropdown container — increased height to prevent cutoff */}
-                      <div className="max-h-[28rem] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-transparent">
+                      <div className="border-b border-slate-200/80 bg-slate-50/90 px-4 py-3">
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-slate-800">Choose a figure style</p>
+                            <p className="text-xs text-slate-500">The planner will route your request to the right renderer automatically.</p>
+                          </div>
+                          <Badge className="rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:bg-white">
+                            {FIGURE_OPTIONS.length} options
+                          </Badge>
+                        </div>
+                      </div>
+                      <div className="max-h-[32rem] overflow-y-auto overscroll-contain pr-1">
                         {/* Data Charts Section */}
                         <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 sticky top-0 z-10">
                           <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Data Charts</span>
@@ -1436,7 +1484,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                           <button
                             key={option.value}
                             onClick={() => selectType(option)}
-                            className={`w-full flex items-center gap-3 px-4 py-2.5 hover:bg-sky-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-sky-50' : ''}`}
+                            className={`w-full flex items-center gap-3 border-b border-slate-50 px-5 py-3 hover:bg-sky-50 transition-colors ${figureType === option.value ? 'bg-sky-50' : ''}`}
                           >
                             <div className={`w-8 h-8 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
                               <option.icon className="w-4 h-4 text-white" />
@@ -1462,7 +1510,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                           <button
                             key={option.value}
                             onClick={() => selectType(option)}
-                            className={`w-full flex items-center gap-3 px-4 py-2.5 hover:bg-emerald-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-emerald-50' : ''}`}
+                            className={`w-full flex items-center gap-3 border-b border-slate-50 px-5 py-3 hover:bg-emerald-50 transition-colors ${figureType === option.value ? 'bg-emerald-50' : ''}`}
                           >
                             <div className={`w-8 h-8 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
                               <option.icon className="w-4 h-4 text-white" />
@@ -1488,7 +1536,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                           <button
                             key={option.value}
                             onClick={() => selectType(option)}
-                            className={`w-full flex items-center gap-3 px-4 py-2.5 hover:bg-violet-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-violet-50' : ''}`}
+                            className={`w-full flex items-center gap-3 border-b border-slate-50 px-5 py-3 hover:bg-violet-50 transition-colors ${figureType === option.value ? 'bg-violet-50' : ''}`}
                           >
                             <div className={`w-8 h-8 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
                               <option.icon className="w-4 h-4 text-white" />
@@ -1516,7 +1564,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                           <button
                             key={option.value}
                             onClick={() => selectType(option)}
-                            className={`w-full flex items-center gap-3 px-4 py-2.5 hover:bg-orange-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-orange-50' : ''}`}
+                            className={`w-full flex items-center gap-3 border-b border-slate-50 px-5 py-3 hover:bg-orange-50 transition-colors ${figureType === option.value ? 'bg-orange-50' : ''}`}
                           >
                             <div className={`w-8 h-8 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
                               <option.icon className="w-4 h-4 text-white" />
@@ -1544,7 +1592,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                           <button
                             key={option.value}
                             onClick={() => selectType(option)}
-                            className={`w-full flex items-center gap-3 px-4 py-2.5 hover:bg-rose-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-rose-50' : ''}`}
+                            className={`w-full flex items-center gap-3 border-b border-slate-50 px-5 py-3 hover:bg-rose-50 transition-colors ${figureType === option.value ? 'bg-rose-50' : ''}`}
                           >
                             <div className={`w-8 h-8 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
                               <option.icon className="w-4 h-4 text-white" />
@@ -1568,33 +1616,56 @@ Please regenerate the figure incorporating the user's feedback and corrections.
               </div>
 
               {/* Title */}
-              <Input
-                value={title}
-                onChange={e => setTitle(e.target.value)}
-                placeholder={(figureType.startsWith('sketch-') || category === 'ILLUSTRATED_FIGURE')
-                  ? "Illustration title (e.g., System Architecture Overview)" 
-                  : "Figure title (e.g., Performance Comparison)"}
-                className="h-12 rounded-xl border-slate-200 focus:border-blue-400 focus:ring-blue-400"
-              />
+              <div className="space-y-2">
+                <div className="flex items-center justify-between px-1">
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Figure Title</label>
+                  <span className="text-[11px] text-slate-400">Keeps the output focused</span>
+                </div>
+                <Input
+                  value={title}
+                  onChange={e => setTitle(e.target.value)}
+                  placeholder={(figureType.startsWith('sketch-') || category === 'ILLUSTRATED_FIGURE')
+                    ? "Illustration title (e.g., System Architecture Overview)" 
+                    : "Figure title (e.g., Performance Comparison)"}
+                  className="h-12 rounded-2xl border-slate-200 bg-white shadow-sm focus:border-blue-400 focus:ring-blue-400"
+                />
+              </div>
 
               {/* Description */}
-              <Textarea
-                value={description}
-                onChange={e => setDescription(e.target.value)}
-                placeholder={
-                  figureType === 'sketch-auto' 
-                    ? "Optional: Add any specific details you want AI to focus on..."
-                    : figureType === 'sketch-guided'
-                    ? "Describe in detail what you want AI to illustrate (minimum 10 characters)..."
-                    : figureType === 'sketch-refine'
-                    ? "Describe how you want AI to refine/improve your uploaded image..."
-                    : category === 'ILLUSTRATED_FIGURE'
-                    ? "Describe the scientific concept, process, or architecture you want illustrated..."
-                    : "Describe what you want to show... (AI will generate the figure based on this)"
-                }
-                rows={3}
-                className="rounded-xl border-slate-200 focus:border-blue-400 focus:ring-blue-400 resize-none"
-              />
+              <div className="rounded-2xl border border-slate-200/80 bg-slate-50/80 p-3 shadow-sm">
+                <div className="mb-2 flex items-center justify-between gap-3 px-1">
+                  <div>
+                    <label className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Prompt / Brief</label>
+                    <p className="mt-1 text-xs text-slate-500">Tell the model what insight matters, what data exists, and any visual constraints.</p>
+                  </div>
+                  <div className="hidden rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-500 md:block">
+                    Intelligent routing enabled
+                  </div>
+                </div>
+                <Textarea
+                  value={description}
+                  onChange={e => setDescription(e.target.value)}
+                  placeholder={
+                    figureType === 'sketch-auto' 
+                      ? "Optional: Add any specific details you want AI to focus on..."
+                      : figureType === 'sketch-guided'
+                      ? "Describe in detail what you want AI to illustrate (minimum 10 characters)..."
+                      : figureType === 'sketch-refine'
+                      ? "Describe how you want AI to refine/improve your uploaded image..."
+                      : category === 'ILLUSTRATED_FIGURE'
+                      ? "Describe the scientific concept, process, or architecture you want illustrated..."
+                      : "Describe what you want to show... (AI will generate the figure based on this)"
+                  }
+                  rows={4}
+                  className="resize-none rounded-2xl border-slate-200 bg-white focus:border-blue-400 focus:ring-blue-400"
+                />
+              </div>
+              {(category === 'DATA_CHART' || category === 'STATISTICAL_PLOT' || figureType === 'scatter') && (
+                <p className="rounded-xl border border-blue-100 bg-blue-50/70 px-3 py-2 text-xs text-blue-700">
+                  Paste raw CSV, TSV, or simple <code>label, value</code> / <code>x, y</code> rows here if you have them.
+                  Generation will use that data when no structured payload is provided.
+                </p>
+              )}
 
               {/* Sketch-Specific Options (also for Scientific Illustration genres) */}
               {(figureType.startsWith('sketch-') || category === 'ILLUSTRATED_FIGURE') && (
@@ -1688,7 +1759,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                 </div>
               )}
 
-              {/* Create Button */}
+              {/* Primary action */}
               {(figureType.startsWith('sketch-') || category === 'ILLUSTRATED_FIGURE') ? (
                 <Button 
                   onClick={handleGenerateSketch}
@@ -1726,12 +1797,12 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                   ) : pendingSuggestionMeta ? (
                     <>
                       <Zap className="w-5 h-5 mr-2" />
-                      Add and Generate Figure
+                      Generate Figure/Plot
                     </>
                   ) : (
                     <>
-                      <Plus className="w-5 h-5 mr-2" />
-                      Add Figure
+                      <Zap className="w-5 h-5 mr-2" />
+                      Generate Figure/Plot
                     </>
                   )}
                 </Button>

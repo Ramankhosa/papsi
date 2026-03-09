@@ -13,6 +13,10 @@ import {
   generateDiagramCode,
   repairDiagramCode
 } from '@/lib/figure-generation/llm-figure-service';
+import {
+  generateStatisticalPlotSpec,
+  resolveChartGenerationInput,
+} from '@/lib/figure-generation/llm-plot-service';
 import { chooseDiagramRenderer } from '@/lib/figure-generation/diagram-renderer-policy';
 import type { DiagramStructuredSpec, FigureData } from '@/lib/figure-generation/types';
 import {
@@ -273,6 +277,142 @@ function buildStructuredChartData(
   return null;
 }
 
+function parseNumericValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return null;
+
+  const normalized = value
+    .trim()
+    .replace(/[%]$/g, '')
+    .replace(/,/g, '');
+  if (!normalized) return null;
+
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function splitRawDataRow(line: string): string[] {
+  const trimmed = line.trim();
+  if (!trimmed) return [];
+
+  const delimited = ['\t', '|', ';', ',']
+    .map((delimiter) => {
+      const cells = trimmed
+        .split(delimiter)
+        .map((cell) => cell.trim())
+        .filter(Boolean);
+      return cells.length >= 2 ? cells : [];
+    })
+    .find((cells) => cells.length >= 2);
+
+  return delimited || [];
+}
+
+function buildStructuredChartDataFromText(
+  requestText: string | null | undefined,
+  fallbackLabel: string
+): FigureData | null {
+  if (!requestText) return null;
+
+  const lines = requestText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) return null;
+
+  const tabularRows = lines
+    .map(splitRawDataRow)
+    .filter((cells) => cells.length >= 2 && cells.some((cell) => parseNumericValue(cell) !== null));
+
+  if (tabularRows.length >= 2) {
+    const columnCount = Math.max(...tabularRows.map((row) => row.length));
+    const rows = tabularRows
+      .filter((row) => row.length === columnCount)
+      .map((row) => row.slice(0, columnCount));
+
+    if (rows.length >= 2) {
+      const hasHeader = rows[0].some((cell) => parseNumericValue(cell) === null)
+        && rows.slice(1).some((row) => row.slice(1).some((cell) => parseNumericValue(cell) !== null));
+      const header = hasHeader ? rows[0] : undefined;
+      const dataRows = hasHeader ? rows.slice(1) : rows;
+
+      if (dataRows.length >= 2) {
+        if (columnCount === 2) {
+          const parsedValues = dataRows.map((row) => parseNumericValue(row[1]));
+          if (parsedValues.every((value) => value !== null)) {
+            return {
+              labels: dataRows.map((row) => row[0]),
+              datasets: [{
+                label: header?.[1] || fallbackLabel,
+                data: parsedValues as number[]
+              }]
+            };
+          }
+        }
+
+        if (columnCount >= 3) {
+          const labels = dataRows.map((row) => row[0]);
+          const datasets = Array.from({ length: columnCount - 1 }, (_, index) => {
+            const column = index + 1;
+            const parsedValues = dataRows.map((row) => parseNumericValue(row[column]));
+            if (!parsedValues.every((value) => value !== null)) return null;
+            return {
+              label: header?.[column] || `${fallbackLabel} ${index + 1}`,
+              data: parsedValues as number[]
+            };
+          }).filter((dataset): dataset is { label: string; data: number[] } => !!dataset);
+
+          if (labels.length > 0 && datasets.length > 0) {
+            return { labels, datasets };
+          }
+        }
+      }
+    }
+  }
+
+  const pairRows = lines
+    .map((line) => line.match(/^(.+?)\s*[:=]\s*(-?\d+(?:,\d{3})*(?:\.\d+)?%?)$/))
+    .filter((match): match is RegExpMatchArray => !!match);
+
+  if (pairRows.length >= 2) {
+    const labels = pairRows.map((match) => match[1].trim());
+    const values = pairRows
+      .map((match) => parseNumericValue(match[2]))
+      .filter((value): value is number => value !== null);
+
+    if (labels.length === values.length && values.length > 0) {
+      return {
+        labels,
+        datasets: [{
+          label: fallbackLabel,
+          data: values
+        }]
+      };
+    }
+  }
+
+  return null;
+}
+
+function resolveChartData(
+  data: Record<string, any> | null | undefined,
+  requestText: string | null | undefined,
+  fallbackLabel: string
+): { chartData: FigureData | null; source: 'payload' | 'request_text' | 'none' } {
+  const fromPayload = buildStructuredChartData(data, fallbackLabel);
+  if (fromPayload) {
+    return { chartData: fromPayload, source: 'payload' };
+  }
+
+  const fromRequestText = buildStructuredChartDataFromText(requestText, fallbackLabel);
+  if (fromRequestText) {
+    return { chartData: fromRequestText, source: 'request_text' };
+  }
+
+  return { chartData: null, source: 'none' };
+}
+
 function mapThemeToPythonJournal(theme: string | null | undefined): 'nature' | 'ieee' | 'elsevier' | 'default' {
   if (theme === 'ieee') return 'ieee';
   if (theme === 'nature') return 'nature';
@@ -438,12 +578,17 @@ export async function POST(
       case 'DATA_CHART':
         {
           const chartEnrichment = data.suggestionMeta || (meta.suggestionMeta as any) || {};
-          const chartData = buildStructuredChartData(data.data as Record<string, any> | null | undefined, data.title);
+          const chartInput = resolveChartGenerationInput(
+            data.figureType,
+            data.data as Record<string, any> | null | undefined,
+            data.description || chartEnrichment?.dataNeeded || chartEnrichment?.whyThisFigure || null,
+            data.title
+          );
 
-          if (!chartData?.labels?.length || !chartData.datasets?.length) {
+          if (!chartInput.datasets?.length && !chartInput.pointDatasets?.length && !chartInput.rawDataText) {
             result = {
               success: false,
-              error: 'Publication-grade chart generation requires structured numeric data. Provide labels plus values/datasets; placeholder charts are disabled.',
+              error: 'Publication-grade chart generation requires numeric data. Provide a structured payload or paste raw CSV/TSV, x/y rows, or table-style values into the figure request; placeholder charts are disabled.',
               errorCode: 'INVALID_DATA'
             };
             break;
@@ -470,6 +615,11 @@ export async function POST(
           if (paperContext) {
             groundedDescription = `PAPER CONTEXT (use this to make the chart relevant to the research):\n${sanitizeAscii(paperContext, true)}\n\nFIGURE REQUEST:\n${groundedDescription}`;
           }
+          if (chartInput.source === 'request_text') {
+            groundedDescription += '\n\nRAW DATA NOTE: Numeric series were parsed from the figure request text. Preserve those values exactly.';
+          } else if (chartInput.source === 'raw_request') {
+            groundedDescription += '\n\nRAW DATA NOTE: The request includes messy raw numeric content. Normalize it conservatively and use only values explicitly present in the request.';
+          }
           if (chartEnrichment.relevantSection) {
             groundedDescription += `\n\nTARGET SECTION: This chart belongs in the "${sanitizeAscii(String(chartEnrichment.relevantSection))}" section of the paper.`;
           }
@@ -494,11 +644,13 @@ export async function POST(
               studyType: chartEnrichment.paperProfile?.studyType,
               chartSpec: chartEnrichment.chartSpec,
               data: {
-                labels: chartData.labels,
-                datasets: chartData.datasets,
-                values: chartData.datasets.length === 1 ? chartData.datasets[0].data : undefined,
-                datasetLabel: chartData.datasets.length === 1 ? chartData.datasets[0].label : undefined
+                labels: chartInput.labels,
+                datasets: chartInput.datasets,
+                pointDatasets: chartInput.pointDatasets,
+                values: chartInput.datasets?.length === 1 ? chartInput.datasets[0].data : undefined,
+                datasetLabel: chartInput.datasets?.length === 1 ? chartInput.datasets[0].label : undefined
               },
+              rawDataText: chartInput.rawDataText,
               style: resolvedTheme as any
             },
             requestHeaders
@@ -691,7 +843,6 @@ export async function POST(
           const {
             isPythonChartServerHealthy,
             generatePythonChart,
-            figureDataToPythonSpec,
             isPublicationGradePythonPlotType,
             PUBLICATION_GRADE_PYTHON_PLOT_TYPES
           } = await import('@/lib/figure-generation/python-chart-service');
@@ -705,10 +856,10 @@ export async function POST(
             break;
           }
 
-          if (!data.data) {
+          if (data.useLLM === false) {
             result = {
               success: false,
-              error: `Statistical plot "${data.figureType}" requires structured numeric data. Provide the exact data payload needed for this plot type; generic fallback rendering is disabled.`,
+              error: 'Publication-grade statistical plots require AI-assisted code generation. Generic direct-render fallback is disabled.',
               errorCode: 'INVALID_DATA'
             };
             break;
@@ -724,23 +875,57 @@ export async function POST(
             break;
           }
 
-          const spec = figureDataToPythonSpec(data.figureType, data.data as FigureData, {
-            title: data.title,
-            xAxisLabel: statEnrichment.chartSpec?.xAxisLabel,
-            yAxisLabel: statEnrichment.chartSpec?.yAxisLabel,
-            journal: mapThemeToPythonJournal(resolvedTheme),
-          });
+          let groundedDescription = sanitizeAscii(
+            data.description
+              || statEnrichment.whyThisFigure
+              || `Generate a publication-grade ${data.figureType} statistical plot titled "${data.title}".`,
+            true
+          );
 
-          if (!spec) {
+          if (paperContext) {
+            groundedDescription = `PAPER CONTEXT (use this to make the plot relevant to the research):\n${sanitizeAscii(paperContext, true)}\n\nFIGURE REQUEST:\n${groundedDescription}`;
+          }
+          if (statEnrichment.relevantSection) {
+            groundedDescription += `\n\nTARGET SECTION: This plot belongs in the "${sanitizeAscii(String(statEnrichment.relevantSection))}" section of the paper.`;
+          }
+          if (statEnrichment.whyThisFigure) {
+            groundedDescription += `\nPURPOSE: ${sanitizeAscii(String(statEnrichment.whyThisFigure))}`;
+          }
+          if (statEnrichment.dataNeeded) {
+            groundedDescription += `\nDATA TO VISUALIZE: ${sanitizeAscii(String(statEnrichment.dataNeeded))}`;
+          }
+          if (data.modificationRequest) {
+            groundedDescription += `\n\nUSER MODIFICATION REQUEST (apply these changes):\n${sanitizeAscii(data.modificationRequest, true)}`;
+          }
+
+          const llmPlot = await generateStatisticalPlotSpec({
+            plotType: data.figureType,
+            title: data.title,
+            description: groundedDescription,
+            sectionType: statEnrichment.relevantSection,
+            figureRole: statEnrichment.figureRole as any,
+            paperGenre: statEnrichment.paperProfile?.paperGenre,
+            studyType: statEnrichment.paperProfile?.studyType,
+            chartSpec: statEnrichment.chartSpec,
+            structuredData: data.data as Record<string, any> | null | undefined,
+            rawDataText: data.description || statEnrichment?.dataNeeded || statEnrichment?.whyThisFigure || null,
+            journal: mapThemeToPythonJournal(resolvedTheme),
+          }, requestHeaders);
+
+          if (!llmPlot.success || !llmPlot.spec) {
             result = {
               success: false,
-              error: `Invalid data shape for "${data.figureType}". Required structures: groups for boxplot/violin, matrix for heatmap/confusion_matrix, curves for roc_curve, xValues+yValues for regression, method1+method2 for bland_altman, studies for forest_plot, labels+datasets(+errors) for error_bar.`,
-              errorCode: 'INVALID_DATA'
+              error: withStageLimitGuidance(llmPlot.error || `Failed to generate code for "${data.figureType}" statistical plot.`, 'PAPER_CHART_GENERATOR'),
+              errorCode: 'API_ERROR'
             };
             break;
           }
 
-          result = await generatePythonChart(spec);
+          llmMetadata = { tokensUsed: llmPlot.tokensUsed, model: llmPlot.model };
+          result = await generatePythonChart(llmPlot.spec);
+          if (result.success) {
+            result.generatedCode = llmPlot.spec.code;
+          }
         }
         break;
 

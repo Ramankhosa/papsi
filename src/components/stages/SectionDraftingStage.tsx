@@ -1049,10 +1049,12 @@ export default function SectionDraftingStage({
     title: string;
     caption?: string;
     description?: string;
+    notes?: string;
     imagePath?: string;
     status: 'PLANNED' | 'GENERATING' | 'GENERATED' | 'FAILED';
     category?: string;
     figureType?: string;
+    suggestionMeta?: Record<string, unknown> | null;
   }>>([]);
   const [selectedText, setSelectedText] = useState<{ text: string; start: number; end: number } | null>(null);
   const [previewFigure, setPreviewFigure] = useState<{
@@ -1312,10 +1314,12 @@ export default function SectionDraftingStage({
           title: f.title,
           caption: f.caption || f.nodes?.caption || f.description,
           description: f.description,
+          notes: f.notes || f.nodes?.notes,
           imagePath: f.imagePath || f.nodes?.imagePath,
           status: f.status || f.nodes?.status || (f.imagePath ? 'GENERATED' : 'PLANNED'),
           category: f.category || f.nodes?.category || 'CHART',
-          figureType: f.figureType || f.nodes?.figureType || 'auto'
+          figureType: f.figureType || f.nodes?.figureType || 'auto',
+          suggestionMeta: f.suggestionMeta || f.nodes?.suggestionMeta || null
         }));
         setFigures(figs);
       }
@@ -2229,6 +2233,55 @@ export default function SectionDraftingStage({
       throw err;
     }
   }, [authToken, sessionId, loadFigures]);
+
+  const handleGenerateExistingFigure = useCallback(async (figureId: string) => {
+    if (!authToken) {
+      throw new Error('Missing required parameters');
+    }
+
+    const figure = figures.find((entry) => entry.id === figureId);
+    if (!figure) {
+      throw new Error('Figure not found');
+    }
+
+    setFigures((prev) => prev.map((entry) => (
+      entry.id === figureId ? { ...entry, status: 'GENERATING' as const } : entry
+    )));
+
+    try {
+      const response = await fetch(`/api/papers/${sessionId}/figures/${figureId}/generate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({
+          title: figure.title,
+          description: figure.notes || figure.caption || figure.description || figure.title,
+          category: figure.category || 'DIAGRAM',
+          figureType: figure.figureType || 'auto',
+          useLLM: true,
+          theme: 'academic',
+          suggestionMeta: figure.suggestionMeta || undefined
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to generate figure');
+      }
+
+      await loadFigures();
+      showMsg('Figure generated successfully', 'success');
+    } catch (err) {
+      setFigures((prev) => prev.map((entry) => (
+        entry.id === figureId ? { ...entry, status: 'FAILED' as const } : entry
+      )));
+      const message = err instanceof Error ? err.message : 'Figure generation failed';
+      showMsg(message, 'error');
+      throw err;
+    }
+  }, [authToken, figures, loadFigures, sessionId]);
 
   const handleOpenCitationPicker = useCallback(() => {
     setPickerOpen(true);
@@ -3992,6 +4045,7 @@ export default function SectionDraftingStage({
         }}
         onTextAction={handleTextAction}
         onGenerateFigure={handleGenerateFigure}
+        onGenerateExistingFigure={handleGenerateExistingFigure}
         selectedText={selectedText}
         onRefreshFigures={loadFigures}
         onRefreshCitations={loadCitations}
