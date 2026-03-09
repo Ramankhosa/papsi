@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -101,6 +101,14 @@ type FigurePlan = {
   status: 'PLANNED' | 'GENERATING' | 'GENERATED' | 'FAILED';
   generatedCode?: string;
   suggestionMeta?: FigureSuggestionMeta | null;
+};
+
+type GenerationFeedback = {
+  kind: 'single' | 'sketch' | 'batch' | 'modify';
+  category?: FigureCategory;
+  title?: string;
+  count?: number;
+  startedAt: number;
 };
 
 type SuggestionStatus = FigureSuggestionStatus;
@@ -274,6 +282,67 @@ const PREFERENCE_OPTIONS = {
 
 const SUGGESTION_SECTION_FILTER_ALL = '__all__';
 
+function getGenerationHeading(feedback: GenerationFeedback): string {
+  switch (feedback.kind) {
+    case 'batch':
+      return `Generating ${feedback.count || 0} figures`
+    case 'modify':
+      return feedback.title ? `Updating "${feedback.title}"` : 'Updating figure'
+    case 'sketch':
+      return feedback.title ? `Generating "${feedback.title}"` : 'Generating sketch'
+    case 'single':
+    default:
+      return feedback.title ? `Generating "${feedback.title}"` : 'Generating figure'
+  }
+}
+
+function getGenerationMessages(feedback: GenerationFeedback): string[] {
+  const category = feedback.category || 'CUSTOM';
+
+  const categorySpecific =
+    category === 'DATA_CHART' || category === 'STATISTICAL_PLOT'
+      ? [
+          'Interpreting your request and shaping the right plot structure, axes, and series.',
+          'Building a manuscript-ready plotting spec and passing it to the renderer.',
+        ]
+      : category === 'DIAGRAM'
+        ? [
+            'Structuring nodes, relationships, and layout so the diagram reads cleanly.',
+            'Validating the diagram syntax and preparing the final render.',
+          ]
+        : category === 'SKETCH' || category === 'ILLUSTRATED_FIGURE' || category === 'ILLUSTRATION'
+          ? [
+              'Composing the illustration layout, scientific styling, and publication canvas.',
+              'Rendering the image and checking the composition for journal-ready output.',
+            ]
+          : [
+              'Preparing the figure instructions and routing them to the correct rendering service.',
+              'Rendering the final output and storing it in your figure list.',
+            ];
+
+  if (feedback.kind === 'batch') {
+    return [
+      'Batch request received. The backend is working through the selected figures one by one.',
+      'Each figure is being generated and saved as soon as it completes.',
+      'Larger plots and sketches can take longer, but the request is still active.',
+    ];
+  }
+
+  if (feedback.kind === 'modify') {
+    return [
+      'Modification request received. The backend is revising the existing figure.',
+      ...categorySpecific,
+      'Saving the refreshed output back into your figure list.',
+    ];
+  }
+
+  return [
+    'Request received. The backend is actively processing your figure.',
+    ...categorySpecific,
+    'Saving the result to the bottom of your figure list as soon as it is ready.',
+  ];
+}
+
 function getSectionMapFromSession(session: any): Record<string, string> {
   const paperSections = Array.isArray(session?.paperSections) ? session.paperSections : [];
   if (paperSections.length > 0) {
@@ -336,6 +405,9 @@ export default function PaperFigurePlannerStage({
     label: string;
     timedOut: boolean;
   } | null>(null);
+  const [generationFeedback, setGenerationFeedback] = useState<GenerationFeedback | null>(null);
+  const [generationMessageIndex, setGenerationMessageIndex] = useState(0);
+  const figureListEndRef = useRef<HTMLDivElement | null>(null);
 
   const startCancelableRequest = useCallback((label: string, timeoutMs: number) => {
     const controller = new AbortController();
@@ -398,6 +470,38 @@ export default function PaperFigurePlannerStage({
     }
     return `${failures.length} figure(s) failed.`;
   }, []);
+
+  const scrollToFiguresBottom = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    if (typeof window === 'undefined') return;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        figureListEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+      });
+    });
+  }, []);
+
+  const generationMessages = useMemo(
+    () => (generationFeedback ? getGenerationMessages(generationFeedback) : []),
+    [generationFeedback]
+  );
+
+  const activeGenerationMessage = generationMessages.length > 0
+    ? generationMessages[generationMessageIndex % generationMessages.length]
+    : null;
+
+  useEffect(() => {
+    if (!generationFeedback || generationMessages.length === 0) {
+      setGenerationMessageIndex(0);
+      return;
+    }
+
+    setGenerationMessageIndex(0);
+    const intervalId = window.setInterval(() => {
+      setGenerationMessageIndex((current) => (current + 1) % generationMessages.length);
+    }, 2600);
+
+    return () => window.clearInterval(intervalId);
+  }, [generationFeedback, generationMessages.length]);
 
   // Calculate next figure number
   const nextFigureNo = useMemo(() => {
@@ -682,6 +786,7 @@ export default function PaperFigurePlannerStage({
       
       const createdFigure: FigurePlan = data.figure;
       setFigures(prev => [...prev, createdFigure]);
+      scrollToFiguresBottom();
       setTitle('');
       setDescription('');
       setPendingSuggestionMeta(null);
@@ -714,6 +819,12 @@ export default function PaperFigurePlannerStage({
     const previousStatus = figure.status;
     
     setGenerating(figure.id);
+    setGenerationFeedback({
+      kind: 'single',
+      category: figure.category,
+      title: figure.title,
+      startedAt: Date.now()
+    });
     setFigures(prev => prev.map(f => 
       f.id === figure.id ? { ...f, status: 'GENERATING' as const } : f
     ));
@@ -750,6 +861,7 @@ export default function PaperFigurePlannerStage({
           ? { ...f, status: 'GENERATED' as const, imagePath: data.imagePath } 
           : f
       ));
+      scrollToFiguresBottom();
     } catch (err) {
       if (isAbortError(err)) {
         setFigures(prev => prev.map(f => 
@@ -776,6 +888,7 @@ export default function PaperFigurePlannerStage({
     } finally {
       finishCancelableRequest(requestState);
       setGenerating(null);
+      setGenerationFeedback(null);
     }
   };
 
@@ -925,6 +1038,12 @@ export default function PaperFigurePlannerStage({
     const previousStatus = figure.status;
     
     setIsModifying(true);
+    setGenerationFeedback({
+      kind: 'modify',
+      category: figure.category,
+      title: figure.title,
+      startedAt: Date.now()
+    });
     setFigures(prev => prev.map(f => 
       f.id === figure.id ? { ...f, status: 'GENERATING' as const } : f
     ));
@@ -996,6 +1115,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
         ? { ...prev, status: 'GENERATED' as const, imagePath: data.imagePath }
         : prev
       );
+      scrollToFiguresBottom();
       
       // Clear modification input
       setModificationRequest('');
@@ -1027,6 +1147,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
     } finally {
       finishCancelableRequest(requestState);
       setIsModifying(false);
+      setGenerationFeedback(null);
     }
   };
 
@@ -1085,6 +1206,12 @@ Please regenerate the figure incorporating the user's feedback and corrections.
     }
 
     setIsGeneratingSketch(true);
+    setGenerationFeedback({
+      kind: 'sketch',
+      category,
+      title,
+      startedAt: Date.now()
+    });
     
     try {
       const selectedOption = FIGURE_OPTIONS.find(o => o.value === figureType);
@@ -1121,6 +1248,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
 
       // Reload figures to get the new sketch
       await loadFigures();
+      scrollToFiguresBottom();
 
       // Mark the source suggestion as used if applicable
       if (pendingSuggestionId && data.figureId) {
@@ -1140,6 +1268,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
       alert(`Failed to generate sketch: ${err.message}`);
     } finally {
       setIsGeneratingSketch(false);
+      setGenerationFeedback(null);
     }
   };
 
@@ -1175,6 +1304,11 @@ Please regenerate the figure incorporating the user's feedback and corrections.
     if (pending.length === 0) return;
 
     setIsGeneratingBatch(true);
+    setGenerationFeedback({
+      kind: 'batch',
+      count: pending.length,
+      startedAt: Date.now()
+    });
     const requestState = startCancelableRequest(`Generating ${pending.length} figures`, 180000);
     try {
       const response = await fetch(`/api/papers/${sessionId}/figures/batch`, {
@@ -1199,6 +1333,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
       }
 
       await loadFigures();
+      scrollToFiguresBottom();
       const results = Array.isArray(data.results) ? data.results : [];
       const generated = Number(data.generated || results.filter((entry: any) => entry?.success === true).length);
       const failed = Number(data.failed || results.filter((entry: any) => entry?.success === false).length);
@@ -1235,6 +1370,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
     } finally {
       finishCancelableRequest(requestState);
       setIsGeneratingBatch(false);
+      setGenerationFeedback(null);
     }
   };
 
@@ -1243,6 +1379,11 @@ Please regenerate the figure incorporating the user's feedback and corrections.
     if (selectedSuggestions.length === 0) return;
 
     setIsApplyingSuggestionBatch(true);
+    setGenerationFeedback({
+      kind: 'batch',
+      count: selectedSuggestions.length,
+      startedAt: Date.now()
+    });
     const requestState = startCancelableRequest(`Creating and generating ${selectedSuggestions.length} suggestions`, 180000);
     try {
       const response = await fetch(`/api/papers/${sessionId}/figures/batch`, {
@@ -1273,6 +1414,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
       }
 
       await loadFigures();
+      scrollToFiguresBottom();
       const results = Array.isArray(data.results) ? data.results : [];
       const generated = Number(data.generated || results.filter((entry: any) => entry?.success === true).length);
       const failed = Number(data.failed || results.filter((entry: any) => entry?.success === false).length);
@@ -1319,6 +1461,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
     } finally {
       finishCancelableRequest(requestState);
       setIsApplyingSuggestionBatch(false);
+      setGenerationFeedback(null);
     }
   };
 
@@ -1811,6 +1954,50 @@ Please regenerate the figure incorporating the user's feedback and corrections.
           </div>
         </div>
 
+        <AnimatePresence>
+          {generationFeedback && activeGenerationMessage && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              className="rounded-2xl border border-blue-200/80 bg-gradient-to-r from-blue-50 via-white to-indigo-50 p-4 shadow-sm"
+              aria-live="polite"
+            >
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm">
+                  <Loader2 className="h-5 w-5 animate-spin" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-semibold text-slate-900">{getGenerationHeading(generationFeedback)}</p>
+                    <Badge className="border-blue-200 bg-blue-100 text-blue-700 hover:bg-blue-100">
+                      Backend active
+                    </Badge>
+                  </div>
+                  <p className="mt-1 text-sm text-slate-600">{activeGenerationMessage}</p>
+                  <p className="mt-2 text-xs text-slate-500">
+                    The request is still running on the backend. You can stay on this page while the figure is being prepared.
+                  </p>
+                  {generationMessages.length > 1 && (
+                    <div className="mt-3 flex items-center gap-1.5">
+                      {generationMessages.map((_, index) => (
+                        <span
+                          key={`${generationFeedback.kind}-${index}`}
+                          className={`h-1.5 rounded-full transition-all ${
+                            index === generationMessageIndex % generationMessages.length
+                              ? 'w-5 bg-blue-600'
+                              : 'w-1.5 bg-blue-200'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         {/* Figures List */}
         {figures.length > 0 && (
           <div className="space-y-4">
@@ -1874,6 +2061,11 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                             </div>
                             <h4 className="font-medium text-slate-900 truncate">{figure.title}</h4>
                             <p className="text-sm text-slate-500 truncate">{figure.caption}</p>
+                            {isGenerating && activeGenerationMessage && (
+                              <p className="mt-1 max-w-xl text-xs text-blue-600">
+                                {activeGenerationMessage}
+                              </p>
+                            )}
                           </div>
                           
                           {/* Actions - always visible for every status */}
@@ -1990,6 +2182,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                   );
                 })}
               </AnimatePresence>
+              <div ref={figureListEndRef} className="h-px" />
             </div>
             
             {/* Generate All Button */}
@@ -2023,6 +2216,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
             <p className="text-slate-500 mt-1">Create your first figure above or get AI suggestions</p>
           </div>
         )}
+        <div ref={figures.length === 0 ? figureListEndRef : undefined} className="h-px" />
       </div>
 
       {/* AI Suggestions Dialog */}

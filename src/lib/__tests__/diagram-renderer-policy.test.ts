@@ -35,13 +35,12 @@ describe('chooseDiagramRenderer', () => {
     expect(decision.renderer).toBe('mermaid')
   })
 
-  it('prefers PlantUML when Mermaid recently failed', () => {
+  it('keeps gantt diagrams on Mermaid even when the description sounds system-like', () => {
     const decision = chooseDiagramRenderer({
       diagramType: 'gantt',
-      description: 'Timeline for delivery',
-      hasRecentMermaidFailure: true
+      description: 'System rollout timeline across services, gateway, and deployment milestones.'
     })
-    expect(decision.renderer).toBe('plantuml')
+    expect(decision.renderer).toBe('mermaid')
   })
 
   it('uses Mermaid for Mermaid-like specs only after recent PlantUML failure', () => {

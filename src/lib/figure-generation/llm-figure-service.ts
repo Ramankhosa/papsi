@@ -251,10 +251,10 @@ CRITICAL RULES:
 2. NEVER invent or hallucinate data. Use only the exact numeric values and labels provided in the request. Do not fabricate placeholder series, placeholder labels, or synthetic results.
 2a. If the request includes raw CSV, TSV, JSON, x/y rows, pasted metrics, or lightly messy table text, normalize that content into the chart config using the exact values present in the request.
 3. The chart MUST have:
-   - A clear, descriptive title (using the user's title or a refined version)
    - Properly labeled axes with units where applicable (e.g., "Accuracy (%)", "Time (seconds)")
    - A legend with descriptive dataset labels
    - Colors from this academic palette: ["#4E79A7", "#F28E2B", "#E15759", "#76B7B2", "#59A14F", "#EDC948", "#B07AA1", "#FF9DA7"]
+3a. IMPORTANT FOR PAPER FIGURES: do NOT render a title above the chart. The paper title/caption is handled outside the image. Keep axis titles, but disable the in-chart top title.
 4. For bar charts: use semi-transparent fills (rgba with 0.8 opacity), solid borders
 5. For line charts: use solid lines (borderWidth: 2.5), small point radius (3-4px), no fill unless area chart
 6. For pie/doughnut: use the full 8-color palette, add percentage labels via datalabels plugin
@@ -286,7 +286,7 @@ OUTPUT FORMAT (return ONLY this JSON):
   "options": {
     "responsive": true,
     "plugins": {
-      "title": { "display": true, "text": "Chart Title", "font": { "size": 16, "weight": "bold", "family": "'Helvetica Neue', Arial, sans-serif" }, "color": "#1F2937", "padding": { "bottom": 16 } },
+      "title": { "display": false, "text": "", "font": { "size": 16, "weight": "bold", "family": "'Helvetica Neue', Arial, sans-serif" }, "color": "#1F2937", "padding": { "bottom": 16 } },
       "legend": { "position": "bottom", "labels": { "font": { "size": 12, "family": "'Helvetica Neue', Arial, sans-serif" }, "usePointStyle": true, "padding": 16 } }
     },
     "scales": {
@@ -400,7 +400,6 @@ erDiagram
 
 [TEMPLATE 6: GANTT]
 gantt
-  title Timeline
   dateFormat YYYY-MM-DD
   section Work
   Task A :a1, 2026-01-01, 10d
@@ -2153,6 +2152,24 @@ function normalizePlantUMLTemplateType(input?: string): {
   }
 }
 
+function mermaidMatchesTemplateType(code: string, templateType: CanonicalMermaidTemplateType): boolean {
+  const normalized = (code || '').trim()
+
+  switch (templateType) {
+    case 'gantt':
+      return /(^|\n)gantt\b/.test(normalized)
+    case 'sequence':
+      return /(^|\n)sequenceDiagram\b/.test(normalized)
+    case 'state':
+      return /(^|\n)stateDiagram(?:-v2)?\b/.test(normalized)
+    case 'er':
+      return /(^|\n)erDiagram\b/.test(normalized)
+    case 'flowchart':
+    default:
+      return /(^|\n)(flowchart|graph)\b/.test(normalized)
+  }
+}
+
 /**
  * Validate and repair a Chart.js configuration from LLM output
  */
@@ -2236,6 +2253,18 @@ export function validateChartConfig(config: any): { valid: boolean; config?: any
   // Remove scales for pie/doughnut/radar/polarArea
   if (['pie', 'doughnut', 'radar', 'polarArea'].includes(config.type) && config.options?.scales) {
     delete config.options.scales
+  }
+
+  if (!config.options || typeof config.options !== 'object') {
+    config.options = {}
+  }
+  if (!config.options.plugins || typeof config.options.plugins !== 'object') {
+    config.options.plugins = {}
+  }
+  config.options.plugins.title = {
+    ...(config.options.plugins.title || {}),
+    display: false,
+    text: ''
   }
 
   return { valid: true, config }
@@ -2540,6 +2569,16 @@ export async function generateMermaidCode(
       if (!validation.valid) {
         lastError = validation.error || 'Generated Mermaid code was invalid'
         console.warn(`[LLMFigureService] Mermaid validation failed (attempt ${attempt + 1}/${MAX_DIAGRAM_RETRIES + 1}): ${lastError}`)
+        if (attempt < MAX_DIAGRAM_RETRIES) continue
+        return {
+          success: false,
+          error: lastError
+        }
+      }
+
+      if (!mermaidMatchesTemplateType(validation.code, templateSelection.templateType)) {
+        lastError = `Generated Mermaid code did not match required template type "${templateSelection.templateType}".`
+        console.warn(`[LLMFigureService] Mermaid template mismatch (attempt ${attempt + 1}/${MAX_DIAGRAM_RETRIES + 1}): ${lastError}`)
         if (attempt < MAX_DIAGRAM_RETRIES) continue
         return {
           success: false,

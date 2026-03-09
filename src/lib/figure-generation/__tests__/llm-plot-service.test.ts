@@ -68,6 +68,13 @@ describe('llm plot service', () => {
     expect(validation.error).toMatch(/not allowed/i)
   })
 
+  it('rejects matplotlib code that renders a top title', () => {
+    const validation = validateCustomPythonPlotCode("ax.plot([1, 2], [3, 4])\nax.set_title('Results')")
+
+    expect(validation.valid).toBe(false)
+    expect(validation.error).toMatch(/title/i)
+  })
+
   it('preserves scatter point objects during chart validation', () => {
     const validation = validateChartConfig({
       type: 'scatter',
@@ -91,5 +98,6 @@ describe('llm plot service', () => {
       { x: 1, y: 2 },
       { x: 2, y: 4 },
     ])
+    expect(validation.config?.options?.plugins?.title?.display).toBe(false)
   })
 })

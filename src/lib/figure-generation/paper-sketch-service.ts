@@ -350,6 +350,91 @@ function buildEffectiveSketchSpec(
   return { specV2, genre, directives }
 }
 
+export function describeCanvasShape(aspectRatio?: string): string {
+  const ratio = parseAspectRatio(aspectRatio)
+  if (!ratio) return 'the requested publication canvas'
+  if (ratio >= 2.2) return `an ultra-wide canvas matching ${aspectRatio}`
+  if (ratio >= 1.65) return `a wide landscape canvas matching ${aspectRatio}`
+  if (ratio >= 1.2) return `a landscape canvas matching ${aspectRatio}`
+  if (ratio >= 0.9) return `a near-square canvas matching ${aspectRatio}`
+  return `a tall portrait canvas matching ${aspectRatio}`
+}
+
+export function buildCanvasComplianceRules(directives: IllustrationRenderDirectives): string {
+  const aspectRatio = directives.aspectRatio || 'the requested ratio'
+  const canvasShape = describeCanvasShape(aspectRatio)
+  const fillMin = Number(directives.fillCanvasPercentMin || 85)
+  const whitespaceMax = Number(directives.whitespaceMaxPercent || 15)
+
+  return [
+    'CANVAS COMPLIANCE RULES (HARD):',
+    `- Compose directly for ${canvasShape}.`,
+    `- Final composition must visually match aspect ratio ${aspectRatio}; do not output a cinematic, square, or portrait frame when that ratio differs.`,
+    `- Main content must occupy at least ${fillMin}% of the canvas and outer whitespace must stay below ${whitespaceMax}%.`,
+    '- Do not place a small central illustration inside a larger blank canvas.',
+    '- Push the composition to fill the intended width and height with balanced margins.',
+    '- If the layout is a horizontal strip or storyboard, extend the content across the full width instead of compressing it into the center.'
+  ].join('\n')
+}
+
+function buildStyleModeGuidance(style: string): string {
+  switch ((style || 'academic').toLowerCase()) {
+    case 'scientific':
+      return [
+        '- Style mode SCIENTIFIC: prioritize domain-faithful structures, precise labels, and rigorous technical clarity over decorative simplification.',
+        '- Favor canonical scientific symbols, accurate relative relationships, and restrained annotations that look reviewer-ready.',
+        '- If a tradeoff is required, choose scientific fidelity and legibility over stylistic flourish.'
+      ].join('\n')
+    case 'conceptual':
+      return [
+        '- Style mode CONCEPTUAL: preserve academic rigor, but use clearer grouping, stronger hierarchy, and cleaner visual storytelling for abstract relationships.',
+        '- Make the main conceptual pathway immediately readable, while secondary dependencies stay lighter and quieter.',
+        '- Prefer simple, elegant abstractions over literal scene-building or decorative metaphors.'
+      ].join('\n')
+    case 'technical':
+      return [
+        '- Style mode TECHNICAL: emphasize exact geometry, clean orthogonal alignment, disciplined spacing, and engineering-diagram precision.',
+        '- Use an engineer-like drafting aesthetic with deliberate edge alignment, consistent block sizing, and minimal stylistic variance.',
+        '- Prioritize exactness, topology clarity, and crisp schematic order over expressive illustration.'
+      ].join('\n')
+    case 'academic':
+    default:
+      return [
+        '- Style mode ACADEMIC: restrained, reviewer-friendly, balanced, and conservative in color, typography, and composition.',
+        '- Aim for the calm, authoritative look of a final journal figure rather than a conference poster or marketing graphic.',
+        '- Keep the composition elegant, disciplined, and easy to parse in a manuscript layout.'
+      ].join('\n')
+  }
+}
+
+export function buildJournalQualityStandards(style: string, directives: IllustrationRenderDirectives): string {
+  const textPolicy = directives.textPolicy || {}
+  const stylePolicy = directives.stylePolicy || {}
+  const compositionPolicy = directives.compositionPolicy || {}
+
+  return [
+    'JOURNAL-GRADE QUALITY BAR (HARD):',
+    '- The image must look like a final accepted paper figure, not a draft, marketing graphic, poster, or slide.',
+    '- Communicate one dominant scientific message immediately; every element must support that message.',
+    '- Use a strict alignment grid with even gutters, consistent spacing, and deliberate grouping of related elements.',
+    '- Keep stroke weights, corner radii, arrowheads, icon style, and visual rhythm consistent across the entire figure.',
+    '- Create clear visual hierarchy: primary pathway or contribution darkest/most prominent, secondary context lighter and quieter.',
+    '- Apply color semantically and sparingly. Similar concepts should share color families; decorative rainbow coloring is forbidden.',
+    '- Use a restrained, color-blind-safe academic palette and ensure the figure still reads clearly if printed small or viewed in grayscale.',
+    `- Typography must be minimal, high-contrast, and legible: max ${textPolicy.maxLabelsTotal || 'few'} labels, max ${textPolicy.maxWordsPerLabel || 4} words per label, no crowded or overlapping text.`,
+    '- Labels must sit close to the structures they describe; avoid long floating callouts, tangled leader lines, and annotation crossings.',
+    '- Avoid visual clutter, redundant symbols, repeated labels, ornamental icons, glossy effects, gradients, mock-3D, or cartoon styling.',
+    '- Use subtle separators only: pale grouping tints, thin divider rules, and light neutral backgrounds. Avoid heavy black borders unless structurally necessary.',
+    '- Use white or near-white background with crisp separation between panels, blocks, arrows, and annotations.',
+    '- The composition must survive reduction to a typical journal column/page figure size without losing legibility or hierarchy.',
+    '- Every panel, block, and annotation should feel intentionally placed; avoid accidental empty pockets, cramped corners, or inconsistent padding.',
+    `- Composition mode: ${compositionPolicy.layoutMode || 'auto'}, equalPanels=${String(compositionPolicy.equalPanels ?? false)}, noTextOutsidePanels=${String(compositionPolicy.noTextOutsidePanels ?? false)}.`,
+    `- Palette mode: ${stylePolicy.paletteMode || 'academic_muted'} with semantically consistent accents only.`,
+    buildStyleModeGuidance(style),
+    '- Before finalizing, self-check: would this look credible in a Nature, IEEE, Elsevier, or Springer paper without manual redesign?'
+  ].join('\n')
+}
+
 /**
  * Build system prompt for genre-specific academic illustrations.
  * Each genre produces publication-grade scientific figures matching Q1 journal expectations.
@@ -368,16 +453,25 @@ function buildSystemPrompt(
 - Clean vector-style rendering with precise geometric shapes and sharp edges
 - White or very light background; no photorealism, no 3D effects, no clip art
 - Muted academic color palette: navy (#1F77B4), orange (#F28E2B), teal (#2CA02C), slate (#4E4E4E), coral (#E15759)
+- Prefer color-blind-safe semantic color use and maintain clarity in grayscale or low-saturation print settings
 - All text must be legible at the output resolution -- minimum ~10pt equivalent
 - No figure numbers, no title overlays, no captions, no watermarks on the image
+- If a figure title/focus is provided, use it only to guide composition and content. Never draw that title as text on the image.
+- Use the same visual language across the whole figure: one icon family, one stroke system, one spacing rhythm, one annotation style
+- Favor elegant scientific restraint over visual novelty; the result should feel editorial, deliberate, and camera-ready
 - Aspect ratio target: ${d.aspectRatio}; fill >= ${d.fillCanvasPercentMin}%, whitespace <= ${d.whitespaceMaxPercent}%
 - Text: max ${textPolicy.maxLabelsTotal} labels, max ${textPolicy.maxWordsPerLabel} words per label, no all-caps
 - Generate ONLY an image with no accompanying text explanation`
+
+  const canvasRules = buildCanvasComplianceRules(d)
+  const qualityBar = buildJournalQualityStandards(style, d)
 
   const genrePrompts: Record<string, string> = {
     'METHOD_BLOCK': `You are an expert scientific illustrator generating a METHOD_BLOCK figure for a research paper.
 
 ${commonRules}
+${canvasRules}
+${qualityBar}
 
 GENRE-SPECIFIC RULES:
 - Show a left-to-right or top-to-bottom pipeline/workflow with modular rectangular blocks
@@ -392,6 +486,8 @@ GENRE-SPECIFIC RULES:
     'SCENARIO_STORYBOARD': `You are an expert scientific illustrator generating a SCENARIO_STORYBOARD figure for a research paper.
 
 ${commonRules}
+${canvasRules}
+${qualityBar}
 
 GENRE-SPECIFIC RULES:
 - Show 3 equal-width panels in a wide landscape strip composition
@@ -405,6 +501,8 @@ GENRE-SPECIFIC RULES:
     'NEURAL_ARCHITECTURE': `You are an expert scientific illustrator generating a NEURAL_ARCHITECTURE figure for a deep learning research paper.
 
 ${commonRules}
+${canvasRules}
+${qualityBar}
 
 GENRE-SPECIFIC RULES:
 - Show the network architecture as stacked layers flowing left-to-right or top-to-bottom
@@ -420,6 +518,8 @@ GENRE-SPECIFIC RULES:
     'EXPERIMENTAL_SETUP': `You are an expert scientific illustrator generating an EXPERIMENTAL_SETUP figure for a research paper.
 
 ${commonRules}
+${canvasRules}
+${qualityBar}
 
 GENRE-SPECIFIC RULES:
 - Show the physical or logical experimental arrangement as a schematic diagram
@@ -435,6 +535,8 @@ GENRE-SPECIFIC RULES:
     'DATA_PIPELINE': `You are an expert scientific illustrator generating a DATA_PIPELINE figure for a research paper.
 
 ${commonRules}
+${canvasRules}
+${qualityBar}
 
 GENRE-SPECIFIC RULES:
 - Show an end-to-end data processing pipeline as a horizontal strip
@@ -449,6 +551,8 @@ GENRE-SPECIFIC RULES:
     'COMPARISON_MATRIX': `You are an expert scientific illustrator generating a COMPARISON_MATRIX figure for a research paper.
 
 ${commonRules}
+${canvasRules}
+${qualityBar}
 
 GENRE-SPECIFIC RULES:
 - Create a structured grid or matrix comparing methods, models, or approaches
@@ -463,6 +567,8 @@ GENRE-SPECIFIC RULES:
     'PROCESS_MECHANISM': `You are an expert scientific illustrator generating a PROCESS_MECHANISM figure for a research paper.
 
 ${commonRules}
+${canvasRules}
+${qualityBar}
 
 GENRE-SPECIFIC RULES:
 - Illustrate a scientific process, mechanism, or phenomenon step-by-step
@@ -477,6 +583,8 @@ GENRE-SPECIFIC RULES:
     'SYSTEM_INTERACTION': `You are an expert scientific illustrator generating a SYSTEM_INTERACTION figure for a research paper.
 
 ${commonRules}
+${canvasRules}
+${qualityBar}
 
 GENRE-SPECIFIC RULES:
 - Show multiple systems, services, or components and their interactions
@@ -491,6 +599,8 @@ GENRE-SPECIFIC RULES:
     'CONCEPTUAL_FRAMEWORK': `You are an expert scientific illustrator generating a CONCEPTUAL_FRAMEWORK figure for a research paper.
 
 ${commonRules}
+${canvasRules}
+${qualityBar}
 
 GENRE-SPECIFIC RULES:
 - Show the theoretical framework or conceptual model underlying the research
@@ -505,6 +615,8 @@ GENRE-SPECIFIC RULES:
     'GRAPHICAL_ABSTRACT': `You are an expert scientific illustrator generating a GRAPHICAL_ABSTRACT for a research paper.
 
 ${commonRules}
+${canvasRules}
+${qualityBar}
 
 GENRE-SPECIFIC RULES:
 - Create a single wide-format visual summary of the entire paper
@@ -609,12 +721,13 @@ ${context.sectionContent || 'Not provided'}
 ${title ? `FIGURE TITLE/FOCUS: ${title}` : ''}
 ${buildGenreReminder(effective.genre)}
 ${buildIllustrationSpecBlock(effective)}
+${buildCanvasComplianceRules(effective.directives)}
 
 Create a clean, professional output that:
 1. Strictly follows the genre and render directives above
 2. Maps to real paper entities (input -> method -> output -> evaluation where applicable)
 3. Uses minimal text (no microtext)
-4. Avoids figure numbering, overlaid title text, and caption text
+4. Uses the provided figure title only as semantic guidance and never renders that title, figure numbering, or caption text on the image
 `.trim()
 }
 
@@ -636,13 +749,14 @@ ${userPrompt}
 ${title ? `FIGURE TITLE: ${title}` : ''}
 ${buildGenreReminder(effective.genre)}
 ${buildIllustrationSpecBlock(effective)}
+${buildCanvasComplianceRules(effective.directives)}
 
 PAPER CONTEXT (for grounding):
 - Paper: ${context.paperTitle}
 - Abstract: ${context.abstract?.substring(0, 300) || 'Not provided'}...
 
 Apply user intent only if it does not violate genre/render directives.
-Avoid tiny text and avoid any figure numbers/title overlays.
+Avoid tiny text and treat any provided title as semantic guidance only, never as overlaid text on the image.
 `.trim()
 }
 
@@ -669,6 +783,7 @@ PAPER CONTEXT:
 
 ${buildGenreReminder(effective.genre)}
 ${buildIllustrationSpecBlock(effective)}
+${buildCanvasComplianceRules(effective.directives)}
 
 Please:
 1. Enforce the target genre strictly
@@ -676,7 +791,7 @@ Please:
 3. Remove duplicated blocks/panels and fix alignment
 4. Improve clarity and flow arrows
 5. Ensure tight composition (fill canvas, low whitespace)
-6. Do NOT add figure numbers or overlaid title/caption text
+6. Do NOT add figure numbers or overlaid title/caption text; any provided title is guidance only
 `.trim()
 }
 

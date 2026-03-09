@@ -608,7 +608,7 @@ export async function POST(
           let groundedDescription = sanitizeAscii(
             data.description
               || chartEnrichment.whyThisFigure
-              || `Generate a publication-grade ${data.figureType} chart for the supplied research data titled "${data.title}".`,
+              || `Generate a publication-grade ${data.figureType} chart for the supplied research data focused on "${data.title}".`,
             true
           );
 
@@ -659,7 +659,6 @@ export async function POST(
           if (llmResult.success && llmResult.config) {
             llmMetadata = { tokensUsed: llmResult.tokensUsed, model: llmResult.model };
             result = await generateChartFromConfig(llmResult.config as any, {
-              title: data.title,
               theme: { preset: resolvedTheme as any },
               format: 'png'
             });
@@ -878,7 +877,7 @@ export async function POST(
           let groundedDescription = sanitizeAscii(
             data.description
               || statEnrichment.whyThisFigure
-              || `Generate a publication-grade ${data.figureType} statistical plot titled "${data.title}".`,
+              || `Generate a publication-grade ${data.figureType} statistical plot focused on "${data.title}".`,
             true
           );
 

@@ -72,6 +72,14 @@ export function chooseDiagramRenderer(input: DiagramRendererPolicyInput): Diagra
     }
   }
 
+  if (diagramType === 'gantt') {
+    return {
+      renderer: 'mermaid',
+      reason: 'Gantt diagrams are Mermaid-native and should stay on the Mermaid path.',
+      plantUMLRequired: false
+    }
+  }
+
   const plantUMLRequired = umlIntent || systemIntent || recentMermaidFailure || heavySyntax
   if (plantUMLRequired) {
     if (recentMermaidFailure) {
@@ -99,14 +107,6 @@ export function chooseDiagramRenderer(input: DiagramRendererPolicyInput): Diagra
       renderer: 'plantuml',
       reason: 'Input appears punctuation/math-heavy or label-heavy; PlantUML chosen for reliability.',
       plantUMLRequired: true
-    }
-  }
-
-  if (diagramType === 'gantt') {
-    return {
-      renderer: 'mermaid',
-      reason: 'Gantt diagrams are Mermaid-native and simpler to generate there.',
-      plantUMLRequired: false
     }
   }
 

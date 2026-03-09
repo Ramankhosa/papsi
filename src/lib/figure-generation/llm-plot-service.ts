@@ -70,7 +70,7 @@ MATPLOTLIB EXECUTION RULES (HARD CONSTRAINTS):
 2. Do NOT use import, open, exec, eval, compile, globals, locals, __builtins__, __import__, os, sys, pathlib, subprocess, requests, pickle, pandas, or files/network access.
 3. Do NOT create a new figure. Never call plt.figure() or plt.subplots(). Use the provided fig and ax only.
 4. The code must fully render the requested plot on ax.
-5. Set title, axis labels, legend, grid, and any needed annotations inside the code.
+5. Do NOT render a top title on the image. Use the provided title only as semantic guidance. Axis labels, legends, grids, and annotations are allowed and should remain legible.
 6. Prefer a clean academic style: thin grid, clear labels, limited colors, legible ticks, tight layout.
 7. NEVER invent data. If structured data or pasted raw rows are provided, use only those values. If the request is ambiguous, choose the most conservative direct interpretation of the provided values.
 8. If the request includes raw CSV/TSV/JSON/table text, convert it into explicit Python literals inside the code before plotting.
@@ -482,6 +482,7 @@ export function validateCustomPythonPlotCode(code: string): { valid: boolean; co
     [/\b__\w+__\b/, 'Dunder access is not allowed.'],
     [/\b(os|sys|subprocess|pathlib|requests|pickle|pandas)\b/, 'External modules are not available in the plot sandbox.'],
     [/plt\.(figure|subplots)\s*\(/, 'Do not create a new figure; use the provided fig and ax.'],
+    [/\b(?:ax\.set_title|plt\.title)\s*\(/, 'Do not render a title on top of the plot image.'],
   ]
 
   for (const [pattern, message] of forbiddenPatterns) {
