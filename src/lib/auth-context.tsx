@@ -34,6 +34,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined)
 // Token refresh state (shared across all requests)
 let isRefreshing = false
 let refreshPromise: Promise<string | null> | null = null
+const ACTIVITY_THRESHOLD_MS = 5 * 60 * 1000
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter()
@@ -51,8 +52,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const tokenRef = useRef<string | null>(null)
   const refreshAccessTokenRef = useRef<(showModalOnFailure?: boolean) => Promise<string | null>>(null as any)
   const performLogoutRef = useRef<(callServer?: boolean, logoutAll?: boolean, showExpiredModal?: boolean) => Promise<void>>(null as any)
-
-  const ACTIVITY_THRESHOLD_MS = 5 * 60 * 1000
 
   // Keep tokenRef in sync with token state
   useEffect(() => {

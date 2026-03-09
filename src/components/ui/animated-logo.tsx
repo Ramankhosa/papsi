@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
+import Image from 'next/image'
 
 interface AnimatedLogoProps {
   size?: 'sm' | 'md' | 'lg' | 'xl'
@@ -19,6 +20,13 @@ const sizeClasses = {
   xl: 'w-24 h-24'
 }
 
+const sizePixels = {
+  sm: 32,
+  md: 48,
+  lg: 64,
+  xl: 96
+}
+
 export default function AnimatedLogo({
   size = 'md',
   className = '',
@@ -36,7 +44,6 @@ export default function AnimatedLogo({
   const [shouldPlay, setShouldPlay] = useState(autoPlay && !respectReducedMotion)
   const [isPaused, setIsPaused] = useState(false)
   const videoRef = useRef<HTMLVideoElement>(null)
-  const imgRef = useRef<HTMLImageElement>(null)
 
   // Check if user prefers reduced motion
   const prefersReducedMotion = respectReducedMotion &&
@@ -106,10 +113,13 @@ export default function AnimatedLogo({
   const FallbackLogo = () => (
     useKishoFallback ? (
       <div className={`${sizeClasses[size]} ${className} rounded-full overflow-hidden shadow-lg border-2 border-cyan-200`}>
-        <img
+        <Image
           src="/images/kisho.jpg"
           alt="Kisho - Your AI Assistant"
           className="w-full h-full object-cover"
+          width={sizePixels[size]}
+          height={sizePixels[size]}
+          unoptimized
         />
       </div>
     ) : (
@@ -150,16 +160,18 @@ export default function AnimatedLogo({
 
       {/* Try GIF first with img tag */}
       {!imgError && (
-        <img
-          ref={imgRef}
+        <Image
           src="/animations/logo-video.gif"
           alt="Animated logo"
           className={`${sizeClasses[size]} rounded-full object-cover shadow-lg`}
+          width={sizePixels[size]}
+          height={sizePixels[size]}
           onError={handleImgError}
           onLoad={handleImgLoad}
           style={{ display: isLoading ? 'none' : 'block' }}
           aria-label="Animated logo"
           role="img"
+          unoptimized
         />
       )}
 
