@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
 import { 
-  generateChart, 
+  generateChartFromConfig,
   generateFromMermaidCode,
   generateFromPlantUMLCode,
   FigureGenerationResult
@@ -14,7 +14,7 @@ import {
   repairDiagramCode
 } from '@/lib/figure-generation/llm-figure-service';
 import { chooseDiagramRenderer } from '@/lib/figure-generation/diagram-renderer-policy';
-import type { DiagramStructuredSpec } from '@/lib/figure-generation/types';
+import type { DiagramStructuredSpec, FigureData } from '@/lib/figure-generation/types';
 import {
   normalizeFigurePreferences,
   resolveThemeFromPreferences,
@@ -46,6 +46,22 @@ const generateSchema = z.object({
     xValues: z.array(z.number()).optional(),
     yValues: z.array(z.number()).optional(),
     groups: z.record(z.string(), z.array(z.number())).optional(),
+    method1: z.array(z.number()).optional(),
+    method2: z.array(z.number()).optional(),
+    curves: z.array(z.object({
+      label: z.string().optional(),
+      fpr: z.array(z.number()),
+      tpr: z.array(z.number()),
+      auc: z.number().optional()
+    })).optional(),
+    studies: z.array(z.object({
+      label: z.string(),
+      effect: z.number(),
+      ci_low: z.number().optional(),
+      ci_high: z.number().optional(),
+      weight: z.number().optional(),
+      type: z.enum(['study', 'summary']).optional()
+    })).optional(),
     matrix: z.array(z.array(z.number())).optional(),
     matrixLabels: z.array(z.string()).optional()
   }).optional().nullable(), // Allow null for diagrams that don't need data
@@ -226,6 +242,43 @@ function buildPaperContext(session: any): string {
   return parts.length > 0 ? parts.join('\n\n') : '';
 }
 
+function buildStructuredChartData(
+  data: Record<string, any> | null | undefined,
+  fallbackLabel: string
+): FigureData | null {
+  if (!data) return null;
+
+  if (Array.isArray(data.labels) && Array.isArray(data.datasets) && data.datasets.length > 0) {
+    return {
+      labels: data.labels,
+      datasets: data.datasets.map((dataset: any) => ({
+        label: typeof dataset?.label === 'string' && dataset.label.trim() ? dataset.label.trim() : fallbackLabel,
+        data: Array.isArray(dataset?.data) ? dataset.data.map((value: unknown) => Number(value)).filter(Number.isFinite) : [],
+        errors: Array.isArray(dataset?.errors) ? dataset.errors.map((value: unknown) => Number(value)).filter(Number.isFinite) : undefined
+      })).filter((dataset: any) => dataset.data.length > 0)
+    };
+  }
+
+  if (Array.isArray(data.labels) && Array.isArray(data.values) && data.labels.length === data.values.length && data.values.length > 0) {
+    return {
+      labels: data.labels,
+      datasets: [{
+        label: fallbackLabel,
+        data: data.values.map((value: unknown) => Number(value)).filter(Number.isFinite)
+      }]
+    };
+  }
+
+  return null;
+}
+
+function mapThemeToPythonJournal(theme: string | null | undefined): 'nature' | 'ieee' | 'elsevier' | 'default' {
+  if (theme === 'ieee') return 'ieee';
+  if (theme === 'nature') return 'nature';
+  if (theme === 'modern') return 'elsevier';
+  return 'default';
+}
+
 function withStageLimitGuidance(errorMessage: string | undefined, stageCode: string): string {
   const message = (errorMessage || 'LLM generation failed').trim();
   const normalized = message.toLowerCase();
@@ -328,141 +381,6 @@ function normalizeDiagramSpec(spec?: DiagramStructuredSpec | null): DiagramStruc
   };
 }
 
-function buildFallbackSpec(title: string): DiagramStructuredSpec {
-  return {
-    layout: 'LR',
-    nodes: [
-      { idHint: 'inputStage', label: 'Input Stage', group: 'Input' },
-      { idHint: 'processingStage', label: 'Processing Stage', group: 'Processing' },
-      { idHint: 'validationStage', label: 'Validation Stage', group: 'Processing' },
-      { idHint: 'outputStage', label: 'Output Stage', group: 'Output' }
-    ],
-    edges: [
-      { fromHint: 'inputStage', toHint: 'processingStage', label: 'feeds', type: 'solid' },
-      { fromHint: 'processingStage', toHint: 'validationStage', label: 'checks', type: 'solid' },
-      { fromHint: 'validationStage', toHint: 'outputStage', label: 'outputs', type: 'solid' }
-    ],
-    groups: [
-      { name: 'Input', nodeIds: ['inputStage'] },
-      { name: 'Processing', nodeIds: ['processingStage', 'validationStage'] },
-      { name: 'Output', nodeIds: ['outputStage'] }
-    ],
-    splitSuggestion: `If complexity grows, split ${sanitizeLabel(title)} into Fig A and Fig B.`
-  };
-}
-
-function buildDeterministicPlantUMLTemplate(
-  figureType: string,
-  title: string,
-  description?: string,
-  spec?: DiagramStructuredSpec
-): string {
-  const safeTitle = sanitizeLabel(title).slice(0, 60);
-  const normalizedSpec = normalizeDiagramSpec(spec) || buildFallbackSpec(title);
-  const nodes = normalizedSpec.nodes || [];
-  const edges = normalizedSpec.edges || [];
-  const groups = normalizedSpec.groups || [];
-
-  const styleBlock = [
-    '@startuml',
-    'skinparam backgroundColor #FFFFFF',
-    'skinparam defaultFontName "Helvetica Neue"',
-    'skinparam defaultFontSize 13',
-    'skinparam shadowing false',
-    'skinparam roundcorner 8',
-    'skinparam ArrowColor #2F6DA3',
-    'skinparam BoxPadding 10',
-    'skinparam PackageBackgroundColor #F5F8FC',
-    'skinparam PackageBorderColor #6CA0D6',
-    'skinparam RectangleBackgroundColor #EEF4FB',
-    'skinparam RectangleBorderColor #2F6DA3',
-    `title ${safeTitle}`
-  ];
-
-  if ((figureType || '').toLowerCase() === 'flowchart') {
-    const startLabel = sanitizeLabel(nodes[0]?.label || 'Input Stage');
-    const decisionLabel = sanitizeLabel(nodes[1]?.label || 'Decision');
-    const yesLabel = sanitizeLabel(nodes[2]?.label || 'Path A');
-    const noLabel = sanitizeLabel(nodes[3]?.label || 'Path B');
-    const endLabel = sanitizeLabel(nodes[4]?.label || 'Output Stage');
-
-    return [
-      ...styleBlock,
-      'start',
-      `:${startLabel};`,
-      `if (${decisionLabel}?) then (yes)`,
-      `  :${yesLabel};`,
-      'else (no)',
-      `  :${noLabel};`,
-      'endif',
-      `:${endLabel};`,
-      'stop',
-      '@enduml'
-    ].join('\n');
-  }
-
-  if ((figureType || '').toLowerCase() === 'sequence') {
-    const participants = nodes.slice(0, 6).map((node, idx) => `participant "${node.label}" as ${sanitizeAlias(node.idHint, idx)}`);
-    const transitions = edges.slice(0, 18).map((edge, idx) => {
-      const from = sanitizeAlias(edge.fromHint, idx);
-      const to = sanitizeAlias(edge.toHint, idx + 1);
-      const label = edge.label ? ` : ${sanitizeLabel(edge.label)}` : '';
-      const arrow = edge.type === 'dashed' ? '-->' : '->';
-      return `${from} ${arrow} ${to}${label}`;
-    });
-    return [...styleBlock, ...participants, ...transitions, '@enduml'].join('\n');
-  }
-
-  if ((figureType || '').toLowerCase() === 'state') {
-    const stateLines = nodes.map((node, idx) => `state "${node.label}" as ${sanitizeAlias(node.idHint, idx)}`);
-    const edgeLines = edges.map((edge, idx) => {
-      const from = sanitizeAlias(edge.fromHint, idx);
-      const to = sanitizeAlias(edge.toHint, idx + 1);
-      const label = edge.label ? ` : ${sanitizeLabel(edge.label)}` : '';
-      return `${from} --> ${to}${label}`;
-    });
-    const initial = nodes[0] ? `[*] --> ${sanitizeAlias(nodes[0].idHint, 0)}` : '';
-    const final = nodes.length > 0 ? `${sanitizeAlias(nodes[nodes.length - 1].idHint, nodes.length - 1)} --> [*]` : '';
-    return [...styleBlock, ...stateLines, initial, ...edgeLines, final, '@enduml'].filter(Boolean).join('\n');
-  }
-
-  const groupedIds = new Set<string>();
-  const packageLines: string[] = [];
-  groups.forEach((group, groupIdx) => {
-    const groupName = sanitizeLabel(group.name || `Group ${groupIdx + 1}`);
-    packageLines.push(`package "${groupName}" {`);
-    (group.nodeIds || []).forEach((id, idIdx) => {
-      const node = nodes.find(n => sanitizeAlias(n.idHint, 0) === sanitizeAlias(id, 0));
-      if (node) {
-        const alias = sanitizeAlias(node.idHint, idIdx);
-        groupedIds.add(alias);
-        packageLines.push(`  rectangle "${node.label}" as ${alias}`);
-      }
-    });
-    packageLines.push('}');
-  });
-
-  const looseNodeLines = nodes
-    .map((node, idx) => {
-      const alias = sanitizeAlias(node.idHint, idx);
-      if (groupedIds.has(alias)) return '';
-      return `rectangle "${node.label}" as ${alias}`;
-    })
-    .filter(Boolean);
-
-  const edgeLines = edges.map((edge, idx) => {
-    const from = sanitizeAlias(edge.fromHint, idx);
-    const to = sanitizeAlias(edge.toHint, idx + 1);
-    const label = edge.label ? ` : ${sanitizeLabel(edge.label)}` : '';
-    return `${from} --> ${to}${label}`;
-  });
-
-  const note = description ? `note bottom\n${sanitizeAscii(description).slice(0, 180)}\nend note` : '';
-  return [...styleBlock, ...packageLines, ...looseNodeLines, ...edgeLines, note, '@enduml']
-    .filter(Boolean)
-    .join('\n');
-}
-
 export async function POST(
   request: NextRequest, 
   context: { params: Promise<{ paperId: string; figureId: string }> }
@@ -517,31 +435,53 @@ export async function POST(
     // Generate based on category
     switch (data.category) {
       case 'DATA_CHART':
-        // Check if we should use LLM to generate chart config
-        if (data.useLLM && data.description && !data.data?.datasets) {
-          console.log('[PaperFigures] Using LLM to generate chart config...');
-          
-          // Build a grounded description including paper context
-          let groundedDescription = data.description;
-          if (paperContext) {
-            groundedDescription = `PAPER CONTEXT (use this to make the chart relevant to the research):\n${paperContext}\n\nFIGURE REQUEST:\n${data.description}`;
-          }
-          // Enrich with suggestion metadata so the LLM understands purpose and context
+        {
           const chartEnrichment = data.suggestionMeta || (meta.suggestionMeta as any) || {};
-          if (chartEnrichment.relevantSection) {
-            groundedDescription += `\n\nTARGET SECTION: This chart belongs in the "${chartEnrichment.relevantSection}" section of the paper.`;
-          }
-          if (chartEnrichment.whyThisFigure) {
-            groundedDescription += `\nPURPOSE: ${chartEnrichment.whyThisFigure}`;
-          }
-          if (chartEnrichment.dataNeeded) {
-            groundedDescription += `\nDATA TO VISUALIZE: ${chartEnrichment.dataNeeded}`;
-          }
-          if (data.modificationRequest) {
-            groundedDescription += `\n\nUSER MODIFICATION REQUEST (apply these changes):\n${data.modificationRequest}`;
+          const chartData = buildStructuredChartData(data.data as Record<string, any> | null | undefined, data.title);
+
+          if (!chartData?.labels?.length || !chartData.datasets?.length) {
+            result = {
+              success: false,
+              error: 'Publication-grade chart generation requires structured numeric data. Provide labels plus values/datasets; placeholder charts are disabled.',
+              errorCode: 'INVALID_DATA'
+            };
+            break;
           }
 
-          // Use LLM to generate chart configuration from description
+          if (data.useLLM === false) {
+            result = {
+              success: false,
+              error: 'Publication-grade chart generation requires AI-assisted chart configuration. Generic direct-render fallback is disabled.',
+              errorCode: 'INVALID_DATA'
+            };
+            break;
+          }
+
+          console.log('[PaperFigures] Using LLM to generate publication-grade chart config...');
+
+          let groundedDescription = sanitizeAscii(
+            data.description
+              || chartEnrichment.whyThisFigure
+              || `Generate a publication-grade ${data.figureType} chart for the supplied research data titled "${data.title}".`,
+            true
+          );
+
+          if (paperContext) {
+            groundedDescription = `PAPER CONTEXT (use this to make the chart relevant to the research):\n${sanitizeAscii(paperContext, true)}\n\nFIGURE REQUEST:\n${groundedDescription}`;
+          }
+          if (chartEnrichment.relevantSection) {
+            groundedDescription += `\n\nTARGET SECTION: This chart belongs in the "${sanitizeAscii(String(chartEnrichment.relevantSection))}" section of the paper.`;
+          }
+          if (chartEnrichment.whyThisFigure) {
+            groundedDescription += `\nPURPOSE: ${sanitizeAscii(String(chartEnrichment.whyThisFigure))}`;
+          }
+          if (chartEnrichment.dataNeeded) {
+            groundedDescription += `\nDATA TO VISUALIZE: ${sanitizeAscii(String(chartEnrichment.dataNeeded))}`;
+          }
+          if (data.modificationRequest) {
+            groundedDescription += `\n\nUSER MODIFICATION REQUEST (apply these changes):\n${sanitizeAscii(data.modificationRequest, true)}`;
+          }
+
           const llmResult = await generateChartConfig(
             {
               description: groundedDescription,
@@ -552,11 +492,12 @@ export async function POST(
               paperGenre: chartEnrichment.paperProfile?.paperGenre,
               studyType: chartEnrichment.paperProfile?.studyType,
               chartSpec: chartEnrichment.chartSpec,
-              data: data.data?.labels && data.code ? {
-                labels: data.data.labels,
-                values: data.code.split(',').map(v => parseFloat(v.trim())).filter(n => !isNaN(n)),
-                datasetLabel: data.title
-              } : undefined,
+              data: {
+                labels: chartData.labels,
+                datasets: chartData.datasets,
+                values: chartData.datasets.length === 1 ? chartData.datasets[0].data : undefined,
+                datasetLabel: chartData.datasets.length === 1 ? chartData.datasets[0].label : undefined
+              },
               style: resolvedTheme as any
             },
             requestHeaders
@@ -564,66 +505,29 @@ export async function POST(
 
           if (llmResult.success && llmResult.config) {
             llmMetadata = { tokensUsed: llmResult.tokensUsed, model: llmResult.model };
-            
-            // Use the LLM-generated config to create the chart
-            // Pass the full config options (including scales, fonts, etc.) through
-            result = await generateChart(
-              llmResult.config.type as any,
-              llmResult.config.data,
-              {
-                title: data.title,
-                theme: { preset: resolvedTheme as any },
-                format: 'png'
-              }
-            );
+            result = await generateChartFromConfig(llmResult.config as any, {
+              title: data.title,
+              theme: { preset: resolvedTheme as any },
+              format: 'png'
+            });
 
-            // Carry through the LLM-generated code for preview/debugging
             if (result.success) {
               result.generatedCode = JSON.stringify(llmResult.config, null, 2);
             }
           } else {
             result = {
               success: false,
-              error: withStageLimitGuidance(llmResult.error || 'Failed to generate chart configuration', 'PAPER_CHART_GENERATOR'),
+              error: withStageLimitGuidance(llmResult.error || 'Failed to generate publication-grade chart configuration', 'PAPER_CHART_GENERATOR'),
               errorCode: 'API_ERROR'
             };
           }
-        } else if (data.data?.labels && data.data?.datasets) {
-          // Direct data provided - use it directly
-          result = await generateChart(
-            data.figureType as any,
-            data.data,
-            {
-              title: data.title,
-              theme: { preset: resolvedTheme as any },
-              format: 'png'
-            }
-          );
-        } else {
-          // No LLM and no data - generate a clearly labeled placeholder chart
-          const sampleData = {
-            labels: ['Category A', 'Category B', 'Category C', 'Category D', 'Category E'],
-            datasets: [{
-              label: 'Sample Data (replace with actual values)',
-              data: [45, 72, 58, 83, 67]
-            }]
-          };
-          result = await generateChart(
-            data.figureType as any,
-            sampleData,
-            {
-              title: data.title,
-              theme: { preset: resolvedTheme as any },
-              format: 'png'
-            }
-          );
         }
         break;
 
       case 'DIAGRAM':
         {
-          const diagramSpec = normalizeDiagramSpec(data.suggestionMeta?.diagramSpec) || buildFallbackSpec(data.title);
           const inheritedSuggestionMeta = (meta.suggestionMeta as any) || {};
+          const diagramSpec = normalizeDiagramSpec(data.suggestionMeta?.diagramSpec || inheritedSuggestionMeta.diagramSpec);
           const suggestionRendererPreference =
             data.suggestionMeta?.rendererPreference ||
             inheritedSuggestionMeta.rendererPreference ||
@@ -645,13 +549,6 @@ export async function POST(
           });
           rendererDecisionMeta = { renderer: rendererDecision.renderer, reason: rendererDecision.reason };
 
-          const deterministicPlantUMLCode = () => buildDeterministicPlantUMLTemplate(
-            data.figureType,
-            data.title,
-            data.description || '',
-            diagramSpec
-          );
-
           const renderMermaidWithTracking = async (rawCode: string): Promise<FigureGenerationResult> => {
             const mermaidResult = await generateFromMermaidCode(rawCode, {
               theme: { preset: resolvedTheme as any },
@@ -669,13 +566,20 @@ export async function POST(
           // Local helper: render and recover for PlantUML with error-informed repair.
           const renderPlantUMLWithRecovery = async (initialCode: string): Promise<FigureGenerationResult> => {
             let currentCode = initialCode;
+            let lastRenderResult: FigureGenerationResult = {
+              success: false,
+              error: 'PlantUML render failed',
+              errorCode: 'RENDERING_FAILED'
+            };
 
             for (let attempt = 0; attempt < 2; attempt++) {
               const renderResult = await generateFromPlantUMLCode(currentCode, { format: 'svg', useProxy: false });
               if (renderResult.success) {
+                renderResult.generatedCode = currentCode;
                 finalDiagramRenderer = 'plantuml';
                 return renderResult;
               }
+              lastRenderResult = renderResult;
               plantUMLRenderFailed = true;
               plantUMLRenderError = renderResult.error || 'PlantUML render failed';
 
@@ -696,25 +600,7 @@ export async function POST(
               }
               currentCode = repair.code;
             }
-
-            // Deterministic PlantUML fallback template.
-            const deterministicCode = deterministicPlantUMLCode();
-            const deterministicResult = await generateFromPlantUMLCode(deterministicCode, { format: 'svg', useProxy: false });
-            if (deterministicResult.success) {
-              deterministicResult.generatedCode = deterministicCode;
-              finalDiagramRenderer = 'plantuml';
-              return deterministicResult;
-            }
-            plantUMLRenderFailed = true;
-            plantUMLRenderError = deterministicResult.error || 'Deterministic PlantUML fallback failed';
-
-            // Final fallback to Mermaid only after PlantUML attempts.
-            const mermaidFallback = getSampleDiagramCode(data.figureType, data.title, data.description || '');
-            const mermaidResult = await renderMermaidWithTracking(mermaidFallback);
-            if (mermaidResult.success) {
-              mermaidResult.generatedCode = mermaidFallback;
-            }
-            return mermaidResult;
+            return lastRenderResult;
           };
 
           if (data.useLLM && data.description && !data.code) {
@@ -768,180 +654,92 @@ export async function POST(
                 result = await renderMermaidWithTracking(llmResult.code);
               }
 
-              if (!result.success) {
-                result = await renderPlantUMLWithRecovery(deterministicPlantUMLCode());
-              }
-
               if (result.success) {
                 result.generatedCode = result.generatedCode || llmResult.code;
               }
             } else {
-              const stageError = withStageLimitGuidance(llmResult.error, 'PAPER_DIAGRAM_GENERATOR');
-              if (stageError !== (llmResult.error || '').trim()) {
-                result = {
-                  success: false,
-                  error: stageError,
-                  errorCode: 'API_ERROR'
-                };
-              } else if (rendererDecision.renderer === 'mermaid') {
-                const mermaidFallback = getSampleDiagramCode(data.figureType, data.title, data.description || '');
-                result = await renderMermaidWithTracking(mermaidFallback);
-                if (result.success) {
-                  result.generatedCode = mermaidFallback;
-                } else {
-                  result = await renderPlantUMLWithRecovery(deterministicPlantUMLCode());
-                }
-              } else {
-                result = await renderPlantUMLWithRecovery(deterministicPlantUMLCode());
-              }
+              result = {
+                success: false,
+                error: withStageLimitGuidance(llmResult.error || 'Failed to generate publication-grade diagram code', 'PAPER_DIAGRAM_GENERATOR'),
+                errorCode: 'API_ERROR'
+              };
             }
           } else if (data.code) {
             if (data.code.includes('@startuml') || data.figureType === 'plantuml') {
               result = await renderPlantUMLWithRecovery(data.code);
             } else if (codeLooksMermaid(data.code)) {
               result = await renderMermaidWithTracking(data.code);
-              if (!result.success) {
-                result = await renderPlantUMLWithRecovery(deterministicPlantUMLCode());
-              }
             } else if (rendererDecision.renderer === 'mermaid') {
               result = await renderMermaidWithTracking(data.code);
-              if (!result.success) {
-                result = await renderPlantUMLWithRecovery(deterministicPlantUMLCode());
-              }
             } else {
               result = await renderPlantUMLWithRecovery(data.code);
             }
           } else {
-            if (rendererDecision.renderer === 'mermaid') {
-              const mermaidFallback = getSampleDiagramCode(data.figureType, data.title, data.description || '');
-              result = await renderMermaidWithTracking(mermaidFallback);
-              if (result.success) {
-                result.generatedCode = mermaidFallback;
-              } else {
-                result = await renderPlantUMLWithRecovery(deterministicPlantUMLCode());
-              }
-            } else {
-              result = await renderPlantUMLWithRecovery(deterministicPlantUMLCode());
-            }
+            result = {
+              success: false,
+              error: 'Publication-grade diagram generation requires either an AI prompt or explicit diagram code. Generic fallback diagrams are disabled.',
+              errorCode: 'INVALID_DATA'
+            };
           }
         }
         break;
 
       case 'STATISTICAL_PLOT':
         {
-          // Strictly prefer Python/matplotlib for publication-grade statistical plots.
-          // If required data/server is missing, fail fast with actionable errors rather than silently degrading quality.
-          const pythonPlotTypes = ['boxplot', 'violin', 'heatmap', 'confusion_matrix',
-            'roc_curve', 'error_bar', 'errorbar', 'regression', 'bland_altman', 'forest_plot'];
-          const isPythonType = pythonPlotTypes.includes(data.figureType);
+          const statEnrichment = data.suggestionMeta || (meta.suggestionMeta as any) || {};
+          const {
+            isPythonChartServerHealthy,
+            generatePythonChart,
+            figureDataToPythonSpec,
+            isPublicationGradePythonPlotType,
+            PUBLICATION_GRADE_PYTHON_PLOT_TYPES
+          } = await import('@/lib/figure-generation/python-chart-service');
 
-          if (isPythonType) {
-            if (!data.data) {
-              result = {
-                success: false,
-                error: `Statistical plot "${data.figureType}" requires structured numeric data. Provide figure data (groups/xValues/yValues/matrix/datasets) to generate a publication-grade plot.`,
-                errorCode: 'INVALID_DATA'
-              };
-              break;
-            }
-
-            const { isPythonChartServerHealthy, generatePythonChart, figureDataToPythonSpec } =
-              await import('@/lib/figure-generation/python-chart-service');
-
-            const healthy = await isPythonChartServerHealthy();
-            if (!healthy) {
-              result = {
-                success: false,
-                error: 'Python chart server is unavailable. Start/restore the matplotlib service to generate publication-grade statistical plots.',
-                errorCode: 'API_ERROR'
-              };
-              break;
-            }
-
-            const spec = figureDataToPythonSpec(data.figureType, data.data, {
-              title: data.title,
-              journal: resolvedTheme === 'ieee' ? 'ieee' : resolvedTheme === 'nature' ? 'nature' : 'default',
-            });
-
-            if (!spec) {
-              result = {
-                success: false,
-                error: `Invalid data shape for "${data.figureType}". Check required fields (e.g., groups for boxplot/violin, matrix for heatmap/confusion_matrix, xValues+yValues for regression).`,
-                errorCode: 'INVALID_DATA'
-              };
-              break;
-            }
-
-            result = await generatePythonChart(spec);
+          if (!isPublicationGradePythonPlotType(data.figureType)) {
+            result = {
+              success: false,
+              error: `No publication-grade statistical renderer is configured for "${data.figureType}". Supported plot types: ${PUBLICATION_GRADE_PYTHON_PLOT_TYPES.join(', ')}.`,
+              errorCode: 'UNSUPPORTED_TYPE'
+            };
             break;
           }
 
-          // LLM-assisted Chart.js fallback (only for non-Python statistical chart families)
-          if (data.useLLM && data.description) {
-            let groundedDescription = `${data.description}\n\nThis is a STATISTICAL VISUALIZATION for an academic paper. Use appropriate statistical chart styling.`;
-            if (paperContext) {
-              groundedDescription = `PAPER CONTEXT:\n${paperContext}\n\nFIGURE REQUEST:\n${groundedDescription}`;
-            }
-            const statEnrichment = data.suggestionMeta || (meta.suggestionMeta as any) || {};
-            if (statEnrichment.relevantSection) {
-              groundedDescription += `\n\nTARGET SECTION: This plot belongs in the "${statEnrichment.relevantSection}" section.`;
-            }
-            if (statEnrichment.whyThisFigure) {
-              groundedDescription += `\nPURPOSE: ${statEnrichment.whyThisFigure}`;
-            }
-            if (statEnrichment.dataNeeded) {
-              groundedDescription += `\nDATA TO VISUALIZE: ${statEnrichment.dataNeeded}`;
-            }
-
-            const llmResult = await generateChartConfig(
-              {
-                description: groundedDescription,
-                chartType: data.figureType as any || 'bar',
-                title: data.title,
-                sectionType: statEnrichment.relevantSection,
-                figureRole: statEnrichment.figureRole as any,
-                paperGenre: statEnrichment.paperProfile?.paperGenre,
-                studyType: statEnrichment.paperProfile?.studyType,
-                chartSpec: statEnrichment.chartSpec,
-                style: resolvedTheme as any
-              },
-              requestHeaders
-            );
-
-            if (llmResult.success && llmResult.config) {
-              llmMetadata = { tokensUsed: llmResult.tokensUsed, model: llmResult.model };
-              result = await generateChart(
-                llmResult.config.type as any,
-                llmResult.config.data,
-                {
-                  title: data.title,
-                  theme: { preset: resolvedTheme as any },
-                  format: 'png'
-                }
-              );
-            } else {
-              result = {
-                success: false,
-                error: withStageLimitGuidance(llmResult.error || 'Failed to generate statistical plot', 'PAPER_CHART_GENERATOR'),
-                errorCode: 'API_ERROR'
-              };
-            }
-          } else if (data.data) {
-            result = await generateChart(
-              'bar',
-              data.data,
-              {
-                title: data.title,
-                theme: { preset: resolvedTheme as any }
-              }
-            );
-          } else {
+          if (!data.data) {
             result = {
               success: false,
-              error: 'Statistical plots require data or a description',
+              error: `Statistical plot "${data.figureType}" requires structured numeric data. Provide the exact data payload needed for this plot type; generic fallback rendering is disabled.`,
               errorCode: 'INVALID_DATA'
             };
+            break;
           }
+
+          const healthy = await isPythonChartServerHealthy();
+          if (!healthy) {
+            result = {
+              success: false,
+              error: 'Python chart server is unavailable. Start or restore the matplotlib service to generate publication-grade statistical plots.',
+              errorCode: 'API_ERROR'
+            };
+            break;
+          }
+
+          const spec = figureDataToPythonSpec(data.figureType, data.data as FigureData, {
+            title: data.title,
+            xAxisLabel: statEnrichment.chartSpec?.xAxisLabel,
+            yAxisLabel: statEnrichment.chartSpec?.yAxisLabel,
+            journal: mapThemeToPythonJournal(resolvedTheme),
+          });
+
+          if (!spec) {
+            result = {
+              success: false,
+              error: `Invalid data shape for "${data.figureType}". Required structures: groups for boxplot/violin, matrix for heatmap/confusion_matrix, curves for roc_curve, xValues+yValues for regression, method1+method2 for bland_altman, studies for forest_plot, labels+datasets(+errors) for error_bar.`,
+              errorCode: 'INVALID_DATA'
+            };
+            break;
+          }
+
+          result = await generatePythonChart(spec);
         }
         break;
 
@@ -962,7 +760,6 @@ export async function POST(
             || undefined;
           const figureGenre = sketchMeta.figureGenre
             || illustrationSpecV2?.figureGenre
-            || data.figureGenre
             || undefined;
           const renderDirectives = sketchMeta.renderDirectives
             || illustrationSpecV2?.renderDirectives
@@ -1115,187 +912,3 @@ export async function POST(
   }
 }
 
-/**
- * Generates professional-quality fallback Mermaid code.
- * Uses the title and description to create a more relevant diagram.
- */
-function getSampleDiagramCode(figureType: string, title: string, description?: string): string {
-  // Sanitize title for Mermaid (remove special chars that break syntax)
-  const safeTitle = title.replace(/[[\]{}()#&;]/g, '').slice(0, 40);
-
-  switch (figureType) {
-    case 'flowchart':
-      return `flowchart TD
-    start([Start]) --> input[Data Input]
-    input --> preprocess[Preprocessing]
-    preprocess --> analyze{Analysis}
-    analyze -->|Path A| methodA[Method A Processing]
-    analyze -->|Path B| methodB[Method B Processing]
-    methodA --> merge[Merge Results]
-    methodB --> merge
-    merge --> validate{Validation}
-    validate -->|Pass| output[Generate Output]
-    validate -->|Fail| preprocess
-    output --> done([Complete])
-
-    style start fill:#4E79A7,stroke:#3B6A96,color:#fff
-    style done fill:#59A14F,stroke:#4A8A42,color:#fff
-    style analyze fill:#F28E2B,stroke:#D97B1E,color:#fff
-    style validate fill:#F28E2B,stroke:#D97B1E,color:#fff`;
-
-    case 'architecture':
-      return `flowchart LR
-    subgraph Input["Input Layer"]
-        direction TB
-        src1[Data Source 1]
-        src2[Data Source 2]
-    end
-
-    subgraph Processing["Processing Layer"]
-        direction TB
-        ingest[Data Ingestion]
-        transform[Transformation]
-        analyze[Analysis Engine]
-    end
-
-    subgraph Output["Output Layer"]
-        direction TB
-        results[Results Store]
-        viz[Visualization]
-        report[Report Generation]
-    end
-
-    src1 --> ingest
-    src2 --> ingest
-    ingest --> transform
-    transform --> analyze
-    analyze --> results
-    results --> viz
-    results --> report
-
-    style Input fill:#E8F4FD,stroke:#4E79A7
-    style Processing fill:#FFF3E0,stroke:#F28E2B
-    style Output fill:#E8F5E9,stroke:#59A14F`;
-
-    case 'sequence':
-      return `sequenceDiagram
-    participant U as User
-    participant C as Client Application
-    participant S as Processing Service
-    participant D as Data Store
-
-    U->>C: Submit Request
-    activate C
-    C->>S: Process Data
-    activate S
-    S->>D: Query Records
-    activate D
-    D-->>S: Return Results
-    deactivate D
-    S->>S: Apply Analysis
-    S-->>C: Processed Output
-    deactivate S
-    C-->>U: Display Results
-    deactivate C`;
-
-    case 'class':
-      return `classDiagram
-    class DataProcessor {
-        +String inputPath
-        +Config settings
-        +loadData() DataSet
-        +preprocess() DataSet
-        +validate() bool
-    }
-    class AnalysisEngine {
-        +DataSet data
-        +String method
-        +analyze() Results
-        +compare() Metrics
-    }
-    class ResultsExporter {
-        +Results results
-        +export(format) File
-        +visualize() Chart
-    }
-    DataProcessor --> AnalysisEngine : feeds
-    AnalysisEngine --> ResultsExporter : produces`;
-
-    case 'er':
-      return `erDiagram
-    STUDY ||--o{ EXPERIMENT : contains
-    EXPERIMENT ||--|{ DATASET : produces
-    DATASET ||--o{ RESULT : yields
-    STUDY {
-        string id PK
-        string title
-        string methodology
-        date startDate
-    }
-    EXPERIMENT {
-        string id PK
-        string configuration
-        string parameters
-        int trialNumber
-    }
-    DATASET {
-        string id PK
-        int sampleSize
-        string format
-        float completeness
-    }
-    RESULT {
-        string id PK
-        float value
-        float confidence
-        string metric
-    }`;
-
-    case 'gantt':
-      return `gantt
-    title ${safeTitle}
-    dateFormat YYYY-MM-DD
-    section Literature Review
-        Survey Existing Work       :done, lr1, 2024-01-01, 30d
-        Identify Research Gaps     :done, lr2, after lr1, 14d
-    section Methodology Design
-        Design Experiments         :active, md1, after lr2, 21d
-        Prepare Data Collection    :md2, after md1, 14d
-    section Data Collection
-        Conduct Experiments        :dc1, after md2, 45d
-        Data Validation            :dc2, after dc1, 14d
-    section Analysis and Writing
-        Statistical Analysis       :aw1, after dc2, 30d
-        Draft Paper                :aw2, after aw1, 28d
-        Revision and Submission    :aw3, after aw2, 21d`;
-
-    case 'state':
-      return `stateDiagram-v2
-    [*] --> Idle
-    Idle --> Initializing : Start Process
-    Initializing --> DataLoading : Config Ready
-    DataLoading --> Processing : Data Loaded
-    DataLoading --> Error : Load Failed
-    Processing --> Validating : Analysis Complete
-    Validating --> Success : Valid Results
-    Validating --> Processing : Retry Analysis
-    Error --> Initializing : Reset
-    Success --> Reporting : Generate Report
-    Reporting --> [*]`;
-
-    default:
-      return `flowchart TD
-    step1[Define Objectives] --> step2[Literature Review]
-    step2 --> step3[Design Methodology]
-    step3 --> step4[Data Collection]
-    step4 --> step5[Analysis]
-    step5 --> step6{Results Valid?}
-    step6 -->|Yes| step7[Report Findings]
-    step6 -->|No| step4
-    step7 --> step8[Conclusions]
-
-    style step1 fill:#4E79A7,stroke:#3B6A96,color:#fff
-    style step8 fill:#59A14F,stroke:#4A8A42,color:#fff
-    style step6 fill:#F28E2B,stroke:#D97B1E,color:#fff`;
-  }
-}

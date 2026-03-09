@@ -194,12 +194,17 @@ export type StatisticalPlotType =
   | 'boxplot'
   | 'violin'
   | 'heatmap'
+  | 'confusion_matrix'
+  | 'roc_curve'
   | 'correlation_matrix'
   | 'regression'
+  | 'bland_altman'
+  | 'forest_plot'
   | 'distribution'
   | 'kde'          // Kernel Density Estimation
   | 'pairplot'
   | 'errorbar'
+  | 'error_bar'
   | 'custom_matplotlib'
 
 export type IllustrationType = 
@@ -267,6 +272,22 @@ export interface FigureData {
   xValues?: number[]
   yValues?: number[]
   groups?: Record<string, number[]>
+  method1?: number[]
+  method2?: number[]
+  curves?: Array<{
+    label?: string
+    fpr: number[]
+    tpr: number[]
+    auc?: number
+  }>
+  studies?: Array<{
+    label: string
+    effect: number
+    ci_low?: number
+    ci_high?: number
+    weight?: number
+    type?: 'study' | 'summary'
+  }>
   
   // Correlation/matrix data
   matrix?: number[][]
@@ -276,6 +297,7 @@ export interface FigureData {
 export interface ChartDataset {
   label: string
   data: number[]
+  errors?: number[]
   backgroundColor?: string | string[]
   borderColor?: string | string[]
   borderWidth?: number

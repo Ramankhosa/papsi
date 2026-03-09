@@ -48,6 +48,7 @@ export type { PythonPlotType, PythonChartSpec } from './python-chart-service'
 // Re-export service functions
 export {
   generateChart,
+  generateChartFromConfig,
   generateBarChart,
   generateLineChart,
   generateScatterPlot,
@@ -211,8 +212,8 @@ async function generateDiagram(
 }
 
 /**
- * Generates a statistical plot using the Python matplotlib server (preferred)
- * or falls back to QuickChart for simple types.
+ * Generates a publication-grade statistical plot using the Python matplotlib server.
+ * Generic QuickChart fallback is intentionally disabled.
  */
 async function generateStatisticalPlot(
   request: FigureGenerationRequest
@@ -221,43 +222,44 @@ async function generateStatisticalPlot(
     return { success: false, error: 'Data or code is required for statistical plots', errorCode: 'INVALID_DATA' }
   }
 
-  // Python-rendered plot types (publication grade)
-  const pythonTypes = ['boxplot', 'violin', 'heatmap', 'confusion_matrix', 'roc_curve',
-                       'regression', 'bland_altman', 'forest_plot', 'errorbar', 'error_bar', 'custom_matplotlib']
+  const {
+    isPythonChartServerHealthy,
+    generatePythonChart,
+    figureDataToPythonSpec,
+    isPublicationGradePythonPlotType,
+    PUBLICATION_GRADE_PYTHON_PLOT_TYPES
+  } = await import('./python-chart-service')
 
-  if (request.plotType && pythonTypes.includes(request.plotType)) {
-    const { isPythonChartServerHealthy, generatePythonChart, figureDataToPythonSpec } = await import('./python-chart-service')
-
-    const healthy = await isPythonChartServerHealthy()
-    if (healthy) {
-      const spec = figureDataToPythonSpec(
-        request.plotType,
-        request.data,
-        { title: request.title, xAxisLabel: undefined, yAxisLabel: undefined }
-      )
-      if (spec) {
-        return generatePythonChart(spec)
-      }
-    } else {
-      console.warn('[FigureService] Python chart server unavailable, falling back to QuickChart')
+  if (!request.plotType || !isPublicationGradePythonPlotType(request.plotType)) {
+    return {
+      success: false,
+      error: `No publication-grade statistical renderer is configured for '${request.plotType}'. Supported plot types: ${PUBLICATION_GRADE_PYTHON_PLOT_TYPES.join(', ')}.`,
+      errorCode: 'UNSUPPORTED_TYPE'
     }
   }
 
-  // Fallback to QuickChart for simple types or when Python is unavailable
-  const simpleTypes: string[] = ['histogram', 'errorbar']
-  if (request.plotType && simpleTypes.includes(request.plotType) && request.data) {
-    const chartType: DataChartType = request.plotType === 'histogram' ? 'bar' : 'line'
-    return generateChart(chartType, request.data, {
-      title: request.title,
-      theme: request.theme,
-      academicStyle: request.academicStyle
-    })
+  const healthy = await isPythonChartServerHealthy()
+  if (!healthy) {
+    return {
+      success: false,
+      error: 'Python chart server is unavailable. Start the docker/python-charts service to render publication-grade statistical plots.',
+      errorCode: 'API_ERROR'
+    }
+  }
+
+  const spec = figureDataToPythonSpec(
+    request.plotType,
+    request.data,
+    { title: request.title, xAxisLabel: undefined, yAxisLabel: undefined }
+  )
+  if (spec) {
+    return generatePythonChart(spec)
   }
 
   return {
     success: false,
-    error: `Statistical plot type '${request.plotType}' requires the Python chart server. Ensure the Docker container is running (docker/python-charts).`,
-    errorCode: 'UNSUPPORTED_TYPE'
+    error: `Invalid data shape for statistical plot type '${request.plotType}'. Provide the exact structured payload required by the Python renderer.`,
+    errorCode: 'INVALID_DATA'
   }
 }
 

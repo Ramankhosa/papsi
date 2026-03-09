@@ -58,6 +58,11 @@ export interface ChartGenerationRequest {
   data?: {
     labels?: string[]
     values?: number[]
+    datasets?: Array<{
+      label: string
+      data: number[]
+      errors?: number[]
+    }>
     datasetLabel?: string
   }
   style?: 'academic' | 'nature' | 'ieee' | 'minimal' | 'modern'
@@ -238,7 +243,7 @@ Your task: generate a valid Chart.js configuration object that produces a BEAUTI
 
 CRITICAL RULES:
 1. Return ONLY valid JSON. No markdown fences, no explanation, no comments in the JSON.
-2. NEVER invent or hallucinate data. If the user provides specific data values, use them exactly. If no specific data is provided, use clearly labeled placeholder values (e.g., "Category A", "Category B") with values that form a realistic, visually balanced pattern - and set the dataset label to "Sample Data (replace with actual values)".
+2. NEVER invent or hallucinate data. Use only the exact numeric values and labels provided in the request. Do not fabricate placeholder series, placeholder labels, or synthetic results.
 3. The chart MUST have:
    - A clear, descriptive title (using the user's title or a refined version)
    - Properly labeled axes with units where applicable (e.g., "Accuracy (%)", "Time (seconds)")
@@ -255,8 +260,7 @@ CRITICAL RULES:
 12. You will receive sectionType and figureRole context. Respect it.
 13. If sectionType=results:
    - prioritize baseline vs proposed comparisons and uncertainty-ready layouts
-   - avoid perfectly monotonic or unrealistic trends
-   - if data is missing, placeholders must be modest, plausible, and explicitly labeled
+   - avoid visually misleading scaling, clutter, or exaggerated contrast
 14. If chartSpec is provided, follow chartSpec axis labels and field mappings exactly.
 
 OUTPUT FORMAT (return ONLY this JSON):
@@ -2319,7 +2323,13 @@ export async function generateChartConfig(
         userRequest += `\n\nchartSpec (deterministic mapping - follow exactly):\n${JSON.stringify(request.chartSpec, null, 2)}`
       }
 
-      if (request.data?.labels && request.data?.values) {
+      if (request.data?.datasets?.length) {
+        userRequest += `\n\nACTUAL STRUCTURED DATA PROVIDED (use these exact values and preserve series grouping):`
+        userRequest += `\n${JSON.stringify({
+          labels: request.data.labels || [],
+          datasets: request.data.datasets
+        }, null, 2)}`
+      } else if (request.data?.labels && request.data?.values) {
         userRequest += `\n\nACTUAL DATA PROVIDED (use these exact values):`
         userRequest += `\nLabels: ${JSON.stringify(request.data.labels)}`
         userRequest += `\nValues: ${JSON.stringify(request.data.values)}`
@@ -2327,10 +2337,7 @@ export async function generateChartConfig(
           userRequest += `\nDataset label: "${request.data.datasetLabel}"`
         }
       } else {
-        userRequest += `\n\nNOTE: No actual data provided. Use realistic placeholder labels (e.g., "Method A", "Method B") with modest, plausible placeholder values. Mark the dataset label as "Sample Data (replace with actual values)".`
-        if (sectionType === 'results') {
-          userRequest += `\nResults placeholder realism: include small noise and modest baseline-vs-proposed gaps. Avoid perfect trends or dramatic jumps unless explicitly requested.`
-        }
+        throw new Error('Publication-quality chart generation requires structured numeric data.')
       }
 
       if (request.style) {

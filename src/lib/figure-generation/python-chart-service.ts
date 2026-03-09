@@ -14,6 +14,19 @@ import type { FigureGenerationResult, FigureData } from './types'
 const PYTHON_CHART_URL = process.env.PYTHON_CHART_URL || 'http://localhost:5100'
 const PYTHON_CHART_TIMEOUT = Number(process.env.PYTHON_CHART_TIMEOUT_MS) || 45_000
 
+export const PUBLICATION_GRADE_PYTHON_PLOT_TYPES = [
+  'boxplot',
+  'violin',
+  'heatmap',
+  'confusion_matrix',
+  'roc_curve',
+  'error_bar',
+  'errorbar',
+  'regression',
+  'bland_altman',
+  'forest_plot',
+] as const
+
 export type PythonPlotType =
   | 'boxplot'
   | 'violin'
@@ -60,6 +73,10 @@ export interface PythonChartSpec {
 
   // custom
   code?: string
+}
+
+export function isPublicationGradePythonPlotType(plotType: string): plotType is typeof PUBLICATION_GRADE_PYTHON_PLOT_TYPES[number] {
+  return (PUBLICATION_GRADE_PYTHON_PLOT_TYPES as readonly string[]).includes(plotType)
 }
 
 /**
@@ -218,6 +235,17 @@ export function figureDataToPythonSpec(
         figureSize: 'square',
       }
     }
+    case 'roc_curve': {
+      if (!figureData.curves?.length) return null
+      return {
+        ...base,
+        plotType: 'roc_curve',
+        data: { curves: figureData.curves },
+        xAxisLabel: opts?.xAxisLabel || 'False Positive Rate',
+        yAxisLabel: opts?.yAxisLabel || 'True Positive Rate',
+        figureSize: 'square',
+      }
+    }
     case 'error_bar':
     case 'errorbar': {
       if (!figureData.labels || !figureData.datasets) return null
@@ -232,6 +260,28 @@ export function figureDataToPythonSpec(
             errors: (ds as any).errors,
           })),
         },
+      }
+    }
+    case 'bland_altman': {
+      if (!figureData.method1 || !figureData.method2) return null
+      return {
+        ...base,
+        plotType: 'bland_altman',
+        data: {
+          method1: figureData.method1,
+          method2: figureData.method2,
+        },
+      }
+    }
+    case 'forest_plot': {
+      if (!figureData.studies?.length) return null
+      return {
+        ...base,
+        plotType: 'forest_plot',
+        data: {
+          studies: figureData.studies,
+        },
+        figureSize: 'double_column',
       }
     }
     default:

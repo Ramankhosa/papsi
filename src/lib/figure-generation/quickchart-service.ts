@@ -84,6 +84,80 @@ export function buildChartConfig(
   }
 }
 
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+}
+
+function deepMergeChartOptions(base: any, override: any): any {
+  if (!isPlainObject(base)) return override
+  if (!isPlainObject(override)) return base
+
+  const merged: Record<string, any> = { ...base }
+  for (const [key, value] of Object.entries(override)) {
+    if (isPlainObject(value) && isPlainObject(merged[key])) {
+      merged[key] = deepMergeChartOptions(merged[key], value)
+    } else {
+      merged[key] = value
+    }
+  }
+  return merged
+}
+
+function mergeChartDatasets(baseDatasets: ChartDataset[], overrideDatasets?: ChartDataset[]): ChartDataset[] {
+  if (!overrideDatasets?.length) return baseDatasets
+
+  return overrideDatasets.map((dataset, index) => ({
+    ...(baseDatasets[index] || {}),
+    ...dataset
+  }))
+}
+
+function normalizeConfigType(type: string | undefined): DataChartType {
+  const validTypes: DataChartType[] = ['bar', 'horizontalBar', 'line', 'scatter', 'pie', 'doughnut', 'radar', 'polarArea', 'bubble', 'area']
+  if (type && validTypes.includes(type as DataChartType)) {
+    return type as DataChartType
+  }
+  return 'bar'
+}
+
+export function buildAcademicChartConfig(
+  config: QuickChartConfig,
+  options?: {
+    title?: string
+    theme?: FigureTheme
+    academicStyle?: AcademicFigureStyle
+  }
+): QuickChartConfig {
+  const chartType = normalizeConfigType(config?.type)
+  const baseConfig = buildChartConfig(
+    chartType,
+    {
+      labels: config?.data?.labels || [],
+      datasets: config?.data?.datasets || []
+    },
+    options?.title,
+    options?.theme,
+    options?.academicStyle
+  )
+
+  const merged: QuickChartConfig = {
+    ...baseConfig,
+    ...config,
+    type: normalizeChartType(chartType),
+    data: {
+      labels: config?.data?.labels || baseConfig.data.labels,
+      datasets: mergeChartDatasets(baseConfig.data.datasets, config?.data?.datasets)
+    },
+    options: deepMergeChartOptions(baseConfig.options || {}, config?.options || {})
+  }
+
+  if (['pie', 'doughnut', 'radar', 'polarArea'].includes(merged.type) && merged.options?.scales) {
+    delete merged.options.scales
+  }
+
+  return merged
+}
+
 /**
  * Normalizes chart type for QuickChart API.
  */
@@ -309,11 +383,33 @@ export async function generateChart(
     backgroundColor?: string
   }
 ): Promise<FigureGenerationResult> {
+  const config = buildChartConfig(
+    chartType,
+    data,
+    options?.title,
+    options?.theme,
+    options?.academicStyle
+  )
+
+  return generateChartFromConfig(config, options)
+}
+
+export async function generateChartFromConfig(
+  config: QuickChartConfig,
+  options?: {
+    title?: string
+    theme?: FigureTheme
+    academicStyle?: AcademicFigureStyle
+    width?: number
+    height?: number
+    format?: 'png' | 'svg' | 'webp'
+    backgroundColor?: string
+  }
+): Promise<FigureGenerationResult> {
   const startTime = Date.now()
-  
+
   try {
-    // Validate data
-    if (!data.labels?.length && !data.datasets?.length) {
+    if (!config?.data?.labels?.length && !config?.data?.datasets?.length) {
       return {
         success: false,
         error: 'No data provided for chart generation',
@@ -322,16 +418,8 @@ export async function generateChart(
       }
     }
 
-    // Build chart configuration
-    const config = buildChartConfig(
-      chartType,
-      data,
-      options?.title,
-      options?.theme,
-      options?.academicStyle
-    )
-
-    // Determine dimensions
+    const finalConfig = buildAcademicChartConfig(config, options)
+    const chartType = normalizeConfigType(finalConfig.type)
     const dimensions = getDimensions(chartType, options?.academicStyle)
     const width = options?.width || dimensions.width
     const height = options?.height || dimensions.height
@@ -339,22 +427,17 @@ export async function generateChart(
 
     console.log(`[QuickChart] Generating ${chartType} chart: ${width}x${height} ${format}`)
 
-    // Use POST for large configs to avoid URL length limits (>2000 chars)
-    // QuickChart supports both GET (via URL) and POST (via body)
-    const configJson = JSON.stringify(config)
+    const configJson = JSON.stringify(finalConfig)
     const usePost = configJson.length > 1500
 
     let response: Response
-
-    // Add timeout to prevent hanging on external API
     const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 30000) // 30 second timeout
+    const timeout = setTimeout(() => controller.abort(), 30000)
 
     try {
       const dpr = ACADEMIC_DEFAULTS.devicePixelRatio
 
       if (usePost) {
-        // Use POST for large configs
         response = await fetch(`${QUICKCHART_BASE_URL}/chart`, {
           method: 'POST',
           headers: {
@@ -362,7 +445,7 @@ export async function generateChart(
             'Accept': format === 'svg' ? 'image/svg+xml' : `image/${format}`
           },
           body: JSON.stringify({
-            chart: config,
+            chart: finalConfig,
             width,
             height,
             format,
@@ -372,8 +455,7 @@ export async function generateChart(
           signal: controller.signal
         })
       } else {
-        // Use GET for small configs (faster, cacheable)
-        const chartUrl = buildChartUrl(config, {
+        const chartUrl = buildChartUrl(finalConfig, {
           width,
           height,
           format,
@@ -403,10 +485,8 @@ export async function generateChart(
       }
     }
 
-    // Get image data
     const buffer = Buffer.from(await response.arrayBuffer())
     const imageBase64 = buffer.toString('base64')
-
     const duration = Date.now() - startTime
     console.log(`[QuickChart] Chart generated in ${duration}ms, size: ${buffer.length} bytes`)
 
@@ -419,9 +499,8 @@ export async function generateChart(
       fileSize: buffer.length,
       provider: 'quickchart',
       apiCallDuration: duration,
-      generatedCode: JSON.stringify(config, null, 2)
+      generatedCode: JSON.stringify(finalConfig, null, 2)
     }
-
   } catch (error) {
     console.error('[QuickChart] Generation failed:', error)
     return {
