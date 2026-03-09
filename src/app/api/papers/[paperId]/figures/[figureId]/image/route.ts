@@ -40,7 +40,7 @@ export async function GET(
   for (const candidate of candidates) {
     try {
       const buffer = await fs.readFile(candidate);
-      return new NextResponse(buffer, {
+      return new NextResponse(buffer as BodyInit, {
         headers: {
           'Content-Type': getImageContentType(candidate),
           'Cache-Control': 'public, max-age=31536000, immutable',
