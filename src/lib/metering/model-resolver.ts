@@ -125,18 +125,25 @@ export async function resolveModel(
     console.log(`[ModelResolver] Using system default: ${result.modelCode}`)
   }
 
-  // Safety floor: archetype detection prompt includes many topic fields and often
-  // exceeds generic/default maxTokensIn values (e.g. 2000), causing preflight failure.
-  if (stageCode === 'PAPER_ARCHETYPE_DETECTION') {
-    const archetypeMinInputTokens = 12000
-    if (!result.maxTokensIn || result.maxTokensIn < archetypeMinInputTokens) {
-      console.log(
-        `[ModelResolver] Raising ${stageCode} maxTokensIn from ${result.maxTokensIn ?? 'unset'} to ${archetypeMinInputTokens}`
-      )
-      result = {
-        ...result,
-        maxTokensIn: archetypeMinInputTokens
-      }
+  // Safety floors: several stages include paper context or structured prompts that
+  // exceed generic/default maxTokensIn values (e.g. 2000), causing preflight failure.
+  const STAGE_MIN_INPUT_TOKENS: Record<string, number> = {
+    PAPER_ARCHETYPE_DETECTION: 12000,
+    PAPER_DIAGRAM_GENERATOR: 16000,
+    PAPER_DIAGRAM_FROM_TEXT: 16000,
+    PAPER_CHART_GENERATOR: 12000,
+    PAPER_FIGURE_SUGGESTION: 16000,
+    PAPER_SKETCH_GENERATION: 12000,
+  }
+
+  const minTokens = STAGE_MIN_INPUT_TOKENS[stageCode ?? '']
+  if (minTokens && (!result.maxTokensIn || result.maxTokensIn < minTokens)) {
+    console.log(
+      `[ModelResolver] Raising ${stageCode} maxTokensIn from ${result.maxTokensIn ?? 'unset'} to ${minTokens}`
+    )
+    result = {
+      ...result,
+      maxTokensIn: minTokens
     }
   }
 

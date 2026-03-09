@@ -44,7 +44,20 @@ import {
   Upload,
   Paintbrush,
   FileImage,
-  Lightbulb
+  Lightbulb,
+  Brain,
+  FlaskConical,
+  Workflow,
+  Table2,
+  Cog,
+  Layers,
+  Frame,
+  Film,
+  Microscope,
+  BoxSelect,
+  TrendingUp,
+  ScatterChart,
+  BarChart
 } from 'lucide-react';
 
 interface PaperFigurePlannerStageProps {
@@ -54,7 +67,7 @@ interface PaperFigurePlannerStageProps {
   session?: any;
 }
 
-type FigureCategory = 'DATA_CHART' | 'DIAGRAM' | 'STATISTICAL_PLOT' | 'ILLUSTRATION' | 'SKETCH' | 'CUSTOM';
+type FigureCategory = 'DATA_CHART' | 'DIAGRAM' | 'STATISTICAL_PLOT' | 'ILLUSTRATED_FIGURE' | 'ILLUSTRATION' | 'SKETCH' | 'CUSTOM';
 
 type DiagramSpec = {
   layout?: 'LR' | 'TD';
@@ -63,6 +76,10 @@ type DiagramSpec = {
   groups?: Array<{ name: string; nodeIds?: string[]; description?: string }>;
   splitSuggestion?: string;
 };
+
+type IllustrationGenre = 'METHOD_BLOCK' | 'SCENARIO_STORYBOARD' | 'CONCEPTUAL_FRAMEWORK' | 'GRAPHICAL_ABSTRACT'
+  | 'NEURAL_ARCHITECTURE' | 'EXPERIMENTAL_SETUP' | 'DATA_PIPELINE' | 'COMPARISON_MATRIX'
+  | 'PROCESS_MECHANISM' | 'SYSTEM_INTERACTION';
 
 type FigureSuggestionMeta = {
   relevantSection?: string;
@@ -74,6 +91,9 @@ type FigureSuggestionMeta = {
   sketchStyle?: 'academic' | 'scientific' | 'conceptual' | 'technical';
   sketchPrompt?: string;
   sketchMode?: 'SUGGEST' | 'GUIDED';
+  figureGenre?: IllustrationGenre;
+  illustrationSpecV2?: Record<string, unknown>;
+  renderDirectives?: Record<string, unknown>;
 };
 
 type FigurePlan = {
@@ -114,7 +134,10 @@ type FigureSuggestionItem = {
 };
 
 // Figure types with descriptions and visual examples
-const FIGURE_OPTIONS = [
+const FIGURE_OPTIONS: Array<{
+  value: string; label: string; icon: any; category: string;
+  desc: string; example: string; genre?: IllustrationGenre;
+}> = [
   // Data Charts
   { value: 'bar', label: 'Bar Chart', icon: BarChart3, category: 'DATA_CHART', 
     desc: 'Compare values across categories', example: '📊 ▐▐▐ ▐▐ ▐▐▐▐' },
@@ -126,6 +149,21 @@ const FIGURE_OPTIONS = [
     desc: 'Show correlations between variables', example: '⚬ · ⚬ · ⚬' },
   { value: 'radar', label: 'Radar Chart', icon: Network, category: 'DATA_CHART',
     desc: 'Compare multiple variables', example: '◇ ◆ ◇' },
+  // Statistical Plots (Python/matplotlib rendered)
+  { value: 'boxplot', label: 'Box Plot', icon: BoxSelect, category: 'STATISTICAL_PLOT',
+    desc: 'Distribution with quartiles & outliers', example: '┣━━━╋━━━┫' },
+  { value: 'violin', label: 'Violin Plot', icon: Activity, category: 'STATISTICAL_PLOT',
+    desc: 'Distribution shape comparison', example: ')()(  )(  )(' },
+  { value: 'heatmap', label: 'Heatmap', icon: LayoutGrid, category: 'STATISTICAL_PLOT',
+    desc: 'Matrix correlation or intensity map', example: '▓▒░▒▓' },
+  { value: 'error_bar', label: 'Error Bar Chart', icon: BarChart, category: 'STATISTICAL_PLOT',
+    desc: 'Means with confidence intervals', example: '┬ ┬ ┬ ┬' },
+  { value: 'regression', label: 'Regression Plot', icon: TrendingUp, category: 'STATISTICAL_PLOT',
+    desc: 'Best-fit line with confidence band', example: '⟋ ± band' },
+  { value: 'confusion_matrix', label: 'Confusion Matrix', icon: Table2, category: 'STATISTICAL_PLOT',
+    desc: 'Classification performance grid', example: 'TP FP / FN TN' },
+  { value: 'roc_curve', label: 'ROC Curve', icon: ScatterChart, category: 'STATISTICAL_PLOT',
+    desc: 'Receiver operating characteristic', example: '↗ AUC' },
   // Diagrams  
   { value: 'flowchart', label: 'Flowchart', icon: GitBranch, category: 'DIAGRAM',
     desc: 'Process flows & decision trees', example: '□ → ◇ → □' },
@@ -139,11 +177,32 @@ const FIGURE_OPTIONS = [
     desc: 'Entity relationships', example: '○─◇─○' },
   { value: 'gantt', label: 'Gantt Chart', icon: Clock, category: 'DIAGRAM',
     desc: 'Project timeline', example: '▬▬▬ ▬▬' },
-  // AI Sketches & Illustrations
+  // Scientific Illustrations (AI-generated via Gemini)
+  { value: 'sketch-method-block', label: 'Method Overview', icon: Layers, category: 'ILLUSTRATED_FIGURE',
+    desc: 'Multi-step methodology pipeline diagram', example: 'In → [Step] → Out', genre: 'METHOD_BLOCK' },
+  { value: 'sketch-neural-arch', label: 'Neural Architecture', icon: Brain, category: 'ILLUSTRATED_FIGURE',
+    desc: 'Deep learning model architecture diagram', example: '◻ → ◻ → ◻ layers', genre: 'NEURAL_ARCHITECTURE' },
+  { value: 'sketch-experiment', label: 'Experimental Setup', icon: FlaskConical, category: 'ILLUSTRATED_FIGURE',
+    desc: 'Lab / experiment layout illustration', example: '🔬 → 📊', genre: 'EXPERIMENTAL_SETUP' },
+  { value: 'sketch-pipeline', label: 'Data Pipeline', icon: Workflow, category: 'ILLUSTRATED_FIGURE',
+    desc: 'Data flow from source to output', example: 'DB → ETL → ML', genre: 'DATA_PIPELINE' },
+  { value: 'sketch-comparison', label: 'Comparison Matrix', icon: Table2, category: 'ILLUSTRATED_FIGURE',
+    desc: 'Side-by-side method / result comparison', example: 'A vs B vs C', genre: 'COMPARISON_MATRIX' },
+  { value: 'sketch-mechanism', label: 'Process Mechanism', icon: Cog, category: 'ILLUSTRATED_FIGURE',
+    desc: 'Biological, chemical, or physical process', example: '⚙ → ⚙ → ⚙', genre: 'PROCESS_MECHANISM' },
+  { value: 'sketch-system', label: 'System Interaction', icon: Boxes, category: 'ILLUSTRATED_FIGURE',
+    desc: 'Component / module interaction diagram', example: '⬡ ↔ ⬡ ↔ ⬡', genre: 'SYSTEM_INTERACTION' },
+  { value: 'sketch-framework', label: 'Conceptual Framework', icon: Frame, category: 'ILLUSTRATED_FIGURE',
+    desc: 'Abstract theoretical framework figure', example: '⬡ -- ⬡ -- ⬡', genre: 'CONCEPTUAL_FRAMEWORK' },
+  { value: 'sketch-storyboard', label: 'Scenario Storyboard', icon: Film, category: 'ILLUSTRATED_FIGURE',
+    desc: 'Step-by-step scenario or use-case panels', example: '[ 1 ] [ 2 ] [ 3 ]', genre: 'SCENARIO_STORYBOARD' },
+  { value: 'sketch-abstract', label: 'Graphical Abstract', icon: Microscope, category: 'ILLUSTRATED_FIGURE',
+    desc: 'Journal graphical abstract / TOC image', example: 'TOC graphic', genre: 'GRAPHICAL_ABSTRACT' },
+  // Free-form AI Sketches
   { value: 'sketch-auto', label: 'AI Sketch (Auto)', icon: Sparkles, category: 'SKETCH',
-    desc: 'AI generates based on paper context', example: '✨ 🎨 Auto' },
+    desc: 'AI generates based on paper context', example: '✨ Auto' },
   { value: 'sketch-guided', label: 'AI Sketch (Guided)', icon: Paintbrush, category: 'SKETCH',
-    desc: 'AI generates from your description', example: '🖌️ ✏️ Guided' },
+    desc: 'AI generates from your description', example: '🖌️ Guided' },
   { value: 'sketch-refine', label: 'Refine Image', icon: Upload, category: 'SKETCH',
     desc: 'AI refines your uploaded/hand-drawn sketch', example: '📤 → 🎨' },
 ];
@@ -152,6 +211,7 @@ const CATEGORY_COLORS: Record<FigureCategory, string> = {
   DATA_CHART: 'bg-sky-500',
   DIAGRAM: 'bg-violet-500',
   STATISTICAL_PLOT: 'bg-emerald-500',
+  ILLUSTRATED_FIGURE: 'bg-orange-500',
   ILLUSTRATION: 'bg-amber-500',
   SKETCH: 'bg-rose-500',
   CUSTOM: 'bg-slate-500'
@@ -161,6 +221,7 @@ const CATEGORY_ACCENTS: Record<FigureCategory, string> = {
   DATA_CHART: 'border-sky-200 bg-sky-50/70',
   DIAGRAM: 'border-violet-200 bg-violet-50/70',
   STATISTICAL_PLOT: 'border-emerald-200 bg-emerald-50/70',
+  ILLUSTRATED_FIGURE: 'border-orange-200 bg-orange-50/70',
   ILLUSTRATION: 'border-amber-200 bg-amber-50/70',
   SKETCH: 'border-rose-200 bg-rose-50/70',
   CUSTOM: 'border-slate-200 bg-slate-50/70'
@@ -700,6 +761,7 @@ export default function PaperFigurePlannerStage({
           theme: 'academic',
           preferences: normalizePrefs(),
           suggestionMeta: figure.suggestionMeta || undefined,
+          figureGenre: figure.suggestionMeta?.figureGenre || undefined,
           useLLM: true
         })
       });
@@ -874,7 +936,7 @@ export default function PaperFigurePlannerStage({
     setDescription(suggestion.description);
     setFigureType(suggestion.suggestedType || 'flowchart');
     setCategory(suggestion.category || 'DIAGRAM');
-    if ((suggestion.category === 'SKETCH') || suggestion.suggestedType?.startsWith('sketch')) {
+    if ((suggestion.category === 'SKETCH') || (suggestion.category === 'ILLUSTRATED_FIGURE') || suggestion.suggestedType?.startsWith('sketch')) {
       setSketchStyle(resolveSketchStyleFromPreferences(normalizePrefs()));
     }
     setPendingSuggestionId(suggestion.id);
@@ -887,7 +949,10 @@ export default function PaperFigurePlannerStage({
       diagramSpec: suggestion.diagramSpec,
       sketchStyle: suggestion.sketchStyle || undefined,
       sketchPrompt: suggestion.sketchPrompt || undefined,
-      sketchMode: suggestion.sketchMode || undefined
+      sketchMode: suggestion.sketchMode || undefined,
+      figureGenre: (suggestion as any).figureGenre || undefined,
+      illustrationSpecV2: (suggestion as any).illustrationSpecV2 || undefined,
+      renderDirectives: (suggestion as any).renderDirectives || undefined,
     });
     setShowSuggestions(false);
   };
@@ -907,7 +972,7 @@ export default function PaperFigurePlannerStage({
       let response: Response;
       
       // Check if this is a sketch - use sketch endpoint
-      const isSketch = figure.category === 'SKETCH' || figure.figureType?.startsWith('sketch-');
+      const isSketch = figure.category === 'SKETCH' || figure.category === 'ILLUSTRATED_FIGURE' || figure.figureType?.startsWith('sketch-');
       
       if (isSketch) {
         // Use sketch modification endpoint
@@ -1004,12 +1069,21 @@ Please regenerate the figure incorporating the user's feedback and corrections.
   };
 
   // Handle type selection
-  const selectType = (option: typeof FIGURE_OPTIONS[0]) => {
+  const selectType = (option: typeof FIGURE_OPTIONS[number]) => {
     setFigureType(option.value);
     setCategory(option.category as FigureCategory);
     setShowTypeDropdown(false);
-    setPendingSuggestionMeta(null);
-    // Clear sketch file when switching types
+
+    if (option.genre) {
+      setPendingSuggestionMeta({
+        figureGenre: option.genre,
+        sketchMode: 'GUIDED',
+        sketchStyle: sketchStyle,
+      });
+    } else {
+      setPendingSuggestionMeta(null);
+    }
+
     if (!option.value.startsWith('sketch-')) {
       setSketchUploadFile(null);
       setSketchUploadPreview(null);
@@ -1031,10 +1105,14 @@ Please regenerate the figure incorporating the user's feedback and corrections.
   const handleGenerateSketch = async () => {
     if (!authToken || !title.trim()) return;
     
-    // Validate based on sketch mode
-    const sketchMode = figureType.replace('sketch-', '').toUpperCase();
+    // Resolve sketch mode: ILLUSTRATED_FIGURE genres always use GUIDED,
+    // free-form sketches derive from the figureType suffix (auto/guided/refine).
+    const isIllustratedFigure = category === 'ILLUSTRATED_FIGURE';
+    const sketchMode = isIllustratedFigure
+      ? 'GUIDED'
+      : figureType.replace('sketch-', '').toUpperCase();
     
-    if (sketchMode === 'GUIDED' && (!description || description.length < 10)) {
+    if (sketchMode === 'GUIDED' && !isIllustratedFigure && (!description || description.length < 10)) {
       alert('Please provide at least 10 characters of instructions for guided mode');
       return;
     }
@@ -1047,17 +1125,20 @@ Please regenerate the figure incorporating the user's feedback and corrections.
     setIsGeneratingSketch(true);
     
     try {
-      // Prepare request body
+      const selectedOption = FIGURE_OPTIONS.find(o => o.value === figureType);
+      const genre = selectedOption?.genre || pendingSuggestionMeta?.figureGenre || undefined;
+
       const body: any = {
         mode: sketchMode,
         title,
         userPrompt: description,
-        style: sketchStyle
+        style: sketchStyle,
+        ...(genre && { figureGenre: genre }),
+        ...(pendingSuggestionMeta && { suggestionMeta: pendingSuggestionMeta }),
       };
       
       // Add uploaded image for REFINE mode
       if (sketchMode === 'REFINE' && sketchUploadFile && sketchUploadPreview) {
-        // Extract base64 from data URL
         const base64 = sketchUploadPreview.split(',')[1];
         body.uploadedImageBase64 = base64;
         body.uploadedImageMimeType = sketchUploadFile.type || 'image/png';
@@ -1391,50 +1472,76 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                       exit={{ opacity: 0, y: -10 }}
                       className="absolute z-20 w-full mt-2 bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden"
                     >
-                      {/* Scrollable dropdown container */}
-                      <div className="max-h-72 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-200 scrollbar-track-transparent">
-                        {/* Charts Section */}
-                        <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 sticky top-0">
+                      {/* Scrollable dropdown container — increased height to prevent cutoff */}
+                      <div className="max-h-[28rem] overflow-y-auto scrollbar-thin scrollbar-thumb-slate-300 scrollbar-track-transparent">
+                        {/* Data Charts Section */}
+                        <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 sticky top-0 z-10">
                           <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Data Charts</span>
                         </div>
                         {FIGURE_OPTIONS.filter(o => o.category === 'DATA_CHART').map((option) => (
                           <button
                             key={option.value}
                             onClick={() => selectType(option)}
-                            className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-blue-50' : ''}`}
+                            className={`w-full flex items-center gap-3 px-4 py-2.5 hover:bg-sky-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-sky-50' : ''}`}
                           >
-                            <div className={`w-9 h-9 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
+                            <div className={`w-8 h-8 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
                               <option.icon className="w-4 h-4 text-white" />
                             </div>
                             <div className="flex-1 text-left min-w-0">
                               <div className="flex items-center gap-2">
-                                <span className="font-medium text-slate-800">{option.label}</span>
+                                <span className="font-medium text-sm text-slate-800">{option.label}</span>
                                 <span className="text-slate-400 text-xs font-mono">{option.example}</span>
-                </div>
+                              </div>
                               <span className="text-xs text-slate-500">{option.desc}</span>
-          </div>
+                            </div>
                             {figureType === option.value && (
-                              <Check className="w-4 h-4 text-blue-600 shrink-0" />
+                              <Check className="w-4 h-4 text-sky-600 shrink-0" />
                             )}
                           </button>
                         ))}
-                        
+
+                        {/* Statistical Plots Section */}
+                        <div className="px-3 py-2 bg-emerald-50 border-b border-emerald-100 sticky top-0 z-10">
+                          <span className="text-xs font-semibold text-emerald-600 uppercase tracking-wider">Statistical Plots</span>
+                        </div>
+                        {FIGURE_OPTIONS.filter(o => o.category === 'STATISTICAL_PLOT').map((option) => (
+                          <button
+                            key={option.value}
+                            onClick={() => selectType(option)}
+                            className={`w-full flex items-center gap-3 px-4 py-2.5 hover:bg-emerald-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-emerald-50' : ''}`}
+                          >
+                            <div className={`w-8 h-8 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
+                              <option.icon className="w-4 h-4 text-white" />
+                            </div>
+                            <div className="flex-1 text-left min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-sm text-slate-800">{option.label}</span>
+                                <span className="text-slate-400 text-xs font-mono">{option.example}</span>
+                              </div>
+                              <span className="text-xs text-slate-500">{option.desc}</span>
+                            </div>
+                            {figureType === option.value && (
+                              <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                            )}
+                          </button>
+                        ))}
+
                         {/* Diagrams Section */}
-                        <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 sticky top-0">
-                          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Diagrams</span>
+                        <div className="px-3 py-2 bg-violet-50 border-b border-violet-100 sticky top-0 z-10">
+                          <span className="text-xs font-semibold text-violet-600 uppercase tracking-wider">Diagrams</span>
                         </div>
                         {FIGURE_OPTIONS.filter(o => o.category === 'DIAGRAM').map((option) => (
                           <button
                             key={option.value}
                             onClick={() => selectType(option)}
-                            className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-violet-50' : ''}`}
+                            className={`w-full flex items-center gap-3 px-4 py-2.5 hover:bg-violet-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-violet-50' : ''}`}
                           >
-                            <div className={`w-9 h-9 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
+                            <div className={`w-8 h-8 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
                               <option.icon className="w-4 h-4 text-white" />
                             </div>
                             <div className="flex-1 text-left min-w-0">
                               <div className="flex items-center gap-2">
-                                <span className="font-medium text-slate-800">{option.label}</span>
+                                <span className="font-medium text-sm text-slate-800">{option.label}</span>
                                 <span className="text-slate-400 text-xs font-mono">{option.example}</span>
                               </div>
                               <span className="text-xs text-slate-500">{option.desc}</span>
@@ -1444,25 +1551,53 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                             )}
                           </button>
                         ))}
-                        
-                        {/* AI Sketches Section */}
-                        <div className="px-3 py-2 bg-gradient-to-r from-rose-50 to-pink-50 border-b border-rose-100 sticky top-0">
+
+                        {/* Scientific Illustrations Section (AI-generated) */}
+                        <div className="px-3 py-2 bg-gradient-to-r from-orange-50 to-amber-50 border-b border-orange-100 sticky top-0 z-10">
+                          <span className="text-xs font-semibold text-orange-600 uppercase tracking-wider flex items-center gap-1">
+                            <Brain className="w-3 h-3" /> Scientific Illustrations
+                          </span>
+                        </div>
+                        {FIGURE_OPTIONS.filter(o => o.category === 'ILLUSTRATED_FIGURE').map((option) => (
+                          <button
+                            key={option.value}
+                            onClick={() => selectType(option)}
+                            className={`w-full flex items-center gap-3 px-4 py-2.5 hover:bg-orange-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-orange-50' : ''}`}
+                          >
+                            <div className={`w-8 h-8 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
+                              <option.icon className="w-4 h-4 text-white" />
+                            </div>
+                            <div className="flex-1 text-left min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium text-sm text-slate-800">{option.label}</span>
+                                <span className="text-slate-400 text-xs font-mono">{option.example}</span>
+                              </div>
+                              <span className="text-xs text-slate-500">{option.desc}</span>
+                            </div>
+                            {figureType === option.value && (
+                              <Check className="w-4 h-4 text-orange-600 shrink-0" />
+                            )}
+                          </button>
+                        ))}
+
+                        {/* Free-form AI Sketches Section */}
+                        <div className="px-3 py-2 bg-gradient-to-r from-rose-50 to-pink-50 border-b border-rose-100 sticky top-0 z-10">
                           <span className="text-xs font-semibold text-rose-600 uppercase tracking-wider flex items-center gap-1">
-                            <Sparkles className="w-3 h-3" /> AI Sketches & Illustrations
+                            <Sparkles className="w-3 h-3" /> Free-form AI Sketches
                           </span>
                         </div>
                         {FIGURE_OPTIONS.filter(o => o.category === 'SKETCH').map((option) => (
                           <button
                             key={option.value}
                             onClick={() => selectType(option)}
-                            className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-rose-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-rose-50' : ''}`}
+                            className={`w-full flex items-center gap-3 px-4 py-2.5 hover:bg-rose-50 transition-colors border-b border-slate-50 ${figureType === option.value ? 'bg-rose-50' : ''}`}
                           >
-                            <div className={`w-9 h-9 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
+                            <div className={`w-8 h-8 rounded-lg ${CATEGORY_COLORS[option.category as FigureCategory]} flex items-center justify-center shrink-0`}>
                               <option.icon className="w-4 h-4 text-white" />
                             </div>
                             <div className="flex-1 text-left min-w-0">
                               <div className="flex items-center gap-2">
-                                <span className="font-medium text-slate-800">{option.label}</span>
+                                <span className="font-medium text-sm text-slate-800">{option.label}</span>
                                 <span className="text-slate-400 text-xs font-mono">{option.example}</span>
                               </div>
                               <span className="text-xs text-slate-500">{option.desc}</span>
@@ -1482,8 +1617,8 @@ Please regenerate the figure incorporating the user's feedback and corrections.
               <Input
                 value={title}
                 onChange={e => setTitle(e.target.value)}
-                placeholder={figureType.startsWith('sketch-') 
-                  ? "Sketch title (e.g., System Architecture Illustration)" 
+                placeholder={(figureType.startsWith('sketch-') || category === 'ILLUSTRATED_FIGURE')
+                  ? "Illustration title (e.g., System Architecture Overview)" 
                   : "Figure title (e.g., Performance Comparison)"}
                 className="h-12 rounded-xl border-slate-200 focus:border-blue-400 focus:ring-blue-400"
               />
@@ -1499,18 +1634,26 @@ Please regenerate the figure incorporating the user's feedback and corrections.
                     ? "Describe in detail what you want AI to illustrate (minimum 10 characters)..."
                     : figureType === 'sketch-refine'
                     ? "Describe how you want AI to refine/improve your uploaded image..."
+                    : category === 'ILLUSTRATED_FIGURE'
+                    ? "Describe the scientific concept, process, or architecture you want illustrated..."
                     : "Describe what you want to show... (AI will generate the figure based on this)"
                 }
                 rows={3}
                 className="rounded-xl border-slate-200 focus:border-blue-400 focus:ring-blue-400 resize-none"
               />
 
-              {/* Sketch-Specific Options */}
-              {figureType.startsWith('sketch-') && (
-                <div className="space-y-4 p-4 bg-gradient-to-r from-rose-50 to-pink-50 rounded-xl border border-rose-100">
-                  <div className="flex items-center gap-2 text-rose-700">
+              {/* Sketch-Specific Options (also for Scientific Illustration genres) */}
+              {(figureType.startsWith('sketch-') || category === 'ILLUSTRATED_FIGURE') && (
+                <div className={`space-y-4 p-4 rounded-xl border ${
+                  category === 'ILLUSTRATED_FIGURE'
+                    ? 'bg-gradient-to-r from-orange-50 to-amber-50 border-orange-100'
+                    : 'bg-gradient-to-r from-rose-50 to-pink-50 border-rose-100'
+                }`}>
+                  <div className={`flex items-center gap-2 ${category === 'ILLUSTRATED_FIGURE' ? 'text-orange-700' : 'text-rose-700'}`}>
                     <Sparkles className="w-4 h-4" />
-                    <span className="font-medium text-sm">AI Sketch Options</span>
+                    <span className="font-medium text-sm">
+                      {category === 'ILLUSTRATED_FIGURE' ? 'AI Scientific Illustration Options' : 'AI Sketch Options'}
+                    </span>
                   </div>
                   
                   {/* Style Selector */}
@@ -1592,21 +1735,25 @@ Please regenerate the figure incorporating the user's feedback and corrections.
               )}
 
               {/* Create Button */}
-              {figureType.startsWith('sketch-') ? (
+              {(figureType.startsWith('sketch-') || category === 'ILLUSTRATED_FIGURE') ? (
                 <Button 
                   onClick={handleGenerateSketch}
                   disabled={isGeneratingSketch || !title.trim() || (figureType === 'sketch-refine' && !sketchUploadFile)}
-                  className="w-full h-12 rounded-xl bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-700 hover:to-pink-700 text-white font-medium shadow-lg shadow-rose-500/25"
+                  className={`w-full h-12 rounded-xl text-white font-medium shadow-lg ${
+                    category === 'ILLUSTRATED_FIGURE'
+                      ? 'bg-gradient-to-r from-orange-600 to-amber-600 hover:from-orange-700 hover:to-amber-700 shadow-orange-500/25'
+                      : 'bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-700 hover:to-pink-700 shadow-rose-500/25'
+                  }`}
                 >
                   {isGeneratingSketch ? (
                     <>
                       <Loader2 className="w-5 h-5 animate-spin mr-2" />
-                      Generating Sketch...
+                      {category === 'ILLUSTRATED_FIGURE' ? 'Generating Illustration...' : 'Generating Sketch...'}
                     </>
                   ) : (
                     <>
                       <Sparkles className="w-5 h-5 mr-2" />
-                      Generate AI Sketch
+                      {category === 'ILLUSTRATED_FIGURE' ? 'Generate Scientific Illustration' : 'Generate AI Sketch'}
                     </>
                   )}
                 </Button>

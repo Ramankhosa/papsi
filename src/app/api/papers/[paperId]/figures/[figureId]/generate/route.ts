@@ -904,6 +904,7 @@ export async function POST(
             || undefined;
           const figureGenre = sketchMeta.figureGenre
             || illustrationSpecV2?.figureGenre
+            || data.figureGenre
             || undefined;
           const renderDirectives = sketchMeta.renderDirectives
             || illustrationSpecV2?.renderDirectives
