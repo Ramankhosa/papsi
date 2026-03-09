@@ -39,8 +39,15 @@ const generateSchema = z.object({
     labels: z.array(z.string()).optional(),
     datasets: z.array(z.object({
       label: z.string(),
-      data: z.array(z.number())
-    })).optional()
+      data: z.array(z.number()),
+      errors: z.array(z.number()).optional()
+    })).optional(),
+    values: z.array(z.number()).optional(),
+    xValues: z.array(z.number()).optional(),
+    yValues: z.array(z.number()).optional(),
+    groups: z.record(z.string(), z.array(z.number())).optional(),
+    matrix: z.array(z.array(z.number())).optional(),
+    matrixLabels: z.array(z.string()).optional()
   }).optional().nullable(), // Allow null for diagrams that don't need data
   code: z.string().optional().nullable(),
   theme: z.string().optional().nullable(),
@@ -217,6 +224,25 @@ function buildPaperContext(session: any): string {
   }
 
   return parts.length > 0 ? parts.join('\n\n') : '';
+}
+
+function withStageLimitGuidance(errorMessage: string | undefined, stageCode: string): string {
+  const message = (errorMessage || 'LLM generation failed').trim();
+  const normalized = message.toLowerCase();
+  const isStageLimit = normalized.includes('input exceeds stage limit')
+    || normalized.includes('configured limit')
+    || normalized.includes('maxtokensin');
+
+  if (!isStageLimit) return message;
+
+  return [
+    message,
+    `Stage config issue: ${stageCode} has maxTokensIn lower than this request.`,
+    'Fix by running one of:',
+    '- npx tsx scripts/fix-figure-stage-limits.ts (quick patch for figure-related stage limits)',
+    '- npx tsx scripts/seed-publication-ideation-stages.ts (full paper-stage reseed with generous limits)',
+    'Then restart the app/PM2 process to reload configuration.'
+  ].join('\n');
 }
 
 function wasRecentFailure(timestamp: unknown, withinHours: number = 24): boolean {
@@ -558,7 +584,7 @@ export async function POST(
           } else {
             result = {
               success: false,
-              error: llmResult.error || 'Failed to generate chart configuration',
+              error: withStageLimitGuidance(llmResult.error || 'Failed to generate chart configuration', 'PAPER_CHART_GENERATOR'),
               errorCode: 'API_ERROR'
             };
           }
@@ -750,7 +776,14 @@ export async function POST(
                 result.generatedCode = result.generatedCode || llmResult.code;
               }
             } else {
-              if (rendererDecision.renderer === 'mermaid') {
+              const stageError = withStageLimitGuidance(llmResult.error, 'PAPER_DIAGRAM_GENERATOR');
+              if (stageError !== (llmResult.error || '').trim()) {
+                result = {
+                  success: false,
+                  error: stageError,
+                  errorCode: 'API_ERROR'
+                };
+              } else if (rendererDecision.renderer === 'mermaid') {
                 const mermaidFallback = getSampleDiagramCode(data.figureType, data.title, data.description || '');
                 result = await renderMermaidWithTracking(mermaidFallback);
                 if (result.success) {
@@ -796,29 +829,54 @@ export async function POST(
 
       case 'STATISTICAL_PLOT':
         {
-          // Try Python matplotlib server first for publication-grade plots
+          // Strictly prefer Python/matplotlib for publication-grade statistical plots.
+          // If required data/server is missing, fail fast with actionable errors rather than silently degrading quality.
           const pythonPlotTypes = ['boxplot', 'violin', 'heatmap', 'confusion_matrix',
             'roc_curve', 'error_bar', 'errorbar', 'regression', 'bland_altman', 'forest_plot'];
           const isPythonType = pythonPlotTypes.includes(data.figureType);
 
-          if (isPythonType && data.data) {
+          if (isPythonType) {
+            if (!data.data) {
+              result = {
+                success: false,
+                error: `Statistical plot "${data.figureType}" requires structured numeric data. Provide figure data (groups/xValues/yValues/matrix/datasets) to generate a publication-grade plot.`,
+                errorCode: 'INVALID_DATA'
+              };
+              break;
+            }
+
             const { isPythonChartServerHealthy, generatePythonChart, figureDataToPythonSpec } =
               await import('@/lib/figure-generation/python-chart-service');
 
             const healthy = await isPythonChartServerHealthy();
-            if (healthy) {
-              const spec = figureDataToPythonSpec(data.figureType, data.data, {
-                title: data.title,
-                journal: resolvedTheme === 'ieee' ? 'ieee' : resolvedTheme === 'nature' ? 'nature' : 'default',
-              });
-              if (spec) {
-                result = await generatePythonChart(spec);
-                break;
-              }
+            if (!healthy) {
+              result = {
+                success: false,
+                error: 'Python chart server is unavailable. Start/restore the matplotlib service to generate publication-grade statistical plots.',
+                errorCode: 'API_ERROR'
+              };
+              break;
             }
+
+            const spec = figureDataToPythonSpec(data.figureType, data.data, {
+              title: data.title,
+              journal: resolvedTheme === 'ieee' ? 'ieee' : resolvedTheme === 'nature' ? 'nature' : 'default',
+            });
+
+            if (!spec) {
+              result = {
+                success: false,
+                error: `Invalid data shape for "${data.figureType}". Check required fields (e.g., groups for boxplot/violin, matrix for heatmap/confusion_matrix, xValues+yValues for regression).`,
+                errorCode: 'INVALID_DATA'
+              };
+              break;
+            }
+
+            result = await generatePythonChart(spec);
+            break;
           }
 
-          // LLM-assisted Chart.js fallback
+          // LLM-assisted Chart.js fallback (only for non-Python statistical chart families)
           if (data.useLLM && data.description) {
             let groundedDescription = `${data.description}\n\nThis is a STATISTICAL VISUALIZATION for an academic paper. Use appropriate statistical chart styling.`;
             if (paperContext) {
@@ -864,7 +922,7 @@ export async function POST(
             } else {
               result = {
                 success: false,
-                error: llmResult.error || 'Failed to generate statistical plot',
+                error: withStageLimitGuidance(llmResult.error || 'Failed to generate statistical plot', 'PAPER_CHART_GENERATOR'),
                 errorCode: 'API_ERROR'
               };
             }
@@ -1241,5 +1299,3 @@ function getSampleDiagramCode(figureType: string, title: string, description?: s
     style step6 fill:#F28E2B,stroke:#D97B1E,color:#fff`;
   }
 }
-
-

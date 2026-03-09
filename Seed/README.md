@@ -58,6 +58,22 @@ Seeds the flexible LLM model configuration system:
 node Seed/seed-llm-models.js
 ```
 
+### Paper Figure Planner stage controls
+
+`Seed/seed-llm-models.js` now seeds the paper figure stages and generous limits directly:
+
+- `PAPER_FIGURE_SUGGESTION`
+- `PAPER_CHART_GENERATOR`
+- `PAPER_DIAGRAM_GENERATOR`
+- `PAPER_DIAGRAM_FROM_TEXT`
+- `PAPER_SKETCH_GENERATION`
+
+So for stage-limit issues, run this single script and restart your app process (PM2/systemd/docker):
+
+```bash
+node Seed/seed-llm-models.js
+```
+
 ### create-tenant-admin.js
 
 Creates admin users for existing tenants.

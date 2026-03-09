@@ -755,6 +755,11 @@ async function main() {
 
     // === PAPER WRITING ASSISTANT STAGES ===
     { code: 'PAPER_CREATE_SECTIONS', displayName: 'Create Sections from Selected Text', featureCode: 'PAPER_DRAFTING', sortOrder: 1, description: 'Reorganize selected plain text into headed sections with coherent body paragraphs' },
+    { code: 'PAPER_FIGURE_SUGGESTION', displayName: 'Figure Suggestions', featureCode: 'PAPER_DRAFTING', sortOrder: 2, description: 'Suggest publication-quality figures aligned to section rhetoric and available evidence' },
+    { code: 'PAPER_CHART_GENERATOR', displayName: 'Chart Generator', featureCode: 'PAPER_DRAFTING', sortOrder: 3, description: 'Generate chart configurations for paper figures' },
+    { code: 'PAPER_DIAGRAM_GENERATOR', displayName: 'Diagram Generator', featureCode: 'PAPER_DRAFTING', sortOrder: 4, description: 'Generate Mermaid/PlantUML diagrams for paper figures' },
+    { code: 'PAPER_DIAGRAM_FROM_TEXT', displayName: 'Diagram From Text', featureCode: 'PAPER_DRAFTING', sortOrder: 5, description: 'Create a diagram directly from selected paper text' },
+    { code: 'PAPER_SKETCH_GENERATION', displayName: 'Paper Sketch Generation', featureCode: 'PAPER_DRAFTING', sortOrder: 6, description: 'Generate scientific figure sketches/images' },
 
     // === IDEATION ENGINE STAGES (Mind-Map Patent Ideation) ===
     { code: 'IDEATION_NORMALIZE', displayName: 'Seed Normalization', featureCode: 'IDEATION', sortOrder: 1, description: 'Extracts structured information from the seed input (core entity, goal, constraints, unknowns, contradictions)' },
@@ -860,6 +865,11 @@ async function main() {
     'DIAGRAM_BLOCK':                      { maxTokensIn: 30000,  maxTokensOut: 8000 },
     // Paper assistant stages
     'PAPER_CREATE_SECTIONS':              { maxTokensIn: 24000,  maxTokensOut: 12000 },
+    'PAPER_FIGURE_SUGGESTION':            { maxTokensIn: 48000,  maxTokensOut: 12000 },
+    'PAPER_CHART_GENERATOR':              { maxTokensIn: 32000,  maxTokensOut: 8000 },
+    'PAPER_DIAGRAM_GENERATOR':            { maxTokensIn: 48000,  maxTokensOut: 12000 },
+    'PAPER_DIAGRAM_FROM_TEXT':            { maxTokensIn: 48000,  maxTokensOut: 12000 },
+    'PAPER_SKETCH_GENERATION':            { maxTokensIn: 32000,  maxTokensOut: 8000 },
     // IDEATION stages (Mind-Map Patent Ideation Engine) - GENEROUS for creative work
     'IDEATION_NORMALIZE':                 { maxTokensIn: 20000,  maxTokensOut: 8192 },
     'IDEATION_CLASSIFY':                  { maxTokensIn: 20000,  maxTokensOut: 8192 },
@@ -924,6 +934,11 @@ async function main() {
       'DIAGRAM_BLOCK':                      'gemini-2.5-flash-lite',
       // Paper assistant stages
       'PAPER_CREATE_SECTIONS':              'gemini-2.5-flash',
+      'PAPER_FIGURE_SUGGESTION':            'gemini-2.5-pro',
+      'PAPER_CHART_GENERATOR':              'gpt-4o',
+      'PAPER_DIAGRAM_GENERATOR':            'gpt-4o',
+      'PAPER_DIAGRAM_FROM_TEXT':            'gpt-4o',
+      'PAPER_SKETCH_GENERATION':            'gemini-3.1-flash-image',
       // IDEATION stages - Use Pro for heavy reasoning, Flash Lite for lighter tasks
       'IDEATION_NORMALIZE':                 'gemini-2.5-flash-lite',
       'IDEATION_CLASSIFY':                  'gemini-2.5-flash-lite',
@@ -983,6 +998,11 @@ async function main() {
       'DIAGRAM_BLOCK':                      'gpt-4o',
       // Paper assistant stages
       'PAPER_CREATE_SECTIONS':              'gpt-5-mini',
+      'PAPER_FIGURE_SUGGESTION':            'gpt-5.1-thinking',
+      'PAPER_CHART_GENERATOR':              'gpt-5.1',
+      'PAPER_DIAGRAM_GENERATOR':            'gpt-5.1-thinking',
+      'PAPER_DIAGRAM_FROM_TEXT':            'gpt-5.1-thinking',
+      'PAPER_SKETCH_GENERATION':            'gemini-3.1-flash-image',
       // IDEATION stages - Pro tier: GPT-5 for creative, Gemini Pro for analysis
       'IDEATION_NORMALIZE':                 'gemini-2.5-pro',
       'IDEATION_CLASSIFY':                  'gemini-2.5-pro',
@@ -1042,6 +1062,11 @@ async function main() {
       'DIAGRAM_BLOCK':                      'gpt-4o',
       // Paper assistant stages
       'PAPER_CREATE_SECTIONS':              'gpt-5',
+      'PAPER_FIGURE_SUGGESTION':            'gpt-5.2-thinking',
+      'PAPER_CHART_GENERATOR':              'gpt-5.2',
+      'PAPER_DIAGRAM_GENERATOR':            'gpt-5.2-thinking',
+      'PAPER_DIAGRAM_FROM_TEXT':            'gpt-5.2-thinking',
+      'PAPER_SKETCH_GENERATION':            'gemini-3.1-flash-image',
       // IDEATION stages - Enterprise tier: Best models for maximum quality
       'IDEATION_NORMALIZE':                 'gpt-5-mini',
       'IDEATION_CLASSIFY':                  'gpt-5-mini',

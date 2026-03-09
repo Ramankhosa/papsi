@@ -32,5 +32,6 @@ describe('Provider model aliasing', () => {
     expect(getProviderFromModelCode('glm-5')).toBe('zhipu')
     expect(getProviderFromModelCode('glm-4.5v')).toBe('zhipu')
     expect(getProviderFromModelCode('qwen2.5-72b-instruct')).toBe('qwen')
+    expect(getProviderFromModelCode('gemini-3.1-flash-image')).toBe('gemini')
   })
 })
