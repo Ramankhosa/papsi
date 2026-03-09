@@ -14,6 +14,12 @@ import {
   resolveSketchStyleFromPreferences,
   type FigureSuggestionPreferences
 } from '@/lib/figure-generation/preferences';
+import {
+  extractFigureSuggestionMeta,
+  type FigureSuggestionStatus,
+  type FigureSuggestionTransport,
+  type FigureSuggestionTransportMeta
+} from '@/lib/figure-generation/suggestion-meta';
 import { 
   BarChart3, 
   LineChart, 
@@ -81,20 +87,7 @@ type IllustrationGenre = 'METHOD_BLOCK' | 'SCENARIO_STORYBOARD' | 'CONCEPTUAL_FR
   | 'NEURAL_ARCHITECTURE' | 'EXPERIMENTAL_SETUP' | 'DATA_PIPELINE' | 'COMPARISON_MATRIX'
   | 'PROCESS_MECHANISM' | 'SYSTEM_INTERACTION';
 
-type FigureSuggestionMeta = {
-  relevantSection?: string;
-  importance?: 'required' | 'recommended' | 'optional';
-  dataNeeded?: string;
-  whyThisFigure?: string;
-  rendererPreference?: 'plantuml' | 'mermaid' | 'auto';
-  diagramSpec?: DiagramSpec;
-  sketchStyle?: 'academic' | 'scientific' | 'conceptual' | 'technical';
-  sketchPrompt?: string;
-  sketchMode?: 'SUGGEST' | 'GUIDED';
-  figureGenre?: IllustrationGenre;
-  illustrationSpecV2?: Record<string, unknown>;
-  renderDirectives?: Record<string, unknown>;
-};
+type FigureSuggestionMeta = FigureSuggestionTransportMeta;
 
 type FigurePlan = {
   id: string;
@@ -110,27 +103,12 @@ type FigurePlan = {
   suggestionMeta?: FigureSuggestionMeta | null;
 };
 
-type SuggestionStatus = 'pending' | 'used' | 'dismissed';
+type SuggestionStatus = FigureSuggestionStatus;
 
-type FigureSuggestionItem = {
+type FigureSuggestionItem = FigureSuggestionTransport & {
   id: string;
-  title: string;
-  description: string;
   category: FigureCategory;
-  suggestedType?: string;
-  rendererPreference?: 'plantuml' | 'mermaid' | 'auto';
-  relevantSection?: string;
-  importance?: 'required' | 'recommended' | 'optional';
-  dataNeeded?: string;
-  whyThisFigure?: string;
-  diagramSpec?: DiagramSpec;
-  sketchStyle?: 'academic' | 'scientific' | 'conceptual' | 'technical';
-  sketchPrompt?: string;
-  sketchMode?: 'SUGGEST' | 'GUIDED';
-  // Persistence & tracking fields
   status?: SuggestionStatus;
-  usedByFigureId?: string | null;
-  usedAt?: string | null;
 };
 
 // Figure types with descriptions and visual examples
@@ -468,25 +446,22 @@ export default function PaperFigurePlannerStage({
 
   /** Parse API response items into typed FigureSuggestionItem[] */
   const parseSuggestionsFromApi = useCallback((items: any[]): FigureSuggestionItem[] => {
-    return items.map((item: any, index: number) => ({
-      id: item.id || `${Date.now()}-${index}`,
-      title: item.title,
-      description: item.description,
-      category: (item.category || 'DIAGRAM') as FigureCategory,
-      suggestedType: item.suggestedType || 'flowchart',
-      rendererPreference: item.rendererPreference,
-      relevantSection: item.relevantSection || '',
-      importance: item.importance || 'optional',
-      dataNeeded: item.dataNeeded || '',
-      whyThisFigure: item.whyThisFigure || '',
-      diagramSpec: item.diagramSpec,
-      sketchStyle: item.sketchStyle,
-      sketchPrompt: item.sketchPrompt,
-      sketchMode: item.sketchMode,
-      status: (item.status as SuggestionStatus) || 'pending',
-      usedByFigureId: item.usedByFigureId ?? null,
-      usedAt: item.usedAt ?? null
-    }));
+    return items.map((item: any, index: number) => {
+      const suggestionMeta = extractFigureSuggestionMeta(item);
+
+      return {
+        id: item.id || `${Date.now()}-${index}`,
+        title: item.title,
+        description: item.description,
+        category: (item.category || 'DIAGRAM') as FigureCategory,
+        importance: item.importance || 'optional',
+        suggestedType: item.suggestedType || 'flowchart',
+        ...suggestionMeta,
+        status: (item.status as SuggestionStatus) || 'pending',
+        usedByFigureId: item.usedByFigureId ?? null,
+        usedAt: item.usedAt ?? null
+      };
+    });
   }, []);
 
   /** Load suggestion cache from server on mount */
@@ -940,20 +915,7 @@ export default function PaperFigurePlannerStage({
       setSketchStyle(resolveSketchStyleFromPreferences(normalizePrefs()));
     }
     setPendingSuggestionId(suggestion.id);
-    setPendingSuggestionMeta({
-      relevantSection: suggestion.relevantSection || undefined,
-      importance: suggestion.importance || undefined,
-      dataNeeded: suggestion.dataNeeded || undefined,
-      whyThisFigure: suggestion.whyThisFigure || undefined,
-      rendererPreference: suggestion.rendererPreference || undefined,
-      diagramSpec: suggestion.diagramSpec,
-      sketchStyle: suggestion.sketchStyle || undefined,
-      sketchPrompt: suggestion.sketchPrompt || undefined,
-      sketchMode: suggestion.sketchMode || undefined,
-      figureGenre: (suggestion as any).figureGenre || undefined,
-      illustrationSpecV2: (suggestion as any).illustrationSpecV2 || undefined,
-      renderDirectives: (suggestion as any).renderDirectives || undefined,
-    });
+    setPendingSuggestionMeta(extractFigureSuggestionMeta(suggestion) || null);
     setShowSuggestions(false);
   };
 
@@ -1297,15 +1259,7 @@ Please regenerate the figure incorporating the user's feedback and corrections.
             description: item.description,
             category: item.category,
             suggestedType: item.suggestedType,
-            rendererPreference: item.rendererPreference,
-            relevantSection: item.relevantSection,
-            importance: item.importance,
-            dataNeeded: item.dataNeeded,
-            whyThisFigure: item.whyThisFigure,
-            diagramSpec: item.diagramSpec,
-            sketchStyle: item.sketchStyle,
-            sketchPrompt: item.sketchPrompt,
-            sketchMode: item.sketchMode
+            ...extractFigureSuggestionMeta(item)
           })),
           preferences: normalizePrefs(),
           useLLM: true,

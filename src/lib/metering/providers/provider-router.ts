@@ -8,10 +8,11 @@ import { createLLMProvider, getProviderFromModelCode, type ProviderConfig, type 
 import { logLLMCost, ensurePricingLoaded, isPricingLoaded } from '../cost-calculator'
 
 const SHOULD_LOG_PROVIDER_INIT = process.env.LLM_PROVIDER_INIT_LOGS === 'true'
-const parsePositiveIntEnv = (value: string | undefined, fallback: number): number => {
-  const parsed = Number.parseInt(value || '', 10)
+const parseOptionalPositiveIntEnv = (value: string | undefined): number | undefined => {
+  if (!value || !value.trim()) return undefined
+  const parsed = Number.parseInt(value, 10)
   if (Number.isFinite(parsed) && parsed > 0) return parsed
-  return fallback
+  return undefined
 }
 
 export interface ProviderPriority {
@@ -126,6 +127,70 @@ interface ProviderConfigs {
   }
 }
 
+export function buildProviderConfigsFromEnv(env: NodeJS.ProcessEnv = process.env): ProviderConfigs {
+  return {
+    // Google Gemini providers
+    gemini: {
+      apiKey: env.GOOGLE_AI_API_KEY,
+      model: 'gemini-2.5-pro',
+      baseURL: 'https://generativelanguage.googleapis.com/v1beta'
+    },
+    'gemini-flash-lite': {
+      apiKey: env.GOOGLE_AI_API_KEY,
+      model: 'gemini-2.0-flash-lite',
+      baseURL: 'https://generativelanguage.googleapis.com/v1beta'
+    },
+    
+    // OpenAI provider
+    openai: {
+      apiKey: env.OPENAI_API_KEY,
+      model: 'gpt-4o',
+      baseURL: 'https://api.openai.com/v1',
+      // Leave timeout undefined unless explicitly configured so GPT-5 requests can
+      // use the provider's longer model-specific defaults instead of a hard 30s cap.
+      timeout: parseOptionalPositiveIntEnv(env.OPENAI_TIMEOUT_MS),
+      maxRetries: parseOptionalPositiveIntEnv(env.OPENAI_MAX_RETRIES)
+    },
+    
+    // Anthropic Claude provider
+    anthropic: {
+      apiKey: env.ANTHROPIC_API_KEY,
+      model: 'claude-3-5-sonnet-20241022',
+      baseURL: 'https://api.anthropic.com/v1',
+      timeout: parseOptionalPositiveIntEnv(env.ANTHROPIC_TIMEOUT_MS),
+      maxRetries: parseOptionalPositiveIntEnv(env.ANTHROPIC_MAX_RETRIES)
+    },
+    
+    // DeepSeek provider (cost-effective)
+    deepseek: {
+      apiKey: env.DEEPSEEK_API_KEY,
+      model: 'deepseek-chat',
+      baseURL: 'https://api.deepseek.com/v1'
+    },
+    
+    // Groq provider (ultra-fast)
+    groq: {
+      apiKey: env.GROQ_API_KEY,
+      model: 'llama-3.3-70b-versatile',
+      baseURL: 'https://api.groq.com/openai/v1'
+    },
+
+    // Zhipu GLM provider
+    zhipu: {
+      apiKey: env.ZHIPU_API_KEY,
+      model: 'glm-5',
+      baseURL: env.ZHIPU_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4'
+    },
+
+    // Qwen provider (DashScope-compatible)
+    qwen: {
+      apiKey: env.QWEN_API_KEY,
+      model: 'qwen2.5-72b-instruct',
+      baseURL: env.QWEN_BASE_URL || 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
+    }
+  }
+}
+
 export class LLMProviderRouter {
   private providers = new Map<string, LLMProvider>()
   private providerConfigs: Record<string, ProviderConfig> = {}
@@ -140,65 +205,7 @@ export class LLMProviderRouter {
       console.log('Initializing LLM providers...')
     }
 
-    const configs: ProviderConfigs = {
-      // Google Gemini providers
-      gemini: {
-        apiKey: process.env.GOOGLE_AI_API_KEY,
-        model: 'gemini-2.5-pro',
-        baseURL: 'https://generativelanguage.googleapis.com/v1beta'
-      },
-      'gemini-flash-lite': {
-        apiKey: process.env.GOOGLE_AI_API_KEY,
-        model: 'gemini-2.0-flash-lite',
-        baseURL: 'https://generativelanguage.googleapis.com/v1beta'
-      },
-      
-      // OpenAI provider
-      openai: {
-        apiKey: process.env.OPENAI_API_KEY,
-        model: 'gpt-4o',
-        baseURL: 'https://api.openai.com/v1',
-        timeout: parsePositiveIntEnv(process.env.OPENAI_TIMEOUT_MS, 30000),
-        maxRetries: parsePositiveIntEnv(process.env.OPENAI_MAX_RETRIES, 3)
-      },
-      
-      // Anthropic Claude provider
-      anthropic: {
-        apiKey: process.env.ANTHROPIC_API_KEY,
-        model: 'claude-3-5-sonnet-20241022',
-        baseURL: 'https://api.anthropic.com/v1',
-        timeout: parsePositiveIntEnv(process.env.ANTHROPIC_TIMEOUT_MS, 30 * 60 * 1000),
-        maxRetries: parsePositiveIntEnv(process.env.ANTHROPIC_MAX_RETRIES, 2)
-      },
-      
-      // DeepSeek provider (cost-effective)
-      deepseek: {
-        apiKey: process.env.DEEPSEEK_API_KEY,
-        model: 'deepseek-chat',
-        baseURL: 'https://api.deepseek.com/v1'
-      },
-      
-      // Groq provider (ultra-fast)
-      groq: {
-        apiKey: process.env.GROQ_API_KEY,
-        model: 'llama-3.3-70b-versatile',
-        baseURL: 'https://api.groq.com/openai/v1'
-      },
-
-      // Zhipu GLM provider
-      zhipu: {
-        apiKey: process.env.ZHIPU_API_KEY,
-        model: 'glm-5',
-        baseURL: process.env.ZHIPU_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4'
-      },
-
-      // Qwen provider (DashScope-compatible)
-      qwen: {
-        apiKey: process.env.QWEN_API_KEY,
-        model: 'qwen2.5-72b-instruct',
-        baseURL: process.env.QWEN_BASE_URL || 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1'
-      }
-    }
+    const configs = buildProviderConfigsFromEnv(process.env)
 
     // Only initialize providers that have API keys
     Object.entries(configs).forEach(([type, config]) => {

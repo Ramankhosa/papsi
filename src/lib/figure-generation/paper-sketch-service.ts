@@ -314,6 +314,17 @@ function defaultRenderDirectives(genre: EffectiveFigureGenre): IllustrationRende
   }
 }
 
+function normalizeSketchApiModelCode(modelCode: string): string {
+  // Google currently exposes Nano Banana 2 on the public image-generation docs
+  // as gemini-3.1-flash-image-preview. Keep the shorter internal code in DB config,
+  // but call the documented API model name at runtime.
+  if (modelCode === 'gemini-3.1-flash-image') {
+    return 'gemini-3.1-flash-image-preview'
+  }
+
+  return modelCode
+}
+
 function mergeRenderDirectives(
   genre: EffectiveFigureGenre,
   override?: IllustrationRenderDirectives
@@ -884,23 +895,15 @@ export async function generateSketchWithGemini(
   for (const modelCode of modelCandidates) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const isImagenModel = modelCode.toLowerCase().includes('imagen')
-        const isNanoBanana2 = modelCode.includes('3.1-flash-image')
-        
+        const apiModelCode = normalizeSketchApiModelCode(modelCode)
+        const isImagenModel = apiModelCode.toLowerCase().includes('imagen')
+
         const generationConfig: any = isImagenModel ? {} : {
           responseModalities: ["TEXT", "IMAGE"],
         }
 
-        // NB2 cost optimization: request minimum viable resolution for papers
-        // Single-column figure at 300 DPI = ~1050px. We use 1024 to stay efficient.
-        if (isNanoBanana2 && !isImagenModel) {
-          generationConfig.imageGenerationConfig = {
-            outputImageSize: '1024',
-          }
-        }
-        
         const model = genAI.getGenerativeModel({
-          model: modelCode,
+          model: apiModelCode,
           generationConfig,
         })
 
@@ -918,7 +921,11 @@ export async function generateSketchWithGemini(
           })
         }
 
-        console.log(`[PaperSketchService] Calling ${modelCode} (attempt ${attempt}/${maxRetries})...`)
+        if (apiModelCode !== modelCode) {
+          console.log(`[PaperSketchService] Calling ${modelCode} via ${apiModelCode} (attempt ${attempt}/${maxRetries})...`)
+        } else {
+          console.log(`[PaperSketchService] Calling ${modelCode} (attempt ${attempt}/${maxRetries})...`)
+        }
         
         const result = await model.generateContent(parts)
         const response = result.response
@@ -950,6 +957,17 @@ export async function generateSketchWithGemini(
       } catch (err: any) {
         lastError = err.message || 'Unknown error'
         console.warn(`[PaperSketchService] ${modelCode} attempt ${attempt} failed:`, lastError)
+
+        const normalizedError = lastError.toLowerCase()
+        const isPermanentPayloadError =
+          normalizedError.includes('invalid json payload') ||
+          normalizedError.includes('unknown name') ||
+          normalizedError.includes('cannot find field')
+
+        if (isPermanentPayloadError) {
+          console.warn(`[PaperSketchService] ${modelCode} request shape was rejected by Gemini; trying next fallback model.`)
+          break
+        }
         
         if (attempt < maxRetries) {
           await new Promise(r => setTimeout(r, 1000 * attempt))

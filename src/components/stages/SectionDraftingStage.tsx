@@ -29,6 +29,7 @@ import PersonaManager, { type PersonaSelection } from '@/components/drafting/Per
 import PaperInstructionsModal from './PaperInstructionsModal';
 import PaperSectionInstructionPopover from './PaperSectionInstructionPopover';
 import FloatingWritingPanel from '@/components/paper/FloatingWritingPanel';
+import { extractFigureSuggestionMeta } from '@/lib/figure-generation/suggestion-meta';
 import { polishDraftMarkdown } from '@/lib/markdown-draft-formatter';
 import InlineDimensionProposal from '@/components/paper/InlineDimensionProposal';
 import DimensionPlanPills from '@/components/paper/DimensionPlanPills';
@@ -2165,16 +2166,7 @@ export default function SectionDraftingStage({
       const title = meta?.title || description.slice(0, 100);
 
       // Build suggestionMeta for the figure plan so the generate route can use it
-      const suggestionMeta: Record<string, any> = {};
-      if (meta?.relevantSection) suggestionMeta.relevantSection = meta.relevantSection;
-      if (meta?.importance) suggestionMeta.importance = meta.importance;
-      if (meta?.dataNeeded) suggestionMeta.dataNeeded = meta.dataNeeded;
-      if (meta?.whyThisFigure) suggestionMeta.whyThisFigure = meta.whyThisFigure;
-      if (meta?.rendererPreference) suggestionMeta.rendererPreference = meta.rendererPreference;
-      if (meta?.diagramSpec) suggestionMeta.diagramSpec = meta.diagramSpec;
-      if (meta?.sketchStyle) suggestionMeta.sketchStyle = meta.sketchStyle;
-      if (meta?.sketchPrompt) suggestionMeta.sketchPrompt = meta.sketchPrompt;
-      if (meta?.sketchMode) suggestionMeta.sketchMode = meta.sketchMode;
+      const suggestionMeta = extractFigureSuggestionMeta(meta);
 
       // First create the figure plan with full suggestion context
       const createRes = await fetch(`/api/papers/${sessionId}/figures`, {
@@ -2190,7 +2182,7 @@ export default function SectionDraftingStage({
           category,
           figureType,
           notes: description,
-          suggestionMeta: Object.keys(suggestionMeta).length > 0 ? suggestionMeta : undefined
+          suggestionMeta
         })
       });
 
@@ -2216,7 +2208,7 @@ export default function SectionDraftingStage({
             figureType,
             useLLM: true,
             theme: 'academic',
-            suggestionMeta: Object.keys(suggestionMeta).length > 0 ? suggestionMeta : undefined
+            suggestionMeta
           })
         }
       );

@@ -94,7 +94,7 @@ const createSchema = z.object({
       steps: z.array(z.string()).optional(),
       captionDraft: z.string().optional(),
       splitSuggestion: z.string().optional(),
-      figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT']).optional(),
+      figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT', 'NEURAL_ARCHITECTURE', 'EXPERIMENTAL_SETUP', 'DATA_PIPELINE', 'COMPARISON_MATRIX', 'PROCESS_MECHANISM', 'SYSTEM_INTERACTION']).optional(),
       renderDirectives: z.object({
         aspectRatio: z.string().optional(),
         fillCanvasPercentMin: z.number().optional(),
@@ -128,7 +128,7 @@ const createSchema = z.object({
       diagramSpec: z.any().optional(),
       illustrationSpecV2: z.any().optional()
     }).optional().nullable(),
-    figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT']).optional().nullable(),
+    figureGenre: z.enum(['METHOD_BLOCK', 'SCENARIO_STORYBOARD', 'CONCEPTUAL_FRAMEWORK', 'GRAPHICAL_ABSTRACT', 'NEURAL_ARCHITECTURE', 'EXPERIMENTAL_SETUP', 'DATA_PIPELINE', 'COMPARISON_MATRIX', 'PROCESS_MECHANISM', 'SYSTEM_INTERACTION']).optional().nullable(),
     renderDirectives: z.object({
       aspectRatio: z.string().optional(),
       fillCanvasPercentMin: z.number().optional(),

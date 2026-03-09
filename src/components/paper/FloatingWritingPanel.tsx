@@ -52,6 +52,11 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  extractFigureSuggestionMeta,
+  type FigureSuggestionStatus,
+  type FigureSuggestionTransport,
+} from '@/lib/figure-generation/suggestion-meta';
 
 // ============================================================================
 // Types
@@ -169,24 +174,11 @@ interface FloatingWritingPanelProps {
 }
 
 /** Metadata passed from the floating panel's smart figure suggestion flow */
-interface SmartFigureMeta {
+interface SmartFigureMeta extends FigureSuggestionTransport {
   id?: string;
-  status?: 'pending' | 'used' | 'dismissed';
+  status?: FigureSuggestionStatus;
   sourceSection?: string;
   sourceText?: string;
-  category?: string;
-  suggestedType?: string;
-  rendererPreference?: string;
-  title?: string;
-  description?: string;
-  importance?: string;
-  relevantSection?: string;
-  dataNeeded?: string;
-  whyThisFigure?: string;
-  diagramSpec?: any;
-  sketchStyle?: string;
-  sketchPrompt?: string;
-  sketchMode?: string;
 }
 
 // ============================================================================
@@ -981,25 +973,23 @@ export default function FloatingWritingPanel({
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to get suggestions');
 
-      const items: SmartFigureMeta[] = (data.suggestions || []).map((s: any) => ({
-        id: s.id,
-        status: s.status || 'pending',
-        title: s.title,
-        description: s.description,
-        category: s.category || 'DIAGRAM',
-        suggestedType: s.suggestedType || 'flowchart',
-        rendererPreference: s.rendererPreference,
-        relevantSection: currentSection || s.relevantSection,
-        importance: s.importance,
-        dataNeeded: s.dataNeeded,
-        whyThisFigure: s.whyThisFigure,
-        diagramSpec: s.diagramSpec,
-        sourceSection: currentSection,
-        sourceText: sourceText.slice(0, 500),
-        sketchStyle: s.sketchStyle,
-        sketchPrompt: s.sketchPrompt,
-        sketchMode: s.sketchMode
-      }));
+      const items: SmartFigureMeta[] = (data.suggestions || []).map((s: any) => {
+        const suggestionMeta = extractFigureSuggestionMeta(s);
+
+        return {
+          id: s.id,
+          status: (s.status as FigureSuggestionStatus) || 'pending',
+          title: s.title,
+          description: s.description,
+          category: s.category || 'DIAGRAM',
+          importance: s.importance || 'optional',
+          suggestedType: s.suggestedType || 'flowchart',
+          ...suggestionMeta,
+          relevantSection: currentSection || suggestionMeta?.relevantSection,
+          sourceSection: currentSection,
+          sourceText: sourceText.slice(0, 500)
+        };
+      });
       setSmartSuggestions(items);
     } catch (err) {
       console.error('[SmartFigureSuggest] Error:', err);

@@ -26,6 +26,17 @@ describe('Provider model aliasing', () => {
     expect(p.getCostPerToken('gemini-3-pro-preview-thinking')).toEqual(p.getCostPerToken('gemini-3-pro-preview'))
   })
 
+  it('GeminiProvider maps gemini-3.1-flash-image to the preview API model for limits/costs', () => {
+    const p = new GeminiProvider({
+      apiKey: 'x',
+      baseURL: 'https://generativelanguage.googleapis.com/v1beta',
+      model: 'gemini-3.1-flash-image'
+    })
+
+    expect(p.getTokenLimits('gemini-3.1-flash-image')).toEqual(p.getTokenLimits('gemini-3.1-flash-image-preview'))
+    expect(p.getCostPerToken('gemini-3.1-flash-image')).toEqual(p.getCostPerToken('gemini-3.1-flash-image-preview'))
+  })
+
   it('routes new model codes to the expected providers', () => {
     expect(getProviderFromModelCode('claude-opus-4.5')).toBe('anthropic')
     expect(getProviderFromModelCode('claude-opus-4.6')).toBe('anthropic')

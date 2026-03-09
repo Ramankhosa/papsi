@@ -171,6 +171,14 @@ async function resolveSketchModelCandidates(tenantId?: string | null): Promise<s
   return Array.from(new Set(candidates.filter(Boolean)))
 }
 
+function normalizeSketchApiModelCode(modelCode: string): string {
+  if (modelCode === 'gemini-3.1-flash-image') {
+    return 'gemini-3.1-flash-image-preview'
+  }
+
+  return modelCode
+}
+
 // === CONTEXT BUNDLE BUILDER ===
 
 /**
@@ -815,9 +823,10 @@ export async function generateSketchWithGemini(
   for (const modelCode of modelCandidates) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
+        const apiModelCode = normalizeSketchApiModelCode(modelCode)
         // Determine generation config based on model type
         // Imagen models use different config than Gemini models
-        const isImagenModel = modelCode.toLowerCase().includes('imagen')
+        const isImagenModel = apiModelCode.toLowerCase().includes('imagen')
         
         // For Gemini Nano Banana Pro image generation
         // Reference: https://ai.google.dev/gemini-api/docs/image-generation
@@ -827,7 +836,7 @@ export async function generateSketchWithGemini(
         }
         
         const model = genAI.getGenerativeModel({
-          model: modelCode,
+          model: apiModelCode,
           generationConfig,
         })
 
@@ -848,7 +857,11 @@ export async function generateSketchWithGemini(
           })
         }
 
-        console.log(`[SketchService] Calling ${modelCode} (attempt ${attempt}/${maxRetries})${inputImage ? ' with source image' : ''}...`)
+        if (apiModelCode !== modelCode) {
+          console.log(`[SketchService] Calling ${modelCode} via ${apiModelCode} (attempt ${attempt}/${maxRetries})${inputImage ? ' with source image' : ''}...`)
+        } else {
+          console.log(`[SketchService] Calling ${modelCode} (attempt ${attempt}/${maxRetries})${inputImage ? ' with source image' : ''}...`)
+        }
         
         const result = await model.generateContent(parts)
         const response = result.response

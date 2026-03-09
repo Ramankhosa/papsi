@@ -27,7 +27,8 @@ export class GeminiProvider implements LLMProvider {
     'gemini-3-pro-preview',
     'gemini-3-pro-preview-thinking',
     'gemini-3-pro-image-preview',
-    'gemini-3.1-flash-image'
+    'gemini-3.1-flash-image',
+    'gemini-3.1-flash-image-preview'
   ]
 
   // Map legacy model codes (as saved in plan config) to current Google model IDs
@@ -48,7 +49,8 @@ export class GeminiProvider implements LLMProvider {
     'gemini-3-pro-preview': 'gemini-3-pro-preview',
     'gemini-3-pro-preview-thinking': 'gemini-3-pro-preview',
     'gemini-3-pro-image-preview': 'gemini-3-pro-image-preview',
-    'gemini-3.1-flash-image': 'gemini-3.1-flash-image'
+    'gemini-3.1-flash-image': 'gemini-3.1-flash-image-preview',
+    'gemini-3.1-flash-image-preview': 'gemini-3.1-flash-image-preview'
   }
 
   private config: ProviderConfig
@@ -321,7 +323,8 @@ export class GeminiProvider implements LLMProvider {
       'gemini-3.0-nano-banana': { input: 128000, output: 8192 },
       'gemini-3-pro-preview': { input: 2097152, output: 65536 },
       'gemini-3-pro-image-preview': { input: 128000, output: 8192 },
-      'gemini-3.1-flash-image': { input: 128000, output: 8192 }
+      'gemini-3.1-flash-image': { input: 128000, output: 8192 },
+      'gemini-3.1-flash-image-preview': { input: 128000, output: 8192 }
     }
     
     return limits[normalized] || { input: 2097152, output: 65536 }  // Default to 65K output for newer models
@@ -352,7 +355,8 @@ export class GeminiProvider implements LLMProvider {
       'gemini-3.0-nano-banana': { input: 0.000001, output: 0.000004 },      // $1.00/$4.00 per M
       'gemini-3-pro-preview': { input: 0.00000125, output: 0.000005 },      // Placeholder - update if pricing differs
       'gemini-3-pro-image-preview': { input: 0.000001, output: 0.000004 },  // $1.00/$4.00 per M
-      'gemini-3.1-flash-image': { input: 0.000001, output: 0.000004 }       // Placeholder - verify with official pricing
+      'gemini-3.1-flash-image': { input: 0.000001, output: 0.000004 },      // Placeholder - verify with official pricing
+      'gemini-3.1-flash-image-preview': { input: 0.000001, output: 0.000004 }
     }
     
     return costs[normalized] || { input: 0.00000125, output: 0.000005 }
