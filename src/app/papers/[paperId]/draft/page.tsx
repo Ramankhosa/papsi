@@ -134,8 +134,12 @@ export default function PaperDraftingPage() {
   }, [authLoading, loadSession]);
 
   const StageComponent = STAGE_COMPONENTS[currentStage];
-  const handleSessionUpdated = (updated: any) => setSession(updated);
-  const handleTopicSaved = (topic: any) => setSession((prev: any) => ({ ...prev, researchTopic: topic }));
+  const handleSessionUpdated = useCallback((updated: any) => {
+    setSession(updated);
+  }, []);
+  const handleTopicSaved = useCallback((topic: any) => {
+    setSession((prev: any) => ({ ...prev, researchTopic: topic }));
+  }, []);
   const citationsCount = Array.isArray(session?.citations) ? session.citations.length : 0;
   const deepCandidatesCount = useMemo(() => {
     const citations = Array.isArray(session?.citations) ? session.citations : [];
@@ -229,7 +233,7 @@ export default function PaperDraftingPage() {
   const latestReview = useMemo(() => getLatestPaperReview(session), [session]);
   const hasReviewReport = !!latestReview;
 
-  const getStageLockReason = (stageKey: StageKey) => {
+  const getStageLockReason = useCallback((stageKey: StageKey) => {
     switch (stageKey) {
       case 'OUTLINE_PLANNING':
         return null; // Always accessible - this is the first stage
@@ -281,7 +285,19 @@ export default function PaperDraftingPage() {
       default:
         return null;
     }
-  };
+  }, [
+    citationsCount,
+    deepCandidatesCount,
+    hasDraft,
+    hasDraftContent,
+    hasFrozenBlueprint,
+    hasPaperType,
+    hasRequiredSections,
+    hasReviewReport,
+    hasSectionConfig,
+    hasTopic,
+    requiredSectionKeys.length,
+  ]);
 
   const isStageEnabled = (stageKey: StageKey) => {
     switch (stageKey) {

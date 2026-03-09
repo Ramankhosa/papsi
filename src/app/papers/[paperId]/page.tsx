@@ -344,7 +344,7 @@ export default function PaperSessionPage() {
     }
   }
 
-  const handleNavigateToStage = async (stageKey: string) => {
+  const handleNavigateToStage = useCallback(async (stageKey: string) => {
     const nextStage = stageKey as StageKey
     const lockReason = getStageLockReason(nextStage)
     if (lockReason) {
@@ -357,12 +357,16 @@ export default function PaperSessionPage() {
     if (paperId) {
       localStorage.setItem(`paper_stage_${paperId}`, nextStage)
     }
-  }
+  }, [getStageLockReason, paperId])
 
-  const handleSessionUpdated = (updatedSession: any) => {
+  const handleSessionUpdated = useCallback((updatedSession: any) => {
     setSession(updatedSession)
     setAutoSaveStatus('saved')
-  }
+  }, [])
+
+  const handleTopicSaved = useCallback((topic: any) => {
+    setSession(prev => prev ? { ...prev, researchTopic: topic } : null)
+  }, [])
 
   const handleTitleEdit = async (newTitle: string) => {
     if (!authToken || !session) return
@@ -559,9 +563,7 @@ export default function PaperSessionPage() {
                   sessionId={paperId}
                   authToken={authToken}
                   onSessionUpdated={handleSessionUpdated}
-                  onTopicSaved={(topic) => {
-                    setSession(prev => prev ? { ...prev, researchTopic: topic } : null)
-                  }}
+                  onTopicSaved={handleTopicSaved}
                   onNavigateToStage={handleNavigateToStage}
                   selectedSection={selectedSection}
                   onSectionSelect={setSelectedSection}

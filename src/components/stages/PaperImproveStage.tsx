@@ -99,11 +99,6 @@ export default function PaperImproveStage({
   const detailedReview = useMemo(() => getLatestPaperReviewByMode(session, 'section_by_section'), [session]) as PaperReviewRecord | null
   const latestReview = selectedMode === 'section_by_section' ? detailedReview : quickReview
 
-  useEffect(() => {
-    if (selectedMode === 'section_by_section' && !detailedReview && quickReview) {
-      setSelectedMode('quick')
-    }
-  }, [selectedMode, detailedReview, quickReview])
   const rewriteIssues = useMemo(
     () => latestReview?.issues.filter(issue => issue.fixType === 'rewrite_fixable' && issue.status === 'pending') || [],
     [latestReview]

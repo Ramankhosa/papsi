@@ -108,12 +108,6 @@ export default function PaperReviewStage({
   const detailedReview = useMemo(() => getLatestPaperReviewByMode(session, 'section_by_section'), [session]) as PaperReviewRecord | null
   const activeReview = selectedMode === 'section_by_section' ? detailedReview : quickReview
 
-  useEffect(() => {
-    if (selectedMode === 'section_by_section' && !detailedReview && quickReview) {
-      setSelectedMode('quick')
-    }
-  }, [selectedMode, detailedReview, quickReview])
-
   const runReview = useCallback(async () => {
     if (!sessionId || !authToken) return
 
