@@ -21,6 +21,7 @@ import {
   resolveSketchStyleFromPreferences
 } from '@/lib/figure-generation/preferences';
 import { generatePaperSketch } from '@/lib/figure-generation/paper-sketch-service';
+import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image';
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
@@ -788,7 +789,7 @@ export async function POST(
             // Return the result to be consistent with chart/diagram responses.
             return NextResponse.json({
               success: true,
-              imagePath: sketchResult.imagePath,
+              imagePath: resolvePaperFigureImageUrl(sessionId, figureId, sketchResult.imagePath),
               format: 'png',
               fileSize: 0 // Sketch service doesn't return file size; client doesn't use it
             });
@@ -890,7 +891,7 @@ export async function POST(
 
     return NextResponse.json({
       success: true,
-      imagePath,
+      imagePath: resolvePaperFigureImageUrl(sessionId, figureId, imagePath),
       generatedCode: result.generatedCode,
       format,
       fileSize: buffer.length

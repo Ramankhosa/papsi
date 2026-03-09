@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { authenticateUser } from '@/lib/auth-middleware';
+import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -163,7 +164,8 @@ function toResponse(plan: any) {
   const meta = typeof plan.nodes === 'object' && plan.nodes !== null ? plan.nodes : {};
   
   // Image path is stored in nodes JSON (not a separate field)
-  const imagePath = meta.imagePath || null;
+  const rawImagePath = meta.imagePath || null;
+  const imagePath = resolvePaperFigureImageUrl(plan.sessionId, plan.id, rawImagePath);
   
   // Determine status based on whether image exists or explicit status
   let status: 'PLANNED' | 'GENERATING' | 'GENERATED' | 'FAILED' = 'PLANNED';

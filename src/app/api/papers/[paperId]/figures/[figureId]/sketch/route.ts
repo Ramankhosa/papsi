@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { z } from 'zod'
 import { generatePaperSketch, modifyPaperSketch, PaperSketchMode } from '@/lib/figure-generation/paper-sketch-service'
+import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image'
 
 // Schema for sketch generation request
 const sketchGenerateSchema = z.object({
@@ -120,7 +121,7 @@ export async function POST(
     return NextResponse.json({
       success: true,
       figureId: result.figureId,
-      imagePath: result.imagePath
+      imagePath: resolvePaperFigureImageUrl(paperId, result.figureId || figureId, result.imagePath)
     })
 
   } catch (error: any) {
@@ -177,7 +178,7 @@ export async function PATCH(
     return NextResponse.json({
       success: true,
       figureId: result.figureId,
-      imagePath: result.imagePath
+      imagePath: resolvePaperFigureImageUrl(params.paperId, result.figureId || figureId, result.imagePath)
     })
 
   } catch (error: any) {
