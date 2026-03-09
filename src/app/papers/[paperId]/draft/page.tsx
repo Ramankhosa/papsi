@@ -314,7 +314,7 @@ export default function PaperDraftingPage() {
     }
   };
 
-  const handleStageChange = (stageKey: StageKey) => {
+  const handleStageChange = useCallback((stageKey: StageKey) => {
     if (stageKey === currentStage) return;
     const lockReason = getStageLockReason(stageKey);
     if (lockReason) {
@@ -328,7 +328,7 @@ export default function PaperDraftingPage() {
     if (paperId) {
       localStorage.setItem(`paper_stage_${paperId}`, stageKey);
     }
-  };
+  }, [currentStage, getStageLockReason, paperId]);
 
   const handleForceProceed = () => {
     if (!pendingStage) return;
