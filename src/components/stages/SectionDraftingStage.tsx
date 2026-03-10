@@ -601,7 +601,7 @@ const AUTO_SAVE_DELAY = 3000;
 // ============================================================================
 
 export default function SectionDraftingStage({ 
-  sessionId, authToken, onSessionUpdated, onNavigateToStage 
+  sessionId, authToken, onSessionUpdated, onNavigateToStage, selectedSection 
 }: SectionDraftingStageProps) {
   // Session State
   const [session, setSession] = useState<any>(null);
@@ -677,6 +677,24 @@ export default function SectionDraftingStage({
     () => ['IEEE', 'VANCOUVER'].includes((bibliographyStyle || '').toUpperCase()),
     [bibliographyStyle]
   );
+
+  useEffect(() => {
+    const normalizedSection = normalizeSectionKey(selectedSection || '');
+    if (!normalizedSection) return;
+
+    setFocusedSection(normalizedSection);
+
+    const frameId = window.requestAnimationFrame(() => {
+      const anchor = document.querySelector<HTMLElement>(`[data-section-anchor="${normalizedSection}"]`);
+      if (!anchor) return;
+
+      anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const editor = editorRefs.current[normalizedSection];
+      editor?.focus?.();
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [selectedSection, sectionConfigs]);
   
 
   // Floating Panel State
@@ -3350,7 +3368,11 @@ export default function SectionDraftingStage({
                     const recommendedFigureCount = recommendedFigureIds.length;
 
                     return (
-                      <div key={keyName} className="section-wrapper group/section relative">
+                      <div
+                        key={keyName}
+                        data-section-anchor={normalizedKey}
+                        className="section-wrapper group/section relative"
+                      >
                         {section.keys.length > 1 && (
                           <h4
                             className="text-slate-700"

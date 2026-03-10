@@ -217,7 +217,12 @@ function normalizeAppliedFixes(value: unknown): PaperReviewFixHistoryEntry[] {
       const sectionKey = String(entry?.sectionKey || '').trim()
       if (!issueId || !sectionKey) return null
 
-      const status = String(entry?.status || '').trim().toLowerCase() === 'ignored' ? 'ignored' : 'fixed'
+      const rawStatus = String(entry?.status || '').trim().toLowerCase()
+      const status = rawStatus === 'ignored'
+        ? 'ignored'
+        : rawStatus === 'reverted'
+          ? 'reverted'
+          : 'fixed'
 
       return {
         issueId,
@@ -227,6 +232,7 @@ function normalizeAppliedFixes(value: unknown): PaperReviewFixHistoryEntry[] {
         afterText: typeof entry?.afterText === 'string' ? entry.afterText : undefined,
         diffSummary: typeof entry?.diffSummary === 'string' ? entry.diffSummary : undefined,
         appliedAt: String(entry?.appliedAt || entry?.fixedAt || new Date().toISOString()),
+        revertedAt: typeof entry?.revertedAt === 'string' ? entry.revertedAt : undefined,
       } satisfies PaperReviewFixHistoryEntry
     })
     .filter(Boolean) as PaperReviewFixHistoryEntry[]
@@ -297,4 +303,203 @@ export function countPendingRewriteIssues(review: PaperReviewRecord | null): num
 export function hasOutstandingReview(review: PaperReviewRecord | null): boolean {
   if (!review) return false
   return review.issues.some(issue => issue.status === 'pending')
+}
+
+function serializePaperReviewRecord(review: PaperReviewRecord) {
+  return {
+    id: review.reviewId,
+    reviewId: review.reviewId,
+    reviewedAt: review.reviewedAt,
+    draftId: review.draftId || null,
+    jurisdiction: 'PAPER',
+    issues: review.issues,
+    summary: review.summary,
+    appliedFixes: review.appliedFixes,
+  }
+}
+
+function buildUpdatedReview(
+  review: PaperReviewRecord,
+  issues: PaperReviewIssue[],
+  appliedFixes: PaperReviewFixHistoryEntry[]
+): PaperReviewRecord {
+  const summary = normalizePaperReviewSummary(
+    {
+      ...review.summary,
+      generatedAt: review.summary.generatedAt || new Date().toISOString(),
+    },
+    issues
+  )
+
+  return {
+    ...review,
+    issues,
+    summary,
+    appliedFixes,
+  }
+}
+
+export function upsertPaperReviewIntoSession(session: any, review: PaperReviewRecord) {
+  if (!session || !Array.isArray(session.aiReviews)) return session
+
+  const serialized = serializePaperReviewRecord(review)
+  let replaced = false
+  const aiReviews = session.aiReviews.map((entry: any) => {
+    const entryId = String(entry?.id || entry?.reviewId || '').trim()
+    if (entryId !== review.reviewId) return entry
+    replaced = true
+    return {
+      ...entry,
+      ...serialized,
+    }
+  })
+
+  return {
+    ...session,
+    aiReviews: replaced ? aiReviews : [serialized, ...aiReviews],
+  }
+}
+
+export function updatePaperDraftSectionInSession(session: any, sectionKey: string, content: string) {
+  if (!session || !Array.isArray(session.annexureDrafts)) return session
+
+  let changed = false
+  const annexureDrafts = session.annexureDrafts.map((draft: any) => {
+    if (String(draft?.jurisdiction || '').toUpperCase() !== 'PAPER') return draft
+
+    const rawSections = draft?.extraSections
+    let sections: Record<string, string> = {}
+    if (typeof rawSections === 'string') {
+      try {
+        sections = JSON.parse(rawSections) as Record<string, string>
+      } catch {
+        sections = {}
+      }
+    } else if (rawSections && typeof rawSections === 'object') {
+      sections = rawSections as Record<string, string>
+    }
+
+    if (sections[sectionKey] === content) return draft
+
+    changed = true
+    const nextSections = {
+      ...sections,
+      [sectionKey]: content,
+    }
+
+    return {
+      ...draft,
+      extraSections: typeof rawSections === 'string'
+        ? JSON.stringify(nextSections)
+        : nextSections,
+    }
+  })
+
+  if (!changed) return session
+
+  return {
+    ...session,
+    annexureDrafts,
+  }
+}
+
+export function resolvePaperReviewIssueOptimistically(
+  review: PaperReviewRecord,
+  issueId: string,
+  resolution: Extract<PaperReviewFixHistoryEntry['status'], 'fixed' | 'ignored'>,
+  appliedAt: string = new Date().toISOString()
+): PaperReviewRecord {
+  const issue = review.issues.find(entry => entry.id === issueId)
+  if (!issue) return review
+
+  const issues = review.issues.map(entry =>
+    entry.id === issueId
+      ? {
+          ...entry,
+          status: resolution,
+        }
+      : entry
+  )
+  const appliedFixes = [
+    ...review.appliedFixes,
+    {
+      issueId,
+      sectionKey: issue.sectionKey,
+      status: resolution,
+      appliedAt,
+      diffSummary: resolution === 'ignored'
+        ? 'Dismissed without changing manuscript text'
+        : 'Marked resolved without an AI rewrite',
+    },
+  ]
+
+  return buildUpdatedReview(review, issues, appliedFixes)
+}
+
+export function applyPaperReviewFixOptimistically(
+  review: PaperReviewRecord,
+  issueId: string,
+  beforeText: string,
+  afterText: string,
+  appliedAt: string = new Date().toISOString()
+): PaperReviewRecord {
+  const issue = review.issues.find(entry => entry.id === issueId)
+  if (!issue) return review
+
+  const issues = review.issues.map(entry =>
+    entry.id === issueId
+      ? {
+          ...entry,
+          status: 'fixed' as const,
+        }
+      : entry
+  )
+  const appliedFixes = [
+    ...review.appliedFixes,
+    {
+      issueId,
+      sectionKey: issue.sectionKey,
+      status: 'fixed' as const,
+      beforeText,
+      afterText,
+      diffSummary: 'Applied AI rewrite preview to manuscript section',
+      appliedAt,
+    },
+  ]
+
+  return buildUpdatedReview(review, issues, appliedFixes)
+}
+
+export function revertPaperReviewFixOptimistically(
+  review: PaperReviewRecord,
+  issueId: string,
+  revertedAt: string = new Date().toISOString()
+): PaperReviewRecord {
+  const issues = review.issues.map(entry =>
+    entry.id === issueId
+      ? {
+          ...entry,
+          status: 'pending' as const,
+        }
+      : entry
+  )
+
+  let reverted = false
+  const appliedFixes = review.appliedFixes.map((entry, index) => {
+    if (reverted || entry.issueId !== issueId || entry.status !== 'fixed') return entry
+
+    const laterMatchingFixedEntry = review.appliedFixes.slice(index + 1).some(candidate =>
+      candidate.issueId === issueId && candidate.status === 'fixed'
+    )
+    if (laterMatchingFixedEntry) return entry
+
+    reverted = true
+    return {
+      ...entry,
+      status: 'reverted' as const,
+      revertedAt,
+    }
+  })
+
+  return buildUpdatedReview(review, issues, appliedFixes)
 }

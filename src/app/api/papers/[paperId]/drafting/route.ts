@@ -60,7 +60,9 @@ const actionSchema = z.object({
     'word_count',
     'run_manuscript_review',
     'preview_review_fix',
-    'apply_review_fix'
+    'apply_review_fix',
+    'resolve_review_issue',
+    'revert_review_fix'
   ])
 });
 
@@ -159,6 +161,7 @@ const citationSequenceHistorySchema = z.object({
 const manuscriptReviewSchema = z.object({
   sessionId: z.string().min(1),
   reviewMode: z.enum(['quick', 'section_by_section']).optional(),
+  stream: z.boolean().optional(),
 });
 
 const reviewFixPreviewSchema = z.object({
@@ -173,6 +176,19 @@ const applyReviewFixSchema = z.object({
   issueId: z.string().min(1),
   originalContent: z.string().optional(),
   fixedContent: z.string().optional()
+});
+
+const resolveReviewIssueSchema = z.object({
+  sessionId: z.string().min(1),
+  reviewId: z.string().min(1),
+  issueId: z.string().min(1),
+  resolution: z.enum(['fixed', 'ignored']),
+});
+
+const revertReviewFixSchema = z.object({
+  sessionId: z.string().min(1),
+  reviewId: z.string().min(1),
+  issueId: z.string().min(1),
 });
 
 const humanizeSectionSchema = z.object({
@@ -3694,6 +3710,18 @@ type GenerateSectionResult = {
 
 type GenerationStatusEmitter = (phase: string, message: string) => Promise<void> | void;
 
+type PaperReviewProgressEmitter = (payload: {
+  reviewMode: 'quick' | 'section_by_section';
+  phase: 'prepare' | 'review' | 'section_review' | 'aggregate' | 'persist' | 'complete';
+  message: string;
+  totalSections?: number;
+  completedSections?: number;
+  sectionKey?: string;
+  sectionLabel?: string;
+  reviewId?: string;
+  reviewedAt?: string;
+}) => Promise<void> | void;
+
 class DraftingRequestError extends Error {
   readonly status: number;
   readonly payload?: any;
@@ -5658,15 +5686,28 @@ async function runSectionBySectionPaperReview(params: {
   sessionId: string;
   tenantContext?: TenantContext | null;
   reviewedAt: string;
+  emitProgress?: PaperReviewProgressEmitter;
 }) {
-  const { reviewModel, requestHeaders, sessionId, tenantContext, reviewedAt } = params;
+  const { reviewModel, requestHeaders, sessionId, tenantContext, reviewedAt, emitProgress } = params;
   const sections = Array.isArray(reviewModel.sections) ? reviewModel.sections : [];
   const references = Array.isArray(reviewModel.references) ? reviewModel.references : [];
   const figures = Array.isArray(reviewModel.figures) ? reviewModel.figures : [];
+  let completedSections = 0;
+
+  await emitProgress?.({
+    reviewMode: 'section_by_section',
+    phase: 'section_review',
+    message: sections.length > 0
+      ? `Running section reviewers (0/${sections.length} complete)`
+      : 'No drafted sections available for section-by-section review',
+    totalSections: sections.length,
+    completedSections: 0,
+  });
 
   const sectionReviewerOutputs = await Promise.all(
     sections.map(async (section: Record<string, any>, sectionIndex: number) => {
       const sectionKey = String(section.sectionKey || '');
+      const sectionLabel = String(section.sectionLabel || section.heading || sectionKey);
       const figureIdSet = new Set<string>(Array.isArray(section.referencedFigureIds) ? section.referencedFigureIds : []);
       const relevantFigures = figures.filter((figure: any) => figureIdSet.has(String(figure.figureId || '')));
       const citationKeySet = new Set<string>(Array.isArray(section.citedReferenceIds) ? section.citedReferenceIds : []);
@@ -5717,6 +5758,17 @@ async function runSectionBySectionPaperReview(params: {
         throw new Error(result.error?.message || `Failed to review section ${sectionKey}`);
       }
 
+      completedSections += 1;
+      await emitProgress?.({
+        reviewMode: 'section_by_section',
+        phase: 'section_review',
+        message: `Completed ${sectionLabel} (${completedSections}/${sections.length})`,
+        totalSections: sections.length,
+        completedSections,
+        sectionKey,
+        sectionLabel,
+      });
+
       const parsed = extractJsonObjectFromModelOutput(result.response.output || '');
       const sectionIssues = Array.isArray(parsed?.issues)
         ? parsed.issues.map((issue: any, index: number) => normalizePendingPaperReviewIssue(issue, index, reviewedAt))
@@ -5743,6 +5795,14 @@ async function runSectionBySectionPaperReview(params: {
       };
     })
   );
+
+  await emitProgress?.({
+    reviewMode: 'section_by_section',
+    phase: 'aggregate',
+    message: 'Aggregating section findings into one manuscript report',
+    totalSections: sections.length,
+    completedSections: sections.length,
+  });
 
   const aggregationResult = await llmGateway.executeLLMOperation(
     { headers: requestHeaders },
@@ -5886,6 +5946,284 @@ async function getPersistedPaperReview(sessionId: string, reviewId: string) {
   return {
     review,
     normalized: normalizePaperReviewRecord(review)
+  };
+}
+
+async function executePaperManuscriptReview(params: {
+  sessionId: string;
+  session: any;
+  paperTypeCode: string;
+  requestHeaders: Record<string, string>;
+  tenantContext?: TenantContext | null;
+  reviewMode: 'quick' | 'section_by_section';
+  emitProgress?: PaperReviewProgressEmitter;
+}) {
+  const { sessionId, session, paperTypeCode, requestHeaders, tenantContext, reviewMode, emitProgress } = params;
+
+  await emitProgress?.({
+    reviewMode,
+    phase: 'prepare',
+    message: 'Collecting manuscript sections, citations, and figure context',
+    completedSections: 0,
+  });
+
+  const [draft, researchTopic, blueprint, citations, figures, venue] = await Promise.all([
+    getPaperDraft(sessionId),
+    prisma.researchTopic.findUnique({ where: { sessionId } }),
+    prisma.paperBlueprint.findUnique({ where: { sessionId } }),
+    citationService.getCitationsForSession(sessionId),
+    loadPaperReviewFigureEntries(sessionId),
+    session.publicationVenueId
+      ? prisma.publicationVenue.findUnique({ where: { id: session.publicationVenueId } })
+      : Promise.resolve(null)
+  ]);
+
+  const reviewedAt = new Date().toISOString();
+  const sectionMap = buildPaperDraftSectionMap(draft, researchTopic);
+  const preferredOrder = ['title', 'abstract', ...parseBlueprintSectionOrder(blueprint?.sectionPlan)];
+  const sectionOrder = mergeSectionOrder(preferredOrder, sectionMap);
+  const figuresByNo = new Map(figures.map((figure) => [figure.figureNo, figure] as const));
+
+  const sections = sectionOrder
+    .map((sectionKey, index) => {
+      const content = String(sectionMap[sectionKey] || '');
+      if (!content.trim()) return null;
+
+      const figureNumbers = extractFigureNumbersFromText(content);
+      const referencedFigureIds = figureNumbers
+        .map((figureNo) => figuresByNo.get(figureNo)?.id || null)
+        .filter((value): value is string => Boolean(value));
+
+      return {
+        sectionId: sectionKey,
+        sectionKey,
+        sectionType: sectionKey,
+        heading: SECTION_DISPLAY_NAMES[sectionKey] || formatSectionLabel(sectionKey),
+        sectionLabel: SECTION_DISPLAY_NAMES[sectionKey] || formatSectionLabel(sectionKey),
+        orderIndex: index,
+        bodyText: content,
+        wordCount: computeWordCount(content),
+        citedReferenceIds: extractCitationKeys(content),
+        referencedFigureIds
+      };
+    })
+    .filter((section): section is NonNullable<typeof section> => section !== null);
+
+  const figuresPayload = figures.map((figure) => {
+    const referencedBySectionIds = sections
+      .filter((section) => section.referencedFigureIds.includes(figure.id))
+      .map((section) => section.sectionKey);
+
+    return {
+      figureId: figure.id,
+      figureLabel: `Figure ${figure.figureNo}`,
+      title: figure.title,
+      caption: figure.caption || '',
+      figureType: figure.figureType || figure.category || '',
+      insertionSectionId: figure.relevantSection || null,
+      referencedBySectionIds,
+      sourceType: figure.imagePath ? 'generated_or_uploaded' : 'planned',
+      generatedOrUploadedFlag: Boolean(figure.imagePath),
+      metadataPayload: {
+        description: figure.description || '',
+        notes: figure.notes || '',
+        figureRole: figure.figureRole || '',
+        whyThisFigure: figure.whyThisFigure || '',
+        dataNeeded: figure.dataNeeded || '',
+        sectionFitJustification: figure.sectionFitJustification || '',
+        structuredHint: figure.structuredHint || '',
+        inferredImageMeta: figure.inferredImageMeta || null
+      }
+    };
+  });
+
+  const reviewModel = {
+    paperId: sessionId,
+    title: sectionMap.title || researchTopic?.title || '',
+    abstract: sectionMap.abstract || researchTopic?.abstractDraft || '',
+    keywords: Array.isArray(researchTopic?.keywords) ? researchTopic.keywords : [],
+    articleType: session.paperType?.code || paperTypeCode,
+    targetVenue: venue?.name || null,
+    citationStyleCode: getStyleCode(session),
+    targetWordCount: session.targetWordCount || null,
+    currentWordCount: sections.reduce((sum, section) => sum + section.wordCount, 0),
+    researchContext: {
+      field: researchTopic?.field || '',
+      subfield: researchTopic?.subfield || '',
+      researchQuestion: researchTopic?.researchQuestion || '',
+      problemStatement: researchTopic?.problemStatement || '',
+      methodology: researchTopic?.methodology || '',
+      methodologyApproach: researchTopic?.methodologyApproach || '',
+      datasetDescription: researchTopic?.datasetDescription || '',
+      experiments: researchTopic?.experiments || '',
+      hypothesis: researchTopic?.hypothesis || '',
+      expectedResults: researchTopic?.expectedResults || '',
+      novelty: researchTopic?.novelty || '',
+      limitations: researchTopic?.limitations || ''
+    },
+    blueprint: blueprint ? {
+      thesisStatement: blueprint.thesisStatement || '',
+      centralObjective: blueprint.centralObjective || '',
+      keyContributions: Array.isArray(blueprint.keyContributions) ? blueprint.keyContributions : [],
+      sectionPlan: Array.isArray(blueprint.sectionPlan) ? blueprint.sectionPlan : [],
+      narrativeArc: blueprint.narrativeArc || '',
+      methodologyType: blueprint.methodologyType || '',
+      version: blueprint.version || 1
+    } : null,
+    sections,
+    figures: figuresPayload,
+    references: citations.map((citation) => ({
+      citationKey: citation.citationKey,
+      title: citation.title,
+      authors: Array.isArray(citation.authors) ? citation.authors : [],
+      year: citation.year || null,
+      venue: citation.venue || null,
+      sourceType: citation.sourceType || null
+    })),
+    citations: sections.map((section) => ({
+      sectionKey: section.sectionKey,
+      citationKeys: section.citedReferenceIds
+    })),
+    metadata: {
+      reviewedAt,
+      reviewMode: 'full_manuscript',
+      assumptions: [
+        'Review is grounded only in manuscript text and stored metadata.',
+        'Missing evidence should be treated as a manuscript deficiency, not proof that the research itself is invalid.'
+      ]
+    }
+  };
+
+  let issues: ReturnType<typeof normalizePendingPaperReviewIssue>[] = [];
+  let summary = normalizePaperReviewSummary({}, issues);
+  let tokensUsed: number | undefined;
+
+  if (sections.length === 0) {
+    summary = normalizePaperReviewSummary({
+      reviewMode,
+      reviewLabel: getPaperReviewModeLabel(reviewMode),
+      executiveSummary: 'The manuscript does not yet contain drafted sections to review.',
+      overallReadiness: 'not_submission_ready',
+      readinessRationale: 'Generate the manuscript body before running the review stage.',
+      rejectRiskDrivers: ['Core manuscript sections are missing'],
+      revisionPriorities: ['Draft the required paper sections before review'],
+      actionPlan: [
+        {
+          title: 'Complete drafting first',
+          priority: 'high',
+          summary: 'Create the core manuscript sections, then rerun review.',
+          issueIds: []
+        }
+      ],
+      generatedAt: reviewedAt
+    }, issues);
+  } else if (reviewMode === 'section_by_section') {
+    const detailedReview = await runSectionBySectionPaperReview({
+      reviewModel,
+      requestHeaders,
+      sessionId,
+      tenantContext,
+      reviewedAt,
+      emitProgress
+    });
+    issues = detailedReview.issues;
+    summary = detailedReview.summary;
+    tokensUsed = detailedReview.tokensUsed;
+  } else {
+    await emitProgress?.({
+      reviewMode,
+      phase: 'review',
+      message: 'Running the whole-manuscript reviewer',
+      totalSections: sections.length,
+      completedSections: sections.length > 0 ? 1 : 0,
+    });
+
+    const result = await llmGateway.executeLLMOperation(
+      { headers: requestHeaders },
+      {
+        taskCode: 'LLM2_DRAFT' as const,
+        stageCode: 'PAPER_MANUSCRIPT_REVIEW',
+        prompt: await buildPaperReviewPrompt(reviewModel),
+        parameters: {
+          temperature: 0.2,
+          tenantId: tenantContext?.tenantId
+        },
+        idempotencyKey: crypto.randomUUID(),
+        metadata: {
+          sessionId,
+          paperId: sessionId,
+          action: 'run_manuscript_review',
+          module: 'paper_review',
+          purpose: 'paper_manuscript_review',
+          sectionCount: sections.length,
+          citationCount: citations.length,
+          figureCount: figures.length
+        }
+      }
+    );
+
+    if (!result.success || !result.response) {
+      throw new DraftingRequestError(
+        result.error?.message || 'Manuscript review failed',
+        500,
+        { success: false, error: result.error?.message || 'Manuscript review failed' }
+      );
+    }
+
+    const parsed = extractJsonObjectFromModelOutput(result.response.output || '');
+    issues = Array.isArray(parsed?.issues)
+      ? dedupePendingPaperReviewIssues(
+          parsed.issues.map((issue: any, index: number) =>
+            normalizePendingPaperReviewIssue(issue, index, reviewedAt)
+          )
+        )
+      : [];
+    summary = normalizePaperReviewSummary({
+      reviewMode: 'quick',
+      reviewLabel: getPaperReviewModeLabel('quick'),
+      ...(parsed?.summary && typeof parsed.summary === 'object' ? parsed.summary : {}),
+      generatedAt: reviewedAt
+    }, issues);
+    tokensUsed = result.response.outputTokens;
+  }
+
+  await emitProgress?.({
+    reviewMode,
+    phase: 'persist',
+    message: 'Saving the review report and issue queue',
+    totalSections: sections.length,
+    completedSections: sections.length,
+  });
+
+  const savedReview = await prisma.aIReviewResult.create({
+    data: {
+      sessionId,
+      draftId: draft?.id || null,
+      jurisdiction: 'PAPER',
+      issues: issues as any,
+      summary: summary as any,
+      tokensUsed,
+      reviewedAt: new Date(reviewedAt)
+    }
+  });
+
+  await emitProgress?.({
+    reviewMode,
+    phase: 'complete',
+    message: 'Review report is ready',
+    totalSections: sections.length,
+    completedSections: sections.length,
+    reviewId: savedReview.id,
+    reviewedAt,
+  });
+
+  return {
+    success: true,
+    reviewId: savedReview.id,
+    reviewMode,
+    issues,
+    summary,
+    reviewedAt
   };
 }
 
@@ -7427,237 +7765,37 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
       case 'run_manuscript_review': {
         const payload = manuscriptReviewSchema.parse(body);
         const reviewMode = payload.reviewMode === 'section_by_section' ? 'section_by_section' : 'quick';
-
-        const [draft, researchTopic, blueprint, citations, figures, venue] = await Promise.all([
-          getPaperDraft(sessionId),
-          prisma.researchTopic.findUnique({ where: { sessionId } }),
-          prisma.paperBlueprint.findUnique({ where: { sessionId } }),
-          citationService.getCitationsForSession(sessionId),
-          loadPaperReviewFigureEntries(sessionId),
-          session.publicationVenueId
-            ? prisma.publicationVenue.findUnique({ where: { id: session.publicationVenueId } })
-            : Promise.resolve(null)
-        ]);
-
-        const reviewedAt = new Date().toISOString();
-        const sectionMap = buildPaperDraftSectionMap(draft, researchTopic);
-        const preferredOrder = ['title', 'abstract', ...parseBlueprintSectionOrder(blueprint?.sectionPlan)];
-        const sectionOrder = mergeSectionOrder(preferredOrder, sectionMap);
-        const figuresByNo = new Map(figures.map((figure) => [figure.figureNo, figure] as const));
-
-        const sections = sectionOrder
-          .map((sectionKey, index) => {
-            const content = String(sectionMap[sectionKey] || '');
-            if (!content.trim()) return null;
-
-            const figureNumbers = extractFigureNumbersFromText(content);
-            const referencedFigureIds = figureNumbers
-              .map((figureNo) => figuresByNo.get(figureNo)?.id || null)
-              .filter((value): value is string => Boolean(value));
-
-            return {
-              sectionId: sectionKey,
-              sectionKey,
-              sectionType: sectionKey,
-              heading: SECTION_DISPLAY_NAMES[sectionKey] || formatSectionLabel(sectionKey),
-              sectionLabel: SECTION_DISPLAY_NAMES[sectionKey] || formatSectionLabel(sectionKey),
-              orderIndex: index,
-              bodyText: content,
-              wordCount: computeWordCount(content),
-              citedReferenceIds: extractCitationKeys(content),
-              referencedFigureIds
+        if (payload.stream) {
+          return createSSEStreamResponse(async (send) => {
+            const emitProgress: PaperReviewProgressEmitter = async (progress) => {
+              send('status', {
+                ...progress,
+                at: new Date().toISOString(),
+              });
             };
-          })
-          .filter((section): section is NonNullable<typeof section> => section !== null);
 
-        const figuresPayload = figures.map((figure) => {
-          const referencedBySectionIds = sections
-            .filter((section) => section.referencedFigureIds.includes(figure.id))
-            .map((section) => section.sectionKey);
-
-          return {
-            figureId: figure.id,
-            figureLabel: `Figure ${figure.figureNo}`,
-            title: figure.title,
-            caption: figure.caption || '',
-            figureType: figure.figureType || figure.category || '',
-            insertionSectionId: figure.relevantSection || null,
-            referencedBySectionIds,
-            sourceType: figure.imagePath ? 'generated_or_uploaded' : 'planned',
-            generatedOrUploadedFlag: Boolean(figure.imagePath),
-            metadataPayload: {
-              description: figure.description || '',
-              notes: figure.notes || '',
-              figureRole: figure.figureRole || '',
-              whyThisFigure: figure.whyThisFigure || '',
-              dataNeeded: figure.dataNeeded || '',
-              sectionFitJustification: figure.sectionFitJustification || '',
-              structuredHint: figure.structuredHint || '',
-              inferredImageMeta: figure.inferredImageMeta || null
-            }
-          };
-        });
-
-        const reviewModel = {
-          paperId: sessionId,
-          title: sectionMap.title || researchTopic?.title || '',
-          abstract: sectionMap.abstract || researchTopic?.abstractDraft || '',
-          keywords: Array.isArray(researchTopic?.keywords) ? researchTopic.keywords : [],
-          articleType: session.paperType?.code || paperTypeCode,
-          targetVenue: venue?.name || null,
-          citationStyleCode: getStyleCode(session),
-          targetWordCount: session.targetWordCount || null,
-          currentWordCount: sections.reduce((sum, section) => sum + section.wordCount, 0),
-          researchContext: {
-            field: researchTopic?.field || '',
-            subfield: researchTopic?.subfield || '',
-            researchQuestion: researchTopic?.researchQuestion || '',
-            problemStatement: researchTopic?.problemStatement || '',
-            methodology: researchTopic?.methodology || '',
-            methodologyApproach: researchTopic?.methodologyApproach || '',
-            datasetDescription: researchTopic?.datasetDescription || '',
-            experiments: researchTopic?.experiments || '',
-            hypothesis: researchTopic?.hypothesis || '',
-            expectedResults: researchTopic?.expectedResults || '',
-            novelty: researchTopic?.novelty || '',
-            limitations: researchTopic?.limitations || ''
-          },
-          blueprint: blueprint ? {
-            thesisStatement: blueprint.thesisStatement || '',
-            centralObjective: blueprint.centralObjective || '',
-            keyContributions: Array.isArray(blueprint.keyContributions) ? blueprint.keyContributions : [],
-            sectionPlan: Array.isArray(blueprint.sectionPlan) ? blueprint.sectionPlan : [],
-            narrativeArc: blueprint.narrativeArc || '',
-            methodologyType: blueprint.methodologyType || '',
-            version: blueprint.version || 1
-          } : null,
-          sections,
-          figures: figuresPayload,
-          references: citations.map((citation) => ({
-            citationKey: citation.citationKey,
-            title: citation.title,
-            authors: Array.isArray(citation.authors) ? citation.authors : [],
-            year: citation.year || null,
-            venue: citation.venue || null,
-            sourceType: citation.sourceType || null
-          })),
-          citations: sections.map((section) => ({
-            sectionKey: section.sectionKey,
-            citationKeys: section.citedReferenceIds
-          })),
-          metadata: {
-            reviewedAt,
-            reviewMode: 'full_manuscript',
-            assumptions: [
-              'Review is grounded only in manuscript text and stored metadata.',
-              'Missing evidence should be treated as a manuscript deficiency, not proof that the research itself is invalid.'
-            ]
-          }
-        };
-
-        let issues: ReturnType<typeof normalizePendingPaperReviewIssue>[] = [];
-        let summary = normalizePaperReviewSummary({}, issues);
-        let tokensUsed: number | undefined;
-
-        if (sections.length === 0) {
-          summary = normalizePaperReviewSummary({
-            reviewMode,
-            reviewLabel: getPaperReviewModeLabel(reviewMode),
-            executiveSummary: 'The manuscript does not yet contain drafted sections to review.',
-            overallReadiness: 'not_submission_ready',
-            readinessRationale: 'Generate the manuscript body before running the review stage.',
-            rejectRiskDrivers: ['Core manuscript sections are missing'],
-            revisionPriorities: ['Draft the required paper sections before review'],
-            actionPlan: [
-              {
-                title: 'Complete drafting first',
-                priority: 'high',
-                summary: 'Create the core manuscript sections, then rerun review.',
-                issueIds: []
-              }
-            ],
-            generatedAt: reviewedAt
-          }, issues);
-        } else if (reviewMode === 'section_by_section') {
-          const detailedReview = await runSectionBySectionPaperReview({
-            reviewModel,
-            requestHeaders,
-            sessionId,
-            tenantContext,
-            reviewedAt
+            await executePaperManuscriptReview({
+              sessionId,
+              session,
+              paperTypeCode,
+              requestHeaders,
+              tenantContext,
+              reviewMode,
+              emitProgress,
+            });
           });
-          issues = detailedReview.issues;
-          summary = detailedReview.summary;
-          tokensUsed = detailedReview.tokensUsed;
-        } else {
-          const result = await llmGateway.executeLLMOperation(
-            { headers: requestHeaders },
-            {
-              taskCode: 'LLM2_DRAFT' as const,
-              stageCode: 'PAPER_MANUSCRIPT_REVIEW',
-              prompt: await buildPaperReviewPrompt(reviewModel),
-              parameters: {
-                temperature: 0.2,
-                tenantId: tenantContext?.tenantId
-              },
-              idempotencyKey: crypto.randomUUID(),
-              metadata: {
-                sessionId,
-                paperId: sessionId,
-                action: 'run_manuscript_review',
-                module: 'paper_review',
-                purpose: 'paper_manuscript_review',
-                sectionCount: sections.length,
-                citationCount: citations.length,
-                figureCount: figures.length
-              }
-            }
-          );
-
-          if (!result.success || !result.response) {
-            return NextResponse.json({
-              success: false,
-              error: result.error?.message || 'Manuscript review failed'
-            }, { status: 500 });
-          }
-
-          const parsed = extractJsonObjectFromModelOutput(result.response.output || '');
-          issues = Array.isArray(parsed?.issues)
-            ? dedupePendingPaperReviewIssues(
-                parsed.issues.map((issue: any, index: number) =>
-                  normalizePendingPaperReviewIssue(issue, index, reviewedAt)
-                )
-              )
-            : [];
-          summary = normalizePaperReviewSummary({
-            reviewMode: 'quick',
-            reviewLabel: getPaperReviewModeLabel('quick'),
-            ...(parsed?.summary && typeof parsed.summary === 'object' ? parsed.summary : {}),
-            generatedAt: reviewedAt
-          }, issues);
-          tokensUsed = result.response.outputTokens;
         }
 
-        const savedReview = await prisma.aIReviewResult.create({
-          data: {
-            sessionId,
-            draftId: draft?.id || null,
-            jurisdiction: 'PAPER',
-            issues: issues as any,
-            summary: summary as any,
-            tokensUsed,
-            reviewedAt: new Date(reviewedAt)
-          }
+        const result = await executePaperManuscriptReview({
+          sessionId,
+          session,
+          paperTypeCode,
+          requestHeaders,
+          tenantContext,
+          reviewMode,
         });
 
-        return NextResponse.json({
-          success: true,
-          reviewId: savedReview.id,
-          reviewMode,
-          issues,
-          summary,
-          reviewedAt
-        });
+        return NextResponse.json(result);
       }
 
       case 'preview_review_fix': {
@@ -7986,7 +8124,192 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           originalContent,
           fixedContent,
           diffSummary: buildPaperFixSummary(originalContent, fixedContent),
+          appliedAt,
           saved: true
+        });
+      }
+
+      case 'resolve_review_issue': {
+        const payload = resolveReviewIssueSchema.parse(body);
+
+        const reviewBundle = await getPersistedPaperReview(sessionId, payload.reviewId);
+        if (!reviewBundle?.normalized) {
+          return NextResponse.json({ success: false, error: 'Review not found' }, { status: 404 });
+        }
+
+        const reviewRecord = reviewBundle.normalized;
+        const persistedReview = reviewBundle.review;
+        const issue = reviewRecord.issues.find((entry) => entry.id === payload.issueId);
+        if (!issue) {
+          return NextResponse.json({ success: false, error: 'Review issue not found' }, { status: 404 });
+        }
+
+        if (issue.status === payload.resolution) {
+          return NextResponse.json({
+            success: true,
+            reviewId: persistedReview.id,
+            issueId: issue.id,
+            updatedIssueStatus: issue.status,
+          });
+        }
+
+        if (issue.status !== 'pending') {
+          return NextResponse.json({
+            success: false,
+            error: 'Only pending issues can be resolved from this stage'
+          }, { status: 409 });
+        }
+
+        const appliedAt = new Date().toISOString();
+        const updatedIssues = reviewRecord.issues.map((entry) =>
+          entry.id === issue.id
+            ? {
+                ...entry,
+                status: payload.resolution,
+              }
+            : entry
+        );
+        const updatedSummary = normalizePaperReviewSummary({
+          ...reviewRecord.summary,
+          generatedAt: reviewRecord.summary.generatedAt || appliedAt
+        }, updatedIssues);
+        const updatedFixes = [
+          ...reviewRecord.appliedFixes,
+          {
+            issueId: issue.id,
+            sectionKey: issue.sectionKey,
+            status: payload.resolution,
+            diffSummary: payload.resolution === 'ignored'
+              ? 'Dismissed without changing manuscript text'
+              : 'Marked resolved without an AI rewrite',
+            appliedAt,
+          }
+        ];
+        const existingIgnored = Array.isArray(persistedReview.ignoredIssues)
+          ? (persistedReview.ignoredIssues as string[])
+          : [];
+        const nextIgnored = payload.resolution === 'ignored'
+          ? (existingIgnored.includes(issue.id) ? existingIgnored : [...existingIgnored, issue.id])
+          : existingIgnored.filter((issueId) => issueId !== issue.id);
+
+        await prisma.aIReviewResult.update({
+          where: { id: persistedReview.id },
+          data: {
+            issues: updatedIssues as any,
+            summary: updatedSummary as any,
+            appliedFixes: updatedFixes as any,
+            ignoredIssues: nextIgnored as any,
+          }
+        });
+
+        return NextResponse.json({
+          success: true,
+          reviewId: persistedReview.id,
+          issueId: issue.id,
+          updatedIssueStatus: payload.resolution,
+          appliedAt,
+        });
+      }
+
+      case 'revert_review_fix': {
+        const payload = revertReviewFixSchema.parse(body);
+
+        const [draft, researchTopic, reviewBundle] = await Promise.all([
+          getPaperDraft(sessionId),
+          prisma.researchTopic.findUnique({ where: { sessionId } }),
+          getPersistedPaperReview(sessionId, payload.reviewId)
+        ]);
+
+        if (!reviewBundle?.normalized) {
+          return NextResponse.json({ success: false, error: 'Review not found' }, { status: 404 });
+        }
+
+        const reviewRecord = reviewBundle.normalized;
+        const persistedReview = reviewBundle.review;
+        const issue = reviewRecord.issues.find((entry) => entry.id === payload.issueId);
+        if (!issue) {
+          return NextResponse.json({ success: false, error: 'Review issue not found' }, { status: 404 });
+        }
+
+        const fixIndex = [...reviewRecord.appliedFixes]
+          .map((entry, index) => ({ entry, index }))
+          .reverse()
+          .find(({ entry }) => entry.issueId === issue.id && entry.status === 'fixed' && typeof entry.beforeText === 'string')
+
+        if (!fixIndex) {
+          return NextResponse.json({
+            success: false,
+            error: 'No revertable fix history was found for this issue'
+          }, { status: 404 });
+        }
+
+        const fixEntry = fixIndex.entry;
+        const targetSectionKey = normalizeSectionKey(fixEntry.sectionKey || issue.sectionKey);
+        if (!targetSectionKey || targetSectionKey === 'manuscript') {
+          return NextResponse.json({
+            success: false,
+            error: 'This fix is not tied to a single editable section'
+          }, { status: 400 });
+        }
+
+        const sectionMap = buildPaperDraftSectionMap(draft, researchTopic);
+        const currentContent = String(sectionMap[targetSectionKey] || '');
+        if (
+          typeof fixEntry.afterText === 'string'
+          && computeContentFingerprint(currentContent) !== computeContentFingerprint(fixEntry.afterText)
+        ) {
+          return NextResponse.json({
+            success: false,
+            error: 'The section changed after this fix was applied. Open the section draft and revert manually if you still want to restore the old text.'
+          }, { status: 409 });
+        }
+
+        const activeDraft = draft || await getOrCreatePaperDraft(sessionId, researchTopic?.title || 'Untitled Paper');
+        await updateDraftContent(activeDraft.id, targetSectionKey, String(fixEntry.beforeText || ''), paperTypeCode);
+
+        const revertedAt = new Date().toISOString();
+        const updatedIssues = reviewRecord.issues.map((entry) =>
+          entry.id === issue.id
+            ? {
+                ...entry,
+                status: 'pending' as const,
+              }
+            : entry
+        );
+        const updatedSummary = normalizePaperReviewSummary({
+          ...reviewRecord.summary,
+          generatedAt: reviewRecord.summary.generatedAt || revertedAt
+        }, updatedIssues);
+        const updatedFixes = reviewRecord.appliedFixes.map((entry, index) =>
+          index === fixIndex.index
+            ? {
+                ...entry,
+                status: 'reverted' as const,
+                revertedAt,
+              }
+            : entry
+        );
+        const existingIgnored = Array.isArray(persistedReview.ignoredIssues)
+          ? (persistedReview.ignoredIssues as string[]).filter((issueId) => issueId !== issue.id)
+          : [];
+
+        await prisma.aIReviewResult.update({
+          where: { id: persistedReview.id },
+          data: {
+            issues: updatedIssues as any,
+            summary: updatedSummary as any,
+            appliedFixes: updatedFixes as any,
+            ignoredIssues: existingIgnored as any,
+          }
+        });
+
+        return NextResponse.json({
+          success: true,
+          reviewId: persistedReview.id,
+          issueId: issue.id,
+          sectionKey: targetSectionKey,
+          revertedContent: String(fixEntry.beforeText || ''),
+          revertedAt,
         });
       }
 

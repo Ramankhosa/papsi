@@ -299,20 +299,7 @@ export default function PaperSessionPage() {
   const latestReview = useMemo(() => getLatestPaperReview(session), [session])
   const hasReviewReport = !!latestReview
 
-  // Check if paper writing feature is enabled
-  if (!isFeatureEnabled('ENABLE_PAPER_WRITING_UI')) {
-    return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <div className="text-center">
-          <BookOpenCheck className="w-16 h-16 text-slate-400 mx-auto mb-4" />
-          <h2 className="text-xl font-semibold text-slate-900 mb-2">Paper Writing Feature</h2>
-          <p className="text-slate-600">This feature is not currently available.</p>
-        </div>
-      </div>
-    )
-  }
-
-  const getStageLockReason = (stageKey: StageKey): string | null => {
+  const getStageLockReason = useCallback((stageKey: StageKey): string | null => {
     switch (stageKey) {
       case 'OUTLINE_PLANNING':
         return null
@@ -342,7 +329,17 @@ export default function PaperSessionPage() {
       default:
         return null
     }
-  }
+  }, [
+    citationsCount,
+    deepCandidatesCount,
+    hasDraftContent,
+    hasFrozenBlueprint,
+    hasPaperType,
+    hasRequiredSections,
+    hasReviewReport,
+    hasTopic,
+    requiredSectionKeys.length,
+  ])
 
   const handleNavigateToStage = useCallback(async (stageKey: string) => {
     const nextStage = stageKey as StageKey
@@ -367,6 +364,19 @@ export default function PaperSessionPage() {
   const handleTopicSaved = useCallback((topic: any) => {
     setSession(prev => prev ? { ...prev, researchTopic: topic } : null)
   }, [])
+
+  // Check if paper writing feature is enabled
+  if (!isFeatureEnabled('ENABLE_PAPER_WRITING_UI')) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center">
+          <BookOpenCheck className="w-16 h-16 text-slate-400 mx-auto mb-4" />
+          <h2 className="text-xl font-semibold text-slate-900 mb-2">Paper Writing Feature</h2>
+          <p className="text-slate-600">This feature is not currently available.</p>
+        </div>
+      </div>
+    )
+  }
 
   const handleTitleEdit = async (newTitle: string) => {
     if (!authToken || !session) return

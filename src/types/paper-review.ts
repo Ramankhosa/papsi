@@ -103,11 +103,12 @@ export interface PaperReviewSummary {
 export interface PaperReviewFixHistoryEntry {
   issueId: string
   sectionKey: string
-  status: 'fixed' | 'ignored'
+  status: 'fixed' | 'ignored' | 'reverted'
   beforeText?: string
   afterText?: string
   diffSummary?: string
   appliedAt: string
+  revertedAt?: string
 }
 
 export interface PaperReviewRecord {

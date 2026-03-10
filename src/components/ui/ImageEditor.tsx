@@ -1,4 +1,5 @@
 'use client'
+/* eslint-disable @next/next/no-img-element */
 
 import { useState, useRef, useEffect } from 'react'
 import { Loader2, X, ExternalLink, Upload, Check, AlertTriangle, ArrowRight, Image as ImageIcon, Download } from 'lucide-react'
@@ -149,7 +150,7 @@ export default function ImageEditor({ imageSrc, onSave, onClose, title }: ImageE
                 <div>
                   <h2 className="text-xl font-semibold text-gray-900">Edit Image with miniPaint</h2>
                   <p className="text-gray-600 mt-1">
-                    You'll be taken to miniPaint (third-party editor) to edit your image
+                    You&apos;ll be taken to miniPaint (third-party editor) to edit your image
                   </p>
                 </div>
               </div>
@@ -180,11 +181,11 @@ export default function ImageEditor({ imageSrc, onSave, onClose, title }: ImageE
                 <ol className="space-y-2 text-sm text-blue-800">
                   <li className="flex items-start gap-2">
                     <span className="flex-shrink-0 w-5 h-5 bg-blue-200 text-blue-800 rounded-full flex items-center justify-center text-xs font-bold">1</span>
-                    <span>Click <strong>"Download Image"</strong> to save the image to your computer</span>
+                    <span>Click <strong>&quot;Download Image&quot;</strong> to save the image to your computer</span>
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="flex-shrink-0 w-5 h-5 bg-blue-200 text-blue-800 rounded-full flex items-center justify-center text-xs font-bold">2</span>
-                    <span>Click <strong>"Open miniPaint"</strong> to open the editor</span>
+                    <span>Click <strong>&quot;Open miniPaint&quot;</strong> to open the editor</span>
                   </li>
                   <li className="flex items-start gap-2">
                     <span className="flex-shrink-0 w-5 h-5 bg-blue-200 text-blue-800 rounded-full flex items-center justify-center text-xs font-bold">3</span>
@@ -244,7 +245,7 @@ export default function ImageEditor({ imageSrc, onSave, onClose, title }: ImageE
                 <div>
                   <h2 className="text-xl font-semibold text-gray-900">Editing in miniPaint</h2>
                   <p className="text-gray-600 mt-1">
-                    miniPaint is open in another tab. Come back when you're done!
+                    miniPaint is open in another tab. Come back when you&apos;re done!
                   </p>
                 </div>
               </div>
@@ -254,7 +255,7 @@ export default function ImageEditor({ imageSrc, onSave, onClose, title }: ImageE
               <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
                 <h3 className="font-medium text-amber-900 mb-2">Remember to save your work:</h3>
                 <p className="text-sm text-amber-800">
-                  In miniPaint, go to <strong>File → Export as → PNG</strong> to download your edited image, 
+                  In miniPaint, go to <strong>File → Export as → PNG</strong> to download your edited image,
                   then come back here to upload it.
                 </p>
               </div>
