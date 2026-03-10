@@ -79,6 +79,7 @@ export default function PaperImproveStage({
   const [resolvingIssueId, setResolvingIssueId] = useState<string | null>(null)
   const [revertingIssueId, setRevertingIssueId] = useState<string | null>(null)
   const [selectedMode, setSelectedMode] = useState<PaperReviewMode>('quick')
+  const [hasInitializedMode, setHasInitializedMode] = useState(false)
 
   const loadSession = useCallback(async () => {
     if (!sessionId || !authToken) return
@@ -102,7 +103,10 @@ export default function PaperImproveStage({
 
   useEffect(() => {
     const persisted = readPersistedPaperReviewMode(sessionId)
-    if (persisted) setSelectedMode(persisted)
+    if (persisted) {
+      setSelectedMode(persisted)
+      setHasInitializedMode(true)
+    }
   }, [sessionId])
 
   useEffect(() => {
@@ -118,9 +122,17 @@ export default function PaperImproveStage({
   const quickReview = useMemo(() => getLatestPaperReviewByMode(session, 'quick'), [session]) as PaperReviewRecord | null
   const detailedReview = useMemo(() => getLatestPaperReviewByMode(session, 'section_by_section'), [session]) as PaperReviewRecord | null
   useEffect(() => {
-    if (selectedMode === 'quick' && !quickReview && detailedReview) handleModeChange('section_by_section')
-    if (selectedMode === 'section_by_section' && !detailedReview && quickReview) handleModeChange('quick')
-  }, [detailedReview, handleModeChange, quickReview, selectedMode])
+    if (hasInitializedMode) return
+    if (detailedReview) {
+      handleModeChange('section_by_section')
+      setHasInitializedMode(true)
+      return
+    }
+    if (quickReview) {
+      handleModeChange('quick')
+      setHasInitializedMode(true)
+    }
+  }, [detailedReview, handleModeChange, hasInitializedMode, quickReview])
 
   const latestReview = selectedMode === 'section_by_section' ? detailedReview : quickReview
   const rewriteIssues = useMemo(() => latestReview?.issues.filter(issue => issue.fixType === 'rewrite_fixable' && issue.status === 'pending') || [], [latestReview])

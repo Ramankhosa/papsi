@@ -170,6 +170,7 @@ export default function PaperReviewStage({
   const [progress, setProgress] = useState<ReviewProgressState | null>(null)
   const [issueFilter, setIssueFilter] = useState<IssueFilter>('all')
   const abortControllerRef = useRef<AbortController | null>(null)
+  const hasInitializedModeRef = useRef(false)
 
   const loadSession = useCallback(async () => {
     if (!sessionId || !authToken) return
@@ -193,7 +194,10 @@ export default function PaperReviewStage({
 
   useEffect(() => {
     const persisted = readPersistedPaperReviewMode(sessionId)
-    if (persisted) setSelectedMode(persisted)
+    if (persisted) {
+      setSelectedMode(persisted)
+      hasInitializedModeRef.current = true
+    }
   }, [sessionId])
 
   useEffect(() => {
@@ -210,9 +214,17 @@ export default function PaperReviewStage({
   const quickReview = useMemo(() => getLatestPaperReviewByMode(session, 'quick'), [session]) as PaperReviewRecord | null
   const detailedReview = useMemo(() => getLatestPaperReviewByMode(session, 'section_by_section'), [session]) as PaperReviewRecord | null
   useEffect(() => {
-    if (selectedMode === 'quick' && !quickReview && detailedReview) handleModeChange('section_by_section')
-    if (selectedMode === 'section_by_section' && !detailedReview && quickReview) handleModeChange('quick')
-  }, [detailedReview, handleModeChange, quickReview, selectedMode])
+    if (hasInitializedModeRef.current) return
+    if (detailedReview) {
+      handleModeChange('section_by_section')
+      hasInitializedModeRef.current = true
+      return
+    }
+    if (quickReview) {
+      handleModeChange('quick')
+      hasInitializedModeRef.current = true
+    }
+  }, [detailedReview, handleModeChange, quickReview])
 
   const activeReview = selectedMode === 'section_by_section' ? detailedReview : quickReview
   const readinessMeta = getPaperReviewReadinessMeta(activeReview?.summary.overallReadiness || '')
