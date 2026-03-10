@@ -159,6 +159,11 @@ interface DimensionProgress {
   remaining: number;
 }
 
+interface FigureInjectionPreference {
+  enabled: boolean;
+  selectedFigureIds: string[];
+}
+
 interface DimensionDraftUIState {
   initialized: boolean;
   started: boolean;
@@ -216,6 +221,13 @@ function createInitialDimensionUIState(): DimensionDraftUIState {
     editMode: false,
     streamCursor: 0,
     isStreaming: false
+  };
+}
+
+function createDefaultFigureInjectionPreference(): FigureInjectionPreference {
+  return {
+    enabled: false,
+    selectedFigureIds: []
   };
 }
 
@@ -1055,6 +1067,7 @@ export default function SectionDraftingStage({
     category?: string;
     figureType?: string;
     suggestionMeta?: Record<string, unknown> | null;
+    inferredImageMeta?: Record<string, unknown> | null;
   }>>([]);
   const [selectedText, setSelectedText] = useState<{ text: string; start: number; end: number } | null>(null);
   const [previewFigure, setPreviewFigure] = useState<{
@@ -1089,6 +1102,8 @@ export default function SectionDraftingStage({
   const [sectionCitationValidation, setSectionCitationValidation] = useState<Record<string, SectionCitationValidation>>({});
   const [dimensionPanelOpen, setDimensionPanelOpen] = useState<Record<string, boolean>>({});
   const [dimensionBySection, setDimensionBySection] = useState<Record<string, DimensionDraftUIState>>({});
+  const [figureInjectionBySection, setFigureInjectionBySection] = useState<Record<string, FigureInjectionPreference>>({});
+  const [figurePickerOpenBySection, setFigurePickerOpenBySection] = useState<Record<string, boolean>>({});
 
   // Regeneration
   const [regenOpen, setRegenOpen] = useState<Record<string, boolean>>({});
@@ -1102,6 +1117,10 @@ export default function SectionDraftingStage({
   const [messageType, setMessageType] = useState<'success' | 'error' | 'warning'>('success');
   const mappedEvidenceStorageKey = useMemo(
     () => (sessionId ? `paper:${sessionId}:mapped-evidence` : ''),
+    [sessionId]
+  );
+  const figureInjectionStorageKey = useMemo(
+    () => (sessionId ? `paper:${sessionId}:figure-injection` : ''),
     [sessionId]
   );
 
@@ -1129,6 +1148,154 @@ export default function SectionDraftingStage({
       };
     });
   }, []);
+
+  const selectableFigures = useMemo(
+    () => figures.filter((figure) => figure.status !== 'FAILED'),
+    [figures]
+  );
+
+  const getFigureInjectionState = useCallback((sectionKey: string): FigureInjectionPreference => {
+    const normalized = normalizeSectionKey(sectionKey);
+    return figureInjectionBySection[normalized] || createDefaultFigureInjectionPreference();
+  }, [figureInjectionBySection]);
+
+  const isFigureRecommendedForSection = useCallback((
+    figure: {
+      category?: string;
+      figureType?: string;
+      suggestionMeta?: Record<string, unknown> | null;
+    },
+    sectionKey: string
+  ) => {
+    const normalizedSection = normalizeSectionKey(sectionKey);
+    const meta = figure.suggestionMeta && typeof figure.suggestionMeta === 'object'
+      ? figure.suggestionMeta
+      : null;
+    const relevantSection = normalizeSectionKey(String(meta?.relevantSection || ''));
+    const figureRole = String(meta?.figureRole || '').trim().toUpperCase();
+    const figureType = String(figure.figureType || '').trim().toLowerCase();
+    const category = String(figure.category || '').trim().toUpperCase();
+
+    if (relevantSection && relevantSection === normalizedSection) {
+      return true;
+    }
+
+    if (normalizedSection === 'methodology') {
+      return figureRole === 'EXPLAIN_METHOD'
+        || ['flowchart', 'architecture', 'sequence', 'class', 'er', 'gantt'].includes(figureType)
+        || category === 'DIAGRAM'
+        || category === 'ILLUSTRATED_FIGURE';
+    }
+
+    if (normalizedSection === 'results') {
+      return figureRole === 'SHOW_RESULTS'
+        || category === 'DATA_CHART'
+        || category === 'STATISTICAL_PLOT';
+    }
+
+    if (normalizedSection === 'discussion') {
+      return figureRole === 'INTERPRET';
+    }
+
+    return false;
+  }, []);
+
+  const getRecommendedFigureIds = useCallback((sectionKey: string) => {
+    return selectableFigures
+      .filter((figure) => isFigureRecommendedForSection(figure, sectionKey))
+      .map((figure) => figure.id);
+  }, [isFigureRecommendedForSection, selectableFigures]);
+
+  const getSortedFiguresForSection = useCallback((sectionKey: string) => {
+    return [...selectableFigures].sort((left, right) => {
+      const leftRecommended = isFigureRecommendedForSection(left, sectionKey);
+      const rightRecommended = isFigureRecommendedForSection(right, sectionKey);
+      if (leftRecommended !== rightRecommended) return leftRecommended ? -1 : 1;
+      return left.figureNo - right.figureNo;
+    });
+  }, [isFigureRecommendedForSection, selectableFigures]);
+
+  const setFigureInjectionState = useCallback((
+    sectionKey: string,
+    updater: (prev: FigureInjectionPreference) => FigureInjectionPreference
+  ) => {
+    const normalized = normalizeSectionKey(sectionKey);
+    setFigureInjectionBySection(prev => {
+      const current = prev[normalized] || createDefaultFigureInjectionPreference();
+      return {
+        ...prev,
+        [normalized]: updater(current)
+      };
+    });
+  }, []);
+
+  const toggleFigureInjection = useCallback((sectionKey: string) => {
+    const recommendedIds = getRecommendedFigureIds(sectionKey);
+    const normalized = normalizeSectionKey(sectionKey);
+    setFigureInjectionBySection(prev => {
+      const current = prev[normalized] || createDefaultFigureInjectionPreference();
+      const nextEnabled = !current.enabled;
+      return {
+        ...prev,
+        [normalized]: {
+          enabled: nextEnabled,
+          selectedFigureIds: nextEnabled && current.selectedFigureIds.length === 0
+            ? recommendedIds
+            : current.selectedFigureIds
+        }
+      };
+    });
+    setFigurePickerOpenBySection(prev => ({
+      ...prev,
+      [normalized]: false
+    }));
+  }, [getRecommendedFigureIds]);
+
+  const toggleFigureSelection = useCallback((sectionKey: string, figureId: string) => {
+    setFigureInjectionState(sectionKey, prev => {
+      const selected = prev.selectedFigureIds.includes(figureId)
+        ? prev.selectedFigureIds.filter(id => id !== figureId)
+        : [...prev.selectedFigureIds, figureId];
+      return {
+        ...prev,
+        enabled: true,
+        selectedFigureIds: selected
+      };
+    });
+  }, [setFigureInjectionState]);
+
+  const applyRecommendedFigureSelection = useCallback((sectionKey: string) => {
+    setFigureInjectionState(sectionKey, prev => ({
+      ...prev,
+      enabled: true,
+      selectedFigureIds: getRecommendedFigureIds(sectionKey)
+    }));
+  }, [getRecommendedFigureIds, setFigureInjectionState]);
+
+  const selectAllFiguresForSection = useCallback((sectionKey: string) => {
+    setFigureInjectionState(sectionKey, prev => ({
+      ...prev,
+      enabled: true,
+      selectedFigureIds: getSortedFiguresForSection(sectionKey).map(figure => figure.id)
+    }));
+  }, [getSortedFiguresForSection, setFigureInjectionState]);
+
+  const clearSelectedFiguresForSection = useCallback((sectionKey: string) => {
+    setFigureInjectionState(sectionKey, prev => ({
+      ...prev,
+      selectedFigureIds: []
+    }));
+  }, [setFigureInjectionState]);
+
+  const buildFigureInjectionPayload = useCallback((sectionKey: string) => {
+    const state = getFigureInjectionState(sectionKey);
+    const validIds = new Set(selectableFigures.map(figure => figure.id));
+    const selectedFigureIds = state.selectedFigureIds.filter(id => validIds.has(id));
+    return {
+      useFigures: state.enabled && selectedFigureIds.length > 0,
+      selectedFigureIds
+    };
+  }, [getFigureInjectionState, selectableFigures]);
 
   const isCitationEligibleForSection = useCallback(
     (sectionKey: string) => citationEligibleBySection[normalizeSectionKey(sectionKey)] === true,
@@ -1319,7 +1486,8 @@ export default function SectionDraftingStage({
           status: f.status || f.nodes?.status || (f.imagePath ? 'GENERATED' : 'PLANNED'),
           category: f.category || f.nodes?.category || 'CHART',
           figureType: f.figureType || f.nodes?.figureType || 'auto',
-          suggestionMeta: f.suggestionMeta || f.nodes?.suggestionMeta || null
+          suggestionMeta: f.suggestionMeta || f.nodes?.suggestionMeta || null,
+          inferredImageMeta: f.inferredImageMeta || f.nodes?.inferredImageMeta || null
         }));
         setFigures(figs);
       }
@@ -1333,6 +1501,8 @@ export default function SectionDraftingStage({
     setDimensionBySection({});
     setBgSectionSelectorOpen(false);
     setBgSelectedSectionKeys([]);
+    setFigureInjectionBySection({});
+    setFigurePickerOpenBySection({});
     setShowReferenceDraftModal(false);
     setReferenceDraftLoading(false);
     setReferenceDraftError(null);
@@ -1619,6 +1789,59 @@ export default function SectionDraftingStage({
     }
   }, [mappedEvidenceBySection, mappedEvidenceStorageKey]);
 
+  useEffect(() => {
+    if (!figureInjectionStorageKey) return;
+    try {
+      const raw = localStorage.getItem(figureInjectionStorageKey);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return;
+      const normalized: Record<string, FigureInjectionPreference> = {};
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (!value || typeof value !== 'object') continue;
+        const entry = value as Record<string, unknown>;
+        normalized[normalizeSectionKey(key)] = {
+          enabled: entry.enabled === true,
+          selectedFigureIds: Array.isArray(entry.selectedFigureIds)
+            ? entry.selectedFigureIds.map((id) => String(id || '').trim()).filter(Boolean)
+            : []
+        };
+      }
+      setFigureInjectionBySection(normalized);
+    } catch (err) {
+      console.warn('[SectionDrafting] Failed to load figure injection preferences:', err);
+    }
+  }, [figureInjectionStorageKey]);
+
+  useEffect(() => {
+    if (!figureInjectionStorageKey) return;
+    try {
+      localStorage.setItem(figureInjectionStorageKey, JSON.stringify(figureInjectionBySection));
+    } catch (err) {
+      console.warn('[SectionDrafting] Failed to persist figure injection preferences:', err);
+    }
+  }, [figureInjectionBySection, figureInjectionStorageKey]);
+
+  useEffect(() => {
+    if (selectableFigures.length === 0) return;
+    const validIds = new Set(selectableFigures.map((figure) => figure.id));
+    setFigureInjectionBySection(prev => {
+      let changed = false;
+      const next: Record<string, FigureInjectionPreference> = {};
+      for (const [key, value] of Object.entries(prev)) {
+        const filteredIds = value.selectedFigureIds.filter((id) => validIds.has(id));
+        if (filteredIds.length !== value.selectedFigureIds.length) {
+          changed = true;
+        }
+        next[key] = {
+          ...value,
+          selectedFigureIds: filteredIds
+        };
+      }
+      return changed ? next : prev;
+    });
+  }, [selectableFigures]);
+
   // REMOVED: Auto-switch to preview mode - always stay in edit mode for stability
 
   const refreshSession = useCallback(async () => {
@@ -1809,10 +2032,12 @@ export default function SectionDraftingStage({
 
     try {
       const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
+      const figureInjection = buildFigureInjectionPayload(sectionKey);
       const payload: Record<string, unknown> = {
         action: 'generate_dimension',
         sectionKey,
-        useMappedEvidence
+        useMappedEvidence,
+        ...figureInjection
       };
       if (options?.dimensionKey) payload.dimensionKey = options.dimensionKey;
       if (options?.feedback) payload.feedback = options.feedback;
@@ -1844,12 +2069,13 @@ export default function SectionDraftingStage({
         loading: false
       }));
     }
-  }, [applyDimensionResponse, isMappedEvidenceEnabled, requestDraftingAction, setDimensionState, showMsg]);
+  }, [applyDimensionResponse, buildFigureInjectionPayload, isMappedEvidenceEnabled, requestDraftingAction, setDimensionState, showMsg]);
 
   const startDimensionFlow = useCallback(async (sectionKey: string) => {
     const instruction = userInstructions[sectionKey];
     const instructions = instruction?.isActive !== false ? instruction?.instruction || '' : '';
     const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
+    const figureInjection = buildFigureInjectionPayload(sectionKey);
 
     setSectionLoading(prev => ({ ...prev, [sectionKey]: true }));
     setDimensionState(sectionKey, prev => ({
@@ -1864,7 +2090,8 @@ export default function SectionDraftingStage({
         action: 'start_dimension_flow',
         sectionKey,
         instructions,
-        useMappedEvidence
+        useMappedEvidence,
+        ...figureInjection
       });
       applyDimensionResponse(sectionKey, data);
       // Let the dimension-plan UI commit before kicking off the first LLM draft.
@@ -1885,7 +2112,7 @@ export default function SectionDraftingStage({
         loading: false
       }));
     }
-  }, [applyDimensionResponse, generateDimensionDraft, isMappedEvidenceEnabled, requestDraftingAction, setDimensionState, showMsg, userInstructions]);
+  }, [applyDimensionResponse, buildFigureInjectionPayload, generateDimensionDraft, isMappedEvidenceEnabled, requestDraftingAction, setDimensionState, showMsg, userInstructions]);
 
   const acceptDimensionDraft = useCallback(async (
     sectionKey: string,
@@ -1908,6 +2135,7 @@ export default function SectionDraftingStage({
 
     try {
       const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
+      const figureInjection = buildFigureInjectionPayload(sectionKey);
       const data = await requestDraftingAction({
         action: 'accept_dimension',
         sectionKey,
@@ -1915,6 +2143,7 @@ export default function SectionDraftingStage({
         content: state.proposalText,
         prefetchNext: continueToNext,
         useMappedEvidence,
+        ...figureInjection,
         allowCitationBypass: options?.allowCitationBypass === true
       });
       const normalized = applyDimensionResponse(sectionKey, data);
@@ -1952,6 +2181,7 @@ export default function SectionDraftingStage({
     }
   }, [
     applyDimensionResponse,
+    buildFigureInjectionPayload,
     clearCitationValidationForSection,
     generateDimensionDraft,
     getDimensionState,
@@ -1980,12 +2210,14 @@ export default function SectionDraftingStage({
 
     try {
       const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
+      const figureInjection = buildFigureInjectionPayload(sectionKey);
       const data = await requestDraftingAction({
         action: 'reject_dimension',
         sectionKey,
         dimensionKey: state.activeDimensionKey,
         feedback: effectiveFeedback || undefined,
-        useMappedEvidence
+        useMappedEvidence,
+        ...figureInjection
       });
       applyDimensionResponse(sectionKey, data);
       showMsg('Rewrote dimension draft', 'success');
@@ -2003,7 +2235,7 @@ export default function SectionDraftingStage({
         rejecting: false
       }));
     }
-  }, [applyDimensionResponse, getDimensionState, isMappedEvidenceEnabled, requestDraftingAction, setDimensionState, showMsg]);
+  }, [applyDimensionResponse, buildFigureInjectionPayload, getDimensionState, isMappedEvidenceEnabled, requestDraftingAction, setDimensionState, showMsg]);
 
   const beginStructuredDraft = useCallback(async (sectionKey: string) => {
     if (!supportsDimensionFlow(sectionKey)) {
@@ -2296,6 +2528,7 @@ export default function SectionDraftingStage({
       const instr = userInstructions[sectionKey];
       const instructions = instr?.isActive !== false ? instr?.instruction || '' : '';
       const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
+      const figureInjection = buildFigureInjectionPayload(sectionKey);
       const generationMode = isPass1ExcludedSection(sectionKey) ? 'topup_final' : 'two_pass';
       const res = await fetch(`/api/papers/${sessionId}/drafting`, {
         method: 'POST',
@@ -2305,6 +2538,7 @@ export default function SectionDraftingStage({
           sectionKey,
           instructions,
           useMappedEvidence,
+          ...figureInjection,
           generationMode,
           autoCitationRepair: false,
           usePersonaStyle,
@@ -2333,7 +2567,7 @@ export default function SectionDraftingStage({
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
-  }, [sessionId, authToken, userInstructions, usePersonaStyle, personaSelection, isMappedEvidenceEnabled, setCitationValidationForSection, clearCitationValidationForSection]);
+  }, [sessionId, authToken, userInstructions, usePersonaStyle, personaSelection, isMappedEvidenceEnabled, buildFigureInjectionPayload, setCitationValidationForSection, clearCitationValidationForSection]);
 
   const handleGenerate = useCallback(async (keys: string[]) => {
     if (loading) return;
@@ -2427,6 +2661,7 @@ export default function SectionDraftingStage({
     try {
       const remarks = instructionsOverride ?? regenRemarks[sectionKey] ?? '';
       const useMappedEvidence = isMappedEvidenceEnabled(sectionKey);
+      const figureInjection = buildFigureInjectionPayload(sectionKey);
       const generationMode = isPass1ExcludedSection(sectionKey) ? 'topup_final' : 'two_pass';
       const res = await fetch(`/api/papers/${sessionId}/drafting`, {
         method: 'POST',
@@ -2436,6 +2671,7 @@ export default function SectionDraftingStage({
           sectionKey,
           instructions: remarks,
           useMappedEvidence,
+          ...figureInjection,
           generationMode,
           autoCitationRepair: false,
           usePersonaStyle,
@@ -2479,7 +2715,7 @@ export default function SectionDraftingStage({
     } finally {
       setSectionLoading(prev => ({ ...prev, [sectionKey]: false }));
     }
-  }, [sessionId, authToken, regenRemarks, usePersonaStyle, personaSelection, refreshSession, isMappedEvidenceEnabled, setCitationValidationForSection, clearCitationValidationForSection]);
+  }, [sessionId, authToken, regenRemarks, usePersonaStyle, personaSelection, refreshSession, isMappedEvidenceEnabled, buildFigureInjectionPayload, setCitationValidationForSection, clearCitationValidationForSection]);
 
   // ============================================================================
   // Citations & Bibliography
@@ -3487,6 +3723,13 @@ export default function SectionDraftingStage({
                     const autoCitationEnabled = autoCitationAvailable ? isMappedEvidenceEnabled(keyName) : false;
                     const instruction = userInstructions[keyName];
                     const instructionActive = Boolean(instruction?.instruction) && instruction?.isActive !== false;
+                    const figureInjectionState = getFigureInjectionState(keyName);
+                    const sortedFigures = getSortedFiguresForSection(keyName);
+                    const selectedFigureSet = new Set(figureInjectionState.selectedFigureIds);
+                    const selectedFigures = sortedFigures.filter((figure) => selectedFigureSet.has(figure.id));
+                    const hasFigureOptions = sortedFigures.length > 0;
+                    const recommendedFigureIds = getRecommendedFigureIds(keyName);
+                    const recommendedFigureCount = recommendedFigureIds.length;
 
                     return (
                       <div key={keyName} className="section-wrapper group/section relative">
@@ -3555,6 +3798,140 @@ export default function SectionDraftingStage({
                             />
                           </div>
                         )}
+
+                        <div className="mb-2 rounded-lg border border-slate-200/80 bg-slate-50/70 px-3 py-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <label className={`inline-flex items-center gap-2 text-xs font-medium ${hasFigureOptions ? 'text-slate-700' : 'text-slate-400'}`}>
+                              <input
+                                type="checkbox"
+                                checked={figureInjectionState.enabled}
+                                onChange={() => toggleFigureInjection(keyName)}
+                                disabled={!hasFigureOptions || isWorking || autoModeRunning}
+                                className="h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500 disabled:cursor-not-allowed"
+                              />
+                              <span>Ground with figures</span>
+                            </label>
+
+                            {hasFigureOptions ? (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setFigurePickerOpenBySection(prev => ({
+                                    ...prev,
+                                    [normalizedKey]: !prev[normalizedKey]
+                                  }))}
+                                  disabled={!figureInjectionState.enabled || isWorking || autoModeRunning}
+                                  className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-slate-600 hover:border-violet-300 hover:text-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {selectedFigures.length > 0 ? `${selectedFigures.length} selected` : 'Choose'}
+                                </button>
+                                {recommendedFigureCount > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => applyRecommendedFigureSelection(keyName)}
+                                    disabled={!figureInjectionState.enabled || isWorking || autoModeRunning}
+                                    className="rounded-full border border-violet-200 bg-violet-50 px-2.5 py-0.5 text-[11px] font-medium text-violet-700 hover:bg-violet-100 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    Recommended
+                                  </button>
+                                )}
+                                {selectedFigures.length > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => clearSelectedFiguresForSection(keyName)}
+                                    disabled={!figureInjectionState.enabled || isWorking || autoModeRunning}
+                                    className="rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-[11px] font-medium text-slate-500 hover:border-rose-200 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
+                                  >
+                                    Clear
+                                  </button>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-[11px] text-slate-400">No figures available yet</span>
+                            )}
+                          </div>
+
+                          {figureInjectionState.enabled && selectedFigures.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1.5">
+                              {selectedFigures.map((figure) => (
+                                <span
+                                  key={figure.id}
+                                  className="inline-flex items-center gap-1 rounded-full border border-violet-200 bg-white px-2 py-0.5 text-[11px] text-violet-700"
+                                >
+                                  <span className="font-medium">Fig. {figure.figureNo}</span>
+                                  <span className="max-w-[160px] truncate">{figure.title}</span>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {figureInjectionState.enabled && figurePickerOpenBySection[normalizedKey] && hasFigureOptions && (
+                            <div className="mt-2 rounded-md border border-slate-200 bg-white p-2">
+                              <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                                <span>Select only the figures this section should use.</span>
+                                <button
+                                  type="button"
+                                  onClick={() => selectAllFiguresForSection(keyName)}
+                                  className="rounded-full border border-slate-200 px-2 py-0.5 font-medium text-slate-600 hover:border-slate-300 hover:text-slate-800"
+                                >
+                                  All
+                                </button>
+                              </div>
+                              <div className="space-y-2">
+                                {sortedFigures.map((figure) => {
+                                  const isSelected = selectedFigureSet.has(figure.id);
+                                  const isRecommended = isFigureRecommendedForSection(figure, keyName);
+                                  const relevantSectionLabel = typeof figure.suggestionMeta?.relevantSection === 'string'
+                                    ? figure.suggestionMeta.relevantSection.trim()
+                                    : '';
+                                  const inferredSummary = typeof figure.inferredImageMeta?.summary === 'string'
+                                    ? figure.inferredImageMeta.summary.trim()
+                                    : '';
+                                  const helperText = inferredSummary || figure.caption || figure.description || figure.notes || '';
+
+                                  return (
+                                    <label
+                                      key={figure.id}
+                                      className={`flex cursor-pointer items-start gap-2 rounded-md border px-2 py-2 transition-colors ${
+                                        isSelected
+                                          ? 'border-violet-300 bg-violet-50/70'
+                                          : 'border-slate-200 hover:border-slate-300 hover:bg-slate-50'
+                                      }`}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={isSelected}
+                                        onChange={() => toggleFigureSelection(keyName, figure.id)}
+                                        className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 text-violet-600 focus:ring-violet-500"
+                                      />
+                                      <div className="min-w-0 flex-1">
+                                        <div className="flex flex-wrap items-center gap-1.5">
+                                          <span className="text-xs font-semibold text-slate-700">Figure {figure.figureNo}</span>
+                                          <span className="text-xs text-slate-600">{figure.title}</span>
+                                          {isRecommended && (
+                                            <span className="rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-medium text-violet-700">
+                                              Recommended
+                                            </span>
+                                          )}
+                                          {relevantSectionLabel && (
+                                            <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500">
+                                              {relevantSectionLabel}
+                                            </span>
+                                          )}
+                                        </div>
+                                        {helperText && (
+                                          <p className="mt-1 text-[11px] leading-4 text-slate-500">
+                                            {helperText}
+                                          </p>
+                                        )}
+                                      </div>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
 
                         <div className="relative">
                           <PaperMarkdownEditor

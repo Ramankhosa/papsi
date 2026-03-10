@@ -210,13 +210,15 @@ function toResponse(plan: any) {
     figureNo: plan.figureNo,
     title: plan.title,
     caption: meta.caption || plan.description || '',
+    description: plan.description || '',
     figureType,
     category,
     notes: meta.notes || '',
     status,
     imagePath,
     generatedCode: meta.generatedCode || null,
-    suggestionMeta: meta.suggestionMeta || null
+    suggestionMeta: meta.suggestionMeta || null,
+    inferredImageMeta: meta.inferredImageMeta || null
   };
 }
 

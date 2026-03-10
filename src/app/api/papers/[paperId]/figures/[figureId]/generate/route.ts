@@ -26,6 +26,8 @@ import {
 } from '@/lib/figure-generation/preferences';
 import { generatePaperSketch } from '@/lib/figure-generation/paper-sketch-service';
 import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image';
+import { llmGateway } from '@/lib/metering/gateway';
+import type { TaskCode } from '@prisma/client';
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
@@ -193,6 +195,7 @@ const generateSchema = z.object({
 
 // Use absolute path for reliable file operations
 const FIGURE_UPLOAD_DIR = path.join(process.cwd(), 'public/uploads/figures');
+const FIGURE_METADATA_STAGE_CODE = 'PAPER_FIGURE_METADATA_INFER';
 
 async function getSessionForUser(sessionId: string, user: { id: string; roles?: string[] }) {
   const where = user.roles?.includes('SUPER_ADMIN')
@@ -520,6 +523,205 @@ function normalizeDiagramSpec(spec?: DiagramStructuredSpec | null): DiagramStruc
     groups,
     splitSuggestion: spec.splitSuggestion ? sanitizeAscii(spec.splitSuggestion).slice(0, 140) : undefined
   };
+}
+
+interface FigureInferenceMeta {
+  summary: string;
+  visibleElements: string[];
+  visibleText: string[];
+  chartSignals: string[];
+  claimsSupported: string[];
+  claimsToAvoid: string[];
+  inferredAt: string;
+  model?: string;
+}
+
+function extractJsonObjectFromOutput(raw: string): Record<string, unknown> | null {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return null;
+
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenced ? fenced[1].trim() : trimmed;
+  const firstBrace = candidate.indexOf('{');
+  const lastBrace = candidate.lastIndexOf('}');
+  if (firstBrace === -1 || lastBrace <= firstBrace) return null;
+
+  try {
+    return JSON.parse(candidate.slice(firstBrace, lastBrace + 1)) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function cleanInferenceText(value: unknown, maxLength: number): string {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1).trim()}…` : text;
+}
+
+function cleanInferenceList(value: unknown, maxItems: number, maxLength: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(
+      value
+        .map((entry) => cleanInferenceText(entry, maxLength))
+        .filter(Boolean)
+        .slice(0, maxItems)
+    )
+  );
+}
+
+function parseFigureInferenceMeta(
+  raw: unknown,
+  inferredAt: string,
+  model?: string
+): FigureInferenceMeta | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const summary = cleanInferenceText(record.summary, 320);
+  const visibleElements = cleanInferenceList(record.visibleElements, 6, 80);
+  const visibleText = cleanInferenceList(record.visibleText, 8, 80);
+  const chartSignals = cleanInferenceList(record.chartSignals, 6, 120);
+  const claimsSupported = cleanInferenceList(record.claimsSupported, 6, 140);
+  const claimsToAvoid = cleanInferenceList(record.claimsToAvoid, 6, 140);
+
+  if (!summary && visibleElements.length === 0 && visibleText.length === 0 && chartSignals.length === 0) {
+    return null;
+  }
+
+  return {
+    summary,
+    visibleElements,
+    visibleText,
+    chartSignals,
+    claimsSupported,
+    claimsToAvoid,
+    inferredAt,
+    ...(model ? { model } : {})
+  };
+}
+
+async function inferFigureImageMetadata(params: {
+  requestHeaders: Record<string, string>;
+  imageBase64: string;
+  mimeType: string;
+  title: string;
+  caption?: string | null;
+  category: string;
+  figureType: string;
+  suggestionMeta?: Record<string, unknown> | null;
+}): Promise<FigureInferenceMeta | null> {
+  const suggestionMeta = params.suggestionMeta && typeof params.suggestionMeta === 'object'
+    ? params.suggestionMeta
+    : null;
+  const prompt = `You are extracting evidence-safe metadata from a research-paper figure image.
+
+Return ONLY valid JSON with this exact shape:
+{
+  "summary": "1-2 sentence visible summary",
+  "visibleElements": ["up to 6 concrete visible elements"],
+  "visibleText": ["up to 8 short labels or text strings that are visibly present"],
+  "chartSignals": ["up to 6 directly visible trends, comparisons, or visual signals"],
+  "claimsSupported": ["up to 6 conservative claims directly supported by the figure"],
+  "claimsToAvoid": ["up to 6 claims that would overreach the visible evidence"]
+}
+
+Rules:
+- Describe only what is visible in the image or explicit from visible labels/axes/legends.
+- Use the metadata below only to disambiguate the figure purpose; do not invent unseen details.
+- Keep each list item short and concrete.
+- If text is unreadable or absent, return an empty array for "visibleText".
+- "claimsSupported" must stay strictly observational.
+- "claimsToAvoid" should flag causal, statistical, or performance claims not proven by the image alone.
+
+Figure metadata:
+- Title: ${cleanInferenceText(params.title, 160)}
+- Caption: ${cleanInferenceText(params.caption, 220) || 'None'}
+- Category: ${cleanInferenceText(params.category, 40)}
+- Figure type: ${cleanInferenceText(params.figureType, 40)}
+- Suggestion meta: ${cleanInferenceText(suggestionMeta ? JSON.stringify(suggestionMeta) : 'None', 600)}`;
+
+  try {
+    const result = await llmGateway.executeLLMOperation(
+      { headers: params.requestHeaders },
+      {
+        taskCode: 'LLM3_DIAGRAM' as TaskCode,
+        stageCode: FIGURE_METADATA_STAGE_CODE,
+        content: {
+          parts: [
+            { type: 'text', text: prompt },
+            {
+              type: 'image',
+              image: {
+                mimeType: params.mimeType,
+                data: params.imageBase64,
+                description: cleanInferenceText(params.title, 120) || 'Research figure'
+              }
+            }
+          ]
+        },
+        parameters: {
+          temperature: 0,
+          reasoning_effort: 'low'
+        },
+        metadata: {
+          module: 'paper-figures',
+          stageCode: FIGURE_METADATA_STAGE_CODE,
+          category: params.category,
+          figureType: params.figureType
+        }
+      }
+    );
+
+    if (!result.success || !result.response?.output) {
+      return null;
+    }
+
+    const inferredAt = new Date().toISOString();
+    const parsed = extractJsonObjectFromOutput(result.response.output);
+    return parseFigureInferenceMeta(parsed, inferredAt, result.response.modelClass || undefined);
+  } catch (error) {
+    console.warn('[PaperFigures] Figure metadata inference failed:', error);
+    return null;
+  }
+}
+
+async function inferFigureMetadataFromStoredImage(params: {
+  requestHeaders: Record<string, string>;
+  imagePath: string;
+  title: string;
+  caption?: string | null;
+  category: string;
+  figureType: string;
+  suggestionMeta?: Record<string, unknown> | null;
+}): Promise<FigureInferenceMeta | null> {
+  try {
+    const relativePath = params.imagePath.startsWith('/')
+      ? params.imagePath.slice(1)
+      : params.imagePath;
+    const absolutePath = path.join(process.cwd(), 'public', relativePath);
+    const buffer = await fs.readFile(absolutePath);
+    const lowerPath = params.imagePath.toLowerCase();
+    const mimeType = lowerPath.endsWith('.svg')
+      ? 'image/svg+xml'
+      : lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg')
+        ? 'image/jpeg'
+        : 'image/png';
+
+    return inferFigureImageMetadata({
+      requestHeaders: params.requestHeaders,
+      imageBase64: buffer.toString('base64'),
+      mimeType,
+      title: params.title,
+      caption: params.caption,
+      category: params.category,
+      figureType: params.figureType,
+      suggestionMeta: params.suggestionMeta
+    });
+  } catch (error) {
+    console.warn('[PaperFigures] Stored-image metadata inference failed:', error);
+    return null;
+  }
 }
 
 export async function POST(
@@ -969,8 +1171,32 @@ export async function POST(
           }, user.id, undefined);
 
           if (sketchResult.success && sketchResult.imagePath) {
-            // The sketch service already saved the image and updated the figurePlan.
-            // Return the result to be consistent with chart/diagram responses.
+            const inferredImageMeta = await inferFigureMetadataFromStoredImage({
+              requestHeaders,
+              imagePath: sketchResult.imagePath,
+              title: data.title,
+              caption: data.caption,
+              category: data.category,
+              figureType: data.figureType,
+              suggestionMeta: sketchMeta
+            });
+
+            if (inferredImageMeta) {
+              const latestPlan = await prisma.figurePlan.findUnique({
+                where: { id: figureId }
+              });
+              const latestNodes = (latestPlan?.nodes as any) || {};
+              await prisma.figurePlan.update({
+                where: { id: figureId },
+                data: {
+                  nodes: {
+                    ...latestNodes,
+                    inferredImageMeta
+                  } as any
+                }
+              });
+            }
+
             return NextResponse.json({
               success: true,
               imagePath: resolvePaperFigureImageUrl(sessionId, figureId, sketchResult.imagePath),
@@ -1018,6 +1244,16 @@ export async function POST(
     const checksum = crypto.createHash('sha256').update(buffer).digest('hex');
     const imagePath = `/uploads/figures/${filename}`;
     const nowIso = new Date().toISOString();
+    const inferredImageMeta = await inferFigureImageMetadata({
+      requestHeaders,
+      imageBase64: result.imageBase64,
+      mimeType: format === 'svg' ? 'image/svg+xml' : format === 'jpg' || format === 'jpeg' ? 'image/jpeg' : 'image/png',
+      title: data.title,
+      caption: data.caption,
+      category: data.category,
+      figureType: data.figureType,
+      suggestionMeta: data.suggestionMeta || meta.suggestionMeta || null
+    });
 
     // Update the figure plan with the generated image
     // NOTE: imagePath is stored in nodes JSON since the schema doesn't have a dedicated field
@@ -1048,6 +1284,7 @@ export async function POST(
           checksum,
           generatedCode: result.generatedCode,
           fileSize: buffer.length,
+          inferredImageMeta: inferredImageMeta || meta.inferredImageMeta || null,
           appliedPreferences: normalizedPreferences,
           suggestionMeta: data.suggestionMeta || meta.suggestionMeta || null,
           lastModificationRequest: data.modificationRequest || null,

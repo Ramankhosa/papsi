@@ -2480,6 +2480,23 @@ COHERENCE RULES (Always Apply)
   // ── Persuasion Block ───────────────────────────────────────────────────────
 
   {
+    templateKey: 'figure_grounding_block',
+    applicationMode: 'paper',
+    sectionScope: '*',
+    paperTypeScope: '*',
+    content: `FIGURE GROUNDING RULES:
+- Use only the supplied figure metadata; do not invent or infer unseen visual details.
+- Mention figures only when they materially support the section's claims.
+- Refer to figures only as [Figure N].
+- In Methodology, use figures to explain setup, architecture, workflow, or procedure — not outcome claims.
+- In Results, report only observations that are explicitly grounded in the selected figure metadata.
+- In Discussion, interpret only patterns that are already grounded in Results or figure metadata.
+- If figure metadata is insufficient for a claim, omit the claim rather than speculate.`,
+    priority: 0,
+    description: 'Guidance block for grounding section drafting on user-selected figures.'
+  },
+
+  {
     templateKey: 'persuasion_block',
     applicationMode: 'paper',
     sectionScope: '*',

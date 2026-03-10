@@ -22,6 +22,7 @@ import { researchIntentLockService, type ResearchIntentLock } from '@/lib/servic
 import { buildRhetoricalPromptBlock, type RhetoricalBlueprint } from '@/lib/services/rhetorical-blueprint-service';
 import { rhetoricalComposerService } from '@/lib/services/rhetorical-composer-service';
 import { systemPromptTemplateService, TEMPLATE_KEYS } from '@/lib/services/system-prompt-template-service';
+import { resolvePaperFigureImageUrl } from '@/lib/figure-generation/paper-figure-image';
 import {
   buildCitationKeyLookup,
   citationKeyIdentity,
@@ -63,6 +64,8 @@ const generateSchema = z.object({
   temperature: z.number().min(0).max(1).optional(),
   maxOutputTokens: z.number().int().positive().optional(), // Deprecated: output tokens now controlled via super admin LLM config
   useMappedEvidence: z.boolean().optional(),
+  useFigures: z.boolean().optional(),
+  selectedFigureIds: z.array(z.string().min(1)).max(12).optional(),
   generationMode: z.enum(['two_pass', 'topup_final']).optional(),
   autoCitationRepair: z.boolean().optional(),
   // Persona style support (borrowed from patent drafting)
@@ -79,6 +82,8 @@ const startDimensionFlowSchema = z.object({
   sectionKey: z.string().min(1),
   instructions: z.string().max(5000).optional(),
   useMappedEvidence: z.boolean().optional(),
+  useFigures: z.boolean().optional(),
+  selectedFigureIds: z.array(z.string().min(1)).max(12).optional(),
   temperature: z.number().min(0).max(1).optional()
 });
 
@@ -88,7 +93,9 @@ const generateDimensionSchema = z.object({
   feedback: z.string().max(2000).optional(),
   forceRegenerate: z.boolean().optional(),
   temperature: z.number().min(0).max(1).optional(),
-  useMappedEvidence: z.boolean().optional()
+  useMappedEvidence: z.boolean().optional(),
+  useFigures: z.boolean().optional(),
+  selectedFigureIds: z.array(z.string().min(1)).max(12).optional()
 });
 
 const acceptDimensionSchema = z.object({
@@ -97,6 +104,8 @@ const acceptDimensionSchema = z.object({
   content: z.string().optional(),
   prefetchNext: z.boolean().optional(),
   useMappedEvidence: z.boolean().optional(),
+  useFigures: z.boolean().optional(),
+  selectedFigureIds: z.array(z.string().min(1)).max(12).optional(),
   allowCitationBypass: z.boolean().optional()
 });
 
@@ -105,7 +114,9 @@ const rejectDimensionSchema = z.object({
   dimensionKey: z.string().min(1),
   feedback: z.string().max(2000).optional(),
   temperature: z.number().min(0).max(1).optional(),
-  useMappedEvidence: z.boolean().optional()
+  useMappedEvidence: z.boolean().optional(),
+  useFigures: z.boolean().optional(),
+  selectedFigureIds: z.array(z.string().min(1)).max(12).optional()
 });
 
 const getDimensionFlowSchema = z.object({
@@ -1595,6 +1606,42 @@ interface EvidencePromptContext {
   evidenceDigest: SectionEvidencePack['evidenceDigest'];
 }
 
+interface FigureInferenceMeta {
+  summary?: string;
+  visibleElements?: string[];
+  visibleText?: string[];
+  chartSignals?: string[];
+  claimsSupported?: string[];
+  claimsToAvoid?: string[];
+  inferredAt?: string;
+}
+
+interface FigurePromptEntry {
+  id: string;
+  figureNo: number;
+  title: string;
+  caption?: string;
+  description?: string;
+  notes?: string;
+  category?: string;
+  figureType?: string;
+  status?: string;
+  imagePath?: string;
+  relevantSection?: string;
+  figureRole?: string;
+  whyThisFigure?: string;
+  dataNeeded?: string;
+  sectionFitJustification?: string;
+  structuredHint?: string;
+  inferredImageMeta?: FigureInferenceMeta | null;
+}
+
+interface FigurePromptContext {
+  useFigures: boolean;
+  selectedFigureIds: string[];
+  figures: FigurePromptEntry[];
+}
+
 interface DimensionPlanEntry {
   dimensionKey: string;
   dimensionLabel: string;
@@ -2250,6 +2297,259 @@ function extractJsonObjectFromOutput(raw: string): Record<string, unknown> | nul
   return null;
 }
 
+function normalizeSelectedFigureIds(rawIds?: string[] | null): string[] {
+  if (!Array.isArray(rawIds)) return [];
+  return Array.from(new Set(
+    rawIds.map((id) => String(id || '').trim()).filter(Boolean)
+  ));
+}
+
+function cleanPromptFigureText(value: unknown, maxLength: number = 240): string {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1).trim()}…` : text;
+}
+
+function summarizeFigureStructuredHint(meta: Record<string, unknown>): string {
+  const chartSpec = asRecord(meta.chartSpec);
+  if (Object.keys(chartSpec).length > 0) {
+    const xAxisLabel = cleanPromptFigureText(chartSpec.xAxisLabel, 60);
+    const yAxisLabel = cleanPromptFigureText(chartSpec.yAxisLabel, 60);
+    const series = Array.isArray(chartSpec.series)
+      ? (chartSpec.series as Array<Record<string, unknown>>)
+          .map((entry) => cleanPromptFigureText(entry.label, 40))
+          .filter(Boolean)
+      : [];
+    const segments = [
+      xAxisLabel ? `x=${xAxisLabel}` : '',
+      yAxisLabel ? `y=${yAxisLabel}` : '',
+      series.length > 0 ? `series=${series.join(', ')}` : ''
+    ].filter(Boolean);
+    return segments.join(' | ');
+  }
+
+  const diagramSpec = asRecord(meta.diagramSpec);
+  if (Object.keys(diagramSpec).length > 0) {
+    const layout = cleanPromptFigureText(diagramSpec.layout, 20);
+    const nodes = Array.isArray(diagramSpec.nodes) ? diagramSpec.nodes.length : 0;
+    const edges = Array.isArray(diagramSpec.edges) ? diagramSpec.edges.length : 0;
+    const groups = Array.isArray(diagramSpec.groups) ? diagramSpec.groups.length : 0;
+    const segments = [
+      layout ? `layout=${layout}` : '',
+      nodes > 0 ? `nodes=${nodes}` : '',
+      edges > 0 ? `edges=${edges}` : '',
+      groups > 0 ? `groups=${groups}` : ''
+    ].filter(Boolean);
+    return segments.join(' | ');
+  }
+
+  const illustrationSpec = asRecord(meta.illustrationSpecV2);
+  if (Object.keys(illustrationSpec).length > 0) {
+    const layout = cleanPromptFigureText(illustrationSpec.layout, 20);
+    const panelCount = Number(illustrationSpec.panelCount);
+    const figureGenre = cleanPromptFigureText(
+      illustrationSpec.figureGenre || meta.figureGenre,
+      40
+    );
+    const segments = [
+      layout ? `layout=${layout}` : '',
+      Number.isFinite(panelCount) && panelCount > 0 ? `panels=${panelCount}` : '',
+      figureGenre ? `genre=${figureGenre}` : ''
+    ].filter(Boolean);
+    return segments.join(' | ');
+  }
+
+  return '';
+}
+
+function parseFigureInferenceMeta(value: unknown): FigureInferenceMeta | null {
+  const meta = asRecord(value);
+  if (Object.keys(meta).length === 0) return null;
+  const summary = cleanPromptFigureText(meta.summary, 400);
+  const visibleElements = Array.isArray(meta.visibleElements)
+    ? meta.visibleElements.map((item) => cleanPromptFigureText(item, 80)).filter(Boolean)
+    : [];
+  const visibleText = Array.isArray(meta.visibleText)
+    ? meta.visibleText.map((item) => cleanPromptFigureText(item, 80)).filter(Boolean)
+    : [];
+  const chartSignals = Array.isArray(meta.chartSignals)
+    ? meta.chartSignals.map((item) => cleanPromptFigureText(item, 120)).filter(Boolean)
+    : [];
+  const claimsSupported = Array.isArray(meta.claimsSupported)
+    ? meta.claimsSupported.map((item) => cleanPromptFigureText(item, 140)).filter(Boolean)
+    : [];
+  const claimsToAvoid = Array.isArray(meta.claimsToAvoid)
+    ? meta.claimsToAvoid.map((item) => cleanPromptFigureText(item, 140)).filter(Boolean)
+    : [];
+  const inferredAt = cleanPromptFigureText(meta.inferredAt, 40);
+
+  if (!summary && visibleElements.length === 0 && visibleText.length === 0 && chartSignals.length === 0) {
+    return null;
+  }
+
+  return {
+    ...(summary ? { summary } : {}),
+    ...(visibleElements.length > 0 ? { visibleElements } : {}),
+    ...(visibleText.length > 0 ? { visibleText } : {}),
+    ...(chartSignals.length > 0 ? { chartSignals } : {}),
+    ...(claimsSupported.length > 0 ? { claimsSupported } : {}),
+    ...(claimsToAvoid.length > 0 ? { claimsToAvoid } : {}),
+    ...(inferredAt ? { inferredAt } : {})
+  };
+}
+
+function buildFallbackFigureSelection(
+  figures: FigurePromptEntry[],
+  sectionKey: string
+): FigurePromptEntry[] {
+  const normalizedSectionKey = normalizeSectionKey(sectionKey);
+  const exactMatches = figures.filter((figure) => normalizeSectionKey(figure.relevantSection || '') === normalizedSectionKey);
+  if (exactMatches.length > 0) return exactMatches;
+
+  if (normalizedSectionKey === 'methodology') {
+    const candidates = figures.filter((figure) =>
+      figure.figureRole === 'EXPLAIN_METHOD'
+      || figure.category === 'DIAGRAM'
+      || figure.category === 'ILLUSTRATED_FIGURE'
+    );
+    if (candidates.length > 0) return candidates;
+  }
+
+  if (normalizedSectionKey === 'results') {
+    const candidates = figures.filter((figure) =>
+      figure.figureRole === 'SHOW_RESULTS'
+      || figure.category === 'DATA_CHART'
+      || figure.category === 'STATISTICAL_PLOT'
+    );
+    if (candidates.length > 0) return candidates;
+  }
+
+  if (normalizedSectionKey === 'discussion') {
+    const candidates = figures.filter((figure) => figure.figureRole === 'INTERPRET');
+    if (candidates.length > 0) return candidates;
+  }
+
+  return [];
+}
+
+async function loadFigurePromptContext(params: {
+  sessionId: string;
+  sectionKey: string;
+  useFigures?: boolean;
+  selectedFigureIds?: string[];
+}): Promise<FigurePromptContext> {
+  if (params.useFigures !== true) {
+    return { useFigures: false, selectedFigureIds: [], figures: [] };
+  }
+
+  const selectedFigureIds = normalizeSelectedFigureIds(params.selectedFigureIds);
+  const plans = await prisma.figurePlan.findMany({
+    where: {
+      sessionId: params.sessionId,
+      ...(selectedFigureIds.length > 0 ? { id: { in: selectedFigureIds } } : {})
+    },
+    orderBy: { figureNo: 'asc' }
+  });
+
+  const figures = plans
+    .map<FigurePromptEntry | null>((plan) => {
+      const meta = asRecord(plan.nodes);
+      if (meta.isDeleted === true || meta.deleted === true || meta.status === 'DELETED') {
+        return null;
+      }
+
+      const suggestionMeta = asRecord(meta.suggestionMeta);
+      return {
+        id: plan.id,
+        figureNo: Number(plan.figureNo),
+        title: cleanPromptFigureText(plan.title, 140) || `Figure ${plan.figureNo}`,
+        caption: cleanPromptFigureText(meta.caption || plan.description, 220),
+        description: cleanPromptFigureText(plan.description, 220),
+        notes: cleanPromptFigureText(meta.notes, 220),
+        category: cleanPromptFigureText(meta.category, 40),
+        figureType: cleanPromptFigureText(meta.figureType, 40),
+        status: cleanPromptFigureText(meta.status, 40),
+        imagePath: resolvePaperFigureImageUrl(params.sessionId, plan.id, cleanPromptFigureText(meta.imagePath, 180)) || undefined,
+        relevantSection: cleanPromptFigureText(suggestionMeta.relevantSection, 40),
+        figureRole: cleanPromptFigureText(suggestionMeta.figureRole, 40),
+        whyThisFigure: cleanPromptFigureText(suggestionMeta.whyThisFigure, 220),
+        dataNeeded: cleanPromptFigureText(suggestionMeta.dataNeeded, 220),
+        sectionFitJustification: cleanPromptFigureText(suggestionMeta.sectionFitJustification, 180),
+        structuredHint: summarizeFigureStructuredHint(suggestionMeta),
+        inferredImageMeta: parseFigureInferenceMeta(meta.inferredImageMeta)
+      };
+    })
+    .filter((entry): entry is FigurePromptEntry => entry !== null);
+
+  const effectiveFigures = selectedFigureIds.length > 0
+    ? figures
+    : buildFallbackFigureSelection(figures, params.sectionKey);
+
+  return {
+    useFigures: effectiveFigures.length > 0,
+    selectedFigureIds,
+    figures: effectiveFigures
+  };
+}
+
+function formatSelectedFigureContext(figureContext: FigurePromptContext, sectionKey: string): string {
+  if (!figureContext.useFigures || figureContext.figures.length === 0) {
+    return '';
+  }
+
+  const normalizedSectionKey = normalizeSectionKey(sectionKey);
+  const header = [
+    'FIGURE GROUNDING (USER-SELECTED OR SECTION-MATCHED):',
+    '- Treat only the figure metadata below as authoritative; do not invent unseen visual details.',
+    '- Reference figures in prose only as [Figure N].',
+    normalizedSectionKey === 'methodology'
+      ? '- In Methodology, use figures only to explain setup, flow, architecture, or procedure; do not claim outcome improvements from them.'
+      : normalizedSectionKey === 'results'
+        ? '- In Results, report only observations that are supported by the selected figures or their stored metadata.'
+        : normalizedSectionKey === 'discussion'
+          ? '- In Discussion, interpret only patterns already grounded in the selected figures or reported results.'
+          : '- Use figures only when they directly strengthen this section.'
+  ];
+
+  const blocks = figureContext.figures.map((figure) => {
+    const lines = [
+      `Figure ${figure.figureNo}: ${figure.title}`,
+      figure.relevantSection ? `  Suggested section: ${figure.relevantSection}` : '',
+      figure.figureRole ? `  Role: ${figure.figureRole}` : '',
+      figure.category || figure.figureType
+        ? `  Type: ${[figure.category, figure.figureType].filter(Boolean).join(' / ')}`
+        : '',
+      figure.caption ? `  Caption: ${figure.caption}` : '',
+      figure.description ? `  Description: ${figure.description}` : '',
+      figure.notes ? `  Notes: ${figure.notes}` : '',
+      figure.whyThisFigure ? `  Why this figure: ${figure.whyThisFigure}` : '',
+      figure.dataNeeded ? `  Data represented: ${figure.dataNeeded}` : '',
+      figure.sectionFitJustification ? `  Section fit: ${figure.sectionFitJustification}` : '',
+      figure.structuredHint ? `  Structured hint: ${figure.structuredHint}` : '',
+      figure.inferredImageMeta?.summary ? `  Visible summary: ${figure.inferredImageMeta.summary}` : '',
+      figure.inferredImageMeta?.visibleElements?.length
+        ? `  Visible elements: ${figure.inferredImageMeta.visibleElements.join('; ')}`
+        : '',
+      figure.inferredImageMeta?.visibleText?.length
+        ? `  Visible text: ${figure.inferredImageMeta.visibleText.join('; ')}`
+        : '',
+      figure.inferredImageMeta?.chartSignals?.length
+        ? `  Visible signals: ${figure.inferredImageMeta.chartSignals.join('; ')}`
+        : '',
+      figure.inferredImageMeta?.claimsSupported?.length
+        ? `  Supported claims: ${figure.inferredImageMeta.claimsSupported.join('; ')}`
+        : '',
+      figure.inferredImageMeta?.claimsToAvoid?.length
+        ? `  Avoid claiming: ${figure.inferredImageMeta.claimsToAvoid.join('; ')}`
+        : ''
+    ].filter(Boolean);
+
+    return lines.join('\n');
+  });
+
+  return `${header.join('\n')}\n\n${blocks.join('\n\n')}`;
+}
+
 function extractSectionOutput(
   rawOutput: string
 ): { content: string; memory: Record<string, unknown> | null } {
@@ -2669,6 +2969,7 @@ interface SectionPromptRuntimeBundle {
   sectionWordBudget?: number;
   blueprintPromptContext?: BlueprintPromptContext;
   evidencePromptContext: EvidencePromptContext;
+  figurePromptContext: FigurePromptContext;
   previousSectionMemories: PreviousSectionMemoryEntry[];
 }
 
@@ -2977,6 +3278,7 @@ async function buildPrompt(
   writingSampleBlock?: string,
   blueprintContext?: BlueprintPromptContext,
   evidenceContext?: EvidencePromptContext,
+  figureContext?: FigurePromptContext,
   outputMode: SectionPromptOutputMode = 'markdown',
   previousSectionMemories?: PreviousSectionMemoryEntry[]
 ): Promise<string> {
@@ -3138,10 +3440,32 @@ async function buildPrompt(
     && !hasCoveragePlaceholders
     ? `\n\n${coverageNotes}`
     : '';
+  const figureGroundingFallback = `FIGURE GROUNDING RULES:
+- Use only the figure metadata supplied below; do not infer visual details beyond it.
+- Mention figures only when they materially support the section's claims.
+- Refer to them as [Figure N].
+- In Methodology, use figures to explain setup/process only.
+- In Results, report only observations grounded in the figure metadata.
+- In Discussion, interpret only patterns already grounded in results/figures.`;
+  const figureContextBlockText = formatSelectedFigureContext(figureContext || { useFigures: false, selectedFigureIds: [], figures: [] }, sectionKey);
+  const figureGroundingBlock = figureContextBlockText
+    ? await systemPromptTemplateService.resolveWithFallback(
+        {
+          templateKey: TEMPLATE_KEYS.FIGURE_GROUNDING_BLOCK,
+          applicationMode: 'paper',
+          sectionScope: sectionKey,
+          paperTypeScope: paperTypeCode
+        },
+        figureGroundingFallback
+      )
+    : '';
 
   const userBlock = userInstructions ? `\n\nUSER INSTRUCTIONS:\n${userInstructions}` : '';
   const styleBlock = writingSampleBlock ? `\n\n${writingSampleBlock}` : '';
   const crossSectionBlock = formatPreviousSectionMemoriesBlock(previousSectionMemories || []);
+  const figureBlock = figureContextBlockText
+    ? `\n\n${figureGroundingBlock}\n\n${figureContextBlockText}`
+    : '';
   const outputInstructions = outputMode === 'pass1_json'
     ? buildPass1ArtifactOutputInstructions(blueprintContext, evidenceContext)
     : `OUTPUT FORMAT (MANDATORY):
@@ -3152,7 +3476,7 @@ async function buildPrompt(
 - Preserve citation placeholders exactly in [CITE:key] format.
 - Do not use HTML tags.`;
 
-  return `${basePrompt}${topicBlock}${archetypeBlock}${crossSectionBlock}${rhetoricalBlock ? `\n\n${rhetoricalBlock}` : ''}${evidenceBlock}${coverageBlock}${citationsBlock}${styleBlock}${userBlock}
+  return `${basePrompt}${topicBlock}${archetypeBlock}${crossSectionBlock}${rhetoricalBlock ? `\n\n${rhetoricalBlock}` : ''}${evidenceBlock}${coverageBlock}${figureBlock}${citationsBlock}${styleBlock}${userBlock}
 
 ${outputInstructions}`;
 }
@@ -3440,6 +3764,8 @@ async function generateSection(
     sectionKey,
     instructions: payload.instructions,
     useMappedEvidence: payload.useMappedEvidence,
+    useFigures: payload.useFigures,
+    selectedFigureIds: payload.selectedFigureIds,
     writingSampleBlock,
     tenantContext
   });
@@ -3998,6 +4324,8 @@ async function buildSectionPromptRuntimeBundle(params: {
   sectionKey: string;
   instructions?: string;
   useMappedEvidence?: boolean;
+  useFigures?: boolean;
+  selectedFigureIds?: string[];
   writingSampleBlock?: string;
   tenantContext?: TenantContext | null;
 }): Promise<SectionPromptRuntimeBundle> {
@@ -4021,6 +4349,12 @@ async function buildSectionPromptRuntimeBundle(params: {
 
   const draft = await getPaperDraft(sessionId);
   const extraSections = normalizeExtraSections(draft?.extraSections);
+  const figurePromptContext = await loadFigurePromptContext({
+    sessionId,
+    sectionKey: normalizedSectionKey,
+    useFigures: params.useFigures,
+    selectedFigureIds: params.selectedFigureIds
+  });
 
   let blueprintPromptContext: BlueprintPromptContext | undefined;
   let blueprintWordBudget: number | undefined;
@@ -4146,6 +4480,7 @@ async function buildSectionPromptRuntimeBundle(params: {
     params.writingSampleBlock,
     blueprintPromptContext,
     evidencePromptContext,
+    figurePromptContext,
     'markdown',
     previousSectionMemories
   );
@@ -4158,6 +4493,7 @@ async function buildSectionPromptRuntimeBundle(params: {
     params.writingSampleBlock,
     blueprintPromptContext,
     evidencePromptContext,
+    figurePromptContext,
     'pass1_json',
     previousSectionMemories
   );
@@ -4174,6 +4510,7 @@ async function buildSectionPromptRuntimeBundle(params: {
     sectionWordBudget,
     blueprintPromptContext,
     evidencePromptContext,
+    figurePromptContext,
     previousSectionMemories
   };
 }
@@ -5003,6 +5340,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           sectionKey,
           instructions: payload.instructions,
           useMappedEvidence: payload.useMappedEvidence,
+          useFigures: payload.useFigures,
+          selectedFigureIds: payload.selectedFigureIds,
           tenantContext
         });
         let sectionRecord = await getOrCreateDimensionSectionRecord(sessionId, sectionKey);
@@ -5112,6 +5451,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           paperTypeCode,
           sectionKey,
           useMappedEvidence: payload.useMappedEvidence,
+          useFigures: payload.useFigures,
+          selectedFigureIds: payload.selectedFigureIds,
           tenantContext
         });
 
@@ -5302,6 +5643,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           paperTypeCode,
           sectionKey,
           useMappedEvidence: payload.useMappedEvidence,
+          useFigures: payload.useFigures,
+          selectedFigureIds: payload.selectedFigureIds,
           tenantContext
         });
         const resolvedFlowBudget = normalizePositiveWordBudget(flow.sectionWordBudget)
@@ -5609,6 +5952,8 @@ export async function POST(request: NextRequest, context: { params: { paperId: s
           paperTypeCode,
           sectionKey,
           useMappedEvidence: payload.useMappedEvidence,
+          useFigures: payload.useFigures,
+          selectedFigureIds: payload.selectedFigureIds,
           tenantContext
         });
         const resolvedFlowBudget = normalizePositiveWordBudget(flow.sectionWordBudget)

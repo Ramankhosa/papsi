@@ -296,6 +296,11 @@ const STAGE_CONTROL_HELP: Record<string, StageHelpInfo> = {
     responsibility: 'Generates paper visuals using image-capable models from textual guidance.',
     tip: 'Ensure the selected model supports image generation.'
   },
+  PAPER_FIGURE_METADATA_INFER: {
+    summary: 'Low-cost figure metadata inference.',
+    responsibility: 'Reads a generated figure image and extracts concise, evidence-safe metadata for downstream drafting.',
+    tip: 'Prefer reliable vision models with low latency and strong JSON adherence.'
+  },
   PAPER_TEXT_ACTION: {
     summary: 'Targeted text transformations.',
     responsibility: 'Applies rewrite, expand, condense, formalize, or simplify actions on selected text.',

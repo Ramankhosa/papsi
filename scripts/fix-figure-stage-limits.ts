@@ -7,6 +7,7 @@ const FIGURE_STAGE_LIMITS: Record<string, { maxTokensIn: number; maxTokensOut: n
   PAPER_DIAGRAM_FROM_TEXT:  { maxTokensIn: 32000, maxTokensOut: 8000 },
   PAPER_CHART_GENERATOR:   { maxTokensIn: 24000, maxTokensOut: 8000 },
   PAPER_FIGURE_SUGGESTION: { maxTokensIn: 48000, maxTokensOut: 8000 },
+  PAPER_FIGURE_METADATA_INFER: { maxTokensIn: 16000, maxTokensOut: 4000 },
   PAPER_SKETCH_GENERATION: { maxTokensIn: 24000, maxTokensOut: 8000 },
 }
 

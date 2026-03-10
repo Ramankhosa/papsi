@@ -81,6 +81,62 @@ function getMermaidDiagramType(type: DiagramType): string {
   return typeMap[type] || 'flowchart TD'
 }
 
+function splitMermaidPreamble(code: string): { preamble: string; body: string } {
+  const trimmed = code.trim()
+  const lines = trimmed.split('\n')
+  const preambleLines: string[] = []
+  let index = 0
+
+  while (index < lines.length) {
+    const line = lines[index].trim()
+    if (!line) {
+      if (preambleLines.length > 0) {
+        preambleLines.push(lines[index])
+        index += 1
+        continue
+      }
+      break
+    }
+    if (line.startsWith('%%{') || line.startsWith('%%')) {
+      preambleLines.push(lines[index])
+      index += 1
+      continue
+    }
+    break
+  }
+
+  return {
+    preamble: preambleLines.join('\n').trim(),
+    body: lines.slice(index).join('\n').trim()
+  }
+}
+
+export function hasMermaidDiagramDeclaration(code: string): boolean {
+  const { body } = splitMermaidPreamble(code)
+  return /^(flowchart\b|graph\s+(?:TD|TB|BT|RL|LR)\b|sequenceDiagram\b|classDiagram\b|stateDiagram(?:-v2)?\b|erDiagram\b|gantt\b|mindmap\b|timeline\b)/.test(body)
+}
+
+export function buildFullMermaidCode(
+  config: MermaidConfig,
+  options?: {
+    theme?: FigureTheme
+    academicStyle?: AcademicFigureStyle
+  }
+): string {
+  const header = buildMermaidHeader(options?.theme, options?.academicStyle)
+  const diagramDeclaration = getMermaidDiagramType(config.diagramType)
+  const rawCode = config.code.trim()
+
+  if (hasMermaidDiagramDeclaration(rawCode)) {
+    return config.code
+  }
+
+  const { preamble, body } = splitMermaidPreamble(rawCode)
+  const prefix = preamble || header
+
+  return [prefix, diagramDeclaration, body].filter(Boolean).join('\n')
+}
+
 // ============================================================================
 // Kroki API Integration
 // ============================================================================
@@ -187,19 +243,7 @@ export async function generateMermaidDiagram(
   
   try {
     // Build full Mermaid code with theme
-    const header = buildMermaidHeader(options?.theme, options?.academicStyle)
-    const diagramDeclaration = getMermaidDiagramType(config.diagramType)
-    
-    let fullCode: string
-    if (config.code.trim().startsWith('%%{') || 
-        config.code.trim().startsWith('flowchart') ||
-        config.code.trim().startsWith('sequenceDiagram') ||
-        config.code.trim().startsWith('classDiagram')) {
-      // Code already has diagram type declaration
-      fullCode = config.code
-    } else {
-      fullCode = `${header}\n${diagramDeclaration}\n${config.code}`
-    }
+    const fullCode = buildFullMermaidCode(config, options)
 
     const format = options?.format || 'svg'
     const krokiType = getKrokiDiagramType(config.diagramType)

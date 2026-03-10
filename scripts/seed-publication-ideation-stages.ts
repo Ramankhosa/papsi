@@ -275,6 +275,12 @@ const publicationStages: StageDefinition[] = [
     description: 'Create image-generation-ready prompts for scientific and technical figures.',
     sortOrder: 42,
   },
+  {
+    code: 'PAPER_FIGURE_METADATA_INFER',
+    displayName: 'Figure Metadata Inference',
+    description: 'Infer concise, evidence-safe metadata from generated figure images using a low-cost vision model.',
+    sortOrder: 43,
+  },
 
   // Review and repair
   {
@@ -524,6 +530,12 @@ const stageConfigs: Record<string, StageRuntimeConfig> = {
     { modelPreferences: ['gemini-3.1-flash-image', 'gemini-3-pro-image-preview', 'gemini-2.5-pro'], maxTokensIn: 24_000, maxTokensOut: 8_000 },
     { modelPreferences: ['gemini-3-pro-image-preview', 'gemini-3.1-flash-image', 'gpt-5-mini'], maxTokensIn: 40_000, maxTokensOut: 12_000 },
     { modelPreferences: ['gemini-3-pro-image-preview', 'gemini-3.1-flash-image', 'gpt-5.2'], maxTokensIn: 64_000, maxTokensOut: 16_000 }
+  ),
+  PAPER_FIGURE_METADATA_INFER: stagePlan(
+    0.05,
+    { modelPreferences: ['gpt-4o-mini', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite'], maxTokensIn: 16_000, maxTokensOut: 2_000 },
+    { modelPreferences: ['gpt-4o-mini', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'], maxTokensIn: 24_000, maxTokensOut: 2_500 },
+    { modelPreferences: ['gpt-4o-mini', 'gemini-2.5-flash-lite', 'gemini-2.5-flash'], maxTokensIn: 32_000, maxTokensOut: 3_000 }
   ),
 
   PAPER_REVIEW_GAPS: stagePlan(

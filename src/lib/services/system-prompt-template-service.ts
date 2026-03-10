@@ -180,6 +180,7 @@ export const TEMPLATE_KEYS = {
   PERSUASION_BLOCK: 'persuasion_block',
   REVIEWER_LENS: 'reviewer_lens',
   ARGUMENTATIVE_ARC: 'argumentative_arc',
+  FIGURE_GROUNDING_BLOCK: 'figure_grounding_block',
   TEXT_ACTION_CREATE_SECTIONS: 'text_action_create_sections',
 } as const;
 
